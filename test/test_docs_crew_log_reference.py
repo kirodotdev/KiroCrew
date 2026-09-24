@@ -35,6 +35,7 @@ from pathlib import Path
 
 import pytest
 
+from kiro_crew import agent_panel
 from kiro_crew.crew_log.schema import (
     KIND_SESSION,
     MAX_ENTRY_BYTES,
@@ -63,7 +64,7 @@ _JSON_BLOCK_RE = re.compile(r"^```json\n(.*?)\n```$", re.MULTILINE | re.DOTALL)
 
 #: The count the page's own prose claims. Pinned so adding a subsection without
 #: updating the page's opening line fails here rather than misleading a reader.
-EXPECTED_LIVE_TYPES = 31
+EXPECTED_LIVE_TYPES = 32
 
 #: The only two emitters that write a session entry. Kept as a literal rather than
 #: read from ``FIXED_SOURCES``, which holds the crew-side values too.
@@ -146,6 +147,26 @@ def test_session_examples_carry_no_crew_only_envelope_fields(block: str) -> None
     raw = json.loads(block)
     assert "thread" not in raw, "thread is the crew's log shape"
     assert "ref" not in raw, "no session emitter sets ref"
+
+
+@pytest.mark.parametrize("block", _json_examples())
+def test_example_crew_key_is_a_real_digest_width(block: str) -> None:
+    """A `crew_key` example must be as wide as the digest the code actually makes.
+
+    This page is copied from, and the reader's own ownership check compares the whole
+    digest, so a short example yields a record `api_member_panel` can never match --
+    the panel silently reads as another crew's. The page carried a 40-character value
+    where ``crew_key`` is a sha256 (64), and nothing caught it: every other example
+    test only parses the JSON, which a wrong-width hex string passes. Compared against
+    the live function rather than a literal 64, so changing the digest updates this
+    with it.
+    """
+    data = json.loads(block).get("data")
+    if not isinstance(data, dict) or "crew_key" not in data:
+        pytest.skip("this example has no crew_key")
+    assert len(str(data["crew_key"])) == len(
+        agent_panel.crew_key("any-crew")
+    ), "a crew_key example must be the width crew_key actually produces"
 
 
 @pytest.mark.parametrize("block", _json_examples())

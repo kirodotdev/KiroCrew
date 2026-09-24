@@ -3,7 +3,7 @@
 **Local page, not a mirror.** Part of the [crew log reference](README.md), which is
 marked as a named exception in [the Reference index](../README.md).
 
-Thirty types. Read [envelope.md](envelope.md) first for the fields every entry
+Thirty-two types. Read [envelope.md](envelope.md) first for the fields every entry
 carries; this page covers only each type's `data`.
 
 Session entries are written with `src` `gateway` or `acp` and nothing else. They
@@ -53,6 +53,7 @@ The **Emitter** column says whether this build writes the type. Every row below 
 | [`object/observed`](#objectobserved) | The state of an object outside the session, as a named producer observed it. | live | `gateway` | — |
 | [`radar/recorded`](#radarrecorded) | One Issue Radar crew-ledger update: the work-item fields it set and the event explaining them. | live | `gateway` | — |
 | [`work/recorded`](#workrecorded) | One work-board mutation: who acted, on which item, and the fields it set. | live | `gateway` | — |
+| [`panel/published`](#panelpublished) | One publish of a crew's own webview: the data, and the template that renders it. | live | `gateway` | — |
 
 ## Session and turn
 
@@ -1275,6 +1276,58 @@ bound worker slot's units. Fold them all, oldest unit first, and key items by
 not folded yet, not to a missing item.
 
 **Since** — the change that made the work ledger a projection of the crew log.
+
+## The member panel
+
+### `panel/published`
+
+One publish of a crew's own webview: the data, and the template that renders it.
+
+**Kind and `src`** — `session`; `src` is `gateway`.
+
+**When written** — One entry per publish, appended to the PUBLISHING member's own DM
+session log, beside the write of `crew-panels/<slug>.json`. That tool is mounted on
+nothing else, so the publishing session is always the member's own DM session and the
+slot a panel folds under is always that member's. This entry is the ADDITIONAL
+record: the file is the durable one, and it is what answers a reader when the crew
+log is off, when the crew published before this type existed, or when the session's
+unit has been collected by retention. What the entry adds is what one overwritable
+file cannot hold — a publish history, and one record per owner on a slug two crews
+resolve to. The append is best-effort for that reason: a refused entry costs a
+publish its history row, never the panel.
+
+**Pairing** — None.
+
+| Field | Type | Required | Meaning | Enum |
+|---|---|---|---|---|
+| `template` | string | required | Id of the human-authored template the data is rendered with. The pair is what renders, so a payload naming no template has no layout to fill; the store resolves the id at publish, so an unknown one never reaches a line. | |
+| `data` | object | required | The state the crew published, already scrubbed and depth-checked. The MEMBERS are the crew's own field names — a panel is deliberately generic — so they are undeclared and bounded by byte and depth ceilings instead. | |
+| `title` | string | optional | Short name for this panel, shown in the page's picker. | |
+| `crew` | string | optional | The publishing crew's name as DISPLAY text, redacted, so it is not an identity. Carried so a reader of one entry can say whose panel it is without resolving the slot. | |
+| `crew_key` | string | optional | Digest of the crew's EXACT name, which is what ownership is decided on. Separate from `crew` because redaction is many-to-one: a credential-shaped name redacts to a string matching no exact name, so display text cannot serve as an identity. | |
+
+**Invariants** — A whole record, never a delta: each publish REPLACES the panel, so
+the fold takes the newest entry whole and a partial update has no meaning. The fold
+retains one record per `crew_key` rather than one per slot, because a slot is keyed
+by the member slug and two crews can resolve to one slug when memory provisioning
+suffixes a persisted `member_id`; each crew then reads the record its own digest
+keys instead of a later crew's publish hiding an earlier one's panel. Superseded
+publishes are kept only as a short history of title and template, not as payloads.
+The fold re-applies the store's own ceilings to the bytes it reads (`title` 200,
+`template` 64, `crew_key` 64, history 50 rows, 4 owners), because a planted or
+damaged line is exactly the input that ignores the writer's clamp. `published_at`
+is derived from the entry's own `time` and is not repeated in `data`.
+
+```json
+{"type":"panel/published","seq":84,"time":1789000003100,"src":"gateway","data":{"template":"default","title":"fleet","crew":"fleet-crew","crew_key":"04b27504d7cf4733ace180d2bd7123c36aebb36fcfdb2aebc6525affd6383c02","data":{"cycle":47,"open_prs":3}}}
+```
+
+**Reader hint** — Read the fold for the member's own DM slot, then select the record
+under the asking crew's `crew_key`; an empty `template` is the fold's way of saying
+this crew has published nothing. Do not key on the slug alone — on a collided slug
+that serves whichever crew published last to both of them.
+
+**Since** — the change that gave the member panel a crew-log record beside its file.
 
 ## Removed types
 

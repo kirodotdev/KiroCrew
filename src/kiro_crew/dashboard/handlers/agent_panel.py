@@ -31,16 +31,23 @@ from aiohttp import web
 from kiro_crew import agent_panel
 from kiro_crew import members as members_mod
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.crew_log import emit as crew_log_emit
+from kiro_crew.crew_log import projection
+from kiro_crew.crew_log.entry_types import PANEL_FOLD_NAME
 from kiro_crew.dashboard.handlers._shared import _is_restricted_session
 from kiro_crew.dashboard.handlers.cron import _recognize_session
 from kiro_crew.dashboard.handlers.members import (
     _deny_app_caller,
+    _member_thread_slot,
     _slug_is_claimed_by_any_member,
 )
+from kiro_crew.dashboard.handlers.session_ledger import _session_unit
 from kiro_crew.dashboard.state import DashboardState, _normalize_slot_key
 from kiro_crew.history import is_incognito_transcript
 from kiro_crew.members import MemberSlugError
+from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.sel import sel
+from kiro_crew.session_ledger import _APPEND_FLUSH_SECONDS
 from kiro_crew.validation import (
     _AGENT_NAME_RE,
     PANEL_PUBLISH_SCHEMA,
@@ -241,7 +248,12 @@ async def api_agent_panel_publish(request: web.Request) -> web.Response:
         return refusal
     assert resolved is not None
     slug, crew_name = resolved
-
+    # Read once, up front: the append needs it to resolve the calling session's unit
+    # and the broadcast needs it to tell open drawers. ``request.app["state"]``
+    # rather than ``.get()``, matching ``_resolve_publishing_crew`` -- a gateway
+    # serving this route without a state is a boot bug, not a request to answer.
+    state: DashboardState = request.app["state"]
+    sk = request.headers.get("X-Session-Key", "")
     try:
         body = await request.json()
     except Exception:
@@ -275,8 +287,8 @@ async def api_agent_panel_publish(request: web.Request) -> web.Response:
     # members routes enumerate, and compared on the ownership DIGEST so no crew name
     # has to be carried around to make the comparison.
     #
-    # Without it, strict ownership made a renamed or deleted crew permanent: its
-    # record held the slug forever and every later crew reaching that slug was told
+    # Without it, strict ownership makes a renamed or deleted crew permanent: its
+    # record holds the slug forever and every later crew reaching that slug is told
     # to "rename one of the crews", which cannot be done when the other crew is gone.
     def _owner_is_live(owner_key: str) -> bool:
         # The roster is read HERE, not hoisted above the call: this runs on the
@@ -289,19 +301,22 @@ async def api_agent_panel_publish(request: web.Request) -> web.Response:
         # "no crew holds this slug" and "we could not read which crews exist" arrive
         # as the same empty enumeration -- and read as absent, which hands the
         # colliding publish a takeover of a live crew's record. Treated as live so
-        # the unreadable case refuses the takeover instead of granting it; the
-        # strict-ownership refusal the caller already handles is the safe answer,
-        # and it stops being given once the config reads cleanly again.
+        # the unreadable case refuses the takeover instead of granting it.
         if cfg.degraded_sections:
             return True
-        # Through the liveness enumeration, NOT the addressability one: the
-        # create route validates a crew name only against the credential-shape
-        # check, so a name the agent-name grammar rejects -- "On call", with a
-        # space -- is a real crew that derives this slug. Asking the addressable
-        # list would drop it, report its owner as gone, and hand the colliding
-        # publish its record.
+        # Through the liveness enumeration, NOT the addressability one: the create
+        # route validates a crew name only against the credential-shape check, so a
+        # name the agent-name grammar rejects -- "On call", with a space -- is a real
+        # crew that derives this slug. Asking the addressable list would drop it,
+        # report its owner as gone, and hand the colliding publish its record.
         return _slug_is_claimed_by_any_member(cfg, slug, owner_key)
 
+    # THE FILE IS THE DURABLE RECORD and is written first, which is what keeps this
+    # route working on a gateway with the crew log off -- the default. The crew log
+    # entry below is an ADDITIONAL record: it is what gives a panel a history and
+    # keeps two crews on one slug from hiding each other's, and it is appended to a
+    # session's unit, which retention may collect. A panel outlives any one session,
+    # so the log cannot be its only home.
     try:
         record = await asyncio.to_thread(
             agent_panel.publish,
@@ -325,8 +340,6 @@ async def api_agent_panel_publish(request: web.Request) -> web.Response:
         # Coded rather than left to surface as a 500: the crew cannot fix this and
         # neither can the drawer, so an opaque error tells the one party who CAN
         # (the operator, who has to remove the link) nothing about what happened.
-        # Carries its own code rather than reusing ``bad_crew_slug`` below, which
-        # means "this crew has no addressable member space" -- a different repair.
         logger.warning("panel record path unusable for crew %s: %s", slug, exc)
         return web.json_response(
             {"error": str(exc), "code": "panel_record_is_a_symlink"}, status=400
@@ -340,6 +353,47 @@ async def api_agent_panel_publish(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "could not write the panel", "code": "panel_write_failed"}, status=503
         )
+
+    # The additional record, and BEST-EFFORT by design: the publish has already
+    # succeeded and the drawer already has a panel to show, so a crew log that is
+    # off, has no unit for this session yet, or refuses the line costs this publish
+    # its history row and nothing else. Failing the request here would make the
+    # feature's durable half hostage to its observational half.
+    #
+    # The unit is the CALLING session's own, which is the member's DM session: the
+    # panel tool is mounted nowhere else, so the entry lands on slot
+    # ``member-<slug>`` and the drawer's slug-keyed read folds it without any
+    # binding of its own.
+    if crew_log_emit.enabled():
+        # The ENTRY's own fields, not the stored document's. The file carries two
+        # members the entry type does not declare: ``schema``, which versions the
+        # file format, and ``published_at``, which the fold derives from the entry's
+        # envelope ``time`` so no line can claim a publish time the log disagrees
+        # with. Appending the document whole is refused as ``bad_data_field``, which
+        # costs the panel its history while the publish itself reports success.
+        entry = {
+            "template": str(record.get("template") or ""),
+            "data": record.get("data") or {},
+            "title": str(record.get("title") or ""),
+            "crew": str(record.get("crew") or ""),
+            "crew_key": str(record.get("crew_key") or ""),
+        }
+
+        def _append() -> bool:
+            unit = _session_unit(state, sk)
+            if not unit:
+                return False
+            # Asked BEFORE the append, because an entry over the line ceiling can
+            # never land and would otherwise be counted as a dropped write.
+            if not crew_log_emit.panel_entry_fits(entry):
+                return False
+            return crew_log_emit.on_panel_published(unit, entry, timeout=_APPEND_FLUSH_SECONDS)
+
+        if not await asyncio.to_thread(_append):
+            # Logged, not returned: the file carries this publish and the read
+            # prefers whichever record is newer, so the panel this call wrote IS
+            # what a reader gets. What is lost is the history row for this cycle.
+            logger.warning("panel history not recorded for crew %s; the panel was written", slug)
     # Tell open drawers a new document exists.
     #
     # Without this the drawer showed its FIRST read for the rest of the session:
@@ -355,7 +409,6 @@ async def api_agent_panel_publish(request: web.Request) -> web.Response:
     # (a test pins that it never reaches a client), and it is not needed: the frame
     # only says "re-read this slug", and the read route re-applies the ownership
     # check to whoever asks.
-    state: DashboardState = request.app["state"]
     state.broadcast_ws("panel_published", {"slug": slug})
     # The data is not echoed: it is the crew's own input, and a response that
     # repeats a 64 KB payload back into the tool result burns the context this
@@ -372,19 +425,125 @@ async def api_agent_panel_publish(request: web.Request) -> web.Response:
     )
 
 
+def _panel_slot(cfg: KiroCrewConfig, member: str, slug: str) -> str:
+    """The DM slot a crew's panel fold lives on.
+
+    The same derivation ``api_member_thread`` uses to CREATE that thread, so it names
+    the slot the publishing session actually runs under -- a member's DM session is
+    the only place the panel tool is mounted. Derived rather than looked up so a crew
+    whose thread is not running still reads its last panel.
+
+    The fallback is the V1 key, taken when the memory-store resolution refuses: an
+    unknown member, or a member identity whose V2 store record is missing or
+    degraded. Blanking a published panel because a store record is unreadable would
+    make an unrelated degradation look like the crew never published, and the
+    fallback cannot serve another crew's record -- the slug is part of both keys, and
+    the ownership digest is re-checked on whatever is read.
+    """
+    try:
+        slot, _store = _member_thread_slot(cfg, member, slug)
+    except UnknownMemoryStore:
+        return members_mod.member_slot_key(slug)
+    return slot
+
+
+def _panel_record(slot: str, slug: str, owner_key: str) -> dict[str, Any] | None:
+    """The crew's panel record: the folded one, else the stored file.
+
+    THE FILE DECIDES THE PANEL when this owner has one, and the fold supplies the
+    history. The file cannot be staler: the publish route writes it BEFORE it
+    appends, and returns without appending if that write fails, so every publish is
+    in the file while only the ones whose append landed are in the fold. That write
+    order is the invariant this selection rests on -- a future writer that appends
+    without writing the file would break it, and this comment is the contract it
+    would be breaking.
+
+    The fold is read for *slot* -- the member's own DM slot, which is the only slot a
+    publish can append under -- through the ordinary slot-keyed projection, so it is
+    served by the same warm kernel every other slot fold uses and this route keeps no
+    cache of its own. It answers alone when the file has nothing to say: a crew whose
+    file was never written, or was removed, or cannot be parsed.
+
+    *owner_key* selects WHICH record, because one slot can carry two crews: the slot
+    is the member slug's, and a crew whose persisted ``member_id`` is another crew's
+    name-derived slug lands on the same one. The fold keeps a record per ownership
+    digest, so each crew is answered with its own rather than with whichever of them
+    published last -- which the single file cannot do. The file is checked against the
+    same digest before it is used at all, since it is keyed by slug alone, so a
+    collision cannot let one crew's publish displace the other's reading.
+
+    The file is also what makes a panel outlive its session. It answers for a crew
+    that published with the crew log off, for one that published before this entry
+    type existed, and for one whose session unit has since been collected by
+    retention -- a fold-only read would blank a webview that is still on disk.
+    Nothing here writes it: this is a GET, and the store owns that write.
+
+    An empty ``template`` is how the fold says "nothing published": the store refuses
+    a publish naming no template, so no real record has one.
+    """
+    try:
+        folded = projection.read_slot_projection(slot, PANEL_FOLD_NAME).value
+    except Exception:
+        # A damaged or unreadable log reads as "nothing folded" rather than as a 500,
+        # matching the store's own totality contract: this route renders somebody's
+        # drawer, and the fallback below may still have a panel to show.
+        #
+        # WARNING, not debug: the crew-visible symptom is a panel that went blank
+        # with nothing saying why, and a log that stays damaged produces it on every
+        # read. The operator is the only party who can repair it, so the trace has to
+        # be at a level they will actually see.
+        logger.warning("panel fold unreadable for slot %s", slot, exc_info=True)
+        folded = {}
+    owners = folded.get("owners") if isinstance(folded, dict) else None
+    mine = owners.get(owner_key) if isinstance(owners, dict) else None
+    if not (isinstance(mine, dict) and str(mine.get("template") or "")):
+        return agent_panel.read(slug)
+
+    stored = agent_panel.read(slug)
+    # The file is keyed by SLUG alone, so on a slug two crews resolve to it may hold
+    # the other crew's panel. Only this owner's own file may be used, or a collision
+    # would let one crew's publish displace the other's reading.
+    if stored is None or str(stored.get("crew_key") or "") != owner_key:
+        return mine
+
+    # THE FILE DECIDES THE PANEL, because it cannot be staler than the fold: the
+    # publish route writes it BEFORE it appends, and returns without appending if
+    # that write fails. So every publish is in the file, while only the ones whose
+    # append landed are in the fold -- the crew log may be off for a cycle, or the
+    # entry may exceed the log's whole-LINE ceiling while its data is under the
+    # store's own cap.
+    #
+    # Preferring the fold instead pinned the drawer to the last LOGGED cycle and kept
+    # serving it while the route answered the crew ok, which is the one failure a
+    # published panel must not have: a viewer cannot tell a stale dashboard from a
+    # current one. Comparing the two ``published_at`` stamps does not fix it either,
+    # because both are second-granularity and two publishes in one second tie.
+    #
+    # The history is the fold's alone, and those rows stay true of the cycles that
+    # were logged, so they ride along rather than being lost with it. They count
+    # LOGGED publishes, which is what the fold can see.
+    newest = dict(stored)
+    for carried in ("history", "publishes", "history_omitted"):
+        if carried in mine:
+            newest[carried] = mine[carried]
+    return newest
+
+
 def _read_and_compose(
+    slot: str,
     slug: str,
+    owner_key: str,
 ) -> tuple[dict[str, Any] | None, str | None, bool]:
     """One record read, and the document composed from that same record.
 
     Both halves of the response come from a single snapshot, so a publish landing
     mid-request cannot pair one version's HTML with another version's summary.
-    Runs in a worker thread: two blocking file reads (the record, then the
-    template) plus the compose. The final flag distinguishes composition failure
+    Runs in a worker thread: the slot fold (or the fallback file read) plus the
+    template read plus the compose. The final flag distinguishes composition failure
     from an absent record without exposing an unowned record before ownership is
     checked.
     """
-    record = agent_panel.read(slug)
+    record = _panel_record(slot, slug, owner_key)
     try:
         return record, agent_panel.render_record(record), False
     except (agent_panel.PanelError, TypeError, ValueError):
@@ -436,13 +595,12 @@ async def api_member_panel(request: web.Request) -> web.Response:
         )
     # ``member`` (query, REQUIRED) is the exact crew name, exactly as
     # ``api_member_activity`` requires it and for the same reason: slugification is
-    # lossy, so ``Oncall`` and ``oncall`` reach one slug and therefore one record.
-    # ``publish`` refuses the colliding WRITE, which stops one crew overwriting the
-    # other -- but with the read keyed on the slug alone the loser of that race
-    # still saw the winner's dashboard in its own drawer. Verifying the stored
-    # ownership claim here is the other half of the same guard, and making the
-    # parameter required makes the mixed read impossible by construction rather
-    # than a caller obligation.
+    # lossy, so ``Oncall`` and ``oncall`` reach one slug and therefore one slot. The
+    # fold keeps a record per ownership digest, so both crews' panels survive there
+    # -- but a read keyed on the slug alone still hands whichever published last to
+    # both of them. Verifying the stored ownership claim here is what picks the
+    # asking crew's own record, and making the parameter required makes the mixed
+    # read impossible by construction rather than a caller obligation.
     member = request.query.get("member", "")
     if not member or not _AGENT_NAME_RE.match(member):
         return web.json_response(
@@ -452,7 +610,30 @@ async def api_member_panel(request: web.Request) -> web.Response:
     # between them and returned the old document beside the new summary, so the
     # docked chip and the expanded view could disagree. Composed inside the same
     # worker hop, which also keeps the template resolution off the event loop.
-    record, html, render_failed = await asyncio.to_thread(_read_and_compose, slug)
+    #
+    # The SLOT comes from the crew name plus the slug, through the same derivation
+    # the members page uses for the DM thread: the fold lives on that slot, because
+    # that is the only session a publish can append from. Derived rather than looked
+    # up so a member whose thread is not running still reads its last panel.
+
+    # Derived from the crew name alone, so it is known BEFORE the read and can select
+    # which of a shared slot's records to fold out. The post-read comparison below is
+    # the same value re-checked against what was actually read: it is what guards the
+    # legacy file, which is keyed on the slug only and therefore cannot be selected.
+    mine = agent_panel.crew_key(member)
+
+    def _resolve_and_read() -> tuple[dict[str, Any] | None, str | None, bool]:
+        cfg = KiroCrewConfig.load()
+        return _read_and_compose(_panel_slot(cfg, member, slug), slug, mine)
+
+    try:
+        record, html, render_failed = await asyncio.to_thread(_resolve_and_read)
+    except (MemberSlugError, ValueError):
+        # The crew name has no addressable member space, so it has no DM slot and
+        # therefore no panel. Reported as the empty state rather than a refusal: from
+        # this caller's point of view there is nothing published, and the slug it
+        # asked about is not evidence of anything else.
+        return web.json_response({"panel": None, "html": None})
     # Compared on the DIGEST of the exact name. The stored ``crew`` is the REDACTED
     # display text, so a credential-shaped crew name would never equal the exact
     # name it was redacted from -- that crew could not read its own panel, and two
@@ -466,7 +647,7 @@ async def api_member_panel(request: web.Request) -> web.Response:
     # outright. A forgery is the only thing left that can write one, which is
     # exactly what must not render.
     owner_key = str((record or {}).get("crew_key") or "")
-    if record is not None and (not owner_key or owner_key != agent_panel.crew_key(member)):
+    if record is not None and (not owner_key or owner_key != mine):
         # Another crew owns this slug's record. Reported as "nothing published"
         # rather than as a refusal: from this crew's point of view it HAS no panel,
         # and naming the other crew would disclose a colliding name the viewer of

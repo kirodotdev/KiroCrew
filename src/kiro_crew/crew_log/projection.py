@@ -68,6 +68,13 @@ from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
 from kiro_crew.config.paths import data_home
 from kiro_crew.crew_log.entry_types import (
+    PANEL_CREW_KEY_LIMIT,
+    PANEL_ENTRY_TYPE,
+    PANEL_FOLD_NAME,
+    PANEL_HISTORY_LIMIT,
+    PANEL_OWNER_LIMIT,
+    PANEL_TEMPLATE_LIMIT,
+    PANEL_TITLE_LIMIT,
     RADAR_CI_BOUNDS,
     RADAR_CI_KEYS,
     RADAR_CLEARABLE_FIELDS,
@@ -157,7 +164,7 @@ SESSION_FOLD_NAMES: Final[tuple[str, ...]] = PROJECTION_NAMES + INTERNAL_PROJECT
 #: :data:`PROJECTION_NAMES` for that reason: the growth push and the side panel
 #: address a session, and pushing a slot-wide value under one session's id would
 #: report a partial answer as the whole one.
-SLOT_PROJECTION_NAMES: Final[tuple[str, ...]] = ("ledger", "radar", "work")
+SLOT_PROJECTION_NAMES: Final[tuple[str, ...]] = ("ledger", "radar", "work", "panel")
 
 #: The slot-keyed fold served by its OWNER and by no generic route. This fold's owner
 #: (the Issue Radar crew store) orders a crew's units by the order the crew recorded
@@ -2745,6 +2752,13 @@ def _slot_units_for_fold(slot: str, name: str) -> "tuple[str, ...]":
         return session_ledger.crew_log_units(slot)
     if name == "work":
         return _work_units(slot, session_ledger.work_crew_log_units(slot))
+    if name == PANEL_FOLD_NAME:
+        # NOT the header fallthrough. A header's ``createdAt`` is stamped once and never
+        # rewritten, so a backward clock step between two units of one slot would order
+        # the retired unit last -- and this fold takes the newest entry WHOLE, so that
+        # retired publish would become the current panel permanently, with the history
+        # rows built against the wrong predecessor.
+        return session_ledger.panel_crew_log_units(slot)
     return session_units_for_slot(slot)
 
 
@@ -3753,6 +3767,198 @@ def _work_render(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# panel -- a crew's own webview, keyed by the publishing member's slot
+# --------------------------------------------------------------------------- #
+
+#: Describes the panel RECORD, not where it lives. Equal to the store's own version
+#: so the shape a drawer consumes is unchanged by the record moving into this log; a
+#: consumer of a panel does not branch on which file held it.
+PANEL_SCHEMA_VERSION: Final[int] = 1
+
+
+def _panel_iso(stamp_ms: int) -> str:
+    """An entry's epoch-millisecond ``time`` as the record's UTC ``+00:00`` spelling.
+
+    Derived from the envelope rather than written into the entry: one clock, and no
+    way for an entry to claim a publish time the log disagrees with.
+
+    Offset-CARRYING, because this value leaves the host. The drawer hands
+    ``published_at`` to ``new Date()``, which reads an offset-free string as the
+    BROWSER's local time -- invisible on the loopback dashboard, where the same clock
+    wrote it, and skewed by the whole offset from a remote browser in another zone.
+
+    A stamp outside the range a ``datetime`` can hold answers ``""``, the same thing
+    an absent one answers: these are bytes a reader does not control, so a damaged or
+    planted ``time`` would otherwise turn every read of that slot into a crash,
+    permanently, since the line stays on disk and nothing rewrites it. Losing one
+    stamp costs a reader a display value; raising costs it the whole panel.
+    """
+    try:
+        return datetime.fromtimestamp(stamp_ms / 1000, tz=timezone.utc).isoformat(
+            timespec="seconds"
+        )
+    except (OverflowError, OSError, ValueError):
+        return ""
+
+
+def _panel_text(value: Any, limit: int) -> str:
+    """*value* as a clamped string, or ``""``. The fold's own shape gate."""
+    if not isinstance(value, str):
+        return ""
+    return value[:limit]
+
+
+def _panel_owner_start() -> dict[str, Any]:
+    """One owner's panel state: the record it last published, and its past titles."""
+    return {
+        "template": "",
+        "title": "",
+        "crew": "",
+        "crew_key": "",
+        "data": {},
+        "published_at": "",
+        "history": [],
+        "publishes": 0,
+        # Overflow is COUNTED, not silently dropped: a trimmed tail otherwise reads
+        # exactly like a crew that never published those cycles, so a reader cannot
+        # tell a bounded history from a complete one.
+        "history_omitted": 0,
+        # Fold order, not a timestamp: this decides which owner is evicted, and
+        # ``published_at`` is empty for an entry whose ``time`` no ``datetime`` can
+        # hold, so a stamp key would rank a damaged record against real ones.
+        "seq": 0,
+    }
+
+
+def _panel_start() -> dict[str, Any]:
+    # Keyed by OWNERSHIP DIGEST rather than holding one record, because one slot can
+    # carry two crews: the slot is the member slug's, and a crew whose persisted
+    # ``member_id`` is another crew's name-derived slug lands on the same one. With a
+    # single record the later publisher's panel would be the only one the fold could
+    # answer with, so the other crew's own drawer showed nothing while its entries sat
+    # in this very log. ``newest`` names the owner that published last, which is what
+    # a reader with no digest of its own is answered with.
+    return {"owners": {}, "newest": "", "owners_omitted": 0, "seq": 0}
+
+
+def _panel_step(state: dict[str, Any], entry: Entry) -> None:
+    if entry.type != PANEL_ENTRY_TYPE:
+        return
+    data = entry.data
+    # WHOLE-DOCUMENT REPLACEMENT, which is where this fold parts company with the
+    # ledger's. A publish replaces the panel, so a present ``template`` and ``data``
+    # are what make an entry a publish at all; an entry missing either is a damaged
+    # or planted line, and applying its half over a good panel would splice two
+    # cycles' state together -- exactly the mixed record whole-replacement exists to
+    # prevent. Skipped rather than partially applied.
+    template = _panel_text(data.get("template"), PANEL_TEMPLATE_LIMIT)
+    payload = data.get("data")
+    if not template or not isinstance(payload, Mapping):
+        return
+    stamp = _panel_iso(entry.time)
+    key = _panel_text(data.get("crew_key"), PANEL_CREW_KEY_LIMIT)
+    owners: dict[str, Any] = state["owners"]
+    own = owners.get(key)
+    if own is None:
+        # Bounded before the insert, and the LEAST RECENTLY PUBLISHED owner is what
+        # goes: a slot that somehow sees many owners keeps the ones publishing now,
+        # and a reader whose record aged out is answered the same way a reader with no
+        # record is -- an empty panel, never another crew's.
+        #
+        # Ranked on the fold-order ``seq`` rather than on ``published_at``, because a
+        # stamp is empty for an entry whose ``time`` no ``datetime`` can hold: a
+        # string key would sort every such record first and evict a live crew's panel
+        # on the strength of one planted line.
+        if len(owners) >= PANEL_OWNER_LIMIT:
+            oldest = min(owners, key=lambda k: _as_int(owners[k].get("seq")))
+            del owners[oldest]
+            # Said out loud, not silently dropped: an evicted owner otherwise reads
+            # exactly like a crew that never published on this slot.
+            state["owners_omitted"] = _as_int(state.get("owners_omitted")) + 1
+        own = owners[key] = _panel_owner_start()
+    # The SUPERSEDED panel becomes a history row, before the new one overwrites it,
+    # so the row describes the panel that is being replaced rather than the one
+    # replacing it. Nothing is appended for the first publish: there is no earlier
+    # panel to record, and a row describing the empty start state would read as a
+    # publish that never happened. Per owner, because a crew's history is its own.
+    if own["template"]:
+        rows: list[dict[str, str]] = own["history"]
+        rows.append(
+            {
+                "at": own["published_at"],
+                "title": own["title"],
+                "template": own["template"],
+            }
+        )
+        # Bounded like every other fold state here: the oldest superseded panel ages
+        # out so a crew publishing every cycle cannot grow the record without limit.
+        # What ages out is COUNTED, for the same reason the owner eviction is.
+        if len(rows) > PANEL_HISTORY_LIMIT:
+            dropped = len(rows) - PANEL_HISTORY_LIMIT
+            del rows[:dropped]
+            own["history_omitted"] = _as_int(own.get("history_omitted")) + dropped
+    own["template"] = template
+    own["data"] = dict(payload)
+    own["title"] = _panel_text(data.get("title"), PANEL_TITLE_LIMIT)
+    own["crew"] = _panel_text(data.get("crew"), PANEL_TITLE_LIMIT)
+    own["crew_key"] = key
+    own["published_at"] = stamp
+    own["publishes"] += 1
+    state["seq"] = _as_int(state.get("seq")) + 1
+    own["seq"] = state["seq"]
+    state["newest"] = key
+
+
+def _panel_owner_record(own: Mapping[str, Any]) -> dict[str, Any]:
+    """One owner's record, in the shape the drawer already consumes.
+
+    ``history_omitted`` is the bound speaking: it is how a reader tells a history
+    trimmed at its cap from one that holds every cycle the crew ever published.
+    """
+    return {
+        "schema": PANEL_SCHEMA_VERSION,
+        "template": own["template"],
+        "title": own["title"],
+        "crew": own["crew"],
+        "crew_key": own["crew_key"],
+        "data": dict(own["data"]),
+        "published_at": own["published_at"],
+        "history": [dict(row) for row in own["history"]],
+        "publishes": own["publishes"],
+        "history_omitted": _as_int(own.get("history_omitted")),
+    }
+
+
+def _panel_render(state: dict[str, Any]) -> dict[str, Any]:
+    """The panel RECORD, in the shape the drawer already consumes.
+
+    Deliberately the same keys the store's document carried when it was a file of
+    its own, so the read route, the composer and the drawer did not have to learn a
+    new shape to stop being a second copy of the truth. ``history`` and ``publishes``
+    are what the file could not hold: one overwritable document has no past, which is
+    the whole reason the record moved into this log.
+
+    The top level is the NEWEST publish on this slot, and ``owners`` carries one
+    record per publishing crew keyed by its ownership digest. A reader that knows
+    which crew it is asking about reads its own entry there; the top level is for a
+    reader that does not, and on an uncontested slot the two are the same record.
+
+    An empty ``template`` is how a reader tells "this crew has published nothing"
+    from "this crew published an empty panel": the store refuses a publish that names
+    no template, so no real record has one.
+
+    ``owners_omitted`` is the owner bound speaking, beside each record's own
+    ``history_omitted``: without it a slot that evicted a crew reads exactly like a
+    slot that crew never published on.
+    """
+    owners: dict[str, Any] = state["owners"]
+    newest = owners.get(state["newest"])
+    record = _panel_owner_record(newest if newest is not None else _panel_owner_start())
+    record["owners"] = {key: _panel_owner_record(own) for key, own in owners.items()}
+    record["owners_omitted"] = _as_int(state.get("owners_omitted"))
+    return record
+
+
 def _as_int(value: Any) -> int:
     """*value* when it is a real int, else 0 -- a bool is not a count."""
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
@@ -3999,6 +4205,13 @@ _FOLDS: Final[dict[str, _Fold]] = {
         _work_render,
         bind_slot=_work_bind_slot,
         affects=frozenset({WORK_ENTRY_TYPE}),
+    ),
+    PANEL_FOLD_NAME: _Fold(
+        PANEL_FOLD_NAME,
+        _panel_start,
+        _panel_step,
+        _panel_render,
+        affects=frozenset({PANEL_ENTRY_TYPE}),
     ),
 }
 

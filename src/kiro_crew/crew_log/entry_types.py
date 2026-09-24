@@ -201,6 +201,45 @@ RADAR_ENTRY_TYPE = "radar/recorded"
 #: the type the fold matches on and the type the registry declares are one value.
 WORK_ENTRY_TYPE = "work/recorded"
 
+#: The crew webview's entry type, named here for the reason the two above are: the
+#: fold in ``projection`` matches on this type, and a type the fold does not match
+#: drops a real publish with nothing raised -- so the matched value and the declared
+#: one are one constant. The panel store imports it rather than restating it.
+PANEL_ENTRY_TYPE = "panel/published"
+
+#: Ceilings the panel fold RE-APPLIES to the bytes it reads. The writer clamps too,
+#: but these come off a file a reader does not control, so a planted or damaged line
+#: is exactly the input that ignores the writer's rule. Equal to the store's own caps
+#: by construction -- ``test_agent_panel_crew_log`` pins them against
+#: ``agent_panel`` -- because a lower ceiling here would truncate an ordinary
+#: accepted panel on every read, which is silent corruption rather than a bound.
+PANEL_TITLE_LIMIT = 200
+PANEL_TEMPLATE_LIMIT = 64
+#: A SHA-256 hexdigest, which is what ``agent_panel.crew_key`` produces and the read
+#: route compares on. Clamped like every other field the fold reads, so a planted
+#: line cannot carry an unbounded string into a state a reader retains; the clamp is
+#: the digest's own exact width, so no real key is ever shortened by it.
+PANEL_CREW_KEY_LIMIT = 64
+#: Past publishes the fold keeps, newest last. A HISTORY, not the value: each row is
+#: the title and template of a superseded panel, so an operator can see that a crew
+#: is publishing and what it called each cycle without the fold retaining every
+#: payload it ever held -- which is what the byte ceiling per entry bounds, and what
+#: retaining N payloads would multiply.
+PANEL_HISTORY_LIMIT = 50
+#: Distinct OWNERS one slot's panel fold retains a record for, newest publish wins
+#: within each. More than one is possible because a slot is keyed by the member slug
+#: and two crews can resolve to one slug (memory provisioning suffixes a persisted
+#: ``member_id``, so a name-derived slug can be held by a crew of another name). Each
+#: crew then reads the record its OWN ownership digest keys, instead of a newer
+#: crew's publish hiding an older one's panel from its own drawer.
+#:
+#: Small because the number is not a scale: one slug is one member, and a collision
+#: is a degraded roster rather than a mode of use. The cap is what keeps the retained
+#: state bounded -- each record holds a capped payload, so this multiplies it -- and
+#: the oldest publish is evicted when a further owner appears.
+PANEL_OWNER_LIMIT = 4
+PANEL_FOLD_NAME = "panel"
+
 #: Work-item phases. Two classifications hang off this enum and do not coincide:
 #: the TTL-active phases age toward the claim TTL, and the editing phases are the
 #: ones a crew may hold at most ONE item in. Neither can be collapsed into a bool
@@ -1680,6 +1719,70 @@ _SESSION_TYPES: tuple[EntryType, ...] = (
             "units, so the ledger's files are a cache of the crew log rather than a "
             "record beside it. The work ledger therefore DEPENDS on this log: with the "
             "emitter off the tools refuse rather than keeping a document of their own."
+        ),
+    ),
+    # -- panel -------------------------------------------------------------- #
+    EntryType(
+        PANEL_ENTRY_TYPE,
+        "One publish of a crew's own webview: the data, and the template that renders it.",
+        (
+            Field(
+                "template",
+                JSON_STRING,
+                required=True,
+                note=(
+                    "Id of the human-authored template the data is rendered with. Required "
+                    "because the pair is what renders: a payload naming no template has no "
+                    "layout to fill, and the store resolves the id at publish so an "
+                    "unknown one is refused before it reaches a line."
+                ),
+            ),
+            Field(
+                "data",
+                JSON_OBJECT,
+                required=True,
+                note=(
+                    "The state the crew published, already scrubbed and depth-checked. The "
+                    "MEMBERS are the crew's own field names -- a panel is deliberately "
+                    "generic, so nothing here knows what they mean -- which is why they are "
+                    "undeclared and bounded by byte and depth ceilings instead."
+                ),
+            ),
+            Field(
+                "title",
+                JSON_STRING,
+                note="Short name for this panel, shown in the page's picker.",
+            ),
+            Field(
+                "crew",
+                JSON_STRING,
+                note=(
+                    "The publishing crew's name as DISPLAY text -- redacted, so it is not "
+                    "an identity. Carried so a reader of one entry can say whose panel it "
+                    "is without resolving the slot."
+                ),
+            ),
+            Field(
+                "crew_key",
+                JSON_STRING,
+                note=(
+                    "Digest of the crew's EXACT name, which is what ownership is decided "
+                    "on. Separate from crew because redaction is many-to-one: a "
+                    "credential-shaped name redacts to a string that matches no exact name, "
+                    "so display text cannot serve as an identity."
+                ),
+            ),
+        ),
+        note=(
+            "One entry per publish, appended to the publishing member's own DM session log "
+            "-- the only session the panel tool is ever mounted on -- so the slot a panel "
+            "folds under is the member's. Two crew names can resolve to one slot, so the "
+            "fold keys a record per crew_key and answers each crew with its own. Each "
+            "publish REPLACES the panel, so the fold takes the newest entry whole and keeps "
+            "the earlier ones only as a short history; a partial update has no meaning here, "
+            "unlike the ledger's. This log is NOT the panel's only home: the publish writes "
+            "crew-panels/<slug>.json first and that file is the durable record, so this "
+            "append is best-effort history and a publish with the emitter off still succeeds."
         ),
     ),
 )

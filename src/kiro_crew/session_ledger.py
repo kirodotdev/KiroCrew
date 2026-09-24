@@ -247,6 +247,11 @@ _UNIT_ORDER_FILE = "unit-order"
 #: a later ledger-only append move a unit whose work update is stale past the unit
 #: holding the newest work update.
 _WORK_UNIT_ORDER_FILE = "work-unit-order"
+#: Panel publishes need a third, for the same reason work records do: sharing either
+#: order would let an append that is not a publish move a unit whose newest PANEL is
+#: older past the unit holding the newest one, and the panel fold takes the newest
+#: entry whole.
+_PANEL_UNIT_ORDER_FILE = "panel-unit-order"
 #: How many of a slot's units the order log keeps, newest kept. A slot gains one
 #: per reset, so this is generous. Past it the oldest recorded ids drop out and
 #: those units fold with the never-recorded ones, which the fold applies BEFORE
@@ -1748,6 +1753,39 @@ def work_crew_log_units(slot_key: str) -> tuple[str, ...]:
         return units
     except Exception:
         logger.warning("work ledger: could not list this slot's crew logs", exc_info=True)
+        return ()
+
+
+def note_panel_unit_recorded(slot_key: str, session_id: str) -> None:
+    """Publish that *session_id* just appended a panel record under its slot."""
+    _note_unit_order(
+        canonical_slot(slot_key, session_id),
+        session_id,
+        order_file=_PANEL_UNIT_ORDER_FILE,
+    )
+
+
+def panel_crew_log_units(slot_key: str) -> tuple[str, ...]:
+    """Panel units for *slot_key* in causal append order, oldest first.
+
+    Units absent from the bounded order tail predate every retained unit and fold
+    first. Listing failures fail closed, which for the panel costs the history and not
+    the panel: the file is the durable record and the read falls back to it.
+    """
+    if not slot_key:
+        return ()
+    try:
+        from kiro_crew.crew_log.store import session_units_for_slot
+
+        units = session_units_for_slot(slot_key)
+        recorded = _recorded_unit_order(slot_key, order_file=_PANEL_UNIT_ORDER_FILE)
+        if recorded:
+            known = [unit for unit in recorded if unit in units]
+            rest = [unit for unit in units if unit not in recorded]
+            units = tuple(rest + known)
+        return units
+    except Exception:
+        logger.warning("panel: could not list this slot's crew logs", exc_info=True)
         return ()
 
 

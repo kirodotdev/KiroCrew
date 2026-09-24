@@ -234,6 +234,13 @@ CANONICAL: dict[str, dict] = {
         "event": "progress: scoped tests green",
         "event_kind": "report",
     },
+    "panel/published": {
+        "template": "default",
+        "data": {"cycle": 47, "waiting_on_you": 1, "holding": 6},
+        "title": "fleet — cycle 47",
+        "crew": "Fleet Conductor",
+        "crew_key": "9f2c" + "0" * 60,
+    },
 }
 
 
@@ -270,7 +277,11 @@ def test_every_type_written_today_is_declared_and_nothing_else_is():
     # from this registry, so an undeclared type in a log stops every later fold of it --
     # and not because any fold of ONE log branches on them: the session tree is folded
     # across logs.
-    assert len(SESSION_ENTRY_TYPES) == 33
+    #
+    # The one past those is the crew webview's ``panel/published``, which joins its
+    # siblings for the same reason they did: a panel is a record whose history matters,
+    # and one overwritable document per crew could hold none of it.
+    assert len(SESSION_ENTRY_TYPES) == 34
     # Nine types the vocabulary owns that nothing writes. Declaring one would state
     # a shape no writer produces, and the first emitter to land would have to
     # satisfy a contract written without it. They pass through undeclared instead.

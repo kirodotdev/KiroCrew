@@ -155,6 +155,13 @@ TYPE_OWNERSHIP: dict[str, frozenset[str]] = {
             # reader folds those entries, so this domain is what makes the work
             # ledger a projection of the crew log rather than a store beside it.
             "work",
+            # The crew's published webview. ``panel_publish`` appends one
+            # ``panel/published`` entry to the member's own DM session log and the
+            # drawer folds those entries, so this domain is what makes a published
+            # panel a projection of the crew log rather than a document beside it.
+            # Owned by the session kind because the tool is mounted on nothing but a
+            # member's DM session, which is the unit the entry lands in.
+            "panel",
         }
     ),
 }

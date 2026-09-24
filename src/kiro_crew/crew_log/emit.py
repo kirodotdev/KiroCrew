@@ -4928,6 +4928,91 @@ def work_entry_fits(data: dict[str, Any]) -> bool:
     return _entry_line_fits("work/recorded", data, src=_SRC_GATEWAY)
 
 
+def on_panel_published(session_id: str, data: dict[str, Any], *, timeout: float = 5.0) -> bool:
+    """One publish of a crew's webview, appended to its DM session log, acknowledged.
+
+    The write half of the crew panel. A publish REPLACES the whole panel, so the
+    entry carries the document whole rather than the fields that changed: a panel
+    describes one cycle's state, and a partial update would leave last cycle's rows
+    beside this cycle's counters with nothing marking which is which. That is the
+    one way this differs from the session ledger's entry, whose absent field means
+    unchanged.
+
+    WAITS, like ``on_work_recorded``, though not because this record is the panel's
+    only one -- the file is, and the route has already written it. It waits so the
+    caller learns whether THIS publish's history row landed, and so an append the
+    waiter gave up on cannot land later. It returns ``True`` once the writer has
+    appended, and ``False`` when the append was refused, permanently dropped, or not
+    started within *timeout* seconds. ``False`` is FINAL -- an entry the waiter gave
+    up on is abandoned and will not land later even if the writer retries the job.
+    Without that, a slow store could report the row missing and commit it anyway, so
+    one publish would end up with two history rows. An append already STARTED is waited to
+    completion however long the store takes, and its outcome reported truthfully
+    rather than guessed.
+
+    Queued through the same writer as every other entry, for the reason the session
+    ledger gives: an append takes the unit's WRITE OWNERSHIP, and while the emitter
+    holds a running session's handle a second handle in this process is refused, so
+    a store that wrote around the emitter would fail for exactly the crews that are
+    publishing. Going through the writer also orders the entry against the turn the
+    crew published inside.
+
+    *session_id* is the PUBLISHING session's, which is the member's own DM session:
+    the panel tool is mounted nowhere else, so the unit this lands in belongs to
+    that member's slot and the slug-keyed read finds it without a binding of its
+    own. A session with no crew log answers ``False`` here, and the refusal belongs
+    where the crew can be told about it.
+    """
+    if not session_id or not enabled():
+        return False
+    landed = threading.Event()
+    gate = threading.Lock()
+    outcome = {"ok": False, "abandoned": False}
+
+    def _job() -> None:
+        with gate:
+            # A waiter that gave up has abandoned the entry: it must not land later,
+            # or a publish the crew was told failed would reappear on the next fold.
+            # Under the gate the two outcomes cannot cross.
+            if outcome["abandoned"]:
+                return
+            log = _handle(session_id)
+            if log is None:
+                return
+            log.append("panel/published", data, src=_SRC_GATEWAY)
+            # The panel fold spans replacement sessions, and a unit header's clock can
+            # step BACKWARD, which would fold a retired session's publish last and make
+            # it the current panel with history built against the wrong predecessor.
+            # Publish the causal order only after this append has really landed.
+            from kiro_crew import session_ledger
+
+            session_ledger.note_panel_unit_recorded("", session_id)
+            outcome["ok"] = True
+
+    _submit(_job, "appending panel/published", session_id, after=landed.set)
+    if landed.wait(timeout):
+        return outcome["ok"]
+    with gate:
+        if outcome["ok"]:
+            return True
+        outcome["abandoned"] = True
+    return False
+
+
+def panel_entry_fits(data: dict[str, Any]) -> bool:
+    """Whether *data* would fit one ``panel/published`` entry.
+
+    Asked beside the write rather than inside it, because the caller can act on the
+    answer and ``_write`` cannot: an entry over the ceiling by construction can
+    never land, so the panel it would report as published never exists. The store's
+    own byte ceiling bounds the payload, and this bounds the one thing the store
+    cannot see -- the whole serialized line, envelope included. Same serializer,
+    same entry type and src as the append, so the two cannot disagree about what
+    fits.
+    """
+    return _entry_line_fits("panel/published", data, src=_SRC_GATEWAY)
+
+
 def on_work_recorded(session_id: str, data: dict[str, Any], *, timeout: float = 5.0) -> bool:
     """One work-board mutation, appended to the ACTING session's log, acknowledged.
 
