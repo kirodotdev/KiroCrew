@@ -6973,7 +6973,11 @@
       "diagram_source": "図のソース",
       "copy_failed": "コピーできませんでした",
       "mermaid_render_failed": "この図を描画できませんでした。代わりにソースを表示します。",
-      "image_position": "{{total}} 枚中 {{index}} 枚目"
+      "image_position": "{{total}} 枚中 {{index}} 枚目",
+      "copy_chip_name": "{{text}} をコピー",
+      "open_path_chip_name": "{{path}} を開く",
+      "browse_path_chip_name": "{{path}} を参照",
+      "switch_to_session_chip_name": "セッション {{label}} に切り替え"
     },
     "markdownToc": {
       "contents": "目次",

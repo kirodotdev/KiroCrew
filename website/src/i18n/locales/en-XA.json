@@ -6447,7 +6447,11 @@
       "diagram_source": "[Ðìàğŕàɱ şøùŕçè ·············]",
       "copy_failed": "[Çøþý ƒàìĺèð ··········]",
       "mermaid_render_failed": "[Çøùĺðñ’ţ ŕèñðèŕ ţĥìş ðìàğŕàɱ. Şĥøẁìñğ ţĥè şøùŕçè ìñşţèàð. ····················]",
-      "image_position": "[{{index}} øƒ {{total}} ······]"
+      "image_position": "[{{index}} øƒ {{total}} ······]",
+      "copy_chip_name": "[Çøþý {{text}} ········]",
+      "open_path_chip_name": "[Øþèñ {{path}} ········]",
+      "browse_path_chip_name": "[Ɓŕøẁşè {{path}} ···········]",
+      "switch_to_session_chip_name": "[Şẁìţçĥ ţø şèşşìøñ {{label}} ················]"
     },
     "markdownToc": {
       "contents": "[Çøñţèñţş ············]",

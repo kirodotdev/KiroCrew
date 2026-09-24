@@ -7288,7 +7288,11 @@
       "diagram_source": "Исходный код диаграммы",
       "copy_failed": "Не удалось скопировать",
       "mermaid_render_failed": "Не удалось отобразить эту диаграмму. Вместо неё показан исходный код.",
-      "image_position": "{{index}} из {{total}}"
+      "image_position": "{{index}} из {{total}}",
+      "copy_chip_name": "Скопировать {{text}}",
+      "open_path_chip_name": "Открыть {{path}}",
+      "browse_path_chip_name": "Просмотреть {{path}}",
+      "switch_to_session_chip_name": "Переключиться на сессию {{label}}"
     },
     "markdownToc": {
       "contents": "Содержание",

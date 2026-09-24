@@ -7183,7 +7183,11 @@
       "diagram_source": "Código-fonte do diagrama",
       "copy_failed": "Falha ao copiar",
       "mermaid_render_failed": "Não foi possível renderizar este diagrama. Exibindo o código-fonte.",
-      "image_position": "{{index}} de {{total}}"
+      "image_position": "{{index}} de {{total}}",
+      "copy_chip_name": "Copiar {{text}}",
+      "open_path_chip_name": "Abrir {{path}}",
+      "browse_path_chip_name": "Navegar em {{path}}",
+      "switch_to_session_chip_name": "Alternar para a sessão {{label}}"
     },
     "markdownToc": {
       "contents": "Conteúdo",

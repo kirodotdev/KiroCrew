@@ -6973,7 +6973,11 @@
       "diagram_source": "图表源代码",
       "copy_failed": "复制失败",
       "mermaid_render_failed": "无法渲染此图表。改为显示源代码。",
-      "image_position": "第 {{index}} 张，共 {{total}} 张"
+      "image_position": "第 {{index}} 张，共 {{total}} 张",
+      "copy_chip_name": "复制 {{text}}",
+      "open_path_chip_name": "打开 {{path}}",
+      "browse_path_chip_name": "浏览 {{path}}",
+      "switch_to_session_chip_name": "切换到会话 {{label}}"
     },
     "markdownToc": {
       "contents": "目录",

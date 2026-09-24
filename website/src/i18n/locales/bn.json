@@ -7078,7 +7078,11 @@
       "diagram_source": "ডায়াগ্রামের সোর্স",
       "copy_failed": "কপি ব্যর্থ",
       "mermaid_render_failed": "এই ডায়াগ্রামটি রেন্ডার করা যায়নি। এর পরিবর্তে সোর্স দেখানো হচ্ছে।",
-      "image_position": "{{total}}টির মধ্যে {{index}}"
+      "image_position": "{{total}}টির মধ্যে {{index}}",
+      "copy_chip_name": "{{text}} কপি করো",
+      "open_path_chip_name": "{{path}} খোলো",
+      "browse_path_chip_name": "{{path}} ব্রাউজ করো",
+      "switch_to_session_chip_name": "{{label}} সেশনে যাও"
     },
     "markdownToc": {
       "contents": "বিষয়সূচি",

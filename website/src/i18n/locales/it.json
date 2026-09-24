@@ -7183,7 +7183,11 @@
       "diagram_source": "Codice sorgente del diagramma",
       "copy_failed": "Copia non riuscita",
       "mermaid_render_failed": "Impossibile visualizzare questo diagramma. Viene mostrato il codice sorgente.",
-      "image_position": "{{index}} di {{total}}"
+      "image_position": "{{index}} di {{total}}",
+      "copy_chip_name": "Copia {{text}}",
+      "open_path_chip_name": "Apri {{path}}",
+      "browse_path_chip_name": "Esplora {{path}}",
+      "switch_to_session_chip_name": "Passa alla sessione {{label}}"
     },
     "markdownToc": {
       "contents": "Contenuto",

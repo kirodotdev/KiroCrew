@@ -2503,7 +2503,11 @@
       "diagram_source": "Diagram source",
       "copy_failed": "Copy failed",
       "mermaid_render_failed": "Couldn’t render this diagram. Showing the source instead.",
-      "image_position": "{{index}} of {{total}}"
+      "image_position": "{{index}} of {{total}}",
+      "copy_chip_name": "Copy {{text}}",
+      "open_path_chip_name": "Open {{path}}",
+      "browse_path_chip_name": "Browse {{path}}",
+      "switch_to_session_chip_name": "Switch to session {{label}}"
     },
     "mcpAppFrame": {
       "collapse": "Collapse",

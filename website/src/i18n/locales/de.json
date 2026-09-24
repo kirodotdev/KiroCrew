@@ -7078,7 +7078,11 @@
       "diagram_source": "Diagrammquelltext",
       "copy_failed": "Kopieren fehlgeschlagen",
       "mermaid_render_failed": "Dieses Diagramm konnte nicht gerendert werden. Stattdessen wird der Quelltext angezeigt.",
-      "image_position": "{{index}} von {{total}}"
+      "image_position": "{{index}} von {{total}}",
+      "copy_chip_name": "{{text}} kopieren",
+      "open_path_chip_name": "{{path}} öffnen",
+      "browse_path_chip_name": "{{path}} durchsuchen",
+      "switch_to_session_chip_name": "Zur Sitzung {{label}} wechseln"
     },
     "markdownToc": {
       "contents": "Inhalt",

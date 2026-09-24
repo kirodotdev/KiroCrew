@@ -1624,6 +1624,25 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 /* Kiro theme: inline code = neutral elevated surface (Prey/750) + light-purple text (Figma 3906:185658) */
 [data-theme="kiro-dark"] .msg-content :not(pre)>code{background:#28242e;color:#c19aff}
 [data-theme="kiro-light"] .msg-content :not(pre)>code{background:var(--bg-hover);color:#723acc}
+/* Inline-code CHIPS (MarkdownRenderer): a chip's colour says what its click does. A chip whose
+   click navigates (`navigate`: a confirmed path, a session, an autolinked work item or a span
+   inside a link) wears the accent, the colour links wear; a chip that only copies (`copy`)
+   wears the NEUTRAL text colour, plus its dotted underline and copy cursor (set by the
+   component). Two values, because these two rules are the attribute's only consumer and two
+   kinds are all they tell apart. Neutral, not the Kiro inline-code purple above: on these
+   themes that purple and the accent are two near-identical purples, and a reader takes both
+   for the same kind of chip — "link-coloured = navigates, neutral = copies" has to hold on
+   every theme, and on the others inline code already inherits the text colour. The two Kiro
+   rules above set `color` at specificity (0,2,2), and the utilities are emitted unlayered, so
+   the `text-accent` utility (0,1,0) the actionable chips carry lost to them: every chip
+   painted in the code colour. Both chip states therefore get their own rule here, at (0,3,2),
+   keyed on the `data-chip-action` the renderer sets (raw HTML cannot: InlineCode drops any
+   inbound one). Kiro dark uses Purple/300, the same step-up message links take below. A span
+   that is no chip at all (an image-only raw span) keeps the theme's purple. */
+[data-theme="kiro-dark"] .msg-content :not(pre)>code[data-chip-action="copy"]{color:var(--text)}
+[data-theme="kiro-light"] .msg-content :not(pre)>code[data-chip-action="copy"]{color:var(--text)}
+[data-theme="kiro-dark"] .msg-content :not(pre)>code[data-chip-action="navigate"]{color:#b07fff}
+[data-theme="kiro-light"] .msg-content :not(pre)>code[data-chip-action="navigate"]{color:var(--accent)}
 /* Kiro dark: brighten message links — #8e48ff (=accent, same as the button fill) reads dull as thin
    text on the dark bg, so step up to Purple/300 for equal perceived vibrancy. Scoped to Kiro. */
 [data-theme="kiro-dark"] .msg-content a{color:#b07fff;text-decoration-color:rgba(176,127,255,.45)}

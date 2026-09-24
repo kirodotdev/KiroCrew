@@ -6973,7 +6973,11 @@
       "diagram_source": "다이어그램 소스",
       "copy_failed": "복사 실패",
       "mermaid_render_failed": "이 다이어그램을 렌더링할 수 없습니다. 대신 소스를 표시합니다.",
-      "image_position": "{{total}}개 중 {{index}}번째"
+      "image_position": "{{total}}개 중 {{index}}번째",
+      "copy_chip_name": "{{text}} 복사",
+      "open_path_chip_name": "{{path}} 열기",
+      "browse_path_chip_name": "{{path}} 찾아보기",
+      "switch_to_session_chip_name": "{{label}} 세션으로 전환"
     },
     "markdownToc": {
       "contents": "목차",

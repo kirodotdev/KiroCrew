@@ -7183,7 +7183,11 @@
       "diagram_source": "Source du diagramme",
       "copy_failed": "Échec de la copie",
       "mermaid_render_failed": "Impossible d’afficher ce diagramme. La source est affichée à la place.",
-      "image_position": "{{index}} sur {{total}}"
+      "image_position": "{{index}} sur {{total}}",
+      "copy_chip_name": "Copier {{text}}",
+      "open_path_chip_name": "Ouvrir {{path}}",
+      "browse_path_chip_name": "Parcourir {{path}}",
+      "switch_to_session_chip_name": "Passer à la session {{label}}"
     },
     "markdownToc": {
       "contents": "Sommaire",
