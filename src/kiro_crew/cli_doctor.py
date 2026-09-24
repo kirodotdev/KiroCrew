@@ -1182,6 +1182,122 @@ def _doctor_cron_script_sources(issues: list[str]) -> None:
         )
 
 
+def _doctor_skill_currency(issues: list[str]) -> None:
+    """Report installed skills that do not match the package this build ships.
+
+    An installed skill can run for days against a package that has already fixed
+    the script it carries, and nothing else anywhere says so. The sync's update
+    gate compares mtimes, so an installed copy whose mtime is newer than
+    anything the package ships is judged up to date and simply skipped; the
+    operator keeps running superseded code and reads its output as current.
+
+    A shipped file cannot answer this about itself. It has no import-time
+    version to read and no subprocess to ask git with, and a hardcoded version
+    constant goes stale silently the moment someone edits the file without
+    bumping it -- the exact failure it would claim to prevent. Currency is a
+    relation between the install and the package, and only one side of that
+    relation is visible from inside the script. Doctor sees both sides.
+
+    Scope is deliberately narrow. "Behind" means the install does not match the
+    source tree the sync selects for it, not that it trails a remote revision:
+    doctor makes no network call, and an operator running an older build must not
+    be told their skill is stale against a revision they never installed. A
+    skill no source root ships is absent from the result, not reported, because
+    there is no source tree for it to be out of step with.
+
+    POSIX only for now. On Windows the comparison would have to read each
+    install by name, where losing the race against a substituted junction costs
+    an outbound authenticated connection rather than a wrong answer, so this
+    prints the boundary instead of a verdict there.
+    """
+    from kiro_crew.skills import (
+        SKILL_INSTALL_BEHIND,
+        SKILL_INSTALL_EDITED,
+        SKILL_INSTALL_IN_SYNC,
+        installed_skill_currency,
+    )
+
+    if os.name == "nt":
+        # Said out loud rather than printed as silence. The check reports nothing
+        # on Windows, and an absent section is indistinguishable from a gateway
+        # whose installs are all current -- which is the false reassurance this
+        # whole instrument exists to remove.
+        print("\nInstalled Skill Currency")
+        print(
+            "  not checked on this platform yet: the comparison reads each "
+            "installed directory by name, and the pinned read that makes that "
+            "safe here does not exist yet, so no verdict is printed rather than "
+            "one taken unsafely"
+        )
+        return
+
+    states = installed_skill_currency()
+    if not states:
+        return
+
+    behind = [state for state in states if state.state == SKILL_INSTALL_BEHIND]
+    edited = [state for state in states if state.state == SKILL_INSTALL_EDITED]
+    unverifiable = [
+        state
+        for state in states
+        if state.state not in (SKILL_INSTALL_IN_SYNC, SKILL_INSTALL_BEHIND, SKILL_INSTALL_EDITED)
+    ]
+
+    print("\nInstalled Skill Currency")
+    print(
+        f"  {len(states) - len(behind) - len(edited) - len(unverifiable)} in step with this build"
+    )
+    # Skill names and source paths come off disk, out of a packaged tree or a
+    # KIROCREW_PROJECT_DIR tree, so a name is untrusted text: printed raw, an
+    # OSC/ANSI sequence or an embedded newline in a directory name would drive
+    # the terminal or forge a verdict line. The source path is displayed for the
+    # same reason the cron section displays its own: it names which tree the
+    # verdict was reached against, which is what makes a project skill
+    # shadowing a builtin legible rather than surprising.
+    for state in behind:
+        print(
+            f"  {_safe_display(state.name)}:  ❌ does not match "
+            f"{_safe_display(str(state.source))}"
+        )
+    for state in edited:
+        print(
+            f"  {_safe_display(state.name)}:  ⚠ edited since install, so it is not "
+            f"compared against {_safe_display(str(state.source))}"
+        )
+    for state in unverifiable:
+        print(
+            f"  {_safe_display(state.name)}:  ⏹ could not be compared against "
+            f"{_safe_display(str(state.source))}"
+        )
+
+    if behind:
+        # Named as the source tree rather than as the package: the comparison
+        # picks the root the sync itself would pick, so a project skill is
+        # judged against the project tree that shadows the builtin. Each line
+        # above prints which tree that was.
+        issues.append("installed skill does not match the source tree the sync selects for it")
+        print(
+            "               Restart the gateway to re-run the skill sync. A name "
+            "that persists after a restart carries an mtime NO OLDER than "
+            "anything that source tree holds, so the sync reads it as up to date "
+            "and skips it: "
+            "move that installed directory OUT of the skills directory (a "
+            "rename in place keeps a readable SKILL.md, which discovery "
+            "publishes as a second copy of the same skill) and restart again, "
+            "and the sync reinstalls it from that source. A behind copy still "
+            "matches the marker the sync wrote, so it holds no local edits to "
+            "lose."
+        )
+    if edited:
+        print(
+            "               An edited copy is not overwritten in place. While no "
+            "update is due it stays on its current code; when an update IS due "
+            "the sync moves the edited tree aside to a dot-prefixed backup "
+            "beside it and installs the packaged version, so the edit stops "
+            "taking effect until it is reconciled."
+        )
+
+
 def _open_slot_agent_names() -> list[tuple[str, str]]:
     """``(slot key, agent name)`` for every open dashboard tab persisting one.
 
@@ -4677,6 +4793,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     # ── Data Home (+ leftover legacy home) ──
     _doctor_data_home()
     _doctor_cron_script_sources(issues)
+    _doctor_skill_currency(issues)
     _doctor_deprecated_agent_specs(cfg, issues)
     _doctor_path_launcher()
     _doctor_trust_root()

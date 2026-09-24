@@ -1286,6 +1286,216 @@ def _verified_unchanged_fingerprint(dest_dir: Path, src_dir: Path | None) -> str
     return dest_fingerprint
 
 
+SKILL_INSTALL_IN_SYNC = "in-sync"
+SKILL_INSTALL_BEHIND = "behind"
+SKILL_INSTALL_EDITED = "edited"
+SKILL_INSTALL_UNVERIFIABLE = "unverifiable"
+
+
+@dataclass(frozen=True)
+class InstalledSkillCurrency:
+    """One installed builtin skill judged against the packaged tree it came from."""
+
+    name: str
+    source: Path
+    state: str
+
+
+def _first_linked_skill_component(base: Path, name: str) -> Path | None:
+    """First directory strictly BETWEEN *base* and ``base / name`` that is a link.
+
+    A skill name may be nested (``kirocrew-dev/prepare-pr``), so testing the
+    leaf alone leaves the directories above it unscreened while every probe of
+    the leaf still resolves through them. A link at ``<skills>/kirocrew-dev``
+    then makes the fingerprint hash a tree outside the skills directory and
+    report it as this install, which is the verdict the leaf screen exists to
+    refuse.
+
+    Components are tested ROOT-FIRST and the walk stops at the first hit, so
+    each ``lstat`` runs only after the component above it is known not to be a
+    link and the walk itself never traverses one.
+
+    A link here is operator-made: these are directories the sync creates itself,
+    exactly as the leaf is. A flat name has no components between the two paths
+    and costs no stat at all.
+    """
+    current = base
+    for part in PurePosixPath(name).parts[:-1]:
+        current = current / part
+        if is_link_or_junction(current):
+            return current
+    return None
+
+
+def installed_skill_currency() -> list[InstalledSkillCurrency]:
+    """Judge each installed skill against the packaged tree the sync would pick.
+
+    The question this answers is currency: does the install still correspond to
+    the package this process is running. A script can report its own identity
+    but not its own currency, because currency is a relation between the
+    install and the package, and only one side of it is visible from inside a
+    shipped file. Both sides are visible here.
+
+    No new provenance data is needed, because the marker already holds the
+    answer. ``_ensure_builtin_skills`` records the fingerprint of the PACKAGED
+    tree (not of the copy it wrote), and ``_tree_entries`` hashes relative
+    paths, modes, link targets and file bytes while excluding mtime entirely.
+    The recorded value is therefore a portable content identity of the package
+    the install came from, and comparing it against a fresh fingerprint of the
+    packaged tree needs no version constant inside any shipped file, no marker
+    format change, and no network call.
+
+    What makes staleness silent today is the update gate, not the marker: it
+    compares mtimes, so an installed copy carrying an mtime newer than anything
+    the package ships is judged up to date, no copy happens, and nothing says
+    so. This function reads the same two trees the gate reads and reports the
+    comparison the gate throws away.
+
+    ``SKILL_INSTALL_BEHIND`` states that the two sides disagree, not which is
+    older: a content hash cannot order two revisions, exactly as
+    :func:`deployed_cron_script_sources` reports divergence without a
+    direction. "Behind" names the actionable direction in practice because the
+    packaged side is the code this process is running.
+
+    ``SKILL_INSTALL_EDITED`` takes precedence over a currency verdict when both
+    apply. The marker still identifies the package an edited install came from,
+    but the edit is the fact that has to be reconciled first: while it stands,
+    the sync quarantines the directory rather than updating it, so reporting
+    the install merely as behind would name a remedy that does not apply.
+
+    Source roots are consulted in the sync's own order, project skills before
+    packaged ones, and the first root to ship a name owns it. Comparing a
+    project skill against a packaged tree of the same name would otherwise
+    report every shadowing skill as behind the builtin it deliberately
+    replaces.
+
+    An installed directory that NO source root ships is ABSENT from the result
+    rather than reported: with no packaged tree there is nothing to be out of
+    step with, and a skill the operator installed themselves must not be
+    described as stale. Likewise a name that is packaged but not installed --
+    the sync installs it on the next run, and an absent directory has no
+    currency to judge.
+
+    Every read failure yields ``SKILL_INSTALL_UNVERIFIABLE`` rather than a
+    comparison: an unmarked install (pre-provenance, or user-authored by
+    assumption), a destination that is itself a link or junction, a skills
+    directory that is itself linked, a linked directory between the skills
+    directory and a nested install, and a tree over the fingerprint ceilings
+    all land there. Unverifiable never reads as agreement, because an
+    instrument whose read failed must not report the two sides equal.
+
+    POSIX only, and that gate is the first thing here rather than a detail.
+    Every read below reaches its target by name, and the link test guarding each
+    one is a separate syscall from the read it guards, so a concurrent writer to
+    the skills directory can substitute a link in between. On POSIX the cost of
+    losing that race is a wrong verdict. On Windows a junction whose target is a
+    UNC share turns the next local-looking stat into an outbound connection that
+    authenticates as this process, which nothing afterwards can take back, and
+    the descriptor-pinned walk that would close it is unavailable there:
+    :func:`kiro_crew.pinned_fs.supports_pinned_walk` requires ``O_NOFOLLOW`` and
+    ``os.open`` in ``os.supports_dir_fd``, and Windows offers neither. So this
+    reports nothing on Windows rather than reading unsafely, and the doctor
+    section says the check does not run instead of printing verdicts it cannot
+    stand behind. Tracked separately, with the core primitive it needs.
+    """
+    if os.name == "nt":
+        return []
+    base = skills_dir()
+    # Screened BEFORE the first stat, because every probe below is built from
+    # this path. A link here makes each local-looking stat a read of whatever
+    # the link targets, and the sync only ever creates this directory for real,
+    # so a link is operator-made and its target is not this gateway's install
+    # tree. A fingerprint taken through it would describe some other tree and
+    # be reported as this install.
+    base_readable = not is_link_or_junction(base)
+    if base_readable and not base.is_dir():
+        return []
+
+    results: list[InstalledSkillCurrency] = []
+    supplied: set[str] = set()
+    for src_root in (_project_skills_dir(), _BUILTIN_SKILLS_DIR):
+        if not src_root or not src_root.exists():
+            continue
+        for name, src_file in _iter_skill_files(src_root):
+            # First source root to ship a name owns it, mirroring the sync.
+            if name in supplied:
+                continue
+            supplied.add(name)
+            src_dir = src_file.parent
+            if not base_readable:
+                # Nothing under an unreadable base can be judged, and presence
+                # is the first thing that cannot be tested. Reported rather than
+                # skipped: a section that printed nothing would read as a
+                # gateway with no installs, and unverifiable must never read as
+                # agreement.
+                results.append(
+                    InstalledSkillCurrency(
+                        name=name,
+                        source=src_dir,
+                        state=SKILL_INSTALL_UNVERIFIABLE,
+                    )
+                )
+                continue
+            dest_dir = base / name
+            if _first_linked_skill_component(base, name) is not None:
+                # Screened before the leaf, for the same reason the base is
+                # screened before this loop: a nested name's intermediate
+                # directories are resolved through by every probe below,
+                # including the link test on the leaf itself, so a link there is
+                # traversed by whichever probe runs first. Reported rather than
+                # skipped, because presence is the first thing that cannot be
+                # tested and an omitted name would read as not installed.
+                results.append(
+                    InstalledSkillCurrency(
+                        name=name,
+                        source=src_dir,
+                        state=SKILL_INSTALL_UNVERIFIABLE,
+                    )
+                )
+                continue
+            # Order is the safety property, not a style choice. The link test is
+            # local to dest_dir, while the SKILL.md stat resolves THROUGH it, so
+            # testing the link first means a linked install is never traversed.
+            # Reversed, the stat reads the link's target before anything has
+            # judged the path, and a tree outside the skills directory then
+            # decides whether this install is present.
+            if not is_link_or_junction(dest_dir) and not (dest_dir / "SKILL.md").is_file():
+                # Not installed: nothing on disk to judge. A link IS judged even
+                # when its SKILL.md does not resolve, because a dangling one is
+                # an install whose currency cannot be established, not an
+                # absence -- and the state check refuses to read any link's
+                # target, so reaching it costs no traversal.
+                continue
+            results.append(
+                InstalledSkillCurrency(
+                    name=name,
+                    source=src_dir,
+                    state=_skill_currency_state(dest_dir, src_dir),
+                )
+            )
+    return sorted(results, key=lambda entry: entry.name)
+
+
+def _skill_currency_state(dest_dir: Path, src_dir: Path) -> str:
+    """Compare one installed skill tree against the packaged tree it came from."""
+    if is_link_or_junction(dest_dir):
+        # The sync only ever creates real directories, so a link here is
+        # user-made and its target must not even be read.
+        return SKILL_INSTALL_UNVERIFIABLE
+    recorded = _recorded_fingerprint(dest_dir)
+    if recorded is None:
+        return SKILL_INSTALL_UNVERIFIABLE
+    installed = _skill_tree_fingerprint(dest_dir)
+    if installed is None:
+        return SKILL_INSTALL_UNVERIFIABLE
+    if installed != recorded:
+        return SKILL_INSTALL_EDITED
+    packaged = _skill_tree_fingerprint(src_dir, assume_owner_rwx_dirs=True)
+    if packaged is None:
+        return SKILL_INSTALL_UNVERIFIABLE
+    return SKILL_INSTALL_IN_SYNC if recorded == packaged else SKILL_INSTALL_BEHIND
+
+
 # A cron script body is one file, not a tree, so its ceiling sits far below the
 # whole-tree budget above. A body over this size reads as unverifiable rather
 # than being compared -- the same fail-safe direction an unprovable tree takes.
