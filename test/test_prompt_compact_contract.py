@@ -165,6 +165,12 @@ def test_monitor_modes_have_distinct_stop_paths_and_real_exit_conditions() -> No
         r"positive `max_cycles` and `max_runtime_secs`; never use zero",
         r"REQUESTED and END YOUR TURN.*after the turn.*cannot prove arming",
         r"On a later turn verify session-bound state",
+        r"missing permission.*remediation work, not a terminal condition",
+        r"least-privileged allowed fix.*verify it.*keep the loop active",
+        r"Remediation NEVER means granting yourself approvals or permissions.*weakening or bypassing approval policy.*editing governance controls",
+        r"only an already-allowed least-privilege owner/config repair is permitted",
+        r"only the user can grant the next approval.*report that once.*recheck",
+        r"Call `autonudge_stop` only when.*objective or Definition of Done.*user asks to stop.*STOP sentinel.*unrecoverable",
         r"Terminal records are read-only.*explicit new watch.*retained user-stop evidence.*owner",
         r"never add a second driver.*unbounded wait/poll",
         r"Missing hosting context permits bounded in-turn wait/poll",
@@ -180,6 +186,63 @@ def test_monitor_modes_have_distinct_stop_paths_and_real_exit_conditions() -> No
     _require(monitor, r"never edit the file directly", r"cross-process lock")
     assert "Arming failure means NO monitor is running" not in monitor
     assert "On successful arming, tell the user monitoring is active" not in monitor
+
+
+_SELF_NUDGE = ROOT / "skills" / "self-nudge-loop"
+_BLOCKED_STEP = (
+    "6. If every current task is blocked: pick the highest-priority remediable blocker "
+    "and take one unblocking step. A missing permission/config/dependency is work to fix "
+    "(an already-allowed least-privilege owner/config repair; never grant yourself "
+    "approvals or weaken policy). If only the user can act, report that once and keep "
+    "the loop active to recheck later."
+)
+
+
+def _scaffold_loop_md_template() -> str:
+    """Extract the LOOP_MD heredoc without invoking a platform shell."""
+    scaffold = (_SELF_NUDGE / "scaffold.sh").read_text(encoding="utf-8")
+    lines = scaffold.splitlines()
+    opener_prefix = "LOOP_MD=$(cat <<"
+    openers = [
+        (index, line.removeprefix(opener_prefix))
+        for index, line in enumerate(lines)
+        if line.startswith(opener_prefix)
+    ]
+    assert len(openers) == 1
+    start, delimiter = openers[0]
+    assert re.fullmatch(r"[A-Z_][A-Z0-9_]*", delimiter)
+    end = next(
+        index
+        for index in range(start + 1, len(lines) - 1)
+        if lines[index] == delimiter and lines[index + 1] == ")"
+    )
+    return "\n".join(lines[start + 1 : end])
+
+
+def test_self_nudge_recipe_remediates_blockers_without_retiring_the_goal() -> None:
+    recipe = (_SELF_NUDGE / "SKILL.md").read_text(encoding="utf-8")
+    scaffold = (_SELF_NUDGE / "scaffold.sh").read_text(encoding="utf-8")
+
+    for text in (recipe, scaffold):
+        assert 'autonudge_stop(reason="all blocked")' not in text
+        assert "all blocked" not in text
+        assert _BLOCKED_STEP in text
+    # The template the scaffold emits is a heredoc copy of the recipe, so the
+    # two must carry the same step verbatim or a reader following one would
+    # paste a loop that retires itself while the other keeps it active.
+    assert recipe.count(_BLOCKED_STEP) == 1
+    assert scaffold.count(_BLOCKED_STEP) == 1
+
+
+def test_scaffolded_loop_md_keeps_the_goal_active_through_blockers() -> None:
+    loop_md = _scaffold_loop_md_template()
+
+    nudge = loop_md.split("## Ready-to-paste nudge", 1)[1].split("## Kill switches", 1)[0]
+    assert "all blocked" not in nudge
+    assert _BLOCKED_STEP in nudge
+    # The stop calls that survive are the sanctioned ones only.
+    stops = re.findall(r'autonudge_stop\(reason="([^"]+)"\)', nudge)
+    assert sorted(stops) == ["DoD met", "sentinel"]
 
 
 def test_browser_keeps_all_four_approval_groups_and_ownership_controls() -> None:

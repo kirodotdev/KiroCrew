@@ -419,10 +419,10 @@ class DiscordApprovalDecider:
         try:
             return bool(await asyncio.wait_for(fut, _APPROVAL_TIMEOUT_S))
         except asyncio.TimeoutError:
-            # Nobody pressed a button for the whole window, so a monitoring loop
-            # bound to this session cannot act either -- record it so the loop
-            # stops on its next wake instead of spending the rest of its cycle
-            # cap being denied. Inert for a session with no loop
+            # Nobody pressed a button for the whole window, so record concrete
+            # approval-stall evidence for any automation bound to this session.
+            # A structured monitor stops; a prompt loop keeps its bounded
+            # remediation lifecycle active. Inert for a session with no loop
             # (``notify_approval_stalled`` resolves by binding key), and
             # best-effort: a monitoring convenience must never change how this
             # turn's denial is reported.

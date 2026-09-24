@@ -6770,8 +6770,14 @@ async def _handle_goal_command(state: "DashboardState", slot: "_ChatSlot", messa
                 "summary citing the evidence, and stop; "
                 "(3) else do ONE atomic step (<=5 tool calls) and make the deliverable durable "
                 "(write the file / run the check) before claiming progress.\n"
-                "Guardrails: never git push; never read credential files. Hard blocker -> state it once and "
-                f'autonudge_stop(reason="blocked"). Budget {_max_cycles} cycles (service stops at '
+                "Guardrails: never git push; never read credential files. A missing permission, config, "
+                "dependency, or failing command is remediation work: inspect the owning code/config, "
+                "make an allowed least-privilege fix with tests, and keep this goal active. Remediation "
+                "never means granting yourself approvals or permissions, weakening or bypassing approval "
+                "policy, or editing governance controls; only an already-allowed least-privilege "
+                "owner/config repair is permitted. If only the "
+                "user can approve the next step, report that once and recheck later; never call "
+                f"autonudge_stop merely because work is blocked. Budget {_max_cycles} cycles (service stops at "
                 "the cap). One short progress line per cycle."
             )
             await _goal_svc.add(
@@ -14104,14 +14110,14 @@ async def _run_chat(
                             "retrying the same call.",
                             "msg msg-a",
                         )
-                    # Tell any monitoring loop bound to this slot that a cycle
-                    # could not obtain approval. This branch IS the evidence a
-                    # reactive stop needs: the prompt ran its full window with no
-                    # decision, which an auto-approved tool never reaches. The
-                    # loop stops on its next wake instead of spending the rest of
-                    # its cap on cycles that cannot act. Best-effort and
-                    # non-blocking — a monitoring convenience must never change
-                    # how this turn's denial is reported.
+                    # Tell any automation bound to this slot that a cycle could
+                    # not obtain approval. This branch is concrete evidence: the
+                    # prompt ran its full window with no decision, which an
+                    # auto-approved tool never reaches. A structured monitor
+                    # stops as a delivery failure; a prompt/goal loop stays active
+                    # so its next bounded cycle can remediate or recheck. Best-
+                    # effort and non-blocking — automation bookkeeping must never
+                    # change how this turn's denial is reported.
                     try:
                         from kiro_crew.autonudge import (
                             get_instance as _autonudge_get,  # circular: autonudge -> dashboard.chat -> chat_runner

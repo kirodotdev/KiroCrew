@@ -304,9 +304,18 @@ def schemas() -> list[dict[str, Any]]:
         {
             "name": "autonudge_stop",
             "description": (
-                "Stop the auto-nudge loop driving your current session. Call this "
-                "when you determine the loop should halt (e.g. goal complete, "
-                "blocked on user input, or a STOP sentinel file indicates shutdown). "
+                "Stop the auto-nudge loop driving your current session. Use this only "
+                "when the goal or Definition of Done is complete, the user asked to stop, "
+                "a STOP sentinel fired, or a host/tooling failure remains unrecoverable "
+                "after bounded retries and no safe work remains. A missing permission, "
+                "credential, configuration, dependency, or failing tool/build/test is "
+                "remediation work, not a stop condition: inspect the owning "
+                "code/config, make the least-privileged allowed fix, verify the "
+                "repair, and keep the loop active. Remediation never means granting "
+                "yourself approvals or permissions, weakening or bypassing approval "
+                "policy, or editing governance controls; only an already-allowed "
+                "least-privilege owner/config repair is permitted. If only the user "
+                "can grant the next approval, report that once and recheck later. "
                 "Legacy loops are removed. For a structured monitor, this compatibility "
                 "alias records a durable user-stop outcome and retains the record for "
                 "inspection. Safe to call even if no loop is active."

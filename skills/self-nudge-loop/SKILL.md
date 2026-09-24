@@ -212,7 +212,7 @@ BOARD (skip this block if the project has no kanban-md board):
 3. `kanban-md --dir <BOARD_PATH> list --status todo --json` — read todo column.
 4. `kanban-md --dir <BOARD_PATH> pick --assignee loop-<cycle_n>` — atomic claim of next unblocked todo.
 5. If pick returns nothing and a dep-met backlog card exists, promote: `kanban-md --dir <BOARD_PATH> move <id> --status todo` then pick.
-6. If everything blocked AND you already posted a blocker this arming: autonudge_stop(reason="all blocked") and stop.
+6. If every current task is blocked: pick the highest-priority remediable blocker and take one unblocking step. A missing permission/config/dependency is work to fix (an already-allowed least-privilege owner/config repair; never grant yourself approvals or weaken policy). If only the user can act, report that once and keep the loop active to recheck later.
 
 EXECUTE (≤5 tool calls per cycle, hard cap):
 7. Read the single spec file for the claimed task.
