@@ -171,12 +171,69 @@ Auto-sizing and the runtime gate are independent guards; readings fail open
 only when neither host memory nor a finite cgroup limit is available.
 
 When enabled, the per-spawn guard adds `_startup_memory_reserve_gb` to that
-floor: the next start, unregistered claims, and the gap between estimated cost
-and observed RSS of live dedicated workers. The estimate uses the greatest of
-zero, `subagent_cost_gb` and live dedicated peak RSS. Yielded parents retain their
-reservation; queued/terminal rows and confirmed shared sessions contribute none.
-This guards rapid admissions during delayed RSS growth without counting observed
-memory twice. The claim re-entry uses the reservation taken before its await.
+floor. Two prices apply. A WARMING start -- the next one, a claim awaiting
+registration, a dedicated worker fewer than `_RSS_SAMPLES_TO_SETTLE` (2) sweeps
+have measured -- is priced at `_effective_next_start_gb`: the larger of
+`subagent_cost_gb`, the learned p90 for the run's cost bucket (`_cost_bucket`: the
+explicit agent, else the template the run inherits -- the same key `_record_cost`
+writes its samples under; `learned_cost_for` answers only that bucket's own
+dedicated p90, never another bucket's, since on a sharing-default backend a
+share-eligible agent's own bucket never forms and a heaviest-known fallback
+would price its every spawn at an unrelated figure) and any live dedicated peak,
+less the RSS it already holds. One reading can land mid-growth, so a single
+sample does not yet settle a worker. A SETTLED dedicated worker owes only the gap
+between the larger of `subagent_cost_gb` and its own peak and its observed RSS,
+so its reservation retires as RSS is observed and a learned p90 above what that
+worker needed never becomes a phantom reserve beyond the sweeps before it
+settles.
+Yielded parents retain their reservation; queued/terminal rows and confirmed
+shared sessions contribute none. This guards rapid admissions during delayed RSS
+growth without counting observed memory twice. The claim re-entry uses the
+reservation taken before its await.
+
+The learned figures reach the gate as `SubagentManager._learned_costs_gb`, one
+p90 per cost bucket, published by the reaper sweep's off-loop `_refresh_learned_cost` (once at reaper
+start, then every `_REAPER_INTERVAL`); the gate itself does arithmetic only and
+never opens the cost log on the event loop. The read is `dedicated_only`: a
+session-shared run's sample (written with `shared: true`) is a per-session share
+of one runtime, not what a start that may run as its own process will cost, and
+`compact_cost_log` keeps one FIFO window per `(agent, shared)` so shared runs can
+never evict an agent's dedicated history. Records written before the field
+existed read as dedicated -- on a backend where sharing is the default, diluted
+shares can keep a bucket's p90 low until the 50-sample window turns over; that
+window is never worse than the fallback the fix replaces and self-corrects with
+every new sample. The reserve's read leaves out samples older than
+`_SAMPLE_MAX_AGE_SECS` (30 days), so a price learned under a workload that is
+gone expires without an operator reset while a host idle for less than that
+keeps its figure; the cap's reader (`read_learned_cost`, `_host_mem_term`)
+applies no horizon and is unchanged. The log is streamed, never held whole
+(`_iter_samples`): each bucket keeps at most `window` values in a bounded deque,
+at most `_PARSE_BUCKET_CEILING` buckets are held while parsing (a memory
+ceiling, with one WARNING naming an overflow), keys longer than `_BUCKET_KEY_CAP`
+are dropped, and what is returned and held is the heaviest `_MAX_BUCKETS`
+(`cap_buckets`); compaction streams the same way. The identity is read on both
+sides of the parse and a mismatch keeps the prior state. The held map is cleared
+when the log is ABSENT (first boot, or the operator's reset), and a COMPLETE read
+of an inspectable log is authoritative -- it replaces the map, so a bucket it
+does not yield (expired past the horizon, or below `min_samples`) retires on the
+running gateway without a restart; the same fresh read serves a REPLACED log
+(`cost_log_identity`: a new inode, or a shrunk size -- the reset re-created by the
+next sample within one sweep, or a compaction rewrite). An INCOMPLETE read
+(`read_learned_costs_checked`: a refused record ended the parse early, the
+present log could not be opened, or its identity could not be inspected) is
+MERGED, so an unreached bucket keeps its figure rather than being lowered
+silently. A cancel-recovery respawn resets the run's sample count and last
+reading and bumps `_rss_generation`, which the sweep re-checks after its off-loop
+`/proc` read so a reading of the dead process cannot settle the new one. That sweep interval is also why the
+reserve must read the learned cost at all: it is the only price on a start until
+the first RSS sample, and priced at the 0.5 GB fallback a burst of ~6 GB dedicated
+runtimes each cleared the raw free-memory check and then grew into the same
+headroom together. A low-memory deferral names the per-start price, the learned
+p90 and the configured cost (log line and SEL `startup_cost_gb` /
+`learned_cost_gb`), because a p90 that outlived the roster it was measured on
+can hold the bar above what the host will clear while deferred runs record no
+new samples; the remedies are lowering `agent.spawn_min_memory_gb` or deleting
+`subagents/cost_samples.jsonl` under the data home.
 
 The adaptive growth bound is the user's ceiling itself (`user_max_concurrent`),
 with no static host prediction under it: the controller climbs on live pressure

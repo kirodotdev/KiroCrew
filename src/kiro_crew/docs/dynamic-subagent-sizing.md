@@ -156,13 +156,27 @@ The cap interacts with `spawn_min_memory_gb` but does not replace it: the cap is
 a startup count limit, while `spawn_min_memory_gb` is a real-time per-spawn
 memory floor. They are independent guards.
 When the memory floor is enabled, admission also reserves memory for the next
-start and for live dedicated workers whose RSS has not yet reached the larger of
-`subagent_cost_gb` and the live dedicated peak RSS. Claimed starts awaiting
-registration and parents waiting without a slot retain this reservation;
-confirmed shared sessions do not add a dedicated-process cost. Observed RSS
-replaces reserved memory, so it is not counted twice. This lets short spawn
+start, for claimed starts awaiting registration, and for live dedicated workers.
+A start that has not settled yet -- fewer than two reaper sweeps have measured
+it -- is priced at the learned p90 from `cost_samples.jsonl` for the agent being
+spawned (the named agent, or the template an agent-less spawn inherits -- the
+same key its own samples are recorded under; only that agent's own history counts,
+only from runs that ran as their own process, and only samples younger than 30
+days, since a session-shared run's figure is a per-session share and a price
+learned under a removed workload must be able to expire), never less than
+`subagent_cost_gb`, less whatever RSS it already holds;
+so the reserve prices it at what runs on this host have actually cost rather than
+at the first-boot fallback (the reaper refreshes those figures off the event
+loop, so they can lag a new sample by up to one sweep). A settled worker owes only
+the gap between the larger of `subagent_cost_gb` and its own peak and what it
+holds now, so observed memory is never counted twice and a learned cost above
+what a particular worker needed does not hold memory it will never use. Parents waiting without a slot retain their reservation; confirmed
+shared sessions do not add a dedicated-process cost. This lets short spawn
 intervals fill available capacity without spending the same headroom repeatedly
 while processes warm up. It cannot predict allocations beyond the estimated cost.
+A deferral for low memory states the per-start price it used; if a learned cost
+no longer reflects this host, delete `subagents/cost_samples.jsonl` under the
+data home (or lower `spawn_min_memory_gb`) and it re-learns from the next runs.
 
 ## Notes
 

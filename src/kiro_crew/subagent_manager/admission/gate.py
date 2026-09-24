@@ -12,6 +12,9 @@ if TYPE_CHECKING:
     from ...subagent import (
         KiroCrewConfig,
         SubagentInfo,
+        _cost_bucket,
+        _effective_next_start_gb,
+        _startup_cost_gb,
         _startup_memory_reserve_gb,
         _validate_agent,
         _validate_app_agent_ownership,
@@ -19,6 +22,7 @@ if TYPE_CHECKING:
         asyncio,
         cached_admission_check,
         check_memory_available,
+        learned_cost_for,
         logger,
         platform_compat,
         redact_credentials,
@@ -635,29 +639,78 @@ class _GateMixin(ManagerComponent):
 
         # --- Memory guard: defer (durable) or refuse (legacy) while host memory
         # is critically low. ---
+        # This run's own learned p90 -- keyed the way its samples are written,
+        # by the explicit agent or else the inherited template. None when that
+        # bucket has no dedicated history (or nothing is published yet): the
+        # configured cost, plus the live dedicated peaks folded in below, prices
+        # it -- never another agent's figure.
+        learned_cost = learned_cost_for(
+            getattr(self._manager, "_learned_costs_gb", {}), _cost_bucket(agent, execution)
+        )
+        agents_snapshot = list(self._manager._agents.values())
         try:
             memory_cfg = KiroCrewConfig.load().agent
             min_mem = memory_cfg.spawn_min_memory_gb
-            startup_cost = memory_cfg.subagent_cost_gb
+            configured_cost = float(memory_cfg.subagent_cost_gb)
+            # The learned p90 when the reaper has published one, never below
+            # the configured fallback: this is the only price on a warming
+            # start until it settles, and the fallback alone under-priced a
+            # 6 GB runtime twelve-fold (see _startup_cost_gb). Arithmetic over
+            # manager attributes -- the cost log is read off-loop by the reaper
+            # sweep, never here.
+            startup_cost = _startup_cost_gb(memory_cfg, learned_cost)
         except Exception:
             min_mem = 4.0
+            configured_cost = 0.5
             startup_cost = 0.5
+        # What the next start is really priced at once live dedicated peaks
+        # are folded in -- the figure the reserve uses and the one reported.
+        next_start_price = _effective_next_start_gb(
+            agents_snapshot, cost_gb=configured_cost, next_start_gb=startup_cost
+        )
         if min_mem > 0 and not _dispatch_now:
             # RSS grows after a process starts. Reserve the unobserved part so
             # a fast drain cannot repeatedly spend the same free memory before
-            # the next controller sample. Observed growth replaces reservation.
+            # the next controller sample. Observed growth replaces reservation:
+            # a settled worker owes only its own gap (``cost_gb``), while the
+            # next start and every still-warming start are priced at the
+            # learned figure (``next_start_gb``).
             min_mem += _startup_memory_reserve_gb(
-                list(self._manager._agents.values()),
+                agents_snapshot,
                 running_count=self._manager._running_count,
-                cost_gb=startup_cost,
+                cost_gb=configured_cost,
+                next_start_gb=startup_cost,
             )
         mem_ok, avail_gb = (True, -1.0) if _dispatch_now else check_memory_available(min_gb=min_mem)
         if not mem_ok:
+            # Which figure actually set the price: the learned p90 only when it
+            # is the larger one; otherwise the operator's configured pin (which
+            # is also the honest answer while nothing has been learned yet).
+            if next_start_price > startup_cost:
+                price_source = "live dedicated peak RSS"
+            elif learned_cost is not None and learned_cost > configured_cost:
+                price_source = "learned per-run p90"
+            else:
+                price_source = "configured agent.subagent_cost_gb"
+            # Name the price, not just the total: a learned p90 that outlived
+            # the roster it was measured on can hold this bar above what the
+            # host will ever clear, and deferred runs record no new samples to
+            # correct it. The operator's remedies are lowering
+            # ``agent.spawn_min_memory_gb`` or removing the stale
+            # ``subagents/cost_samples.jsonl`` under the data home.
             logger.warning(
-                "Subagent spawn %s: only %.2f GB available (min %.1f GB required)",
+                "Subagent spawn %s: only %.2f GB available (min %.1f GB required; each "
+                "warming start priced at %.2f GB from the %s -- learned p90 %s, "
+                "configured subagent_cost_gb %.2f). A learned cost that no longer "
+                "reflects this host can be reset by deleting subagents/cost_samples.jsonl "
+                "under the data home.",
                 "deferred" if _durable else "refused",
                 avail_gb,
                 min_mem,
+                next_start_price,
+                price_source,
+                "%.2f GB" % learned_cost if learned_cost is not None else "none yet",
+                configured_cost,
             )
             sel().log_tool_invocation(
                 session_key=parent_session_key or "",
@@ -667,6 +720,8 @@ class _GateMixin(ManagerComponent):
                 metadata={
                     "available_gb": avail_gb,
                     "min_gb": min_mem,
+                    "startup_cost_gb": next_start_price,
+                    "learned_cost_gb": learned_cost,
                     **_task_audit,
                 },
             )
@@ -679,12 +734,20 @@ class _GateMixin(ManagerComponent):
                 agent=agent,
                 parent_session_key=parent_session_key,
                 done=True,
-                error=f"spawn refused: only {avail_gb:.1f} GB memory available (need {min_mem:.0f} GB)",
+                error=(
+                    f"spawn refused: only {avail_gb:.1f} GB memory available (need "
+                    f"{min_mem:.0f} GB; each warming start is priced at "
+                    f"{next_start_price:.1f} GB from the {price_source})"
+                ),
                 batch_id=batch_id,
                 batch_total=max(0, int(batch_total)),
             )
             deferred = (
-                _deferred(f"low memory: {avail_gb:.1f} GB available, need {min_mem:.0f} GB", info)
+                _deferred(
+                    f"low memory: {avail_gb:.1f} GB available, need {min_mem:.0f} GB "
+                    f"({next_start_price:.1f} GB per warming start, from the {price_source})",
+                    info,
+                )
                 if _durable
                 else None
             )

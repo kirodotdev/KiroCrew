@@ -961,7 +961,7 @@ class TestRecordCost:
         info.peak_cpu_cores = 0.75
         with patch.object(sa, "append_cost_sample") as append:
             mgr._record_cost(info)
-        append.assert_called_once_with("scout", 1.5, 0.75)
+        append.assert_called_once_with("scout", 1.5, 0.75, shared=False)
 
     def test_store_failure_is_swallowed(self) -> None:
         mgr = _manager()
@@ -1105,12 +1105,20 @@ class TestReadSurfaces:
         sampled.last_rss_gb = 0.5
         sampled.peak_rss_gb = 0.75
         sampled.last_cpu_cores = 1.234
-        mgr._agents.update({"fresh": fresh, "sampled": sampled})
+        sampled._rss_samples = 1
+        # A respawned run: the peak survives from the dead process, but THIS
+        # process has not been measured yet, so it must render as unmeasured
+        # rather than as "0 MB resident".
+        respawned = _info("respawned", parent_session_key="dash:1")
+        respawned.peak_rss_gb = 0.75
+        mgr._agents.update({"fresh": fresh, "sampled": sampled, "respawned": respawned})
         rows = {r["id"]: r for r in mgr.task_memory_rows()}
         assert rows["fresh"]["sampled"] is False
         assert rows["sampled"]["sampled"] is True
         assert rows["sampled"]["rss_mb"] == pytest.approx(512.0)
         assert rows["sampled"]["cpu_cores"] == pytest.approx(1.23)
+        assert rows["respawned"]["sampled"] is False
+        assert rows["respawned"]["rss_mb"] == 0.0
 
     def test_task_memory_rows_carry_proc_and_stub_counts(self) -> None:
         """The regression this fixes: the fields were absent, so the Sessions

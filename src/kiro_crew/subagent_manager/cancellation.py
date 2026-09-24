@@ -113,6 +113,18 @@ class CancellationCoordinator(ManagerComponent):
                 # so re-arm the token or the respawned run's finally would no-op
                 # and leave `_running_count` permanently inflated.
                 info._slot_released = False
+                # The respawn is a NEW process: the dead one's RSS readings must
+                # not make the spawn guard treat it as settled (a ~zero gap for
+                # the sweep before it is measured). Its peak stays -- a high-water
+                # mark for the run, and the conservative direction -- but the
+                # sample count and the last reading start over so the fresh
+                # process is priced as warming until the reaper has seen it.
+                # Generation FIRST: a sweep whose off-loop read is in flight
+                # re-checks it after reading, so it must already have moved
+                # before the readings below are cleared.
+                info._rss_generation += 1
+                info._rss_samples = 0
+                info.last_rss_gb = 0.0
                 self._manager._tasks[info.id] = asyncio.create_task(self._manager._run(info))
                 try:
                     await self._manager._fire_event("subagent_recovering", info, {"attempt": 1})

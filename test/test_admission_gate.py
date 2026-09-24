@@ -379,6 +379,208 @@ class TestSpawnAdmissionGate:
         assert unavailable["metadata"]["min_gb"] == 4.5  # floor plus the pending process
         assert unavailable["metadata"]["task"] == "test task"
 
+    @pytest.mark.parametrize(
+        ("configured", "learned", "expected_min_gb"),
+        [
+            (0.5, 6.0, 10.0),  # learned p90 outranks the first-boot fallback
+            (0.5, None, 4.5),  # nothing learned yet: the fallback stands
+            (2.0, 1.0, 6.0),  # an operator pin above the learned value still holds
+        ],
+    )
+    def test_startup_reserve_prices_the_pending_start_at_the_learned_cost(
+        self, configured, learned, expected_min_gb
+    ) -> None:
+        """The per-spawn reserve must use the same learned cost the cap is sized from.
+
+        A dedicated runtime takes tens of seconds to reach its resident size and
+        the reaper samples RSS only every 60 s, so every start admitted inside
+        that window is priced purely by this reserve. Pricing it at the 0.5 GB
+        first-boot fallback while the cost store already holds a 6 GB p90 let a
+        burst of starts each pass a raw free-memory check and then grow into
+        the same headroom together (the ~5 GB/session fan-out that exhausted a
+        64 GB host).
+        """
+        mgr = self._mgr()
+        # What the reaper's off-loop refresh publishes; the gate never reads
+        # the cost log itself.
+        mgr._learned_costs_gb = {} if learned is None else {"kirocrew": learned}
+        seen: list[float] = []
+
+        def memory_check(*, min_gb, **_kw):
+            seen.append(min_gb)
+            return True, -1.0  # unmeasurable: the SEL record carries min_gb too
+
+        with (
+            patch("kiro_crew.subagent.check_memory_available", side_effect=memory_check),
+            patch("kiro_crew.platform_compat.IS_LINUX", True),
+            patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
+            patch("kiro_crew.subagent.cached_admission_check", return_value=_refused()),
+            patch("kiro_crew.subagent.sel") as mock_sel,
+        ):
+            mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+            mock_cfg.load.return_value.agent.subagent_cost_gb = configured
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+
+            info = mgr.spawn(task="test task", parent_session_key="sess-1")
+
+        assert info is not None
+        assert seen == [pytest.approx(expected_min_gb)]
+        unavailable = next(
+            c[1]
+            for c in mock_sel.return_value.log_tool_invocation.call_args_list
+            if c[1]["outcome"] == "memory_check_unavailable"
+        )
+        assert unavailable["metadata"]["min_gb"] == pytest.approx(expected_min_gb)
+
+    def test_low_memory_deferral_names_the_learned_price(self) -> None:
+        """A deferral says what one start was priced at and where that came from.
+
+        A learned p90 can outlive the roster it was measured on and hold the
+        bar above what the host will ever clear, while deferred runs record no
+        new samples to correct it; the operator has to be able to see that from
+        the deferral itself.
+        """
+        mgr = self._mgr()
+        assert mgr._taskq is not None
+        mgr._learned_costs_gb = {"kirocrew": 6.0}
+        with (
+            patch("kiro_crew.subagent.check_memory_available", return_value=(False, 8.0)),
+            patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
+            patch("kiro_crew.subagent.cached_admission_check", return_value=_admitted()),
+            patch("kiro_crew.subagent.sel") as mock_sel,
+        ):
+            mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+            mock_cfg.load.return_value.agent.subagent_cost_gb = 0.5
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+
+            info = mgr.spawn(task="test task", parent_session_key="sess-1")
+
+        assert info is not None and info.queued is True
+        call_kwargs = mock_sel.return_value.log_tool_invocation.call_args[1]
+        assert call_kwargs["outcome"] == "deferred_low_memory"
+        assert call_kwargs["metadata"]["startup_cost_gb"] == pytest.approx(6.0)
+        assert call_kwargs["metadata"]["learned_cost_gb"] == pytest.approx(6.0)
+        assert call_kwargs["metadata"]["min_gb"] == pytest.approx(10.0)
+        deferred = [e for e in mgr._taskq.events(info.id) if e.kind == "deferred"]
+        reason = str(deferred[-1].data.get("reason")) if deferred else ""
+        assert "6.0 GB per warming start, from the learned per-run p90" in reason
+
+    def test_low_memory_deferral_reports_the_live_peak_that_set_the_price(self) -> None:
+        """A live dedicated peak above the learned figure IS the next start's price."""
+        from kiro_crew.subagent import SubagentInfo
+
+        mgr = self._mgr()
+        assert mgr._taskq is not None
+        mgr._learned_costs_gb = {"kirocrew": 6.0}
+        heavy = SubagentInfo(
+            id="heavy", task="w", peak_rss_gb=7.5, last_rss_gb=7.0, _rss_samples=2, _pid=4242
+        )
+        mgr._agents["heavy"] = heavy
+        with (
+            patch("kiro_crew.subagent.check_memory_available", return_value=(False, 8.0)),
+            patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
+            patch("kiro_crew.subagent.cached_admission_check", return_value=_admitted()),
+            patch("kiro_crew.subagent.sel") as mock_sel,
+        ):
+            mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+            mock_cfg.load.return_value.agent.subagent_cost_gb = 0.5
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+
+            info = mgr.spawn(task="test task", parent_session_key="sess-1")
+
+        assert info is not None and info.queued is True
+        call_kwargs = mock_sel.return_value.log_tool_invocation.call_args[1]
+        assert call_kwargs["metadata"]["startup_cost_gb"] == pytest.approx(7.5)
+        # floor 4 + next start 7.5 + the settled heavy worker's own gap 0.5
+        assert call_kwargs["metadata"]["min_gb"] == pytest.approx(12.0)
+        deferred = [e for e in mgr._taskq.events(info.id) if e.kind == "deferred"]
+        reason = str(deferred[-1].data.get("reason")) if deferred else ""
+        assert "7.5 GB per warming start, from the live dedicated peak RSS" in reason
+
+    def test_a_lightweight_agent_is_priced_by_its_own_history(self) -> None:
+        """One build-heavy agent's p90 must not hold every other spawn to its price."""
+        mgr = self._mgr()
+        assert mgr._taskq is not None
+        mgr._learned_costs_gb = {"kirocrew": 9.0, "light": 1.0}
+        seen: list[float] = []
+
+        def memory_check(*, min_gb, **_kw):
+            seen.append(min_gb)
+            return True, 32.0
+
+        with (
+            patch("kiro_crew.subagent.check_memory_available", side_effect=memory_check),
+            patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
+            patch("kiro_crew.subagent.cached_admission_check", return_value=_refused()),
+            patch("kiro_crew.subagent._validate_agent", return_value=("light", "", "")),
+            patch("kiro_crew.subagent.sel") as mock_sel,
+        ):
+            mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+            mock_cfg.load.return_value.agent.subagent_cost_gb = 0.5
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+
+            mgr.spawn(task="test task", parent_session_key="sess-1", agent="light")
+            mgr.spawn(task="test task", parent_session_key="sess-1", agent="brand-new")
+
+        # light: floor 4 + its own 1.0. brand-new: no dedicated history of its
+        # own -> the configured 0.5, never the heavy agent's 9.0.
+        assert seen == [pytest.approx(5.0), pytest.approx(4.5)]
+
+    def test_an_agentless_spawn_is_priced_by_the_template_it_inherits(self) -> None:
+        """The lookup keys the way samples are written: explicit agent, else template."""
+        mgr = self._mgr()
+        assert mgr._taskq is not None
+        mgr._sessions.get_agent_selection.return_value = ("template", "heavy")
+        mgr._learned_costs_gb = {"kirocrew": 1.0, "heavy": 6.0}
+        seen: list[float] = []
+
+        def memory_check(*, min_gb, **_kw):
+            seen.append(min_gb)
+            return True, 32.0
+
+        with patch(
+            "kiro_crew.subagent.check_memory_available", side_effect=memory_check
+        ), patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg, patch(
+            "kiro_crew.subagent.cached_admission_check", return_value=_refused()
+        ), patch(
+            "kiro_crew.subagent.sel"
+        ) as mock_sel:
+            mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+            mock_cfg.load.return_value.agent.subagent_cost_gb = 0.5
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+
+            mgr.spawn(task="test task", parent_session_key="sess-1")
+
+        assert seen == [pytest.approx(10.0)]  # floor 4 + the inherited template's 6
+
+    def test_low_memory_deferral_names_the_configured_price_when_nothing_is_learned(
+        self,
+    ) -> None:
+        """With no learned figure the deferral must not claim one."""
+        mgr = self._mgr()
+        assert mgr._taskq is not None
+        assert mgr._learned_costs_gb == {}
+        with (
+            patch("kiro_crew.subagent.check_memory_available", return_value=(False, 3.0)),
+            patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
+            patch("kiro_crew.subagent.cached_admission_check", return_value=_admitted()),
+            patch("kiro_crew.subagent.sel") as mock_sel,
+        ):
+            mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+            mock_cfg.load.return_value.agent.subagent_cost_gb = 0.5
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+
+            info = mgr.spawn(task="test task", parent_session_key="sess-1")
+
+        assert info is not None and info.queued is True
+        call_kwargs = mock_sel.return_value.log_tool_invocation.call_args[1]
+        assert call_kwargs["metadata"]["startup_cost_gb"] == pytest.approx(0.5)
+        assert call_kwargs["metadata"]["learned_cost_gb"] is None
+        deferred = [e for e in mgr._taskq.events(info.id) if e.kind == "deferred"]
+        reason = str(deferred[-1].data.get("reason")) if deferred else ""
+        assert "0.5 GB per warming start, from the configured agent.subagent_cost_gb" in reason
+        assert "learned" not in reason
+
 
 # ── config key ───────────────────────────────────────────────────────────────
 

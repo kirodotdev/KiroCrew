@@ -1336,6 +1336,47 @@ async def test_recovery_respawn_releases_its_fresh_slot():
     )
 
 
+@pytest.mark.asyncio
+async def test_recovery_respawn_is_priced_as_a_fresh_process():
+    """A respawn is a NEW process; the dead one's RSS readings must not settle it.
+
+    The spawn guard treats a dedicated worker as settled once two sweeps have
+    measured it and then reserves only its own peak-vs-RSS gap. A respawned
+    run reuses the same record, so without a reset the fresh process would be
+    priced at ~zero for the sweep before the reaper sees it -- exactly the
+    unmeasured window the reserve exists to cover. The peak stays (a high-water
+    mark, and the conservative direction); the sample count and last reading
+    start over.
+    """
+    from kiro_crew.subagent import _startup_memory_reserve_gb
+
+    mgr = _make_manager()
+    info = _info(_session_sharing=False)
+    info._rss_samples = 2
+    info.last_rss_gb = 5.8
+    info.peak_rss_gb = 6.0
+    assert mgr._release_slot(info) is True
+    mgr._running_count = 0
+    seen: dict[str, object] = {}
+
+    async def _fake_run(_info):
+        seen["samples"] = _info._rss_samples
+        seen["last"] = _info.last_rss_gb
+        seen["peak"] = _info.peak_rss_gb
+        # The guard's view at the moment the fresh process is launched: the
+        # next start (6) plus this warming worker holding nothing yet (6).
+        seen["reserve"] = _startup_memory_reserve_gb(
+            [_info], running_count=mgr._running_count, cost_gb=0.5, next_start_gb=6.0
+        )
+        if mgr._release_slot(_info):
+            mgr._running_count = max(0, mgr._running_count - 1)
+
+    mgr._run = _fake_run  # type: ignore[assignment]
+    await _schedule_recovery(mgr, info)
+
+    assert seen == {"samples": 0, "last": 0.0, "peak": 6.0, "reserve": pytest.approx(12.0)}
+
+
 # ── the reap marker is split: early for respawn, late for records ────
 
 
