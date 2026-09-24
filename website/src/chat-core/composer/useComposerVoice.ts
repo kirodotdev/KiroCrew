@@ -876,6 +876,11 @@ export function composerVoiceInputProps(cv: ComposerVoice) {
   return {
     voiceRecording: voiceOwned && voice.recording,
     voiceTranscribing: voiceOwned && voice.transcribing,
+    /* The released utterance is still queued behind the recogniser: capture has
+       ended, so `voiceRecording` is false, but the socket, the audio and the
+       microphone are all still held here. Gated like the other two, because a
+       discard belongs to the composer that owns the capture and to no other. */
+    voiceDraining: voiceOwned && voice.draining,
     /* Ungated: `startVoice` refuses on `voice.transcribing` outright, so the
        voice controls have to read the same global fact. */
     voiceTranscribeActive: voice.transcribing,

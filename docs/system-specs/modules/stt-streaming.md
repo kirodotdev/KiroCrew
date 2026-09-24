@@ -125,6 +125,14 @@ splitting a surrogate pair or dropping an unspaced CJK prefix just because a
 later Latin word contains a space. Durable meeting transcript storage is unchanged.
 Manual release and an automatic capture stop share the composer's stop protection:
 they freeze the release caret and disarm semantic submission while results drain.
+The drain keeps a way out of its own: Escape discards the released utterance,
+releases the single-microphone claim and disarms the late result, so a wait behind
+a cold model is a wait and not a locked composer. `useVoiceInput` reports that
+window as `draining`, apart from the transcription flag it is folded into, because
+only a streaming drain still holds the audio a discard can throw away. The discard
+is also the only gesture the window accepts: the microphone button picks its action
+from whether capture is live, so during the drain it would open a second dictation
+rather than end the pending one.
 Late final corrections preserve text the user types after capture has stopped.
 Every actual capture end, including a fatal server frame, synchronously fires
 the composer's once-only capture-stop protection before deferred socket-close

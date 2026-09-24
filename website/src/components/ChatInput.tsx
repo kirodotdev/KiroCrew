@@ -1036,6 +1036,7 @@ function ChatInput({
     onSelectVoiceDevice,
     voiceDeviceSwitchIsLive = false,
     voiceTranscribing = false,
+    voiceDraining = false,
     voiceTranscribeActive,
     voiceBusyElsewhere = false,
     voiceBusyElsewhereSession = null,
@@ -1541,8 +1542,23 @@ function ChatInput({
   // defaultPrevented, so a snip started during recording would otherwise be
   // cancelled by the same keypress that stopped the recording.
   useEffect(() => {
-    const cancel = onVoiceCancel || onVoiceToggle
-    if (!voiceRecording || !cancel) return
+    // Escape covers the released utterance too, not only live capture. A
+    // recogniser that has to fetch and load its weights first can hold the
+    // utterance for minutes, and every other way out is shut for the duration:
+    // the mic button is the pending transcription's spinner and Enter would
+    // orphan the transcript. Without this the wait has no exit at all, and the
+    // one-microphone claim is held for the whole of it, so no other chat can
+    // dictate either.
+    //
+    // The two windows accept different handlers. While capture is live the mic
+    // button is the commit, so the toggle is a serviceable fallback for the
+    // discard. After the release there is no commit gesture left: the toggle
+    // chooses its action by asking whether the mic is capturing, so during the
+    // drain it opens a SECOND dictation on top of the pending one. A drain
+    // therefore takes the discard handler alone, and with no discard handler
+    // Escape keeps its other meanings.
+    const cancel = voiceRecording ? (onVoiceCancel || onVoiceToggle) : voiceDraining ? onVoiceCancel : undefined
+    if (!cancel) return
     const handler = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || e.isComposing || e.defaultPrevented) return
       if (slashMenuOpenRef.current || filePickerOpenRef.current || skillPickerOpenRef.current || pathPickerOpenRef.current) return
@@ -1553,7 +1569,7 @@ function ChatInput({
     }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
-  }, [voiceRecording, onVoiceCancel, onVoiceToggle])
+  }, [voiceRecording, voiceDraining, onVoiceCancel, onVoiceToggle])
 
   const ctxWrapRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -3382,9 +3398,9 @@ function ChatInput({
    * disabled `settling` bar until capture fully ended: a window where nothing
    * on screen was pressable. (What is VISIBLE through that drain depends on the
    * dictation panel: its own gate reads `voiceRecording`, so when enabled — the
-   * default — it stays up and the textarea returns when capture ends; the
-   * panel's `gestureDriven` carries the settling term for the same window, see
-   * the render site.)
+   * default — it is up for exactly the capture and the textarea returns when
+   * capture ends; the panel's `gestureDriven` carries the settling term for the
+   * same window, see the render site.)
    */
   const voiceHoldMode = voiceModeAvailable && voiceModePref
     && (!composerHasDraft || (captureInFlight && touchPtt.owns))
@@ -3407,11 +3423,11 @@ function ChatInput({
   /**
    * Capture is winding DOWN: the gesture is over but the transport has not let go.
    *
-   * Streaming `stop()` keeps `recording` true until its socket is cleaned up, and
-   * `transcribeInFlight` is still false through that drain — so the bar fell back to
-   * "Hold to talk" while enabled, and the next press hit the hook's
-   * existing-recording branch and STOPPED the phantom session instead of opening a
-   * new one. The user's next utterance was simply not captured.
+   * The window exists because the gesture resolves before the transport does, and
+   * a bar that falls back to "Hold to talk" inside it is a trap: the next press
+   * hits the hook's existing-recording branch and STOPS the phantom session
+   * instead of opening a new one, so the user's next utterance is simply not
+   * captured.
    *
    * Derived from `touchPtt.bar` and used only for the label and the button's
    * `disabled` — deliberately NOT fed back into the hook's own `disabled`, which
@@ -4156,12 +4172,11 @@ function ChatInput({
 
 
         {showDictation ? (
-          /* `gestureDriven` carries the settling term because ownership ends at
-             the release while this panel outlives it: `showDictation` is gated
-             on `voiceRecording`, which stays true through the streaming drain.
-             `bar === 'settling'` can only name the gesture's OWN drain (the
-             hook records `draining` solely on its own commit path), so the
-             keyboard hint stays suppressed for exactly the drain the finger
+          /* `gestureDriven` carries the settling term because gesture ownership
+             ends at the release while the panel is still mounted for whatever
+             capture remains. `bar === 'settling'` can only name the gesture's OWN
+             drain (the hook records `draining` solely on its own commit path), so
+             the keyboard hint stays suppressed for exactly the drain the finger
              just committed — and stays SHOWN for a keyboard-binding capture,
              where Esc/Enter genuinely work. */
           <VoiceDictationPanel sampleRef={showDictation} value={value} partial={voicePartial} deviceLabel={voiceDeviceLabel} deviceId={voiceDeviceId} onSelectDevice={onSelectVoiceDevice || noopSelectDevice} deviceSwitchIsLive={voiceDeviceSwitchIsLive} streaming={voiceStreaming} gestureDriven={voiceHoldMode || touchPtt.bar === 'settling'} download={voiceDownload} />

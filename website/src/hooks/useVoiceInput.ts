@@ -621,5 +621,12 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
   /** True when `switchDevice` takes effect immediately rather than next recording. */
   const deviceSwitchIsLive = streamEnabled && streamRecording
 
-  return { recording: isRecording, transcribing: transcribing || !!streamDraining, sessionOwner, streamEnabled, toggle, start, stop, cancel, prewarm, error, level, deviceLabel, deviceId, clearError, partial, download, sampleRef, switchDevice, deviceSwitchIsLive }
+  // `transcribing` folds two states together on purpose: every surface that
+  // only asks "is something of mine still in flight" wants one flag. `draining`
+  // is the half of it a CANCEL has to see on its own, because the two halves
+  // answer differently. A streaming drain still holds the socket, the retained
+  // audio and the microphone, so `cancel` can throw all three away; a batch
+  // transcription's audio is already at the transcriber and its transcript is
+  // the only copy of what was said, so nothing can recall it.
+  return { recording: isRecording, transcribing: transcribing || !!streamDraining, draining: !!streamDraining, sessionOwner, streamEnabled, toggle, start, stop, cancel, prewarm, error, level, deviceLabel, deviceId, clearError, partial, download, sampleRef, switchDevice, deviceSwitchIsLive }
 }
