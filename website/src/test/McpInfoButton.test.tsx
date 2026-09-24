@@ -3,6 +3,7 @@ import { render as rtlRender, screen, fireEvent, waitFor } from '@testing-librar
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactElement } from 'react'
 import McpInfoButton from '../pages/chat/McpInfoButton'
+import { SESSION_DOT_CLASS } from '../pages/chat/McpToolsPanel'
 import { api } from '../api/client'
 
 vi.mock('../api/client', () => ({
@@ -46,6 +47,18 @@ describe('McpInfoButton', () => {
     await waitFor(() => {
       expect(screen.getByText('disabled')).toBeInTheDocument()
     })
+  })
+
+  // #10320: `enabled` is config only, so the mark must not wear the `ok` hue.
+  it('marks a configured server no-report, not the ok status hue', async () => {
+    render(<McpInfoButton />)
+    fireEvent.click(screen.getByTitle('Session MCP servers'))
+    await waitFor(() => expect(screen.getByText('builder-mcp')).toBeInTheDocument())
+    const dot = (name: string) =>
+      screen.getByText(name).parentElement!.querySelector('span.rounded-full')!
+    expect(dot('builder-mcp').className).not.toContain('bg-ok')
+    expect(dot('builder-mcp').className).toContain(SESSION_DOT_CLASS.no_report)
+    expect(dot('slack-mcp').className).toContain('bg-muted')
   })
 
   it('closes on outside click', async () => {

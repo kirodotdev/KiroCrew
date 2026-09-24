@@ -177,12 +177,12 @@ export default function McpToolsPanel({
           const sessionReason = mcpSessionFailureReason(s.name, sessionReport)
           const sessionLabel = i18nT(SESSION_LABEL_KEY[sessionState])
           // With a report in hand the mark answers "did this start HERE" and is
-          // drawn as a ring; without one it falls back to the configured enabled
-          // flag as a filled dot, which is all the dashboard used to know. The
-          // row's own opacity still carries disabled.
+          // drawn as a ring. Without one the configured `enabled` flag is a read of
+          // mcp.json, so painting it `ok` claimed a session nobody had measured.
+          // The row's own opacity still carries disabled.
           const serverDotClass = hasSessionReport
             ? `w-2 h-2 ${SESSION_DOT_CLASS[sessionState]}`
-            : `w-1.5 h-1.5 ${serverDim ? 'bg-muted' : 'bg-ok'}`
+            : `w-1.5 h-1.5 ${serverDim ? 'bg-muted' : SESSION_DOT_CLASS.no_report}`
           const toggleRow = () => {
             if (tools.length) toggle(s.name)
           }

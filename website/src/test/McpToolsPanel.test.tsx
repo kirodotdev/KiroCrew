@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
-import McpToolsPanel from '../pages/chat/McpToolsPanel'
+import McpToolsPanel, { SESSION_DOT_CLASS } from '../pages/chat/McpToolsPanel'
 
 const servers = [{ name: 'slack-mcp', enabled: true }]
 const toolsByServer = {
@@ -28,6 +28,24 @@ describe('McpToolsPanel', () => {
     expect(screen.getByTitle('Loaded this session')).toBeInTheDocument()
     expect(screen.getByTitle('Deferred')).toBeInTheDocument()
     expect(screen.getByTitle('Disabled')).toBeInTheDocument()
+  })
+
+  // #10320: with no session report the config-only `enabled` flag must not read as `ok`.
+  it('marks a configured server no-report when no session report has arrived', () => {
+    render(
+      <McpToolsPanel
+        servers={[{ name: 'slack-mcp', enabled: true }, { name: 'off-mcp', enabled: false }]}
+        toolsByServer={toolsByServer}
+        loaded={new Set()}
+        toolSearchOn={true}
+        loading={false}
+      />,
+    )
+    const dot = (name: string) =>
+      screen.getByRole('button', { name: new RegExp(name) }).querySelector('span.rounded-full')!
+    expect(dot('slack-mcp').className).not.toContain('bg-ok')
+    expect(dot('slack-mcp').className).toContain(SESSION_DOT_CLASS.no_report)
+    expect(dot('off-mcp').className).toContain('bg-muted')
   })
 
   it('marks every non-disabled tool active when tool search is off', () => {

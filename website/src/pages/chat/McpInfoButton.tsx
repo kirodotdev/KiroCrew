@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Plug, Zap } from 'lucide-react'
 import { api } from '../../api/client'
 import ErrorNotice from '../../components/ErrorNotice'
+import { SESSION_DOT_CLASS } from './McpToolsPanel'
 
 import { i18nT } from '../../i18n/t'
 export default function McpInfoButton({ agent }: { agent?: string }) {
@@ -94,7 +95,12 @@ export default function McpInfoButton({ agent }: { agent?: string }) {
           )}
           {!serversFailed && (servers.length === 0 ? <div className="text-muted text-[13px] italic">{i18nT('pages.chat.mcpInfoButton.none_loaded')}</div> : servers.map(s => (
             <div key={s.name} className={`flex items-center gap-2 py-1 text-[13px] ${s.enabled === false ? 'opacity-40' : ''}`}>
-              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${s.enabled === false ? 'bg-muted' : 'bg-ok'}`} />
+              {/* `enabled` is config only (GET /api/mcp/active reads the spec's
+                  `disabled` flag), so `ok` would claim a handshake nobody observed. */}
+              <span
+                className={`w-1.5 h-1.5 rounded-full shrink-0 ${s.enabled === false ? 'bg-muted' : SESSION_DOT_CLASS.no_report}`}
+                title={s.enabled === false ? undefined : i18nT('pages.chatPage.mcp_session_no_report')}
+              />
               <code className="text-text">{s.name}</code>
               {s.enabled === false && <span className="text-[11px] text-muted">{i18nT('pages.chat.mcpInfoButton.disabled')}</span>}
             </div>
