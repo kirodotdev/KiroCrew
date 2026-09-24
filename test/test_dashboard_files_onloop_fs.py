@@ -500,7 +500,10 @@ class TestFileWrite:
     async def test_validation_runs_off_the_event_loop(self, a_file: Path, spy: _ThreadSpy):
         spy.watch(a_file)
         req = make_mocked_request("POST", "/api/file-write", app=_app())
-        req["user"] = "test-user"
+        # The owner: /api/file-write is owner-gated, and this test is about the
+        # probe, not the gate.
+        req["user"] = "local-app"
+        req["app"] = ""
         with mock.patch.object(
             f,
             "read_bounded_json",
@@ -942,7 +945,9 @@ class TestBoundedProbePool:
 
         async def post(handler, body: dict) -> web.Response:
             req = make_mocked_request("POST", "/api/x", app=_app())
-            req["user"] = "test-user"
+            # The owner, so the owner-gated file_write reaches its probe.
+            req["user"] = "local-app"
+            req["app"] = ""
             with mock.patch.object(
                 f, "read_bounded_json", mock.AsyncMock(return_value=(body, None))
             ):

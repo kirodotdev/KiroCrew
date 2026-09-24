@@ -42,6 +42,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 from tmpdir_helpers import SHORT_TMP_PREFIX, short_tmp_base
 
 from kiro_crew import atomic_write as atomic_write_mod
@@ -270,7 +271,9 @@ class TestFileRead:
 class TestFileWrite:
     @staticmethod
     def _client_app() -> web.Application:
-        return _app("POST", "/api/file-write", files_mod.api_file_write)
+        # Owner-gated route: the identity is plumbing so these tests stay on the
+        # branch each one names (the gate itself: test_file_write_owner_gate.py).
+        return as_owner(_app("POST", "/api/file-write", files_mod.api_file_write))
 
     @pytest.mark.asyncio
     async def test_writes_content_atomically(self, tmp_path, mock_sel):

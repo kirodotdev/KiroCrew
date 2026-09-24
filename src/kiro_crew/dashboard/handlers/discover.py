@@ -26,7 +26,7 @@ from kiro_crew.skill_providers.base import ProviderRegistry, SkillProvider, prov
 from kiro_crew.skill_providers.skillsh import SkillsShConfig, SkillsShProvider
 from kiro_crew.skills import skills_dir as _skills_dir
 
-from .prompts import api_skills
+from .prompts import _deny_non_owner_skill_operation, api_skills
 
 logger = logging.getLogger(__name__)
 
@@ -324,6 +324,12 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
     join the agent's own catalog, so refuse the internal-secret caller and
     keep it a deliberate dashboard action. The agent can still READ any
     registry skill via ``skill_fetch``; it just cannot persist one.
+
+    And owner-only among dashboard callers, through the same helper as every
+    mutating skill route in ``prompts``: an installed skill joins the catalog the
+    agent loads exactly as a created one does, so a non-owner session (a
+    Slack-allowlisted user's dashboard token) must not reach here the write
+    ``POST /api/skills`` refuses it.
     """
     if request.get("internal_auth"):
         _sel().log_tool_invocation(
@@ -344,6 +350,11 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
             },
             status=403,
         )
+    # After the internal-secret refusal, which keeps its own ``human_only`` answer,
+    # and ahead of the body read and the provider lookup.
+    denied = _deny_non_owner_skill_operation(request, "skill_discover_install")
+    if denied is not None:
+        return denied
     try:
         body = await request.json()
     except Exception:

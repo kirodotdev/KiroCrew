@@ -20,6 +20,7 @@ from unittest.mock import MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 from conftest import make_dir_link
 from kiro_crew import platform_compat
@@ -90,6 +91,10 @@ def _make_app(state, provider):
 
     app = web.Application()
     app["state"] = state
+    # Install is owner-gated; the owner identity is plumbing so these tests stay on
+    # the branch each one names (the gate itself: test_non_owner_file_and_skill_writes).
+    state.owner_id = ""
+    as_owner(app)
     app.router.add_get("/api/skills/-/discover", discover_mod.api_skills_discover)
     app.router.add_get(
         "/api/skills/-/discover/preview", discover_mod.api_skills_discover_preview

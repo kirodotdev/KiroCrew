@@ -115,7 +115,7 @@ def sel_mock(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
 
 @pytest.fixture()
 def state(skills_root: Path) -> MagicMock:
-    st = MagicMock(context_builder=None)
+    st = MagicMock(context_builder=None, owner_id="")
     st._standalone_skills = SkillsLoader(skills_path=skills_root, install_builtins=False)
     return st
 
@@ -139,6 +139,10 @@ def _mk(
     app = web.Application()
     app["state"] = state
     req = make_mocked_request(method, path, app=app)
+    # The owner (no owner configured, signed local subject): install is owner-gated,
+    # and these tests are about what lies behind the gate.
+    req["user"] = "local-app"
+    req["app"] = ""
     if internal_auth:
         req["internal_auth"] = True
     if body is not ...:

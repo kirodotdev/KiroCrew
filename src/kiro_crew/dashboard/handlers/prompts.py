@@ -101,10 +101,10 @@ def _deny_non_owner_skill_operation(request: web.Request, operation: str) -> web
     """Restrict owner-only skill state to the configured dashboard owner.
 
     Covers the project-skill consent endpoints and every mutating skill
-    handler: CRUD writes, pending approve/dismiss/dismiss-all, pin, and
-    inject-on-trigger. Skill content is injected into agent context, so any
-    skill mutation is an instruction-injection surface: only the dashboard
-    owner may perform it.
+    handler: CRUD writes, pending approve/dismiss/dismiss-all, pin,
+    inject-on-trigger, and the registry install in ``discover.py``. Skill
+    content is injected into agent context, so any skill mutation is an
+    instruction-injection surface: only the dashboard owner may perform it.
     ``is_owner_dashboard_request`` already refuses app tokens (any non-empty
     app identity) and non-owner dashboard subjects, and both outcomes are
     SEL-audited here.

@@ -397,8 +397,11 @@ async def test_install_with_raising_availability_probe_is_404_not_500(
         external_access=_AllowOnly("https://catalog.example.test"),
     )
     app = web.Application()
-    app["state"] = MagicMock()
+    app["state"] = MagicMock(owner_id="")
     request = make_mocked_request("POST", "/api/skills/-/discover/install", app=app)
+    # The owner: install is owner-gated, and this test is about the availability probe.
+    request["user"] = "local-app"
+    request["app"] = ""
     from unittest.mock import AsyncMock
 
     request.json = AsyncMock(  # type: ignore[method-assign]

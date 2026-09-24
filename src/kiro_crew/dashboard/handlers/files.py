@@ -4087,11 +4087,22 @@ def _file_write_blocking(path: str, content: str) -> str | None:
 
 async def api_file_write(request: web.Request) -> web.Response:
     """POST /api/file-write — write file content from the markdown panel."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
     from kiro_crew.validation import (  # noqa: F811
         FILE_WRITE_SCHEMA,
         ValidationError,
         validate_tool_args,
     )
+
+    # Ahead of the body read and the path probe. This route rewrites any existing
+    # file off the sensitive floor, which includes the steering documents, the
+    # skills and the MCP config whose own write routes are owner-gated; leaving it
+    # open handed a non-owner (a Slack-allowlisted user's dashboard session) every
+    # file those gates protect. Ahead of the probe too, so whether a path exists is
+    # not a non-owner's to learn from a 404.
+    owner_denied = await require_owner_dashboard_request(request, "file_write")
+    if owner_denied is not None:
+        return owner_denied
 
     # max_bytes=None: the body carries the file's whole contents, which has no
     # defensible byte ceiling.
