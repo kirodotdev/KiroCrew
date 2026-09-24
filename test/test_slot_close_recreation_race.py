@@ -1777,6 +1777,55 @@ async def test_rows_only_defers_by_the_line_tab_id_not_by_the_flag_alone(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_rows_only_handover_persists_a_retained_context_residual(tmp_path) -> None:
+    """The hold travels WITH the rows a deferring write commits.
+
+    A close retaining a context-owing note leaves a context-only residual under a fresh id
+    and commits the note's visible row. If the hand-over write defers ``deferred_notes``
+    with the other writer's presentation fields, that residual never reaches disk while the
+    entry it replaced is carried back verbatim -- and the next restore retires that entry
+    against its committed row, losing the context half.
+
+    The line is stamped as ANOTHER writer's, which is the only condition under which
+    the deferral runs at all.
+    """
+    state = _make_state(tmp_path)
+    slot = await _slot_with_committed_and_uncommitted_rows(state)
+    await _publish_metadata(state, slot, title="COMMITTED TITLE", folder="folder-committed")
+    state.conversation_log.update_metadata(
+        HKEY, {"tab_id": "0123456789ab", "title": "THEIRS", "folder_id": "folder-theirs"}
+    )
+
+    slot._deferred_notes.append(
+        {
+            "id": "held00000001",
+            "content": "HELD-NOTE",
+            "cls": "reconcile-note",
+            "context": {"content": "HELD-CONTEXT", "role": "system"},
+        }
+    )
+    slot.flush_deferred_notes(retain_context_owing=True)
+    assert [n.get("contextOnly") for n in slot._deferred_notes] == [True], "fixture: no residual"
+
+    assert await handlers.save_slot_off_loop(
+        state, slot, force=True, best_effort=False, rows_only=True
+    )
+
+    meta = state.conversation_log.get_metadata(HKEY)
+    residuals = [n for n in (meta.get("deferred_notes") or []) if n.get("contextOnly")]
+    assert len(residuals) == 1, meta.get("deferred_notes")
+    assert residuals[0]["context"]["content"] == "HELD-CONTEXT"
+    assert "held00000001" not in [
+        n.get("id") for n in (meta.get("deferred_notes") or [])
+    ], "the retired entry was carried back beside its own committed row"
+    assert "HELD-NOTE" in _disk_contents(state)
+    scoped = "the merge overwrote a field the other writer still owns"
+    assert meta.get("title") == "THEIRS", scoped
+    assert meta.get("folder_id") == "folder-theirs", scoped
+    assert meta.get("tab_id") == "0123456789ab", scoped
+
+
+@pytest.mark.asyncio
 async def test_handover_rows_only_write_still_creates_a_first_metadata_line(tmp_path) -> None:
     """With no line on disk yet there is nobody to defer to, so the slot's own wins.
 
