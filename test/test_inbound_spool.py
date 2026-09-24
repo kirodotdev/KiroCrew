@@ -1358,6 +1358,50 @@ def test_the_spool_directory_is_masked_in_agent_sandboxes() -> None:
     assert "inbound-spool" in _CREW_HIDDEN_LEAVES
 
 
+def test_the_spool_root_exists_before_a_mask_has_to_bind_over_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A mask over an absent name is no mask, and this store is created on first write.
+
+    ``mount(2)`` cannot cover a path that does not exist and the launcher's
+    ``SENSITIVE_DIRS`` loop is guarded on ``isdir``, so on a host where no inbound
+    message has been refused the spool root is skipped and every sandbox spawned
+    first runs with the name unmasked. That sandbox can create the directory itself
+    and leave an entry the gateway reads on the next start and quotes as the
+    operator's own words. The link refusals above do not answer this shape: they
+    refuse a link, and an agent's own directory is a real directory. So the root is
+    materialised -- empty, owner-only -- before any namespace spawn.
+
+    The second half is the other direction: the spool must not care that its root
+    arrived early. Its readers open the leaf INSIDE the root, so an empty root and
+    an absent one give the same answer.
+    """
+    from kiro_crew import sandbox
+
+    home = tmp_path / "crew"
+    home.mkdir()
+    monkeypatch.setattr(sandbox, "config_dir", lambda: home)
+    monkeypatch.setattr(S, "data_home", lambda: home)
+
+    assert "inbound-spool" in sandbox._CREW_PRECREATE_HIDDEN_DIR_LEAVES, (
+        "membership in _CREW_HIDDEN_LEAVES only declares the intent to mask; a leaf "
+        "the gateway creates lazily also has to exist when the loop runs"
+    )
+
+    root = home / "inbound-spool"
+    assert not root.exists(), "the point of the test is that it starts absent"
+
+    created = sandbox._materialize_maskable_dirs()
+
+    assert str(root) in created
+    assert root.is_dir() and not root.is_symlink()
+    if os.name == "posix":
+        assert oct(root.stat().st_mode & 0o777) == "0o700"
+
+    S._refuse_links(spool_path())
+    assert peek_next() is None, "an empty root must read as an absent one"
+
+
 # ── Channel wiring: what each adopter declares as its route ──────────────────
 
 

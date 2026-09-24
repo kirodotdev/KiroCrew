@@ -1603,6 +1603,19 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # than refusing it. Materialised empty at 0700 before every spawn so the bind
     # always has a target.
     "work",
+    # The refused-inbound spool root, and its consequence is the sharpest kind: the
+    # store is created by its own first write, so on a host where no inbound message
+    # has been refused the name is absent, the ``isdir``-guarded ``SENSITIVE_DIRS``
+    # loop skips it, and the mask is vacuous for the life of every sandbox spawned
+    # first. One of those can create the directory ITSELF and leave an entry the
+    # gateway reads on the next start and quotes verbatim, as the operator's own
+    # words, into a conversation the egress recheck still authorizes. The module's
+    # own refusals do not reach this shape -- they refuse a LINK at the directory,
+    # the leaf or the lock, and a directory an agent created is a real directory
+    # holding a plain single-linked file. Materialised empty at 0700, which is what
+    # the spool's own ``restrict_to_owner=True`` writes already require of it; its
+    # readers open the leaf inside, so an empty root reads exactly as an absent one.
+    "inbound-spool",
 )
 
 #: The masked md-notebook leaves materialised before a namespace spawn, and what each
