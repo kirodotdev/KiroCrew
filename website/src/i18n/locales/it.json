@@ -4002,6 +4002,11 @@
         "fast_path": "Fast path",
         "fix_label": "Fix: {{fix}}",
         "hypothesis_agent_must_confirm_first": "hypothesis — agent must confirm first",
+        "incidentio_error_no_schedule_ids": "È impostato un ID utente incident.io ma nessun calendario è configurato, quindi questa istanza risulta fuori turno a ogni controllo. Aggiungi nelle Impostazioni i calendari di cui fai parte.",
+        "incidentio_error_unreachable": "incident.io non ha risposto (HTTP {{status}}).",
+        "incidentio_error_unreachable_no_status": "incident.io non ha risposto.",
+        "incidentio_not_on_roster": "Non hai turni nei calendari incident.io configurati per le prossime due settimane. Controlla schedule_ids e il tuo ID utente incident.io nelle Impostazioni.",
+        "incidentio_roster_window": "incident.io · turni delle prossime due settimane",
         "is_no_longer_in_the_ledger": "is no longer in the\n                                    ledger.",
         "knowledge_ledger": "Knowledge ledger",
         "known_patterns": "Known patterns",
@@ -4103,7 +4108,8 @@
         "waiting_awaiting_approval": "Approve to continue",
         "waiting_awaiting_diagnosis": "Stopped, no diagnosis",
         "waiting_awaiting_input": "Waiting on you",
-        "waiting_on_you": "Waiting on you"
+        "waiting_on_you": "Waiting on you",
+        "your_next_shift": "Il tuo prossimo turno: {{start}} – {{end}}"
       },
       "settingsPanel": {
         "a_pattern_is_required_there_is_no_wildcard_grant": "A pattern is required — there is no wildcard grant. Use * to match a prefix, e.g. prod-* covers every resource whose name starts with prod-.",
@@ -4228,7 +4234,8 @@
         "your_github_login": "Your GitHub login",
         "your_pagerduty_user_id": "Your PagerDuty user ID",
         "your_incident_io_user_id": "Your incident.io user ID",
-        "your_team_s_ledger_is_still_being_exchanged_sync": "Your team's ledger is still being exchanged — sync names"
+        "your_team_s_ledger_is_still_being_exchanged_sync": "Your team's ledger is still being exchanged — sync names",
+        "unknown_incidentio_user_refused": "incident.io non ha nessun utente con questo ID. Inserisci il tuo ID utente incident.io, non il tuo nome."
       },
       "signalsPanel": {
         "a_signal_that_is_absent_from_this_poll_can_be_re": "A signal that is absent from this poll can be read as recovered.",

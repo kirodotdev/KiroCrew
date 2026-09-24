@@ -4063,6 +4063,11 @@
         "fast_path": "Быстрый путь",
         "fix_label": "Исправление: {{fix}}",
         "hypothesis_agent_must_confirm_first": "гипотеза — агент должен сначала подтвердить",
+        "incidentio_error_no_schedule_ids": "ID пользователя incident.io задан, но графики не настроены, поэтому при каждой проверке этот экземпляр считается не на смене. Добавь в настройках графики, в которых ты состоишь.",
+        "incidentio_error_unreachable": "incident.io не ответил (HTTP {{status}}).",
+        "incidentio_error_unreachable_no_status": "incident.io не ответил.",
+        "incidentio_not_on_roster": "В настроенных графиках incident.io у тебя нет смен на ближайшие две недели. Проверь schedule_ids и свой ID пользователя incident.io в настройках.",
+        "incidentio_roster_window": "incident.io · смены на ближайшие две недели",
         "is_no_longer_in_the_ledger": "— её больше нет в\n                                    журнале.",
         "knowledge_ledger": "Журнал знаний",
         "known_patterns": "Известные шаблоны",
@@ -4168,7 +4173,8 @@
         "waiting_awaiting_approval": "Одобри, чтобы продолжить",
         "waiting_awaiting_diagnosis": "Остановлено, диагноза нет",
         "waiting_awaiting_input": "Ждёт тебя",
-        "waiting_on_you": "Ждёт тебя"
+        "waiting_on_you": "Ждёт тебя",
+        "your_next_shift": "Твоя следующая смена: {{start}} – {{end}}"
       },
       "settingsPanel": {
         "a_pattern_is_required_there_is_no_wildcard_grant": "Шаблон обязателен — разрешения «на всё» не существует. Используй *, чтобы задать префикс: например, prod-* охватывает все ресурсы, чьё имя начинается на prod-.",
@@ -4294,7 +4300,8 @@
         "your_github_login": "Твой логин GitHub",
         "your_pagerduty_user_id": "Твой ID пользователя PagerDuty",
         "your_incident_io_user_id": "Твой ID пользователя incident.io",
-        "your_team_s_ledger_is_still_being_exchanged_sync": "Журнал твоей команды всё ещё обменивается — синхронизация каждый раз явно называет ветку"
+        "your_team_s_ledger_is_still_being_exchanged_sync": "Журнал твоей команды всё ещё обменивается — синхронизация каждый раз явно называет ветку",
+        "unknown_incidentio_user_refused": "В incident.io нет пользователя с таким ID. Введи свой ID пользователя incident.io, а не имя."
       },
       "signalsPanel": {
         "a_signal_that_is_absent_from_this_poll_can_be_re": "Сигнал, которого нет в этом опросе, можно считать восстановившимся.",

@@ -3880,6 +3880,11 @@
         "fast_path": "快速通道",
         "fix_label": "修复：{{fix}}",
         "hypothesis_agent_must_confirm_first": "假设 — 代理必须先确认",
+        "incidentio_error_no_schedule_ids": "已设置 incident.io 用户 ID，但没有配置排班表，因此每次检查时此实例都算作不在班。请在设置中添加你所在的排班表。",
+        "incidentio_error_unreachable": "incident.io 没有响应（HTTP {{status}}）。",
+        "incidentio_error_unreachable_no_status": "incident.io 没有响应。",
+        "incidentio_not_on_roster": "未来两周内，已配置的 incident.io 排班表中没有你的班次。请在设置中检查 schedule_ids 和你的 incident.io 用户 ID。",
+        "incidentio_roster_window": "incident.io · 未来两周的班次",
         "is_no_longer_in_the_ledger": "已不在账本中。",
         "knowledge_ledger": "知识账本",
         "known_patterns": "已知模式",
@@ -3973,7 +3978,8 @@
         "waiting_awaiting_approval": "批准后继续",
         "waiting_awaiting_diagnosis": "已停下，没有诊断",
         "waiting_awaiting_input": "等你处理",
-        "waiting_on_you": "等你处理"
+        "waiting_on_you": "等你处理",
+        "your_next_shift": "下一个班次：{{start}} – {{end}}"
       },
       "settingsPanel": {
         "a_pattern_is_required_there_is_no_wildcard_grant": "必须填写模式 — 没有通配授权。用 * 匹配前缀，例如 prod-* 覆盖所有名称以 prod- 开头的资源。",
@@ -4096,7 +4102,8 @@
         "your_github_login": "你的 GitHub 登录名",
         "your_pagerduty_user_id": "你的 PagerDuty 用户 ID",
         "your_incident_io_user_id": "你的 incident.io 用户 ID",
-        "your_team_s_ledger_is_still_being_exchanged_sync": "你们团队的账本仍在交换 — 同步每次都会显式指定"
+        "your_team_s_ledger_is_still_being_exchanged_sync": "你们团队的账本仍在交换 — 同步每次都会显式指定",
+        "unknown_incidentio_user_refused": "incident.io 中没有这个 ID 的用户。请输入你的 incident.io 用户 ID，而不是名字。"
       },
       "signalsPanel": {
         "a_signal_that_is_absent_from_this_poll_can_be_re": "这次轮询里没出现的信号可以视为已恢复。",
