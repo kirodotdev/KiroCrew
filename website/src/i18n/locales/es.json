@@ -8364,6 +8364,7 @@
     },
     "voiceStatusBar": {
       "default_microphone": "Micrófono predeterminado",
+      "dictation_kept_for_model": "Tu dictado se conserva y se transcribirá.",
       "recording": "Grabando"
     },
     "webAppArtifactCard": {
@@ -9092,6 +9093,7 @@
       "audio_worklet_unavailable": "audio worklet no disponible",
       "stt_connection_error": "error de conexión de stt",
       "stt_connection_lost": "se perdió la conexión de stt",
+      "stt_model_still_loading": "El modelo de voz aún se está cargando, así que no se pudo transcribir tu dictado y no se conservó. Vuelve a dictarlo cuando el modelo termine de cargarse.",
       "stt_error": "error de stt"
     },
     "useVoiceInput": {
@@ -9120,6 +9122,7 @@
     "sttProviders": {
       "downloading_decoder": "Descargando el decodificador de audio: {{pct}} ({{done}} de {{total}})",
       "downloading_speech_model": "Descargando el modelo de voz: {{pct}} ({{done}} de {{total}})",
+      "loading_speech_model": "Cargando el modelo de voz…",
       "stream_error_decode_failed": "El reconocimiento de voz no pudo terminar esta transcripción. Vuelve a dictarla.",
       "stream_error_max_duration": "El dictado alcanzó su límite de duración. Empieza una grabación nueva para continuar.",
       "stream_error_model_missing": "El modelo de voz aún no está listo. Descárgalo en los ajustes de voz a texto y vuelve a intentarlo.",

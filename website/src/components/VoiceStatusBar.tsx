@@ -1,10 +1,11 @@
-import { CheckCircle2, MicOff } from 'lucide-react'
+import { CheckCircle2, Loader2, MicOff } from 'lucide-react'
 import ErrorNotice from './ErrorNotice'
 
 import MicSourceMenu from './MicSourceMenu'
 
 import { i18nT } from '../i18n/t'
 import { downloadLabel } from '../lib/sttProviders'
+import type { SttModelProgress } from '../lib/sttProviders'
 interface Props {
   /** True while actively capturing audio. */
   recording: boolean
@@ -22,8 +23,8 @@ interface Props {
   onSelectDevice: (deviceId: string) => void
   /** True when a switch applies immediately rather than to the next recording. */
   deviceSwitchIsLive?: boolean
-  /** Byte progress of the one-time speech-model download this session waits on. */
-  download?: { done: number; total: number } | null
+  /** What the speech model this session waits on is doing: fetching, or loading. */
+  download?: SttModelProgress | null
   /**
    * A visible, non-error status line shown while idle — the reason the mic is
    * blocked ("Microphone in use in another chat"), or that a held dictation just
@@ -38,8 +39,10 @@ interface Props {
 /**
  * Thin status strip at the top of the chat input. Shows a dismissible error
  * when the mic fails to start, otherwise a live recording indicator (pulsing
- * dot + input-level meter + active microphone name) while capturing. Renders
- * nothing when idle and error-free.
+ * dot + input-level meter + active microphone name) while capturing. Once
+ * capture ends it shows what the speech model is doing while the retained
+ * audio waits on it. Renders nothing when idle, error-free and with no model
+ * work outstanding.
  */
 /** The notice text with `action.label` rendered as a button, when the label
  *  occurs in the text (it is interpolated into it, so word order per locale
@@ -97,6 +100,41 @@ export default function VoiceStatusBar({ recording, level, deviceLabel, deviceId
   }
 
   if (!recording) {
+    // Capture ends the moment the key is released, but the model this session
+    // waits on may still be fetching or loading, and the retained audio is
+    // held for it. That wait is the longest thing the user experiences here,
+    // so the line explaining it outlives the recorder rather than vanishing
+    // with it and leaving a composer that simply does nothing.
+    if (download) {
+      return (
+        <div
+          role="status"
+          data-testid="voice-status-download"
+          className="flex items-start gap-2 px-3 py-1.5 text-[12px] leading-snug border-b border-border bg-chrome/50 text-muted"
+        >
+          <Loader2 size={13} className="shrink-0 mt-0.5 animate-spin" aria-hidden="true" />
+          <span className="flex-1 min-w-0 break-words">
+            {downloadLabel(download)}
+            {/* Only after release, and only here. The words are already recorded
+                and the composer is empty, so without this the wait is
+                indistinguishable from having lost the sentence, and the sensible
+                response to that is to give up and retype it. The recording strip
+                has no room for it and does not need it: the mic is still live
+                there, so nothing looks lost yet.
+
+                Its OWN line, not appended to the stage text: the download
+                variant ends on a byte figure with no terminal punctuation, so
+                side by side the two read as a single sentence — "(612MB of
+                1.5GB) Your dictation is kept". Separating them here rather than
+                adding a full stop to that string, which the settings panel also
+                shows on its own in thirteen catalogs. Not dimmed either: this is
+                the sentence that stops the user retyping a dictation that is
+                still on its way. */}
+            <span className="block">{i18nT('components.voiceStatusBar.dictation_kept_for_model')}</span>
+          </span>
+        </div>
+      )
+    }
     if (!notice) return null
     return (
       <div

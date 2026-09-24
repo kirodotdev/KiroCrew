@@ -8249,6 +8249,7 @@
     },
     "voiceStatusBar": {
       "default_microphone": "ডিফল্ট মাইক্রোফোন",
+      "dictation_kept_for_model": "তোমার ডিক্টেশন সংরক্ষিত আছে এবং পরে ট্রান্সক্রাইব করা হবে।",
       "recording": "রেকর্ডিং হচ্ছে"
     },
     "webAppArtifactCard": {
@@ -8972,6 +8973,7 @@
       "audio_worklet_unavailable": "অডিও ওয়ার্কলেট পাওয়া যাচ্ছে না",
       "stt_connection_error": "stt কানেকশন এরর",
       "stt_connection_lost": "stt কানেকশন হারিয়ে গেছে",
+      "stt_model_still_loading": "স্পিচ মডেল এখনও লোড হচ্ছে, তাই তোমার ডিক্টেশন ট্রান্সক্রাইব করা যায়নি এবং সংরক্ষিতও হয়নি। মডেল লোড হয়ে গেলে আবার বলো।",
       "stt_error": "stt এরর"
     },
     "useVoiceInput": {
@@ -9000,6 +9002,7 @@
     "sttProviders": {
       "downloading_decoder": "অডিও ডিকোডার ডাউনলোড হচ্ছে: {{pct}} ({{total}}-এর মধ্যে {{done}})",
       "downloading_speech_model": "স্পিচ মডেল ডাউনলোড হচ্ছে: {{pct}} ({{total}}-এর মধ্যে {{done}})",
+      "loading_speech_model": "স্পিচ মডেল লোড হচ্ছে…",
       "stream_error_decode_failed": "স্পিচ রিকগনিশন এই প্রতিলিপি শেষ করতে পারেনি। আবার বলে লিখিয়ে নাও।",
       "stream_error_max_duration": "ডিকটেশন তার সময়সীমায় পৌঁছে গেছে। চালিয়ে যেতে নতুন রেকর্ডিং শুরু করো।",
       "stream_error_model_missing": "স্পিচ মডেল এখনও তৈরি নয়। স্পিচ-টু-টেক্সট সেটিংসে এটি ডাউনলোড করো, তারপর আবার চেষ্টা করো।",

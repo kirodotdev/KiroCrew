@@ -8134,6 +8134,7 @@
     },
     "voiceStatusBar": {
       "default_microphone": "デフォルトマイク",
+      "dictation_kept_for_model": "録音した音声は保持され、文字起こしされます。",
       "recording": "録音中"
     },
     "webAppArtifactCard": {
@@ -8852,6 +8853,7 @@
       "audio_worklet_unavailable": "オーディオワークレットが利用できません",
       "stt_connection_error": "stt接続エラー",
       "stt_connection_lost": "stt接続が失われました",
+      "stt_model_still_loading": "音声モデルの読み込みが終わらなかったため、録音した音声を文字起こしできず、保存もされていません。モデルの読み込みが終わってからもう一度お話しください。",
       "stt_error": "sttエラー"
     },
     "useVoiceInput": {
@@ -8880,6 +8882,7 @@
     "sttProviders": {
       "downloading_decoder": "オーディオデコーダーをダウンロード中: {{pct}}（{{total}} 中 {{done}}）",
       "downloading_speech_model": "音声モデルをダウンロード中: {{pct}}（{{total}} 中 {{done}}）",
+      "loading_speech_model": "音声モデルを読み込み中…",
       "stream_error_decode_failed": "音声認識はこの書き起こしを完了できませんでした。もう一度口述してください。",
       "stream_error_max_duration": "口述が長さの上限に達しました。続けるには新しい録音を開始してください。",
       "stream_error_model_missing": "音声モデルの準備がまだできていません。音声入力の設定でダウンロードしてから、もう一度お試しください。",

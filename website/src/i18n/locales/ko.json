@@ -8134,6 +8134,7 @@
     },
     "voiceStatusBar": {
       "default_microphone": "기본 마이크",
+      "dictation_kept_for_model": "녹음한 움성은 보관되어 텍스트로 변환됩니다.",
       "recording": "녹음 중"
     },
     "webAppArtifactCard": {
@@ -8852,6 +8853,7 @@
       "audio_worklet_unavailable": "오디오 워크릿을 사용할 수 없습니다",
       "stt_connection_error": "stt 연결 오류",
       "stt_connection_lost": "stt 연결이 끊어졌습니다",
+      "stt_model_still_loading": "음성 모델을 아직 로드하는 중이라 녹음한 음성을 텍스트로 변환하지 못했고 보관되지도 않았습니다. 모델 로드가 끝난 뒤에 다시 말해 주세요.",
       "stt_error": "stt 오류"
     },
     "useVoiceInput": {
@@ -8880,6 +8882,7 @@
     "sttProviders": {
       "downloading_decoder": "오디오 디코더 다운로드 중: {{pct}}({{total}} 중 {{done}})",
       "downloading_speech_model": "음성 모델 다운로드 중: {{pct}} ({{total}} 중 {{done}})",
+      "loading_speech_model": "음성 모델 로드 중…",
       "stream_error_decode_failed": "음성 인식이 이 전사를 완료하지 못했습니다. 다시 구술하세요.",
       "stream_error_max_duration": "구술이 길이 제한에 도달했습니다. 계속하려면 새로 녹음하세요.",
       "stream_error_model_missing": "음성 모델이 아직 준비되지 않았습니다. 음성 텍스트 변환 설정에서 내려받은 후 다시 시도하세요.",

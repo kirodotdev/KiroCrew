@@ -8479,6 +8479,7 @@
     },
     "voiceStatusBar": {
       "default_microphone": "Микрофон по умолчанию",
+      "dictation_kept_for_model": "Записанная речь сохранена и будет расшифрована.",
       "recording": "Запись"
     },
     "webAppArtifactCard": {
@@ -9212,6 +9213,7 @@
       "audio_worklet_unavailable": "audio worklet недоступен",
       "stt_connection_error": "ошибка соединения stt",
       "stt_connection_lost": "соединение stt потеряно",
+      "stt_model_still_loading": "Речевая модель всё ещё загружается, поэтому записанную речь расшифровать не удалось и она не сохранена. Продиктуй её заново, когда модель загрузится.",
       "stt_error": "ошибка stt"
     },
     "useVoiceInput": {
@@ -9240,6 +9242,7 @@
     "sttProviders": {
       "downloading_decoder": "Загрузка аудиодекодера: {{pct}} ({{done}} из {{total}})",
       "downloading_speech_model": "Загрузка речевой модели: {{pct}} ({{done}} из {{total}})",
+      "loading_speech_model": "Загрузка речевой модели в память…",
       "stream_error_decode_failed": "Распознавание речи не смогло завершить эту расшифровку. Продиктуй ещё раз.",
       "stream_error_max_duration": "Диктовка достигла предела длительности. Начни новую запись, чтобы продолжить.",
       "stream_error_model_missing": "Речевая модель ещё не готова. Загрузи её в настройках распознавания речи и попробуй снова.",

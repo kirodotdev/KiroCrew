@@ -8364,6 +8364,7 @@
     },
     "voiceStatusBar": {
       "default_microphone": "Micro par défaut",
+      "dictation_kept_for_model": "Ta dictée est conservée et sera transcrite.",
       "recording": "Enregistrement"
     },
     "webAppArtifactCard": {
@@ -9092,6 +9093,7 @@
       "audio_worklet_unavailable": "audio worklet indisponible",
       "stt_connection_error": "erreur de connexion stt",
       "stt_connection_lost": "connexion stt perdue",
+      "stt_model_still_loading": "Le modèle vocal est encore en cours de chargement, ta dictée n'a donc pas pu être transcrite et n'a pas été conservée. Redis-la une fois le modèle chargé.",
       "stt_error": "erreur stt"
     },
     "useVoiceInput": {
@@ -9120,6 +9122,7 @@
     "sttProviders": {
       "downloading_decoder": "Téléchargement du décodeur audio : {{pct}} ({{done}} sur {{total}})",
       "downloading_speech_model": "Téléchargement du modèle vocal : {{pct}} ({{done}} sur {{total}})",
+      "loading_speech_model": "Chargement du modèle vocal…",
       "stream_error_decode_failed": "La reconnaissance vocale n'a pas pu terminer cette transcription. Dicte-la à nouveau.",
       "stream_error_max_duration": "La dictée a atteint sa durée maximale. Lance un nouvel enregistrement pour continuer.",
       "stream_error_model_missing": "Le modèle vocal n'est pas encore prêt. Télécharge-le dans les paramètres de reconnaissance vocale, puis réessaie.",

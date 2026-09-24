@@ -3301,6 +3301,13 @@ function ChatInput({
   /** "Is a transcription in flight at all" — see the `voiceTranscribeActive` prop
    *  doc. Falls back to the gated flag so the prop stays optional. */
   const transcribeInFlight = voiceTranscribeActive ?? voiceTranscribing
+  /** Whether the composer may say "Transcribing". False while the speech model is
+   *  still fetching or loading: the status strip directly above already names that
+   *  stage, and a placeholder asserting transcription under a line that reads
+   *  "Downloading the speech model: 40%" tells the user two different things about
+   *  the same wait. The strip is the single source of truth for it, so the
+   *  placeholder falls through to its default instead. */
+  const transcribingIsHonest = transcribeInFlight && !voiceDownload
   /** Another composer holds the microphone. Blocks STARTING here exactly like a
    *  foreign transcription does, but it is not transcription — nothing of this
    *  composer's is in flight — so it gets its own label and icon, never the
@@ -4196,7 +4203,7 @@ function ChatInput({
                 onSelectionChange={publishLexicalSelection}
                 sentMessages={sentMessages}
                 ariaLabel={inputAriaLabel ?? i18nT('components.chatInput.message_input')}
-                placeholder={!connected ? i18nT('components.chatInput.gateway_offline_message_will_not_send') : disabledProp ? i18nT('components.chatInput.stopping') : voiceRecording ? i18nT('components.chatInput.recording_click_mic_to_stop') : voiceTranscribing ? i18nT('components.chatInput.transcribing_please_wait') : continuePlaceholder || voiceModePlaceholder || resolvedPlaceholder}
+                placeholder={!connected ? i18nT('components.chatInput.gateway_offline_message_will_not_send') : disabledProp ? i18nT('components.chatInput.stopping') : voiceRecording ? i18nT('components.chatInput.recording_click_mic_to_stop') : transcribingIsHonest ? i18nT('components.chatInput.transcribing_please_wait') : continuePlaceholder || voiceModePlaceholder || resolvedPlaceholder}
                 disabled={disabled}
                 readOnly={optimizing}
                 sendOnEnter={sendOnEnter}
@@ -4216,7 +4223,7 @@ function ChatInput({
           data-composer-typo
           className={/* focus-cue-ok: the cue is the composer shell's focus-within border-accent brightening; a second ring on the textarea would double-paint one control. */ `relative w-full bg-transparent border-none ${INPUT_TYPO} text-text outline-hidden min-h-[44px] max-h-[50vh] placeholder:text-muted resize-none ${manualHeight !== null ? 'flex-1' : ''} ${disabled ? 'opacity-40 pointer-events-none' : ''} ${optimizing ? 'opacity-30' : ''}`}
           style={manualHeight !== null ? { height: '100%' } : undefined}
-          placeholder={!connected ? i18nT('components.chatInput.gateway_offline_message_will_not_send') : disabledProp ? i18nT('components.chatInput.stopping') : voiceRecording ? i18nT('components.chatInput.recording_click_mic_to_stop') : voiceTranscribing ? i18nT('components.chatInput.transcribing_please_wait') : continuePlaceholder || voiceModePlaceholder || resolvedPlaceholder}
+          placeholder={!connected ? i18nT('components.chatInput.gateway_offline_message_will_not_send') : disabledProp ? i18nT('components.chatInput.stopping') : voiceRecording ? i18nT('components.chatInput.recording_click_mic_to_stop') : transcribingIsHonest ? i18nT('components.chatInput.transcribing_please_wait') : continuePlaceholder || voiceModePlaceholder || resolvedPlaceholder}
           readOnly={optimizing}
           rows={1}
           value={value}

@@ -25,6 +25,7 @@ import {
   PROVIDER_TRANSCRIBE,
   STREAM_ERROR_CODE_KEY,
   UNAVAILABLE_CODE_KEY,
+  downloadLabel,
   streamErrorMessage,
 } from '../lib/sttProviders'
 import EN_MANUAL from '../i18n/locales/en.manual.json'
@@ -150,6 +151,43 @@ describe('the download prompt', () => {
       // only warning a user gets before a multi-hundred-megabyte transfer.
       expect(value, code).toBeTruthy()
       expect(value, code).toContain('{{size}}')
+      seen.push(code)
+    }
+    // Guard the guard: an empty catalog map would make the loop vacuously pass.
+    expect(seen.length).toBeGreaterThanOrEqual(SUPPORTED_LANGUAGES.length)
+  })
+})
+
+describe('the line for a model the session is waiting on', () => {
+  it('describes a load differently from a transfer', () => {
+    // Both reach the user on one channel, and the two sentences must not collapse
+    // into each other: a load has no bytes, so a shared label would report a
+    // permanent zero percent while the model was in fact coming up normally.
+    const loading = downloadLabel({ done: 0, total: 0, stage: 'preparing' })
+    const fetching = downloadLabel({ done: 0, total: 0, stage: 'downloading' })
+    expect(loading).not.toBe(fetching)
+    expect(loading).not.toContain('{{')
+  })
+
+  it('reads an absent stage as the transfer the settings panel polls', () => {
+    // That caller has real bytes and passes no stage, so the default has to stay
+    // the transfer sentence.
+    expect(downloadLabel({ done: 1, total: 2 })).toBe(
+      downloadLabel({ done: 1, total: 2, stage: 'downloading' }),
+    )
+  })
+
+  it('is written in every shipped catalog', () => {
+    // A missing key renders the dotted path into the recording chrome, at the one
+    // moment there is no transcript to look at instead.
+    const seen: string[] = []
+    for (const [code, bundle] of Object.entries(RUNTIME_CATALOGS)) {
+      const root = (bundle as { translation: unknown }).translation as {
+        lib?: { sttProviders?: Record<string, string> }
+      }
+      const value = root.lib?.sttProviders?.loading_speech_model
+      expect(value, code).toBeTruthy()
+      expect(value, code).not.toContain('{{')
       seen.push(code)
     }
     // Guard the guard: an empty catalog map would make the loop vacuously pass.

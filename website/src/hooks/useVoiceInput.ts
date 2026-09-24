@@ -3,6 +3,7 @@ import { api } from '../api/client'
 import { streamingSupported, useStreamingStt } from './useStreamingStt'
 import { acquireMicStream, activeDeviceId, humanizeMicError, createLevelMeter, createAudioSample, getPreferredMicId, setPreferredMicId } from './mic'
 import { beginTranscription, settleTranscription, subscribeTranscripts } from './voiceTranscriptInbox'
+import type { SttModelProgress } from '../lib/sttProviders'
 import { i18nT } from '../i18n/t'
 
 function pickMimeType(): string {
@@ -112,10 +113,11 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
   // Latest partial hypothesis, mirrored so the dictation panel can render it
   // muted. Cleared on final/stop so a stale partial can't linger as grey text.
   const [partial, setPartial] = useState('')
-  // Byte progress of a one-time model download the live session is waiting on.
-  // Surfaced to the recording chrome because otherwise the wait is
-  // indistinguishable from a hung microphone.
-  const [download, setDownload] = useState<{ done: number; total: number } | null>(null)
+  // What the recogniser is doing while the live session waits for it: the
+  // one-time model download, or the load that follows it. Surfaced to the
+  // recording chrome because otherwise the wait is indistinguishable from a hung
+  // microphone.
+  const [download, setDownload] = useState<SttModelProgress | null>(null)
   // Unthrottled per-frame audio features, written in place by the level meter
   // and read by the shader's render loop. A ref (not state) on purpose: this
   // updates ~60x/sec and must never trigger a React render.

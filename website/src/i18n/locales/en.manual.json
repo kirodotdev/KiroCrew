@@ -2916,7 +2916,8 @@
       "restarting": "Restarting..."
     },
     "voiceStatusBar": {
-      "default_microphone": "Default microphone"
+      "default_microphone": "Default microphone",
+      "dictation_kept_for_model": "Your dictation is kept and will be transcribed."
     },
     "webAppArtifactCard": {
       "api_app": "API app",
@@ -3495,6 +3496,7 @@
       "audio_worklet_unavailable": "audio worklet unavailable",
       "stt_connection_error": "stt connection error",
       "stt_connection_lost": "stt connection lost",
+      "stt_model_still_loading": "The speech model is still loading, so your dictation could not be transcribed and was not kept. Dictate it again once the model has finished loading.",
       "stt_error": "stt error"
     },
     "useVoiceInput": {
@@ -7386,6 +7388,7 @@
     "sttProviders": {
       "downloading_decoder": "Downloading the audio decoder: {{pct}} ({{done}} of {{total}})",
       "downloading_speech_model": "Downloading the speech model: {{pct}} ({{done}} of {{total}})",
+      "loading_speech_model": "Loading the speech model…",
       "stream_error_decode_failed": "Speech recognition could not finish this transcript. Dictate it again.",
       "stream_error_max_duration": "Dictation reached its length limit. Start a new recording to continue.",
       "stream_error_model_missing": "The speech model is not ready yet. Download it in the speech-to-text settings, then try again.",

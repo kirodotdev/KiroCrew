@@ -8364,6 +8364,7 @@
     },
     "voiceStatusBar": {
       "default_microphone": "Microfono predefinito",
+      "dictation_kept_for_model": "La tua dettatura è conservata e verrà trascritta.",
       "recording": "Registrazione"
     },
     "webAppArtifactCard": {
@@ -9092,6 +9093,7 @@
       "audio_worklet_unavailable": "audio worklet non disponibile",
       "stt_connection_error": "errore di connessione stt",
       "stt_connection_lost": "connessione stt persa",
+      "stt_model_still_loading": "Il modello vocale è ancora in caricamento, quindi la tua dettatura non è stata trascritta e non è stata conservata. Dettala di nuovo quando il modello ha finito di caricarsi.",
       "stt_error": "errore stt"
     },
     "useVoiceInput": {
@@ -9120,6 +9122,7 @@
     "sttProviders": {
       "downloading_decoder": "Download del decodificatore audio: {{pct}} ({{done}} di {{total}})",
       "downloading_speech_model": "Download del modello vocale: {{pct}} ({{done}} di {{total}})",
+      "loading_speech_model": "Caricamento del modello vocale…",
       "stream_error_decode_failed": "Il riconoscimento vocale non è riuscito a completare questa trascrizione. Dettala di nuovo.",
       "stream_error_max_duration": "La dettatura ha raggiunto il limite di durata. Avvia una nuova registrazione per continuare.",
       "stream_error_model_missing": "Il modello vocale non è ancora pronto. Scaricalo nelle impostazioni di riconoscimento vocale, poi riprova.",

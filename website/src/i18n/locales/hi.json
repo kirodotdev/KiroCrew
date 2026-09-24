@@ -8249,6 +8249,7 @@
     },
     "voiceStatusBar": {
       "default_microphone": "डिफ़ॉल्ट माइक्रोफ़ोन",
+      "dictation_kept_for_model": "तुम्हारा डिक्टेशन सुरक्षित है और बाद में ट्रांसक्राइब किया जाएगा।",
       "recording": "रिकॉर्डिंग"
     },
     "webAppArtifactCard": {
@@ -8972,6 +8973,7 @@
       "audio_worklet_unavailable": "ऑडियो वर्कलेट अनुपलब्ध",
       "stt_connection_error": "stt कनेक्शन त्रुटि",
       "stt_connection_lost": "stt कनेक्शन टूट गया",
+      "stt_model_still_loading": "वाक् मॉडल अभी भी लोड हो रहा है, इसलिए तुम्हारा डिक्टेशन ट्रांसक्राइब नहीं हो सका और सुरक्षित भी नहीं रहा। मॉडल लोड हो जाने पर फिर से बोलो।",
       "stt_error": "stt त्रुटि"
     },
     "useVoiceInput": {
@@ -9000,6 +9002,7 @@
     "sttProviders": {
       "downloading_decoder": "ऑडियो डिकोडर डाउनलोड हो रहा है: {{pct}} ({{total}} में से {{done}})",
       "downloading_speech_model": "वाक् मॉडल डाउनलोड हो रहा है: {{pct}} ({{total}} में से {{done}})",
+      "loading_speech_model": "वाक् मॉडल लोड हो रहा है…",
       "stream_error_decode_failed": "वाक् पहचान यह प्रतिलेख पूरा नहीं कर सकी। इसे दोबारा बोलकर लिखवाओ।",
       "stream_error_max_duration": "डिक्टेशन अपनी अवधि सीमा पर पहुँच गया। जारी रखने के लिए नई रिकॉर्डिंग शुरू करो।",
       "stream_error_model_missing": "वाक् मॉडल अभी तैयार नहीं है। इसे वाक्-से-पाठ सेटिंग में डाउनलोड करो, फिर दोबारा कोशिश करो।",
