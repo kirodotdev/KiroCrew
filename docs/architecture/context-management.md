@@ -232,7 +232,13 @@ re-adds, once:
 3. `[REINJECTED AFTER COMPACTION — response preferences]`, re-read from current
    config so a level changed mid-session lands;
 4. the member section, re-read from disk — so the member gets its *current*
-   briefing and permanent rules back, not the pre-compaction copy.
+   briefing and permanent rules back, not the pre-compaction copy;
+5. `[AGENT SYSTEM PROMPT]` — the managed spec prompt is a stub pointing at this
+   block, so a compaction that drops it leaves the session with no contract.
+   This one is the *session-start* copy: `{{MAX_SUBAGENTS}}` carries the reading
+   `_session_cap_figure` took when the session started, because the cap in force
+   is derived from live host conditions and a second reading would hand the
+   session a contract it never agreed to, differing in a number it never chose.
 
 If that turn does not land (cancelled, refused, errored), `rearm_reinjection` puts
 the flag back, so the context is never lost to a failed turn.

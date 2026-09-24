@@ -290,11 +290,12 @@ descriptions (`mcp_tools/spawn.py::schemas`, "You can run up to N sub-agents
 concurrently") and the `{{MAX_SUBAGENTS}}` prompt token
 (`context.py::_resolve_prompt_templates`) -- read the in-process registry only,
 through `resource_status.adaptive_exec_cap()`, and never the loopback API: the
-token is resolved on every session assembly, and `schemas()` runs on the
-gateway's own discovery cycle as well as in a tool server. In the gateway that
-read is the live cap (a disabled controller reports the user's max, which is
-then the cap in force; a paused dispatch reads as unknown). Where it is empty
-the configured ceiling is printed and labelled as one -- "N (configured
+prompt token is resolved once per session -- a session start takes the reading
+and the restore of the contract after compaction reuses it -- and `schemas()`
+runs on the gateway's own discovery cycle as well as in a tool server. In the
+gateway that read is the live cap (a disabled controller reports the user's max,
+which is then the cap in force; a paused dispatch reads as unknown). Where it is
+empty the configured ceiling is printed and labelled as one -- "N (configured
 ceiling)" in the prompt, "Your configured sub-agent ceiling is N; the cap
 actually in force may be lower" in the tool description.
 

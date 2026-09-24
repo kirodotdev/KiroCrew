@@ -510,6 +510,78 @@ class TestContextBuilder:
         assert _NATIVE_PROMPT_STUB not in reinjected
         assert reinjected == contract(fresh)
 
+    @staticmethod
+    def _contract(m: str) -> str:
+        """The text inside the ``[AGENT SYSTEM PROMPT]`` block."""
+        start = m.index("[AGENT SYSTEM PROMPT]\n") + len("[AGENT SYSTEM PROMPT]\n")
+        return m[start : m.index("\n[END AGENT SYSTEM PROMPT]", start)]
+
+    def test_the_restored_contract_carries_the_session_start_cap(self, tmp_path):
+        """The delegation cap in the contract is a live host reading, so a
+        reading that moves between two assemblies would make the restored
+        contract differ from the one the session was given. The figure is a
+        per-session snapshot, and re-injection reuses it."""
+        builder = self._reinject_builder(tmp_path)
+        with patch(
+            "kiro_crew.resource_status.adaptive_exec_cap",
+            side_effect=[4242, 4343, 4444],
+        ):
+            fresh, _ = builder.build_message(
+                "first turn", is_new_session=True, session_key="dashboard:chat-cap-a"
+            )
+            msg, _ = builder.build_message(
+                "carry on",
+                is_new_session=False,
+                needs_reinjection=True,
+                session_key="dashboard:chat-cap-a",
+            )
+        # Equality alone is also satisfied by a rendering that dropped the
+        # token, so the substitution is asserted on its own.
+        assert "{{MAX_SUBAGENTS}}" not in self._contract(fresh)
+        assert "4242" in self._contract(fresh)
+        assert self._contract(msg) == self._contract(fresh)
+
+    def test_each_session_start_takes_its_own_cap_reading(self, tmp_path):
+        """The snapshot is per session, not per process: a session starting
+        reads the cap in force for it, so the figure still tracks the host."""
+        builder = self._reinject_builder(tmp_path)
+        with patch(
+            "kiro_crew.resource_status.adaptive_exec_cap",
+            side_effect=[4242, 4343, 4444],
+        ):
+            first, _ = builder.build_message(
+                "first turn", is_new_session=True, session_key="dashboard:chat-cap-a"
+            )
+            second, _ = builder.build_message(
+                "first turn", is_new_session=True, session_key="dashboard:chat-cap-a"
+            )
+        assert "4242" in self._contract(first)
+        assert "4343" in self._contract(second)
+
+    def test_another_session_start_leaves_this_contract_alone(self, tmp_path):
+        """One builder assembles every session in the gateway, so a sibling
+        session starting between the two assemblies must not change what
+        compaction restores here."""
+        builder = self._reinject_builder(tmp_path)
+        with patch(
+            "kiro_crew.resource_status.adaptive_exec_cap",
+            side_effect=[4242, 4343, 4444],
+        ):
+            fresh, _ = builder.build_message(
+                "first turn", is_new_session=True, session_key="dashboard:chat-cap-a"
+            )
+            builder.build_message(
+                "first turn", is_new_session=True, session_key="dashboard:chat-cap-b"
+            )
+            msg, _ = builder.build_message(
+                "carry on",
+                is_new_session=False,
+                needs_reinjection=True,
+                session_key="dashboard:chat-cap-a",
+            )
+        assert "4242" in self._contract(fresh)
+        assert self._contract(msg) == self._contract(fresh)
+
     def test_no_reinjection_when_the_flag_is_absent(self, tmp_path):
         """The default path is unchanged — no marker, no index re-injection."""
         builder = self._reinject_builder(tmp_path)

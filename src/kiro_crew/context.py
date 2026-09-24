@@ -3066,6 +3066,11 @@ class ContextBuilder:
     of a session (or after a context reset).
     """
 
+    # The delegation-capacity token a prompt carries, and how many sessions'
+    # readings of it are held at once.
+    _MAX_SUBAGENTS_TOKEN = "{{MAX_SUBAGENTS}}"
+    _CAP_FIGURE_SESSIONS = 512
+
     @staticmethod
     def get_memory_for(
         workspace: str | None = None, memory_store: str | None = None
@@ -3208,6 +3213,9 @@ class ContextBuilder:
         self.lessons = lessons or LessonStore()
         self.conversation_log = conversation_log
         self.channel_history = channel_history
+        # One reading of the delegation cap per session key; see
+        # `_session_cap_figure`.
+        self._cap_figures: dict[str, str] = {}
         # Captured for the Jev decision point at `skills.select`. Production
         # reaches `build_message` only through `run_in_embed_pool`, a thread
         # executor with no running loop, so the point cannot obtain one where it
@@ -3254,37 +3262,67 @@ class ContextBuilder:
         return prompt.replace("{bot_name}", live_name or self._bot_name)
 
     @staticmethod
-    def _resolve_prompt_templates(prompt: str, session_key: str) -> str:
+    def _live_cap_figure() -> str:
+        """The concurrent sub-agent cap in force, as a prompt spells it.
+
+        ``agent.max_subagents`` is a ceiling the adaptive controller may be
+        dispatching 1 at a time under, so the figure is the cap IN FORCE -- a
+        registry read (``resource_status.adaptive_exec_cap``) this
+        gateway-process path can afford. When no controller runs here (the CLI,
+        tests) the configured ceiling is used and labelled as one. Both readings
+        are derived from live host conditions, which is why a session holds one
+        of them: see :meth:`_session_cap_figure`.
+        """
+        cap = resource_status.adaptive_exec_cap()
+        if cap > 0:
+            return str(cap)
+        # Lazy import: kiro_crew.subagent imports this module, so a
+        # top-level import would cycle.
+        try:
+            from kiro_crew.subagent import (  # circular import: subagent -> context
+                resolve_max_subagents,
+            )
+
+            ceiling = resolve_max_subagents(KiroCrewConfig.load())
+        except Exception:
+            ceiling = 0
+        return f"{ceiling} (configured ceiling)" if ceiling > 0 else "several"
+
+    def _session_cap_figure(self, session_key: str, *, refresh: bool) -> str:
+        """One session's reading of the delegation cap, taken once.
+
+        The contract block is rendered twice for a session -- at session start,
+        and again when compaction restores it -- while the reading underneath
+        the figure moves with host load. Reading it per assembly therefore hands
+        a compacted session a contract that differs from the one it was given,
+        in a number it never chose. A session start takes the reading and every
+        later rendering for that session reuses it, so the figure still tracks
+        the host from session to session while one session's contract holds
+        still. A session whose start this process did not serve has no reading
+        and takes a live one.
+        """
+        memo = self._cap_figures
+        if refresh or session_key not in memo:
+            if session_key not in memo and len(memo) >= self._CAP_FIGURE_SESSIONS:
+                memo.pop(next(iter(memo)), None)
+            memo[session_key] = self._live_cap_figure()
+        return memo[session_key]
+
+    @staticmethod
+    def _resolve_prompt_templates(prompt: str, session_key: str, cap_figure: str = "") -> str:
         """Resolve conditional template blocks in prompt text.
 
         Dashboard sessions get a short widget pointer; Slack/CLI get it stripped.
-        The ``{{MAX_SUBAGENTS}}`` token is replaced with the concurrent
-        sub-agent cap IN FORCE, so the delegation guidance carries the number
-        the model can actually fan out to. ``agent.max_subagents`` is a ceiling
-        the adaptive controller may be dispatching 1 at a time under; the live
-        cap is a registry read (``resource_status.adaptive_exec_cap``), which
-        this gateway-process path can afford on every assembly. When no
-        controller runs here (the CLI, tests) the configured ceiling is used and
-        labelled as one. Resolved for every transport (not just dashboard),
-        before the widget-block branch.
+        The ``{{MAX_SUBAGENTS}}`` token is replaced with the delegation capacity
+        the model can actually fan out to: ``cap_figure`` when the caller holds
+        that session's reading, otherwise a live one. Resolved for every
+        transport (not just dashboard), before the widget-block branch.
         """
-        if "{{MAX_SUBAGENTS}}" in prompt:
-            cap = resource_status.adaptive_exec_cap()
-            if cap > 0:
-                figure = str(cap)
-            else:
-                # Lazy import: kiro_crew.subagent imports this module, so a
-                # top-level import would cycle.
-                try:
-                    from kiro_crew.subagent import (  # circular import: subagent -> context
-                        resolve_max_subagents,
-                    )
-
-                    ceiling = resolve_max_subagents(KiroCrewConfig.load())
-                except Exception:
-                    ceiling = 0
-                figure = f"{ceiling} (configured ceiling)" if ceiling > 0 else "several"
-            prompt = prompt.replace("{{MAX_SUBAGENTS}}", figure)
+        if ContextBuilder._MAX_SUBAGENTS_TOKEN in prompt:
+            prompt = prompt.replace(
+                ContextBuilder._MAX_SUBAGENTS_TOKEN,
+                cap_figure or ContextBuilder._live_cap_figure(),
+            )
 
         cfg = KiroCrewConfig.load()
 
@@ -4538,11 +4576,14 @@ class ContextBuilder:
         session_key: str | None,
         is_cc: bool,
         private_owner: bool,
+        session_start: bool,
     ) -> str:
         """Return the agent contract for the ``[AGENT SYSTEM PROMPT]`` block, or "".
 
         Session start and post-compaction reinjection both call this, so the
-        contract a compacted session gets back is the one it started with.
+        contract a compacted session gets back is the one it started with. Only
+        a session start takes a fresh reading of the delegation cap; the call
+        that restores the block reuses the session's own.
         """
         is_custom = bool(agent) and agent != "kirocrew"
         agent_prompt: str
@@ -4573,7 +4614,12 @@ class ContextBuilder:
                 agent_prompt = ""
         if not agent_prompt:
             return ""
-        agent_prompt = self._resolve_prompt_templates(agent_prompt, session_key or "")
+        cap_figure = (
+            self._session_cap_figure(session_key or "", refresh=session_start)
+            if self._MAX_SUBAGENTS_TOKEN in agent_prompt
+            else ""
+        )
+        agent_prompt = self._resolve_prompt_templates(agent_prompt, session_key or "", cap_figure)
         return self._substitute_bot_name(agent_prompt)
 
     def build_message(
@@ -4798,6 +4844,7 @@ class ContextBuilder:
                     session_key=session_key,
                     is_cc=is_cc,
                     private_owner=bool(_private_owner),
+                    session_start=True,
                 )
             )
             if agent_prompt:
@@ -5001,6 +5048,7 @@ class ContextBuilder:
                 session_key=session_key,
                 is_cc=is_cc,
                 private_owner=bool(_private_owner),
+                session_start=False,
             )
             if _agent_prompt:
                 parts.append(
