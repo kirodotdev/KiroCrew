@@ -110,7 +110,14 @@ from kiro_crew.hooks import (
     safe_read_file_bytes_nolink,
     unc_probe_allowed,
 )
-from kiro_crew.mcp_cleanup import prune_dangling_tool_refs, purge_deleted_proxy_from_config
+from kiro_crew.mcp_cleanup import (
+    invalid_disabled_flag,
+    mcp_entries_muted,
+    mcp_entry_is_muted,
+    prune_dangling_tool_refs,
+    purge_deleted_proxy_from_config,
+    warn_invalid_disabled,
+)
 from kiro_crew.mcp_provenance import (
     DERIVED_KEY,
     command_is_ours,
@@ -6455,13 +6462,27 @@ def rebuild_agent_config(
     # collision sibling remains mounted. Grant revocation is intentionally looser:
     # every disabled source denies auto-approval to its canonical alias family,
     # because ``allowedTools`` bypasses the PreToolUse gate.
+    #
+    # "Disabled" is ``mcp_entry_is_muted``, the launch predicate the gateway
+    # rewriter, the session projections and the dashboard listing share: a
+    # non-boolean ``disabled`` (``"false"``, ``null``) is read FAIL-CLOSED here
+    # too, so a server the listing shows as Disabled is never mounted by this
+    # rebuild -- truthiness would have mounted one muted with ``null`` or ``0``.
     _shared_source_entries = tuple(
         itertools.chain(extra_shared_mcp.items(), shared_mcp.items(), kirocrew_mcp.items())
     )
+    # The rebuild strips a mount on a non-boolean ``disabled`` exactly as the
+    # listing withholds the row, so it reports the value the same way -- through
+    # the shared bounded warn-once ledger -- rather than silently. A headless
+    # install rebuilds without a dashboard read, and would otherwise never say
+    # why a server the operator meant to switch on is not mounted.
+    for _scope_label, _scope_map in _scopes:
+        for _srv, _srv_spec in _scope_map.items():
+            _invalid, _flag = invalid_disabled_flag(_srv_spec)
+            if _invalid:
+                warn_invalid_disabled(_srv, _flag, _scope_label)
     _disabled_source_names = {
-        srv
-        for srv, srv_spec in _shared_source_entries
-        if isinstance(srv_spec, dict) and srv_spec.get("disabled")
+        srv for srv, srv_spec in _shared_source_entries if mcp_entry_is_muted(srv_spec)
     }
     _disabled_mounted_aliases = {
         mounted
@@ -6472,7 +6493,7 @@ def rebuild_agent_config(
     _disabled_grant_families = {
         mcp_server_alias(srv)
         for srv, srv_spec in _shared_source_entries
-        if isinstance(srv_spec, dict) and srv_spec.get("disabled")
+        if mcp_entry_is_muted(srv_spec)
     }
 
     def _grant_ref_is_in_alias_family(ref: object, base: str) -> bool:
@@ -6537,7 +6558,29 @@ def rebuild_agent_config(
             lst[:] = kept
             return True
 
-        if spec.get("disabled") or alias in _disabled_mounted_aliases:
+        # Muted when ANY scope's entry for this alias mutes it -- the shared
+        # multi-scope predicate, so this arm and the dashboard row answer alike.
+        # ``spec`` is the merge's winner; the other sources are read too, because
+        # a higher-priority ``false`` must never argue a lower scope's mute away.
+        muted_here = mcp_entries_muted(
+            itertools.chain(
+                (spec,),
+                (
+                    s
+                    for srv, s in _shared_source_entries
+                    if _mounted_alias_by_source.get(srv) == alias
+                ),
+            )
+        )
+        if muted_here or alias in _disabled_mounted_aliases:
+            # The rendered entry says ``true`` whenever the server is muted --
+            # over a merged ``false`` from a higher-priority scope as much as over
+            # a raw ``null``/``0``/``"false"``. The file kiro-cli parses must
+            # agree with the listing: a selective ``@srv/tool`` ref this arm keeps
+            # would otherwise launch a server every surface calls muted.
+            rendered = valid_servers.get(alias)
+            if isinstance(rendered, dict):
+                rendered["disabled"] = True
             for key in ("tools", "allowedTools"):
                 if (
                     _strip_owned_refs(key, strip_per_tool=key == "allowedTools")

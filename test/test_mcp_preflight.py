@@ -1345,6 +1345,40 @@ class TestOneServerCannotEndThePass:
                 [McpServerInfo(name="s", command="/bin/true")], tmp_path, budget=None
             )
 
+    @pytest.mark.asyncio
+    async def test_a_disabled_row_with_a_malformed_command_does_not_end_the_pass(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A disabled placeholder's config is the one nobody has exercised.
+
+        ``probe_all`` carries a disabled server as an unprobed placeholder, and
+        ``command`` is stored from the config JSON unvalidated, so a disabled row
+        can arrive here with a dict where a string belongs. Its identity hashes
+        that command, and identities were derived for EVERY row before the
+        disabled filter and outside the per-server boundary -- so one such row
+        raised ``AttributeError`` and Measure All measured nothing. The healthy
+        neighbour is measured and stored; the disabled row is neither spawned
+        nor given a verdict."""
+        import kiro_crew.mcp_gateway.evaluate as ev
+
+        spawned: list[str] = []
+
+        async def route(server):
+            spawned.append(server.name)
+            return SimpleNamespace(ran=True, caller_sensitive=False, reasons=())
+
+        monkeypatch.setattr(ev, "preflight", route)
+        servers = [
+            McpServerInfo(name="good-mcp", command="/bin/true"),
+            McpServerInfo(name="off-mcp", command={"not": "a string"}, disabled=True),
+        ]
+        out = await ev.evaluate_new_servers(servers, tmp_path, budget=None)
+        assert spawned == ["good-mcp"]
+        assert set(out) == {"good-mcp"}, out
+        stored = vc.VerdictCache(tmp_path / vc.VERDICT_CACHE_FILENAME)
+        stored.load()
+        assert stored.server_names() == {"good-mcp"}, stored.server_names()
+
 
 class TestSupersededRowIsNotReadable:
     """A row for replaced code must not survive where the dashboard can read it.

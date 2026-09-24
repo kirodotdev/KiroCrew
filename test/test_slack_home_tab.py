@@ -199,7 +199,10 @@ class TestPublishHomeTabCapabilities:
     @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
     @patch(
         "kiro_crew.slack.events.list_servers",
-        return_value=[SimpleNamespace(name="builder-mcp"), SimpleNamespace(name="kirocrew-core")],
+        return_value=[
+            SimpleNamespace(name="builder-mcp", disabled=False),
+            SimpleNamespace(name="kirocrew-core", disabled=False),
+        ],
     )
     @patch(
         "kiro_crew.slack.events._get_skills_loader",
@@ -221,6 +224,37 @@ class TestPublishHomeTabCapabilities:
         assert "MCP Integrations (2)" in text
         assert "Skills (1)" in text
         assert "taskei" in text
+
+    @pytest.mark.asyncio
+    @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
+    @patch(
+        "kiro_crew.slack.events.list_servers",
+        return_value=[
+            SimpleNamespace(name="builder-mcp", disabled=False),
+            SimpleNamespace(name="figma", disabled=True),
+            SimpleNamespace(name="kirocrew-core", disabled=False),
+        ],
+    )
+    @patch("kiro_crew.slack.events._get_skills_loader")
+    @patch(
+        "kiro_crew.sso_status.get_sso_status_line",
+        new_callable=AsyncMock,
+        return_value="*SSO:* ✅ 5.0h remaining",
+    )
+    async def test_disabled_servers_are_not_advertised(self, _mw, mock_loader, _servers, _yolo):
+        """A server switched off in the shared config -- or muted by a
+        non-boolean ``disabled`` -- is not a capability a Slack session has.
+        ``disabled`` is the listing's aggregate over every scope through the
+        launch predicate, so the Home tab reads that flag rather than re-deriving
+        it. Red under the unfiltered list, which counted and named it."""
+        mock_loader.return_value.list_skills.return_value = []
+        orch = _make_orch()
+        await _publish_home_tab(orch, "U123")
+
+        text = str(orch.slack.views_publish.call_args[1]["view"]["blocks"])
+        assert "MCP Integrations (2)" in text
+        assert "builder-mcp" in text
+        assert "figma" not in text
 
     @pytest.mark.asyncio
     @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)

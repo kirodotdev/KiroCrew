@@ -179,6 +179,7 @@
   "pages.membersPage.activity_routed_count",
   "pages.membersPage.member_count",
   "pages.overview.mcpTab.applied_change",
+  "pages.overview.mcpTab.disabled_count",
   "pages.overview.mcpTab.pending_change",
   "pages.overview.memoryTab.session",
   "pages.overview.skillsTab.agent",

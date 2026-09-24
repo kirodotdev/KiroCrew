@@ -858,6 +858,22 @@ export interface McpServer {
   /** True when the entry lives in KiroCrew's own mcp.json — the scope the
    *  Edit JSON action reads and writes (consent-disabled rows included). */
   kirocrewManaged?: boolean
+  /** Which config switched the row off, from the backend — never inferred from
+   *  `enabled` + `kirocrewManaged`. `kirocrew`: a disable in Kiro Crew's own
+   *  store, which the Kiro Crew scope badge + Apply lifts (the consent step).
+   *  `shared`: a disable in a config this panel does not write for enable (the
+   *  shared Kiro MCP config the IDE edits, or a provider global), so the row is
+   *  inert here; a row disabled in both reads `shared`. `null` when enabled. */
+  disabledIn?: 'shared' | 'kirocrew' | null
+  /** The file to edit to re-enable a `shared` row, home collapsed to `~`, when
+   *  the backend can name it; `null` when it cannot. */
+  disabledInFile?: string | null
+  /** WHY the row is off, when the switch is not the honest story: `invalid`
+   *  means the config's `disabled` is not a boolean (`"false"`, `1`, `null`) and
+   *  the backend read it fail-closed -- an invalid value never launches a
+   *  server -- so the fix is to repair the value where it sits, not to flip a
+   *  switch. `null` when enabled or when some config really says `true`. */
+  disabledReason?: 'invalid' | null
   /** Consecutive failed probes on record. Absent means none — a healthy server
    *  carries neither this nor `quarantined`. */
   probeFailures?: number

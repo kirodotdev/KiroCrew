@@ -150,6 +150,101 @@ class TestDisabledServerDoesNotDefeatProbeCache:
         assert "turned-off" in names, "a disabled server must still render a row"
         assert "enabled-one" in names
 
+    @pytest.mark.asyncio
+    async def test_the_listing_reads_the_store_off_the_event_loop_thread(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """``GET /api/mcp`` runs on every page load; the store read it needs
+        (``read_text`` + ``json.loads``) is blocking file I/O and goes through a
+        worker thread, as at the probe and probe-cache sites. The sync-io gate
+        skips local ``read_text()`` by design, so this is the pin: the helper
+        must observe a thread other than the loop's. Red on the bare call, which
+        ran it on the loop -- a slow data-home mount stalled the gateway."""
+        import threading
+
+        servers = [McpServerInfo(name="enabled-one", command="/bin/true", status="ok")]
+        cache = [{"name": "enabled-one", "status": "ok", "tools": [], "error": ""}]
+        _arrange(monkeypatch, tmp_path, servers, cache)
+        seen: list[int] = []
+
+        def store_read() -> dict:
+            seen.append(threading.get_ident())
+            return {}
+
+        monkeypatch.setattr(mcp_mod, "_kirocrew_mcp_servers", store_read)
+        loop_thread = threading.get_ident()
+
+        resp = await mcp_mod.api_mcp_servers(_request(_State()))
+
+        assert resp.status == 200
+        assert seen, "the listing did not read the store at all"
+        assert all(ident != loop_thread for ident in seen), "store read ran on the event loop"
+
+    @pytest.mark.asyncio
+    async def test_reenabled_server_behind_a_disabled_placeholder_reprobes(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """A cached ``disabled`` placeholder is not a probe.
+
+        The probe cache carries every configured row, and a row withheld from
+        the spawn set sits there as ``status: "disabled"``. When the operator
+        re-enables that server inside the cache TTL, the name IS in the cache
+        but nothing has ever probed it: the row must re-arm the fan-out like an
+        absent one, and the placeholder must not overlay ``disabled`` onto a row
+        whose config now says enabled.
+        """
+        servers = [
+            McpServerInfo(name="enabled-one", command="/bin/true", status="ok"),
+            # Re-enabled: ``disabled`` is False and no probe has run yet.
+            McpServerInfo(name="back-on", command="/bin/true", status="unknown"),
+        ]
+        cache = [
+            {"name": "enabled-one", "status": "ok", "tools": [], "error": ""},
+            {"name": "back-on", "status": "disabled", "tools": [], "error": "", "disabled": True},
+        ]
+        _arrange(monkeypatch, tmp_path, servers, cache)
+
+        state = _State()
+        resp = await mcp_mod.api_mcp_servers(_request(state))
+
+        rows = {r["name"]: r for r in json.loads(resp.text or "[]")}
+        assert rows["back-on"]["enabled"] is True
+        assert rows["back-on"]["status"] == "unknown", "the placeholder overlaid a live row"
+        assert state._background_tasks, "an unprobed enabled row must re-arm the probe"
+        assert mcp_mod._mcp_probe_in_progress is True
+        for task in list(state._background_tasks):
+            await task
+
+    @pytest.mark.asyncio
+    async def test_still_disabled_row_behind_a_placeholder_does_not_reprobe(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """The placeholder for a row that is STILL disabled is the steady state:
+        no spawn is owed, so a warm cache stays warm."""
+        servers = [
+            McpServerInfo(name="enabled-one", command="/bin/true", status="ok"),
+            McpServerInfo(name="turned-off", command="/bin/true", disabled=True),
+        ]
+        cache = [
+            {"name": "enabled-one", "status": "ok", "tools": [], "error": ""},
+            {"name": "turned-off", "status": "disabled", "tools": [], "error": "", "disabled": True},
+        ]
+        probe = _arrange(monkeypatch, tmp_path, servers, cache)
+
+        state = _State()
+        resp = await mcp_mod.api_mcp_servers(_request(state))
+
+        rows = {r["name"]: r for r in json.loads(resp.text or "[]")}
+        assert rows["turned-off"]["status"] == "disabled"
+        assert rows["turned-off"]["enabled"] is False
+        # GET stamps the same provenance the probe paths do: a disable neither
+        # config map above holds is inert here, with no file to name.
+        assert rows["turned-off"]["disabledIn"] == "shared"
+        assert rows["turned-off"]["disabledInFile"] is None
+        assert rows["enabled-one"]["disabledIn"] is None
+        probe.assert_not_awaited()
+        assert not state._background_tasks
+
 
 class TestMcpHeaderRedaction:
     @pytest.mark.asyncio

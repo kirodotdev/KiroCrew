@@ -14,6 +14,10 @@ const mockApi = vi.hoisted(() => ({
   kirocrewConfig: vi.fn(),
 }))
 vi.mock('../api/client', () => ({ api: mockApi }))
+// The path chip copies through the shared util; `true` = the text reached the
+// clipboard, which is what flips the chip to its "Copied" state.
+const mockCopy = vi.hoisted(() => vi.fn().mockResolvedValue({ ok: true, hadAsyncApi: true }))
+vi.mock('../utils/clipboard', () => ({ copyWithOutcome: mockCopy }))
 
 vi.mock('../providers', () => ({
   useProvider: () => ({ displayName: 'kiro', labels: { pluginRegistryName: 'Packages' } }),
@@ -549,5 +553,315 @@ describe('probe-failure count', () => {
     await waitFor(() => expect(mockApi.mcpResetProbeFailures).toHaveBeenCalled())
     // Still there: the row reflects the server, not the click.
     expect(screen.getByText('Failing')).toBeInTheDocument()
+  })
+})
+
+/**
+ * A server marked disabled in the shared Kiro MCP config stays in this table
+ * through a sync or probe, as the Kiro IDE keeps it: a greyed "Disabled" row.
+ * This suite pins how the table shows it — present, greyed, badged, its scope
+ * toggles inert, one line saying which file to edit, Uninstall still live and
+ * honest about what it does — and that nothing changes for enabled rows or for
+ * Kiro Crew's own consent-disabled rows (#13075). Which of the two disabled
+ * states a row is in comes from the backend's `disabledIn`, never from
+ * `enabled` + `kirocrewManaged`.
+ */
+describe('McpTab disabled-in-config rows', () => {
+  const SHARED_FILE = '~/.kiro/settings/mcp.json'
+  const disabledInConfig = (over: Partial<McpServer> = {}): McpServer => ({
+    ...server('figma'),
+    status: 'disabled',
+    enabled: false,
+    kirocrewManaged: false,
+    disabledIn: 'shared',
+    disabledInFile: SHARED_FILE,
+    tools: [],
+    ...over,
+  })
+  const consentDisabled = (): McpServer => ({
+    ...server('weather'),
+    status: 'disabled',
+    enabled: false,
+    kirocrewManaged: true,
+    disabledIn: 'kirocrew',
+    disabledInFile: null,
+    tools: [],
+  })
+  const row = (name: string): HTMLElement => {
+    const tr = screen.getByText(name, { selector: 'code' }).closest('tr')
+    if (!tr) throw new Error(`no row for ${name}`)
+    return tr
+  }
+
+  it('keeps the disabled server in the list, greyed and badged, with the header count', async () => {
+    mockApi.mcpServers.mockResolvedValue([server('alpha'), disabledInConfig()])
+    renderTab()
+    await waitFor(() => expect(screen.getByText('figma', { selector: 'code' })).toBeInTheDocument())
+    // Same list as the enabled rows, not a separate section.
+    expect(screen.getByText('MCP Servers (2)')).toBeInTheDocument()
+    expect(screen.getByTestId('mcp-disabled-count')).toHaveTextContent('1 disabled')
+    const tr = row('figma')
+    expect(tr).toHaveAttribute('data-disabled-in-config', 'true')
+    // Greyed per CELL, not per row: Uninstall stays live on this row, and a
+    // dimmed live button reads as disabled. The five non-actionable cells dim;
+    // the <tr> and the sticky actions cell keep full opacity.
+    expect(tr).toHaveStyle({ opacity: '1' })
+    const cells = Array.from(tr.querySelectorAll('td'))
+    expect(cells).toHaveLength(6)
+    for (const cell of cells.slice(0, 5)) expect(cell.style.opacity).toBe('0.6')
+    expect(cells[5].style.opacity).toBe('')
+    expect(within(cells[5]).getByRole('button', { name: 'Uninstall' })).toBeEnabled()
+    const badge = within(tr).getByText('Disabled in config')
+    // A deliberate disable is an off switch: the muted tone, never the error
+    // tone the invalid-value row wears; and no "Config error" chip.
+    expect(badge.className).toContain('var(--muted)')
+    expect(badge.className).not.toContain('text-danger')
+    expect(within(tr).queryByTestId('mcp-config-error-chip')).not.toBeInTheDocument()
+    // Inside a dimmed cell the muted token fell under contrast in the light
+    // themes; the chip's text sits one token step up.
+    expect(badge.getAttribute('style')).toContain('var(--text)')
+    // The badge carries the explanation the two words cannot: which file, and
+    // that nothing here can change it.
+    expect(badge.closest('[title]')?.getAttribute('title')).toMatch(/shared Kiro MCP config/)
+    const status = within(tr).getByText('Disabled')
+    expect(status).toBeInTheDocument()
+    expect(status.className).toContain('var(--muted)')
+  })
+
+  it('says on the row which file disabled it and where to turn it back on', async () => {
+    // In words on the row, not only in hover text: a keyboard or touch user
+    // never sees a `title`, and this row's whole point is to say why it is grey.
+    mockApi.mcpServers.mockResolvedValue([disabledInConfig()])
+    renderTab()
+    await waitFor(() => expect(screen.getByText('figma', { selector: 'code' })).toBeInTheDocument())
+    const where = within(row('figma')).getByTestId('mcp-disabled-in-config-where')
+    // Honest about the missing affordance: this table has no re-enable switch
+    // (a separate decision), so the line says editing the file is the way and
+    // that a switch is planned -- and hands over the one thing it can, the path,
+    // as a chip that copies it.
+    expect(where).toHaveTextContent(`Disabled in ${SHARED_FILE}. Editing this file lifts its disable; another config may still keep the server off. A switch is planned.`)
+    expect(where).not.toHaveTextContent('To turn it back on')
+    const chip = within(where).getByTestId('mcp-disabled-in-config-path')
+    expect(chip).toHaveTextContent(SHARED_FILE)
+    expect(chip).toHaveAttribute('aria-label', `Copy the path ${SHARED_FILE}`)
+    expect(chip.getAttribute('title')).toBe('Copy path')
+    fireEvent.click(chip)
+    expect(mockCopy).toHaveBeenCalledWith(SHARED_FILE)
+    await waitFor(() => expect(chip).toHaveAttribute('data-copied', 'true'))
+    expect(chip.getAttribute('title')).toBe('Copied')
+  })
+
+  it('names the shared MCP config when the backend cannot name the file', async () => {
+    mockApi.mcpServers.mockResolvedValue([disabledInConfig({ disabledInFile: null })])
+    renderTab()
+    await waitFor(() => expect(screen.getByText('figma', { selector: 'code' })).toBeInTheDocument())
+    const where = within(row('figma')).getByTestId('mcp-disabled-in-config-where')
+    expect(where).toHaveTextContent('Disabled in the shared MCP config. Editing that config lifts its disable; another config may still keep the server off. A switch is planned.')
+    expect(where).not.toHaveTextContent('~/')
+    // No path to copy, so no chip.
+    expect(within(where).queryByTestId('mcp-disabled-in-config-path')).not.toBeInTheDocument()
+  })
+
+  it('reports a refused copy in place through ErrorNotice with the hand-off, never as Copied', async () => {
+    // `copyWithOutcome` reports the clipboard refusing: no async API (a plain-HTTP
+    // gateway) or a denied permission. That outcome is an error the user must
+    // see and the agent can act on: it renders through `ErrorNotice` (the repo's
+    // one error surface) WITH the standard hand-off, backed by a journaled report
+    // whose code names the failure and whose detail is the raw reason. The chip
+    // stays out of its "Copied" state. Red under the silent `if (!ok) return`,
+    // and red again under a notice without `askAgent`.
+    mockCopy.mockResolvedValueOnce({ ok: false, hadAsyncApi: false })
+    mockApi.mcpServers.mockResolvedValue([disabledInConfig()])
+    renderTab()
+    await waitFor(() => expect(screen.getByText('figma', { selector: 'code' })).toBeInTheDocument())
+    const where = within(row('figma')).getByTestId('mcp-disabled-in-config-where')
+    const chip = within(where).getByTestId('mcp-disabled-in-config-path')
+    fireEvent.click(chip)
+    const notice = await within(where).findByTestId('mcp-disabled-in-config-path-copy-failed')
+    expect(notice).toHaveTextContent('Copy failed')
+    expect(notice).toHaveAttribute('role', 'alert')
+    expect(within(notice).getByText('Ask the agent')).toBeInTheDocument()
+    // Stacked on its own line (the notice's block shape), never inline beside the
+    // chip: the sentence's row holds the chip, the notice holds Ask the agent +
+    // Dismiss -- no row carries more than two actions.
+    expect(notice.tagName).toBe('DIV')
+    expect(within(notice).getAllByRole('button').length).toBeLessThanOrEqual(2)
+    expect(notice.previousElementSibling === chip || notice.compareDocumentPosition(chip) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy()
+    expect(chip).not.toHaveAttribute('data-copied')
+    expect(chip.getAttribute('title')).toBe('Copy path')
+    // The journal holds the structured report the hand-off carries.
+    const { recentErrors } = await import('../utils/errorReport')
+    const report = recentErrors().find(r => r.message === 'Copy failed')
+    expect(report?.code).toBe('clipboard_unavailable')
+    expect(report?.source).toBe('system')
+    expect(report?.detail).toBeUndefined()
+    // A denied permission is told apart from an absent API.
+    mockCopy.mockResolvedValueOnce({ ok: false, hadAsyncApi: true, asyncError: Object.assign(new Error('denied'), { name: 'NotAllowedError' }) })
+    fireEvent.click(chip)
+    await waitFor(() => expect(recentErrors().some(r => r.code === 'clipboard_denied' && r.detail?.includes('denied'))).toBe(true))
+    // Dismissable.
+    fireEvent.click(within(within(where).getByTestId('mcp-disabled-in-config-path-copy-failed')).getByRole('button', { name: /dismiss|close/i }))
+    expect(within(where).queryByTestId('mcp-disabled-in-config-path-copy-failed')).not.toBeInTheDocument()
+  })
+
+  it('names the invalid value, not a switch, when the backend read "disabled" fail-closed', async () => {
+    // `"disabled": "false"` (a string) is read fail-closed by the backend -- an
+    // invalid value never launches a server -- and "set it to false" would be
+    // the wrong instruction for a value that already reads "false". The row
+    // says what is wrong and where, and it reads as an ERROR to repair, not as
+    // an off switch: a "Config error" chip and the status badge in the error
+    // tone, and no greying. The controls stay inert as for any shared-config
+    // disable -- the fix lives in the shared file.
+    mockApi.mcpServers.mockResolvedValue([disabledInConfig({ disabledReason: 'invalid' })])
+    renderTab()
+    await waitFor(() => expect(screen.getByText('figma', { selector: 'code' })).toBeInTheDocument())
+    const tr = row('figma')
+    const where = within(tr).getByTestId('mcp-disabled-in-config-where')
+    expect(where).toHaveTextContent(`Disabled: invalid "disabled" value in ${SHARED_FILE}. Set it to true or false there.`)
+    expect(where).not.toHaveTextContent('To turn it back on')
+    expect(where).toHaveAttribute('data-disabled-reason', 'invalid')
+    expect(tr).toHaveAttribute('data-disabled-in-config', 'true')
+    // The chip: "Config error" in the error tone, never the muted "Disabled in
+    // config" of a deliberate disable; its help is the repair line itself.
+    expect(within(tr).queryByText('Disabled in config')).not.toBeInTheDocument()
+    const chip = within(tr).getByTestId('mcp-config-error-chip')
+    expect(chip).toHaveTextContent('Config error')
+    expect(chip.className).toContain('text-danger')
+    expect(chip.className).not.toContain('var(--muted)')
+    expect(chip.getAttribute('title')).toBe(`Disabled: invalid "disabled" value in ${SHARED_FILE}. Set it to true or false there.`)
+    // The repair line names the file as the same copyable chip.
+    expect(within(where).getByTestId('mcp-disabled-in-config-path')).toHaveTextContent(SHARED_FILE)
+    // The status badge says "Invalid value" in the error tone -- words, not only
+    // colour and the chip, tell it apart from a deliberate "Disabled".
+    expect(within(tr).queryByText('Disabled')).not.toBeInTheDocument()
+    const status = within(tr).getByText('Invalid value')
+    expect(status.className).toContain('text-danger')
+    expect(status.className).not.toContain('var(--muted)')
+    // Not greyed: every cell keeps full opacity, so the row does not read as off.
+    for (const cell of Array.from(tr.querySelectorAll('td'))) expect(cell.style.opacity).toBe('')
+    // Still inert -- the panel cannot repair the value.
+    for (const scope of ['kirocrew', 'kiroGlobal']) expect(tr.querySelector(`button[data-scope="${scope}"]`)).toBeDisabled()
+  })
+
+  it('names the shared MCP config for an invalid value when the backend cannot name the file', async () => {
+    mockApi.mcpServers.mockResolvedValue([disabledInConfig({ disabledReason: 'invalid', disabledInFile: null })])
+    renderTab()
+    await waitFor(() => expect(screen.getByText('figma', { selector: 'code' })).toBeInTheDocument())
+    const where = within(row('figma')).getByTestId('mcp-disabled-in-config-where')
+    expect(where).toHaveTextContent('Disabled: invalid "disabled" value in the shared MCP config. Set it to true or false there.')
+    expect(where).not.toHaveTextContent('~/')
+  })
+
+  it('keeps the switch wording for a real disable, whatever else the row carries', async () => {
+    // `disabledReason: null` is the backend's "a real true is the story".
+    mockApi.mcpServers.mockResolvedValue([disabledInConfig({ disabledReason: null })])
+    renderTab()
+    await waitFor(() => expect(screen.getByText('figma', { selector: 'code' })).toBeInTheDocument())
+    const where = within(row('figma')).getByTestId('mcp-disabled-in-config-where')
+    expect(where).toHaveTextContent(`Disabled in ${SHARED_FILE}. Editing this file lifts its disable; another config may still keep the server off. A switch is planned.`)
+    expect(where).not.toHaveTextContent('invalid')
+    expect(where).not.toHaveAttribute('data-disabled-reason')
+    expect(within(row('figma')).getByText('Disabled')).toBeInTheDocument()
+    expect(within(row('figma')).queryByText('Invalid value')).not.toBeInTheDocument()
+  })
+
+  it('renders the scope toggles inert and Uninstall live and honest', async () => {
+    mockApi.mcpServers.mockResolvedValue([disabledInConfig()])
+    renderTab()
+    await waitFor(() => expect(screen.getByText('figma', { selector: 'code' })).toBeInTheDocument())
+    const tr = row('figma')
+    // Uninstall still purges the name from every config, the shared file
+    // included, so the button stays live and its hover text says exactly that
+    // rather than a greyed button implying it would do nothing.
+    const uninstall = within(tr).getByRole('button', { name: 'Uninstall' })
+    expect(uninstall).toBeEnabled()
+    expect(uninstall.getAttribute('title')).toBe('Removes this server from every MCP config, including the shared one it is disabled in.')
+    // Both scope badges are inert and say why -- and each keeps its OWN scope
+    // name in its title/aria-label. Under the label-free help sentence both
+    // badges read identically to a screen reader: two unnamed inert buttons.
+    // Not the pending-uninstall wording the same styling means on a staged row.
+    const names: string[] = []
+    for (const [scope, label] of [['kirocrew', 'Kiro Crew'], ['kiroGlobal', 'Kiro']] as const) {
+      const badge = tr.querySelector<HTMLButtonElement>(`button[data-scope="${scope}"]`)
+      expect(badge, scope).not.toBeNull()
+      expect(badge).toBeDisabled()
+      const title = badge?.getAttribute('title') ?? ''
+      expect(title).toBe(`${label}: off (disabled in the shared MCP config; change it there)`)
+      expect(badge?.getAttribute('aria-label')).toBe(title)
+      expect(title).not.toMatch(/pending uninstall/)
+      names.push(title)
+    }
+    expect(new Set(names).size).toBe(names.length)
+    // No re-enable control exists in this table for it (a separate decision).
+    expect(within(tr).queryByRole('button', { name: /Enable/ })).not.toBeInTheDocument()
+    // And the live Uninstall does what it says: it stages the removal.
+    fireEvent.click(uninstall)
+    await waitFor(() => expect(screen.getByText(/1 pending change/)).toBeInTheDocument())
+    expect(within(row('figma')).getByRole('button', { name: 'Undo' })).toBeInTheDocument()
+  })
+
+  it('renders a store-managed server that the shared config disables inert, not as a consent row', async () => {
+    // The dual-scope corner: the entry is in Kiro Crew's store (so the row is
+    // `kirocrewManaged`) but the SHARED config carries the disable. Offering the
+    // consent step here would offer a re-enable that cannot land — lifting the
+    // store's flag leaves the shared one — so the backend's `disabledIn`
+    // decides, not `kirocrewManaged`.
+    mockApi.mcpServers.mockResolvedValue([disabledInConfig({ kirocrewManaged: true })])
+    renderTab()
+    await waitFor(() => expect(screen.getByText('figma', { selector: 'code' })).toBeInTheDocument())
+    const tr = row('figma')
+    expect(tr).toHaveAttribute('data-disabled-in-config', 'true')
+    expect(within(tr).getByText('Disabled in config')).toBeInTheDocument()
+    expect(within(tr).getByTestId('mcp-disabled-in-config-where')).toBeInTheDocument()
+    expect(tr.querySelector('button[data-scope="kirocrew"]')).toBeDisabled()
+    // Still the store's entry: the JSON editor keeps its action.
+    expect(within(tr).getByRole('button', { name: 'Edit JSON for figma' })).toBeEnabled()
+  })
+
+  it('shows no count when nothing is disabled', async () => {
+    mockApi.mcpServers.mockResolvedValue([server('alpha'), server('beta')])
+    renderTab()
+    await waitFor(() => expect(screen.getByText('MCP Servers (2)')).toBeInTheDocument())
+    expect(screen.queryByTestId('mcp-disabled-count')).not.toBeInTheDocument()
+    expect(screen.queryByText('Disabled in config')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('mcp-disabled-in-config-where')).not.toBeInTheDocument()
+  })
+
+  it('leaves enabled rows exactly as before', async () => {
+    mockApi.mcpServers.mockResolvedValue([server('alpha'), disabledInConfig()])
+    renderTab()
+    await waitFor(() => expect(screen.getByText('alpha', { selector: 'code' })).toBeInTheDocument())
+    const tr = row('alpha')
+    expect(tr).not.toHaveAttribute('data-disabled-in-config')
+    expect(tr).toHaveStyle({ opacity: '1' })
+    for (const cell of Array.from(tr.querySelectorAll('td'))) expect(cell.style.opacity).toBe('')
+    expect(within(tr).queryByText('Disabled in config')).not.toBeInTheDocument()
+    expect(within(tr).queryByTestId('mcp-disabled-in-config-where')).not.toBeInTheDocument()
+    const uninstall = within(tr).getByRole('button', { name: 'Uninstall' })
+    expect(uninstall).toBeEnabled()
+    expect(uninstall).not.toHaveAttribute('title')
+    expect(tr.querySelector('button[data-scope="kirocrew"]')).toBeEnabled()
+    expect(within(tr).getByText('Online')).toBeInTheDocument()
+  })
+
+  it('keeps the controls on a consent-disabled row from Kiro Crew\u2019s own store', async () => {
+    // A registry install or custom add lands disabled in the Kiro Crew scope
+    // until the user enables it — through the Kiro Crew badge + Apply, in THIS
+    // table. That row is disabled too, and counts as such, but it is not
+    // "disabled in config" and must keep every control it had.
+    mockApi.mcpServers.mockResolvedValue([consentDisabled(), disabledInConfig()])
+    renderTab()
+    await waitFor(() => expect(screen.getByText('weather', { selector: 'code' })).toBeInTheDocument())
+    expect(screen.getByTestId('mcp-disabled-count')).toHaveTextContent('2 disabled')
+    const tr = row('weather')
+    expect(tr).not.toHaveAttribute('data-disabled-in-config')
+    expect(within(tr).queryByText('Disabled in config')).not.toBeInTheDocument()
+    expect(within(tr).queryByTestId('mcp-disabled-in-config-where')).not.toBeInTheDocument()
+    expect(within(tr).getByRole('button', { name: 'Uninstall' })).toBeEnabled()
+    const kirocrew = tr.querySelector<HTMLButtonElement>('button[data-scope="kirocrew"]')
+    expect(kirocrew).toBeEnabled()
+    // The consent step still stages a pending change.
+    fireEvent.click(kirocrew!)
+    await waitFor(() => expect(screen.getByText(/1 pending change/)).toBeInTheDocument())
   })
 })

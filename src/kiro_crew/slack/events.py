@@ -1141,7 +1141,11 @@ async def _publish_home_tab(orch: GatewayOrchestrator, user_id: str) -> None:
         # ── Capabilities ──
         blocks.append({"type": "header", "text": {"type": "plain_text", "text": "🔌 Capabilities"}})
         try:
-            servers = list_servers()
+            # Only servers a session can actually use: ``disabled`` is the
+            # aggregate of the launch predicate over every scope, so a server
+            # switched off in the shared config -- or muted by a non-boolean
+            # ``disabled`` -- is not advertised as a capability here.
+            servers = [s for s in list_servers() if not s.disabled]
             skills = await asyncio.to_thread(lambda: _get_skills_loader().list_skills())
 
             # Slack caps a single section's text at 3000 chars. MCP servers and
