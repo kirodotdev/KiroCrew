@@ -216,6 +216,7 @@
     "resource_tight": "Tight",
     "subagent_cap": "cap: {{cap}}",
     "notifications": "বিজ্ঞপ্তি",
+    "notifications_ask_agent_help": "এই পেজ ছেড়ে একটি নতুন চ্যাট খোলে, যেখানে এই ত্রুটির রিপোর্ট আগে থেকেই পূরণ করা থাকে, তোমাকে শুধু পাঠাতে হবে",
     "notifications_failed_to_load": "বিজ্ঞপ্তি লোড করা যায়নি",
     "open_inbox": "ইনবক্স খুলুন",
     "open_menu": "মেনু খুলুন",

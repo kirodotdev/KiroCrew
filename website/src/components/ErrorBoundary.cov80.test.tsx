@@ -91,6 +91,16 @@ describe('ErrorBoundary', () => {
     expect(screen.queryByText('Something went wrong')).not.toBeInTheDocument()
   })
 
+  it('a function fallback receives the caught error', () => {
+    // For a custom fallback that mounts AskAgentButton itself: the button keys
+    // its journal lookup on the error's message, which a static node cannot see.
+    render(
+      <ErrorBoundary fallback={error => <div>zzq-custom|{error.message}</div>}><Boom shouldThrow /></ErrorBoundary>,
+    )
+    expect(screen.getByText('zzq-custom|zzq-render-broke')).toBeInTheDocument()
+    expect(screen.queryByText('Something went wrong')).not.toBeInTheDocument()
+  })
+
   it('the route fallback offers Ask-the-agent plus a recovering Try Again', () => {
     const { rerender } = render(<ErrorBoundary><Boom shouldThrow /></ErrorBoundary>)
     expect(screen.getByText('zzq-ask|zzq-render-broke')).toBeInTheDocument()

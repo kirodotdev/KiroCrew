@@ -219,6 +219,7 @@
     "resource_tight": "Tight",
     "subagent_cap": "cap: {{cap}}",
     "notifications": "Notifiche",
+    "notifications_ask_agent_help": "Esce da questa pagina e apre una nuova chat con il rapporto di questo errore già precompilato, che devi solo inviare",
     "notifications_failed_to_load": "Impossibile caricare le notifiche",
     "open_inbox": "Apri la posta in arrivo",
     "open_menu": "Apri il menu",

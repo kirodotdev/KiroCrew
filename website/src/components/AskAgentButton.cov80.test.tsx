@@ -56,6 +56,23 @@ describe('AskAgentButton', () => {
     expect(send.mock.calls[0][1]).toEqual({ hard: true })
   })
 
+  it('runs the whole hand-off through the gate, so a veto stages nothing', () => {
+    // The gate stands in for `useGuardedLeave`'s `leave`: it is handed the
+    // hand-off and decides. Declining must leave no trace — not even a staged
+    // prompt for the next chat to drain.
+    const gate = vi.fn<(proceed: () => void) => void>()
+    render(<AskAgentButton message="zzq-gated" gate={gate} />)
+    fireEvent.click(screen.getByRole('button'))
+    expect(gate).toHaveBeenCalledTimes(1)
+    expect(send).not.toHaveBeenCalled()
+
+    // Allowed: the gate runs what it was handed, and that is the hand-off.
+    gate.mock.calls[0][0]()
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(send.mock.calls[0][0]).toContain('zzq-gated')
+    expect(send.mock.calls[0][1]).toEqual({ hard: false })
+  })
+
   it('the solid variant carries the accent skin, the link variant the danger skin', () => {
     const { unmount } = render(<AskAgentButton message="zzq-a" variant="solid" />)
     expect(screen.getByRole('button').className).toContain('bg-accent')

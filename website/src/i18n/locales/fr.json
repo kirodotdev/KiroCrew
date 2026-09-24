@@ -219,6 +219,7 @@
     "resource_tight": "Tight",
     "subagent_cap": "cap: {{cap}}",
     "notifications": "Notifications",
+    "notifications_ask_agent_help": "Quitte cette page et ouvre une nouvelle conversation avec le rapport de cette erreur déjà pré-rempli, que tu n’as plus qu’à envoyer",
     "notifications_failed_to_load": "Échec du chargement des notifications",
     "open_inbox": "Ouvrir la boîte de réception",
     "open_menu": "Ouvrir le menu",

@@ -219,6 +219,7 @@
     "resource_tight": "Tight",
     "subagent_cap": "cap: {{cap}}",
     "notifications": "Notificações",
+    "notifications_ask_agent_help": "Sai desta página e abre um chat novo com o relatório deste erro já pré-preenchido, pronto para você enviar",
     "notifications_failed_to_load": "Falha ao carregar as notificações",
     "open_inbox": "Abrir caixa de entrada",
     "open_menu": "Abrir menu",

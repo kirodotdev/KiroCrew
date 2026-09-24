@@ -213,6 +213,7 @@
     "resource_tight": "Tight",
     "subagent_cap": "cap: {{cap}}",
     "notifications": "通知",
+    "notifications_ask_agent_help": "このページを離れて新しいチャットを開き、このエラーのレポートを入力済みにしておくので、あとは送信するだけです",
     "notifications_failed_to_load": "通知の読み込みに失敗しました",
     "open_inbox": "受信トレイを開く",
     "open_menu": "メニューを開く",

@@ -222,6 +222,7 @@
     "resource_tight": "Tight",
     "subagent_cap": "cap: {{cap}}",
     "notifications": "Уведомления",
+    "notifications_ask_agent_help": "Уходит с этой страницы и открывает новый чат, где отчёт об этой ошибке уже заполнен и ждёт, когда ты его отправишь",
     "notifications_failed_to_load": "Не удалось загрузить уведомления",
     "open_inbox": "Открыть входящие",
     "open_menu": "Открыть меню",

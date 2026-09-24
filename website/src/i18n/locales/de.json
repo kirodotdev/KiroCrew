@@ -216,6 +216,7 @@
     "resource_tight": "Tight",
     "subagent_cap": "cap: {{cap}}",
     "notifications": "Benachrichtigungen",
+    "notifications_ask_agent_help": "Verlässt diese Seite und öffnet einen neuen Chat, in dem der Bericht zu diesem Fehler schon vorausgefüllt ist und nur noch von dir gesendet werden muss",
     "notifications_failed_to_load": "Benachrichtigungen konnten nicht geladen werden",
     "open_inbox": "Posteingang öffnen",
     "open_menu": "Menü öffnen",

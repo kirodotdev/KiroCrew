@@ -284,8 +284,11 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
         </>
       )}
 
-      {/* List */}
-      <div ref={listRef} className={`flex-1 overflow-y-auto ${mac ? 'px-4 -mx-4 pb-2' : 'scroll-shadow'}`}>
+      {/* List. In the mac variant this container is what a press below the
+          last card lands on, which is why it carries a test id. Everything
+          composed into the mac variant is material or background by decision
+          (App.tsx, the sheet's invariant); a new child needs one or the other. */}
+      <div ref={listRef} data-testid="notification-feed-list" className={`flex-1 overflow-y-auto ${mac ? 'px-4 -mx-4 pb-2' : 'scroll-shadow'}`}>
         {filtered.length === 0 ? (
           <EmptyState testId="notification-feed-empty" icon={<Bell className="lucide-inline" />} title={i18nT('components.notifications.notificationFeed.no_notifications')} subtitle={filter ? i18nT('components.notifications.notificationFeed.try_a_different_search') : i18nT('components.notifications.notificationFeed.activity_will_appear_here')} />
         ) : (

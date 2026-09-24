@@ -213,6 +213,7 @@
     "resource_tight": "Tight",
     "subagent_cap": "cap: {{cap}}",
     "notifications": "알림",
+    "notifications_ask_agent_help": "이 페이지를 떠나 새 채팅을 열고 이 오류의 보고서를 미리 채워 두므로, 전송 버튼만 누르면 됩니다",
     "notifications_failed_to_load": "알림을 불러오지 못했습니다",
     "open_inbox": "받은 편지함 열기",
     "open_menu": "메뉴 열기",

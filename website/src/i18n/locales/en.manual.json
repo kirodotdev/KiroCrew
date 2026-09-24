@@ -215,7 +215,8 @@
     "focus_mode_title_mac": "Focus mode · ⌥⇧M",
     "connect_your_phone": "Connect your phone",
     "kiro_credit_usage_no_reading": "Kiro credit usage — no balance reading yet; open to refresh",
-    "kiro_credit_usage_config_unreadable": "Kiro credit usage — could not read the backend setting; open to retry"
+    "kiro_credit_usage_config_unreadable": "Kiro credit usage — could not read the backend setting; open to retry",
+    "notifications_ask_agent_help": "Leaves this page and opens a new chat with this error's report already filled in, ready for you to send"
   },
   "appSdk": {
     "chatEmbed": {

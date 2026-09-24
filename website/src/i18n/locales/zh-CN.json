@@ -213,6 +213,7 @@
     "resource_tight": "Tight",
     "subagent_cap": "cap: {{cap}}",
     "notifications": "通知",
+    "notifications_ask_agent_help": "离开此页面并打开一个新对话，其中已预填好此错误的报告，你只需按下发送",
     "notifications_failed_to_load": "通知加载失败",
     "open_inbox": "打开收件箱",
     "open_menu": "打开菜单",

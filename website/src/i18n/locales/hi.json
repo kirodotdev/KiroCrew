@@ -216,6 +216,7 @@
     "resource_tight": "Tight",
     "subagent_cap": "cap: {{cap}}",
     "notifications": "सूचनाएँ",
+    "notifications_ask_agent_help": "यह पेज छोड़कर एक नई चैट खोलता है जिसमें इस त्रुटि की रिपोर्ट पहले से भरी होती है, तुम्हें बस उसे भेजना है",
     "notifications_failed_to_load": "सूचनाएँ लोड नहीं हो सकीं",
     "open_inbox": "इनबॉक्स खोलें",
     "open_menu": "मेनू खोलें",
