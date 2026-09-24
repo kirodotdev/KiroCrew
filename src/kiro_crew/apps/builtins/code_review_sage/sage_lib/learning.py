@@ -116,7 +116,7 @@ def _candidate_lock(root: Path | None, namespace: str | None):
         if lock is None:
             lock = _CANDIDATE_LOCKS[key] = threading.Lock()
     ns_dir = _namespace_dir(namespace, root)
-    ns_dir.mkdir(parents=True, exist_ok=True)
+    store.mkdir_refusing_links(ns_dir)
     # A dedicated lock file, never the catalog itself: locking the file being
     # atomically REPLACED would hold a lock on an inode the rename discards.
     lock_path = ns_dir / "candidate.md.lock"
@@ -180,9 +180,9 @@ def create_namespace(name: str, root: Path | None = None) -> dict:
     ns_path = _namespace_dir(name, root)
     if (ns_path / "learned-patterns.md").exists():
         return {"ok": False, "error": f"namespace {name!r} already exists"}
-    ns_path.mkdir(parents=True, exist_ok=True)
+    store.mkdir_refusing_links(ns_path)
     header = f"# Learned patterns — namespace: {name}\n\n"
-    (ns_path / "learned-patterns.md").write_text(header, encoding="utf-8")
+    store.atomic_write_text(ns_path / "learned-patterns.md", header)
     return {"ok": True, "namespace": name, "path": str(ns_path)}
 
 
@@ -302,7 +302,7 @@ def list_patterns_for_review(root: Path | None = None) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def _atomic_write(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    store.mkdir_refusing_links(path.parent)
     store.atomic_write_text(path, text)
 
 
@@ -339,7 +339,7 @@ def stage_learning(pattern: dict, source: str, root: Path | None = None,
             "(the reviewer never learns from its own unpublished findings)")
     store.ensure_layout(root)
     ns_dir = _namespace_dir(namespace, root)
-    ns_dir.mkdir(parents=True, exist_ok=True)
+    store.mkdir_refusing_links(ns_dir)
     p = _normalize_pattern(pattern)
     cf = candidate_file(root, namespace)
     # Read and write under one lock: see _candidate_lock.
@@ -450,8 +450,20 @@ def _record_consolidation(consolidated: int, namespace: str | None = None,
     entry = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
              "consolidated": consolidated, "namespace": ns}
     path = _consolidations_log(root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8") as fh:
+    store.mkdir_refusing_links(path.parent)
+    # An APPEND, not a staged replace. ``atomic_write_text`` would have to read
+    # the whole log, add this line and rename a fresh file over it, and two
+    # consolidations racing that sequence each publish a file missing the other's
+    # entry, so a completed consolidation disappears from the log. ``O_APPEND``
+    # keeps each record's write indivisible instead.
+    #
+    # The chain is resolved ONCE, inside the helper, and the leaf is opened
+    # relative to that pinned parent. Opening the full path by name here would
+    # re-resolve every ancestor after the guard above had already passed, so a
+    # component swapped in between would redirect the append; and the leaf's own
+    # name needs a check of its own either way, because an append FOLLOWS a link
+    # at the final component and writes into whatever it points at.
+    with os.fdopen(store.open_append_nolink(path), "a", encoding="utf-8") as fh:
         fh.write(json.dumps(entry) + "\n")
 
 

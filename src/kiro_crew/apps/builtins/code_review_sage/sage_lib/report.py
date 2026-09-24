@@ -638,7 +638,7 @@ def write_outputs(report: dict, html_body: str, root: Path | None = None,
     HTML. ``index.json`` remains the small pointer the UI polls."""
     _ensure(root, run_id)
     rd = reports_dir(root, run_id)
-    rd.mkdir(parents=True, exist_ok=True)
+    store.mkdir_refusing_links(rd)
     html_path = rd / "focus-report.html"
     _atomic_write(html_path, html_body)
     # Compact 🔴+🟡 rows for inline rendering in the dashboard (chat/export default).
@@ -772,7 +772,7 @@ def set_report_slug(slug: str, root: Path | None = None,
     idx_path = reports_dir(root, run_id) / "index.json"
     idx = json.loads(read_within_reports(idx_path, root, run_id) or "{}")
     idx["report_slug"] = slug
-    idx_path.parent.mkdir(parents=True, exist_ok=True)
+    store.mkdir_refusing_links(idx_path.parent)
     _atomic_write(idx_path, json.dumps(idx, indent=2))
     return idx
 
@@ -784,7 +784,7 @@ def reset(root: Path | None = None, run_id: str | None = None) -> None:
     clears the live display — not the record of past runs."""
     _ensure(root, run_id)
     rd = reports_dir(root, run_id)
-    rd.mkdir(parents=True, exist_ok=True)
+    store.mkdir_refusing_links(rd)
     empty = {"report_slug": None, "bands": {"red": 0, "yellow": 0, "green": 0},
              "generated_at": "", "total": 0}
     idx_path = rd / "index.json"
@@ -806,7 +806,7 @@ def _atomic_write(path: Path, text: str) -> None:
     ``store.atomic_write_locked``, which is now the single implementation this
     and ``learning.py:_atomic_write`` share rather than two copies of one block.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
+    store.mkdir_refusing_links(path.parent)
     store.atomic_write_text(path, text)
 
 

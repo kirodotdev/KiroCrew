@@ -476,6 +476,60 @@ class TestReviewEffort(unittest.TestCase):
     def test_write_effort_overlay_never_raises(self):
         _write_effort_overlay("/proc/nonexistent/\x00bad", "claude-sonnet-4.6")
 
+    def test_a_planted_link_at_the_overlay_name_takes_no_bytes(self):
+        """`work_dir` is the review worker's OWN cwd, so it is plantable.
+
+        A by-name `write_text` follows a link at the final component and
+        TRUNCATES whatever it points at, which turns this best-effort overlay
+        into an arbitrary-file-truncation primitive for a prompt-injected worker.
+        The staged replace lands on the NAME instead: the link is replaced, and
+        the file it aliased keeps its bytes.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            victim = Path(tmp) / "victim.txt"
+            victim.write_text("keep me\n", encoding="utf-8")
+            settings = Path(tmp) / ".kiro" / "settings"
+            settings.mkdir(parents=True)
+            cli = settings / "cli.json"
+            try:
+                cli.symlink_to(victim)
+            except (OSError, NotImplementedError):
+                self.skipTest("planting the attack needs symlink creation")
+
+            _write_effort_overlay(tmp, "claude-sonnet-4.6", "high")
+
+            self.assertEqual(victim.read_text(encoding="utf-8"), "keep me\n",
+                             "the aliased file was written through")
+            self.assertFalse(cli.is_symlink(), "the link survived the publish")
+
+    def test_a_planted_link_at_the_overlay_name_contributes_no_keys(self):
+        """The overlay READS `cli.json` before publishing the merged document.
+
+        The sibling case above covers the write: the publish lands on the name, so
+        the aliased file keeps its bytes. This covers the read, where the harm runs
+        the other way -- a following read copies the aliased document's keys INTO
+        the document published under this name, and the next worker loads that as
+        its own settings. The no-follow read refuses the plant, so the overlay is
+        built from "no settings yet".
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            victim = Path(tmp) / "victim.json"
+            victim.write_text('{"borrowed_key": "not-from-this-file"}', encoding="utf-8")
+            settings = Path(tmp) / ".kiro" / "settings"
+            settings.mkdir(parents=True)
+            cli = settings / "cli.json"
+            try:
+                cli.symlink_to(victim)
+            except (OSError, NotImplementedError):
+                self.skipTest("planting the attack needs symlink creation")
+
+            _write_effort_overlay(tmp, "claude-sonnet-4.6", "high")
+
+            published = json.loads(cli.read_text(encoding="utf-8"))
+            self.assertNotIn("borrowed_key", published,
+                             "the aliased document's keys were republished")
+            self.assertEqual(list(published), ["chat.modelDefaults"])
+
     def test_reviewer_model_falls_back_to_default(self):
         self.assertEqual(
             _reviewer_model("definitely-not-installed-xyz"), _DEFAULT_REVIEW_MODEL)

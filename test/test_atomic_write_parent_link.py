@@ -427,3 +427,54 @@ def test_plain_secret_write_under_the_data_home_still_works(owned_home):
     aw.atomic_write(target, SECRET, restrict_to_owner=True)
 
     assert target.read_text() == SECRET
+
+
+# ---------------------------------------------------------------------------
+# anchored_parent: the path shape a pinned O_NOFOLLOW walk needs
+# ---------------------------------------------------------------------------
+
+
+@requires_symlinks
+def test_anchored_parent_keeps_the_names_below_the_anchor_lexical(owned_home, tmp_path):
+    """Resolving instead would hand a pinned walk the plant's own target.
+
+    ``pinned_fs.pin_parent`` opens one component at a time with ``O_NOFOLLOW``,
+    which refuses a component that is a link -- but only if it is asked to open
+    that component at all. ``resolve()`` answers with the directory the link
+    points at, so the walk opens a clean chain inside the attacker's tree and
+    pins it. The lexical names are what put the link back in the walk's way.
+    """
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    os.symlink(elsewhere, owned_home / "state")
+
+    anchored = aw.anchored_parent(owned_home / "state")
+
+    assert anchored == str(owned_home.resolve() / "state")
+    assert anchored != str((owned_home / "state").resolve())
+
+
+def test_anchored_parent_matches_the_resolved_parent_on_a_clean_chain(owned_home):
+    """With no link on the chain the two answers are the same directory.
+
+    This is what makes the lexical form safe to hand a walk: it costs the
+    ordinary case nothing, and the answers part company only where a component
+    is a link.
+    """
+    parent = owned_home / "state" / "deep"
+    parent.mkdir(parents=True)
+
+    assert aw.anchored_parent(parent) == str(parent.resolve())
+
+
+def test_anchored_parent_declines_a_parent_outside_every_owned_root(owned_home, tmp_path):
+    """No owned root above it means no trusted place to start the walk.
+
+    Saying so lets the caller choose, rather than handing back a path that looks
+    anchored and is not. A caller-supplied root and a test's temp tree are both
+    this case.
+    """
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    assert aw.anchored_parent(outside) is None

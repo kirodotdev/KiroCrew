@@ -292,7 +292,12 @@ def write_descriptor(run_id: str, change_id: str, *, sid: str, agent: str = "",
         "created_at": time.time(),
     }
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        # ``followup_dir`` has already refused a link at the runs root, the run
+        # directory or ``chat``, anchored at the runs root. It says nothing about
+        # the components ABOVE that root, and a link there redirects this mkdir
+        # just as effectively, so the shared guard covers that upper span. The two
+        # spans are disjoint, so this is not the local walk run twice.
+        store.mkdir_refusing_links(path.parent)
         # A random O_EXCL temp renamed over the name, not a predictable
         # `<name>.tmp`: the reviewer can pre-plant a symlink at a name it can
         # guess, and writing through it would land this content on whatever it

@@ -372,16 +372,15 @@ def _write_effort_overlay(work_dir: str, model: str, effort: str = REVIEW_EFFORT
     bad overlay write never breaks a review)."""
     try:
         with workspace_cli_settings_lock(Path(work_dir)) as cli_json:
-            try:
-                existing = (
-                    json.loads(cli_json.read_text(encoding="utf-8"))
-                    if cli_json.exists()
-                    else {}
-                )
-            except (json.JSONDecodeError, OSError):
-                existing = {}
-            if not isinstance(existing, dict):
-                existing = {}
+            # Through `read_json_nolink`, not `read_text`: `cli.json` sits under
+            # the review worker's own `work_dir`, and the settings lock verifies
+            # the LOCK file, never this one. A plain read dereferences a link
+            # planted at this name, and the merged document is published straight
+            # back under it -- so the read is the leg that would copy a foreign
+            # document's bytes into a file the next worker loads as its settings.
+            # Missing, a plant, oversize and a non-object all arrive as None and
+            # mean "no overlay yet", which is what an empty file means here too.
+            existing = store.read_json_nolink(cli_json, cli_json.parent) or {}
             defaults = existing.get("chat.modelDefaults")
             if not isinstance(defaults, dict):
                 defaults = {}
@@ -395,7 +394,15 @@ def _write_effort_overlay(work_dir: str, model: str, effort: str = REVIEW_EFFORT
             model_cfg["output_config"] = output_cfg
             defaults[model] = model_cfg
             existing["chat.modelDefaults"] = defaults
-            cli_json.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+            # Not `write_text`: that follows a link at the final name and
+            # TRUNCATES what it points at, and `work_dir` is the review worker's
+            # own cwd -- the one tree a prompt-injected worker can plant in. The
+            # shared helper refuses a linked PARENT and stages the write, then
+            # renames over the final name -- so a link sitting at that name is
+            # REPLACED by a real file rather than written through, and the file it
+            # pointed at keeps its bytes. A reader never sees a half-written
+            # overlay either, because the rename publishes it whole.
+            store.atomic_write_text(cli_json, json.dumps(existing, indent=2))
     except Exception:
         logger.debug("could not write review effort overlay (work_dir=%s)", work_dir, exc_info=True)
 

@@ -668,6 +668,41 @@ def refuse_linked_parent(path: Path | str) -> None:
     _refuse_linked_parent(Path(path))
 
 
+def anchored_parent(parent: Path | str) -> str | None:
+    """Return *parent* with its trust anchor RESOLVED and the names below it LEXICAL.
+
+    For a caller that pins the chain with one ``O_NOFOLLOW`` ``openat`` per
+    component (:func:`pinned_fs.pin_parent`). That walk needs a path whose
+    components it can open by name, and the obvious way to get one --
+    ``Path(parent).resolve()`` -- defeats it: resolving follows a link planted
+    below the anchor, so the walk is handed the link's TARGET and pins that
+    directory faithfully, ``O_NOFOLLOW`` and all. Keeping those names lexical is
+    what makes such a component fail its own open instead.
+
+    The split is :func:`_link_trust_anchor`'s, so the policy for where "a link
+    here is not ours" starts has one home. At or above the anchor a link is the
+    operator's layout -- a symlinked ``$HOME``, a data home on another disk --
+    and resolving there is both required and safe; below it every directory is
+    one Kiro Crew created itself.
+
+    ``None`` when *parent* is outside every owned root, or the anchor cannot be
+    resolved. There is no trusted place to start the walk in either case, so the
+    caller chooses what to do rather than being handed a path that looks
+    anchored. A clean chain gives exactly what ``resolve()`` gives, because
+    :func:`refuse_linked_parent` passing means the lexical names and the resolved
+    ones name the same directories; the two answers part company only when a
+    component is a link, which is the case worth refusing.
+    """
+    split = _link_trust_anchor(Path(parent))
+    if split is None:
+        return None
+    anchor, names = split
+    anchor_resolved = _resolved_or_none(anchor)
+    if anchor_resolved is None:
+        return None
+    return str(anchor_resolved.joinpath(*names))
+
+
 def _refuse_linked_parent(path: Path) -> None:
     """Refuse to write a secret whose parent chain passes through a link.
 
