@@ -32,6 +32,8 @@ import {
   attemptSilentRefresh,
   __resetAuthRecoveryStateForTests,
   SEARCH_MIN_CHARS,
+  BROWSE_FILES_TIMEOUT_MS,
+  FILE_SEARCH_TIMEOUT_MS,
 } from '../api/client'
 import { STALE_OWNER_SESSION_CODE, __resetStaleOwnerHandlerForTests, installStaleOwnerHandler } from '../api/staleOwnerSignal'
 import { queryClient } from '../api/queryClient'
@@ -1004,14 +1006,22 @@ describe('query-string builders', () => {
     expect(call(4).url).toBe('/api/file-diff?path=%2Frepo%2Fa%20b.ts')
   })
 
-  it('fileSearch scopes to a project and forwards the abort signal', async () => {
+  it('scopes fileSearch to a project and relays the abort signal under its deadline', async () => {
     const ctl = new AbortController()
     await api.fileSearch('cli', 'kirocrew', ctl.signal)
     expect(call().url).toBe('/api/file-search?q=cli&project=kirocrew')
-    expect(call().init?.signal).toBe(ctl.signal)
+    // The fetch gets the DEADLINE's signal, not the caller's: the bound lives in
+    // the client, so a caller cannot opt out of it by handing over its own.
+    const relayed = call().init?.signal as AbortSignal
+    expect(relayed).toBeInstanceOf(AbortSignal)
+    expect(relayed).not.toBe(ctl.signal)
+    // Relay is asserted where observable -- on a request still in flight; this one
+    // has settled, so its timer and listener are already released.
+
+    // A caller that passes no signal is bounded all the same.
     await api.fileSearch('cli')
     expect(call(1).url).toBe('/api/file-search?q=cli')
-    expect(call(1).init).toBeUndefined()
+    expect(call(1).init?.signal).toBeInstanceOf(AbortSignal)
   })
 
   it('artifactSessionDocs can scope to one session', async () => {
@@ -1465,6 +1475,110 @@ describe('sendChat theme consent', () => {
 
 /* ─────────────── 3. the non-trivial method implementations ─────────────── */
 
+describe('deadline-bound endpoints', () => {
+  // Exercised against a stubbed `fetch`, the only layer where the bound is
+  // observable -- the component harnesses stub `api.*` and would bypass it.
+
+  const realTimeout = globalThis.setTimeout
+
+  /** Shrink the deadline without touching the production composition, and record the
+   *  value it asked for, so the assertion costs milliseconds rather than a real 10s
+   *  wait. Same shape the base's other client-deadline suites use. */
+  function shrinkDeadline(ms: number, record?: (asked: number) => void) {
+    vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, asked?: number) => {
+      record?.(asked ?? 0)
+      return realTimeout(fn, ms)
+    }) as unknown as typeof globalThis.setTimeout)
+  }
+
+  const wedged = () => fetchMock.mockImplementation(
+    (_u: string, init?: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        const s = init?.signal
+        if (s?.aborted) return reject(s.reason)
+        s?.addEventListener('abort', () => reject(s.reason), { once: true })
+      }),
+  )
+
+  it('rejects with the TimeoutError-named Error shape the cause-keyed notices decode', async () => {
+    // A transport default that rejects with any other shape stops `isDeadlineError` recognising
+    // it, silently degrading every cause-keyed notice here to the generic "failed" copy.
+    const { isDeadlineError } = await import('../api/queryClient')
+    const { searchErrorCause } = await import('../lib/searchErrorCause')
+    wedged()
+    shrinkDeadline(20)
+    const err = await api.browseFiles('/p').then(() => null, (e: unknown) => e)
+    expect(err).toBeInstanceOf(Error)
+    expect((err as Error).name).toBe('TimeoutError')
+    expect(isDeadlineError(err)).toBe(true)
+    expect(searchErrorCause(err)).toBe('timed_out')
+  })
+
+  it('bounds api.recentProjects, the picker sibling that shares the wedged loop', async () => {
+    // Fail-first: unbounded, the Recent tab sat empty for as long as the gateway hung.
+    const asked: number[] = []
+    wedged()
+    shrinkDeadline(20, ms => asked.push(ms))
+    await expect(api.recentProjects()).rejects.toMatchObject({ name: 'TimeoutError' })
+    expect(asked).toContain(BROWSE_FILES_TIMEOUT_MS)
+  })
+
+  it('bounds api.browseDirs too, the sibling both directory pickers spin on', async () => {
+    // Fail-first: unbounded, this promise never settled and the Project/Workspace
+    // pickers sat on an empty browse list for as long as they stayed open.
+    const asked: number[] = []
+    wedged()
+    shrinkDeadline(20, ms => asked.push(ms))
+    await expect(api.browseDirs('/p')).rejects.toMatchObject({ name: 'TimeoutError' })
+    expect(asked).toContain(BROWSE_FILES_TIMEOUT_MS)
+  })
+
+  it('bounds api.browseFiles, so a wedged gateway stops the folder listing spinning', async () => {
+    // Fail-first: unbounded, this promise never settled and FolderPanel showed its
+    // loading state for as long as the panel stayed open.
+    const asked: number[] = []
+    wedged()
+    shrinkDeadline(20, ms => asked.push(ms))
+    await expect(api.browseFiles('/p')).rejects.toMatchObject({ name: 'TimeoutError' })
+    expect(asked).toContain(BROWSE_FILES_TIMEOUT_MS)
+  })
+
+  it('bounds api.projectTree by the WHOLE-TREE deadline, not the one-level listing one', async () => {
+    // The listing bound is documented as shorter "because a listing walks one level, not the
+    // tree", so the tree read sharing it contradicted that; assertion two is the drift control.
+    const asked: number[] = []
+    wedged()
+    shrinkDeadline(20, ms => asked.push(ms))
+    await expect(api.projectTree('/p')).rejects.toMatchObject({ name: 'TimeoutError' })
+    expect(asked).toContain(FILE_SEARCH_TIMEOUT_MS)
+    expect(asked).not.toContain(BROWSE_FILES_TIMEOUT_MS)
+  })
+
+  it('leaves api.projectGitStatus UNBOUNDED, the scope this PR declares and its comment states', async () => {
+    // Bounding it puts the raw English deadline message into every locale, because the git
+    // panel renders the server message verbatim and has no timeout copy of its own.
+    const asked: number[] = []
+    wedged()
+    shrinkDeadline(20, ms => asked.push(ms))
+    void api.projectGitStatus('/p').catch(() => {})
+    await new Promise(resolve => realTimeout(resolve, 60))
+    expect(asked).not.toContain(BROWSE_FILES_TIMEOUT_MS)
+  })
+
+  it('passes the caller signal through browseFiles, so a superseded listing is cancelled', async () => {
+    const ac = new AbortController()
+    fetchMock.mockImplementation(
+      (_u: string, init?: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+        }),
+    )
+    const p = api.browseFiles('/p', ac.signal)
+    ac.abort(new Error('superseded'))
+    await expect(p).rejects.toBeTruthy()
+  })
+})
+
 describe('revealPath', () => {
   // The transport is side-effect-free: it posts the action and returns the wire
   // shape. When the host is headless it hands back a `copy` path for the caller
@@ -1852,10 +1966,24 @@ describe('every api method issues one well-formed /api request', () => {
   const methods = Object.entries(api as unknown as Record<string, AnyFn>)
     .filter(([name, fn]) => typeof fn === 'function' && !HAND_TESTED.has(name))
 
+  // A deadline composes its own signal with the caller's, so identity is not the
+  // contract for these methods. Keep this list narrow: every other dispatched
+  // signal must still be the exact one supplied by the caller.
+  const DEADLINE_WRAPPED_METHODS = new Set([
+    'fileSearch',
+    'browseFiles',
+    'browseDirs',
+    'browseDrives',
+    'recentProjects',
+    'projectTree',
+  ])
+  const CALLER_SIGNAL = new AbortController().signal
+
   // Methods whose URL comes out of an ARGUMENT'S FIELD rather than a positional
   // string. The generic `'sw-1'` args below would make such a method build its
   // URL from `undefined` — a harness artifact, not a defect in the method — so
-  // each one names the minimal shape its URL is read from.
+  // each one names the minimal shape its URL is read from. Signal-bearing methods
+  // also receive a real signal so the probe can assert their dispatch contract.
   const ARGS: Record<string, unknown[]> = {
     // Memory reads take typed objects; positional strings do not satisfy the
     // query/record contract and would manufacture undefined URL parameters.
@@ -1872,10 +2000,26 @@ describe('every api method issues one well-formed /api request', () => {
     // not a defect: a real caller hands this a Blob, exactly as here, and a Blob
     // body is left alone the same way a FormData one is.
     importSessionFromFile: [new Blob(['{}'], { type: 'application/gzip' })],
+    updateInstance: ['sw-1', {}, { signal: CALLER_SIGNAL }],
+    chatSlotDetail: ['sw-1', undefined, undefined, CALLER_SIGNAL],
+    sendChat: ['sw-1', 'sw-2', 'sw-3', CALLER_SIGNAL],
+    spawnStatus: ['sw-1', { signal: CALLER_SIGNAL }],
+    fileSearch: ['sw-1', 'sw-2', CALLER_SIGNAL],
+    pathComplete: ['sw-1', 'sw-2', 'sw-3', CALLER_SIGNAL],
+    browseFiles: ['sw-1', CALLER_SIGNAL],
   }
 
   it('covers the whole surface (guards against the table silently shrinking)', () => {
     expect(methods.length).toBeGreaterThan(300)
+  })
+
+  it('keeps deadline-bound file reads in the universal request probe', () => {
+    expect(methods.map(([name]) => name)).toEqual(expect.arrayContaining([
+      'fileSearch',
+      'browseFiles',
+      'browseDirs',
+      'recentProjects',
+    ]))
   })
 
   it.each(methods.map(([name]) => name))('%s', async (name) => {
@@ -1892,6 +2036,13 @@ describe('every api method issues one well-formed /api request', () => {
     expect(url.startsWith('/api/'), `${name} escaped the /api prefix: ${url}`).toBe(true)
     for (const junk of ['undefined', '[object Object]', 'NaN', '/null']) {
       expect(url.includes(junk), `${name} leaked ${junk} into ${url}`).toBe(false)
+    }
+    if (init?.signal !== undefined) {
+      if (DEADLINE_WRAPPED_METHODS.has(name)) {
+        expect(init.signal, `${name} dropped its deadline signal`).toBeInstanceOf(AbortSignal)
+      } else {
+        expect(init.signal, `${name} did not forward the caller signal`).toBe(CALLER_SIGNAL)
+      }
     }
     // A body is only ever sent with a method that can carry one.
     if (init?.body !== undefined) {

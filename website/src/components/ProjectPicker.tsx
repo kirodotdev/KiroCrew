@@ -7,8 +7,48 @@ import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
 import ErrorNotice from './ErrorNotice'
 import { findReport, type ErrorReport } from '../utils/errorReport'
 import { endsWithSeparator, isWindowsPath, lastSegment, parentIsDriveList, pathSeparator, stripTrailingSeparator } from '../utils/browsePath'
+import { searchErrorCause, type SearchErrorCause } from '../lib/searchErrorCause'
 
 import { i18nT } from '../i18n/t'
+
+// Copy for a failed DIRECTORY listing, keyed on the same classifier WorkspacePicker and
+// FolderPanel read, so one failure is named one way whichever picker the user is in. Two
+// maps because the notice reads differently with a listing on screen (it names the path
+// that failed and the one still shown) and without one (nothing to point at). The
+// `failed` arm is the existing generic copy; the other arms name the cause and the remedy
+// that fits it -- a timeout is retried, a refusal is not.
+const LISTING_FAILED_KEYS: Record<SearchErrorCause, string> = {
+  timed_out: 'components.projectPicker.listing_failed_timed_out',
+  denied: 'components.projectPicker.listing_failed_denied',
+  root_missing: 'components.projectPicker.listing_failed_root_missing',
+  failed: 'components.projectPicker.listing_failed',
+}
+const LISTING_FAILED_NO_PATH_KEYS: Record<SearchErrorCause, string> = {
+  timed_out: 'components.projectPicker.listing_failed_no_path_timed_out',
+  denied: 'components.projectPicker.listing_failed_no_path_denied',
+  root_missing: 'components.projectPicker.listing_failed_no_path_root_missing',
+  failed: 'components.projectPicker.listing_failed_no_path',
+}
+// A drive-list request has no failed path to name. Timeout and access-denied
+// failures still have distinct, actionable copy; an unexpected missing-root
+// response falls back to the existing generic drive-list notice.
+const DRIVES_FAILED_KEYS: Record<SearchErrorCause, string> = {
+  timed_out: 'components.projectPicker.drives_failed_timed_out',
+  denied: 'components.projectPicker.drives_failed_denied',
+  root_missing: 'components.projectPicker.drives_failed',
+  failed: 'components.projectPicker.drives_failed',
+}
+// Only two arms have copy of their own: the recents endpoint answers any read error
+// with 200 `{"dirs": []}` and never a coded body (`api_recent_projects` in
+// chat_handlers.py), so `denied` / `root_missing` cannot be produced for it -- a 403
+// carrying `authRequired` classifies as `failed` -- and both take the generic copy
+// rather than keys no request can reach.
+const RECENT_FAILED_KEYS: Record<SearchErrorCause, string> = {
+  timed_out: 'components.projectPicker.recent_failed_timed_out',
+  denied: 'components.projectPicker.recent_failed',
+  root_missing: 'components.projectPicker.recent_failed',
+  failed: 'components.projectPicker.recent_failed',
+}
 interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -36,21 +76,25 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
   const [recentDirs, setRecentDirs] = useState<string[]>([])
   const [recentQuery, setRecentQuery] = useState('')
   const [browseSel, setBrowseSel] = useState(0)
-  // Which listing failed last, if any: a directory (`browse`) or the drive
-  // list (`browseDrives`). Said out loud through ErrorNotice — a swallowed
-  // failure leaves Back or a typed path appearing to do nothing. Cleared by the
-  // next successful listing of either kind, or by the next keystroke, since
-  // typing is the recovery the notice suggests.
-  const [listFailed, setListFailed] = useState<null | 'dir' | 'drives'>(null)
+  // Which picker read failed last: recent projects, a directory (`browse`), or
+  // the drive list (`browseDrives`). Said out loud through ErrorNotice — a
+  // swallowed failure leaves Back or a typed path appearing to do nothing.
+  // A successful browse read clears browse failures but preserves a recent-project
+  // failure while that Browse fallback is displayed; the next keystroke clears it.
+  const [listFailed, setListFailed] = useState<null | 'dir' | 'drives' | 'recent'>(null)
   // What failed, for the notice: the path that could not be opened, and the
   // structured report the API client journaled for that request (endpoint,
   // status, backend `code`), so the agent hand-off carries the real context
   // rather than only the localized sentence (GPT review on #11424).
   const [failedPath, setFailedPath] = useState('')
   const [failedReport, setFailedReport] = useState<ErrorReport | undefined>(undefined)
-  const noteFailure = (kind: 'dir' | 'drives', path: string, err: unknown) => {
+  // WHY it failed, for the notice copy. Read only while `listFailed` is set,
+  // so it needs no clearing of its own.
+  const [failedCause, setFailedCause] = useState<SearchErrorCause>('failed')
+  const noteFailure = (kind: 'dir' | 'drives' | 'recent', path: string, err: unknown) => {
     setListFailed(kind)
     setFailedPath(path)
+    setFailedCause(searchErrorCause(err))
     setFailedReport(findReport(err instanceof Error ? err.message : String(err)))
   }
   // Which kind of listing is on screen. The drive list (Windows only) has no
@@ -80,7 +124,7 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
     const ticket = ++listingSeq.current
     api.browseDirs(path).then(d => {
       if (ticket !== listingSeq.current) return
-      setBrowsePath(d.path); setBrowseParent(d.parent); setBrowseDirs(d.dirs); setBrowseSel(0); setListFailed(null); setListing('dir')
+      setBrowsePath(d.path); setBrowseParent(d.parent); setBrowseDirs(d.dirs); setBrowseSel(0); setListFailed(failed => failed === 'recent' ? failed : null); setListing('dir')
       // Append the path delimiter after a browse/drill so the user can start
       // typing the next segment immediately (#1196). Derive the separator from
       // the returned path so a native Windows path (C:\Users\me) stays all-`\`
@@ -107,7 +151,7 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
     const ticket = ++listingSeq.current
     api.browseDrives().then(d => {
       if (ticket !== listingSeq.current) return
-      setBrowsePath(''); setBrowseParent(''); setBrowseDirs(d.dirs); setBrowseSel(0); setListFailed(null); setListing('drives')
+      setBrowsePath(''); setBrowseParent(''); setBrowseDirs(d.dirs); setBrowseSel(0); setListFailed(failed => failed === 'recent' ? failed : null); setListing('drives')
       setInput('')
       requestAnimationFrame(() => inputRef.current?.focus())
     }).catch((err: unknown) => { if (ticket === listingSeq.current) noteFailure('drives', '', err) })
@@ -132,6 +176,12 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
   const typed = stripTrailingSeparator(input.trim())
   const fieldNamesShownListing = !!browsePath && (isWindowsPath(typed) ? typed.toLowerCase() === browsePath.toLowerCase() : typed === browsePath)
   const canCommit = (!!input.trim() || !!browsePath) && (listFailed !== 'dir' || fieldNamesShownListing)
+  // The "No subdirectories" empty-state and a LISTING notice describe the same list,
+  // so they never share the screen: the notice says the rows could not be read, the
+  // empty-state claims they were read and there are none. A preserved recents notice
+  // is about a different read, so a directory that listed successfully empty still
+  // gets its empty-state beside it rather than a list that says nothing at all.
+  const listingFailed = listFailed === 'dir' || listFailed === 'drives'
   const atDriveRoot = parentIsDriveList(browsePath, browseParent)
   const canGoUp = atDriveRoot || (!!browseParent && browseParent !== browsePath)
   const goUp = () => { if (atDriveRoot) browseDrives(); else browse(browseParent) }
@@ -140,11 +190,20 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
     if (!open) return
     setRecentQuery('')
     setListFailed(null)
+    browse()
+    // The opening browse owns the ticket for both reads. A later browse/drives
+    // request advances it, so neither arm of this recents request can overwrite
+    // the newer listing's state or failure notice.
+    const ticket = listingSeq.current
     api.recentProjects().then(d => {
+      if (ticket !== listingSeq.current) return
       setRecentDirs(d.dirs || [])
       setTab(d.dirs?.length ? 'recent' : 'browse')
-    }).catch(() => setTab('browse'))
-    browse()
+    }).catch((err: unknown) => {
+      if (ticket !== listingSeq.current) return
+      noteFailure('recent', '', err)
+      setTab('browse')
+    })
   }, [open, browse])
 
   useEffect(() => {
@@ -423,17 +482,19 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
                 askAgent={errorHandoff}
                 onHandoff={() => onOpenChange(false)}
                 report={failedReport}
-                message={listFailed === 'drives'
-                  ? i18nT('components.projectPicker.drives_failed', { path: shownPath, example: otherDriveExample(browsePath) })
-                  : browsePath
-                    ? i18nT('components.projectPicker.listing_failed', { failed: failedPath, path: shownPath })
-                    : i18nT('components.projectPicker.listing_failed_no_path', { failed: failedPath })}
-                testId={listFailed === 'drives' ? 'pp-drives-error' : 'pp-listing-error'}
+                message={listFailed === 'recent'
+                  ? i18nT(RECENT_FAILED_KEYS[failedCause])
+                  : listFailed === 'drives'
+                    ? i18nT(DRIVES_FAILED_KEYS[failedCause], { path: shownPath, example: otherDriveExample(browsePath) })
+                    : browsePath
+                      ? i18nT(LISTING_FAILED_KEYS[failedCause], { failed: failedPath, path: shownPath })
+                      : i18nT(LISTING_FAILED_NO_PATH_KEYS[failedCause])}
+                testId={listFailed === 'recent' ? 'pp-recent-error' : listFailed === 'drives' ? 'pp-drives-error' : 'pp-listing-error'}
               />
             </div>
           )}
           <div id="pp-browse-list" role="listbox" aria-label={i18nT('components.projectPicker.subdirectories')} className="overflow-y-auto flex-1 min-h-0">
-            {filteredBrowse.length === 0 && <div className="px-3 py-4 text-[12px] text-muted text-center">{i18nT('components.projectPicker.no_subdirectories')}</div>}
+            {!listingFailed && filteredBrowse.length === 0 && <div className="px-3 py-4 text-[12px] text-muted text-center">{i18nT('components.projectPicker.no_subdirectories')}</div>}
             {filteredBrowse.map((d, i) => (
               <button
                 key={d.path}

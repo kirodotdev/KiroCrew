@@ -30,7 +30,11 @@ const OUT = process.argv[2] || '../temp-screenshots/windows-drives-picker'
 mkdirSync(OUT, { recursive: true })
 
 const DRIVES = { path: '', parent: '', dirs: ['C:\\', 'D:\\', 'E:\\'].map(d => ({ name: d, path: d })) }
-let drivesFail = false
+// 'ok' answers the drive list; 'failed' is a 503 with no code (the generic arm);
+// 'denied' is the 403+access_denied the handler answers (its own copy, Retry-less);
+// 'hang' never answers, so the client's OWN browse deadline is what fires — the
+// timed-out arm's copy is then evidenced by the real mechanism, not a stubbed error.
+let drivesMode = 'ok'
 const TREE = {
   'C:\\': { path: 'C:\\', parent: '', dirs: ['Program Files', 'Users', 'Windows'].map(n => ({ name: n, path: `C:\\${n}` })) },
   'D:\\': { path: 'D:\\', parent: '', dirs: ['backups', 'games', 'work'].map(n => ({ name: n, path: `D:\\${n}` })) },
@@ -56,7 +60,9 @@ await stubDashboardApi(page, {
     if (path !== '/api/browse-dirs') return false
     const u = new URL(route.request().url())
     if (u.searchParams.get('drives') === '1') {
-      if (drivesFail) { await json(route, { error: 'Access denied' }, 503); return true }
+      if (drivesMode === 'failed') { await json(route, { error: 'Access denied' }, 503); return true }
+      if (drivesMode === 'denied') { await json(route, { error: 'Access denied', code: 'access_denied' }, 403); return true }
+      if (drivesMode === 'hang') { return true } // handled, never fulfilled: the client deadline fires
       await json(route, DRIVES); return true
     }
     const p = u.searchParams.get('path') || 'C:\\'
@@ -96,15 +102,30 @@ await shot('3-other-drive')
 
 // Back to the drive list, then Back again from another drive root with the
 // listing failing: the notice appears and the D:\ rows stay usable.
-drivesFail = true
+drivesMode = 'failed'
 await page.getByTitle('All drives', { exact: true }).click()
 await page.getByTestId('pp-drives-error').waitFor()
 await page.waitForTimeout(300)
 await shot('4-drives-failed')
 
+// The 403+access_denied arm: its OWN copy, and no Retry — the refusal is permanent.
+drivesMode = 'denied'
+await page.getByTitle('All drives', { exact: true }).click()
+await page.getByText('No access to the drive list', { exact: false }).waitFor()
+await page.waitForTimeout(300)
+await shot('4b-drives-denied')
+
+// The hang arm: the stub never answers, the client's browse deadline fires, and the
+// notice says timed out — asserted verbatim so a copy drift fails this run.
+drivesMode = 'hang'
+await page.getByTitle('All drives', { exact: true }).click()
+await page.getByText('Drive list timed out', { exact: false }).waitFor({ timeout: 25_000 })
+await page.waitForTimeout(300)
+await shot('4c-drives-timed-out')
+
 // A folder listing that fails: drill to D:\work, then into a folder the stub
 // refuses. The notice names the listing still on screen.
-drivesFail = false
+drivesMode = 'ok'
 await page.getByRole('option', { name: /work/ }).click()
 await page.getByRole('option', { name: /kirocrew/ }).waitFor()
 await page.getByRole('option', { name: /kirocrew/ }).click()
@@ -132,7 +153,7 @@ await page.getByRole('button', { name: /^(Select project|Project:)/ }).first().c
 const chatCombo = page.getByRole('combobox', { name: 'Project directory path' })
 await chatCombo.waitFor()
 await page.getByRole('option', { name: /Users/ }).waitFor()
-drivesFail = true
+drivesMode = 'failed'
 await page.getByTitle('All drives', { exact: true }).click()
 await page.getByRole('button', { name: /Ask the agent/i }).waitFor()
 await page.waitForTimeout(300)

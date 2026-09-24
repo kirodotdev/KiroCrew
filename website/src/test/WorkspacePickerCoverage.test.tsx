@@ -4,6 +4,7 @@ import type { ComponentProps } from 'react'
 import { renderWithProviders } from './helpers'
 import WorkspacePicker from '../components/WorkspacePicker'
 import { api } from '../api/client'
+import { ApiError } from '../api/apiError'
 
 type BrowseDirsResult = Awaited<ReturnType<typeof api.browseDirs>>
 type PickerProps = ComponentProps<typeof WorkspacePicker>
@@ -160,11 +161,189 @@ describe('WorkspacePicker', () => {
       expect(await screen.findByText('No subdirectories')).toBeInTheDocument()
     })
 
-    it('swallows a browse failure and stays usable', async () => {
+    it('ignores an older browse failure after a newer browse has succeeded', async () => {
+      renderPicker()
+      await screen.findByText('alpha')
+
+      let rejectOlder!: (reason?: unknown) => void
+      const older = new Promise<BrowseDirsResult>((_resolve, reject) => { rejectOlder = reject })
+      let resolveNewer!: (value: BrowseDirsResult) => void
+      const newer = new Promise<BrowseDirsResult>(resolve => { resolveNewer = resolve })
+      vi.mocked(api.browseDirs)
+        .mockReturnValueOnce(older)
+        .mockReturnValueOnce(newer)
+
+      fireEvent.click(screen.getByText('alpha'))
+      fireEvent.click(screen.getByText('beta'))
+      await act(async () => {
+        resolveNewer(browseResult('/home/u/beta', '/home/u', [
+          { name: 'newest', path: '/home/u/beta/newest' },
+        ]))
+      })
+      expect(await screen.findByText('newest')).toBeInTheDocument()
+
+      await act(async () => { rejectOlder(new Error('older listing failed')) })
+      expect(screen.getByText('newest')).toBeInTheDocument()
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
+    })
+
+    it('surfaces a browse failure without claiming the directory is empty', async () => {
       vi.mocked(api.browseDirs).mockRejectedValue(new Error('nope'))
       renderPicker()
-      expect(await screen.findByText('No subdirectories')).toBeInTheDocument()
+      expect(await screen.findByRole('alert')).toHaveTextContent('Unable to list folder')
+      expect(screen.queryByText('No subdirectories')).not.toBeInTheDocument()
       expect(screen.getByLabelText('Project directory path')).toHaveValue('')
+    })
+
+    it('offers Retry beside the failure, which re-asks for the same listing and clears the notice when it lands', async () => {
+      // The notice named the cause but no remedy, and this surface has no Refresh, so a
+      // wedged gateway that recovered left the user closing and reopening the picker.
+      vi.mocked(api.browseDirs)
+        .mockRejectedValueOnce(Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' }))
+        .mockResolvedValue(browseResult())
+      renderPicker()
+      expect(await screen.findByRole('alert')).toHaveTextContent('Folder listing timed out')
+      expect(api.browseDirs).toHaveBeenCalledTimes(1)
+
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+      // The first open asked for the default listing; with no browse position yet, so does Retry.
+      expect(api.browseDirs).toHaveBeenCalledTimes(2)
+      expect(api.browseDirs).toHaveBeenLastCalledWith(undefined)
+      expect(await screen.findByText('alpha')).toBeInTheDocument()
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
+
+      // The recovered listing drills as any other.
+      fireEvent.click(screen.getByText('alpha'))
+      expect(api.browseDirs).toHaveBeenLastCalledWith('/home/u/alpha')
+    })
+
+    it('Retry re-lists the child whose drill failed', async () => {
+      vi.mocked(api.browseDirs)
+        .mockResolvedValueOnce(browseResult('/home/u', '/home', [
+          { name: 'x', path: '/home/u/x' },
+        ]))
+        .mockRejectedValueOnce(Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' }))
+        .mockResolvedValueOnce(browseResult('/home/u/x', '/home/u', []))
+      renderPicker()
+      fireEvent.click(await screen.findByText('x'))
+      expect(await screen.findByRole('alert')).toHaveTextContent('Folder listing timed out')
+
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+      expect(api.browseDirs).toHaveBeenLastCalledWith('/home/u/x')
+      await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+    })
+
+    it('Retry after a NON-timeout failure re-asks for the same listing too', async () => {
+      // The `failed` arm offers Retry exactly as the timeout arm does, so it has to re-ask as well.
+      vi.mocked(api.browseDirs)
+        .mockRejectedValueOnce(new Error('Failed to fetch'))
+        .mockResolvedValue(browseResult())
+      renderPicker()
+      expect(await screen.findByRole('alert')).toHaveTextContent('Unable to list folder')
+
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+      expect(api.browseDirs).toHaveBeenCalledTimes(2)
+      expect(api.browseDirs).toHaveBeenLastCalledWith(undefined)
+      expect(await screen.findByText('alpha')).toBeInTheDocument()
+    })
+
+    it('does not offer Retry for an access-denied listing refusal', async () => {
+      vi.mocked(api.browseDirs).mockRejectedValue(
+        new ApiError(403, 'Access denied', JSON.stringify({ error: 'Access denied', code: 'access_denied' })),
+      )
+      renderPicker()
+      expect(await screen.findByRole('alert')).toHaveTextContent('No access to this folder')
+      expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
+    })
+
+    it('shows the retry in progress and disables the control until the re-asked listing settles', async () => {
+      // A listing can honestly take most of its bound. With no in-flight state, the timeout
+      // notice and an enabled Retry sat unchanged for that whole wait, so a second press was
+      // the natural read -- and each press took a fresh ticket and restarted the wait.
+      const timeout = Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' })
+      vi.mocked(api.browseDirs).mockRejectedValueOnce(timeout)
+      renderPicker()
+      expect(await screen.findByRole('alert')).toHaveTextContent('Folder listing timed out')
+
+      let settleRetry!: (value: BrowseDirsResult) => void
+      vi.mocked(api.browseDirs).mockReturnValueOnce(
+        new Promise<BrowseDirsResult>(resolve => { settleRetry = resolve }),
+      )
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+      expect(api.browseDirs).toHaveBeenCalledTimes(2)
+
+      // In flight: the control says so and takes no second press, so the ticket stands.
+      const inFlight = screen.getByRole('button', { name: 'Retrying…' })
+      expect(inFlight).toBeDisabled()
+      expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
+      fireEvent.click(inFlight)
+      expect(api.browseDirs).toHaveBeenCalledTimes(2)
+
+      await act(async () => { settleRetry(browseResult()) })
+      expect(await screen.findByText('alpha')).toBeInTheDocument()
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Retrying…' })).not.toBeInTheDocument()
+    })
+
+    it('re-enables Retry when the re-asked listing fails again', async () => {
+      const timeout = () => Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' })
+      vi.mocked(api.browseDirs).mockRejectedValueOnce(timeout())
+      renderPicker()
+      expect(await screen.findByRole('alert')).toHaveTextContent('Folder listing timed out')
+
+      let failRetry!: (reason: unknown) => void
+      vi.mocked(api.browseDirs).mockReturnValueOnce(
+        new Promise<BrowseDirsResult>((_resolve, reject) => { failRetry = reject }),
+      )
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+      expect(screen.getByRole('button', { name: 'Retrying…' })).toBeDisabled()
+
+      await act(async () => { failRetry(timeout()) })
+      expect(await screen.findByRole('button', { name: 'Retry' })).toBeEnabled()
+      expect(screen.getByRole('alert')).toHaveTextContent('Folder listing timed out')
+    })
+
+    it('a STALE settlement neither re-enables Retry nor replaces the notice; only the ticketed one does', async () => {
+      renderPicker()
+      await screen.findByText('alpha')
+
+      // Two drills in a row: the first is superseded before either settles.
+      let settleStale!: (value: BrowseDirsResult) => void
+      let failCurrent!: (reason: unknown) => void
+      vi.mocked(api.browseDirs)
+        .mockReturnValueOnce(new Promise<BrowseDirsResult>(resolve => { settleStale = resolve }))
+        .mockReturnValueOnce(new Promise<BrowseDirsResult>((_resolve, reject) => { failCurrent = reject }))
+      fireEvent.click(screen.getByText('alpha'))
+      fireEvent.click(screen.getByText('beta'))
+      await act(async () => {
+        failCurrent(Object.assign(new Error('deadline exceeded'), { name: 'TimeoutError' }))
+      })
+      expect(await screen.findByRole('alert')).toHaveTextContent('Folder listing timed out')
+
+      let settleRetry!: (value: BrowseDirsResult) => void
+      vi.mocked(api.browseDirs).mockReturnValueOnce(
+        new Promise<BrowseDirsResult>(resolve => { settleRetry = resolve }),
+      )
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+      expect(api.browseDirs).toHaveBeenLastCalledWith('/home/u/beta')
+      expect(screen.getByRole('button', { name: 'Retrying…' })).toBeDisabled()
+
+      // The superseded drill lands now: it must not read as the retry having settled.
+      await act(async () => {
+        settleStale(browseResult('/home/u/alpha', '/home/u', [{ name: 'stale', path: '/home/u/alpha/stale' }]))
+      })
+      expect(screen.getByRole('button', { name: 'Retrying…' })).toBeDisabled()
+      expect(screen.getByRole('alert')).toHaveTextContent('Folder listing timed out')
+      expect(screen.queryByText('stale')).not.toBeInTheDocument()
+
+      await act(async () => {
+        settleRetry(browseResult('/home/u/beta', '/home/u', [{ name: 'fresh', path: '/home/u/beta/fresh' }]))
+      })
+      expect(await screen.findByText('fresh')).toBeInTheDocument()
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Retrying…' })).not.toBeInTheDocument()
     })
   })
 
