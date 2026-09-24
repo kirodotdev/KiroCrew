@@ -6327,14 +6327,16 @@ class TestAdaptiveHomeTargetsExpiry:
         on every build that was handed that leaf, and a per-build line would be
         noise that gets filtered, which is the same as having none.
         """
+        from kiro_crew import security
         from kiro_crew.security import paths as gate
 
+        read_dirs = security._SENSITIVE_HOME_DIRS
         gate._home_targets_pin_state.clear()
         with caplog.at_level(logging.INFO, logger=gate.__name__):
-            gate._report_expiry_pin(True)
-            gate._report_expiry_pin(True)
-            gate._report_expiry_pin(True)
-            gate._report_expiry_pin(False)
+            gate._report_expiry_pin(read_dirs, True)
+            gate._report_expiry_pin(read_dirs, True)
+            gate._report_expiry_pin(read_dirs, True)
+            gate._report_expiry_pin(read_dirs, False)
         lines = [record.getMessage() for record in caplog.records]
         gate._home_targets_pin_state.clear()
 
@@ -6342,6 +6344,124 @@ class TestAdaptiveHomeTargetsExpiry:
         assert "pinned to the" in lines[0]
         assert "symlink" in lines[0]
         assert "cost-tracking expiry in force" in lines[1]
+        # Both halves name the tier, so a reader diagnosing a refusal knows WHICH
+        # gate the line is about rather than reading it as the whole gate's state.
+        assert all("(read tier)" in line for line in lines), lines
+
+    def test_each_tier_dedups_on_its_own_state_not_one_shared_slot(
+        self, monkeypatch, tmp_path, caplog
+    ) -> None:
+        """A host whose builds disagree gets one line per tier, not an alternation.
+
+        The gates hand the builder different lists, so the flag can come back
+        differently for each: a symlinked write-protected crew leaf that holds no
+        secret is in the write gate's list and in neither of the others, which pins
+        the write tier while the keystone-artifact build reports no traversal and
+        selects the cost-tracking expiry. Keyed on one shared slot, each build flips
+        the key the other just set, so both messages repeat for as long as the
+        disagreement lasts and the "in force" half asserts the adaptive expiry
+        applies on a host where a gate IS pinned to the floor -- the exact wrong
+        conclusion for whoever is reading the log to find out why. Keyed per list,
+        each build transitions its own state and says it once.
+
+        Driven through :func:`_home_dir_targets` rather than the reporter, so the
+        wiring that passes the list is pinned and not only the helper.
+        """
+        from kiro_crew import security
+        from kiro_crew.security import paths as gate
+
+        crew_home = tmp_path / "crew"
+        crew_home.mkdir()
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("KIROCREW_HOME", str(crew_home))
+        self._clear()
+        gate._home_targets_pin_state.clear()
+        clock = {"now": 1000.0}
+        monkeypatch.setattr(security.time, "monotonic", lambda: clock["now"])
+
+        write_dirs = security._SENSITIVE_HOME_DIRS + security._WRITE_PROTECTED_HOME_PATHS
+        keystone_dirs = security._KEYSTONE_ARTIFACT_PARENTS
+
+        def disagreeing(home_dirs, roots=None):
+            """Report a traversal for the write list alone, the shape of the defect."""
+            clock["now"] += 0.4
+            built = security._BuiltTargets({str(crew_home / "sessions").casefold()})
+            built.resolution_differed = home_dirs == write_dirs
+            return built
+
+        monkeypatch.setattr(security, "_home_dir_targets_uncached", disagreeing)
+
+        with caplog.at_level(logging.INFO, logger=gate.__name__):
+            for _ in range(3):
+                security._home_dir_targets(write_dirs)
+                security._home_dir_targets(keystone_dirs)
+                # Expire both entries, so the next pass is a fresh build for each
+                # tier and reports again rather than being served from the cache.
+                clock["now"] += security._HOME_TARGETS_TTL_MAX_SECS + 1.0
+        lines = [r.getMessage() for r in caplog.records if "anchor cache" in r.getMessage()]
+        gate._home_targets_pin_state.clear()
+
+        assert len(lines) == 2, f"each tier reports once across the three passes: {lines}"
+        pinned = [line for line in lines if "pinned to the" in line]
+        adaptive = [line for line in lines if "cost-tracking expiry in force" in line]
+        assert len(pinned) == 1 and "(write tier)" in pinned[0], lines
+        assert len(adaptive) == 1 and "(keystone-artifact tier)" in adaptive[0], lines
+
+    def test_every_gate_list_handed_to_the_builder_has_a_tier_name(self) -> None:
+        """A new gate must not reach an operator's log as an ``unnamed`` tier.
+
+        :func:`_home_targets_tier` names the lists it knows and answers generically
+        for one it does not, which keeps the dedup correct either way -- so nothing
+        at runtime notices a gate that arrives with no name, and the generic answer
+        would sit in the log unchallenged. This is what notices: every list a call
+        site in the module hands the builder is resolved against the module and must
+        come back named. The expectation is derived from the call sites rather than
+        restated, so it cannot agree with a stale copy of them.
+        """
+        import ast
+
+        from kiro_crew.security import paths as gate
+
+        tree = ast.parse(Path(gate.__file__).read_text(encoding="utf-8"))
+
+        def resolve(expr: ast.expr) -> list[str] | None:
+            """The module list this expression denotes, or None if it is not one."""
+            if isinstance(expr, ast.Name):
+                value = getattr(gate, expr.id, None)
+                return value if isinstance(value, list) else None
+            if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
+                left, right = resolve(expr.left), resolve(expr.right)
+                return None if left is None or right is None else left + right
+            return None
+
+        # Where the list sits in each signature: first for the builder, second for
+        # the matcher that forwards to it.
+        positions = {"_home_dir_targets": 0, "_path_in_home_dirs": 1}
+        named: list[str] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            callee = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
+            index = positions.get(callee)
+            if index is None or len(node.args) <= index:
+                continue
+            # A call that forwards its own parameter resolves to nothing here; the
+            # list it received is pinned at whichever call site supplied it.
+            listed = resolve(node.args[index])
+            if listed is None:
+                continue
+            tier = gate._home_targets_tier(listed)
+            assert not tier.startswith(
+                "unnamed"
+            ), f"a gate hands the builder an unnamed list: {ast.unparse(node.args[index])}"
+            named.append(tier)
+
+        assert set(named) == {
+            "read",
+            "write",
+            "keystone-artifact",
+        }, f"the scan must reach every gate, found {sorted(set(named))}"
 
     def test_repointed_home_symlink_is_not_served_from_cache_at_the_longest_expiry(
         self, monkeypatch, tmp_path
