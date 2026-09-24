@@ -2750,6 +2750,112 @@ the day it lands rather than waiting to be added to a list. A container that
 merely shares the attribute name can be exempted with a stated reason, and the
 exemption self-voids if that module ever starts writing breadcrumbs.
 
+**`reset` keeps the popped session readable for exactly the life of its teardown.**
+The pop happens under the registry lock before the awaits that can hang (the end
+record, the unlink, the child probes, the provider shutdown), so from the pop to
+the end of the teardown the live map does not name the process the teardown holds.
+A reader that must still reach that process — the cron reaper, when a run's OWN
+`finally` reset popped the session and then hung, the ordinary shape of a run that
+hangs in its teardown — reads `SessionManager.tearing_down(key)`. The facade opens
+a `_TeardownScope` around every `reset`; `SessionLifecycleService.reset` records
+the popped session into it in the same lock hold as the pop, and the scope's exit
+releases the entry however the call ends (return, a deferred shutdown error, a
+cancellation landing on the hung shutdown). Every teardown in flight under the
+key is retained, in pop order (`tearing_down(key)` returns the list): a cold start
+can register a successor while the first teardown hangs, and that successor's own
+reset can pop it and hang as well -- a reader ending the key must reach BOTH
+processes, and a table that kept the first popper alone hid the hung successor
+behind a record that said `reaped`. Each entry is a `TornDown` record: the popped
+session AND the `ProcessHandle` read off it in the pop's own lock hold
+(`process_identity.process_handle_of`), never re-read — the teardown's own awaits
+clear the ACP client's recorded pid after a kill it could not confirm, with the
+process still standing, so a reader that re-read the retained session found no pid
+and named no process while it lived; the reader kills on the entry's `handle`. Each
+scope removes exactly the entry it
+recorded, by the session's identity, when its own teardown ends. Bounded by construction: an
+entry lives exactly as long as the reset coroutine that recorded it, which already
+holds that session, so the table adds a reference per teardown in flight and never
+a lifetime. A caller that must know exactly which session ITS reset popped opens the scope itself (`SessionManager.teardown_scope(on_pop=...)`, passed to `reset` as `scope`): `on_pop` runs in the same lock hold as the pop, handed that session -- how the cron reaper takes the handle of the process a timed-out reset holds. A `SessionLifecycleService.reset` called without a scope records
+nothing; the facade is the caller that opens one. `test_session.py::
+TestResetRetainsTheTornDownSession` pins the entry's life; the cron module spec
+records what the reaper does with it.
+
+**A key whose run is being ended admits nothing -- and drops nothing: the per-key
+ending fence.** `SessionManager.ending_key(key)` is a context manager, the per-key
+sibling of the manager-wide `_closing` check, held by a caller that is ending a
+run (the cron reaper, `cancel()`) from before its reset-then-kill passes until the
+run's terminal record and audit are written: a caller held at the door wakes to a
+key whose run is RECORDED, never to one that is neither being ended nor recorded
+(runtime and durable state agreeing; a registration after the passes is a new life
+under the key, not the run's process, and it follows the record). It raises
+synchronously on entry (`SessionAllocationService.begin_ending`, before the
+holder's first await) and lifts however the block ends (`end_ending`). While it
+is up, a claim or a cold start under the key is HELD at the front door of
+`get_or_create`: the call takes no reservation, waits outside the registry lock
+for the fence's lift event (`SessionRegistryState.ending_lifted`, set by
+`end_ending`; `wait_for_ending_fence`) and then proceeds -- so a sub-agent
+completion that races the reap of its parent's run is delivered into the session
+that follows the record, as it was before the fence existed, never into the run
+being ended and never dropped. The wait is bounded by `ENDING_FENCE_WAIT_SECS`
+(180 s: an independent caller-refusal bound, not a multiple of the fence's length
+-- a reset cancelled at its timeout still finishes its cleanup inside the pass, so
+no duration is derived from the passes -- fixed well inside the 1200 s the
+completion path allows its whole delivery); a fence still up
+at that point is a holder stuck past its bounds, and the caller is refused with
+`SessionEndingError` so the defect surfaces rather than hanging every caller of
+the key. The front door is not the whole rule: `get_or_create` takes its
+allocation reservation and then awaits `provider.start()` BEFORE publishing into
+the map, so a cold start caught inside `start()` when the fence goes up has
+published nothing the holder's passes could see. `begin_ending` therefore
+INVALIDATES every reservation in flight under the key at that moment
+(`SessionRegistryState.invalidated_reservations`, keyed by the reservation token
+`get_or_create` threads into `_get_or_create_impl`): the body's doors -- the
+claim of a live session, that claim again once its wait on the busy turn's
+permit ends (`_reacquire_and_validate`, under the lock, before the session is
+handed back: the wait can outlast a fence rising, and the turn's ordinary
+release would otherwise hand the permit to the waiter before the holder's reset
+pops the session), the cold start before it spawns, the registration after
+`provider.start()` -- refuse that call (`_refuse_if_ending`; the reacquire door
+releases the permit it just took), the provider it
+started is hard-killed by the same `except BaseException` path a closing manager
+uses, and `get_or_create` then removes the reservation, waits for the lift and
+allocates again, so the held request lands with a fresh provider; the
+invalidation lives exactly as long as the reservation (dropped in
+`_remove_reservation_now`). A reservation taken after the fence lifts is a new
+life under the key and is not invalidated. A reservation is not yet a process:
+`SessionRegistryState.spawning_reservations` marks a reservation from the
+pre-spawn fence check (the spawn door) -- or from a warm-pool claim, which owns a
+live process from the claim on -- until registration (published, or a won
+race -- cleared in the same lock hold, with no await between), and
+`SessionManager._spawn_in_flight(key)` (`spawn_in_flight`, a reason phrase or
+None) is the read the holder makes after its passes to name a start it did not
+itself answer -- a cold start inside `provider.start()`, refused and hard-killed
+when it returns. A start that returns DURING the passes is refused at once and its
+reservation removed, so it leaves a receipt instead
+(`SessionRegistryState.refused_spawns`, written by `_remove_reservation_now` while
+the key's fence is up, cleared by `end_ending`): the hard kill the refusal
+dispatched runs off the loop with no outcome read back, so the holder names it
+too ("refused at registration during the ending ... an outcome this record does
+not confirm") rather than recording `reaped` over a process the cleanup had
+erased every trace of; a refusal after the lift leaves no receipt, since the
+record it could inform is already written. A claim waiting on the live session's
+turn semaphore, or a cold start still ahead of its spawn door, holds a reservation
+but is NOT named: it started nothing, is woken or held, and lands after the record
+(naming it recorded a kill failure over a clean reap). A caller held at the front
+door holds no reservation at all. `open_task_session`, the other
+publication door, is refused at its entry while the fence is up rather than held:
+it holds no reservation and creates on a shared runtime with no hard-kill path, so
+a per-step create already in flight is what the ending caller's post-pass read of
+the key remains the net for. Additive to the allocation-boundary predecessor
+capture: new state fields, new methods, and door checks as separate statements.
+`test_session.py::TestTheEndingFenceAdmitsNothingUnderTheKey` pins the held front
+door (cold start and claim), the in-flight invalidation with the hard kill and the
+re-allocation (fence up when the start returns, and lifted before), the pre-start
+variant, the spawn read (a start inside `start()` is a spawn in flight; a claim
+waiting on the turn and a reservation ahead of its spawn door are not), the wait
+bound, the lift, and the task-session door; the cron module spec records what
+the reaper does with the fence, including holding it through the record.
+
 ## Security: PreToolUse Command Enforcement
 
 Command denial is enforced by Kiro Crew's bundled `hooks.py` `PreToolUse` gate,

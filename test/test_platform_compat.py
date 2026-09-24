@@ -490,6 +490,102 @@ class TestProcessHelpers:
                 child.kill()
                 child.wait()
 
+    def test_pid_is_zombie_reads_the_running_state_of_self(self):
+        # A running process is not a zombie on the platforms that expose the
+        # state (Linux /proc, macOS kinfo); elsewhere the answer is "unknown".
+        expected = False if sys.platform in ("linux", "darwin") else None
+        assert pc.pid_is_zombie(os.getpid()) is expected
+
+    def test_pid_is_zombie_is_unknown_for_an_unreadable_or_invalid_pid(self):
+        assert pc.pid_is_zombie(0) is None
+        assert pc.pid_is_zombie(-1) is None
+        if sys.platform == "linux":
+            # No /proc entry: unreadable, not "not a zombie".
+            assert pc.pid_is_zombie(2_000_000_000) is None
+
+    def test_pid_is_zombie_reads_the_linux_stat_state_field(self, monkeypatch):
+        # The comm field is parenthesised and may itself contain spaces and
+        # parentheses, so the state is the first field after the LAST ')'.
+        tail = " ".join(str(i) for i in range(4, 24))
+        seen: list[str] = []
+
+        def _stat_path(text: str):
+            class _FakeStatPath:
+                def __init__(self, path):
+                    seen.append(str(path))
+
+                def read_text(self, *args, **kwargs):
+                    return text
+
+            return _FakeStatPath
+
+        monkeypatch.setattr(pc.sys, "platform", "linux")
+        for state, expected in (("Z", True), ("X", True), ("S", False), ("R", False)):
+            monkeypatch.setattr(
+                pc, "Path", _stat_path(f"4242 (kiro (cli) worker) {state} 1 {tail}")
+            )
+            assert pc.pid_is_zombie(4242) is expected, state
+        assert seen == ["/proc/4242/stat"] * 4
+
+        class _Unreadable:
+            def __init__(self, _p):
+                pass
+
+            def read_text(self, *args, **kwargs):
+                raise PermissionError("[Errno 13] Permission denied")
+
+        monkeypatch.setattr(pc, "Path", _Unreadable)
+        assert pc.pid_is_zombie(4242) is None
+
+    def test_kill_process_group_signals_the_captured_id_and_resolves_nothing(self, monkeypatch):
+        # The caller hands over a group id it captured while the leader was alive;
+        # the primitive addresses THAT id -- no pid is consulted, so a recycled pid
+        # cannot redirect the signal. The POSIX branch, on every platform: the
+        # branch flag is pinned and the two group syscalls are supplied through
+        # the seams the primitive reads (created where the runner lacks them).
+        signalled: list[tuple[int, int]] = []
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(
+            os, "killpg", lambda pgid, sig: signalled.append((pgid, sig)), raising=False
+        )
+        monkeypatch.setattr(
+            os,
+            "getpgid",
+            lambda _pid: pytest.fail("kill_process_group resolved a group from a pid"),
+            raising=False,
+        )
+
+        assert pc.kill_process_group(2**22 + 4242, pc.SIGKILL) is True
+
+        assert signalled == [(2**22 + 4242, pc.SIGKILL)]
+
+    def test_kill_process_group_refuses_broadcast_and_self_instead_of_degrading(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(
+            os, "killpg", lambda pgid, sig: pytest.fail(f"signalled group {pgid}"), raising=False
+        )
+        for refused in (0, 1, -1, pc._OWN_PGID, "4242", 4242.0):
+            with pytest.raises(ValueError, match="refusing broadcast/self process group"):
+                pc.kill_process_group(refused, pc.SIGKILL)  # type: ignore[arg-type]
+
+    def test_kill_process_group_lets_the_signal_s_errors_propagate(self, monkeypatch):
+        def _gone(pgid, sig):
+            raise ProcessLookupError("[Errno 3] No such process")
+
+        monkeypatch.setattr(pc, "IS_POSIX", True)
+        monkeypatch.setattr(os, "killpg", _gone, raising=False)
+        with pytest.raises(ProcessLookupError):
+            pc.kill_process_group(2**22 + 4343, pc.SIGKILL)
+
+    def test_kill_process_group_is_posix_only(self, monkeypatch):
+        # The other branch: no group syscall is reached, whatever the runner has.
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        monkeypatch.setattr(
+            os, "killpg", lambda pgid, sig: pytest.fail(f"signalled group {pgid}"), raising=False
+        )
+        with pytest.raises(OSError, match="no POSIX process groups"):
+            pc.kill_process_group(2**22 + 4444, pc.SIGKILL)
+
     def test_get_ppid_returns_int(self):
         # Returns the parent (>0 normally) or -1 on failure — never raises.
         ppid = pc.get_ppid(os.getpid())

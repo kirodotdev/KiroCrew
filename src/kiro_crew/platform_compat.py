@@ -6143,6 +6143,35 @@ def pid_exists(pid: int) -> bool:
         return False
 
 
+def pid_is_zombie(pid: int) -> bool | None:
+    """Whether *pid* has exited and only waits to be reaped: True / False, None when unreadable.
+
+    ``pid_exists`` answers True for a zombie (``os.kill(pid, 0)`` reaches it),
+    so a caller asking "is this process still RUNNING" -- a survivor check
+    after a signal, where the signalled process sits in the zombie state until
+    its parent, or init, collects it -- needs this beside it. Linux reads the
+    state field of ``/proc/<pid>/stat`` (``Z``, or ``X`` for one being torn
+    down); macOS asks the kernel (:func:`darwin_pid_is_zombie`); elsewhere, and
+    for a process that cannot be read, None -- the caller decides what
+    "unknown" means for it. Never signals anything.
+    """
+    if pid <= 0:
+        return None
+    if sys.platform == "linux":
+        try:
+            stat_data = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+        close_paren = stat_data.rfind(")")
+        fields = stat_data[close_paren + 2 :].split() if close_paren >= 0 else []
+        if not fields:
+            return None
+        return fields[0] in ("Z", "X", "x")
+    if sys.platform == "darwin":
+        return darwin_pid_is_zombie(pid)
+    return None
+
+
 #: Seconds before the ``ps`` start-time probe is abandoned. Only the BSD leg
 #: spawns anything; Linux reads /proc and Windows calls the kernel directly.
 _START_TIME_PS_TIMEOUT = 2
@@ -6507,6 +6536,34 @@ def kill_pid(pid: int, sig: int = SIGTERM) -> bool:
         raise OSError(f"taskkill invocation failed: {exc}") from exc
     if r.returncode != 0:
         _raise_taskkill_error(pid, r.returncode, r.stderr or r.stdout)
+    return True
+
+
+def kill_process_group(pgid: int, sig: int = SIGTERM) -> bool:
+    """Signal the POSIX process group *pgid* -- an id the CALLER captured and verified.
+
+    The group-addressed sibling of :func:`kill_process_tree`, for a caller that
+    holds a group id it read while the group's leader was alive and identity-
+    checked (:func:`kiro_crew.process_identity.isolated_group_of`) and must not
+    resolve anything from a pid at signal time: ``os.getpgid(pid)`` of a pid the
+    kernel has since handed to another process names that process's group.
+    ``os.killpg(pgid, sig)`` in-process, **letting exceptions propagate**
+    (``ProcessLookupError`` when the group has emptied, ``PermissionError``
+    when a member is unsignalable).
+
+    Carries the same broadcast guard as :func:`kill_process_tree`, refusing
+    with ``ValueError`` instead of degrading: ``killpg(1, sig)`` is ``kill(-1,
+    sig)`` in libc -- a signal to every process this uid owns -- so a non-int
+    id, an id <= 1, or our own group is never signalled, and there is no pid to
+    fall back to here. POSIX only: Windows has no process groups in this sense
+    (``OSError``); its trees are terminated through pinned handles
+    (:func:`kill_process_tree_pinned`).
+    """
+    if not IS_POSIX:
+        raise OSError("kill_process_group: no POSIX process groups on this platform")
+    if type(pgid) is not int or pgid <= 1 or pgid == _OWN_PGID:
+        raise ValueError(f"kill_process_group: refusing broadcast/self process group {pgid!r}")
+    os.killpg(pgid, sig)
     return True
 
 
