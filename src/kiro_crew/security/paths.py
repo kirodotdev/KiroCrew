@@ -611,9 +611,9 @@ _CREW_SECRET_LEAVES: list[str] = [
     # unintended-account outcome the gate exists to prevent. Reading it is
     # fenced too: the file names the account id and caller ARN that a profile
     # resolves to, which is reconnaissance an agent should not get for free from
-    # the shared gate. The authenticated dashboard ``/api/aws/consent`` handler
-    # and the ``kirocrew aws-consent`` CLI are the only writers and open the
-    # path directly, not through this gate, so both keep working.
+    # the shared gate. The authenticated dashboard ``/api/aws/consent`` handler is
+    # the only writer and opens the path directly, not through this gate, so it
+    # keeps working.
     "aws_service_consent.json",
     # Recorded consent to send conversation state to the external decision
     # provider (Jev). Same class of control as ``aws_service_consent.json``

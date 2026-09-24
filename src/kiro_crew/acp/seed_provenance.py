@@ -98,7 +98,7 @@ _LOCK = threading.Lock()
 # Cross-process lock filename, BESIDE the sidecar rather than on it: ``atomic_write``
 # publishes by renaming a fresh inode over the sidecar, so a lock held on the
 # sidecar's own inode would guard nothing across that rename. Same placement and
-# reasoning as ``aws_consent._ConsentLock`` and the ops-mission-control policy store.
+# reasoning as the ops-mission-control policy store.
 _LOCK_FILENAME = ".settings_seeds.lock"
 
 

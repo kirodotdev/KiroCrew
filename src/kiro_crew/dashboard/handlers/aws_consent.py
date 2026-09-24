@@ -5,10 +5,10 @@
 ``DELETE /api/aws/consent?service=<id>``  withdraw it
 
 This handler is the operator's own out-of-band control surface, and being the
-only writer (with the ``kirocrew aws-consent`` CLI) is what makes "the agent
-cannot consent to spending the operator's money" true: the grant lives on the
-keystone floor, which the agent can neither read nor write, and this handler
-opens that path directly rather than through the agent tool gate.
+only writer of the grant is what makes "the agent cannot consent to spending the
+operator's money" true: the grant lives on the keystone floor, which the agent
+can neither read nor write, and this handler opens that path directly rather than
+through the agent tool gate. There is no CLI verb that records a grant.
 
 The GET is deliberately the side that performs the ``sts:GetCallerIdentity``
 probe. It is free, non-mutating, and it is the whole point of the surface --
@@ -18,7 +18,10 @@ account and the profile now resolves to another, the probe revokes the stale
 grant here, so the next synthesis refuses and the operator is asked again.
 
 Blocking work is offloaded. The keystone read/write touches the filesystem and
-the identity probe spawns the AWS CLI, so neither may run on the event loop.
+the identity probe spawns the AWS CLI, so neither may run on the event loop. Nor
+may the refusal audit: its security-event-log write also initialises the log on
+first use, so a large or corrupt tail would make one refused request stall the
+requests behind it and the heartbeat.
 """
 
 from __future__ import annotations
@@ -47,7 +50,7 @@ _CODE_STALE_CONFIRMATION = "aws_consent_stale_confirmation"
 _CODE_OWNER_REQUIRED = "dashboard_owner_required"
 
 
-def _deny_non_owner(request: web.Request, operation: str) -> web.Response | None:
+async def _deny_non_owner(request: web.Request, operation: str) -> web.Response | None:
     """Refuse anyone but the dashboard OWNER on every consent endpoint.
 
     Confirming a charge spends the owner's money, so it is an owner action --
@@ -77,8 +80,15 @@ def _deny_non_owner(request: web.Request, operation: str) -> web.Response | None
         operation,
         request.get("app"),
     )
-    aws_consent.audit_decision(
-        "*", outcome="denied", detail=f"{operation}: non-owner caller refused"
+    # Off the event loop. ``audit_decision`` writes the security event log, and
+    # the first write on a fresh gateway also initialises it, so a large or
+    # corrupt log tail would make one refused request stall the requests behind
+    # it and the heartbeat. Same offload the file-delivery consent refusals use.
+    await asyncio.to_thread(
+        aws_consent.audit_decision,
+        "*",
+        outcome="denied",
+        detail=f"{operation}: non-owner caller refused",
     )
     # Deny decision made above; only the response label changes for a signed
     # pre-owner bootstrap subject (see stale_owner_session_response).
@@ -163,7 +173,7 @@ def _grant_payload(grant: aws_consent.Grant | None) -> dict[str, object] | None:
 
 async def api_aws_consent_get(request: web.Request) -> web.Response:
     """GET /api/aws/consent — what this service would bill, and its consent."""
-    denied = _deny_non_owner(request, "aws_consent.read")
+    denied = await _deny_non_owner(request, "aws_consent.read")
     if denied:
         return denied
     service = _requested_service(request)
@@ -219,7 +229,7 @@ async def api_aws_consent_post(request: web.Request) -> web.Response:
     name the account it is confirming is not informed consent, so it is not
     recorded and the feature stays refused.
     """
-    denied = _deny_non_owner(request, "aws_consent.grant")
+    denied = await _deny_non_owner(request, "aws_consent.grant")
     if denied:
         return denied
 
@@ -299,7 +309,7 @@ async def api_aws_consent_post(request: web.Request) -> web.Response:
 
 async def api_aws_consent_delete(request: web.Request) -> web.Response:
     """DELETE /api/aws/consent — withdraw a recorded confirmation."""
-    denied = _deny_non_owner(request, "aws_consent.revoke")
+    denied = await _deny_non_owner(request, "aws_consent.revoke")
     if denied:
         return denied
     service = _requested_service(request)

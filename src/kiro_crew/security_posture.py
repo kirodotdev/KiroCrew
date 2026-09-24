@@ -310,9 +310,10 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "aws_consent.py",
         "The stderr of a failed `aws sts get-caller-identity`, run to show the "
         "operator which account a paid AWS service would bill before they confirm "
-        "it. The text reaches TWO surfaces: the Settings > Voice consent card "
-        "(`identityDetail` over `GET /api/aws/consent`) and `kirocrew aws-consent "
-        "show` on stdout. The CLI quotes back what it was resolving, so a failure "
+        "it. The text reaches the Settings > Voice consent card "
+        "(`identityDetail` over `GET /api/aws/consent`), which is the only "
+        "surface that carries it. The AWS CLI quotes back what it was resolving, "
+        "so a failure "
         "can carry a `credential_process` command line, an SSO start URL, or a "
         "role ARN, and an endpoint override can carry an inline-credential URL -- "
         "so the first stderr line goes through the shared credential + "

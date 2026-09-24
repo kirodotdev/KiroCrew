@@ -647,6 +647,36 @@ class TestConcurrentWithdrawalFailsClosed:
         assert granted is False
         assert "changed" in reason
 
+    def test_grant_withdrawn_during_the_audit_write_is_denied(self, home):
+        """The audit offload suspends too, so it sits INSIDE the gate."""
+        _grant(profile="voice", region="us-east-1", account="111122223333")
+        real_read = aws_consent.read_grant
+        state = {"revoked": False}
+
+        def _reads(service):
+            return None if state["revoked"] else real_read(service)
+
+        async def _probe(_profile, _region, *, use_cache=True):
+            return aws_consent.Identity(ok=True, account="111122223333")
+
+        def _audit(_service, *, outcome, detail=""):
+            # Stands in for the operator pressing Withdraw while the security
+            # event log is being written on the thread pool.
+            state["revoked"] = True
+
+        with (
+            patch.object(aws_consent, "read_grant", side_effect=_reads),
+            patch.object(aws_consent, "probe_identity", _probe),
+            patch.object(aws_consent, "audit_decision", side_effect=_audit),
+        ):
+            granted, reason = asyncio.run(
+                aws_consent.authorize(
+                    aws_consent.SERVICE_POLLY, profile="voice", region="us-east-1"
+                )
+            )
+        assert granted is False
+        assert "Nothing was sent to AWS" in reason
+
     def test_a_grant_naming_no_account_is_denied(self, home):
         """Only a hand-edited file produces one, and it cannot be verified."""
         from kiro_crew.config.loader import aws_consent_path
@@ -776,13 +806,13 @@ class TestConsentEndpointRequiresTheOwner:
     def test_the_owner_is_not_refused(self, home):
         from kiro_crew.dashboard.handlers import aws_consent as handler
 
-        assert handler._deny_non_owner(self._req(), "aws_consent.read") is None
+        assert asyncio.run(handler._deny_non_owner(self._req(), "aws_consent.read")) is None
 
     def test_the_denial_is_audited(self, home):
         from kiro_crew.dashboard.handlers import aws_consent as handler
 
         with patch.object(handler.aws_consent, "audit_decision") as audit:
-            handler._deny_non_owner(self._req(app="notes"), "aws_consent.grant")
+            asyncio.run(handler._deny_non_owner(self._req(app="notes"), "aws_consent.grant"))
         assert [c.kwargs.get("outcome") for c in audit.call_args_list] == ["denied"]
 
     def test_the_denial_never_logs_the_caller_credential(self, home):
@@ -1431,3 +1461,147 @@ class TestAuditDecisionRedactsBeforeTruncate:
 
         assert len(calls) == 1
         assert calls[0]["resources"] == "polly: account=1234"
+
+
+# ── The store lock is in-process, so revocation cannot be denied ──
+
+
+class TestRevocationCannotBeDenied:
+    """An agent must not be able to block the owner's withdrawal of consent.
+
+    The store is serialised by an in-process lock, so there is no lock FILE beside
+    the grant for a sandboxed agent to hold. ``is_sensitive_path`` does cover such
+    a sibling, but that is the evadable tier: a runtime-constructed path escapes
+    the text and argv matchers. Sealing the leaf read-only would not close it
+    either, because ``flock(LOCK_EX)`` succeeds on an ``O_RDONLY`` descriptor, so a
+    read-only bind still admits the exclusive hold. What the hold costs is the
+    owner's REVOKE, which leaves consent active for later billable calls: a denial
+    of revocation rather than a disclosure. These pin that there is no such file.
+    """
+
+    def test_the_module_defines_no_file_lock(self):
+        assert not hasattr(aws_consent, "_LOCK_FILENAME")
+        assert not hasattr(aws_consent, "_ConsentLock")
+
+    def test_no_lock_artifact_appears_beside_the_grant(self, home):
+        from kiro_crew.config.loader import aws_consent_path
+
+        _grant(region="us-east-1")
+        assert aws_consent.revoke(aws_consent.SERVICE_POLLY) is True
+        names = sorted(p.name for p in aws_consent_path().parent.iterdir())
+        assert not [n for n in names if "lock" in n.lower()], names
+
+    @pytest.mark.skipif(os.name != "posix", reason="flock is POSIX-only")
+    def test_a_held_sibling_lock_cannot_block_a_revoke(self, home):
+        """The property exercised end to end: hold the sibling path, revoke anyway.
+
+        The revoke runs in a thread with a deadline, and the deadline is what makes
+        this discriminating rather than merely green: a store that waited on that
+        descriptor would leave the thread alive past it.
+        """
+        import fcntl
+        import threading
+
+        from kiro_crew.config.loader import aws_consent_path
+
+        _grant(region="us-east-1")
+        held = aws_consent_path().parent / ".aws_consent.lock"
+        fd = os.open(str(held), os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            removed: list[bool] = []
+            worker = threading.Thread(
+                target=lambda: removed.append(aws_consent.revoke(aws_consent.SERVICE_POLLY)),
+                daemon=True,
+            )
+            worker.start()
+            worker.join(timeout=10)
+            assert not worker.is_alive(), "the revoke waited on the held descriptor"
+            assert removed == [True]
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+        assert aws_consent.read_grant(aws_consent.SERVICE_POLLY) is None
+
+
+# ── Audit writes never run on the gateway event loop ──
+
+
+class TestAuditWritesStayOffTheEventLoop:
+    """``audit_decision`` writes the Security Event Log, so it must not run inline.
+
+    That write also INITIALISES the log on first use, so a large or corrupt tail
+    makes one call slow, and a slow call on the loop stalls every other request
+    and the heartbeat. Three async paths reach it and all three offload: the
+    endpoints' owner refusal, the per-call verification in :func:`authorize`, and
+    the refusal in :func:`refuse_and_log`. Each case records which thread the
+    audit ran on, because "it is awaited" is not the property being held --
+    running somewhere other than the loop thread is.
+    """
+
+    @staticmethod
+    def _recorder():
+        """Returns ``(fn, seen)``, where ``seen`` gets one flag per audit call.
+
+        True means that call ran on the event-loop thread, which is the defect;
+        ``get_running_loop`` raises in a worker thread and succeeds on the loop's
+        own, which is the whole discriminator.
+        """
+        seen: list[bool] = []
+
+        def record(*_args, **_kwargs) -> None:
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                seen.append(False)
+            else:
+                seen.append(True)
+
+        return record, seen
+
+    def test_the_helper_is_a_coroutine_so_every_caller_must_await_it(self):
+        import inspect
+
+        from kiro_crew.dashboard.handlers import aws_consent as handler
+
+        assert inspect.iscoroutinefunction(handler._deny_non_owner)
+
+    def test_the_owner_refusal_audits_off_the_loop(self, home):
+        from kiro_crew.dashboard.handlers import aws_consent as handler
+
+        record, seen = self._recorder()
+        with patch.object(handler.aws_consent, "audit_decision", record):
+            resp = asyncio.run(
+                handler.api_aws_consent_delete(
+                    _consent_request(app="notes", query={"service": "polly"})
+                )
+            )
+        assert resp.status == 403
+        assert seen == [False], "the denial audit ran on the event loop"
+
+    def test_a_refusal_audits_off_the_loop(self, home):
+        record, seen = self._recorder()
+        with patch.object(aws_consent, "audit_decision", record):
+            allowed = asyncio.run(
+                aws_consent.refuse_and_log(
+                    aws_consent.SERVICE_POLLY, profile="", region="us-east-1"
+                )
+            )
+        assert allowed is False
+        assert seen == [False], "the refusal audit ran on the event loop"
+
+    def test_a_verification_audits_off_the_loop(self, home):
+        _grant(profile="voice", region="us-east-1", account="111122223333")
+        same = aws_consent.Identity(ok=True, account="111122223333")
+        record, seen = self._recorder()
+        with (
+            patch.object(aws_consent, "probe_identity", AsyncMock(return_value=same)),
+            patch.object(aws_consent, "audit_decision", record),
+        ):
+            allowed = asyncio.run(
+                aws_consent.refuse_and_log(
+                    aws_consent.SERVICE_POLLY, profile="voice", region="us-east-1"
+                )
+            )
+        assert allowed is True
+        assert seen == [False], "the verification audit ran on the event loop"

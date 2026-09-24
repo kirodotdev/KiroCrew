@@ -57,14 +57,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import re
 import shutil
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any
 
-from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import aws_consent_path
 from kiro_crew.constants import AWS_PROFILE_FIRST_CHARS
@@ -94,11 +93,46 @@ SERVICE_LABELS: dict[str, str] = {
     SERVICE_COST_EXPLORER: "AWS Cost Explorer",
 }
 
-#: Lock filename beside the consent file -- NOT the file itself, because
-#: ``atomic_write`` renames a new inode over it and a lock on the old inode
-#: protects nothing. Same placement and reasoning as
-#: ``ops_mission_control.policy_store._PolicyLock``.
-_LOCK_FILENAME = ".aws_consent.lock"
+#: Serialises the read-modify-write of the consent store. Every writer below
+#: reads the whole store, edits one key and hands it to ``atomic_write``, which
+#: REPLACES the file wholesale, so two concurrent writers (Polly from the voice
+#: panel, Transcribe from the STT panel) would each write onto a stale snapshot
+#: and the later one would silently drop the other. On an authorization record
+#: that is a correctness defect rather than a lost-update annoyance: the dropped
+#: grant is a feature that refuses to run while its panel shows it as confirmed.
+#:
+#: Deliberately an IN-PROCESS lock, and deliberately NOT a lock FILE beside the
+#: grant.
+#:
+#: A sibling lock file is agent-reachable. ``is_sensitive_path`` covers it, so the
+#: agent's file tools refuse it, but that is the evadable tier: a
+#: runtime-constructed path escapes the text and argv matchers, exactly as
+#: ``sandbox._CREW_READONLY_LEAVES`` says of itself. Sealing such a leaf
+#: read-only would not close it either, because ``flock(LOCK_EX)`` succeeds on an
+#: ``O_RDONLY`` descriptor, so a read-only bind still admits the exclusive hold.
+#: A sandboxed agent holding that lock could not read the grant and could not
+#: forge it; what it could do is block the owner's REVOKE, leaving consent active
+#: for subsequent billable calls. A consent mechanism whose withdrawal can be
+#: denied by the party the consent constrains is defective in its central
+#: promise, so there is no lock file to hold. Same treatment, and the same
+#: reasoning, as ``file_delivery_consent._STORE_LOCK``.
+#:
+#: One writing PROCESS is what makes this sufficient. Every writer of this store
+#: runs in the gateway process, on its ``asyncio.to_thread`` pool: the
+#: owner-gated dashboard handler, :func:`authorize`'s drift revoke,
+#: :func:`reconcile_drift`, and :func:`revoke_for_profile` from the AWS Control
+#: route. There is no CLI verb, for the reason the module docstring gives. The
+#: racing actors are therefore THREADS, which is exactly what a
+#: ``threading.Lock`` serialises; an OS file lock would guard against a second
+#: writing process this design does not have.
+#:
+#: WHAT IS NOT SERIALISED, stated because it is a narrowing: two gateway
+#: processes sharing one data home do not serialise their writes against each
+#: other. A file lock would not make that configuration safe either, and a lost
+#: update there cannot WIDEN a grant. ``atomic_write`` renames, so no reader sees
+#: a torn file, and the losing write can only drop a grant, which makes the gated
+#: service refuse and the operator re-confirm.
+_STORE_LOCK = threading.Lock()
 
 #: Profile names and regions are interpolated into an ``aws`` CLI argv. Values
 #: are argv elements (never a shell string), so the classic injection does not
@@ -240,36 +274,6 @@ def _preserve_if_unreadable() -> None:
         logger.warning("could not preserve the unreadable AWS consent store", exc_info=True)
 
 
-class _ConsentLock:
-    """Exclusive lock around a read-modify-write of the consent file.
-
-    Every writer here is a read-modify-write over a file ``atomic_write``
-    REPLACES wholesale, so two concurrent grants (Polly from the voice panel,
-    Transcribe from the STT panel) would each write their own key onto a stale
-    snapshot and the later one would silently drop the other. On an
-    authorization record that is a correctness defect, not a lost-update
-    annoyance: the dropped grant is a feature that then refuses to run while
-    its panel shows it as confirmed.
-    """
-
-    def __init__(self) -> None:
-        self._fd: int | None = None
-
-    def __enter__(self) -> "_ConsentLock":
-        lock_file = aws_consent_path().parent / _LOCK_FILENAME
-        self._fd = os.open(str(lock_file), os.O_CREAT | os.O_RDWR, 0o600)
-        platform_compat.acquire_lock(self._fd, exclusive=True)
-        return self
-
-    def __exit__(self, *exc: object) -> None:
-        if self._fd is not None:
-            try:
-                platform_compat.release_lock(self._fd)
-            finally:
-                os.close(self._fd)
-                self._fd = None
-
-
 def _write_all(data: dict[str, Any]) -> None:
     path = aws_consent_path()
     # Fail-loud lockdown BEFORE any content lands, same as the sibling keystone
@@ -328,7 +332,7 @@ def record_grant(
         arn=arn,
         granted_at=granted_at,
     )
-    with _ConsentLock():
+    with _STORE_LOCK:
         # Inside the lock, before the read: a concurrent writer must not be able
         # to slip between preserving the old bytes and replacing them.
         _preserve_if_unreadable()
@@ -346,7 +350,7 @@ def record_grant(
 
 def revoke(service: str) -> bool:
     """Drop consent for ``service``. Returns True when a grant was removed."""
-    with _ConsentLock():
+    with _STORE_LOCK:
         data = _read_all()
         if service not in data:
             return False
@@ -377,7 +381,7 @@ def revoke_for_profile(profile: str) -> list[str]:
     caller refuses before it mutates.
     """
     revoked: list[str] = []
-    with _ConsentLock():
+    with _STORE_LOCK:
         try:
             raw = json.loads(aws_consent_path().read_text(encoding="utf-8"))
         except FileNotFoundError:
@@ -493,7 +497,7 @@ async def authorize(service: str, *, profile: str, region: str) -> tuple[bool, s
         )
 
     if identity.account != grant.account:
-        # Off the event loop: revoke does file I/O behind a cross-process lock.
+        # Off the event loop: revoke does file I/O under the store lock.
         await asyncio.to_thread(revoke, service)
         return False, (
             f"{label} was confirmed for AWS account {grant.account}, but "
@@ -502,11 +506,34 @@ async def authorize(service: str, *, profile: str, region: str) -> tuple[bool, s
             f"was withdrawn. Re-confirm in Settings -> Voice."
         )
 
-    # Re-assert the grant AFTER the probe, immediately before allowing. The probe
-    # spawns a subprocess, so it is a real suspension point -- long enough for the
-    # operator to press Withdraw, or for a drift check on another request to
-    # revoke. Without this the decision could be made from a grant that no longer
-    # exists. Same gate-and-act adjacency the repo already applies elsewhere.
+    # Audited on every verification. The probe is uncached here, so this is
+    # one event per gated call -- the price of the check being per-call.
+    #
+    # Off the event loop: ``audit_decision`` writes the security event log, and
+    # the first such write on a fresh gateway also initialises it, so a large or
+    # corrupt log tail would stall every other request and the heartbeat behind
+    # this one. This helper is awaited from the gateway's own handlers.
+    #
+    # Placed BEFORE the re-assertion below, because that offload suspends and the
+    # re-assertion has to be the last statement before allowing. The consequence
+    # is deliberate: this line records the identity verification that did happen
+    # even in the run where the re-assertion then refuses, and the caller audits
+    # that refusal, so the log reads verified-then-denied, which is the sequence
+    # that occurred.
+    await asyncio.to_thread(
+        audit_decision,
+        service,
+        outcome="verified",
+        detail=f"account={identity.account} source={credential_source(profile)}",
+    )
+
+    # Re-assert the grant immediately before allowing, with NO suspension point
+    # between this check and the return. Everything above it suspends: the probe
+    # spawns a subprocess and the audit write goes to a thread, either one long
+    # enough for the operator to press Withdraw or for a drift check on another
+    # request to revoke. Without that adjacency the decision can rest on a grant
+    # already withdrawn, and the caller's paid AWS call proceeds after the
+    # withdrawal. Same gate-and-act adjacency the repo already applies elsewhere.
     still = read_grant(service)
     if still is None or still.to_dict() != grant.to_dict():
         return False, (
@@ -514,13 +541,6 @@ async def authorize(service: str, *, profile: str, region: str) -> tuple[bool, s
             f"Nothing was sent to AWS."
         )
 
-    # Audited on every verification. The probe is uncached here, so this is
-    # one event per gated call -- the price of the check being per-call.
-    audit_decision(
-        service,
-        outcome="verified",
-        detail=f"account={identity.account} source={credential_source(profile)}",
-    )
     return True, ""
 
 
@@ -530,11 +550,16 @@ async def refuse_and_log(service: str, *, profile: str, region: str) -> bool:
     A single helper so every gated call site refuses identically -- the reason
     reaches the operator's log exactly once, at the point the request did not
     happen, and the denial reaches the tamper-evident audit log.
+
+    The audit write goes to a thread for the same reason as the verification one
+    in :func:`authorize`: it touches the security event log, this helper is
+    awaited on the gateway's event loop, and a refused call must not stall the
+    requests behind it.
     """
     granted, reason = await authorize(service, profile=profile, region=region)
     if not granted:
         logger.warning("AWS request refused: %s", reason)
-        audit_decision(service, outcome="denied", detail=reason)
+        await asyncio.to_thread(audit_decision, service, outcome="denied", detail=reason)
     return granted
 
 
@@ -548,8 +573,15 @@ def audit_decision(service: str, *, outcome: str, detail: str = "") -> None:
     withdrawn, and what was refused.
 
     Never raises: an audit failure must not be what stops a refusal from being
-    enforced. Offloaded from the caller's perspective by staying synchronous and
-    cheap -- ``sel()`` writes are already the established pattern here.
+    enforced.
+
+    SYNCHRONOUS and BLOCKING, stated here because it is the caller's obligation:
+    ``sel()`` writes the security event log, and the first write on a fresh
+    gateway also initialises it, so a large or corrupt log tail makes one call
+    slow. An ``async`` caller must therefore reach this through
+    ``asyncio.to_thread`` rather than inline, or the whole gateway waits behind
+    it -- the three consent endpoints, :func:`authorize` and
+    :func:`refuse_and_log` all do.
     """
     try:
         # Local imports for the same reason as in ``_redacted``: the redaction

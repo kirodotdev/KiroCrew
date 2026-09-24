@@ -284,7 +284,7 @@ async def test_aws_consent_gate_labels_stale_bootstrap_denial() -> None:
 
     request = _mocked_request()
     with patch.object(consent_handlers.aws_consent, "audit_decision", MagicMock()):
-        resp = consent_handlers._deny_non_owner(request, "aws_consent.read")
+        resp = await consent_handlers._deny_non_owner(request, "aws_consent.read")
     assert resp is not None and resp.status == 401
     assert resp.text is not None and STALE in resp.text
 
