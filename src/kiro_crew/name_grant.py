@@ -2057,15 +2057,26 @@ def _program_refusal(
             return association
     system = platform_compat.trusted_system_bin(name)
     if system is not None:
-        if not _is_trusted_system_file(name, real):
+        if _is_trusted_system_file(name, real):
+            # The system program itself, identified by realpath equality with the
+            # trusted-directory copy. The name IS the file by construction, so no
+            # witness is needed -- this keeps coreutils and the read-only allowlist
+            # working with no approval history at all.
+            return _interpreter_refusal(name, real, witness, depth)
+        if not platform_compat.trusted_nix_store_file(real):
             return Refusal(
                 SHADOWED,
                 f"{name} resolves to {found}, which shadows the system program at {system}",
             )
-        # The system program itself. The name identifies it by construction, so
-        # no witness is needed -- this is what keeps coreutils and the read-only
-        # allowlist working with no approval history at all.
-        return _interpreter_refusal(name, real, witness, depth)
+        # An immutable Nix store copy shadowing a system name (a gateway PATH that
+        # leads with `~/.nix-profile/bin` resolves a coreutils name into `/nix/store`).
+        # Immutability is NOT identity: the account we run as controls the name->store
+        # mapping through the profile / PATH symlink -- which the realpath walk never
+        # sees -- so any unwritable store binary could be spelled as `head`. So this is
+        # deliberately NOT auto-approved; removing only the hard SHADOWED refusal lets
+        # it fall through to the one-time human pin below, which binds this exact
+        # binary's bytes. A Nix-profile coreutil is then approved once and honoured
+        # thereafter, and a name repointed at a different file re-prompts.
     dispatched = _dispatcher_target_refusal(name, real, as_interpreter)
     if dispatched is not None:
         return dispatched
