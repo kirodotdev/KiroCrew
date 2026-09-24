@@ -55,6 +55,7 @@ import { PANE_HYDRATE_LIMIT, retireStatelessQuestion, captureStatelessCard, capt
 import { FEATURE_REQUEST_FORM_URL } from '../prompts/featureRequest'
 import { handleStopPress, isEscalationState } from '../utils/stopDebounce'
 import { deriveFollowUpOptions } from '../app-sdk/protocol'
+import { appendFollowUpOption, removeFollowUpOption, type OwnedSuffix } from '../lib/followUpToggle'
 import { CONTENT_WIDTH, loadChatConfig, type ChatConfig } from '../pages/chat/ChatSettings'
 import { scaleContentWidth } from '../pages/chat/contentWidth'
 import { tryQuickSend } from '../lib/quickSend'
@@ -468,6 +469,24 @@ export default function ChatPane({
   // Read by the option handler instead of the state: two clicks landing before
   // a re-render would both see the same set and both take the append branch.
   const followUpPickedRef = useRef(followUpPicked); followUpPickedRef.current = followUpPicked
+  // Ownership of the appended suffix, not content-matching (#7616). See
+  // lib/followUpToggle: the chips own a recorded (base, options) span of the
+  // draft, options kept as an ARRAY so a comma-bearing label is one element.
+  // Advanced SYNCHRONOUSLY in the click handler (never in a render-time state
+  // updater), so React StrictMode's double-invocation cannot rebase it on stale
+  // state (the #7616 F2 defect).
+  const followUpInsertedRef = useRef<OwnedSuffix | null>(null)
+  // Any DIRECT user edit of the composer invalidates chip ownership (#7616):
+  // the recorded span describes a draft the chips produced, and once the user
+  // types the span no longer maps to the live text. Clearing here — the single
+  // path a user keystroke takes into `input` — means the un-toggle path can
+  // never act on a stale span, even one the user edited and then restored
+  // byte-for-byte. Chip append/remove set the ref themselves and go through
+  // setInput directly, not this handler, so they are unaffected.
+  const handleUserInput = useCallback((next: string | ((prev: string) => string)) => {
+    followUpInsertedRef.current = null
+    setInput(next)
+  }, [])
   // Orchestrator plan dispatch (#5893) — same mutation ChatPage uses,
   // targeting THIS pane's slot. The hook owns the latch acknowledgement,
   // keyed on the derived options-row identity passed here; the ref lets the
@@ -484,7 +503,7 @@ export default function ChatPane({
     return true
   }
   const followUpOptionsKey = followUpOptions.join('\x00')
-  useEffect(() => { setFollowUpPicked(new Set()) }, [followUpOptionsKey, slotKey])
+  useEffect(() => { setFollowUpPicked(new Set()); followUpInsertedRef.current = null }, [followUpOptionsKey, slotKey])
   // Quick Send parity with ChatPage: same query key, so the cache is shared
   // with the page and no extra request is made for a pane.
   const { data: dashCfg } = useQuery<{ quick_send?: boolean; decisions_enabled?: boolean }>({ queryKey: ['dashboardConfig'], queryFn: () => api.dashboardConfig(), staleTime: 30_000 })
@@ -1780,12 +1799,12 @@ export default function ChatPane({
           ref={composerRef}
           slotKey={slotKey}
           value={input}
-          onChange={setInput}
+          onChange={handleUserInput}
           voice={composerVoiceOptions}
         >
         <ChatInput
           value={input}
-          onChange={setInput}
+          onChange={handleUserInput}
           pasteBlocks={pasteBlocks}
           onPasteBlocksChange={setPasteBlocks}
           onSend={doSend}
@@ -1852,29 +1871,28 @@ export default function ChatPane({
             // text so it no longer matches, leave the text alone — the chip
             // still un-highlights for consistency).
             if (followUpPickedRef.current.has(o)) {
-              const pickedSuffix = Array.from(followUpPickedRef.current).join(', ')
               const next = new Set(followUpPickedRef.current); next.delete(o)
-              const remainingSuffix = Array.from(next).join(', ')
               followUpPickedRef.current = next
-              setInput(prev => {
-                // Same removal ChatPage does (#6092 review). The picked options
-                // are appended as ONE ordered suffix, so the only text this
-                // handler may take back is that whole structure, still intact at
-                // the end. A last-occurrence search for ", o" instead reaches
-                // into the draft once the user has deleted the appended tail by
-                // hand: draft "Discuss, Alpha home" + a still-lit "Alpha" chip
-                // loses the user's own ", Alpha".
-                if (prev === pickedSuffix) return remainingSuffix
-                const delimitedSuffix = ', ' + pickedSuffix
-                if (!prev.endsWith(delimitedSuffix)) return prev  // user edited — leave text, still unmark below
-                const draft = prev.slice(0, -delimitedSuffix.length)
-                return remainingSuffix ? draft + ', ' + remainingSuffix : draft
-              })
+              // Compute the transform SYNCHRONOUSLY in the event handler from
+              // the live draft + ownership refs, then advance both refs and set
+              // the value. No functional state updater is involved, so React
+              // StrictMode's double-invocation cannot rebase ownership on stale
+              // state (the #7616 F2 defect); and because the refs advance before
+              // the next click, two clicks landing in one uncommitted tick still
+              // compose. The refs are the source of truth between renders;
+              // render re-affirms inputRef.current from committed state.
+              const r = removeFollowUpOption(inputRef.current, followUpInsertedRef.current, o)
+              followUpInsertedRef.current = r.owned
+              inputRef.current = r.value
+              setInput(r.value)
               setFollowUpPicked(next)
             } else {
               const next = new Set(followUpPickedRef.current); next.add(o)
               followUpPickedRef.current = next
-              setInput(prev => prev.trim() ? prev.trimEnd() + ', ' + o : o)
+              const r = appendFollowUpOption(inputRef.current, followUpInsertedRef.current, o)
+              followUpInsertedRef.current = r.owned
+              inputRef.current = r.value
+              setInput(r.value)
               setFollowUpPicked(next)
             }
           }}

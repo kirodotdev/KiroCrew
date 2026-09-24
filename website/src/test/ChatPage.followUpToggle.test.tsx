@@ -251,6 +251,36 @@ describe('ChatPage follow-up option toggle', () => {
     expect(composer().value).toBe('Discuss, Go home')
   })
 
+  it('un-toggle removes only the chip-owned suffix, not user text inserted mid-draft (#7616)', async () => {
+    // Removal keys on WHAT THE CHIP APPENDED, not the picked-set content. A
+    // user edit between two appends re-baselines ownership: un-toggling Stay
+    // strips only the owned ", Stay" and keeps "Go and more". The pre-fix
+    // content search removed the wrong span.
+    await renderPage('Ready to proceed.\n\n[OPTIONS: Go | Stay]', '', 'Go')
+    vi.useFakeTimers()
+    await act(async () => { clickOption('Go') })
+    expect(composer().value).toBe('Go')
+    fireEvent.change(composer(), { target: { value: 'Go and more' } })
+    await act(async () => { clickOption('Stay') })
+    expect(composer().value).toBe('Go and more, Stay')
+    await act(async () => { clickOption('Stay') })
+    expect(composer().value).toBe('Go and more')
+  })
+
+  it('un-toggle leaves a user-rewritten tail equal to the suffix untouched (#7616)', async () => {
+    // The endsWith() bug: after the chip appends ", Go", the user rewrites the
+    // whole draft to different text still ENDING with ", Go". The pre-fix
+    // endsWith(', Go') would splice it to 'other'; ownership preserves it.
+    await renderPage('Ready to proceed.\n\n[OPTIONS: Go | Stay]', '', 'Go')
+    fireEvent.change(composer(), { target: { value: 'note' } })
+    vi.useFakeTimers()
+    await act(async () => { clickOption('Go') })
+    expect(composer().value).toBe('note, Go')
+    fireEvent.change(composer(), { target: { value: 'other, Go' } })
+    await act(async () => { clickOption('Go') })
+    expect(composer().value).toBe('other, Go')
+  })
+
   it('re-adds the option on a third click', async () => {
     await renderPage()
     vi.useFakeTimers()

@@ -56,6 +56,7 @@ import { disposeTerminalSession, useDeleteTerminalSession } from '../components/
 import { interceptSlashCommand, isInterceptedSlashCommand } from './chat/ChatInput'
 import { triggerRefresh, updateSlot, slotIsRemoteBound } from '../store/dashboardSlice'
 import { performSlotSwitch } from '../lib/slotSwitch'
+import { appendFollowUpOption, removeFollowUpOption, type OwnedSuffix } from '../lib/followUpToggle'
 import { drainPendingChunks } from '../lib/pendingChunkDrain'
 import { performAgentSlotSwitch } from '../lib/agentSwitch'
 import { api } from '../api/client'
@@ -2290,8 +2291,21 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Read by the option handler instead of the state: two clicks landing before a
   // re-render would both see the same set and both take the append branch.
   const followUpPickedRef = useRef(followUpPicked); followUpPickedRef.current = followUpPicked
+  // Ownership of the appended suffix, not content-matching (#7616). See
+  // lib/followUpToggle (shared with ChatPane): the chips own a recorded
+  // (base, options) span, options kept as an ARRAY so a comma-bearing label is
+  // one element. Advanced SYNCHRONOUSLY in the click handler, never in a
+  // render-time state updater, so StrictMode's double-invocation cannot rebase
+  // it on stale state (the #7616 F2 defect).
+  const followUpInsertedRef = useRef<OwnedSuffix | null>(null)
+  // Any DIRECT user edit of the composer invalidates chip ownership (#7616) —
+  // the recorded span describes a chip-produced draft, so once the user types
+  // it no longer maps to the live text (even an edit-then-restore). Chip
+  // append/remove set the ref themselves and call setInput directly, bypassing
+  // this handler, so they are unaffected.
+  const clearFollowUpOwnership = useCallback(() => { followUpInsertedRef.current = null }, [])
   const followUpOptionsKey = followUpOptions.join('\x00')
-  useEffect(() => { setFollowUpPicked(new Set()) }, [followUpOptionsKey, activeSlot])
+  useEffect(() => { setFollowUpPicked(new Set()); followUpInsertedRef.current = null }, [followUpOptionsKey, activeSlot])
   const { data: dashCfg } = useQuery<{ quick_send?: boolean; session_grid?: boolean; link_previews?: boolean; social_share_enabled?: boolean }>({ queryKey: ['dashboardConfig'], queryFn: () => api.dashboardConfig(), staleTime: 30_000 })
   // Session grid (split view) is an opt-in feature flag (Settings › Chat › Split View). Gates ⌘D, the Columns2 button, and the grid render.
   const splitFeatureEnabled = dashCfg?.session_grid === true
@@ -7538,7 +7552,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 ref={composerRef}
                 slotKey={activeSlot}
                 value={input}
-                onChange={setInput}
+                onChange={v => { clearFollowUpOwnership(); setInput(v) }}
                 voice={composerVoiceOptions}
               >
               <ChatInput
@@ -7620,7 +7634,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               // ChatInput calls this for the user's own edits (typing, paste, undo,
               // picker inserts), never for a parent-driven seed -- so it is the
               // signal that arms the prefill hint's expiry.
-              onChange={v => { setInput(v); setPrefillEdited(true) }}
+              onChange={v => { clearFollowUpOwnership(); setInput(v); setPrefillEdited(true) }}
               onSend={() => send()}
               canSteer={composerBusy}
               onSteer={steer}
@@ -7860,26 +7874,24 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 // text so it no longer matches, leave text alone — the chip
                 // still un-highlights for consistency).
                 if (followUpPickedRef.current.has(o)) {
-                  const pickedSuffix = Array.from(followUpPickedRef.current).join(', ')
                   const next = new Set(followUpPickedRef.current); next.delete(o)
-                  const remainingSuffix = Array.from(next).join(', ')
                   followUpPickedRef.current = next
-                  setInput(prev => {
-                    // Options are appended as one ordered suffix. Remove only
-                    // from that complete generated structure: searching for a
-                    // last occurrence still corrupts an earlier ", Go" if the
-                    // user has already deleted the appended ", Go" by hand.
-                    if (prev === pickedSuffix) return remainingSuffix
-                    const delimitedSuffix = ', ' + pickedSuffix
-                    if (!prev.endsWith(delimitedSuffix)) return prev
-                    const draft = prev.slice(0, -delimitedSuffix.length)
-                    return remainingSuffix ? draft + ', ' + remainingSuffix : draft
-                  })
+                  // Synchronous transform on the live draft + ownership refs
+                  // (#7616): advance both refs and set the value in the click
+                  // handler, never in a render-time updater, so StrictMode's
+                  // double-invocation cannot rebase ownership on stale state.
+                  const r = removeFollowUpOption(inputRef.current, followUpInsertedRef.current, o)
+                  followUpInsertedRef.current = r.owned
+                  inputRef.current = r.value
+                  setInput(r.value)
                   setFollowUpPicked(next)
                 } else {
                   const next = new Set(followUpPickedRef.current); next.add(o)
                   followUpPickedRef.current = next
-                  setInput(prev => prev.trim() ? prev.trimEnd() + ', ' + o : o)
+                  const r = appendFollowUpOption(inputRef.current, followUpInsertedRef.current, o)
+                  followUpInsertedRef.current = r.owned
+                  inputRef.current = r.value
+                  setInput(r.value)
                   setFollowUpPicked(next)
                 }
               }}
