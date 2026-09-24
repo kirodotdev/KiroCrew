@@ -14,8 +14,10 @@ const { findKirocrewBin } = require("./find-bin");
 const { buildGatewayEnvironment, gatewayBytecodeEnvironment } = require("./gateway-env");
 const { resolveGatewayPath } = require("./mac-env");
 const {
-  findMissingBundleParts,
+  launchBlockingBundleParts,
   describeIncompleteBundle,
+  nextInstallingDialogState,
+  INSTALLING_DIALOG_TITLE,
   shouldReclassifyAsInstalling,
   currentAttemptLog,
   SPAWN_MARKER,
@@ -98,6 +100,14 @@ const RESTARTING_STATUS = "Restarting Kiro Crew to finish the update…";
 // caller's to name.
 const RESTARTING_FOR_LOCAL_GATEWAY_STATUS = "Restarting Kiro Crew to start a local gateway…";
 const POLL_INTERVAL_MS = 500;
+// How often the "installation still finishing" dialog re-probes the bundle.
+// Extraction runs for minutes (about eight in the install that motivated the
+// dialog), so a tick this size costs nothing while still landing the retry
+// within seconds of the last part arriving.
+const INSTALLING_PROBE_MS = 5_000;
+// How long the dialog shows "Installation finished" before it closes itself.
+// Painting and closing in the same tick would give the line at most one frame.
+const INSTALLING_COMPLETE_LINGER_MS = 700;
 const ADOPTED_RECOVERY_WAIT_MS = 30_000;
 // loadFile query that tells loading.html it is being painted by a reconnect
 // path rather than a cold boot, so it can offer its exit control at once
@@ -164,6 +174,8 @@ function createGatewaySupervisor({
   execFileSyncFn = defaultExecFileSync,
   setTimeoutFn = setTimeout,
   clearTimeoutFn = clearTimeout,
+  setIntervalFn = setInterval,
+  clearIntervalFn = clearInterval,
   processRef = process,
   dirname = __dirname,
 } = {}) {
@@ -1053,22 +1065,21 @@ function createGatewaySupervisor({
     // The Windows installer writes backend-dist incrementally. Refusing an
     // incomplete interpreter is preventive but cannot see package siblings that
     // have not landed yet; the current-attempt traceback classifier below is the
-    // sound after-the-fact backstop. Neither replaces the other.
-    if (bundled) {
+    // sound after-the-fact backstop. Neither replaces the other. The same
+    // predicate drives the installing dialog's auto-retry probe, so what it
+    // refuses here is exactly what that dialog waits for.
+    const missingParts = launchBlockingBundleParts(fs, path, bin);
+    if (missingParts && missingParts.length) {
       const backendRoot = path.resolve(path.dirname(bin), "..");
-      const missingParts = findMissingBundleParts(fs, path, backendRoot);
-      if (missingParts.length) {
-        const errorMessage = describeIncompleteBundle(missingParts);
-        userError(`spawn REFUSED: incomplete bundle at ${backendRoot} — missing: ${missingParts.join(", ")}`);
-        gatewayStartFailure = {
-          error: errorMessage,
-          incompleteBundle: true,
-          bundled: true,
-        };
-        sendStatus(INSTALLING_STATUS);
-        resolve(false);
-        return;
-      }
+      userError(`spawn REFUSED: incomplete bundle at ${backendRoot} — missing: ${missingParts.join(", ")}`);
+      gatewayStartFailure = {
+        error: describeIncompleteBundle(missingParts, { autoRetry: true }),
+        incompleteBundle: true,
+        bundled: true,
+      };
+      sendStatus(INSTALLING_STATUS);
+      resolve(false);
+      return;
     }
 
     sendStatus("Starting gateway…");
@@ -1124,23 +1135,10 @@ function createGatewaySupervisor({
     // `-P` mirrors the shim this replaces (bin/kirocrew.cmd): it keeps the spawn
     // cwd off sys.path, so a stdlib-named directory there cannot shadow the
     // interpreter's own standard library.
+    // The refusal above already required python.exe beside a .cmd shim.
     if (bin.endsWith("kirocrew.cmd")) {
-      const pythonExe = path.resolve(path.dirname(bin), "..", "python.exe");
-      if (fs.existsSync(pythonExe)) {
-        spawnBin = pythonExe;
-        spawnArgs = ["-s", "-P", "-m", "kiro_crew", ...spawnArgs];
-      } else {
-        const errorMessage = describeIncompleteBundle([]);
-        userError(`spawn REFUSED: bundled interpreter absent at ${pythonExe} — install likely still extracting`);
-        gatewayStartFailure = {
-          error: errorMessage,
-          incompleteBundle: true,
-          bundled: true,
-        };
-        sendStatus(INSTALLING_STATUS);
-        resolve(false);
-        return;
-      }
+      spawnBin = path.resolve(path.dirname(bin), "..", "python.exe");
+      spawnArgs = ["-s", "-P", "-m", "kiro_crew", ...spawnArgs];
     }
 
     const child = spawn(spawnBin, spawnArgs, {
@@ -1532,8 +1530,8 @@ function createGatewaySupervisor({
    */
   function showGatewayErrorDialog(parentWindow, options) {
     const {
-      title,
-      message,
+      title: configuredTitle,
+      message: configuredMessage,
       logTail,
       logPath: displayedLogPath,
       portConflict,
@@ -1546,8 +1544,31 @@ function createGatewaySupervisor({
       retryLabel: configuredRetryLabel,
       accentQuit: accentQuitAction = false,
       showQuitButton: configuredShowQuitButton,
+      // Installing-kind failures only. Re-run every INSTALLING_PROBE_MS while the
+      // dialog is up; the message tracks the falling part count and, once the
+      // probe reports complete, the dialog fires its own Retry. That retry is the
+      // SAME action a click produces, resolved through the same closed handshake,
+      // so it re-enters startGateway exactly once and by the caller's path -- no
+      // second respawn owner beside recoverWedgedGateway or the liveness monitor.
+      // The probe stands down for good, without firing, once the app is quitting
+      // or an update install is dispatched: the updater deliberately stops the
+      // gateway while it swaps the bundle, and a retry then would relaunch what
+      // it is replacing.
+      autoRetryProbe,
     } = options;
     const showQuitButton = configuredShowQuitButton ?? !noRetry;
+    // The installing dialog opens on what the bundle looks like NOW, not on the
+    // refusal-time text: Reveal Log closes and reopens this dialog through the
+    // caller's loop, and the hoisted message would paint the original count
+    // again after the probe had already shown it falling.
+    const opening = typeof autoRetryProbe === "function"
+      ? (() => {
+        try { return nextInstallingDialogState(autoRetryProbe()); }
+        catch { return null; }
+      })()
+      : null;
+    const title = opening && !opening.complete ? opening.title : configuredTitle;
+    const message = opening && !opening.complete ? opening.message : configuredMessage;
     // The other escape hatch from the client-only state: name the crew on another
     // machine, or correct the address already stored. Without it this dialog
     // offers no way to reach a crew, so a launch that finds nothing can only
@@ -1648,12 +1669,13 @@ function createGatewaySupervisor({
       // about the crew -- and run together they read as a single wall a reader
       // gives up on partway through. The branches join the two with a blank line
       // and the rendering honours it; a message with no blank line is unchanged.
-      const messageParagraphs = String(message)
+      const renderParagraphs = (text) => String(text)
         .split(/\n{2,}/)
         .map((part) => part.trim())
         .filter(Boolean)
         .map((part) => `<p>${escapeHtml(part)}</p>`)
         .join("");
+      const messageParagraphs = renderParagraphs(message);
       const logPane = showLog
         ? `<div class="pathline">${escapeHtml(displayedLogPath)}</div>`
           + `<pre class="log">${escapeHtml(logTail || "(launch log is empty)")}</pre>`
@@ -1678,6 +1700,7 @@ function createGatewaySupervisor({
         .ok { background:#f97316; color:#fff; } .ok:hover { background:#ea580c; }
         .cancel { background:${dark ? "#334155" : "#e2e8f0"}; color:${dark ? "#94a3b8" : "#475569"}; }
         .cancel:hover { background:${dark ? "#475569" : "#cbd5e1"}; }
+        button:disabled { opacity:.45; cursor:default; }
       </style></head><body>
         <div class="title">${escapeHtml(title)}</div>
         <div class="msg">${messageParagraphs}</div>
@@ -1691,20 +1714,104 @@ function createGatewaySupervisor({
         </div>
         <script>
           function act(a){ document.title = 'mc-action:' + a; window.close(); }
+          // Enter presses the primary BUTTON rather than calling act() directly,
+          // so a button the completion paint has disabled stays disabled for the
+          // keyboard too; Escape maps to Quit, which is never disabled.
           document.addEventListener('keydown', e => {
-            if (e.key === 'Enter') act('${primaryAction}');
+            if (e.key === 'Enter') {
+              for (const b of document.querySelectorAll('button')) {
+                if (b.getAttribute('onclick') !== "act('${primaryAction}')") continue;
+                if (!b.disabled) b.click();
+                break;
+              }
+            }
             if (e.key === 'Escape') act('quit');
           });
         </script>
       </body></html>`;
 
       let action = null;
+      let probeTimer = null;
+      const stopProbe = () => {
+        if (probeTimer === null) return;
+        clearIntervalFn(probeTimer);
+        probeTimer = null;
+      };
+      if (typeof autoRetryProbe === "function") {
+        let paintedMessage = message;
+        probeTimer = setIntervalFn(() => {
+          if (errorWindow.isDestroyed() || quitting() || installingUpdate) {
+            stopProbe();
+            return;
+          }
+          let state;
+          try {
+            state = nextInstallingDialogState(autoRetryProbe());
+          } catch (probeError) {
+            glog(`install probe failed (${probeError && probeError.message}); will probe again`);
+            return;
+          }
+          if (state.complete) {
+            // Stop before closing: the closed handler also stops, but a tick
+            // must never be able to fire twice for one dialog.
+            stopProbe();
+            glog("bundle complete — retrying the gateway from the install dialog after the linger");
+          }
+          if (state.message !== paintedMessage) {
+            paintedMessage = state.message;
+            // Same paragraph rendering as the first paint; the markup is built
+            // here from escaped text, so the page only ever receives HTML this
+            // process composed.
+            errorWindow.webContents
+              .executeJavaScript(`document.querySelector(".msg").innerHTML = ${JSON.stringify(renderParagraphs(state.message))}`)
+              .catch(() => { /* window closing under the paint */ });
+          }
+          if (state.complete) {
+            // The whole frame says "finished", not just the paragraph: the title
+            // moves with it, Retry is disabled and relabelled because the retry
+            // is already under way (Enter routes through the same button, so the
+            // keyboard cannot fire what the mouse cannot), and Quit says what it
+            // now does. A click during the linger still wins: it sets the action
+            // and closes first, and this close finds the window already gone.
+            errorWindow.webContents
+              .executeJavaScript(
+                `document.querySelector(".title").textContent = ${JSON.stringify(state.title)};`
+                + " for (const b of document.querySelectorAll('button')) {"
+                + " if (b.getAttribute('onclick') === \"act('retry')\") { b.disabled = true; b.textContent = 'Starting…'; }"
+                + " if (b.getAttribute('onclick') === \"act('quit')\") b.textContent = 'Quit anyway'; }",
+              )
+              .catch(() => { /* window closing under the paint */ });
+            setTimeoutFn(() => {
+              if (errorWindow.isDestroyed()) return;
+              // The retry is decided HERE, not at the tick: a quit or an update
+              // install that began during the linger must find no retry armed,
+              // or startGateway would spawn into the bundle the updater is
+              // swapping. The dialog then simply stays, with its buttons live.
+              if (quitting() || installingUpdate) {
+                glog("bundle complete but the app is quitting or installing an update — leaving the dialog to the user");
+                return;
+              }
+              // A click lands as a title update first and the close a beat
+              // later; in that gap the window is not destroyed yet, and the
+              // user's choice must not be overwritten by the auto-retry.
+              if (action !== null) return;
+              action = "retry";
+              errorWindow.close();
+            }, INSTALLING_COMPLETE_LINGER_MS);
+          }
+        }, INSTALLING_PROBE_MS);
+      }
       errorWindow.on("page-title-updated", (_event, updatedTitle) => {
         if (updatedTitle && updatedTitle.startsWith("mc-action:")) {
+          // The user chose; a probe landing after this must not overrule them.
+          stopProbe();
           action = updatedTitle.slice("mc-action:".length);
         }
       });
-      errorWindow.on("closed", () => resolve(action || "quit"));
+      errorWindow.on("closed", () => {
+        stopProbe();
+        resolve(action || "quit");
+      });
       errorWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
     });
   }
@@ -1795,6 +1902,26 @@ function createGatewaySupervisor({
       promptWindow.on("closed", () => resolve(parseRemoteCrewFields(savedTitle)));
       promptWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
     });
+  }
+
+  /**
+   * Re-ask, without spawning anything, whether the launcher would refuse the
+   * bundled backend right now. Resolves the binary afresh the way spawnGateway
+   * does (findKirocrewBin probes live), so a launcher that only lands mid-way
+   * through extraction is picked up too. null = not resolvable to a bundled
+   * tree yet, which the dialog reads as "still installing, count unknown".
+   */
+  function probeLaunchBlockingParts() {
+    const bin = findKirocrewBin(
+      fs,
+      os,
+      path,
+      processObj.resourcesPath,
+      dirname,
+      processObj.arch,
+      IS_WIN,
+    );
+    return launchBlockingBundleParts(fs, path, bin);
   }
 
   // Packaged GUI apps inherit a minimal PATH. macOS and Linux install lsof in
@@ -2225,6 +2352,14 @@ function createGatewaySupervisor({
       // A pre-spawn integrity refusal is already authoritative. Otherwise only
       // a bundled current-attempt stdlib crash may be relabelled as installation;
       // current-attempt EADDRINUSE wins because its remedy is force-stop.
+      // Only a pre-spawn refusal may auto-retry. Its probe sees exactly what
+      // refused, so "complete" there means the launcher will spawn. A crash the
+      // matcher reclassifies as installing died on a module the probe never
+      // inspects (a sibling file, a name outside REQUIRED_STDLIB_PARTS); were
+      // that dialog to auto-retry, a permanently truncated bundle -- disk full,
+      // an interrupted installer, a quarantined file -- would respawn and crash
+      // on every tick with no exit. That dialog keeps the manual Retry.
+      const refusedBeforeSpawn = !!(error.failure && error.failure.incompleteBundle);
       const failureRecord = shouldReclassifyAsInstalling({
         failedToStart,
         failure: error.failure,
@@ -2266,8 +2401,8 @@ function createGatewaySupervisor({
       let title;
       let message;
       if (failureKind === "installing") {
-        title = "Kiro Crew — installation still finishing";
-        message = error.failure?.incompleteBundle
+        title = INSTALLING_DIALOG_TITLE;
+        message = refusedBeforeSpawn
           ? error.message
           : describeIncompleteBundle([]);
       } else if (localGatewayOff) {
@@ -2355,6 +2490,11 @@ function createGatewaySupervisor({
             localGatewayOff,
             remoteHost: remoteTarget,
           }),
+          // The one failure state known to clear on its own, and only where the
+          // probe can see what is missing. Every other dialog stays manual.
+          autoRetryProbe: failureKind === "installing" && refusedBeforeSpawn
+            ? probeLaunchBlockingParts
+            : undefined,
         });
         if (window.isDestroyed()) return;
         if (action === "reveal") {

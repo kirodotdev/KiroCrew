@@ -131,6 +131,11 @@ function findMissingBundleParts(fs, path, backendRoot) {
   if (!hasBundledInterpreter(fs, path, backendRoot)) return [];
   const stdlib = resolveStdlibDir(fs, path, backendRoot);
   if (!stdlib) return ["Lib"];
+  return missingRequiredParts(fs, path, stdlib);
+}
+
+/** The REQUIRED_STDLIB_PARTS whose `__init__.py` is not yet under `stdlib`. */
+function missingRequiredParts(fs, path, stdlib) {
   return REQUIRED_STDLIB_PARTS.filter(
     (rel) => !fs.existsSync(path.join(stdlib, ...rel.split("/"), "__init__.py"))
   );
@@ -147,19 +152,112 @@ function findMissingBundleParts(fs, path, backendRoot) {
  * much is still arriving.
  *
  * @param {string[]} missing  from findMissingBundleParts
+ * @param {{autoRetry?: boolean}} [options]  `autoRetry` when the dialog carrying
+ *   this text re-probes the bundle and retries by itself (a pre-spawn refusal);
+ *   omit it where the user has to click (a crash the matcher reclassified, whose
+ *   missing module the probe cannot see, so no auto-retry is armed).
  * @returns {string}
  */
-function describeIncompleteBundle(missing) {
+function describeIncompleteBundle(missing, { autoRetry = false } = {}) {
   const count = Array.isArray(missing) ? missing.length : 0;
   const detail = count === 1 ? "1 component is" : `${count || "Some"} components are`;
+  const next = autoRetry
+    ? "Kiro Crew starts on its own once the install finishes, or click Retry to check now."
+    : "Wait, then retry.";
   // The reinstall advice carries an explicit time anchor. Extraction can run for
   // minutes, so an unqualified "if this persists" reads as satisfied by two Retry
   // clicks twenty seconds apart — steering the user into the very reinstall this
   // message exists to prevent.
+  // The remedy names the control on screen: the dialog has a Quit button and
+  // nothing labelled "restart".
   return `Kiro Crew's bundled Python runtime is still being installed — ${detail} `
-    + "not on disk yet. This can take a few minutes. Wait, then retry. If it is "
-    + "still failing after five minutes, restart the app; if that does not help, "
-    + "reinstall it.";
+    + `not on disk yet. This can take a few minutes. ${next} If the install is `
+    + "still unfinished after five minutes, quit and reopen Kiro Crew (the Quit "
+    + "button below); if that does not help, reinstall the Kiro Crew app.";
+}
+
+// The installing dialog's title while parts are still arriving, and once the
+// probe finds every part on disk. Both live here so the title and the message
+// under it can never say opposite things: the completion paint swaps both.
+const INSTALLING_DIALOG_TITLE = "Kiro Crew — installation still finishing";
+const INSTALLED_DIALOG_TITLE = "Kiro Crew — installation finished";
+// Painted into the dialog the moment the probe finds every part on disk; the
+// window lingers on it briefly before closing and the boot retries. It exists so
+// a user watching the count fall sees the transition land rather than the
+// dialog vanishing mid-sentence.
+const BUNDLE_COMPLETE_MESSAGE = "Installation finished — starting Kiro Crew…";
+
+/**
+ * Which bundle parts would make spawnGateway REFUSE to launch `bin` right now.
+ *
+ * This IS the pre-spawn refusal: spawnGateway refuses exactly when this returns
+ * a non-empty list, and the "installation still finishing" dialog re-asks the
+ * same function while it waits. One predicate for both keeps the probe at least
+ * as strict as the launcher by construction -- were it laxer, the dialog would
+ * retry a launch the launcher then refuses again, and the two would chase each
+ * other every probe tick. Two conditions refuse:
+ *   - a bundled interpreter tree missing required stdlib packages
+ *     (findMissingBundleParts);
+ *   - the Windows `bin\kirocrew.cmd` shim present while `python.exe` beside it
+ *     has not landed (findMissingBundleParts is silent there by design -- no
+ *     interpreter means "not a tree it understands" -- so the interpreter is
+ *     named as a part of its own, ahead of whichever required packages are
+ *     also still missing, so the count the dialog paints only ever falls).
+ *
+ * @param {{existsSync: Function, readdirSync: Function}} fs
+ * @param {typeof import("path")} path
+ * @param {string} bin  the launcher findKirocrewBin resolved
+ * @returns {string[]|null} part names still to arrive ([] = the launcher would
+ *   spawn); null when `bin` is not inside a bundled tree at all -- the bundled
+ *   launcher itself has not been written yet, or a non-bundled install is in
+ *   use -- which a caller must read as "unknown", never as "complete".
+ */
+function launchBlockingBundleParts(fs, path, bin) {
+  if (typeof bin !== "string" || !bin.includes("backend-dist")) return null;
+  const backendRoot = path.resolve(path.dirname(bin), "..");
+  if (
+    bin.endsWith("kirocrew.cmd")
+    && !fs.existsSync(path.resolve(backendRoot, "python.exe"))
+  ) {
+    // Count the stdlib too: reporting the interpreter alone would paint "1
+    // component" and then climb to eighteen the moment python.exe lands.
+    const stdlib = resolveStdlibDir(fs, path, backendRoot);
+    const parts = stdlib ? missingRequiredParts(fs, path, stdlib) : [...REQUIRED_STDLIB_PARTS];
+    return ["python.exe", ...parts];
+  }
+  return findMissingBundleParts(fs, path, backendRoot);
+}
+
+/**
+ * The "installation still finishing" dialog's next state after one probe.
+ *
+ * Pure so the count text and the complete -> retry transition can be tested
+ * without Electron; the dialog paints `title` and `message` and, on `complete`,
+ * fires its own Retry action.
+ *
+ * @param {string[]|null} missing  from launchBlockingBundleParts. null (launcher
+ *   not resolvable yet) is still installing with an unknown count; only an
+ *   empty ARRAY is complete.
+ * @returns {{complete: boolean, title: string, message: string}}
+ */
+function nextInstallingDialogState(missing) {
+  if (!Array.isArray(missing)) {
+    // Still the auto-retry dialog: the probe is armed and will fire, so the
+    // copy must keep promising that rather than switching to a manual "retry".
+    return {
+      complete: false,
+      title: INSTALLING_DIALOG_TITLE,
+      message: describeIncompleteBundle([], { autoRetry: true }),
+    };
+  }
+  if (missing.length === 0) {
+    return { complete: true, title: INSTALLED_DIALOG_TITLE, message: BUNDLE_COMPLETE_MESSAGE };
+  }
+  return {
+    complete: false,
+    title: INSTALLING_DIALOG_TITLE,
+    message: describeIncompleteBundle(missing, { autoRetry: true }),
+  };
 }
 
 // The line main.js logs immediately before each spawn. It delimits one launch
@@ -307,6 +405,9 @@ module.exports = {
   SPAWN_MARKER,
   currentAttemptLog,
   findMissingBundleParts,
+  launchBlockingBundleParts,
   describeIncompleteBundle,
+  nextInstallingDialogState,
+  INSTALLING_DIALOG_TITLE,
   shouldReclassifyAsInstalling,
 };
