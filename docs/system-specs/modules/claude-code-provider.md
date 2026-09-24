@@ -198,9 +198,17 @@ and effort selection, the full `session/request_permission` flow) works. So
   overlay is written per agent from the GLOBAL settings file as well as the
   agent's own spec, so it can carry exactly that stub), and a session whose
   permission surface Crew does not own gets no stubs along with no array. The
-  registry filter is the stated residual: the rewriter has no registry
-  awareness, so a stub is not held to it here -- tracked separately, and
-  pre-existing on codex, whose stub filter reads the same two rules. A stub
+  registry ceiling reaches the stubs through that same call: both
+  `pooled_session_servers` and `injection_server_names` withhold a stub under
+  registry mode, because a stub is by construction an UNMARKED entry -- the
+  rewriter refuses to wrap a `type: "registry"` one -- and nothing here can
+  resolve a name against the admin's catalog. Holding the line at that one
+  overlay read covers every mirror that mounts `stub_elements`, codex included,
+  and any future one; it is a no-op for the kiro-cli path, which drops an
+  unmarked injected entry under registry mode by itself. Crew's control plane is
+  exempt there on the same grounds it is exempt above, and the two functions must
+  agree, or a name in the set with no element behind it withholds the spec's only
+  copy of that server. A stub
   for a spec-narrowed server stays mounted, unlike codex: the narrowing rides
   `permissions.deny` in `settings.local.json`, which matches the stub because it
   registers under the same server name.

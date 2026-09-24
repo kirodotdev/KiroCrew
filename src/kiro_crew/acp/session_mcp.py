@@ -90,24 +90,31 @@ from kiro_crew.agent import (
 from kiro_crew.agent_discovery import _read_agent_spec, project_agent_files, project_agent_name
 from kiro_crew.agent_sdk.mcp_refs import parse_tools_refs
 from kiro_crew.env import sanitize_spec_env
-from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS, mcp_entry_is_muted
+from kiro_crew.mcp_cleanup import (
+    CONTROL_PLANE_SERVERS,
+    KIROCREW_BIN_MCP_SERVERS,
+    mcp_entry_is_muted,
+)
 
 logger = logging.getLogger(__name__)
 
-# Crew's own control plane. Re-derived from the managed source of truth on every
-# spawn so a stale hand-edited command in the spec cannot cost a claude session
-# the tools it needs to report back to its channel at all. Both are always-on
-# (no gate, not opt_in), so ``managed_mcp_spec_entry`` returns them unless the
-# install is broken. Re-derived, not read from the spec, is also what keeps them
-# out of the registry filter below: they are the host's own process, not a
-# third-party server the admin's catalog governs.
+# Crew's own control plane, defined in the ``mcp_cleanup`` leaf and re-exported
+# here. Re-derived from the managed source of truth on every spawn so a stale
+# hand-edited command in the spec cannot cost a claude session the tools it needs
+# to report back to its channel at all. Both are always-on (no gate, not
+# opt_in), so ``managed_mcp_spec_entry`` returns them unless the install is
+# broken. Re-derived, not read from the spec, is also what keeps them out of the
+# registry filter below: they are the host's own process, not a third-party
+# server the admin's catalog governs.
 #
-# PUBLIC because the codex projection carries this session's identity onto these
-# two entries and onto NOTHING else. Naming the same tuple twice is how the two
-# decisions drift apart, and the safety of that carriage rests on this being the
-# set the loop below REPLACES from the managed source: the element's command, args
-# and env are Crew's own by construction, not the spec's.
-CONTROL_PLANE_SERVERS = ("kirocrew-core", "kirocrew-cron")
+# PUBLIC on this module because the codex projection carries this session's
+# identity onto these two entries and onto NOTHING else, and the safety of that
+# carriage rests on this being the set the loop below REPLACES from the managed
+# source: the element's command, args and env are Crew's own by construction, not
+# the spec's. The definition sits in the leaf so a consumer the agent-SDK import
+# boundary keeps off ``kiro_crew.acp`` -- the broker-stub ceiling in
+# ``mcp_gateway.session_servers`` -- reads the same tuple rather than a second
+# copy of it.
 
 # Every managed Crew server that must be handed the session's IDENTITY when it
 # is mounted -- a wider set than the control plane above, and a different

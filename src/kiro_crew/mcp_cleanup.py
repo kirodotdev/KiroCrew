@@ -128,6 +128,24 @@ OPT_IN_BIN_MCP_SERVERS = (
 # user's global mcp.json, so a stray entry is purgeable either way.
 KIROCREW_BIN_MCP_SERVERS = ALWAYS_ON_BIN_MCP_SERVERS + OPT_IN_BIN_MCP_SERVERS
 
+# Crew's own control plane: the servers a session mounts whether or not its spec
+# names them, re-derived from the managed source on every spawn so a stale
+# hand-edited command cannot cost a session the tools it needs to report back to
+# its channel at all. Re-derived, not read from the spec, is also what keeps them
+# out of an admin registry filter: they are the host's own process, not a
+# third-party server the admin's catalog governs.
+#
+# NOT ``ALWAYS_ON_BIN_MCP_SERVERS``, which also carries ``kirocrew-computer``:
+# that set answers "must this be in an agent spec", and this one answers "does a
+# session get this regardless". Naming the same tuple twice is how two decisions
+# that must agree drift apart, so both consumers read this one:
+# ``acp.session_mcp`` re-exports it for the spec ceiling and the codex identity
+# projection, and ``mcp_gateway.session_servers`` reads it for the broker-stub
+# ceiling. It lives in this leaf because the gateway reaches it without putting
+# ``kiro_crew.agent`` on the daemon's boot path, the same reason
+# ``gatewayd.CONTROL_PLANE_BACKENDS`` reads its set from here.
+CONTROL_PLANE_SERVERS = ("kirocrew-core", "kirocrew-cron")
+
 # Every managed-binary server name KiroCrew is responsible for removing from
 # the user's global mcp.json (Kiro Crew never legitimately writes these there).
 #

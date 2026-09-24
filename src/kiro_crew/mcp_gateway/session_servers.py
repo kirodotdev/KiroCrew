@@ -52,6 +52,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.mcp_cleanup import CONTROL_PLANE_SERVERS
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.mcp_gateway.hashing import STUB_FLAGS_FLAG, encode_target_args, expand_stub_flags
 from kiro_crew.mcp_gateway.rewriter import _WRAPPER_MARKER, _WRAPPER_MARKER_LEGACY
@@ -345,6 +346,50 @@ def _load_overlay_for_agent(
     return None
 
 
+def _registry_ceiling_exemptions() -> frozenset[str] | None:
+    """Return the names a broker stub may still be injected under, or ``None``
+    when the registry ceiling does not apply at all.
+
+    Under registry mode the client resolves each ``mcpServers`` entry carrying
+    ``"type": "registry"`` against the admin's catalog and silently drops every
+    entry that does not. A broker stub is by construction an UNMARKED entry --
+    the rewriter refuses to wrap a ``type: registry`` entry
+    (``mcp_entry_is_registry_governed``), so a stub only ever exists for a
+    server the marker is absent from -- and nothing in this process can resolve
+    a name against that catalog. So a stub is withheld here, which is the same
+    ceiling :mod:`kiro_crew.acp.session_mcp` puts on a spec-declared server.
+
+    This is the chokepoint rather than each mirror's own projection because
+    every consumer of a stub element reads it from :func:`pooled_session_servers`
+    paired with :func:`injection_server_names`. Filtering in a mirror would leave
+    the next mirror exposed; filtering here covers all of them and any future
+    one. It is a no-op for the kiro-cli path, which drops an unmarked injected
+    entry under registry mode by itself.
+
+    Crew's own control plane is exempt on the same grounds it is exempt there: it
+    is the host's own process, not a third-party server the catalog governs, and
+    ``agent._install_agent_spec`` stamps its managed entries ``"type":
+    "registry"`` precisely so the client keeps them. Withholding it would cost a
+    governed install the tools it needs to report back at all. The name set is
+    IMPORTED from :mod:`kiro_crew.mcp_cleanup` rather than retyped, because two
+    copies of it are how the two ceilings drift apart. That leaf is also the one
+    route to it from this package: the agent-SDK import boundary refuses
+    ``mcp_gateway`` an ``acp`` edge, and it is where
+    :data:`kiro_crew.mcp_gateway.gatewayd.CONTROL_PLANE_BACKENDS` reads its own
+    set for the same reason.
+
+    The config read is function-local: the config plane reaches back into this
+    package, so binding it at module scope closes an import cycle. It is served
+    from the loader's process cache, so calling this from both overlay reads costs
+    no extra file I/O.
+    """
+    from kiro_crew.agent import _mcp_registry_mode
+
+    if not _mcp_registry_mode():
+        return None
+    return frozenset(CONTROL_PLANE_SERVERS)
+
+
 def pooled_session_servers(
     overlay_dir: str | Path | None,
     agent: str | None,
@@ -394,11 +439,17 @@ def pooled_session_servers(
     if not isinstance(servers, dict):
         return []
     out: list[dict[str, Any]] = []
+    exempt = _registry_ceiling_exemptions()
     for name, entry in sorted(servers.items()):
         if not isinstance(entry, dict) or not (
             entry.get(_WRAPPER_MARKER) or entry.get(_WRAPPER_MARKER_LEGACY)
         ):
             # Not a broker stub: leave it to the agent spec entirely.
+            continue
+        if exempt is not None and str(name) not in exempt:
+            # Registry ceiling (:func:`_registry_ceiling_exemptions`): withheld,
+            # so the session resolves this server from the agent spec instead --
+            # the same unpooled fallback an unreadable overlay yields.
             continue
         shaped = _acp_server_entry(str(name), entry, channel_id)
         if shaped is not None:
@@ -442,9 +493,11 @@ def injection_server_names(
     servers = spec.get("mcpServers")
     if not isinstance(servers, dict):
         return frozenset()
+    exempt = _registry_ceiling_exemptions()
     return frozenset(
         name
         for name, entry in servers.items()
         if isinstance(entry, dict)
         and (entry.get(_WRAPPER_MARKER) or entry.get(_WRAPPER_MARKER_LEGACY))
+        and (exempt is None or str(name) in exempt)
     )

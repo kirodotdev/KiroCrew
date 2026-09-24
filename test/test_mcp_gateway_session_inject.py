@@ -892,3 +892,142 @@ def test_injection_writes_nothing_to_the_work_dir(tmp_path):
     before = {p for p in work.rglob("*")}
     assert pooled_session_servers(overlay, "kirocrew")
     assert {p for p in work.rglob("*")} == before
+
+
+# --- registry ceiling: a broker stub is an unmarked entry, so it is withheld --
+
+
+def _registry_mode(monkeypatch, enabled):
+    """Force the operator's registry-mode declaration for one test.
+
+    Patched on ``kiro_crew.agent``, which owns the flag, because
+    ``session_servers`` binds it per call rather than at import time.
+    """
+    from kiro_crew import agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "_mcp_registry_mode", lambda: enabled)
+
+
+def _control_plane_name():
+    """One of Crew's own control-plane server names, read from its owner."""
+    from kiro_crew.mcp_cleanup import CONTROL_PLANE_SERVERS
+
+    return CONTROL_PLANE_SERVERS[0]
+
+
+def test_registry_mode_withholds_a_third_party_stub(tmp_path, monkeypatch):
+    """The governed install must not be handed a stub for a spec-declared server.
+
+    Nothing in this process can resolve a server name against the admin's
+    catalog, so a stub cannot be positively authorized and is withheld. Both
+    overlay reads answer empty, which is what leaves the session resolving that
+    server from the agent spec instead.
+    """
+    overlay = _write_overlay(tmp_path, "kirocrew", {"fetch": _stub()})
+    _registry_mode(monkeypatch, True)
+    assert pooled_session_servers(overlay, "kirocrew") == []
+    assert injection_server_names(overlay, "kirocrew") == frozenset()
+
+
+def test_registry_mode_off_injects_every_stub(tmp_path, monkeypatch):
+    """The ceiling is scoped to registry mode and changes nothing outside it."""
+    overlay = _write_overlay(tmp_path, "kirocrew", {"fetch": _stub()})
+    _registry_mode(monkeypatch, False)
+    assert [e["name"] for e in pooled_session_servers(overlay, "kirocrew")] == ["fetch"]
+    assert injection_server_names(overlay, "kirocrew") == frozenset({"fetch"})
+
+
+def test_registry_mode_keeps_the_control_plane_stub(tmp_path, monkeypatch):
+    """Crew's own control plane is exempt, on the spec half's own grounds.
+
+    It is the host's own process rather than a third-party server the catalog
+    governs, and withholding it would leave the session unable to report back to
+    its channel at all -- on precisely the installs that are most governed.
+    """
+    control = _control_plane_name()
+    overlay = _write_overlay(tmp_path, "kirocrew", {"fetch": _stub(), control: _stub()})
+    _registry_mode(monkeypatch, True)
+    assert [e["name"] for e in pooled_session_servers(overlay, "kirocrew")] == [control]
+    assert injection_server_names(overlay, "kirocrew") == frozenset({control})
+
+
+def test_a_registry_marked_entry_has_no_stub_to_withhold(tmp_path, monkeypatch):
+    """The marked half is closed upstream, in the rewriter.
+
+    A ``type: "registry"`` entry is never wrapped, so the overlay holds it
+    unwrapped and no stub for it exists in either mode. The ceiling has nothing
+    to do here, and the entry stays the agent spec's to launch.
+    """
+    marked = {"command": "npx", "type": "registry", "env": {"TOKEN": "s3cr3t"}}
+    overlay = _write_overlay(tmp_path, "kirocrew", {"governed": marked})
+    for enabled in (False, True):
+        _registry_mode(monkeypatch, enabled)
+        assert pooled_session_servers(overlay, "kirocrew") == []
+        assert injection_server_names(overlay, "kirocrew") == frozenset()
+
+
+def test_a_server_not_routed_through_the_gateway_is_unaffected(tmp_path, monkeypatch):
+    """An operator who never opted a server into pooling has no stub either way.
+
+    Routing is the opt-in that makes a stub exist at all, so an unrouted server
+    is left entirely to the spec in both modes, and its credentials stay in the
+    file they were declared in.
+    """
+    unrouted = {"command": "npx", "args": ["-y", "srv"], "env": {"API_KEY": "s3cr3t"}}
+    overlay = _write_overlay(tmp_path, "kirocrew", {"unrouted": unrouted})
+    for enabled in (False, True):
+        _registry_mode(monkeypatch, enabled)
+        assert pooled_session_servers(overlay, "kirocrew") == []
+        assert injection_server_names(overlay, "kirocrew") == frozenset()
+        assert "s3cr3t" not in json.dumps(pooled_session_servers(overlay, "kirocrew"))
+
+
+def test_a_withheld_stub_is_one_kiro_cli_would_drop_anyway(tmp_path, monkeypatch):
+    """Withholding here costs the kiro-cli path nothing.
+
+    Under registry mode that client keeps only entries carrying
+    ``type: "registry"``. A stub never carries one, so the element this ceiling
+    withholds is exactly the element the client drops on arrival.
+    """
+    overlay = _write_overlay(tmp_path, "kirocrew", {"fetch": _stub()})
+    _registry_mode(monkeypatch, False)
+    (element,) = pooled_session_servers(overlay, "kirocrew")
+    assert element.get("type") != "registry"
+    _registry_mode(monkeypatch, True)
+    assert pooled_session_servers(overlay, "kirocrew") == []
+
+
+def test_the_two_overlay_reads_agree_in_both_modes(tmp_path, monkeypatch):
+    """The set and the elements must name the same servers.
+
+    A mirror withholds every name in the set from its own projection, so a name
+    with no element behind it would withhold the spec's only copy of that server
+    and the session would get nothing for it.
+    """
+    servers = {"fetch": _stub(), _control_plane_name(): _stub()}
+    overlay = _write_overlay(tmp_path, "kirocrew", servers)
+    for enabled in (False, True):
+        _registry_mode(monkeypatch, enabled)
+        elements = pooled_session_servers(overlay, "kirocrew")
+        assert injection_server_names(overlay, "kirocrew") == frozenset(
+            e["name"] for e in elements
+        ), f"the two overlay reads disagree with registry mode {enabled}"
+
+
+def test_both_ceilings_read_one_control_plane_tuple():
+    """The stub ceiling and the spec ceiling must exempt the same names.
+
+    Two copies of the tuple is how they drift apart, so the leaf holds the
+    definition and the ACP module re-exports it for its own ceiling and for the
+    codex identity projection. It is also deliberately narrower than the
+    always-on set, which carries a third name: that set answers whether a server
+    must appear in an agent spec, not whether a session gets it regardless.
+    """
+    from kiro_crew.acp.session_mcp import CONTROL_PLANE_SERVERS as via_acp
+    from kiro_crew.mcp_cleanup import ALWAYS_ON_BIN_MCP_SERVERS
+    from kiro_crew.mcp_cleanup import CONTROL_PLANE_SERVERS as via_leaf
+
+    assert via_acp is via_leaf, "the two ceilings read separate tuples"
+    assert set(via_leaf) < set(
+        ALWAYS_ON_BIN_MCP_SERVERS
+    ), "the control plane must stay a strict subset of the always-on servers"
