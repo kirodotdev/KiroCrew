@@ -2285,6 +2285,13 @@ async def _rebase_locked(target: dict) -> dict:
             **_fields,
             "error": "worktree has uncommitted changes" + _detail,
         }
+    # Before the fetch, and before anything is rewritten: a base branch nobody stated
+    # is a guess, and this is the one operation here that cannot be undone from its own
+    # result -- a clean replay onto the wrong base returns ok and names no rollback.
+    # The dirt gate above already refuses on the cheaper hazard.
+    base_refusal = repository.base_branch_mutation_refusal()
+    if base_refusal is not None:
+        return {"ok": False, "error": base_refusal}
     remote = await repository._upstream_remote()
     if await repository._git(path, "fetch", remote, repository.BASE_BRANCH, timeout=90) is None:
         return {"ok": False, "error": f"git fetch {remote} {repository.BASE_BRANCH} failed"}
@@ -2769,10 +2776,19 @@ async def _ensure_repo_resolved() -> None:
     state than the honest "restart the gateway" this replaces.
     """
     global _refresher_task
-    # A resolved and VALID checkout returns here before any await. A resolved-but-invalid
-    # one falls through, because the operator can still correct the path its banner names
-    # and `repository` reopens that latch once the configured string changes.
-    if repository.MAIN_REPO and not repository._REPO_INVALID_MSG:
+    # A resolved checkout this app fully owns returns here before any await. One
+    # carrying either verdict falls through, because the operator can still correct
+    # the path its banner names and `repository` reopens that latch once the
+    # configured string changes. Both verdicts, not just the invalid one: a
+    # read-only checkout is equally a path the operator may have meant to change,
+    # and this is the poll route that would otherwise keep serving a stranger's
+    # repository — with the base branch and upstream remote resolved against it —
+    # until the gateway restarts.
+    if (
+        repository.MAIN_REPO
+        and not repository._REPO_INVALID_MSG
+        and not repository._REPO_READ_ONLY_MSG
+    ):
         return
     await repository.ensure_main_repo_discovered()
     try:

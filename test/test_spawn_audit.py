@@ -937,10 +937,13 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # composition site.
         "apps/builtins/dev_fleet/sync_runner.py::run_step",
         # Dev Fleet builtin backend: async version routes all git/gh through
-        # _run_cmd which calls sandboxed_spawn_argv (the chokepoint). Only
-        # _resolve_primary_checkout uses subprocess.run directly (one-shot
-        # git rev-parse at startup, no agent input, no sandbox needed).
-        "apps/builtins/dev_fleet/repository.py::_resolve_primary_checkout",
+        # _run_cmd which calls sandboxed_spawn_argv (the chokepoint). The four
+        # discovery probes in repository.py are NOT listed here: they route
+        # through the same chokepoint themselves, via ``_probe_git``. They are
+        # synchronous and run before the async path exists, which is why they
+        # cannot use ``_run_cmd`` -- but "cannot use the async helper" is not
+        # "cannot be sandboxed", and git parses the target repository's config,
+        # following ``include.path``, on every command it runs.
         "apps/builtins/dev_fleet/runtime.py::worker",
         # dep_sync stands in for `pip install -e .` on a checkout whose console
         # script is locked, and it spawns the same shapes that step did:

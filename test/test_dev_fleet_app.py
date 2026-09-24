@@ -2378,6 +2378,14 @@ def _assert_git_neutralizers(env):
         "core.hooksPath": "/dev/null",
         "credential.helper": "",
         "core.sshCommand": "ssh",
+        # Signature verification, the third repo-controlled driver class beside
+        # filters and textconv: `showSignature` is the trigger and the four
+        # `gpg.*.program` spellings are what it would exec.
+        "gpg.program": "true",
+        "gpg.openpgp.program": "true",
+        "gpg.ssh.program": "true",
+        "gpg.x509.program": "true",
+        "log.showSignature": "false",
     }
 
 
@@ -3463,7 +3471,7 @@ def test_git_env_neutralizers_present():
     assert n["GIT_NO_REPLACE_OBJECTS"] == "1"
     # GIT_NO_REPLACE_OBJECTS is an env var in its own right, NOT one of the
     # config pairs, so the count must not have grown to cover it.
-    assert n["GIT_CONFIG_COUNT"] == "4"
+    assert n["GIT_CONFIG_COUNT"] == "9"
     assert n["GIT_CONFIG_KEY_0"] == "core.fsmonitor"
     assert n["GIT_CONFIG_VALUE_0"] == "false"
     assert n["GIT_CONFIG_KEY_1"] == "core.hooksPath"
@@ -3472,6 +3480,26 @@ def test_git_env_neutralizers_present():
     assert n["GIT_CONFIG_VALUE_2"] == ""
     assert n["GIT_CONFIG_KEY_3"] == "core.sshCommand"
     assert n["GIT_CONFIG_VALUE_3"] == "ssh"
+    # Signature verification: the trigger plus every program spelling it can name.
+    # `log` is on the foreign-checkout safelist, so `[log] showSignature=true` with a
+    # `gpg.*.program` payload is a read that execs the repository's own program.
+    # `gpg.openpgp.program` is a synonym for `gpg.program` and overrides it, so
+    # pinning only the bare key would leave the synonym free.
+    assert n["GIT_CONFIG_KEY_4"] == "gpg.program"
+    assert n["GIT_CONFIG_VALUE_4"] == "true"
+    assert n["GIT_CONFIG_KEY_5"] == "gpg.openpgp.program"
+    assert n["GIT_CONFIG_VALUE_5"] == "true"
+    assert n["GIT_CONFIG_KEY_6"] == "gpg.ssh.program"
+    assert n["GIT_CONFIG_VALUE_6"] == "true"
+    assert n["GIT_CONFIG_KEY_7"] == "gpg.x509.program"
+    assert n["GIT_CONFIG_VALUE_7"] == "true"
+    assert n["GIT_CONFIG_KEY_8"] == "log.showSignature"
+    assert n["GIT_CONFIG_VALUE_8"] == "false"
+    # The count and the pairs must agree, or git reads a prefix of them and the
+    # pins past the count are silently inert.
+    assert int(n["GIT_CONFIG_COUNT"]) == sum(
+        1 for key in n if key.startswith("GIT_CONFIG_KEY_")
+    )
 
 
 @pytest.mark.skipif(
@@ -6658,7 +6686,11 @@ async def test_context_cached_skips_main_and_base():
 async def test_context_cached_serves_from_cache(monkeypatch):
     calls = []
 
-    async def fake_build(branch, path, pr):
+    async def fake_build(branch, path, pr, *, generation=None):
+        # Mirrors the real signature: `_context_cached` forwards the captured
+        # generation, and a stub that rejects it raises a TypeError the caller's
+        # best-effort `except` swallows -- leaving an empty context cached and a
+        # call count of zero, which reads as a cache hit that never happened.
         calls.append(branch)
         return {"issues": [{"number": 1, "url": None}], "tickets": [], "summary": "s"}
 
@@ -6830,7 +6862,9 @@ async def test_fleet_payload_marks_an_inferred_main_checkout():
 @pytest.mark.asyncio
 async def test_fleet_payload_redacts_credentials_in_main_repo():
     sensitive = f"/tmp/ghp_{'A' * 40}/checkout"
-    with patch.object(repository_mod, "_repo", return_value=sensitive):
+    # ``_repo_read`` is the accessor the payload reads: rendering the path is a
+    # read, and it must still render for a checkout this app may only read.
+    with patch.object(repository_mod, "_repo_read", return_value=sensitive):
         fleet = await _fleet_with(
             [{"path": "/repo", "branch": "main", "is_main": True}]
         )
@@ -6842,7 +6876,7 @@ async def test_fleet_payload_redacts_credentials_in_main_repo():
 @pytest.mark.asyncio
 async def test_fleet_payload_preserves_ordinary_main_repo_path():
     ordinary = "/home/user/oss/KiroCrew"
-    with patch.object(repository_mod, "_repo", return_value=ordinary):
+    with patch.object(repository_mod, "_repo_read", return_value=ordinary):
         fleet = await _fleet_with(
             [{"path": "/repo", "branch": "main", "is_main": True}]
         )

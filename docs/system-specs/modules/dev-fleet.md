@@ -151,17 +151,22 @@ while nothing fetches (`test/test_dev_fleet_repo_reresolution.py`).
 
 Because `""` would make `git -C ""` operate on the backend's own working directory (and
 `Path("")` is `Path(".")`), no consumer reads the global directly: every site that runs git
-against the checkout or builds paths from it resolves it through the `_repo()` accessor,
-which returns the path or raises `RepoNotConfigured`. Sites that deliberately degrade
-instead of failing catch it and say what the degraded answer is — upstream-remote
+against the checkout or builds paths from it resolves it through an accessor. There are two,
+and the stronger one is the default. `_repo()` returns the path or raises
+`RepoNotConfigured`, `RepoUnreadable` or `RepoReadOnly`, and it is what a call site gets by
+not thinking about the question; `_repo_read()` omits the read-only refusal and nothing
+else, and a site reaches it only by naming it, so a foreign repository is a case a consumer
+opts into rather than one it can inherit. Sites that deliberately degrade
+instead of failing catch `RepoUnavailable`, the base all three share, and say what the
+degraded answer is — upstream-remote
 resolution falls back to `origin`, build-pending detection reports nothing pending,
 fallback-remote loading leaves the list empty, sync refuses with its usual
 `{"ok": false}` shape, and the background refresher stops until a later resolution
 restarts it. Bare `MAIN_REPO` loads outside
-the accessor are limited to truthiness guards. An AST ratchet scans every Dev Fleet backend
+the accessors are limited to truthiness guards. An AST ratchet scans every Dev Fleet backend
 component (`test/test_dev_fleet_repo_accessor.py`) and permits the authoritative load only
-inside `repository._repo()`; helpers in every sibling module must route through that
-accessor.
+inside `repository._repo_read()`, which `_repo()` itself reads through, so exactly one
+function loads the global; helpers in every sibling module must route through one of the two.
 
 Every OTHER route that resolves a worktree (`/worktree`, `/disk`, `/prune-candidates`,
 `/prune-run`, the pod routes, `/rebase`, `/make-live`) reaches `_discover_worktrees` too, so
@@ -182,6 +187,471 @@ banner naming the path (the user chose it).
 When a checkout WAS named and git cannot read it, the error names the mechanism that
 supplied the path (`_repo_source_hint`) — the remedy is to edit that one, and listing both
 leaves the user guessing which they set.
+
+### Read-only mode: a named checkout without the Kiro Crew markers
+
+A path the operator named that IS a git repository but carries none of the markers is served
+READ-ONLY rather than refused. The worktree list, branches, ahead/behind, own-commit counts,
+the dirty split, PR state and disk usage are plain git and `gh` reads that hold for any
+repository, and they are the whole value of the page to someone who wants to see that
+repository's worktrees. `_REPO_READ_ONLY_MSG` holds the reason, and `_read_only_reason()` is
+its only reader outside the accessors, so the route boundary, the `/fleet` payload and the
+row fields consult one answer rather than three.
+
+Nothing is adopted silently. `_discover_main_repo` adopts an INFERRED candidate (tiers 3–5)
+only when it passes the marker test, so a read-only fleet exists only where the operator
+typed the path; the latch tests `configured` as well, to state that dependence rather than
+rely on it. `_REPO_INVALID_MSG` stays `None` here, because nothing is wrong with the path —
+it is simply not this product's own checkout, which is why the page shows a fleet and a
+refusal flag instead of the `RepoUnreadable` banner.
+
+Mutating verbs are refused at the accessor, not per verb, so a call site added later inherits
+the refusal. `hmac_proxy_middleware` gates every non-GET on `_repo()` and converts
+`RepoReadOnly` into a `409` `{"ok": false, "code": "repo_read_only"}`. The boundary has to be
+the route rather than the verb because some mutations are rooted at a WORKTREE path instead
+of at the main checkout — a rebase fetches into the worktree it rebases — so a check placed
+at the main-checkout argv would miss them. Pull+Build, rebase, sync, `worktree remove`,
+`update-ref -d`, prune, provisioning and Make Live are all refused this way, and `/fleet`
+carries `read_only_reason` so the page can state the refusal rather than offer a button that
+409s.
+
+The gateway's own routes do not cross that middleware, so they carry the refusal separately.
+`_ensure_repo` is the step every gateway route needing a resolved checkout must take, and it
+answers the same `409` `repo_read_only` after discovery succeeds. Make Live is the route that
+makes this load-bearing: it reaches `live._make_live` → `_find_worktree_by_path` and writes
+the live-target pointer, which would aim the running gateway at a stranger's tree.
+
+The read-only denial is SEL-audited on BOTH surfaces that take it, for the same reason the HMAC
+denial beside the first one is: each is a permission decision on an AUTHENTICATED request. The
+backend middleware takes it before any handler runs; the gateway's `_ensure_repo` takes it
+before its route reaches `_audit`, so neither would otherwise leave a record. Both emits are
+wrapped, because auditing may not mask the answer.
+
+`GIT_OPTIONAL_LOCKS=0` joins `_GIT_ENV_NEUTRALIZERS`, so it reaches every git this handler runs.
+`git status` is a read to its caller and a WRITE to the repository — it refreshes the index's
+stat cache and saves it back under `index.lock` — and every fleet render runs one per row, so
+without it a read-only checkout is modified on the ordinary path. It sits on the env chokepoint
+rather than as a `--no-optional-locks` flag per call site for two reasons: the argv this handler
+builds stays the subcommand it names, and a read added later inherits the pin. Nothing is lost —
+the porcelain answer is identical and a real mutation still takes the locks it REQUIRES — and
+against this product's own checkout it also stops the fleet contending with the operator's git.
+
+The centralized path gate is asked FIRST — about the path the operator NAMED, before anything
+reads inside it — and asked again about the primary checkout `_resolve_primary_checkout`
+rewrites that path to. Both asks run off the event loop, because `sensitive_path_refusal`
+waits on the bounded resolution pool and would otherwise pause every task on the gateway loop.
+The ORDER is the point: the marker tests stat the candidate, resolution runs `git rev-parse`
+inside it, and the filter probe runs `git config --includes`, which follows `include.path` and
+can therefore make git READ a file the fence exists to keep unread — so a verdict consulted
+after those probes is consulted too late, and the earlier ordering also asked nothing at all
+about a protected path that is not a git repository. Two spellings because they differ and the
+difference is the hole: a fenced linked worktree can have a primary outside the fence, and a
+named path outside one can resolve to a primary inside it, so clearing either by the other
+clears a protected path by a path that is not it. A fenced path is refused OUTRIGHT rather than
+served read-only, because reading it is what the fence forbids; it is still published to
+`MAIN_REPO` for the banner alone, since `_repo()` raises on the invalid verdict and no consumer
+receives the path.
+
+The fence is asked about every worktree root too, not only the adopted checkout. A linked
+worktree's location is a path written into the repository's own admin files, which this module
+already treats as adversary-controlled, and `/api/disk` walks each root it is handed
+recursively — so a `gitdir` record naming a credential directory has that directory read. The
+question is asked in `_worktree_porcelain_entries`, the one function every worktree consumer
+goes through, and both spellings are asked of each root. A fenced LINKED root is withheld and
+its reason logged, because one bad record must not cost the rest of the fleet; a fenced PRIMARY
+refuses the whole read, because `is_main` anchors the fleet and dropping it promotes a linked
+worktree to primary — serving the operator a fleet rooted somewhere nobody named.
+
+A gate answer that timed out is unmeasured, not a fence. The gate refuses fail-closed WITHOUT
+judging the path, so that attempt holds no verdict: it says the verification did not complete
+and leaves `_DISCOVERY_DONE` unset, and the next poll retries. Latched, one transient timeout
+would stand as a permanent refusal asserting a measurement nobody took, and the retry the gate
+itself advises could never fire.
+
+A read-only verdict reopens on a corrected config. All three reopen gates key on
+`_REPO_INVALID_MSG or _REPO_READ_ONLY_MSG` rather than on the invalid message alone, because a
+read-only resolution is against a path the operator named and can still correct. The third is
+`_ensure_repo_resolved`, which the `/fleet` poll calls and which returns before discovery for a
+resolved checkout: keyed on the invalid message only, an operator who fixes a typo keeps serving
+the stranger's repository — with `BASE_BRANCH`, the upstream remote and the fallback repos
+latched to it — until the gateway restarts, and the poll is the route that would have noticed.
+
+A repository that configures executable git filter drivers is refused, not served. A filter is
+a COMMAND and `git status` — which every fleet render runs against the adopted checkout — is
+what would run it. The env neutralizers pin the named execution vectors but cannot enumerate
+driver names, so a repo-local filter is the one that stays reachable on a read.
+`_configured_filter_commands` reads only the scopes the repository itself controls, because a
+driver in the operator's own global config is the operator's decision; reading config executes
+nothing, which is what makes asking first the whole remedy.
+
+The clearance cannot be the whole bound, because a driver written between the check and the
+exec still runs, and the SANDBOX cannot bound it either. A foreign read asks for the strict
+tier, but this app's backend is itself spawned inside a standard sandbox and a nested wrap is
+impossible by design (Linux seccomp denies the unshare, macOS Seatbelt refuses
+`sandbox_apply`), so `wrap_argv` passes through and contributes the stricter tier's ENV scrub
+alone — its file-level hides stay at the outer tier, where `~/.aws` and `~/.ssh` are visible by
+design. So the bound is structural: on a checkout this app does not own it never asks git to
+convert content, and a verb that converts nothing can reach neither a `filter.*` driver nor a
+`diff.*.textconv` one. `_NON_CONVERTING_GIT_VERBS` is a SAFELIST, so a verb added later, or a
+git version that teaches an existing verb to convert, costs a measurement rather than a
+credential; `status` and `cherry` are outside it. The cost is that a foreign worktree's dirt is
+never measured, which the row reports as unknown rather than as clean — `dirty` answers `None`,
+and the consumers that act on it already test `is False` and `is True` precisely so an unknown
+never passes for an answer.
+
+Three properties make that probe's answer mean what it says, and each is a hole without it.
+`--includes` is passed on every scope query: for a SPECIFIC scope git defaults
+include-following OFF, so a driver reached through `[include] path = other.cfg` answers an
+empty list to a probe that omits the flag while git still resolves and runs it —
+`dashboard/handlers/worktree.py` proved that empirically for the same class. `--worktree` is
+asked only when `extensions.worktreeConfig` is on, because without the extension git ignores
+`config.worktree` entirely and refuses the query outright on any repository that HAS a linked
+worktree, which is the ordinary shape of what this app enumerates; when the extension IS on the
+scope is asked unconditionally and a failure is classified afterwards by
+`worktree_probe_failure_is_empty_scope`, git creating that file lazily. That question has THREE
+answers, not two: a non-zero exit git does not use for "key absent", and a spawn that raises,
+both mean the question went unasked, and reporting that as "not live" would drop the scope and
+admit a repository whose `config.worktree` holds a driver — so it is reported unread instead.
+And the probe returns TWO answers, the drivers found and separately the reason a live scope
+could not be read, so an unreadable scope is never reported as a configured driver: a driver
+refuses the repository for good, while an unread scope leaves `_DISCOVERY_DONE` unset and the
+next poll retries, exactly like the fail-closed path verdict above. `--local` is read first and
+its answer returned whole, because a driver found there is a measurement and a measurement
+outranks any unread verdict the worktree-scope question could produce.
+
+`--includes` is what makes the answer true and is also what makes the read reach, but the
+hazard is not confined to that flag: git parses the repository's config and follows
+`include.path` on EVERY command, so the FIRST git command in a foreign checkout already opens
+whatever an include names. `--includes` only decides whether an include is followed for the
+value PRINTED. The strict tier does not stop it for the reason given above — the tier
+contributes an ENV scrub and its file hides stay at the outer standard tier, where the
+credential homes are visible. So the bound is structural and it is taken BEFORE any spawn, at
+`_probe_git`, which takes the checkout path as a required argument rather than recovering it
+from argv: a chokepoint that guessed its subject from a flag would be one refactor away from
+guessing wrong. A git question could not be the gate, because asking would already have opened
+the file — so the repository's OWN config files are read by hand, using only git's documented
+one-line layout files (the `.git` pointer and `commondir`, which is how a linked worktree's
+shared config is reached) and never a config parse. Those two files are written by the
+REPOSITORY, though, so they are attacker-controlled input rather than a trusted layout:
+`gitdir: /home/x/.aws` aims this module's own read at a credential directory, and a symlinked
+`.git` does the same without naming anything. The adoption fence does not cover either, since
+it judges the checkout path and the primary it resolves to rather than a third path that
+checkout's metadata points at — so every target the metadata names goes through that same
+central gate, and a symlink is refused outright rather than resolved, because following one
+means trusting its target. Each metadata file is read under `_METADATA_MAX_BYTES`, one byte
+over being enough to refuse, so an oversized `.git/config` is never held whole in the
+gateway's own process — and the read itself opens `O_NOFOLLOW`, because the symlink test and
+the read are a check-then-use pair whose in-between the repository owns: it can replace a file
+that has just passed the test with a link to a credential store, and the flag makes that swap
+fail rather than succeed quietly. Every metadata file is judged, `commondir` included and not
+only the path it names, since `is_file` follows a symlinked `commondir` and would open its
+target before anything judged it. One leading byte-order mark is removed at that shared decode, because git removes
+it too: a config opening `\ufeff[include]` is an include as far as git is concerned, and a
+scanner treating the mark as part of the section name misses it — the same mark would also
+hide a `gitdir:` from the pointer parse. Detected by SECTION, `[include]` and
+`[includeIf ...]` being the only two spellings git honours: an include may name a file that
+includes a third, and following the chain to judge each hop would reimplement the resolution
+this exists to avoid triggering. An absent `.git` is not a refusal — a path that is not a
+checkout has no config of its own — while a config that exists and cannot be READ is refused,
+because doubt about its content is not evidence of safety. The refusal carries its own reason
+to the banner rather than the generic unread text, since it names something the operator can
+see in their own file. Direct git calls inherit the same clearance for free: the refusal
+surfaces as the unread answer, which `_assert_read_cleared` already raises on inside
+`pre_spawn`.
+
+Every probe's output is captured through a FILE and refused above
+`_PROBE_OUTPUT_MAX_BYTES` before it is decoded or split, because `capture_output` reads a pipe
+to EOF into the backend and the `tool` rlimit profile bounds the CHILD rather than what the
+parent accumulates from it. These probes pass `--name-only`, so no config VALUE is ever
+captured and only key volume can grow; an oversized reply routes to the same unread answer,
+since a repository answering a small question with an unbounded one has not answered it. The
+three probe failures share the `ProbeUnread` base for the reason `RepoUnavailable` exists: the
+fail-safe is identical for all of them and a new way to go unread must not slip past a handler
+that enumerated only the reasons alive when it was written.
+
+Every read of a foreign checkout goes through ONE gated spawn, `_run_gated_git`, which forces
+the strict tier and re-takes the clearance in `pre_spawn`; `_git` is a thin wrapper over it for
+the common case, `_run_gated_git_soft` is the wrapper for the resolvers — each already answers a
+non-zero rc with a documented default, so a clearance refusal is reported the same way rather
+than raised — and a caller needing git's own stderr uses the triple directly. One chokepoint
+rather than a convention, because a convention is what kept breaking: the worktree enumeration
+spawned at the default `standard` tier with no clearance — the tier where `_GIT_TRUSTED_HELPERS`
+is injected — and so did the base-branch resolver's `git remote`, the upstream-remote reads, the
+fallback-repo comparison and the untracked-file read, while every per-row read was forcing
+`strict` and re-clearing. That is why the invariant is asserted on the module's own source
+instead of trusted: exactly two `runtime._run_cmd` call sites may exist, the gated spawn and the
+credential-helper load, and the second is exempt because it is repo-INDEPENDENT (`--system` and
+`--global` scope only, no `-C`). That pin covers the whole APP rather than this module, because
+covering one module is what let `fleet_state.py` spawn `remote get-url` and a `merge-base` bare
+while `repository.py` was clean. `worktree_ops.py` is exempt and its exemption is checked, not
+assumed: its checkout-scoped spawns are MUTATIONS, bounded by a different mechanism — `_repo()`
+raises `RepoReadOnly` for a foreign checkout and the route boundary gates every non-GET on that
+accessor — so the pin allows only mutation verbs there and a plain READ added to it fails.
+A path is bound to the generation it was CAPTURED under, supplied by whoever captured it, and
+a read is refused when the configured checkout has moved since. Sampling the generation inside
+the read was a hole with a precise shape: the snapshot build captures a foreign path, a config
+switch lands before the read is entered, and because that switch also CLEARS the read-only
+verdict the read samples the NEW generation, compares it against itself, passes, and runs git
+in the foreign checkout at the `standard` tier — the tier that hands over `_GIT_TRUSTED_HELPERS`.
+The `pre_spawn` gate never saw it, because that gate only catches a switch landing between the
+sample and the spawn. The capture is taken BEFORE the enumeration that produces the paths —
+afterwards, a switch landing mid-enumeration would be stamped with the new generation and the
+stale paths it returned called current — and it is carried by EVERY path-based read, not only
+the row build: the ahead count, the own-commit count and the real-dirty read each take it too,
+since one that samples its own leaves the same hole open for its own field. The lazy
+per-worktree detail captures with the lookup that resolves the name; a caller that resolves its
+path fresh passes nothing, and the current generation IS its capture.
+
+A read whose SUBJECT is repository-controlled bounds its capture too, not only the probes:
+`runtime._run_cmd` takes an optional byte bound, and the commit-context read — ten subjects and
+bodies from a checkout this app may only read — passes it, because the size of a foreign commit
+message is the repository's choice and `communicate` would hold all of it in the gateway before
+any check could look. Each retained subject and body is capped as well, so one oversized field
+cannot ride through inside a capture that fits. The bounded path drains both pipes
+CONCURRENTLY and the reader that overflows KILLS the child before returning: draining one pipe
+at a time is what `communicate` exists to avoid, since a child writing hard to stdout blocks
+forever when stderr is unread, and killing on overflow is what brings the sibling pipe to EOF
+instead of waiting out the whole timeout. The retained PR body is bounded the same way and for
+the same reason: it is written by whoever opened the pull request, and `_PR_CACHE` holds it per
+branch for a whole TTL, so it is capped at capture and truncated again at retention.
+
+The worktree listing is bounded in three places, because all three are chosen by whoever controls
+the repository rather than by this app: the capture (512 KiB), the record count (512), and each
+retained field (4096 chars). Records come from the repository's own admin files and every one is
+parsed, held in the fleet cache and rendered. Overflow is REPORTED, never quiet — an over-limit
+listing refuses the fleet instead of serving it short, because a missing row is a worktree nobody
+was told about and one of them could be the main checkout every other row is anchored to. The
+capture bound names itself before the generic git-error path, which would otherwise report a
+merely large repository as corrupt.
+
+The captured generation must be FORWARDED, never re-taken. A function that receives one and reads
+it again binds the path to whatever checkout is in force after discovery already handed it over,
+which is the exact window the capture exists to close; a local reading is the fallback for a
+caller that has none, written as `if generation is None`. This is enforced by an AST pin over BOTH
+modules that fails on two shapes: a reassignment outside that guard, and a read called from a
+generation-taking function without forwarding it. It replaced a text scan of the caller module,
+which by construction could not see a read living inside the callee — the blind spot that let
+`_dirty_split`'s own `status` read keep its default while the signature around it was threaded.
+
+Every metadata read happens under a PINNED DIRECTORY DESCRIPTOR, because `O_NOFOLLOW` on a file
+open guards the final component only. Validating that `.git` is a real directory and later opening
+`.git/config` by path leaves the window this module exists to close: the repository renames `.git`
+to a symlink in between, the open walks through it, and the leaf is a genuine file at the
+attacker's chosen target — a credential store. Confirmed by experiment, not reasoning: a leaf-only
+no-follow open reads a planted key through a swapped ancestor, and the pin performs that swap
+between the check and the read rather than asserting on source text.
+
+So the checkout's `.git` is opened once with `O_NOFOLLOW|O_DIRECTORY`, and `config`,
+`config.worktree` and `commondir` are resolved as bare NAMES against that descriptor. A descriptor
+cannot be redirected by renaming a name. The descriptors are closed before returning and no caller
+receives a path to reopen: config content travels as `_ConfigRead` records, since a path handed
+back is a path opened by name a second time and the repository owns those names. `commondir` is
+classified by `stat` under the descriptor rather than inferred from a failed read — a read that
+fails is indistinguishable from an absent file, and absent admits the repository, so a symlinked
+`commondir` refuses instead of being silently ignored. The linked-worktree pointer is still read by
+path, which is sound because `.git` is itself the final component there, with no ancestor inside
+the repository to swap.
+
+Whether the platform can resolve a name against an open descriptor is decided ONCE, in
+`_PINNED_READS`, and `os.open` and `os.stat` must both support it together: a stat that fell back to
+a path while the read stayed pinned would judge one file and open another. Windows supports neither
+and cannot `os.open` a directory at all, so there the pinned open is not attempted and the reads
+degrade to the ordered check — the same bound as before, not a new hole. That branch is exercised on
+every platform by a test that forces the flag off AND makes the directory open fail: left to the
+Windows shard alone, a break in it reads as "not a git checkout" for every repository and surfaces
+hours later as a red lane somewhere else.
+
+A worktree field wider than its bound REFUSES the listing rather than being sliced. A truncated lock
+reason reads as the whole reason, and an operator deciding whether to remove a worktree would be
+deciding against text its author never wrote.
+
+Every read refusal emits a denied SEL event on EVERY occurrence, and only the operator-facing log
+line is deduplicated. A trail that records the first refusal per verb cannot answer how often or how
+recently a repository was refused, which is most of what it is read for; the log line is advice, and
+repeating it per row per refresh buries everything else. This covers the filter-driver refusal and
+the unread-config refusal as well, both of which can fire on a repository that was already admitted
+-- a filter can be written into a config after adoption, which is precisely the event worth having a
+record of.
+
+git is never asked anything about a foreign checkout. The config probes read a SNAPSHOT: the bytes
+this module already read and vetted are written to a private 0600 file and git is asked about that,
+with no `-C` and no path into the repository. This closes the last check-then-use window, and closes
+it by construction rather than by narrowing it -- the scan and the question git answers are the same
+bytes, so a config replaced in between cannot exist. A separate entry point enforces it: the
+snapshot probe refuses an argv carrying `-C`, and it is a distinct function rather than a flag
+because what it skips is the checkout probe's whole safety argument, and a boolean would put losing
+that one typo away. Both entry points share one sandboxed, output-bounded spawn.
+
+`--includes` stays on the filter read. For a specific scope git defaults include-following OFF, so
+the flag is what makes the answer mean what git will DO -- a fact an earlier round established
+empirically. The snapshot holds no include, because the scan refuses a config that names one, so the
+flag has nothing to follow.
+
+Whether a config names an include is ONE predicate, shared by the adoption scan and the snapshot
+guard. The two asking differently is the failure mode, and it happened: the section regex is
+start-anchored, so a whole-text `search` answers False for an `[include]` on any line but the first,
+and a guard disagreeing with the scan let exactly what the scan refused reach a spawn. Comments are
+stripped first, since git honours neither `#` nor `;` lines.
+
+Because the scopes are files rather than flags, `config.worktree` is consulted only when
+`extensions.worktreeConfig` is enabled -- read from the `config` bytes already in hand. git ignores
+that file otherwise, so reading it unconditionally would refuse a driver git itself would never
+resolve.
+
+Discovery itself no longer runs git at all. Resolving a linked worktree's primary checkout and
+finding a worktree's own gitdir were both `rev-parse` questions, and asking git where its own
+directories are makes git parse the repository's config and follow any `include.path` it names
+to answer — the hazard reached by the question that was supposed to precede the scan. Both are
+answered from the layout files this module already reads, so two of the four probe sites are
+gone and a source pin holds the count. The `commondir` a linked worktree names is normalised
+LEXICALLY, never resolved, because `Path.resolve` follows symlinks; and since lexical
+normalisation and the kernel disagree when a walked-up component is a symlink — components that
+live inside the repository's own `.git` — the claimed common dir must OWN the gitdir that named
+it, compared by device and inode through `lstat`, which follows nothing. A common dir carrying a
+same-named `worktrees` entry that is a different directory is refused. The pointer read decodes
+with `os.fsdecode`, so a path byte that is not valid UTF-8 survives as the surrogate the later
+`lstat` needs `os.fsencode` to restore; the `errors="replace"` decode a config SCAN wants would
+destroy it, which is why the two decoders are separate functions over one bounded read.
+
+`merge-base` joins the non-converting safelist for thoseresolvers: it reads the commit graph and answers with an exit status, touching no blob, so
+neither a filter nor a textconv driver is reachable through it. The settling window likewise
+opens BEFORE every await that follows publication, the credential-helper warm included, and the
+`try` covers that warm so one that raises cannot leave every mutation refused for the life of
+the process.
+
+A refusal is a permission decision, so each leaves a denied SEL event beside the banner text:the fenced path, the repository that would execute its own code on a read, a withheld worktree
+root, and a refused content-converting verb — that last one once per verb, because the poll
+repeats it per row per refresh and an event per occurrence would bury the log rather than
+record a decision. The UNMEASURED verdicts stay unaudited on purpose: an unresolved path gate
+and an unread config scope decided nothing.
+
+Every cache derived from the RESOLVED checkout is dropped when a resolution lands on a
+different path, before the resolvers re-read. Each of them returns early on a latched value, so
+a memo left in place means the new checkout is served with the old repository's remote name,
+`owner/repo` and base branch — which `git rebase {remote}/{base}` and the prune ancestry gate
+then act on. Read-only mode is what makes this reachable: a foreign checkout now RESOLVES, so
+`_upstream_remote` and `fleet_state._get_owner_repo` latch against it, where before they
+declined because `_repo_read()` raised. `repository` sits BELOW the modules that own the other
+caches in the component DAG, so they register a reset with `register_checkout_reset` rather
+than being reached by an import that would invert the dependency; a checkout-derived cache
+added later registers in the same change that introduces it.
+
+Clearing a cache is only half of it, because a read already in flight measured the old
+checkout and its write lands after the clear. So the reset also bumps a generation counter --
+owned by `repository`, which owns the resolution that moves it, so every module above has one
+answer to ask -- and every checkout-derived write compares it and declines when it no longer
+matches. That
+covers the coalesced background reads -- a fleet snapshot that finished against a different
+checkout is discarded and rebuilt rather than stored, and a disk aggregation in the same
+position restores the cleared state instead of publishing another fleet's worktree names -- and
+equally the identity writes, which are the ones with no way back: the `owner/repo` name and the
+browser base URL have no expiry at all, and a PR verdict keyed under the wrong repository is
+what the unattended reaper reads as MERGED before deleting a worktree, so each of those
+declines rather than caching and answers unknown for that poll. The fleet rebuild is bounded at
+three attempts and the bound raises rather than serving an empty snapshot, because an empty
+fleet asserts a measurement nobody took. The obligation lives in one predicate the writes call,
+so a cache added later calls it too instead of joining a list that has to stay in step.
+
+This module's own three resolvers are in that set, not only the caches above it. The base
+branch names the ref `/rebase` rewrites onto, the upstream remote is the other half of
+`{remote}/{base}` and is memoized with no expiry, and the fallback repo list decides which
+worktree-name prefixes count as legacy and whose merged verdict is trusted — each is resolved
+across awaits, so each compares the generation before publishing. The base branch publishes
+through one closure every tier calls, so a tier added later cannot skip it; the remote's
+degraded answer is git's own conventional default, because a wrong name fails the rebase loudly
+where a stranger's name can match a same-named remote here and point somewhere else; the
+fallback list is left at its not-yet-loaded sentinel so the next call re-enumerates.
+
+Publishing the path and deriving what the path MEANS cannot be one step, so MUTATIONS wait for
+the second half. The resolvers read the checkout, which means the path has to be visible to them
+first — and in that window the mutation gate sees a managed checkout while `BASE_BRANCH` is still
+the shared default the switch reset it to. A rebase landing there replays a worktree onto
+whichever base that name happens to match in the NEW repository: it fails loudly when the name
+matches nothing, and rewrites history when it matches something, which nothing in this app can
+undo. `_mutations_settling_reason` therefore refuses mutations for exactly the width of the
+resolver block, cleared in a `finally` so a resolver that raises cannot refuse every mutation for
+the life of the process. It is asked in TWO places because not every mutation passes the
+accessor: a rebase is rooted at the worktree it rebases, so the route boundary's method gate asks
+as well. It is deliberately NOT folded into `_read_only_reason`: that answer feeds the `/fleet`
+payload and the page's whole read-only mode, so folding a sub-second transition into it would
+flash the banner and withdraw every control on each re-resolution. The READ accessor is
+unaffected, because the resolvers themselves go through it.
+
+The clearance is re-taken on every read, not once at adoption. Discovery's answer is about the
+repository as it was at that moment; a driver written into the config afterwards is read by the
+next `git` invocation and by nothing else, so a one-time answer stops being true exactly where
+it matters. `_git` — the chokepoint every read in this module passes through — asks again
+before it spawns, and raises `RepoUnreadable` on a driver or on an unread scope, which `/fleet`
+renders as the discovery banner. Asked for every read rather than for a list of
+content-touching subcommands: a list has to be kept in step with every read this app grows, and
+the one that gets forgotten is the bug. The price is two `git config` reads per git read, paid
+only on a foreign checkout an operator named explicitly, and neither opens the object database.
+Nothing is latched, so a git failure that happened to be transient clears itself.
+
+Two things are bound to the read rather than re-read from a global while it is in flight. The
+read-only disposition is sampled once, where the spawn's target path is also fixed, and passed
+into the clearance: sampling it again there can answer differently, because a poll re-resolving
+to the app's own managed checkout clears it, and the clearance would then skip the driver probe
+entirely for a read still aimed at the foreign path. The checkout generation is sampled beside
+it and compared before the spawn on EVERY read, whatever the disposition said, because the
+pairing of the two is the hazard: the resolution that lands on a managed checkout also CLEARS
+the read-only verdict, so a read still aimed at the foreign path it captured would sample the
+cleared disposition, skip the clearance and spawn in the tier that carries the trusted
+credential helpers. Both refusals are transient like every other one here: the next poll reads
+the checkout now configured.
+
+The background refresher is refused with them, because its first act is a `git fetch`: a
+network write into a repository the operator handed over to be read, fired on a timer with
+nobody watching. `_status_refresher` resolves through `_repo()`, so `RepoReadOnly` lands in
+the same idle-and-return branch the unresolved states use. Rows still refresh — the fleet
+cache carries its own 10-second TTL and `/fleet` rebuilds through it on demand — so what is
+lost is only the periodic fetch, which makes `behind` a reading of the remote-tracking refs
+already present and therefore possibly stale. A stale number is the better answer than a
+fetch nobody asked for.
+
+Four row fields answer UNKNOWN (`null`) rather than `false`: `build_pending`, `has_venv`,
+`has_dist` and `is_live` (with `is_staged` beside it). Each describes an artifact of this
+product's own build and service-unit machinery, and that machinery never runs against a
+read-only checkout, so `false` would assert "nothing to apply" and "not running" about
+mechanisms that do not apply at all.
+
+`live_state_known` is reported `false` there too, because the cutover routes are refused and no
+row can be marked live.
+
+The page consumes the mode rather than inferring it. `null` is falsy in JavaScript, so every
+`!w.has_dist` read would treat unknown as "no": `DevFleetPage` therefore tests for `null`
+explicitly and labels the build state unknown, counts only `has_dist === false` as
+needs-provision, and renders `read_only_reason` as a banner above the rows. That banner also
+replaces the live-state-unknown notice there — the live state is unknown BECAUSE this mode
+refuses the cutover, not because the gateway failed to answer, and offering "check the gateway"
+for a healthy one names the wrong cause. No control that posts is offered on a read-only
+checkout, mirroring the backend's single gate on the method: the row returns no actions at all
+rather than filtering them one at a time, so a control added later inherits the refusal instead
+of having to remember it. `restart-gateway` is the one exception and stays offered, because it
+restarts the gateway service and touches no repository.
+
+`BASE_BRANCH` is resolved per repository once a checkout publishes (`_resolve_base_branch`)
+rather than fixed at `main`, because a repository whose default branch carries another name
+would otherwise label its primary row "main" and point every ahead/behind range at a branch
+that does not exist. A remote's published `HEAD` is read first, since that is the
+repository's own statement of its default branch, then the local names in
+`_LOCAL_BASE_CANDIDATES`, then the branch the checkout is on. That last tier ranks BELOW the
+candidates on purpose: a dev checkout parked on a feature branch is the ordinary state, and a
+present `main` is the better base there, while a repository named `trunk` or `develop` reaches
+it and stops carrying a name that matches no ref. Every tier is validated by the same
+branch-name guard. Only a checkout that cannot be read at all leaves the value alone, so a
+process with no repository keeps reading the name it always did
+(`test/test_dev_fleet_repo_accessor.py`).
+
+Exactly ONE remote is consulted for that published `HEAD`: `origin`, or the sole remote of a
+checkout that has one under a different name. `git remote` lists names alphabetically, so
+reading them in listing order lets an archive or fork remote decide the base while
+`_upstream_remote` — which resolves `branch.<base>.remote` independently and falls back to
+`origin` — names a different one. `/rebase` combines the two into `{remote}/{BASE_BRANCH}`,
+so a disagreement there rewrites a feature branch onto a base the upstream never published,
+and a stale `origin/<other-name>` left in the repository makes even the fetch step succeed.
+A base taken from a local branch instead composes with the remote read by construction:
+`_upstream_remote` resolves the remote that branch tracks.
 
 ## Routes
 
