@@ -444,13 +444,20 @@ class OrphanStallMonitor(ManagerComponent):
                         # started (folder creation time) to avoid false negatives under load
                         pid_recorded_at = state.get("pid_recorded_at", state.get("started", 0))
                         if self._manager._is_orphan_process(pid, pid_recorded_at):
-                            self._manager._kill_orphan_pid(pid)
+                            # Awaited: the Windows arm is a taskkill spawn that
+                            # waits on the target, kept off the loop.
+                            kill_failed = await self._manager._kill_orphan_pid(pid)
                             try:
                                 sel().log_tool_invocation(
                                     session_key=f"subagent:{agent_id}",
                                     source="subagent",
                                     tool_name="orphan_reconcile_kill",
-                                    outcome="killed",
+                                    # Never ``killed`` for a process the kill
+                                    # left standing: the folder is reconciled
+                                    # below either way, so this row is the only
+                                    # place the process's fate is recorded.
+                                    outcome="killed" if kill_failed is None else "failed",
+                                    error=kill_failed or "",
                                     metadata={"subagent_id": agent_id, "pid": pid},
                                 )
                             except Exception:

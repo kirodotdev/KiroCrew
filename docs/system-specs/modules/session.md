@@ -2783,7 +2783,9 @@ records what the reaper does with it.
 **A key whose run is being ended admits nothing -- and drops nothing: the per-key
 ending fence.** `SessionManager.ending_key(key)` is a context manager, the per-key
 sibling of the manager-wide `_closing` check, held by a caller that is ending a
-run (the cron reaper, `cancel()`) from before its reset-then-kill passes until the
+run (the cron reaper, `cancel()`, and the sub-agent manager's force reap -- a
+deadline, a startup stall, a dashboard Stop -- through
+`process_identity.ending_fence`, the one entry both supervisors use) from before its reset-then-kill passes until the
 run's terminal record and audit are written: a caller held at the door wakes to a
 key whose run is RECORDED, never to one that is neither being ended nor recorded
 (runtime and durable state agreeing; a registration after the passes is a new life

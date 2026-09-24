@@ -45,6 +45,9 @@ def _mock_sessions() -> MagicMock:
     sessions.record_success = MagicMock()
     sessions.get_agent = MagicMock(return_value="")
     sessions.get_agent_selection = MagicMock(return_value=("template", ""))
+    # A real, empty map: the teardown paths read it once before their reset,
+    # and a miss (no live session, nothing to kill) is what these tests mean.
+    sessions._sessions = {}
     return sessions
 
 
@@ -722,12 +725,13 @@ class TestSubagentReaper:
             patch("kiro_crew.subagent.Stats"),
             patch("kiro_crew.subagent.sel"),
             patch("kiro_crew.subagent._RESET_TIMEOUT", 0.1),
-            patch.object(manager, "_sigkill_session", new_callable=AsyncMock) as mock_kill,
+            patch.object(manager, "_sigkill_session", AsyncMock(return_value=None)) as mock_kill,
         ):
             await manager._force_reap("hang0001", info, _TIMEOUT_SECS + 60)
 
         assert info.done is True
-        mock_kill.assert_awaited_once_with("subagent:hang0001")
+        # No session was live before the reset, so the kill is handed no handle.
+        mock_kill.assert_awaited_once_with("subagent:hang0001", None)
 
     @pytest.mark.asyncio
     async def test_run_finally_timeout_on_reset(self) -> None:
@@ -756,7 +760,7 @@ class TestSubagentReaper:
             patch("kiro_crew.subagent.Stats"),
             patch("kiro_crew.subagent.sel"),
             patch("kiro_crew.subagent._RESET_TIMEOUT", 0.1),
-            patch.object(manager, "_sigkill_session", new_callable=AsyncMock),
+            patch.object(manager, "_sigkill_session", AsyncMock(return_value=None)),
         ):
             await manager._run(info)
 

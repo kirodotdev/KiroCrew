@@ -4115,6 +4115,54 @@ class TestRecycleIfIdle:
         assert await backend.recycle_if_idle() is False
         cast(Any, backend_mod.platform_compat.kill_process_tree_async).assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_a_signal_the_fallback_could_not_deliver_is_audited_failed_not_killed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A kill that was refused all the way down is recorded as a failure, not a kill.
+
+        Both signals were suppressed and the audit still said ``killed`` with
+        the process alive -- the shape the sub-agent and cron reapers record as
+        ``failed``. The pool still drops the backend (no consumer is left); its
+        reason and the audit row name what the signal could not do.
+        """
+        monkeypatch.setattr(
+            backend_mod.platform_compat, "kill_process_tree_async",
+            AsyncMock(side_effect=PermissionError("Operation not permitted")))
+        monkeypatch.setattr(
+            backend_mod.platform_compat, "kill_pid_async",
+            AsyncMock(side_effect=PermissionError("Operation not permitted")))
+        backend = _make_backend()
+        assert await backend.recycle_if_idle() is True
+        audit = cast(Any, backend_mod.SecurityEventLog).return_value.log_api_access
+        audit.assert_called_once()
+        assert audit.call_args.kwargs["outcome"] == "failed", (
+            "the audit says killed for a process the signal left alive: "
+            f"{audit.call_args.kwargs!r}"
+        )
+        assert "; kill failed: PermissionError: Operation not permitted" in (
+            audit.call_args.kwargs["error"]
+        )
+        assert "; kill failed: PermissionError" in (backend.dead_reason or "")
+        assert backend.is_alive is False
+
+    @pytest.mark.asyncio
+    async def test_a_process_gone_before_the_fallback_signal_is_a_kill(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Control: ``ProcessLookupError`` on the fallback means the process is gone -- killed."""
+        monkeypatch.setattr(
+            backend_mod.platform_compat, "kill_process_tree_async",
+            AsyncMock(side_effect=OSError("tree not signalable")))
+        monkeypatch.setattr(
+            backend_mod.platform_compat, "kill_pid_async",
+            AsyncMock(side_effect=ProcessLookupError()))
+        backend = _make_backend()
+        assert await backend.recycle_if_idle() is True
+        audit = cast(Any, backend_mod.SecurityEventLog).return_value.log_api_access
+        assert audit.call_args.kwargs["outcome"] == "killed"
+        assert "kill failed" not in (backend.dead_reason or "")
+
 
 class TestBackgroundTasksAndShutdown:
     @pytest.mark.asyncio

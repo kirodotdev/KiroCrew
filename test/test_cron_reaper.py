@@ -26,6 +26,7 @@ from kiro_crew.cron import (
 from kiro_crew.cron_history import CronHistoryStore
 from kiro_crew.process_identity import (
     ProcessHandle,
+    kill_set,
     process_handle_of,
     process_survived,
     process_survived_async,
@@ -2875,7 +2876,7 @@ class TestTheSessionTheResetPopsIsCaptured:
         recycled = ProcessHandle(pid=8989, start_id="7777777", pgid=8989, child_pids={})
         same = ProcessHandle(pid=8989, start_id=_START_ID, pgid=None, child_pids={1: ("x", b"n")})
 
-        targets, missing = CronService._kill_set([snapshot], [(object(), recycled), (object(), same)])
+        targets, missing = kill_set([snapshot], [(object(), recycled), (object(), same)])
 
         assert missing is None
         assert targets == [snapshot, recycled], (

@@ -754,13 +754,15 @@ class TestPidHelpers:
         with patch.object(os, "stat", return_value=SimpleNamespace(st_ctime=500.0)):
             assert SubagentManager._is_orphan_process(4242, 100.0) is False
 
-    def test_kill_orphan_swallows_missing_process(self) -> None:
+    @pytest.mark.asyncio
+    async def test_kill_orphan_swallows_missing_process(self) -> None:
         with patch.object(sa.platform_compat, "kill_pid", side_effect=ProcessLookupError):
-            SubagentManager._kill_orphan_pid(4242)  # must not raise
+            await SubagentManager._kill_orphan_pid(4242)  # must not raise
 
-    def test_kill_orphan_calls_platform_kill(self) -> None:
+    @pytest.mark.asyncio
+    async def test_kill_orphan_calls_platform_kill(self) -> None:
         with patch.object(sa.platform_compat, "kill_pid") as kill:
-            SubagentManager._kill_orphan_pid(4242)
+            await SubagentManager._kill_orphan_pid(4242)
         assert kill.call_args[0][0] == 4242
 
 

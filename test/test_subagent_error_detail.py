@@ -13,9 +13,9 @@ import sqlite3
 import pytest
 
 from kiro_crew.dashboard.chat_runner import _MAX_NATIVE_CARD_ERROR, _clip_card_error
+from kiro_crew.process_identity import MAX_ERROR_DETAIL_LEN
 from kiro_crew.subagent import (
     _MAX_ERROR_CHAIN,
-    _MAX_ERROR_DETAIL_LEN,
     SubagentInfo,
     SubagentManager,
     _describe_exception,
@@ -82,8 +82,8 @@ class TestDescribeException:
         assert _describe_exception(RuntimeError()) == "RuntimeError"
 
     def test_output_is_bounded(self):
-        rendered = _describe_exception(ValueError("x" * (_MAX_ERROR_DETAIL_LEN * 3)))
-        assert len(rendered) == _MAX_ERROR_DETAIL_LEN
+        rendered = _describe_exception(ValueError("x" * (MAX_ERROR_DETAIL_LEN * 3)))
+        assert len(rendered) == MAX_ERROR_DETAIL_LEN
 
     def test_chain_is_capped(self):
         exc = ValueError("link0")
@@ -132,11 +132,11 @@ class TestTombstoneCarriesTheReason:
 
         create_agent_folder("longone", task="t")
         info = SubagentInfo(id="longone", task="t")
-        info.error = "E" * (_MAX_ERROR_DETAIL_LEN * 3)
+        info.error = "E" * (MAX_ERROR_DETAIL_LEN * 3)
 
         SubagentManager._write_tombstone(info, "error")
 
-        assert len(self._tombstone(agent_root, "longone")["detail"]) == _MAX_ERROR_DETAIL_LEN
+        assert len(self._tombstone(agent_root, "longone")["detail"]) == MAX_ERROR_DETAIL_LEN
 
 
 class TestTombstoneResolvesRecoveryAction:

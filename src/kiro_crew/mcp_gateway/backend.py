@@ -65,6 +65,7 @@ from kiro_crew.mcp_gateway.image_budget import (
 from kiro_crew.mcp_gateway.pool import READ_BUFFER_LIMIT_BYTES, RESPONSE_SPILL_THRESHOLD_BYTES
 from kiro_crew.mcp_gateway.spill import maybe_spill_response
 from kiro_crew.mcp_gateway.tool_surface import ToolSurface, project_tool_surface
+from kiro_crew.process_identity import failure_name, with_kill_failure
 from kiro_crew.sandbox import (
     CANONICAL_TEMP_KEYS,
     classify_declared_temp_env,
@@ -3907,6 +3908,11 @@ class Backend:
             # loop. On POSIX it dispatches inline to the sync helper, so
             # os.killpg/os.getpgid monkeypatching still intercepts.
             recycled = True
+            # What the fallback below could not do, named for the record and the
+            # audit -- never swallowed. A refused or failed signal here left the
+            # process alive while the audit said ``killed``: the same suppressed-
+            # failure shape the sub-agent and cron reapers record as ``failed``.
+            kill_failed: str | None = None
             try:
                 await platform_compat.kill_process_tree_async(pid, platform_compat.SIGKILL)
             except ValueError:
@@ -3915,17 +3921,31 @@ class Backend:
             except (ProcessLookupError, PermissionError, OSError):
                 # Tree already gone or not signalable — fall back to a
                 # pid-scoped kill, as this call site did before.
-                with contextlib.suppress(
-                    ProcessLookupError, PermissionError, OSError, ValueError
-                ):
+                try:
                     await platform_compat.kill_pid_async(pid, platform_compat.SIGKILL)
+                except ProcessLookupError:
+                    # Gone before the signal landed: that IS the kill.
+                    pass
+                except (PermissionError, OSError, ValueError) as exc:
+                    kill_failed = failure_name(exc)
             if recycled:
                 self._dead_reason = "recycled after last stub detached with in-flight work"
-                logger.info(
-                    "backend pid=%s recycled (killed): last stub detached with "
-                    "in-flight work",
-                    pid,
-                )
+                if kill_failed is None:
+                    logger.info(
+                        "backend pid=%s recycled (killed): last stub detached with "
+                        "in-flight work",
+                        pid,
+                    )
+                else:
+                    # The pool drops the backend either way (no consumer is left
+                    # to serve); the reason it carries and the audit row say the
+                    # process was NOT killed, in the two supervisors' spelling.
+                    self._dead_reason = with_kill_failure(self._dead_reason, kill_failed)
+                    logger.warning(
+                        "backend pid=%s recycled but its process was not killed: %s",
+                        pid,
+                        kill_failed,
+                    )
                 # SEL audit: SIGKILLing a pooled backend is a security-relevant
                 # action — record it in the HMAC-chained event log regardless
                 # of which path (abort frame or plain disconnect) got us here.
@@ -3933,7 +3953,8 @@ class Backend:
                     SecurityEventLog().log_api_access(
                         caller="gatewayd",
                         operation="mcp-gateway.backend-recycle-kill",
-                        outcome="killed",
+                        # Never ``killed`` for a process the signal left alive.
+                        outcome="killed" if kill_failed is None else "failed",
                         source="gateway",
                         resources=f"pid={pid} server={self.pool_key.server_name}",
                         error=self._dead_reason,
