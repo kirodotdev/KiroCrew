@@ -43,7 +43,11 @@ from kiro_crew.adaptive.policy import (
 from kiro_crew.adaptive.signals import Sample
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.mcp_gateway.admission import SpawnGate
-from kiro_crew.metrics.events import LOOP_LAG_MS
+from kiro_crew.metrics.events import (
+    LOOP_LAG_MS,
+    PROCESS_CPU_UTILIZATION,
+    PROCESS_RSS_SAMPLED,
+)
 
 pytestmark = pytest.mark.timeout(30)
 
@@ -358,7 +362,14 @@ class TestTick:
             lambda *_a, **_kw: pytest.fail("probe_host must not load config"),
         )
         sample = ctl_mod.probe_host()
-        assert set(vars(sample)) == {"free_mem_mb", "rss_mb", "fd_count", "fd_limit"}
+        assert set(vars(sample)) == {
+            "free_mem_mb",
+            "rss_mb",
+            "fd_count",
+            "fd_limit",
+            "cpu_seconds",
+            "cpu_clock",
+        }
 
     @pytest.mark.asyncio
     async def test_hooks_feed_the_sample(self) -> None:
@@ -1109,3 +1120,254 @@ async def test_disabled_controller_never_starts_or_probes() -> None:
         stats.assert_not_awaited()
     finally:
         await ctl.stop()
+
+
+class TestSampledProcessHistograms:
+    """The two resource distributions the controller records on its own tick.
+
+    Recorded here because a histogram is RECORDED and not observed: OTEL has no
+    observable histogram, so the series need a caller on a timer, and this loop
+    already probes both readings for its own decisions.
+    """
+
+    @staticmethod
+    def _capture(store: list) -> Any:
+        def _emit(name: str, value: float, attrs: dict[str, Any], *, unit: str = "1") -> None:
+            store.append((name, value, attrs, unit))
+
+        return _emit
+
+    @staticmethod
+    def _only(store: list, name: str) -> list:
+        return [row for row in store if row[0] == name]
+
+    def _controller_for(
+        self,
+        probe: Any,
+        clock: Clock,
+        monkeypatch: Any,
+        store: list,
+        cores: Optional[int] = 4,
+    ) -> AdaptiveController:
+        monkeypatch.setattr(ctl_mod, "emit_histogram", self._capture(store))
+        monkeypatch.setattr(ctl_mod, "read_logical_cores", lambda: cores)
+        return AdaptiveController(
+            FakeManager(),  # type: ignore[arg-type]
+            cfg=_cfg(),
+            host_probe=probe,
+            clock=clock,
+        )
+
+    @pytest.mark.asyncio
+    async def test_resident_set_is_recorded_in_bytes(self, monkeypatch) -> None:
+        """The probe reads megabytes; the instrument publishes bytes, because the
+        boundary array and the declared unit are both bytes."""
+        store: list = []
+        clock = Clock()
+        ctl = self._controller_for(
+            lambda: HostSample(
+                free_mem_mb=16_000.0, rss_mb=300.0, cpu_seconds=10.0, cpu_clock=clock()
+            ),
+            clock,
+            monkeypatch,
+            store,
+        )
+        await ctl.tick()
+        (row,) = self._only(store, PROCESS_RSS_SAMPLED)
+        name, value, attrs, unit = row
+        assert value == pytest.approx(300.0 * 1024 * 1024)
+        assert attrs == {"process": "gateway"}
+        assert unit == "By"
+
+    @pytest.mark.asyncio
+    async def test_the_first_tick_publishes_no_cpu_share(self, monkeypatch) -> None:
+        """A share is a RATE and the probe returns a lifetime TOTAL, so one
+        reading is not a sample. Publishing anything here would be invented."""
+        store: list = []
+        clock = Clock()
+        ctl = self._controller_for(
+            lambda: HostSample(rss_mb=300.0, cpu_seconds=10.0, cpu_clock=clock()),
+            clock,
+            monkeypatch,
+            store,
+        )
+        await ctl.tick()
+        assert self._only(store, PROCESS_CPU_UTILIZATION) == []
+        assert len(self._only(store, PROCESS_RSS_SAMPLED)) == 1
+
+    @pytest.mark.asyncio
+    async def test_the_second_tick_publishes_the_measured_share(self, monkeypatch) -> None:
+        """Five CPU seconds burned over twenty wall seconds on four cores."""
+        store: list = []
+        clock = Clock()
+        reading = {"cpu": 10.0}
+        ctl = self._controller_for(
+            lambda: HostSample(rss_mb=300.0, cpu_seconds=reading["cpu"], cpu_clock=clock()),
+            clock,
+            monkeypatch,
+            store,
+        )
+        await ctl.tick()
+        clock.advance(20)
+        reading["cpu"] = 15.0
+        await ctl.tick()
+        (row,) = self._only(store, PROCESS_CPU_UTILIZATION)
+        name, value, attrs, unit = row
+        assert value == pytest.approx(5.0 / (20.0 * 4))
+        assert attrs == {"process": "gateway"}
+        assert unit == "1"
+
+    @pytest.mark.asyncio
+    async def test_an_unmeasured_resident_set_publishes_nothing(self, monkeypatch) -> None:
+        """``-1`` is the sample's "not measured"; a zero-byte process is not a
+        thing, so publishing one would be a fake reading."""
+        store: list = []
+        ctl = self._controller_for(lambda: HostSample(), Clock(), monkeypatch, store)
+        await ctl.tick()
+        assert self._only(store, PROCESS_RSS_SAMPLED) == []
+
+    @pytest.mark.asyncio
+    async def test_a_zero_resident_set_publishes_nothing(self, monkeypatch) -> None:
+        """The reachable failure, distinct from the ``-1`` sentinel above.
+
+        ``proc_rss_bytes`` answers 0 on failure rather than raising, so the probe's
+        own ``except`` never runs and the sample carries a plain ``0.0``. A live
+        process never has a true resident set of zero, and a histogram is cumulative,
+        so admitting one would leave a fabricated bucket in the series for the rest of
+        the process's life.
+        """
+        store: list = []
+        ctl = self._controller_for(
+            lambda: HostSample(free_mem_mb=16_000.0, rss_mb=0.0, fd_count=50, fd_limit=1000),
+            Clock(),
+            monkeypatch,
+            store,
+        )
+        await ctl.tick()
+        assert self._only(store, PROCESS_RSS_SAMPLED) == []
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_core_count_publishes_no_share(self, monkeypatch) -> None:
+        """Without a core count there is no machine to be a share OF."""
+        store: list = []
+        clock = Clock()
+        reading = {"cpu": 10.0}
+        ctl = self._controller_for(
+            lambda: HostSample(rss_mb=300.0, cpu_seconds=reading["cpu"], cpu_clock=clock()),
+            clock,
+            monkeypatch,
+            store,
+            cores=None,
+        )
+        await ctl.tick()
+        clock.advance(20)
+        reading["cpu"] = 15.0
+        await ctl.tick()
+        assert self._only(store, PROCESS_CPU_UTILIZATION) == []
+
+    @pytest.mark.asyncio
+    async def test_a_failed_cpu_probe_does_not_become_the_next_baseline(self, monkeypatch) -> None:
+        """``proc_cpu_seconds`` reads 0.0 when the probe fails. Keeping the older
+        pair differences a longer interval against the reading it was taken with,
+        which stays correct arithmetic; adopting 0.0 would report a huge share.
+        """
+        store: list = []
+        clock = Clock()
+        reading = {"cpu": 10.0}
+        ctl = self._controller_for(
+            lambda: HostSample(rss_mb=300.0, cpu_seconds=reading["cpu"], cpu_clock=clock()),
+            clock,
+            monkeypatch,
+            store,
+        )
+        await ctl.tick()
+        clock.advance(10)
+        reading["cpu"] = 0.0  # the probe failed
+        await ctl.tick()
+        assert self._only(store, PROCESS_CPU_UTILIZATION) == []
+        clock.advance(10)
+        reading["cpu"] = 18.0
+        await ctl.tick()
+        (row,) = self._only(store, PROCESS_CPU_UTILIZATION)
+        # 8 seconds burned across the whole 20, not 8 across the last 10.
+        assert row[1] == pytest.approx(8.0 / (20.0 * 4))
+
+    @pytest.mark.asyncio
+    async def test_a_restarted_process_reading_publishes_no_share(self, monkeypatch) -> None:
+        """A lifetime total cannot decrease, so a drop means the two readings came
+        from different processes and their difference describes neither."""
+        store: list = []
+        clock = Clock()
+        reading = {"cpu": 90.0}
+        ctl = self._controller_for(
+            lambda: HostSample(rss_mb=300.0, cpu_seconds=reading["cpu"], cpu_clock=clock()),
+            clock,
+            monkeypatch,
+            store,
+        )
+        await ctl.tick()
+        clock.advance(10)
+        reading["cpu"] = 4.0
+        await ctl.tick()
+        assert self._only(store, PROCESS_CPU_UTILIZATION) == []
+
+    @pytest.mark.asyncio
+    async def test_the_share_divides_by_the_probe_interval_not_the_resume_interval(
+        self, monkeypatch
+    ) -> None:
+        """The CPU total is read in a worker thread; the loop resumes later. Both
+        endpoints of the division come from the probe, so the resumption delay is
+        outside the measured interval.
+
+        The delay is five seconds here to keep the arithmetic unambiguous. It
+        varies from tick to tick, so it does not cancel, and the mechanism is the
+        same at the few hundred milliseconds a busy loop actually shows.
+        """
+        store: list = []
+        clock = Clock()
+        reading = {"cpu": 10.0, "resume_delay": 0.0}
+
+        def probe() -> HostSample:
+            instant = clock()  # the worker thread read the total at this moment
+            clock.advance(reading["resume_delay"])  # the loop resumed this much later
+            return HostSample(rss_mb=300.0, cpu_seconds=reading["cpu"], cpu_clock=instant)
+
+        ctl = self._controller_for(probe, clock, monkeypatch, store)
+        await ctl.tick()
+        clock.advance(20)
+        reading["cpu"] = 15.0
+        reading["resume_delay"] = 5.0
+        await ctl.tick()
+        (row,) = self._only(store, PROCESS_CPU_UTILIZATION)
+        # Five CPU seconds across the twenty between the two probes, on four
+        # cores. Pairing the total with the loop's post-resume instant would
+        # divide by twenty-five and under-report the share by a fifth.
+        assert row[1] == pytest.approx(5.0 / (20.0 * 4))
+        assert row[1] != pytest.approx(5.0 / (25.0 * 4))
+
+    @pytest.mark.asyncio
+    async def test_a_total_with_no_instant_publishes_no_share(self, monkeypatch) -> None:
+        """``cpu_clock`` is the probe's own reading of when it took the total. A
+        sample carrying one without the other is not a measurement, and no instant
+        this loop could substitute belongs to that total."""
+        store: list = []
+        clock = Clock()
+        reading = {"cpu": 10.0, "paired": True}
+        ctl = self._controller_for(
+            lambda: HostSample(
+                rss_mb=300.0,
+                cpu_seconds=reading["cpu"],
+                cpu_clock=clock() if reading["paired"] else -1.0,
+            ),
+            clock,
+            monkeypatch,
+            store,
+        )
+        await ctl.tick()
+        clock.advance(20)
+        reading["cpu"] = 15.0
+        reading["paired"] = False
+        await ctl.tick()
+        assert self._only(store, PROCESS_CPU_UTILIZATION) == []
+        # The resident set is a single reading, so it needs no pair and still publishes.
+        assert len(self._only(store, PROCESS_RSS_SAMPLED)) == 2

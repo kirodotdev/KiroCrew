@@ -44,7 +44,16 @@ from collections import deque
 from dataclasses import dataclass, field, replace
 from typing import Any, Awaitable, Callable, Optional, Protocol
 
-from kiro_crew.metrics.events import ADAPTIVE_DECISIONS, LOOP_LAG_MS, emit_counter, emit_histogram
+from kiro_crew.metrics.events import (
+    ADAPTIVE_DECISIONS,
+    LOOP_LAG_MS,
+    NON_MS_HISTOGRAM_UNITS,
+    PROCESS_CPU_UTILIZATION,
+    PROCESS_RSS_SAMPLED,
+    emit_counter,
+    emit_histogram,
+)
+from kiro_crew.metrics.process_gauges import cpu_utilization, read_logical_cores
 
 from .policy import (
     ACTION_DECREASE,
@@ -115,6 +124,12 @@ class ExecActuator(Protocol):
 GateSetter = Callable[[int], Awaitable[Optional[int]]]
 StatsReader = Callable[[], Awaitable[dict[str, Any]]]
 
+# The ``process`` attribute every sample this controller publishes carries. One
+# spelling for all three series (loop lag, resident set, CPU share): a dashboard
+# that splits on this attribute would otherwise report them as separate
+# processes, and they are readings of the same one.
+_PROCESS = "gateway"
+
 
 @dataclass
 class HostSample:
@@ -124,6 +139,18 @@ class HostSample:
     rss_mb: float = -1.0
     fd_count: int = -1
     fd_limit: int = 0
+    #: Process-lifetime CPU seconds, a monotonic total rather than a rate. Read
+    #: here so the share-of-machine figure can be differenced between two ticks
+    #: without a second probe on a different cadence.
+    cpu_seconds: float = -1.0
+    #: The monotonic instant ``cpu_seconds`` was read at, taken in the same probe
+    #: so the two travel together. The share divides one difference by the other,
+    #: and an instant taken after the worker thread resumes belongs to a later
+    #: moment than the total it would be paired with: the resumption delay varies
+    #: from tick to tick, so it does not cancel, and at the one-second floor of
+    #: ``controller_sample_secs`` a few hundred milliseconds of it is a
+    #: double-digit-percent error published as a measured value.
+    cpu_clock: float = -1.0
 
 
 def probe_host() -> HostSample:
@@ -146,6 +173,13 @@ def probe_host() -> HostSample:
         out.rss_mb = platform_compat.proc_rss_bytes() / (1024.0 * 1024.0)
     except Exception:
         logger.debug("adaptive: rss probe failed", exc_info=True)
+    try:
+        from kiro_crew import platform_compat
+
+        out.cpu_seconds = platform_compat.proc_cpu_seconds()
+        out.cpu_clock = time.monotonic()
+    except Exception:
+        logger.debug("adaptive: cpu seconds probe failed", exc_info=True)
     try:
         from kiro_crew.mcp_gateway.host_budget import _nofile_soft_limit
 
@@ -242,6 +276,16 @@ class AdaptiveController:
         self._gate_pending: Optional[int] = None
         self._last_error: str = ""
         self._ticks = 0
+        # Previous CPU-seconds reading and the clock time it was taken at. A
+        # share-of-machine figure is a RATE, and the probe returns a
+        # process-lifetime total, so it takes two readings to make one sample --
+        # which is why the first tick of a process publishes no utilization.
+        # ``-1.0`` distinguishes "no predecessor yet" from a measured 0.0.
+        self._prev_cpu_seconds: float = -1.0
+        self._prev_cpu_clock: float = -1.0
+        # Logical core count, resolved once: it is the denominator of every
+        # utilization sample and does not change while the process runs.
+        self._cores: Optional[int] = None
         self._counts = {"decrease": 0, "increase": 0, "pause": 0, "probe": 0, "resume": 0}
         self._recent: deque[dict[str, Any]] = deque(maxlen=RECENT_DECISIONS)
         self._config_sub: Any = None
@@ -375,7 +419,7 @@ class AdaptiveController:
         secs = self._sample_secs
         await self._sleep(secs)
         lag_ms = max(0.0, (self._clock() - t0 - secs) * 1000.0)
-        emit_histogram(LOOP_LAG_MS, lag_ms, {"process": "gateway"}, unit="ms")
+        emit_histogram(LOOP_LAG_MS, lag_ms, {"process": _PROCESS}, unit="ms")
         try:
             await self.tick(loop_lag_ms=lag_ms)
         except asyncio.CancelledError:
@@ -386,6 +430,65 @@ class AdaptiveController:
 
     # -- one cycle -----------------------------------------------------------
 
+    def _emit_process_histograms(self, host: HostSample) -> None:
+        """Publish this tick's resident-set and CPU-share distributions.
+
+        Recorded from this loop rather than from the instrument module that owns
+        the matching gauges, because a histogram is RECORDED and not observed:
+        OTEL has no observable histogram, so the two series need a caller on a
+        timer, and adding one to a module whose instruments are all callbacks
+        would put a second sampler and a second cadence in the process. This loop
+        already probes both readings for its own decisions.
+
+        Each unit is read from the same mapping the dashboard resolves, so the
+        value published and the unit declared for it cannot drift apart.
+        """
+        # ``proc_rss_bytes`` answers 0 on failure rather than raising, so the probe's
+        # try/except never fires and a failed read arrives as a plain 0.0 -- which a
+        # live process never truly has. Admitting it would put a fabricated zero in a
+        # CUMULATIVE distribution, where it stays for the process's lifetime and no
+        # later sample can correct it. Same gap-over-fake-zero rule the CPU share
+        # below follows.
+        if host.rss_mb > 0.0:
+            emit_histogram(
+                PROCESS_RSS_SAMPLED,
+                host.rss_mb * 1024.0 * 1024.0,
+                {"process": _PROCESS},
+                unit=NON_MS_HISTOGRAM_UNITS[PROCESS_RSS_SAMPLED],
+            )
+        prev_seconds = self._prev_cpu_seconds
+        prev_clock = self._prev_cpu_clock
+        # Both endpoints come from ``probe_host``, never from this loop's clock:
+        # the share divides a CPU-total difference by a time difference, so the
+        # two instants have to be the ones the totals were read at.
+        #
+        # A failed probe reads 0.0, which must not become the next interval's
+        # baseline: leaving the old pair in place differences a longer interval
+        # against the reading it was actually taken with, which stays correct.
+        if host.cpu_seconds > 0.0 and host.cpu_clock >= 0.0:
+            self._prev_cpu_seconds = host.cpu_seconds
+            self._prev_cpu_clock = host.cpu_clock
+        if prev_seconds <= 0.0 or prev_clock < 0.0:
+            return  # first measured tick of this process: no predecessor to difference
+        if host.cpu_clock < 0.0:
+            return  # a total with no instant of its own is not a measurement
+        if self._cores is None:
+            self._cores = read_logical_cores()
+        share = cpu_utilization(
+            prev_cpu_seconds=prev_seconds,
+            cpu_seconds=host.cpu_seconds,
+            elapsed_seconds=host.cpu_clock - prev_clock,
+            cores=self._cores,
+        )
+        if share is None:
+            return  # a gap in the series, never a fake zero
+        emit_histogram(
+            PROCESS_CPU_UTILIZATION,
+            share,
+            {"process": _PROCESS},
+            unit=NON_MS_HISTOGRAM_UNITS[PROCESS_CPU_UTILIZATION],
+        )
+
     async def tick(self, *, loop_lag_ms: float = 0.0) -> Decision:
         """Sample, decide, apply. Public so tests drive one cycle at a time."""
         self._ticks += 1
@@ -395,6 +498,7 @@ class AdaptiveController:
             host = await asyncio.to_thread(probe_host)
         else:
             host = await asyncio.to_thread(self._host_probe)
+        self._emit_process_histograms(host)
         gate_snap: dict[str, Any] = {}
         budget_snap: dict[str, Any] = {}
         if self._read_gate_stats is not None:

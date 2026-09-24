@@ -4141,8 +4141,9 @@ class AcpSessionHandle:
             rec = get_recorder()
             rec.counter("kirocrew.watchdog.action", attrs=attrs)
             # ms, like every other kirocrew duration histogram: the dashboard's
-            # generic aggregation reports all histograms under *_ms keys, so a
-            # seconds-unit instrument would render 1000x off there.
+            # generic aggregation reports a histogram under *_ms keys unless its
+            # emitting module declares a non-millisecond unit for it, and this
+            # one declares none, so a seconds-unit value would render 1000x off.
             rec.histogram(
                 "kirocrew.watchdog.idle.duration",
                 float(idle) * 1000.0,

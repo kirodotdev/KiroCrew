@@ -95,6 +95,18 @@ type Other = {
   other_generations?: number
   total_count?: number
   total?: number
+  // A histogram whose values are NOT milliseconds carries this family instead of
+  // the `*_ms` one, plus the `unit` its values are in ("By" for a byte count,
+  // "1" for a dimensionless ratio). The backend keeps the two families apart
+  // because a resident set reported as `p50_ms` is a unit lie; the panel must
+  // therefore read WHICHEVER family a row carries, or the distribution is
+  // collected and then dropped at the render.
+  unit?: string
+  p50?: number
+  p90?: number
+  min?: number
+  max?: number
+  mean?: number
   // Present on gauge instruments only: the newest point-in-time sample.
   // Summing a gauge across export cycles would misreport process state, so
   // the API keeps the latest value and the panel must read THIS field.
@@ -548,14 +560,36 @@ function Sums({ items }: { items: Sum[] }) {
  * slowest. Each bar therefore answers "how long is THIS one's tail"; the numbers
  * beside it stay comparable across rows.
  *
- * A zero minimum has no logarithm, so the axis starts at a sub-millisecond floor
- * rather than at zero. That is a floor on the AXIS, not a claim about the data —
- * the real min is printed next to the bar.
+ * A zero minimum has no logarithm, so the axis starts at a floor below the
+ * smallest reading worth plotting rather than at zero. That is a floor on the
+ * AXIS, not a claim about the data — the real min is printed next to the bar.
+ * The floor arrives with the row because it belongs to the row's own scale: 0.5
+ * sits below any millisecond worth plotting and ABOVE most of a CPU share, where
+ * it would clamp every point onto the left edge and flatten the bar.
  */
 const _LOG_FLOOR_MS = 0.5
 
-function RangeBar({ min, p50, p90, max }: { min: number; p50: number; p90: number; max: number }) {
-  const lo = Math.max(min, _LOG_FLOOR_MS)
+function RangeBar({
+  min,
+  p50,
+  p90,
+  max,
+  fmt = fmtMs,
+  floor = _LOG_FLOOR_MS,
+}: {
+  min: number
+  p50: number
+  p90: number
+  max: number
+  // The row's own formatter and axis floor. Defaulted to the millisecond family
+  // because that is what every duration caller means, and a byte or ratio row
+  // reading out as milliseconds in its accessible label is the same unit lie the
+  // visible cells avoid -- a screen reader would be the only surface still told
+  // that a resident set is a duration.
+  fmt?: (v: number) => string
+  floor?: number
+}) {
+  const lo = Math.max(min, floor)
   const hi = Math.max(max, lo * 1.001)
   const span = Math.log10(hi) - Math.log10(lo)
   const at = (v: number) =>
@@ -567,10 +601,10 @@ function RangeBar({ min, p50, p90, max }: { min: number; p50: number; p90: numbe
       className="relative h-1.5 w-full rounded-full bg-[var(--bg)]"
       role="img"
       aria-label={i18nT('pages.telemetryPanel.range_bar_label', {
-        min: fmtMs(min),
-        p50: fmtMs(p50),
-        p90: fmtMs(p90),
-        max: fmtMs(max),
+        min: fmt(min),
+        p50: fmt(p50),
+        p90: fmt(p90),
+        max: fmt(max),
       })}
     >
       {/* p50→p90: where the bulk of the samples land. */}
@@ -1306,11 +1340,15 @@ function ContextTab({
  */
 
 function LatencyTab({ other, days }: { other: Other[]; days: number }) {
+  // Split on the KIND the API states, not on whether `p50_ms` is present. A
+  // histogram in a unit other than milliseconds carries `p50`/`max` instead, so
+  // the presence test sent it to the counter list, which renders its count and
+  // throws the distribution away. Reading the kind means a future non-ms
+  // instrument lands here without anyone remembering to add a field test.
+  const isHist = (o: Other) => o.kind === 'histogram'
   // Histograms first and by volume: a counter has no percentiles to shape, so it
   // cannot carry a profile bar and belongs after the things that can.
-  const hist = other
-    .filter(o => o.p50_ms != null && o.max_ms != null)
-    .sort((a, b) => (b.count ?? 0) - (a.count ?? 0))
+  const hist = other.filter(isHist).sort((a, b) => (b.count ?? 0) - (a.count ?? 0))
   // Gauges are point-in-time readings (thread count, RSS): their number is
   // `latest`, and folding them under Counters would render the one field a
   // gauge never carries.
@@ -1318,8 +1356,37 @@ function LatencyTab({ other, days }: { other: Other[]; days: number }) {
   // ~4.4 GB; byte-unit gauges get human units (exact value stays in `title`).
   const fmtGaugeValue = (name: string, v: number): string =>
     name.endsWith('_bytes') ? fmtBytes(v) : fmtNumber(v)
-  const gauges = other.filter(o => o.p50_ms == null && o.kind === 'gauge')
-  const counters = other.filter(o => o.p50_ms == null && o.kind !== 'gauge')
+  const gauges = other.filter(o => !isHist(o) && o.kind === 'gauge')
+  // The residual, so a kind this panel does not know still appears somewhere
+  // rather than vanishing from the page.
+  const counters = other.filter(o => !isHist(o) && o.kind !== 'gauge')
+
+  // One row shape for both families. The unit picks the formatter and the axis
+  // floor, because the number alone cannot say whether 0.0625 is a ratio or 62
+  // milliseconds: a resident set reads in GiB and a CPU share as a percentage,
+  // and a row with no unit is the millisecond family this table was built for.
+  const scaleFor = (unit?: string): { fmt: (v: number) => string; floor: number } => {
+    if (unit === 'By') return { fmt: fmtBytes, floor: 1 }
+    // A share of one machine's cores, shown as a percentage: 0.0625 reads as a
+    // rounding artefact where 6.3% reads as a share. The floor is a tenth of a
+    // percent of one core, under the smallest share worth plotting.
+    if (unit === '1') return { fmt: v => fmtPercent(v, { maximumFractionDigits: 1 }), floor: 0.001 }
+    return { fmt: fmtMs, floor: _LOG_FLOOR_MS }
+  }
+  const histRow = (o: Other) => {
+    // The UNIT decides the family, not whether a percentile arrived. A non-ms
+    // histogram with no samples in the window reports only count and unit, so a
+    // presence test on `p50` routes that row to fmtMs and prints a byte count as
+    // "0ms" -- the unit lie this split exists to prevent.
+    const neutral = o.p50_ms == null && o.unit != null
+    return {
+      min: (neutral ? o.min : o.min_ms) ?? 0,
+      p50: (neutral ? o.p50 : o.p50_ms) ?? 0,
+      p90: (neutral ? o.p90 : o.p90_ms) ?? 0,
+      max: (neutral ? o.max : o.max_ms) ?? 0,
+      ...scaleFor(neutral ? o.unit : undefined),
+    }
+  }
 
   return (
     <Card className="mb-4">
@@ -1352,7 +1419,9 @@ function LatencyTab({ other, days }: { other: Other[]; days: number }) {
             <span className="w-16 shrink-0 text-right">{i18nT('pages.telemetryPanel.samples_col')}</span>
           </div>
           <div className="flex min-w-max flex-col gap-2">
-            {hist.map(o => (
+            {hist.map(o => {
+              const r = histRow(o)
+              return (
               <div key={o.name} className="flex items-center gap-3 text-[11.5px]">
                 <span className="w-[260px] shrink-0 truncate font-mono text-[11px]" title={o.name}>
                   {o.name}
@@ -1360,21 +1429,16 @@ function LatencyTab({ other, days }: { other: Other[]; days: number }) {
                 {/* The endpoints flank the bar so each row is visibly its own
                     scale, rather than a position on a shared axis it never had. */}
                 <span className="w-14 shrink-0 text-right font-mono tabular-nums text-muted">
-                  {fmtMs(o.min_ms)}
+                  {r.fmt(r.min)}
                 </span>
                 <div className="min-w-0 flex-1">
-                  <RangeBar
-                    min={o.min_ms ?? 0}
-                    p50={o.p50_ms ?? 0}
-                    p90={o.p90_ms ?? 0}
-                    max={o.max_ms ?? 0}
-                  />
+                  <RangeBar min={r.min} p50={r.p50} p90={r.p90} max={r.max} fmt={r.fmt} floor={r.floor} />
                 </div>
                 <span className="w-14 shrink-0 font-mono tabular-nums text-muted">
-                  {fmtMs(o.max_ms)}
+                  {r.fmt(r.max)}
                 </span>
-                <span className="w-16 shrink-0 text-right font-mono tabular-nums">{fmtMs(o.p50_ms)}</span>
-                <span className="w-16 shrink-0 text-right font-mono tabular-nums">{fmtMs(o.p90_ms)}</span>
+                <span className="w-16 shrink-0 text-right font-mono tabular-nums">{r.fmt(r.p50)}</span>
+                <span className="w-16 shrink-0 text-right font-mono tabular-nums">{r.fmt(r.p90)}</span>
                 <span className="flex w-16 shrink-0 items-center justify-end gap-1 text-right font-mono tabular-nums text-muted">
                   {fmtNumber(o.count ?? 0)}
                   {/* The window can span a boundary change, and stats() then describe
@@ -1383,7 +1447,8 @@ function LatencyTab({ other, days }: { other: Other[]; days: number }) {
                   <GenNote shown={o.count} total={o.total_count} compact />
                 </span>
               </div>
-            ))}
+              )
+            })}
           </div>
           </div>
           {/* The marker says WHICH rows are partial; this says what the marker

@@ -265,8 +265,9 @@ _SESSION_BUCKETS_MS: list[float] = [
 # default 10s-ceiling boundaries. `test/metrics/test_provider_bucket_views.py`
 # fails when a histogram metric name in the source has no entry here — add the
 # instrument to this map when you add the metric. All values are ms — the
-# dashboard's generic aggregation reports every histogram under *_ms keys, so
-# a non-ms instrument would surface 1000x off there. A histogram that is NOT a
+# dashboard's generic aggregation reports a histogram under *_ms keys unless its
+# emitting module declares a non-millisecond unit for it, so a non-ms instrument
+# registered here would surface 1000x off there. A histogram that is NOT a
 # duration therefore belongs in `_HISTOGRAM_BUCKETS_BY_UNIT` below, whose
 # instruments the dashboard reads under unit-neutral keys instead.
 _HISTOGRAM_BUCKETS_MS: dict[str, list[float]] = {
@@ -338,11 +339,47 @@ _USD_BUCKETS: list[float] = [
     0.5, 1, 2.5, 5, 10, 25, 50, 100,
 ]
 
+# Resident set of one kirocrew process, in BYTES because that is the unit the
+# reader returns and converting at the emitter would make the boundary array and
+# the instrument disagree. Base-2 bounds so each one is a recognisable memory
+# size rather than a rounded decade.
+#
+# Density sits between 256 MiB and 4 GiB: that is where a gateway and a
+# tool-heavy agent process actually live, and it is the region where the answer
+# to "is the fleet near its memory ceiling" changes. The bottom bound is below
+# any Python process that has finished importing, and the top is well above the
+# largest process seen, because a sample outside the explicit range has its
+# percentile floored or capped at the nearest bound (the overflow artifact
+# `_HISTOGRAM_BUCKETS_MS` documents) and host memory is not ours to hold still.
+_RSS_BUCKETS_BYTES: list[float] = [
+    32 * 1024**2, 64 * 1024**2, 128 * 1024**2, 192 * 1024**2,
+    256 * 1024**2, 384 * 1024**2, 512 * 1024**2, 768 * 1024**2,
+    1024**3, 1536 * 1024**2, 2 * 1024**3, 3 * 1024**3,
+    4 * 1024**3, 6 * 1024**3, 8 * 1024**3, 16 * 1024**3,
+]
+
+# Share of the whole machine burned by one process: a dimensionless ratio where
+# 1.0 is every logical core saturated.
+#
+# Dense at the BOTTOM, which is the opposite of the amount arrays above and is
+# the whole point. A CPython process is mostly one runnable thread, so on a
+# 32-core host a fully busy process measures about 0.03 — put another way, the
+# entire interesting range on a large host sits inside what a linear array would
+# call its first bucket. Bounds above 1.0 are kept because
+# :func:`process_gauges.cpu_utilization` deliberately does not clamp: nothing
+# samples the clock and the kernel's accounting at the same instant, so a
+# saturated process can measure marginally over 1.0, and a bound above it keeps
+# that readable as "pegged" instead of silently capping the top percentile.
+_CPU_RATIO_BUCKETS: list[float] = [
+    0.001, 0.0025, 0.005, 0.01, 0.02, 0.04, 0.06, 0.08,
+    0.1, 0.15, 0.25, 0.4, 0.6, 0.8, 1.0, 1.25,
+]
+
 # Non-duration histograms: instrument name -> boundaries, in the instrument's
 # OWN unit. A SEPARATE map from _HISTOGRAM_BUCKETS_MS on purpose — that map's
 # contract is "all values are ms", which the dashboard's generic aggregation
-# relies on when it reports every histogram under `*_ms` keys, and adding a
-# credit or a dollar amount to it would make both the contract and the reported
+# relies on when it reports a histogram under `*_ms` keys by default, and adding
+# a credit or a dollar amount to it would make both the contract and the reported
 # key a lie. `test_provider_bucket_views.py` guards the split in both
 # directions off the emitted `unit=`, NOT off the name suffix: nothing here is a
 # millisecond instrument, nothing there is anything else, and every histogram
@@ -350,12 +387,20 @@ _USD_BUCKETS: list[float] = [
 # be the wrong test — `kirocrew.embed.queue_wait` and `.inference` above are ms
 # and do not carry it, which is the whole reason the guard reads units.
 #
-# The dashboard reads these two under unit-neutral keys (see
-# `handlers/telemetry.py`'s turn block), which is what keeps them out of the
-# `*_ms` surface.
+# The dashboard reads every entry here under unit-neutral keys rather than
+# `*_ms` ones. It resolves which names those are from the emitting module's own
+# unit declaration (`events.NON_MS_HISTOGRAM_UNITS`, merged in
+# `handlers/telemetry.py` the same way lifetime-total gauge names are), so a new
+# entry below is not silently reported as a duration.
 _HISTOGRAM_BUCKETS_BY_UNIT: dict[str, list[float]] = {
     "kirocrew.turn.credits": _CREDIT_BUCKETS,
     "kirocrew.turn.cost_usd": _USD_BUCKETS,
+    # Sampled at the adaptive controller's existing tick. A gauge of the same
+    # quantity ships beside each of these; the histogram exists because a gauge
+    # merged across instances keeps only min, max and mean, so a fleet-wide
+    # percentile is not recoverable from it at any storage layer.
+    "kirocrew.process.memory.rss_sampled": _RSS_BUCKETS_BYTES,
+    "kirocrew.process.cpu.utilization": _CPU_RATIO_BUCKETS,
 }
 
 

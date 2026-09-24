@@ -71,6 +71,20 @@ GC pause *durations* are deliberately out of scope: they would need a
 ``gc.callbacks`` hook timing every collection (overhead on each GC, telemetry
 on or off), whereas everything here is free until the reader collects.
 
+A percentile-capable COMPANION to the memory and CPU readings above lives
+outside this module, and the split is deliberate. ``kirocrew.process.memory.rss_sampled``
+and ``kirocrew.process.cpu.utilization`` are histograms, and OTEL has no
+observable histogram — a histogram is recorded, not observed — so there is
+nothing here for them to hang off. Recording them from inside an observable
+callback would also mis-count: with an OTLP destination configured a callback is
+entered once per reader, so two ticker threads would record the same reading
+twice and the histogram's count would depend on how many exporters are
+configured. The adaptive controller already samples RSS on its own single-task
+cadence and already records a histogram there, so it records these two as well
+and no new thread, probe or cadence exists for them. What lives here is the
+arithmetic: :func:`cpu_utilization` and :func:`read_logical_cores`, kept with
+the other process-resource readers and SDK-free for the same reason.
+
 OSS-CLEAN: opentelemetry (Apache-2.0) + stdlib + first-party helpers only.
 The opentelemetry import is deferred into :func:`register_process_gauges` so
 this module stays importable when the SDK is absent (env-closure drift) —
@@ -170,6 +184,66 @@ def _gc_stats() -> list[dict[str, int]]:
         return list(gc.get_stats())
     except Exception:  # noqa: BLE001 — telemetry must never break collection
         return []
+
+
+def read_logical_cores() -> int | None:
+    """Logical core count, or None when the platform will not say.
+
+    The same source ``provider._build_resource_attrs`` publishes as
+    ``host.cpu.logical_count``, read here for the same reason it travels with
+    the payload: the count exists only on the client, so a share-of-machine
+    figure can only be computed where this call works.
+    """
+    try:
+        cores = os.cpu_count()
+    except Exception:  # noqa: BLE001 — never let a probe break a sample
+        return None
+    return int(cores) if cores else None
+
+
+def cpu_utilization(
+    *,
+    prev_cpu_seconds: float,
+    cpu_seconds: float,
+    elapsed_seconds: float,
+    cores: int | None,
+) -> float | None:
+    """Share of the whole machine burned between two CPU-seconds readings.
+
+    ``(cpu_seconds - prev_cpu_seconds) / (elapsed_seconds * cores)``, as a ratio
+    in the OTel sense: 1.0 is every core saturated. Pure and SDK-free so the
+    arithmetic is testable without a metrics pipeline, which is the same reason
+    the readers above are plain callables.
+
+    None — a gap in the series, never a fake zero — whenever the figure would be
+    invented rather than measured:
+
+    * either reading is ``<= 0``. :func:`platform_compat.proc_cpu_seconds`
+      returns ``0.0`` for a FAILED probe, so zero cannot be told apart from a
+      real reading and is refused; the first sample of a process has no
+      predecessor and arrives here the same way.
+    * ``elapsed_seconds <= 0``. A clock that did not advance would divide the
+      interval's work by nothing.
+    * no core count, so there is no machine to be a share OF.
+    * the total went BACKWARDS. A process-lifetime total cannot decrease, so a
+      negative delta means the two readings came from different processes (or a
+      clock the platform rewound), and their difference describes neither.
+
+    A value above 1.0 is NOT clamped. Nothing here samples the clock and the
+    kernel's accounting at the same instant, so a busy process can measure
+    marginally over saturation; clamping would publish a number that was not
+    measured, while the top bucket boundary already reads as pegged.
+    """
+    if prev_cpu_seconds <= 0.0 or cpu_seconds <= 0.0:
+        return None
+    if elapsed_seconds <= 0.0:
+        return None
+    if not cores or cores <= 0:
+        return None
+    burned = cpu_seconds - prev_cpu_seconds
+    if burned < 0.0:
+        return None
+    return burned / (elapsed_seconds * float(cores))
 
 
 # ---------------------------------------------------------------------------

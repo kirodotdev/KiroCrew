@@ -26,18 +26,26 @@ from pathlib import Path
 
 import pytest
 
-from kiro_crew.dashboard.handlers.telemetry import _Hist
+from kiro_crew.dashboard.handlers.telemetry import _Hist, _other_series
 from kiro_crew.metrics import provider as provider_mod
+from kiro_crew.metrics.events import (
+    NON_MS_HISTOGRAM_UNITS,
+    PROCESS_CPU_UTILIZATION,
+    PROCESS_RSS_SAMPLED,
+)
 from kiro_crew.metrics.provider import (
+    _CPU_RATIO_BUCKETS,
     _CREDIT_BUCKETS,
     _FAST_BUCKETS_MS,
     _HISTOGRAM_BUCKETS_BY_UNIT,
     _HISTOGRAM_BUCKETS_MS,
+    _RSS_BUCKETS_BYTES,
     _STARTUP_BUCKETS_MS,
     _TURN_BUCKETS_MS,
     _USD_BUCKETS,
     histogram_bounds,
 )
+from kiro_crew.metrics.turns import TURN_COST_METRIC, TURN_CREDITS_METRIC
 
 # One xdist worker for the whole module: every test here derives from ONE module-cached
 # scan of src/ (rglob + ast.parse, ~30s). Under `--dist loadgroup` an unmarked module is
@@ -224,8 +232,8 @@ class TestNonDurationHistograms:
        every one of those samples would land in the FIRST bucket and the reported
        p50/p90 would be a constant.
     2. **Unit separation.** `_HISTOGRAM_BUCKETS_MS` is the map the dashboard's
-       generic aggregation trusts when it reports every histogram under `*_ms`
-       keys, so a non-ms instrument must not be registered there.
+       generic aggregation trusts when it reports a histogram under `*_ms`
+       keys by default, so a non-ms instrument must not be registered there.
     """
 
     def test_emitted_scan_finds_both_families(self):
@@ -248,7 +256,13 @@ class TestNonDurationHistograms:
         )
 
     def test_by_unit_entries_have_an_emitting_call_site(self):
-        stale = sorted(set(_HISTOGRAM_BUCKETS_BY_UNIT) - _emitted_histogram_names())
+        """Checked against the union of the call and sampler scans, for the same
+        reason ``test_no_stale_map_entries`` is: a non-ms histogram recorded
+        through ``events.emit_histogram`` on a sampler cadence is invisible to the
+        ``histogram(`` call scan, so that scan alone would report a live entry as
+        stale."""
+        live = _emitted_histogram_names() | _sampler_histogram_names()
+        stale = sorted(set(_HISTOGRAM_BUCKETS_BY_UNIT) - live)
         assert not stale, f"non-ms map entries with no emitting call site: {stale}"
 
     def test_the_two_maps_are_disjoint(self):
@@ -273,7 +287,7 @@ class TestNonDurationHistograms:
         )
         assert not wrong, (
             f"non-millisecond instruments in the ms map: {wrong}. The dashboard "
-            "reports every histogram in this map under *_ms keys."
+            "reports a histogram in this map under *_ms keys."
         )
 
     def test_by_unit_map_holds_no_millisecond_instruments(self):
@@ -641,3 +655,125 @@ class TestAggregatorReadsRealPercentiles:
         assert new_bounds[landed - 1] <= p50 <= new_bounds[landed]
         assert p50 != 60000.0
         assert p90 != 60000.0
+
+
+def _landing_bucket(value: float, bounds: list[float]) -> int:
+    """Index of the bucket *value* falls in; ``len(bounds)`` is the overflow."""
+    for i, b in enumerate(bounds):
+        if value <= b:
+            return i
+    return len(bounds)
+
+
+class TestSampledProcessHistograms:
+    """The two sampled process distributions.
+
+    Three properties, each of which fails a different way if dropped: no
+    boundaries means OTEL's 0..10000 default, which puts every byte count in the
+    overflow bucket and every CPU ratio in the first one; no unit declaration
+    means the dashboard renders both as millisecond durations; and bounds sized
+    for the wrong population report a constant percentile without failing
+    anything.
+    """
+
+    SAMPLED = (PROCESS_RSS_SAMPLED, PROCESS_CPU_UTILIZATION)
+
+    def test_both_are_registered_in_the_non_duration_map(self):
+        for name in self.SAMPLED:
+            assert name in _HISTOGRAM_BUCKETS_BY_UNIT, f"{name} has no explicit boundaries"
+            assert name not in _HISTOGRAM_BUCKETS_MS, f"{name} is not a millisecond instrument"
+
+    def test_their_bounds_are_strictly_increasing(self):
+        """OTEL requires sorted boundaries; a duplicate makes an empty bucket."""
+        for name in self.SAMPLED:
+            bounds = _HISTOGRAM_BUCKETS_BY_UNIT[name]
+            assert bounds == sorted(bounds), f"{name} boundaries are not sorted"
+            assert len(set(bounds)) == len(bounds), f"{name} has duplicate boundaries"
+
+    def test_rss_bounds_resolve_a_real_process(self):
+        """A gateway and a large agent process must land in bounded buckets.
+
+        Either one in the first or the overflow bucket would report the same
+        floored percentile for every process on the host.
+        """
+        overflow = len(_RSS_BUCKETS_BYTES)
+        for mb in (120, 300, 900, 2048):
+            landed = _landing_bucket(mb * 1024.0 * 1024.0, _RSS_BUCKETS_BYTES)
+            assert 0 < landed < overflow, f"{mb}MB RSS lands in an unbounded bucket"
+
+    def test_cpu_bounds_resolve_a_busy_process_on_a_large_host(self):
+        """The case that decides the array's shape.
+
+        A CPython process is mostly one runnable thread, so a fully busy one on a
+        32-core host measures about 1/32 of the machine. A linear 0..1 array would
+        call that the first bucket and report the same number for an idle process.
+        """
+        overflow = len(_CPU_RATIO_BUCKETS)
+        for share in (1 / 64, 1 / 32, 1 / 8, 0.5, 1.0):
+            landed = _landing_bucket(share, _CPU_RATIO_BUCKETS)
+            assert 0 < landed < overflow, f"share {share} lands in an unbounded bucket"
+
+    def test_over_saturation_is_still_bounded(self):
+        """``cpu_utilization`` does not clamp, so a marginal overshoot must read as
+        pegged rather than as the overflow bucket's floored percentile."""
+        assert _CPU_RATIO_BUCKETS[-1] > 1.0
+
+    def test_every_generic_surface_entry_declares_its_unit(self):
+        """The sync guard between the bucket map and the dashboard's unit lookup.
+
+        A non-ms histogram reaches the dashboard's GENERIC branch unless a
+        dedicated block claims it by name. The billing pair is claimed; anything
+        else in the map must declare its unit, or the generic branch reports it
+        under ``*_ms`` keys and the frontend appends a millisecond suffix to a
+        byte count.
+        """
+        claimed_by_name = {TURN_CREDITS_METRIC, TURN_COST_METRIC}
+        undeclared = sorted(
+            set(_HISTOGRAM_BUCKETS_BY_UNIT) - claimed_by_name - set(NON_MS_HISTOGRAM_UNITS)
+        )
+        assert not undeclared, (
+            f"non-ms histograms with no unit declared for the dashboard: {undeclared}. "
+            "Add each to events.NON_MS_HISTOGRAM_UNITS, or claim it by name in "
+            "_aggregate, or it is reported as a duration."
+        )
+
+    def test_every_declared_unit_has_boundaries(self):
+        """The other direction: a declared unit with no bounds still gets OTEL's
+        default 0..10000 boundaries."""
+        unbounded = sorted(set(NON_MS_HISTOGRAM_UNITS) - set(histogram_bounds()))
+        assert not unbounded, f"units declared without boundaries: {unbounded}"
+
+    def test_no_declared_unit_is_milliseconds(self):
+        """A ms instrument declared here would be routed off the `*_ms` surface
+        that is correct for it."""
+        wrong = sorted(n for n, u in NON_MS_HISTOGRAM_UNITS.items() if u == "ms")
+        assert not wrong, f"millisecond instruments must not be declared non-ms: {wrong}"
+
+    def test_the_generic_surface_reports_them_as_amounts(self):
+        """End-to-end on the reader: unit-neutral keys, and the unit travels.
+
+        This is the assertion that fails if the dashboard's routing is removed:
+        `stats()` would answer with `p50_ms`, which for a resident set is a unit
+        the frontend then renders as a duration.
+        """
+        for name in self.SAMPLED:
+            bounds = _HISTOGRAM_BUCKETS_BY_UNIT[name]
+            counts = [0] * (len(bounds) + 1)
+            counts[2] = 1
+            hist = _Hist()
+            hist.add(
+                {
+                    "count": 1,
+                    "sum": bounds[2],
+                    "min": bounds[2],
+                    "max": bounds[2],
+                    "bucket_counts": counts,
+                    "explicit_bounds": bounds,
+                }
+            )
+            (row,) = _other_series({name: hist}, {}, {})
+            assert row["name"] == name
+            assert row["kind"] == "histogram"
+            assert row["unit"] == NON_MS_HISTOGRAM_UNITS[name]
+            assert "p50" in row and "p90" in row
+            assert not any(k.endswith("_ms") for k in row), f"{name} reported as a duration"

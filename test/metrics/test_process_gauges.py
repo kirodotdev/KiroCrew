@@ -19,6 +19,7 @@ import pytest
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 
+from kiro_crew.metrics import events
 from kiro_crew.metrics import process_gauges as pg
 from kiro_crew.metrics.schema import validate_name
 
@@ -363,3 +364,118 @@ def test_gauge_registration_failure_keeps_telemetry_alive(monkeypatch):
             assert rec.enabled, "gauge failure must not disable telemetry"
     finally:
         provider_mod.reset_for_testing()
+
+
+# ---------------------------------------------------------------------------
+# Share-of-machine arithmetic — pure, SDK-free, and the reason the helper is
+# separate from the instruments: every case below is a decision about whether a
+# number was MEASURED, and none of them needs a metrics pipeline to check.
+# ---------------------------------------------------------------------------
+
+
+def test_new_histogram_names_pass_core_namespace_validation():
+    for name in (events.PROCESS_RSS_SAMPLED, events.PROCESS_CPU_UTILIZATION):
+        assert validate_name(name) == name
+
+
+def test_logical_cores_is_a_positive_count_or_none():
+    cores = pg.read_logical_cores()
+    assert cores is None or cores > 0
+
+
+def test_logical_cores_is_none_when_the_platform_will_not_say():
+    with patch.object(pg.os, "cpu_count", return_value=None):
+        assert pg.read_logical_cores() is None
+    with patch.object(pg.os, "cpu_count", return_value=0):
+        assert pg.read_logical_cores() is None
+
+
+def test_logical_cores_is_none_not_raise_when_the_probe_blows_up():
+    with patch.object(pg.os, "cpu_count", side_effect=OSError("boom")):
+        assert pg.read_logical_cores() is None
+
+
+def test_one_busy_core_of_four_is_a_quarter_of_the_machine():
+    """The arithmetic the whole instrument exists for."""
+    share = pg.cpu_utilization(
+        prev_cpu_seconds=10.0,
+        cpu_seconds=15.0,
+        elapsed_seconds=20.0,
+        cores=4,
+    )
+    assert share == pytest.approx(5.0 / (20.0 * 4))
+
+
+def test_every_core_saturated_reads_as_one():
+    share = pg.cpu_utilization(
+        prev_cpu_seconds=100.0,
+        cpu_seconds=140.0,
+        elapsed_seconds=10.0,
+        cores=4,
+    )
+    assert share == pytest.approx(1.0)
+
+
+def test_over_saturation_is_reported_not_clamped():
+    """Nothing samples the clock and the kernel's accounting at the same instant,
+    so a saturated process can measure marginally over 1.0. Clamping would
+    publish a number that was not measured."""
+    share = pg.cpu_utilization(
+        prev_cpu_seconds=100.0,
+        cpu_seconds=141.0,
+        elapsed_seconds=10.0,
+        cores=4,
+    )
+    assert share is not None and share > 1.0
+
+
+def test_an_idle_process_reads_as_zero_not_as_a_gap():
+    """A real reading of "burned nothing" is data, unlike the refusals below."""
+    share = pg.cpu_utilization(
+        prev_cpu_seconds=10.0,
+        cpu_seconds=10.0,
+        elapsed_seconds=5.0,
+        cores=2,
+    )
+    assert share == 0.0
+
+
+@pytest.mark.parametrize(
+    "kwargs, why",
+    [
+        (
+            {"prev_cpu_seconds": 0.0, "cpu_seconds": 5.0, "elapsed_seconds": 5.0, "cores": 2},
+            "a failed probe reads 0.0, so zero cannot be told from a real reading",
+        ),
+        (
+            {"prev_cpu_seconds": 5.0, "cpu_seconds": 0.0, "elapsed_seconds": 5.0, "cores": 2},
+            "same refusal on the current reading",
+        ),
+        (
+            {"prev_cpu_seconds": -1.0, "cpu_seconds": 5.0, "elapsed_seconds": 5.0, "cores": 2},
+            "the first sample of a process has no predecessor",
+        ),
+        (
+            {"prev_cpu_seconds": 5.0, "cpu_seconds": 6.0, "elapsed_seconds": 0.0, "cores": 2},
+            "a clock that did not advance would divide the work by nothing",
+        ),
+        (
+            {"prev_cpu_seconds": 5.0, "cpu_seconds": 6.0, "elapsed_seconds": -1.0, "cores": 2},
+            "a clock that went backwards is not an interval",
+        ),
+        (
+            {"prev_cpu_seconds": 5.0, "cpu_seconds": 6.0, "elapsed_seconds": 5.0, "cores": None},
+            "no core count means there is no machine to be a share OF",
+        ),
+        (
+            {"prev_cpu_seconds": 5.0, "cpu_seconds": 6.0, "elapsed_seconds": 5.0, "cores": 0},
+            "same",
+        ),
+        (
+            {"prev_cpu_seconds": 9.0, "cpu_seconds": 4.0, "elapsed_seconds": 5.0, "cores": 2},
+            "a lifetime total cannot decrease, so the readings are two processes",
+        ),
+    ],
+)
+def test_an_invented_figure_is_a_gap_never_a_fake_zero(kwargs, why):
+    assert pg.cpu_utilization(**kwargs) is None, why

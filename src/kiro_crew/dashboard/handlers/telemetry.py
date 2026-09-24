@@ -64,10 +64,12 @@ _STARTUP_METRIC = "kirocrew.session.startup.duration"
 # emitter naming the instrument differently is a silently empty panel.
 _TURN_METRIC = TURN_METRIC
 # The turn's two billing histograms. Claimed BY NAME below, ahead of the generic
-# histogram branch, because that branch reports every statistic under `*_ms`
-# keys: a credit or a dollar amount arriving there would be rendered as a
-# millisecond duration on the Telemetry page. They are reported inside the turn
-# block under unit-neutral keys instead, each carrying its own `unit`.
+# histogram branch, because they are reported inside the turn block with their
+# own attribution split, which the generic branch has no shape for. Their unit is
+# handled the same way every non-duration histogram's is: unit-neutral keys, each
+# carrying its own `unit`, never the `*_ms` keys the duration family uses. The
+# generic branch resolves which of its own names need that from
+# `_non_ms_histogram_units()`.
 _TURN_CREDITS_METRIC = TURN_CREDITS_METRIC
 _TURN_COST_METRIC = TURN_COST_METRIC
 # The end-to-end startup point. The claude path emits no ``phase`` attribute at
@@ -129,6 +131,34 @@ def _lifetime_total_gauge_names() -> "frozenset[str]":
 
         _lifetime_total_gauges = frozenset(_process + _inventory)
     return _lifetime_total_gauges
+
+
+# Same first-use deferral, same reason: resolved inside the per-request path so
+# importing this module on the boot path does not pull the instrument modules in.
+_non_ms_units: "dict[str, str] | None" = None
+
+
+def _non_ms_histogram_units() -> "dict[str, str]":
+    """Generic-surface histograms that are NOT milliseconds, and their units.
+
+    ``_Hist.stats()`` names every field ``*_ms``, which is correct for the
+    duration family and a unit lie for anything else: a resident set reported as
+    ``p50_ms`` is rendered with a millisecond suffix by the frontend. The two
+    turn billing histograms avoid this by being claimed by name ahead of the
+    generic branch; a sampled histogram has no dedicated block to be claimed
+    into, so the generic branch reads this mapping and reports those under
+    unit-neutral keys instead.
+
+    The mapping lives with the emitter rather than here, for the reason the
+    lifetime-total roster does: the module that declares an instrument is the one
+    that knows what its reading means, so no unit is re-spelled by a reader.
+    """
+    global _non_ms_units
+    if _non_ms_units is None:
+        from kiro_crew.metrics.events import NON_MS_HISTOGRAM_UNITS
+
+        _non_ms_units = dict(NON_MS_HISTOGRAM_UNITS)
+    return _non_ms_units
 
 
 # Only terminal-fault outcomes count toward fault_rate. The two watchdog
@@ -848,12 +878,17 @@ def _other_series(
     this list renders the same order on every request.
     """
     out: list[dict[str, Any]] = []
+    non_ms = _non_ms_histogram_units()
     for name in sorted(other_hist):
-        s = other_hist[name].stats()
+        unit = non_ms.get(name)
+        s = _amount_stats(other_hist[name], unit) if unit else other_hist[name].stats()
         s.update({"name": name, "kind": "histogram"})
         splits = other_split.get(name)
         if splits:
-            s["splits"] = {sig: splits[sig].stats() for sig in sorted(splits)}
+            s["splits"] = {
+                sig: (_amount_stats(splits[sig], unit) if unit else splits[sig].stats())
+                for sig in sorted(splits)
+            }
         out.append(s)
     for name in sorted(other_ctr):
         rec = other_ctr[name]
@@ -1033,8 +1068,9 @@ def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
     # stream.
     other_cum: dict[str, dict[tuple[str, str, str], list[tuple[int, float]]]] = {}
     turn = _Hist()
-    # The turn's billed amount, kept OUT of other_hist so it is never reported
-    # under `*_ms` keys. Exactly one of the two is populated on a given host —
+    # The turn's billed amount, claimed by name so it is reported inside the turn
+    # block with its per-model attribution split, which the generic surface has no
+    # shape for. Exactly one of the two is populated on a given host —
     # the acp backend bills credits, claude_code bills dollars — so the other
     # reports an empty stat block, which reads as "this host does not bill here"
     # rather than as a measured zero.
