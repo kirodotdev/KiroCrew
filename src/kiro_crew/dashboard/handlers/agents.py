@@ -5684,6 +5684,13 @@ def _reclaim_deleted_member_crew_log(name: str, cfg: KiroCrewConfig) -> None:
     keys its log by that id, so resolving the slug once the record is gone would
     fold the name instead and aim at a different unit.
 
+    Call this while holding ``memory_store_namespace_lock``. The guard it hands
+    the store re-reads the roster, which on its own makes the decision a snapshot:
+    a member id allocated in another process derives the same slug and addresses
+    the same unit, and the unlink has no recovery path. That lock is the one seam
+    every allocator of a member id shares, so holding it is what keeps the window
+    between the decision and the unlink shut.
+
     Best-effort, like every other step of this teardown. The record is already
     gone by the time this runs, so raising would turn a log that could not be
     collected into a failed delete against a crew that is absent. ``owned`` is
@@ -5841,6 +5848,16 @@ async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
                 teams_mod.drop_member(name)
 
             update_config_locked(mutate=mutate, after_write=_drop_from_team)
+            # And the crew log the member wrote its own history into, decided
+            # while this function still holds the namespace lock. The removal
+            # turns on a config read, and that hold is the only thing stopping
+            # another process from committing a same-name record -- which derives
+            # THIS unit -- between the read and the unlink. Nothing rebuilds a
+            # crew log, so the window has to be closed rather than narrowed, and
+            # the lock is shared with every allocator of a member id. ``cfg`` is
+            # the config captured while the record was still in it, which is what
+            # the slug has to be resolved from.
+            _reclaim_deleted_member_crew_log(name, cfg)
             return retired_store
 
         retired_store = await _drained_to_thread(_delete_member)
@@ -5868,12 +5885,6 @@ async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
             clear_list_agents_cache()
             if (state := request.app.get("state")) is not None:
                 state.push_refresh("agents")
-        # And the crew log the member wrote its own history into. Same lock as the
-        # cleanups above, and for the same reason -- a same-name recreation derives
-        # THIS unit, so it must not be able to commit its record while this is
-        # deciding. ``cfg`` is the config captured before the record went, which is
-        # what the slug has to be resolved from.
-        await _drained_to_thread(_reclaim_deleted_member_crew_log, name, cfg)
     # A crew DISAPPEARING is the other half of the same invariant: the captured
     # config still holds the record, so a cron or messaging job still naming the
     # crew would keep resolving its old pin and binding.
