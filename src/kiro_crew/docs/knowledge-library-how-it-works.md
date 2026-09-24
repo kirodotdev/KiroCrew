@@ -25,6 +25,21 @@ Near-identical passages from different sources are collapsed to one result, so
 uploading the same document twice — directly and through a folder sync — does not
 double every hit.
 
+## Removing documents
+
+A file panel that shows a document already in the library offers a Remove
+toggle (green book icon, and a "Remove from Knowledge Library" row in the ⋯
+menu). Removing deletes that file's source and all of the chunks and graph
+entities indexed from it, and the panel falls back to its Add affordance.
+
+The Knowledge page removes sources at larger granularity: the Knowledge
+Detail view deletes a single item, and the Knowledge page supports bulk
+deletion of a selection.
+
+Deletion is permanent. There is no undo, and it cascades to everything
+derived from the removed sources — indexed chunks, extracted graph entities
+and their search contributions are all dropped with the source.
+
 ## Three levels of quality
 
 Search runs three legs and fuses whatever they return, so it degrades in a defined
