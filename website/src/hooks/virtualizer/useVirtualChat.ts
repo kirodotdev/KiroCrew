@@ -350,6 +350,27 @@ export function shiftCompensationAllowed(input: {
   return !input.stick && !input.settleMeasuring
 }
 
+/**
+ * Is the scroller laid out at ZERO height -- a backgrounded mobile tab, a
+ * `display:none` pane, a not-yet-sized column?
+ *
+ * No reader can be moving in a box with no height, yet the geometry of one
+ * reads like a reader who is: `distanceFromBottom` is the whole transcript and
+ * `bottomTarget` is `scrollHeight` itself. Fed to evaluateAutoPin that either
+ * releases follow for a reader who is not on screen or writes a scrollTop the
+ * browser clamps the moment the box comes back -- and the clamp then reads as
+ * a user scroll. ONE predicate, asked by BOTH automatic-pin sites (the
+ * post-paint pinAuto and the pre-paint height-sync re-pin): a private copy at
+ * one site is how the idle rule came to cover one half and not the other.
+ *
+ * Deliberately geometry-only. `document.hidden` is NOT part of it: a desktop
+ * tab keeps its full layout while hidden, and its follower is pinned there
+ * exactly as before.
+ */
+function scrollerCollapsed(el: { clientHeight: number }): boolean {
+  return el.clientHeight === 0
+}
+
 // Capture the topmost visible mounted row (smallest index whose bottom edge
 // is still below the viewport top) and its offset from the scroller's top.
 // Pure over its inputs so it can run both from the hook's callbacks (live
@@ -1419,11 +1440,23 @@ export function useVirtualChat<T>(
   // whose debounced save would clear the very anchor being restored.
   // `undefined` means "not yet latched for this session" (first render).
   const pendingRestoreRef = useRef<ScrollAnchor | null | undefined>(undefined)
+  // True while the pending restore is a visibility-RETURN re-placement rather
+  // than a slot ENTRY. `restoreGate` hides the transcript behind the caller's
+  // skeleton while an entry restore waits for its row, because the rows under
+  // it are a partial, unpositioned transcript. On a return the rows are already
+  // mounted and positioned -- only scrollTop moves -- so the gate must stay
+  // down or the reader comes back to a blanked transcript until settle.
+  const returnRestoreRef = useRef(false)
   // Wall-clock ceiling for the pending restore of the CURRENT session.
   const restoreDeadlineRef = useRef<number>(0)
   // Highest item count seen while a restore is pending; growth past it renews the wait.
   const restoreLastCountRef = useRef(-1)
   const restoreTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Guards the once-per-slot-entry bottom pin (see the slot-entry layout effect
+  // below). Declared here rather than beside that effect because the
+  // visibility-return handler (also below, but earlier) resets it to re-arm
+  // placement after a disturbed hidden interval.
+  const slotPinDoneRef = useRef<string | null>(null)
   // The restore's settle loop, owned OUTSIDE any one commit. Its whole job is to
   // re-land the anchored row as measurements arrive, and those arrive across
   // commits -- so tying its lifetime to the effect's cleanup meant the very next
@@ -1500,6 +1533,7 @@ export function useVirtualChat<T>(
     // First render: latch any saved anchor for the initial session. Reading
     // localStorage during render matches the HeightCache constructor above.
     pendingRestoreRef.current = loadScrollAnchor(sessionId)
+    returnRestoreRef.current = false
     if (pendingRestoreRef.current) {
       stickRef.current = false
       restoreDeadlineRef.current = performance.now() + RESTORE_HYDRATE_WAIT_MS
@@ -1586,6 +1620,7 @@ export function useVirtualChat<T>(
     // doesn't tail-pin before the restore runs; without one, the default
     // open-at-bottom contract stands.
     pendingRestoreRef.current = loadScrollAnchor(sessionId)
+    returnRestoreRef.current = false
     stickRef.current = pendingRestoreRef.current ? false : followOutput
     if (restoreTimerRef.current !== null) {
       clearTimeout(restoreTimerRef.current)
@@ -1906,11 +1941,23 @@ export function useVirtualChat<T>(
   // Self-scrolls schedule saves too, deliberately: a programmatic jump/pin
   // still changes the truth being persisted. The fire-time session guard
   // covers a timer surviving into a slot switch.
-  const scheduleAnchorSave = useCallback(() => {
-    if (anchorSaveTimerRef.current !== null) return
-    const scheduledSession = sessionIdRef.current
-    anchorSaveTimerRef.current = setTimeout(() => {
+  //
+  // `flushPending` runs the body SYNCHRONOUSLY instead of arming the timer --
+  // only when a save is already pending, and in its place. The visibility-hide
+  // branch below uses it: the timer would otherwise fire against a box the
+  // browser has already collapsed, or not at all before the reader returns, and
+  // the return would then read a stale anchor. Same predicates either way --
+  // the flush writes exactly what the timer was about to.
+  const scheduleAnchorSave = useCallback((flushPending = false) => {
+    if (flushPending) {
+      if (anchorSaveTimerRef.current === null) return
+      clearTimeout(anchorSaveTimerRef.current)
       anchorSaveTimerRef.current = null
+    } else if (anchorSaveTimerRef.current !== null) {
+      return
+    }
+    const scheduledSession = sessionIdRef.current
+    const run = () => {
       if (sessionIdRef.current !== scheduledSession) return
       // A restore OWNS the position until its settle has finished converging, and
       // `pendingRestore` alone does not say that: it is cleared the moment the anchored
@@ -1951,6 +1998,14 @@ export function useVirtualChat<T>(
       }
       saveScrollAnchor(scheduledSession, a)
       anchorSavedStateRef.current = { session: scheduledSession, anchor: a }
+    }
+    if (flushPending) {
+      run()
+      return
+    }
+    anchorSaveTimerRef.current = setTimeout(() => {
+      anchorSaveTimerRef.current = null
+      run()
     }, ANCHOR_SAVE_DEBOUNCE_MS)
   }, [bottomThreshold, scrollerRef, captureTopAnchor, restoreOwnsPosition])
 
@@ -2181,6 +2236,11 @@ export function useVirtualChat<T>(
     // moment the glide lands — the arrival branch of the scroll handler runs
     // pinAuto(), which then snaps instantly to the new bottom.
     if (smoothPinActiveRef.current) return
+    // A collapsed box (backgrounded mobile tab, display:none pane) has no
+    // reader in it, and its geometry lies -- see scrollerCollapsed. Skip the
+    // evaluation entirely; the visibility-return handler below re-places once
+    // the box has a real height again.
+    if (scrollerCollapsed(el)) return
     const geom = { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight }
     const viewportShrink =
       lastWriteClientHRef.current >= 0 ? lastWriteClientHRef.current - geom.clientHeight : 0
@@ -2236,6 +2296,150 @@ export function useVirtualChat<T>(
   useEffect(() => {
     syncScrollerEl()
   })
+
+  // ---- Visibility: snapshot on hide, re-place on a DISTURBED return ----
+  //
+  // The slot-entry placement (restore the saved anchor, else force-pin to the
+  // bottom) runs only on a session change or first mount. A mobile tab return
+  // keeps the SAME mounted sessionId, so none of it re-runs -- yet while the
+  // tab was hidden the scroller got a zero-height layout, which released
+  // `stick`, and the WebSocket heal path rebuilt the rows under the still-
+  // mounted scroller. WebKit has no scroll anchoring to absorb that, so the
+  // reader landed far back instead of at the live end (kirodotdev/KiroCrew: the
+  // "transcript jumps back on tab return" mobile report).
+  //
+  // Re-placing on EVERY return would be its own regression: a desktop reader
+  // who jumped to a search hit (a position the intent gate deliberately never
+  // persists) and briefly switched tabs would come back at the live end. So the
+  // return is gated on evidence that the hidden interval MOVED something:
+  //
+  //   HIDE (visible -> hidden), while the layout is still intact: flush the
+  //   pending debounced anchor save (what the timer was about to write, written
+  //   before the box collapses), then snapshot `stick`, the scroll geometry and
+  //   -- for a released reader -- the top visible row as an in-memory anchor.
+  //   That anchor is the return's target: it holds positions the persisted
+  //   anchor never will (programmatic jumps), and it is taken from the live box.
+  //
+  //   RETURN (hidden -> visible): compare the live scroller against the
+  //   snapshot. Disturbed means follow was released while hidden, a follower is
+  //   off the live end (pins are skipped in a collapsed box), or
+  //   scrollTop / clientHeight differ from the snapshot (a clamp or rebuild
+  //   under the reader). An undisturbed return does nothing at all -- no
+  //   latch, no write, no re-render -- which is the desktop tab switch.
+  //
+  //   Disturbed + following at hide: force-pin now (the box is back) and
+  //   re-arm the slot-entry pin so the post-return commit places against the
+  //   real height. Disturbed + released at hide: latch the hide-time anchor
+  //   (falling back to the persisted one, then to the default pin) exactly as
+  //   a slot entry would, so the restore owns the position.
+  //
+  // A restore already owning the position (pending or settling) is left alone
+  // on both ends: its own settle loop lands it against the returned layout.
+  //
+  // Sequencing: the released path only re-arms the latches and bumps
+  // `restoreEval`; the scrollTop write happens in the slot-entry
+  // useLayoutEffect, which runs AFTER the commit once rows are measured and
+  // re-runs on every hydration commit -- the same measured-rows mechanism the
+  // session switch uses, not a bare timeout.
+  const hideSnapshotRef = useRef<{
+    session: string
+    stick: boolean
+    scrollTop: number
+    clientHeight: number
+    anchor: ScrollAnchor | null
+  } | null>(null)
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+    let wasHidden = document.hidden
+    const onHide = () => {
+      const el = scrollerRef.current
+      if (!el) {
+        hideSnapshotRef.current = null
+        return
+      }
+      // Mirror the slot-switch LEAVE flush: a save still inside its debounce
+      // window is written now, against the intact box, with the same
+      // predicates the timer would have applied.
+      scheduleAnchorSave(true)
+      const stick = stickRef.current
+      hideSnapshotRef.current = {
+        session: sessionIdRef.current,
+        stick,
+        scrollTop: el.scrollTop,
+        clientHeight: el.clientHeight,
+        // A follower's position is the bottom; a restore's position is the
+        // restore's. Only a released reader has a row worth remembering.
+        anchor: stick || restoreOwnsPosition() ? null : captureTopAnchor(),
+      }
+    }
+    const onReturn = () => {
+      const snap = hideSnapshotRef.current
+      hideSnapshotRef.current = null
+      // No snapshot (mounted while hidden, no scroller at hide) or one taken
+      // for another session: nothing to compare against, so nothing to do.
+      // Compared against the LIVE ref, not the effect's captured `sessionId`:
+      // the ref flips during render on a session switch, and a switch that
+      // lands while hidden leaves this listener closed over the outgoing id
+      // until React re-subscribes it -- a window a throttled background tab
+      // stretches. Reading the ref means a stale listener can never accept the
+      // prior session's snapshot for the transcript now on screen.
+      const liveSession = sessionIdRef.current
+      if (!snap || snap.session !== liveSession) return
+      const el = scrollerRef.current
+      if (!el) return
+      if (restoreOwnsPosition()) return
+      const geom = { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight }
+      const followReleased = snap.stick && !stickRef.current
+      const followerOffBottom = snap.stick && stickRef.current && !computeAtBottom(geom, bottomThreshold)
+      const positionMoved = geom.scrollTop !== snap.scrollTop
+      const boxChanged = geom.clientHeight !== snap.clientHeight
+      if (!(followReleased || followerOffBottom || positionMoved || boxChanged)) return
+      // Re-arm slot-entry placement for the CURRENT session, mirroring the
+      // session-switch render block. Reset lastWrite* so the freshly laid-out
+      // height is not compared against a stale write recorded while the tab was
+      // hidden (which would read as a user scroll-up).
+      slotPinDoneRef.current = null
+      lastWriteTopRef.current = -1
+      lastWriteClientHRef.current = -1
+      if (restoreTimerRef.current !== null) {
+        clearTimeout(restoreTimerRef.current)
+        restoreTimerRef.current = null
+      }
+      restoreLastCountRef.current = -1
+      if (snap.stick) {
+        // Following at hide: the live end is the position. Pin it before the
+        // first visible frame when the box is already back; the re-armed
+        // slot-entry effect repeats the pin against the post-return commit.
+        pendingRestoreRef.current = null
+        returnRestoreRef.current = false
+        restoreDeadlineRef.current = 0
+        stickRef.current = followOutput
+        if (!scrollerCollapsed(el)) forcePin()
+      } else {
+        // Released at hide: the hide-time row is the position. The persisted
+        // anchor is only a fallback -- it can be older than the position the
+        // reader was actually at.
+        const target = snap.anchor ?? loadScrollAnchor(liveSession)
+        pendingRestoreRef.current = target
+        returnRestoreRef.current = target != null
+        stickRef.current = target ? false : followOutput
+        restoreDeadlineRef.current = target ? performance.now() + RESTORE_HYDRATE_WAIT_MS : 0
+      }
+      // Re-enter the slot-entry layout effect (its restoreEval dep) so it
+      // re-places once the post-return rows are committed and measured.
+      setRestoreEval((n) => n + 1)
+    }
+    const onVisibility = () => {
+      const nowHidden = document.hidden
+      const changed = wasHidden !== nowHidden
+      wasHidden = nowHidden
+      if (!changed) return
+      if (nowHidden) onHide()
+      else onReturn()
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => document.removeEventListener('visibilitychange', onVisibility)
+  }, [sessionId, followOutput, bottomThreshold, scrollerRef, captureTopAnchor, restoreOwnsPosition, scheduleAnchorSave, forcePin])
 
   // ---- Passive scroll listener: isAtBottom + user-scroll stick update ----
   const scrollRafScheduledRef = useRef(false)
@@ -3121,6 +3325,11 @@ export function useVirtualChat<T>(
     const el = scrollerRef.current
     if (!el || typeof el.getBoundingClientRect !== 'function') return
     if (stickRef.current) {
+      // A collapsed box is no place to re-target a bottom from: its
+      // `bottomTarget` is `scrollHeight` itself, and the write would be clamped
+      // -- and read as a user scroll -- the moment the box comes back. Same
+      // predicate as pinAuto, deliberately (see scrollerCollapsed).
+      if (scrollerCollapsed(el)) return
       // FOLLOWED reader: re-target the bottom PRE-PAINT in the same commit
       // that repriced the tree. pinAuto also does this, but post-paint --
       // which leaves ONE visible frame when a large reprice lands (idle
@@ -3443,6 +3652,7 @@ export function useVirtualChat<T>(
           settleMeasuringRef.current = false
           if (!settleGateRef.current) return
           settleGateRef.current = false
+          returnRestoreRef.current = false
           setRestoreEval((v) => v + 1)
         }
         if (!el.isConnected) { if (n === 0) devLog('SETTLE.x', 'disconnected'); lower(); return }
@@ -3578,7 +3788,6 @@ export function useVirtualChat<T>(
   // anchor being restored. An anchor whose row no longer exists (edited /
   // truncated transcript, or a non-durable minted key, or a race where the
   // key arrives with a later hydration chunk) falls back to the default pin.
-  const slotPinDoneRef = useRef<string | null>(null)
   useLayoutEffect(() => {
     if (slotPinDoneRef.current && slotPinDoneRef.current !== sessionId) {
       slotPinDoneRef.current = null
@@ -3591,6 +3800,10 @@ export function useVirtualChat<T>(
       if (idx >= 0) {
         devLog('RESTORE.OK', `${shortId(sessionId)} ${keyShape(anchor.key)} idx=${idx} n=${itemCount}`)
         pendingRestoreRef.current = null
+        // `returnRestoreRef` is left as-is here: a return restore keeps its
+        // settle loop (rows may re-measure after the rebuild) and the flag has
+        // to outlive the pending latch so the settle window stays ungated too.
+        // It drops when the settle loop ends.
         if (restoreTimerRef.current !== null) {
           clearTimeout(restoreTimerRef.current)
           restoreTimerRef.current = null
@@ -3653,6 +3866,7 @@ export function useVirtualChat<T>(
       const _its = itemsRef.current
       devLog('GIVEUP.rows', `${_its.length}: ${_its.slice(0, 7).map((it, i) => keyShape(_idFn ? _idFn(it, i) : getKeyRef.current(it, i))).join(' ')}`)
       pendingRestoreRef.current = null
+      returnRestoreRef.current = false
       stickRef.current = followOutput
       setRestoreEval((n) => n + 1)
     }
@@ -4104,6 +4318,6 @@ export function useVirtualChat<T>(
      *  showing them means the reader watches it assemble and then jump. Entry
      *  with NO saved anchor never raises this -- that case is placed at the live
      *  end on the first commit, with nothing to wait for. */
-    restoreGate: pendingRestoreRef.current != null || settleGateRef.current,
+    restoreGate: !returnRestoreRef.current && (pendingRestoreRef.current != null || settleGateRef.current),
   }
 }
