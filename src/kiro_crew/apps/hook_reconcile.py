@@ -69,6 +69,7 @@ from kiro_crew.apps.hooks_integration import (
     loaded_hook_apps,
     loaded_hook_manifest,
     loaded_hook_signature,
+    manifest_declares_contributions,
     manifest_declares_hooks,
     on_app_disable,
     on_app_enable,
@@ -77,7 +78,7 @@ from kiro_crew.apps.hooks_integration import (
 from kiro_crew.apps.lifecycle import app_has_retained_startup, apps_with_retained_startup
 from kiro_crew.apps.manager import app_enabled_state, app_lifecycle_lock, get_app, list_apps
 from kiro_crew.apps.module_loader import unload_app_modules
-from kiro_crew.apps.teardown import forget_app_hooks
+from kiro_crew.apps.teardown import forget_app_hooks, teardown_contributions
 
 logger = logging.getLogger(__name__)
 
@@ -311,6 +312,39 @@ async def _reconcile_app(name: str, snapshot_info: dict[str, Any] | None) -> Non
                 # for an app that does not exist.
                 if gone:
                     forget_app_hooks(name)
+                # Retracted for a DISABLE too, and so deliberately OUTSIDE the
+                # `gone` guard above. This branch is reached for `gone or
+                # turned_off`, and the reconciler is the ONLY observer of a CLI
+                # disable: `teardown_app_runtime`, which retracts on the other
+                # paths, runs from the dashboard disable route and from trust
+                # withdrawal, neither of which a CLI disable touches. Left under
+                # `gone`, a disabled contributor kept its event subscriptions and
+                # its already-open socket went on receiving member events.
+                #
+                # Awaited, not scheduled: the retraction has to land before the
+                # reconcile moves on, for the same reason the uninstall route
+                # awaits its own.
+                for _warning in await teardown_contributions(name):
+                    logger.warning("reconcile: contribution retraction for %s: %s", name, _warning)
+            return
+
+        # A CONTRIBUTION-ONLY app declares no hooks, so nothing was ever loaded for
+        # it and nothing is retained -- the branch above cannot select it, and its
+        # contributions went un-retracted on a CLI disable or uninstall while its
+        # already-open socket kept receiving member events.
+        #
+        # The guard for `_disable_loaded` here is simply NOT CALLING IT: its whole
+        # job is tearing down loaded hooks and this app has none, so the hooked path
+        # above stays byte-identical rather than learning a second shape.
+        #
+        # `turned_off` is deliberately NOT reused as the trigger. It is true whenever
+        # an app declares no hooks -- right for the hook reconciler, and catastrophic
+        # here, because it would retract an ENABLED contribution-only app on every
+        # tick. The trigger is the app being gone or actually disabled.
+        disabled = current is not None and not current.get("enabled")
+        if (gone or disabled) and manifest_declares_contributions(current or {}):
+            for _warning in await teardown_contributions(name):
+                logger.warning("reconcile: contribution retraction for %s: %s", name, _warning)
             return
 
         # Past teardown, every remaining branch (re)starts app code. Once the
@@ -408,6 +442,18 @@ async def reconcile_once(installed: list[dict[str, Any]]) -> None:
     # whose detached startup task is still live -- they must be torn down when they
     # go away, not orphaned (see app_has_retained_startup / the teardown branch).
     candidates_set.update(apps_with_retained_startup())
+    # And DISABLED apps that declare event-log contributions. A contribution-only
+    # app declares no hooks, so none of the three sources above can see it: nothing
+    # was loaded for it, it is not enabled, and it has no retained startup -- and a
+    # CLI disable therefore left its contributions in place with its socket still
+    # receiving member events. Only the DISABLED ones are added: an enabled
+    # contributor needs no retraction, so selecting it would buy a lock and a disk
+    # read every tick for nothing.
+    candidates_set.update(
+        name
+        for name, info in by_name.items()
+        if not info.get("enabled") and manifest_declares_contributions(info)
+    )
     # A stable order so the gather arg list and the result zip below line up.
     candidates = sorted(candidates_set)
     # Reconcile every candidate CONCURRENTLY, isolating each app's failure.

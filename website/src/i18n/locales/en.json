@@ -7217,6 +7217,8 @@
       "without_gateway_per_session_copies": "Without gateway (per-session copies)"
     },
     "membersPage": {
+      "contributed_empty": "Nothing to show yet",
+      "contributed_more": "+{{count}} more",
       "details": "Details",
       "edit_member": "Edit member",
       "empty_roster": "No crew members yet.",

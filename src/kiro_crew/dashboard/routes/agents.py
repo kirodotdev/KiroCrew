@@ -79,6 +79,25 @@ def register(app: web.Application) -> None:
     app.router.add_put("/api/teams/{id}", handlers.api_teams_update)
     app.router.add_delete("/api/teams/{id}", handlers.api_teams_delete)
 
+    # Contribution protocol: an out-of-process contributor reads a unit's
+    # append-only log, appends namespaced events, and publishes projected views.
+    # `{kind}` is resolved against the eventlog unit registry (today: `member`),
+    # so a second kind is a registration rather than four more routes.
+    #
+    # The `/schema` literal is registered BEFORE `projections/{key}` -- aiohttp
+    # resolves in registration order, and `{key}` would otherwise swallow a key
+    # named `schema`'s parent path. Both are POST, so the narrower pattern must
+    # come first.
+    app.router.add_get("/api/eventlog/{kind}/{id}/events", handlers.api_eventlog_events_get)
+    app.router.add_post("/api/eventlog/{kind}/{id}/events", handlers.api_eventlog_events_post)
+    app.router.add_post(
+        "/api/eventlog/{kind}/{id}/projections/{key}/schema",
+        handlers.api_eventlog_projection_schema_put,
+    )
+    app.router.add_post(
+        "/api/eventlog/{kind}/{id}/projections/{key}", handlers.api_eventlog_projection_put
+    )
+
     # Crew appearance library: the dashboard's own pack store, separate from
     # Crew Companion's. On the dashboard router so a crew's face renders while
     # that app is disabled or absent.

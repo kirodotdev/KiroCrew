@@ -15720,6 +15720,8 @@
       "show_controls": "展开控制项"
     },
     "membersPage": {
+      "contributed_empty": "暂无内容可显示",
+      "contributed_more": "还有 {{count}} 项",
       "drawer_delegated_working": "委派的任务正在运行",
       "details": "详情",
       "edit_member": "编辑成员",

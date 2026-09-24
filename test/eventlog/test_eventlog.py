@@ -2147,3 +2147,223 @@ def test_a_commit_during_the_read_is_not_hidden_by_the_stamp(tmp_path):
     )
     assert [e["seq"] for e in reader.events] == [1, 2], reader.events
     assert [e["data"]["preview"] for e in reader.events] == ["first", "raced"]
+
+
+class TestAContributedPublishNeverFollowsAPlantedParentLink:
+    """The publish is a truncation aimed at whatever the path resolves to.
+
+    A link planted at a PARENT component -- by an agent, not by the contributor
+    whose rows these are -- would send the gateway's write at a file outside the
+    contribution store. ``pinned_fs`` documents itself as the single no-follow
+    publish path for exactly this, so the store routes through it.
+    """
+
+    @staticmethod
+    def _store(root):
+        from kiro_crew.eventlog.contrib import ExternalProjectionStore, ExternalRow
+
+        return ExternalProjectionStore(root), ExternalRow
+
+    def test_a_symlinked_parent_does_not_let_the_publish_escape(self, tmp_path):
+        outside = tmp_path / "outside" / "secret.json"
+        outside.parent.mkdir(parents=True)
+        outside.write_text("do not overwrite me", encoding="utf-8")
+
+        root = tmp_path / "contrib"
+        root.mkdir()
+        # The planted link stands where the kind directory would be.
+        (root / "member").symlink_to(outside.parent, target_is_directory=True)
+
+        store, row_cls = self._store(root)
+        rows = {"app/key": row_cls(value={"v": 1}, seq=1, state_version=1, app="app")}
+        # The refusal RAISES. There is no swallowing mode: a caller that cannot
+        # persist has to know, so it can undo its own in-memory mutation rather
+        # than report a durable write that did not land.
+        with pytest.raises(Exception):
+            store._flush("member", "secret", rows)
+
+        assert outside.read_text(encoding="utf-8") == "do not overwrite me"
+
+    def test_an_ordinary_publish_still_lands(self, tmp_path):
+        # CONTROL. Without this, a publish that refused everything would satisfy the
+        # test above while making every contributed card permanently empty.
+        root = tmp_path / "contrib"
+        root.mkdir()
+        store, row_cls = self._store(root)
+        rows = {"app/key": row_cls(value={"v": 1}, seq=1, state_version=1, app="app")}
+        store._flush("member", "alice", rows)
+
+        written = root / "member" / "alice.json"
+        assert written.is_file()
+        assert "app/key" in written.read_text(encoding="utf-8")
+
+
+class TestTheContributionFileIsBoundedBeforeItIsRead:
+    """The store's file is read whole in one call, so the bound must precede it.
+
+    The publish caps bound what a contributor may put in, which bounds what the file
+    should ever hold -- but the file is a cache on disk rather than a value in hand,
+    and this loader already treats it as something that may have been hand-edited.
+    """
+
+    @staticmethod
+    def _store(root):
+        from kiro_crew.eventlog.contrib import ExternalProjectionStore
+
+        return ExternalProjectionStore(root)
+
+    def test_an_oversized_file_is_read_as_unreadable_without_being_read(
+        self, tmp_path, monkeypatch
+    ):
+        from pathlib import Path
+
+        from kiro_crew.eventlog import contrib as contrib_module
+
+        root = tmp_path / "contrib"
+        (root / "member").mkdir(parents=True)
+        target = root / "member" / "alice.json"
+        target.write_text(
+            '{"app/key": {"value": 1, "seq": 1, "stateVersion": 1, "app": "app"}}', encoding="utf-8"
+        )
+        monkeypatch.setattr(contrib_module, "MAX_STORE_FILE_BYTES", 4)
+        reads: list[str] = []
+        real_read_text = Path.read_text
+
+        def _record(self, *args, **kwargs):
+            reads.append(str(self))
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", _record)
+
+        assert self._store(root).values("member", "alice") == {}
+        # UNREAD is the property: a ceiling checked after the read still allocates.
+        assert str(target) not in reads
+
+    def test_an_ordinary_file_is_still_loaded(self, tmp_path):
+        # CONTROL. Without this, a ceiling of zero would satisfy the test above while
+        # making every contributed card permanently empty after a restart.
+        root = tmp_path / "contrib"
+        (root / "member").mkdir(parents=True)
+        (root / "member" / "alice.json").write_text(
+            '{"app/key": {"value": 1, "seq": 1, "stateVersion": 1, "app": "app"}}',
+            encoding="utf-8",
+        )
+        assert list(self._store(root).values("member", "alice")) == ["app/key"]
+
+
+def test_events_after_pages_oldest_first_from_a_cursor(tmp_path):
+    """The catch-up read, and the ORDER is the whole point.
+
+    A consumer that folded up to ``after`` asks for what came next and applies it
+    in sequence; handing it ``history``'s newest-first page would apply a later
+    event before an earlier one and leave the projection wrong rather than stale.
+    """
+    log = _log(tmp_path)
+    log.create("Alice")
+    for i in range(5):
+        log.append(types.MEMBER_CONFIG, {"i": i})
+
+    # ``seq`` starts at 0 on the first APPEND -- the header is not an event.
+    assert [e["seq"] for e in log.events_after(0, 10)] == [1, 2, 3, 4, 5]
+    # Oldest-first, which is the opposite of the timeline page.
+    assert [e["seq"] for e in log.history(None, 10)] == [5, 4, 3, 2, 1]
+    # Bounded by limit, still from the low end.
+    assert [e["seq"] for e in log.events_after(1, 2)] == [2, 3]
+    # A cursor past the end is empty rather than an error.
+    assert log.events_after(99, 10) == []
+
+
+def test_events_after_treats_a_negative_limit_as_unbounded(tmp_path):
+    """Matches ``history``'s own reading of a negative limit, so the two agree."""
+    log = _log(tmp_path)
+    log.create("Alice")
+    log.append(types.MEMBER_CONFIG, {"i": 0})
+    log.append(types.MEMBER_CONFIG, {"i": 1})
+
+    assert [e["seq"] for e in log.events_after(0, -1)] == [1, 2]
+
+
+def test_events_after_answers_a_cursor_below_the_retained_window(tmp_path, monkeypatch):
+    """The retained tail is a bounded WINDOW, so it cannot serve this read.
+
+    A consumer that fell far behind asks from a cursor under the window's floor.
+    Answered from the tail, it would be handed the window's contents and would
+    silently skip every event below them -- and for a catch-up read those are lost
+    events, not a short page, because the cursor advances past them.
+    """
+    from kiro_crew.eventlog import log as log_mod
+
+    monkeypatch.setattr(log_mod, "MAX_RETAINED_EVENTS", 2)
+    log = _log(tmp_path)
+    log.create("Alice")
+    for i in range(8):
+        log.append(types.MEMBER_CONFIG, {"i": i})
+
+    fresh = _log(tmp_path)
+    fresh.load()
+    assert len(fresh.events) == 2, "precondition: the tail must be a window, not the log"
+
+    seqs = [e["seq"] for e in fresh.events_after(0, -1)]
+    assert seqs == [1, 2, 3, 4, 5, 6, 7, 8], (
+        f"the catch-up read returned {seqs}: it was answered from the retained "
+        "window, so a consumer behind the floor would skip everything under it"
+    )
+
+
+class TestARevocationDuringTheHandOffRefusesTheWrite:
+    """The route's grant check and the write are separated by an await.
+
+    So an app revoked while its publish is in flight has already passed the gate.
+    Re-asking under the lock that writes is the only place the answer cannot go stale
+    before the row lands.
+    """
+
+    @staticmethod
+    def _store(root):
+        from kiro_crew.eventlog.contrib import ExternalProjectionStore
+
+        (root / "member").mkdir(parents=True, exist_ok=True)
+        return ExternalProjectionStore(root)
+
+    def test_a_publish_whose_grant_vanished_is_refused(self, tmp_path):
+        from kiro_crew.eventlog.contrib import ContribError
+
+        store = self._store(tmp_path / "contrib")
+        with pytest.raises(ContribError) as caught:
+            store.publish(
+                "member",
+                "alice",
+                "demo/card",
+                app="demo",
+                value={"n": 1},
+                seq=1,
+                state_version=1,
+                still_granted=lambda: False,
+            )
+        assert caught.value.code == "unit_kind_not_granted"
+        assert store.values("member", "alice") == {}, "the row landed for a revoked app"
+
+    def test_a_publish_that_still_holds_its_grant_lands(self, tmp_path):
+        # CONTROL. Without this, refusing every publish would satisfy the test above
+        # while making the contribution protocol unusable.
+        store = self._store(tmp_path / "contrib")
+        store.publish(
+            "member",
+            "alice",
+            "demo/card",
+            app="demo",
+            value={"n": 1},
+            seq=1,
+            state_version=1,
+            still_granted=lambda: True,
+        )
+        assert "demo/card" in store.values("member", "alice")
+
+    def test_a_caller_passing_no_check_is_unaffected(self, tmp_path):
+        # The parameter is optional, so an internal caller that holds no grant
+        # concept keeps working; asserted so the default cannot silently become deny.
+        store = self._store(tmp_path / "contrib")
+        store.publish(
+            "member", "alice", "demo/card", app="demo", value={"n": 2}, seq=2, state_version=1
+        )
+        assert "demo/card" in store.values("member", "alice")

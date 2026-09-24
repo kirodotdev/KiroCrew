@@ -15720,6 +15720,8 @@
       "show_controls": "コントロールを表示"
     },
     "membersPage": {
+      "contributed_empty": "表示するものはまだありません",
+      "contributed_more": "他 {{count}} 件",
       "drawer_delegated_working": "委任したタスクを実行中",
       "details": "詳細",
       "edit_member": "メンバーを編集",

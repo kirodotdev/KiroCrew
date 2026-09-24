@@ -176,6 +176,19 @@ describe('MemberProjectionStore', () => {
     it('is a no-op for an unknown slug', () => {
       expect(() => store.truncate('missing', 3)).not.toThrow()
     })
+
+    it('never drops a contributed key: its seq is a different domain', () => {
+      // A contributed row carries the contributor's own fold-position seq, not
+      // the member-log asOfSeq that lastSeq bounds. Truncating it here would
+      // drop a live contributed card on reconnect whenever its own seq exceeded
+      // the member log's.
+      store.apply('a', 'roster', { name: 'keep' }, 4)
+      store.apply('a', 'demoapp/count', { n: 3 }, 99)
+      store.truncate('a', 5)
+      expect(store.get('a', 'roster')).toEqual({ name: 'keep' })
+      // The contributed key with the high (foreign-domain) seq survives.
+      expect(store.get('a', 'demoapp/count')).toEqual({ n: 3 })
+    })
   })
 
   describe('truncation reports what it dropped', () => {
@@ -269,6 +282,267 @@ describe('MemberProjectionStore', () => {
     })
   })
 
+  describe('apply: stateVersion outranks seq', () => {
+    it('applies a refold whose stateVersion rose even though its seq went back', () => {
+      // The server accepts exactly this: a contributor that refolds from scratch
+      // bumps stateVersion and starts its seq again
+      // (ExternalProjectionStore.publish, by_state_version). Seq-wins alone
+      // dropped the frame and left the obsolete card on screen.
+      store.apply('a', 'demoapp/count', { n: 9 }, 40, undefined, 1)
+      store.apply('a', 'demoapp/count', { n: 1 }, 2, undefined, 2)
+      expect(store.get('a', 'demoapp/count')).toEqual({ n: 1 })
+    })
+
+    it('drops a frame whose stateVersion went backwards, whatever its seq', () => {
+      store.apply('a', 'demoapp/count', { n: 1 }, 2, undefined, 2)
+      store.apply('a', 'demoapp/count', { n: 9 }, 99, undefined, 1)
+      expect(store.get('a', 'demoapp/count')).toEqual({ n: 1 })
+    })
+
+    it('still applies seq-wins at an equal stateVersion', () => {
+      store.apply('a', 'demoapp/count', { n: 1 }, 5, undefined, 1)
+      store.apply('a', 'demoapp/count', { n: 2 }, 4, undefined, 1)
+      expect(store.get('a', 'demoapp/count')).toEqual({ n: 1 })
+      store.apply('a', 'demoapp/count', { n: 3 }, 6, undefined, 1)
+      expect(store.get('a', 'demoapp/count')).toEqual({ n: 3 })
+    })
+
+    it('removes a row on a deletion frame that carries no stateVersion', () => {
+      // The server's deletion frame omits stateVersion (apps/teardown.py), so it
+      // arrives here as 0, while any contributor that has ever refolded holds a
+      // version above that. Asking the version before the teardown branch
+      // therefore dropped every deletion and left the uninstalled app's card on
+      // screen. The frame's max seq is what still guards it against a replay.
+      const DELETION_SEQ = 2 ** 53 - 1
+      store.apply('a', 'demoapp/count', { n: 1 }, 3, undefined, 4)
+      expect(store.get('a', 'demoapp/count')).toEqual({ n: 1 })
+      store.apply('a', 'demoapp/count', null, DELETION_SEQ)
+      expect(store.get('a', 'demoapp/count')).toBeUndefined()
+    })
+
+    it('keeps a row when a deletion frame is older than the row it would remove', () => {
+      store.apply('a', 'demoapp/count', { n: 1 }, 9, undefined, 0)
+      store.apply('a', 'demoapp/count', null, 4)
+      expect(store.get('a', 'demoapp/count')).toEqual({ n: 1 })
+    })
+
+    it('adopts a schema that arrives at the same position', () => {
+      // A schema is not a value replay: it decides how the card renders, so
+      // dropping it on seq-wins leaves the view drawn by a shape the contributor
+      // has already replaced. The value and the position stay put.
+      const first = { kind: 'badge' as const }
+      const second = { kind: 'table' as const }
+      store.apply('a', 'demoapp/count', { n: 1 }, 5, first, 1)
+      expect(store.schemaOf('a', 'demoapp/count')).toEqual(first)
+      store.apply('a', 'demoapp/count', { n: 9 }, 5, second, 1)
+      expect(store.schemaOf('a', 'demoapp/count')).toEqual(second)
+      expect(store.get('a', 'demoapp/count')).toEqual({ n: 1 })
+    })
+  })
+
+  describe('reconcileContributed', () => {
+    it('deletes a contributed row the authoritative baseline no longer carries', () => {
+      // Teardown otherwise rests entirely on the one null-value frame §6 sends,
+      // and a socket that drops at the wrong moment never delivers it -- the
+      // card then outlived the app that published it.
+      store.apply('a', 'demoapp/count', { n: 1 }, 1, undefined, 1)
+      store.apply('a', 'roster', { name: 'A' }, 1)
+      const mark = store.mark()
+      store.reconcileContributed('a', ['roster'], mark)
+      expect(store.get('a', 'demoapp/count')).toBeUndefined()
+      // A built-in key is not the contributed lifecycle's business.
+      expect(store.get('a', 'roster')).toEqual({ name: 'A' })
+    })
+
+    it('keeps a contributed row written after the mark, so a stale read cannot delete it', () => {
+      // The baseline read is not instantaneous. A live frame that lands while it
+      // is in flight is NEWER than the answer, so absence from that answer says
+      // nothing about it.
+      const mark = store.mark()
+      store.apply('a', 'demoapp/count', { n: 1 }, 1, undefined, 1)
+      store.reconcileContributed('a', [], mark)
+      expect(store.get('a', 'demoapp/count')).toEqual({ n: 1 })
+    })
+
+    it('notifies the key set when it drops a card', () => {
+      store.apply('a', 'demoapp/count', { n: 1 }, 1, undefined, 1)
+      let hits = 0
+      const unsub = store.contributedFace('a').subscribe(() => { hits += 1 })
+      store.reconcileContributed('a', [], store.mark())
+      unsub()
+      expect(hits).toBe(1)
+    })
+  })
+
+  describe('a withdrawal outranks a baseline that predates it', () => {
+    // A roster read is not instantaneous. When a teardown frame deletes the card
+    // while the answer is in flight, that answer still lists it -- and the row is
+    // GONE, so higher-seq-wins has no held row to compare the stale value
+    // against and seeded the withdrawn card straight back onto the screen.
+    const DELETION_SEQ = 2 ** 53 - 1
+
+    it('refuses a baseline key withdrawn after that baseline was requested', () => {
+      store.apply('a', 'demoapp/count', { n: 1 }, 1, undefined, 1)
+      const mark = store.mark()
+      store.apply('a', 'demoapp/count', null, DELETION_SEQ)
+      expect(store.get('a', 'demoapp/count')).toBeUndefined()
+      store.seed(
+        'a',
+        { roster: { name: 'A' }, 'demoapp/count': { n: 1 } },
+        7,
+        { 'demoapp/count': 1 },
+        undefined,
+        undefined,
+        mark,
+      )
+      expect(store.get('a', 'demoapp/count')).toBeUndefined()
+      // Only the withdrawn key is refused; the rest of the baseline still lands.
+      expect(store.get('a', 'roster')).toEqual({ name: 'A' })
+    })
+
+    it('keeps a marker for every key one teardown can withdraw', () => {
+      // The record is sized against the SERVER's bound, not picked for comfort. An
+      // app may hold MAX_PROJECTION_KEYS_PER_UNIT (200) keys on one unit and a
+      // teardown withdraws all of them, so a cap below that evicts the OLDEST
+      // markers during exactly the event the record exists to survive -- and a
+      // roster read already in flight then restores those cards.
+      const keys = Array.from({ length: 200 }, (_, i) => `demoapp/k${i}`)
+      for (const key of keys) store.apply('a', key, { n: 1 }, 1, undefined, 1)
+      const mark = store.mark()
+      for (const key of keys) store.apply('a', key, null, DELETION_SEQ)
+      for (const key of keys) expect(store.get('a', key)).toBeUndefined()
+
+      // One stale baseline, requested before the teardown, listing every key.
+      const values: { [k: string]: unknown } = {}
+      const seqs: { [k: string]: number } = {}
+      for (const key of keys) {
+        values[key] = { n: 1 }
+        seqs[key] = 1
+      }
+      store.seed('a', values, 7, seqs, undefined, undefined, mark)
+
+      const resurrected = keys.filter((key) => store.get('a', key) !== undefined)
+      expect(resurrected).toEqual([])
+    })
+
+    it('records a withdrawal for a key this browser never held', () => {
+      // A cold cache holds no row for the key a teardown names: the tab opened
+      // after that card was published, or the roster answer carrying it is still
+      // in flight. That is the case the record is needed for MOST -- with no held
+      // row there is nothing for higher-seq-wins to compare against, so the
+      // in-flight answer is applied unguarded and the card returns.
+      const mark = store.mark()
+      expect(store.get('a', 'demoapp/count')).toBeUndefined()
+      store.apply('a', 'demoapp/count', null, DELETION_SEQ)
+      store.seed(
+        'a',
+        { roster: { name: 'A' }, 'demoapp/count': { n: 1 } },
+        7,
+        { 'demoapp/count': 1 },
+        undefined,
+        undefined,
+        mark,
+      )
+      expect(store.get('a', 'demoapp/count')).toBeUndefined()
+      // The rest of the baseline is untouched, so the refusal is scoped to the key.
+      expect(store.get('a', 'roster')).toEqual({ name: 'A' })
+    })
+
+    it('keeps a marker for every key a UNIT can hold, not one app share', () => {
+      // The server charges MAX_PROJECTION_KEYS_PER_UNIT (200) PER APP, and one unit
+      // legitimately carries rows from several contributors up to
+      // MAX_PROJECTION_KEYS_PER_FILE (2000). A record sized to a single app's share
+      // therefore evicts its oldest markers the moment a second contributor tears
+      // down beside the first, which is an ordinary multi-app uninstall.
+      const keys = [
+        ...Array.from({ length: 200 }, (_, i) => `appone/k${i}`),
+        ...Array.from({ length: 200 }, (_, i) => `apptwo/k${i}`),
+      ]
+      for (const key of keys) store.apply('a', key, { n: 1 }, 1, undefined, 1)
+      const mark = store.mark()
+      for (const key of keys) store.apply('a', key, null, DELETION_SEQ)
+
+      const values: { [k: string]: unknown } = {}
+      const seqs: { [k: string]: number } = {}
+      for (const key of keys) {
+        values[key] = { n: 1 }
+        seqs[key] = 1
+      }
+      store.seed('a', values, 7, seqs, undefined, undefined, mark)
+
+      const resurrected = keys.filter((key) => store.get('a', key) !== undefined)
+      expect(resurrected).toEqual([])
+    })
+
+    it('believes a baseline requested after the withdrawal', () => {
+      // CONTROL. The app is reinstalled and the next roster read legitimately
+      // carries it. A record that outlived the reads it protects would hide the
+      // new card for good.
+      store.apply('a', 'demoapp/count', { n: 1 }, 1, undefined, 1)
+      store.apply('a', 'demoapp/count', null, DELETION_SEQ)
+      const mark = store.mark()
+      store.seed('a', { 'demoapp/count': { n: 2 } }, 7, { 'demoapp/count': 2 }, undefined, undefined, mark)
+      expect(store.get('a', 'demoapp/count')).toEqual({ n: 2 })
+    })
+
+    it('lets a live frame republish a withdrawn key and retires the record', () => {
+      // CONTROL. A live push lands after the withdrawal by construction, so it
+      // is authoritative -- and retiring the record is what stops the NEXT
+      // baseline refusing the card the contributor just republished.
+      store.apply('a', 'demoapp/count', { n: 1 }, 1, undefined, 1)
+      const mark = store.mark()
+      store.apply('a', 'demoapp/count', null, DELETION_SEQ)
+      store.apply('a', 'demoapp/count', { n: 5 }, 2, undefined, 2)
+      expect(store.get('a', 'demoapp/count')).toEqual({ n: 5 })
+      store.seed('a', { 'demoapp/count': { n: 5 } }, 7, { 'demoapp/count': 2 }, undefined, undefined, mark)
+      expect(store.get('a', 'demoapp/count')).toEqual({ n: 5 })
+    })
+
+    it('seeds normally when no mark is offered', () => {
+      // CONTROL. An omitted mark says "newer than anything held", which is what a
+      // caller with no mark to offer is really claiming -- so the guard must not
+      // silently start refusing keys for every such caller.
+      store.apply('a', 'demoapp/count', { n: 1 }, 1, undefined, 1)
+      store.apply('a', 'demoapp/count', null, DELETION_SEQ)
+      store.seed('a', { 'demoapp/count': { n: 3 } }, 7, { 'demoapp/count': 3 })
+      expect(store.get('a', 'demoapp/count')).toEqual({ n: 3 })
+    })
+  })
+
+  describe('seed clears: a dropped contributed key bumps the keyset', () => {
+    // A contributed card is rendered from a list recomputed on the keyset
+    // version. The per-key face is not what the list reads, so a clear that
+    // notifies only per-key leaves the card on screen with no value behind it.
+    const version = (slug: string): unknown => store.contributedFace(slug).getSnapshot()
+
+    it('bumps it when the refusal sentinel clears a contributed key', () => {
+      store.apply('a', 'app/view', 'v', 5)
+      const before = version('a')
+      store.seed('a', {}, -1)
+      expect(store.get('a', 'app/view')).toBeUndefined()
+      expect(version('a')).not.toBe(before)
+    })
+
+    it('bumps it when an empty baseline clears a contributed key', () => {
+      store.apply('a', 'app/view', 'v', 5)
+      const before = version('a')
+      store.seed('a', {}, 9)
+      expect(store.get('a', 'app/view')).toBeUndefined()
+      expect(version('a')).not.toBe(before)
+    })
+
+    // CONTROL: the bump is conditional on a CONTRIBUTED key going, not on the
+    // clear happening. A member-log key carries no card, so bumping for it would
+    // re-render every contributed list on every ordinary baseline.
+    it('leaves it alone when only a member-log key is cleared', () => {
+      store.apply('a', 'roster', 'v', 5)
+      const before = version('a')
+      store.seed('a', {}, 9)
+      expect(store.get('a', 'roster')).toBeUndefined()
+      expect(version('a')).toBe(before)
+    })
+  })
+
   describe('has / clear', () => {
     it('reports whether a slug is held and clears everything', () => {
       store.apply('a', 'roster', 1, 1)
@@ -276,6 +550,27 @@ describe('MemberProjectionStore', () => {
       store.clear()
       expect(store.has('a')).toBe(false)
       expect(store.get('a', 'roster')).toBeUndefined()
+    })
+  })
+
+  describe('a same-seq schema change reaches the card', () => {
+    it('notifies the contributed face, not just the key', () => {
+      // A schema is what the card renders WITH, so a card already mounted has to be
+      // told. Notifying only the key leaves it drawn by the shape the contributor has
+      // just replaced -- the outcome adopting the schema at the same seq exists to
+      // avoid.
+      const store = new MemberProjectionStore()
+      store.apply('a', 'demoapp/count', { n: 1 }, 5, { title: 'Old' })
+      let keyset = 0
+      const stop = store.contributedFace('a').subscribe(() => {
+        keyset += 1
+      })
+      const before = keyset
+
+      store.apply('a', 'demoapp/count', { n: 1 }, 5, { title: 'New' })
+
+      expect(keyset).toBeGreaterThan(before)
+      stop()
     })
   })
 })

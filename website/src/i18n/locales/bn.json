@@ -15935,6 +15935,8 @@
       "show_controls": "কন্ট্রোল দেখাও"
     },
     "membersPage": {
+      "contributed_empty": "দেখানোর মতো কিছু নেই এখনও",
+      "contributed_more": "+{{count}} আরও",
       "drawer_delegated_working": "অর্পিত কাজ চলছে",
       "details": "বিস্তারিত",
       "edit_member": "সদস্য সম্পাদনা করুন",

@@ -15720,6 +15720,8 @@
       "show_controls": "컨트롤 표시"
     },
     "membersPage": {
+      "contributed_empty": "아직 표시할 내용이 없습니다",
+      "contributed_more": "외 {{count}}개",
       "drawer_delegated_working": "위임한 작업 실행 중",
       "details": "상세",
       "edit_member": "멤버 편집",

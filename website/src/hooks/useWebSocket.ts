@@ -33,6 +33,7 @@ import { MEMBERS_ROSTER_QUERY_KEY } from '../api/membersQuery'
 import { memberProjectionStore } from '../state/memberProjectionStore'
 import { threadLiveStore, type ThreadReplyFrame } from '../state/threadLiveStore'
 import { threadQueryKey, threadsQueryKey } from '../api/threads'
+import type { ProjectionSchema } from '../state/memberProjectionTypes'
 import { sanitizeLlmOutput } from '../utils/sanitize'
 import { deriveToolCallTitle } from '../utils/toolCallTitle'
 import { applyStatusDelta, parseStatusDelta } from '../utils/pullRequestStatusDelta'
@@ -1792,9 +1793,18 @@ export function useWebSocket() {
             // Apply only a well-formed frame: the store's higher-seq-wins drops
             // a stale or replayed seq, but a missing slug/key/seq is a malformed
             // frame that must not touch the store at all.
-            const pf = (data ?? {}) as { slug?: unknown; key?: unknown; seq?: unknown; value?: unknown }
+            const pf = (data ?? {}) as { slug?: unknown; key?: unknown; seq?: unknown; value?: unknown; schema?: unknown; stateVersion?: unknown }
             if (typeof pf.slug === 'string' && pf.slug && typeof pf.key === 'string' && pf.key && typeof pf.seq === 'number') {
-              memberProjectionStore.apply(pf.slug, pf.key, pf.value, pf.seq)
+              // `schema` rides a CONTRIBUTED row's frame and declares how to
+              // render it (contribution protocol §7). Absent on every built-in
+              // key and on a contributor's later folds, where the store keeps
+              // the rendering the key already has.
+              const schema = pf.schema && typeof pf.schema === 'object' ? (pf.schema as ProjectionSchema) : undefined
+              // `stateVersion` rides a contributed row and is read before seq,
+              // because a contributor refolding from scratch bumps it and starts
+              // its seq again -- a frame the server accepts and seq-wins dropped.
+              const version = typeof pf.stateVersion === 'number' ? pf.stateVersion : 0
+              memberProjectionStore.apply(pf.slug, pf.key, pf.value, pf.seq, schema, version)
             }
             break
           }

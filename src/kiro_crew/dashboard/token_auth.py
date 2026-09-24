@@ -1624,7 +1624,71 @@ def app_token_path_allowed(app_name: str, path: str) -> bool:
     # GET (read history) and DELETE, which app tokens must not reach.
     if path == "/api/notifications/push":
         return True
+    # Contribution protocol §2: declaring `contributions` grants these paths, with
+    # no separate `permissions.api` entry. Same shape as the push endpoint above --
+    # the grant is the PREFIX, and every handler under it re-derives authority from
+    # the same manifest declaration (which unit kind, which event type, which
+    # projection key), so reaching the prefix confers nothing over another app's
+    # namespace. Withheld entirely from an app that declared no contributions, so
+    # the surface does not exist for an app that never asked for it.
+    if path.startswith("/api/eventlog/") and _app_declares_contributions(app_name):
+        return True
     return any(_api_pattern_matches(p, path) for p in _app_api_allowlist(app_name))
+
+
+def _app_declares_contributions(app_name: str) -> bool:
+    """Whether *app_name*'s manifest declares any log contribution.
+
+    Function-local import for the same cycle reason as ``_app_api_allowlist``
+    above, and deny-safe: an unreadable manifest answers False, which sends the
+    caller to the ``permissions.api`` allowlist it would have needed anyway.
+    """
+    try:
+        from kiro_crew.eventlog.grants import declares_contributions
+
+        return declares_contributions(app_name)
+    except Exception:
+        logger.warning(
+            "app scope: could not read contributions for %r; denying by default",
+            app_name,
+            exc_info=True,
+        )
+        return False
+
+
+async def _warm_contribution_grant(app_name: str, path: str) -> None:
+    """Resolve an app's contribution declaration off the loop before the gate reads it.
+
+    ``_app_declares_contributions`` below answers from ``eventlog.grants``, whose
+    first lookup for an app resolves ``installed.json`` and the app manifest
+    INLINE -- neither is cached by the apps manager, so both are real filesystem
+    reads. Called from the middleware that runs them, that lands the I/O on the
+    event loop and every other task waits on it
+    (no-blocking-call-on-event-loop), which is the same reason
+    :func:`warm_token_auth_singletons` exists a few functions up.
+
+    Unlike those singletons this cannot be warmed once at startup: the cache is
+    per app and is invalidated whenever an app is enabled, disabled or torn down,
+    so the cold lookup recurs while the gateway runs. It is hoisted to this
+    boundary instead, which is the FIRST thing to consult the declaration on a
+    request -- so the synchronous predicates the handlers and the frame scoper use
+    are all cache hits behind it.
+
+    Both guards keep the hot path free: a dashboard-user token has no app name,
+    no other prefix consults the declaration, and ``is_cold`` is a dict lookup, so
+    a request pays a thread hop only when there is genuinely something to read.
+    """
+    if not app_name or not path.startswith("/api/eventlog/"):
+        return
+    try:
+        from kiro_crew.eventlog.grants import warm
+
+        await warm(app_name)
+    except Exception:
+        # Deny-safe, matching ``_app_declares_contributions``: a warm that fails
+        # leaves the cache cold and the gate reads it the slow way rather than
+        # failing the request on a performance measure.
+        logger.warning("app scope: could not warm contributions for %r", app_name, exc_info=True)
 
 
 def _enforce_app_scope(request: web.Request, app_name: str, path: str) -> web.Response | None:
@@ -2722,6 +2786,7 @@ def token_auth_middleware(
             # paths (e.g. /api/chat, /api/spawn are mixed_internal) — otherwise
             # an app token would reach them on loopback with NO app identity set
             # and be treated as the dashboard user (privilege escalation).
+            await _warm_contribution_grant(_app, path)
             _scope_deny = _enforce_app_scope(request, _app, path)
             if _scope_deny is not None:
                 return _scope_deny
@@ -2804,6 +2869,7 @@ def token_auth_middleware(
                 # POSITIVE dashboard-user signal for the WS scope gate (see
                 # the loopback branch above).
                 request["is_dashboard_user"] = not _app
+                await _warm_contribution_grant(_app, path)
                 _scope_deny = _enforce_app_scope(request, _app, path)
                 if _scope_deny is not None:
                     return _scope_deny
@@ -3179,6 +3245,7 @@ def token_auth_middleware(
         # its own namespace + its manifest ``permissions.api`` allowlist. This
         # is the primary enforcement point for the normal cookie/query-param
         # flow (e.g. /api/sessions, /api/config/*, the /apps/<other>/api proxy).
+        await _warm_contribution_grant(app_name, path)
         _scope_deny = _enforce_app_scope(request, app_name, path)
         if _scope_deny is not None:
             return _scope_deny

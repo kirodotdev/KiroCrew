@@ -14,8 +14,57 @@ export type ProjectionKey = 'roster' | 'activity' | 'wake' | 'driving'
 export interface ProjectionsBlock {
   asOfSeq: number
   values: { [key: string]: unknown }
+  /**
+   * Per-key seq, present only for CONTRIBUTED rows (contribution protocol §5).
+   * A contributed row's seq is the contributor's own fold position, not this
+   * response's asOfSeq, so the store seeds it at its own seq -- otherwise
+   * higher-seq-wins would drop the contributor's next live push.
+   */
+  seqs?: { [key: string]: number }
+  /** Per-key rendering, for contributed rows whose app published one (§7). */
+  schemas?: { [key: string]: ProjectionSchema }
+  /**
+   * Per-key fold generation, for contributed rows. Read BEFORE seq: the server
+   * accepts a publish whose stateVersion rose even when its seq did not advance,
+   * so seq alone would drop a row it already committed.
+   */
+  stateVersions?: { [key: string]: number }
+  /**
+   * The projection store's `mark()`, taken BEFORE this response was requested.
+   * CLIENT-STAMPED: the server never sends it.
+   *
+   * It rides on the block rather than living in a store field because `select`
+   * seeds on a CACHE read too, where the mark that applies is the one belonging
+   * to the fetch that produced these rows — not the newest mark taken since.
+   * `seed` needs it to refuse a contributed key a teardown withdrew while this
+   * request was in flight.
+   */
+  clientMark?: number
 }
 
+/**
+ * How a contributor asks a dashboard to render one of its views (§7). Declared
+ * once per key, never code: no contributor JavaScript runs in the browser.
+ *
+ * `kind` picks the body shape. `path` is a list of dotted selectors into the
+ * value, read differently per kind: the first selector picks the array for
+ * `list` and `table`, and the whole list names the fields to show for
+ * `keyvalue`, `badge` and `text`. An absent or unusable schema falls back to a
+ * compact key-value dump of the value.
+ */
+export interface ProjectionSchema {
+  kind: 'badge' | 'text' | 'list' | 'table' | 'keyvalue'
+  title?: string
+  path?: string[]
+}
+
+/** One contributed `<app>/<key>` view held for a member. */
+export interface ContributedView {
+  key: string
+  value: unknown
+  seq: number
+  schema?: ProjectionSchema
+}
 
 /** The 'roster' projection: config-derived roster fields (minus live presence). */
 export interface RosterView {

@@ -336,6 +336,82 @@ const armedVerdict = await expectVerdictNotAccent(dark)
 await dark.screenshot({ path: `${OUT}/06b-armed-dark.png` })
 console.log(`06b-armed-dark: projection-armed patrol reads "${armedVerdict.text}" in ${armedVerdict.verdict}, not the accent ${armedVerdict.accent}, listed as a wake source with no interval`)
 
+// ── Contributed-view card (contribution protocol §5/§7) ──────────────────────
+// A contributor app publishes a folded view plus a render schema; the drawer
+// draws it from the schema alone (no contributor JS runs). Mirrors what
+// test/contrib_protocol_demo.py produces. First a populated keyvalue card,
+// then the empty-body state.
+await darkPushProjection(
+  'fixer',
+  'demo/count',
+  { pings: { last: 'iad-prod-01', total: 42 } },
+  1,
+  { kind: 'keyvalue', title: 'Demo contributor', path: ['pings.last', 'pings.total'] },
+)
+await dark.locator('[data-testid="contributed-card-demo/count"]').waitFor({ timeout: 15000 })
+await dark.screenshot({ path: `${OUT}/07-contributed-card-dark.png` })
+console.log('07-contributed-card-dark: a published keyvalue card (title + app pill + body)')
+
+// Empty body: the app declared a list view but has published nothing in it
+// yet. A list/table with zero rows is the card's genuine empty state (a
+// keyvalue schema with a fixed path always renders its rows, so it is not the
+// empty path).
+await darkPushProjection(
+  'fixer',
+  'demo/tasks',
+  { items: [] },
+  1,
+  { kind: 'list', title: 'Demo tasks', path: ['items'] },
+)
+await dark.locator('[data-testid="contributed-empty"]').waitFor({ timeout: 15000 })
+await dark.screenshot({ path: `${OUT}/08-contributed-empty-dark.png` })
+console.log('08-contributed-empty-dark: a declared card with no published rows yet (empty body)')
+
+// The remaining body kinds a contributor can declare (badge / text / list /
+// table), each drawn from the value + schema alone. One card per kind so a
+// reviewer sees every rendering the PR adds, not only keyvalue.
+await darkPushProjection(
+  'fixer',
+  'demo/status',
+  { state: 'green' },
+  1,
+  { kind: 'badge', title: 'Demo status', path: ['state'] },
+)
+await darkPushProjection(
+  'fixer',
+  'demo/note',
+  { text: 'Last sweep clean; next run in 6m.' },
+  1,
+  { kind: 'text', title: 'Demo note', path: ['text'] },
+)
+// 25 rows so the list slices at MAX_ROWS (20) and shows the "+5 more" marker.
+await darkPushProjection(
+  'fixer',
+  'demo/queue',
+  { items: Array.from({ length: 25 }, (_, i) => `job #${4800 + i}`) },
+  1,
+  { kind: 'list', title: 'Demo queue', path: ['items'] },
+)
+await darkPushProjection(
+  'fixer',
+  'demo/runs',
+  { rows: [{ id: 4821, status: 'ok' }, { id: 4822, status: 'ok' }, { id: 4823, status: 'fail' }] },
+  1,
+  { kind: 'table', title: 'Demo runs', path: ['rows', 'id', 'status'] },
+)
+await dark.locator('[data-testid="contributed-badge"]').waitFor({ timeout: 15000 })
+await dark.locator('[data-testid="contributed-text"]').waitFor({ timeout: 15000 })
+await dark.locator('[data-testid="contributed-list"]').waitFor({ timeout: 15000 })
+await dark.locator('[data-testid="contributed-table"]').waitFor({ timeout: 15000 })
+await dark.locator('[data-testid="contributed-more"]').first().waitFor({ timeout: 15000 })
+// One element still per card kind, scrolled into view, so no body is clipped
+// by the drawer fold the way a single full-page shot was.
+await dark.locator('[data-testid="contributed-card-demo/status"]').screenshot({ path: `${OUT}/08b-badge-dark.png` })
+await dark.locator('[data-testid="contributed-card-demo/note"]').screenshot({ path: `${OUT}/08c-text-dark.png` })
+await dark.locator('[data-testid="contributed-card-demo/queue"]').screenshot({ path: `${OUT}/08d-list-more-dark.png` })
+await dark.locator('[data-testid="contributed-card-demo/runs"]').screenshot({ path: `${OUT}/08e-table-dark.png` })
+console.log('08b/c/d/e: badge, text, list (with +N more), and table card bodies, one still each')
+
 await darkCtx.close()
 
 // 09/10: the two non-verdict states of the block — read in flight, read failed.

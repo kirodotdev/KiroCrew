@@ -474,9 +474,11 @@ async def api_members(request: web.Request) -> web.Response:
 
     def _project_rows() -> dict[str, dict]:
         from kiro_crew import eventlog_hooks
-        from kiro_crew.eventlog.service import get_service
+        from kiro_crew.eventlog.contrib import get_store
+        from kiro_crew.eventlog.service import UNIT_KIND, get_service
 
         svc = get_service()
+        store = get_store()
         out: dict[str, dict] = {}
         # This map is keyed by SLUG while the roster is keyed by row, and a slug is
         # a lossy fold, so two rows can land on one key. Whichever row is projected
@@ -567,6 +569,39 @@ async def api_members(request: web.Request) -> web.Response:
             except Exception:
                 logger.debug("member projections failed for %r", slug, exc_info=True)
                 out[slug] = {"asOfSeq": -1, "values": {}}
+            # Contributed rows sit in the SAME `values` map as the built-in keys,
+            # so a client needs no second code path to receive them (contribution
+            # protocol §5). Their seqs go in a sibling `seqs` map because a
+            # contributed row's seq is its OWN fold position, not this response's
+            # `asOfSeq`: seeding one at `asOfSeq` would make the store's
+            # higher-seq-wins rule drop the contributor's next live push.
+            try:
+                external = store.values(UNIT_KIND, slug)
+            except Exception:
+                logger.debug("contributed projections failed for %r", slug, exc_info=True)
+                continue
+            if not external:
+                continue
+            block = out[slug]
+            block.setdefault("values", {})
+            seqs: dict[str, int] = block.setdefault("seqs", {})
+            versions: dict[str, int] = block.setdefault("stateVersions", {})
+            schemas: dict[str, dict] = block.setdefault("schemas", {})
+            for key, ext in external.items():
+                if ext.seq < 0 and ext.value is None:
+                    # A schema published before the first fold: nothing to render.
+                    continue
+                block["values"][key] = ext.value
+                seqs[key] = ext.seq
+                # Seeded beside the seq because the two rules differ: a publish
+                # whose stateVersion rose is accepted with a seq that did not
+                # advance, so a client holding only the seq would drop the
+                # contributor's own refold.
+                versions[key] = ext.state_version
+                if ext.schema is not None:
+                    schemas[key] = ext.schema
+            if not schemas:
+                block.pop("schemas", None)
         return out
 
     projections = await asyncio.to_thread(_project_rows)

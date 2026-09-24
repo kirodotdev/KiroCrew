@@ -741,6 +741,104 @@ async def test_a_plain_disable_keeps_the_hook_registries(_harness):
 
 
 @pytest.mark.asyncio
+async def test_a_plain_disable_still_retracts_the_contributions(_harness, monkeypatch):
+    """A DISABLE must retract, even though it keeps the registries next door.
+
+    The reconciler is the only observer of a CLI disable: `teardown_app_runtime`,
+    which retracts on the other paths, runs from the dashboard disable route and
+    from trust withdrawal, and a CLI disable touches neither. Retracting only when
+    the app is `gone` therefore left a disabled contributor's already-open socket
+    receiving member events.
+
+    The asymmetry with the registries is deliberate and is pinned by the test
+    above: those are repopulated by each app's own watchdog, so clearing them on a
+    disable would break a re-enable. Contributions have no such re-registration.
+    """
+    retracted: list[str] = []
+
+    async def _recording_retract(name):
+        retracted.append(name)
+        return []
+
+    monkeypatch.setattr(hr, "teardown_contributions", _recording_retract)
+    calls, (set_current, _, _) = _harness
+    app_off = _app_info("watchtower", enabled=False)
+    set_current(app_off)
+    await hi.record_loaded_hook_signature("watchtower", _app_info("watchtower"))
+
+    await hr.reconcile_once([app_off])
+
+    assert calls == [("disable", "watchtower")]
+    assert retracted == ["watchtower"], (
+        "a disabled contributor kept its contributions, so its live socket goes on "
+        "receiving member events"
+    )
+
+
+def _contributor(name: str, *, enabled: bool):
+    """App info for a CONTRIBUTION-ONLY app: declares contributions, no hooks."""
+    info = _app_info(name, enabled=enabled, hooks=False)
+    info["manifest"]["contributions"] = {"events": [f"{name}/*"]}
+    return info
+
+
+@pytest.mark.asyncio
+async def test_a_contribution_only_app_is_retracted_on_disable(_harness, monkeypatch):
+    """An app with contributions and NO hooks is invisible to the hook selection.
+
+    Nothing is ever loaded for it, so `loaded is None` and nothing is retained --
+    the hook teardown branch cannot select it at all. A CLI disable therefore left
+    its contributions in place while its already-open socket kept receiving member
+    events.
+    """
+    retracted: list[str] = []
+
+    async def _recording_retract(app_name):
+        retracted.append(app_name)
+        return []
+
+    monkeypatch.setattr(hr, "teardown_contributions", _recording_retract)
+    _, (set_current, _, _) = _harness
+    off = _contributor("watchtower", enabled=False)
+    set_current(off)
+
+    await hr.reconcile_once([off])
+
+    assert retracted == ["watchtower"], (
+        "a disabled contribution-only app kept its contributions, so its live socket "
+        "goes on receiving member events"
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_enabled_contribution_only_app_is_left_alone(_harness, monkeypatch):
+    """CONTROL, and the trap this selection had to avoid.
+
+    `turned_off` is true for ANY app declaring no hooks -- right for the hook
+    reconciler, catastrophic as a retraction trigger: it would retract an ENABLED
+    contribution-only app on every tick, deleting the very rows the feature exists
+    to publish. The trigger is gone-or-actually-disabled, which this pins.
+    """
+    retracted: list[str] = []
+
+    async def _recording_retract(app_name):
+        retracted.append(app_name)
+        return []
+
+    monkeypatch.setattr(hr, "teardown_contributions", _recording_retract)
+    _, (set_current, _, _) = _harness
+    on = _contributor("watchtower", enabled=True)
+    set_current(on)
+
+    await hr.reconcile_once([on])
+
+    assert retracted == [], (
+        "an ENABLED contribution-only app was retracted, which deletes the rows the "
+        "feature exists to publish"
+    )
+
+
+@pytest.mark.asyncio
 async def test_an_unsettled_uninstall_keeps_them_for_the_retry(_harness):
     """Unsettled means app code is still running, so its off-switch stays.
 

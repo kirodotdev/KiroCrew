@@ -109,8 +109,9 @@ import { loadColumnWidth } from '../../lib/columnWidth'
 import { tabStatus, type TabStatus } from '../../lib/sessionTabs'
 import { lastActivityEpoch } from '../chat/sessionOrder'
 import { activityDayLabel, floorCountText, groupActivityDays, projectLabel } from './activityDays'
+import { ContributedViews } from './ContributedViewCard'
 import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
-import { useMemberProjection, useMemberRosterViews } from '../../state/useMemberProjection'
+import { useMemberProjection, useMemberContributedViews, useMemberRosterViews } from '../../state/useMemberProjection'
 import type { RosterView, ActivityView, WakeView } from '../../state/memberProjectionTypes'
 import type { CrewmateIdentity } from '../chat/CrewmateMessage'
 
@@ -1378,6 +1379,7 @@ export default function MembersPage() {
   // Contributed `<app>/<key>` views for the open member. Nothing to fetch: they
   // arrive in the same roster baseline and the same member_projection frames as
   // the built-in keys, which is the whole point of §5 reusing that frame.
+  const contributedViews = useMemberContributedViews(activeSlug)
   const activeEntries = useMemo(
     () => (activityView?.recent as MemberActivityEntry[] | undefined) ?? activityQuery.data?.entries ?? [],
     [activityView, activityQuery.data],
@@ -2906,6 +2908,14 @@ export default function MembersPage() {
               <CrewLogTab slot={confirmedSlot} />
             </div>
           ) : null}
+          {/* Contributed views: any `<app>/<key>` projection an app published on
+              this member's log (contribution protocol §7). Rendered generically
+              from the value plus an optional declarative schema -- no app code
+              runs here -- and placed AFTER the host's own blocks (the activity
+              fold, the session record) so a contribution adds to the work log's
+              tail rather than displacing the member's own rows. Absent entirely
+              when no app has published for this member. */}
+          <ContributedViews views={contributedViews} />
             </div>
           )
           // Notes — the crewmate's own standing notes, read-only (no editor:

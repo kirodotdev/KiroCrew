@@ -1517,6 +1517,35 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "environment map is those four named keys and no others, and is omitted "
         "entirely unless a caller asks for it.",
     ),
+    (
+        "Contributor catch-up read",
+        "dashboard/handlers/eventlog.py",
+        "Event envelopes served by `GET /api/eventlog/{kind}/{id}/events`, the "
+        "contribution-protocol catch-up read a granted contributor uses to fold "
+        "the log. `events_after` returns each envelope raw, and an event's `data` "
+        "carries agent-authored free-text (an activity `project`, message "
+        "previews) of the same class the sibling member `/history` and "
+        "`/activity` reads redact. Each event's `data` passes the shared "
+        "exfiltration-URL then credential chain (`_redact_projection_value`) "
+        "before egress, so a credential or presigned URL smuggled into an event "
+        "does not reach the browser.",
+    ),
+    (
+        "Live event-log frame broadcast",
+        "dashboard/eventlog_ws.py",
+        "The `eventlog_event` WS frame `EventLogHub.publish` fans out to every "
+        "subscriber the instant an event is appended -- the live counterpart of "
+        "the `GET .../events` catch-up read. The event's `data` carries "
+        "agent-authored free-text (an activity `project`, message previews) of "
+        "the same class the sibling reads redact, so `data` passes the shared "
+        "exfiltration-URL then credential chain (`_redact_projection_value`) "
+        "before serialization. Runs on the appending thread inside the log lock, "
+        "so the pure-string redactor cannot block; a redactor fault DROPS the "
+        "frame rather than shipping the raw event, because this is the one control "
+        "between agent-authored text and the browser and falling back would make "
+        "it fail open. The event is not lost to the reader: the redacting "
+        "`GET .../events` catch-up read still serves it.",
+    ),
 )
 
 # Modules that call a redactor but are NOT an output egress boundary, so they do
@@ -1581,6 +1610,15 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # dashboard/handlers/workflows.py, the registered sink for this surface,
         # and that handler is the previewer's sole caller.
         "workflows/preview.py",
+        # Same shape as workflows/preview.py, and for the same reason: the
+        # contribution normalizer scrubs a contributor-authored schema title
+        # inside `normalize_schema`, before its own 120-char cap. Redacting
+        # first is the whole point -- the egress redactors match a credential by
+        # its full shape, so cutting first can sever one into a stump no later
+        # pass recognises. It owns no output: a contributed row reaches a client
+        # only through eventlog/service.py, dashboard/handlers/eventlog.py and
+        # dashboard/eventlog_ws.py, each a registered sink for this surface.
+        "eventlog/contrib.py",
         # Audit-side log hygiene: log_decline scrubs the model-authored tool
         # title before writing the shared auto_approve_declined SEL row. The
         # audit log is a gate-side record, not an output bound for a human or

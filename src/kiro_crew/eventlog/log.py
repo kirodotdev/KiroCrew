@@ -420,6 +420,30 @@ class MemberLog:
             return iter(())
         return (_as_event(entry) for entry in self._crew_log.iter_from(1))
 
+    def events_after(self, after: int, limit: int) -> list[Event]:
+        """Oldest-first page of events with ``seq > after``, at most *limit*.
+
+        The catch-up read of the contribution protocol's §3: a consumer that
+        folded up to ``after`` asks for what came next, in the order it must fold
+        it. Distinct from :meth:`history`, which pages BACKWARDS for a timeline
+        view -- folding a newest-first page would apply a later event before an
+        earlier one.
+
+        Read from the store rather than the retained tail, because that tail is a
+        bounded WINDOW: a consumer whose ``after`` sits below the window's floor
+        would be handed the window's contents and silently skip everything under
+        it, which for a catch-up read is lost events rather than a short page.
+        """
+        self._ensure_loaded()
+        if self._crew_log is None:
+            return []
+        out: list[Event] = []
+        for entry in self._crew_log.iter_from(after + 1):
+            out.append(_as_event(entry))
+            if limit is not None and limit >= 0 and len(out) >= limit:
+                break
+        return out
+
     def last_seq(self) -> int:
         """The newest event's seq, or 0 for a log with no events.
 

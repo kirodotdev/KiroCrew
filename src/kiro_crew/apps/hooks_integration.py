@@ -216,6 +216,24 @@ def manifest_declares_hooks(app_info: dict[str, Any]) -> bool:
     return bool((app_info.get("manifest", {}) or {}).get("backend", {}).get("hooks", {}))
 
 
+def manifest_declares_contributions(app_info: dict[str, Any]) -> bool:
+    """Whether an app's manifest declares any event-log contribution.
+
+    Read from the manifest, deliberately, and not through
+    ``grants.declares_contributions``: that resolves the app's ENABLED state first
+    and answers False for a disabled app, which is exactly the app whose
+    contributions the reconciler has to retract.
+    """
+    contributions = (app_info.get("manifest", {}) or {}).get("contributions", {}) or {}
+    if not isinstance(contributions, dict):
+        return False
+    return bool(
+        contributions.get("events")
+        or contributions.get("projections")
+        or contributions.get("units")
+    )
+
+
 def hook_enable_denied(app_name: str) -> str | None:
     """Non-empty reason string when the gateway must NOT run this app's hooks.
 
@@ -360,6 +378,15 @@ async def on_app_enable(
 
     Returns dict with hook results to include in the enable response.
     """
+    # Lift any teardown tombstone: a disable set one to hard-deny the app's grant
+    # during the disable window, and a re-enable re-registers trust, so the app
+    # must be grantable again.
+    try:
+        from kiro_crew.eventlog.grants import unrevoke
+
+        unrevoke(app_name)
+    except Exception:  # pragma: no cover - defensive; never block enable
+        logger.debug("App %s: could not lift contribution tombstone", app_name, exc_info=True)
     result: dict[str, Any] = {}
     denied = app_execution_denied(
         app_name,

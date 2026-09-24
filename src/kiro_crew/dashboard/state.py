@@ -5102,6 +5102,17 @@ class DashboardState:
             get_service().attach_broadcast(self.broadcast_ws)
         except Exception:
             logger.debug("eventlog attach_broadcast failed", exc_info=True)
+        # Wire the contribution protocol's delta channel: every append is
+        # enqueued for the app sockets subscribed to that unit. Separate from the
+        # broadcast sink above -- that one carries WHOLE PROJECTED VALUES to
+        # dashboards, this one carries raw envelopes to contributors, and the two
+        # have opposite client rules (higher-seq-wins vs no-folding-across-a-gap).
+        try:
+            from kiro_crew.dashboard.eventlog_ws import attach_to_service
+
+            attach_to_service()
+        except Exception:
+            logger.debug("eventlog subscription hub attach failed", exc_info=True)
         # Runtime services share the gateway's policy, never a model-supplied mode.
         from kiro_crew.dashboard.handlers._shared import (
             live_session_memory_mode,

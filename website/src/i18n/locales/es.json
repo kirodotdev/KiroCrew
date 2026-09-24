@@ -16150,6 +16150,8 @@
       "show_controls": "Mostrar los controles"
     },
     "membersPage": {
+      "contributed_empty": "Nada que mostrar todavía",
+      "contributed_more": "+{{count}} más",
       "drawer_delegated_working": "Tareas delegadas en curso",
       "details": "Detalles",
       "edit_member": "Editar miembro",

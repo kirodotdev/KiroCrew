@@ -15935,6 +15935,8 @@
       "show_controls": "नियंत्रण दिखाएँ"
     },
     "membersPage": {
+      "contributed_empty": "अभी दिखाने के लिए कुछ नहीं",
+      "contributed_more": "+{{count}} और",
       "drawer_delegated_working": "सौंपे गए कार्य चल रहे हैं",
       "details": "विवरण",
       "edit_member": "सदस्य संपादित करें",
