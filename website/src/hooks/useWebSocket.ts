@@ -126,6 +126,13 @@ function invalidateRefreshQueries(qc: QueryClient): void {
   qc.invalidateQueries({ queryKey: ['default-agent'] })
   qc.invalidateQueries({ queryKey: ['workspaces'] })
   qc.invalidateQueries({ queryKey: ['kirocrewConfig'] })
+  // These answers derive from the config AND, for an `auto` default, the
+  // installed agent spec rebuilt by the server's config applier. A refresh
+  // frame is emitted only after that applier completes, so invalidate the
+  // infinite-stale caches here rather than relying solely on a changed config
+  // value to mint a new key. This also covers external/CLI config writes.
+  qc.invalidateQueries({ queryKey: ['resolved-model'] })
+  qc.invalidateQueries({ queryKey: ['agent-resolved-model'] })
   // Prefix match on purpose: covers the filtered library list
   // (['artifacts', {tag, kind}]) and the tag-options read
   // (['artifacts', 'all-tags']) in one shot. The `artifact_update` frame

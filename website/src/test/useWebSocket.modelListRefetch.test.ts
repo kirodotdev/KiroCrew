@@ -82,6 +82,13 @@ describe('useWebSocket activity_event → model list refetch', () => {
     act(() => { ws.simulateMessage({ type: 'activity_event', data }) })
   }
 
+  function sendFrame(type: string, data: object = {}) {
+    renderHook(() => useWebSocket(), { wrapper })
+    const ws = WS_INSTANCES[0]
+    act(() => { ws.simulateOpen() })
+    act(() => { ws.simulateMessage({ type, data }) })
+  }
+
   const keysOf = (spy: { mock: { calls: unknown[][] } }) =>
     spy.mock.calls.map(c => JSON.stringify((c[0] as { queryKey?: unknown })?.queryKey))
 
@@ -133,5 +140,13 @@ describe('useWebSocket activity_event → model list refetch', () => {
     }
     const log = state.chat.slotActivity?.s1?.toolLog ?? state.chat.toolLog
     expect(log.some(e => e.type === 'session' && e.text.includes('Session created'))).toBe(true)
+  })
+
+  it('refetches both effective-model caches after a server refresh', () => {
+    const spy = vi.spyOn(qc, 'invalidateQueries')
+    sendFrame('refresh')
+    const keys = keysOf(spy)
+    expect(keys).toContain(JSON.stringify(['resolved-model']))
+    expect(keys).toContain(JSON.stringify(['agent-resolved-model']))
   })
 })

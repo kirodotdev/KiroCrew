@@ -1736,8 +1736,20 @@ dispatcher; `WorkflowService` binds `agent.workflow_run_timeout_secs` to its
 `agent.max_channel_agents` to its cap setters, both with `live.bind`). Only the
 ones whose holder is `DashboardState`, or that must rebuild agent artifacts,
 live in `server.py::_register_config_watch` — `agent.provider`,
-`agent.role_models.background`, and `agent.log_level`
+`agent.model`, `agent.role_models.background`, and `agent.log_level`
 (→ `handlers/updates.py::apply_log_level_from_config`).
+Both model appliers rebuild the installed agent specifications before the
+watcher finishes dispatching the change. After a successful `agent.model`
+rebuild, its applier emits a refresh frame, so dashboard PATCH responses and
+that frame expose the new effective model only after the corresponding
+specification is ready, including when the value is cleared back to `auto`.
+If the rebuild fails, the applier logs the failure and emits no refresh frame;
+the previous specification and effective-model readout remain in force. It also
+raises an actionable dashboard notification and remains stale in the watcher,
+which retries the rebuild on later ticks until the generated spec catches up.
+The first successful retry emits both the refresh frame and a recovery
+notification, so the operator is not left with a stale failure message after
+the saved model becomes active.
 The provider applier only schedules the switch: `reload_provider_factory` clears
 the session registry and then shuts the retired providers down one at a time,
 which can outlast the applier bound, and a timed-out applier is retried on the
