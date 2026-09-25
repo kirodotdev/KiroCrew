@@ -19,6 +19,7 @@ import errno
 import inspect
 import pathlib
 import socket
+import textwrap
 import time
 from typing import Any, AsyncIterator, Callable, Iterator
 
@@ -60,8 +61,9 @@ def _stub_authorize(outcome: str, port: int | None = None) -> Callable[..., tupl
     relay's unreachable-upstream handler and the wire answer becomes a generic
     500 instead of the status under test. That is only reachable when the
     connect SUCCEEDS, so a stub whose verdict denies before connect hides the
-    drift until someone changes its verdict. ``_stubs_accept_the_fence`` pins
-    the whole module against it.
+    drift until someone changes its verdict.
+    ``test_every_relay_authorize_stub_accepts_the_post_connect_fence`` pins the
+    whole module against it.
     """
 
     def _authorize(
@@ -494,6 +496,126 @@ def test_dead_upstream_port_cannot_be_taken_by_a_concurrent_worker() -> None:
         assert refused.value.errno == errno.EADDRINUSE
 
 
+_FENCE = "proof_not_before"
+_RELAY_AUTHORIZE = "relay_authorize"
+# The exact number of ``relay_authorize`` doubles this module installs. Pinned,
+# so adding or deleting one is a deliberate edit here: a count that only has a
+# lower bound lets a double drop out of the checked population while the
+# self-check stays green.
+_RELAY_AUTHORIZE_INSTALLS = 9
+
+
+def _declares_fence(node: ast.AST) -> bool:
+    """True when ``node`` takes the post-connect fence as a keyword-only arg."""
+    args = getattr(node, "args", None)
+    if not isinstance(args, ast.arguments):
+        return False
+    return any(kwarg.arg == _FENCE for kwarg in args.kwonlyargs)
+
+
+def _relay_authorize_doubles(source: str) -> tuple[list[int], list[int]]:
+    """Scan ``source`` for ``relay_authorize`` installs; return (all, offenders).
+
+    Both values are line numbers. An offender is an installed double the scan
+    cannot show accepts the fence, which includes a double it cannot resolve at
+    all: a name whose definition is invisible to this scan is unproven, not
+    approved.
+
+    Every name is resolved AT ITS INSTALL SITE, walking outward through the
+    enclosing function scopes to module scope. That is what a single
+    name-to-node mapping cannot express -- this module binds ``_authorize`` in
+    three separate scopes, and one entry per name would check two of those
+    installs against a body that is not in their scope. A name bound more than
+    once inside one scope has to satisfy the fence in every form it takes.
+    """
+    tree = ast.parse(source)
+
+    parents: dict[ast.AST, ast.AST] = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+
+    def _bindings(scope: ast.AST) -> dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]]:
+        """Function names bound DIRECTLY in ``scope``, name -> every definition.
+
+        Descent stops at a nested ``def``, ``class`` or ``lambda`` so an inner
+        definition is attributed to its own scope rather than to the one that
+        encloses it.
+        """
+        found: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]] = {}
+        pending: list[ast.AST] = list(getattr(scope, "body", []))
+        while pending:
+            node = pending.pop()
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                found.setdefault(node.name, []).append(node)
+                continue
+            if isinstance(node, (ast.ClassDef, ast.Lambda)):
+                continue
+            pending.extend(ast.iter_child_nodes(node))
+        return found
+
+    def _resolve(name: str, site: ast.AST) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
+        """Every definition ``name`` denotes at ``site``, from the nearest scope."""
+        scope: ast.AST | None = site
+        while scope is not None:
+            if isinstance(scope, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef)):
+                bound = _bindings(scope).get(name)
+                if bound:
+                    return bound
+            scope = parents.get(scope)
+        return []
+
+    installed: list[tuple[int, ast.expr]] = []
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "setattr"
+        ):
+            continue
+        attribute: str | None = None
+        double: ast.expr | None = None
+        if len(node.args) == 3 and isinstance(node.args[1], ast.Constant):
+            # setattr(module, "relay_authorize", double)
+            named = node.args[1].value
+            attribute = named if isinstance(named, str) else None
+            double = node.args[2]
+        elif len(node.args) == 2 and isinstance(node.args[0], ast.Constant):
+            # setattr("pkg.mod.relay_authorize", double) -- monkeypatch's
+            # dotted-string form, where the attribute rides in the target.
+            dotted = node.args[0].value
+            attribute = dotted.rsplit(".", 1)[-1] if isinstance(dotted, str) else None
+            double = node.args[1]
+        if attribute != _RELAY_AUTHORIZE or double is None:
+            continue
+        installed.append((node.lineno, double))
+
+    offenders: list[int] = []
+    for lineno, double in installed:
+        if isinstance(double, ast.Lambda):
+            conforms = _declares_fence(double)
+        elif isinstance(double, ast.Name):
+            bound = _resolve(double.id, double)
+            conforms = bool(bound) and all(_declares_fence(node) for node in bound)
+        elif isinstance(double, ast.Call) and isinstance(double.func, ast.Name):
+            # A factory: the callable it RETURNS carries the signature.
+            factories = _resolve(double.func.id, double)
+            conforms = bool(factories) and all(
+                any(
+                    _declares_fence(child)
+                    for child in ast.walk(factory)
+                    if isinstance(child, (ast.FunctionDef, ast.Lambda)) and child is not factory
+                )
+                for factory in factories
+            )
+        else:  # pragma: no cover - an unrecognized shape must not pass silently
+            conforms = False
+        if not conforms:
+            offenders.append(lineno)
+
+    return sorted(lineno for lineno, _ in installed), sorted(offenders)
+
+
 def test_every_relay_authorize_stub_accepts_the_post_connect_fence() -> None:
     """Every double this module installs must take ``proof_not_before``.
 
@@ -511,58 +633,59 @@ def test_every_relay_authorize_stub_accepts_the_post_connect_fence() -> None:
     runtime handle on them to introspect.
     """
     source = pathlib.Path(__file__).read_text(encoding="utf-8")
-    tree = ast.parse(source)
-
-    fence = "proof_not_before"
-    named: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {
-        node.name: node
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
-
-    def _declares_fence(node: ast.AST) -> bool:
-        args = getattr(node, "args", None)
-        if not isinstance(args, ast.arguments):
-            return False
-        return any(kwarg.arg == fence for kwarg in args.kwonlyargs)
-
-    installed: list[tuple[int, ast.expr]] = []
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "setattr"
-            and len(node.args) == 3
-            and isinstance(node.args[1], ast.Constant)
-            and node.args[1].value == "relay_authorize"
-        ):
-            installed.append((node.lineno, node.args[2]))
+    installed, offenders = _relay_authorize_doubles(source)
 
     # The guard is only meaningful if it sees the module's real population.
-    assert len(installed) >= 8, [lineno for lineno, _ in installed]
-
-    offenders: list[int] = []
-    for lineno, double in installed:
-        if isinstance(double, ast.Lambda):
-            conforms = _declares_fence(double)
-        elif isinstance(double, ast.Name):
-            referenced = named.get(double.id)
-            conforms = referenced is None or _declares_fence(referenced)
-        elif isinstance(double, ast.Call) and isinstance(double.func, ast.Name):
-            # A factory: the callable it RETURNS carries the signature.
-            factory = named.get(double.func.id)
-            assert factory is not None, (lineno, double.func.id)
-            conforms = any(
-                _declares_fence(child)
-                for child in ast.walk(factory)
-                if isinstance(child, (ast.FunctionDef, ast.Lambda)) and child is not factory
-            )
-        else:  # pragma: no cover - an unrecognized shape must not pass silently
-            conforms = False
-        if not conforms:
-            offenders.append(lineno)
-
+    assert len(installed) == _RELAY_AUTHORIZE_INSTALLS, installed
     assert offenders == [], offenders
+
+
+def test_the_drift_guard_resolves_each_double_in_its_own_scope() -> None:
+    """The scan reports a drifted double even when a sibling scope binds the name.
+
+    Pins the scan itself, because a name-keyed lookup passes this input: two
+    scopes bind ``_authorize``, only one of them drifted, and a single entry per
+    name checks both installs against whichever body it kept.
+    """
+    drifted = textwrap.dedent("""
+        def good(monkeypatch):
+            def _authorize(candidate, *, proof_not_before=None):
+                return "ok", 1
+
+            monkeypatch.setattr(mod, "relay_authorize", _authorize)
+
+
+        def bad(monkeypatch):
+            def _authorize(candidate):
+                return "ok", 1
+
+            monkeypatch.setattr(mod, "relay_authorize", _authorize)
+        """)
+    installed, offenders = _relay_authorize_doubles(drifted)
+    assert len(installed) == 2, installed
+    # The second install is the drifted one; the first must stay clean.
+    assert offenders == [installed[1]], (offenders, installed)
+
+    # The dotted-string install form is counted and checked the same way.
+    dotted = textwrap.dedent("""
+        def bad(monkeypatch):
+            def _authorize(candidate):
+                return "ok", 1
+
+            monkeypatch.setattr("pkg.mod.relay_authorize", _authorize)
+        """)
+    installed, offenders = _relay_authorize_doubles(dotted)
+    assert len(installed) == 1, installed
+    assert offenders == installed, (offenders, installed)
+
+    # A double whose definition the scan cannot find is unproven, so it is
+    # reported rather than passed.
+    unresolvable = textwrap.dedent("""
+        def bad(monkeypatch):
+            monkeypatch.setattr(mod, "relay_authorize", imported_from_elsewhere)
+        """)
+    installed, offenders = _relay_authorize_doubles(unresolvable)
+    assert offenders == installed == [3], (offenders, installed)
 
 
 def test_the_stub_factory_matches_the_real_relay_authorize_signature() -> None:
