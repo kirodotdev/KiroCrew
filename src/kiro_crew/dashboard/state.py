@@ -2379,6 +2379,7 @@ class _ChatSlot:
         "served_model",
         "_session_requested_model",
         "_crew_log_previous_sid",
+        "_crew_log_opened_sid",
         "reasoning_effort",
         "autocompact_pct",
         "mode",
@@ -2647,6 +2648,13 @@ class _ChatSlot:
         # than an earlier store. Cleared once `session/opened` has carried it, so
         # the next supersede of this slot latches afresh. "" = nothing to follow.
         self._crew_log_previous_sid: str = ""
+        # The store a `session/opened` of this slot was last written FOR, recorded
+        # as the edge above is handed over. It is what the slot's next allocation
+        # names as its predecessor: the mapping can be a generation behind while a
+        # replay is pending, and the store's own units carry a wall-clock stamp and
+        # are written by a background writer that may not have run yet. "" = this
+        # process has not opened a crew log for this slot.
+        self._crew_log_opened_sid: str = ""
         # The model id the live session resolved to, for a slot that is
         # inheriting rather than pinning. "" = unknown. Written through
         # `record_served_model`.
@@ -4325,30 +4333,6 @@ class _ChatSlot:
         """
         self.served_model = model_id or ""
 
-    def _newest_crew_log_store(self) -> str:
-        """The newest crew log this slot wrote, or ``""`` when none can be read.
-
-        The units of a slot are ordered by their header's ``createdAt``, which the
-        store defines as the order they were opened in, so the last one is the store
-        a fresh session supersedes.
-
-        A unit whose header cannot be PROVED to be its own is left out of that
-        listing, and such an id is one the emitter would refuse to cite anyway --
-        both sides prove a unit's slot from that same write-once header -- so a
-        short listing loses no edge that would otherwise have been written.
-
-        ``""`` while the crew log is off: there is no store to read, and no entry
-        that could carry an edge either.
-        """
-        from kiro_crew.crew_log import emit as crew_log_emit
-
-        if not crew_log_emit.enabled():
-            return ""
-        from kiro_crew.crew_log.store import session_units_for_slot
-
-        units = session_units_for_slot(self.key)
-        return units[-1] if units else ""
-
     def latch_crew_log_previous(self, sid: str) -> None:
         """Remember the crew log store this slot was writing, if none is remembered.
 
@@ -4371,20 +4355,21 @@ class _ChatSlot:
         them cited by nobody, which is the single chain gap a walker cannot detect:
         both neighbours are well formed and neither says a store is missing.
 
-        So the slot's own units decide, and ``sid`` serves when they cannot answer.
-        The store is the authority because a unit's header names its slot, is
-        written once at create and is never rewritten, while a mapping entry moves
-        with resumability. Reading it also covers a mapping that names a session
-        which never opened a crew log at all, where the id on offer is one no
-        reader could follow.
+        So what this slot last handed to a `session/opened` decides, and ``sid``
+        serves only when that is empty -- a slot this process has not yet opened a
+        crew log for. The slot's own record is the authority because it is the
+        statement of the writer itself, taken at the moment the store became this
+        slot's current one, which no other source observes: the mapping tracks
+        resumability instead, and the store's own units carry a wall-clock stamp
+        and are written by a background writer that has not run yet.
         """
         if self._crew_log_previous_sid:
             return
-        chosen = self._newest_crew_log_store() or sid
+        chosen = self._crew_log_opened_sid or sid
         if chosen:
             self._crew_log_previous_sid = chosen
 
-    def take_crew_log_previous(self) -> str:
+    def take_crew_log_previous(self, *, now_writing: str) -> str:
         """The latched predecessor store id, clearing it as it is handed over.
 
         Read-and-clear, because the value is owed to exactly one
@@ -4392,9 +4377,19 @@ class _ChatSlot:
         slot cite a predecessor two links back and skip the store between them,
         which is the one thing a chain walker cannot detect. Returns ``""`` when
         nothing is latched, which the emitter reads as "no edge to write".
+
+        ``now_writing`` is the store that entry is FOR, and recording it here is
+        what lets the slot's next allocation name a predecessor without consulting
+        anything outside this process. The two belong in one call because they are
+        one handover: the edge cannot be spent without saying which store is
+        becoming this slot's current one, so a caller cannot take the first and
+        forget the second. It is recorded whether or not an entry is written, since
+        it states which store the slot is on rather than what was appended.
         """
         sid = self._crew_log_previous_sid
         self._crew_log_previous_sid = ""
+        if now_writing:
+            self._crew_log_opened_sid = now_writing
         return sid
 
     def forget_session_model_state(self) -> None:

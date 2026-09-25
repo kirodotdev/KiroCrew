@@ -6719,10 +6719,10 @@ async def _spawn_admitted_prefetch(
         # observes afterwards cannot replace this with the successor's id.
         #
         # Same source as the turn site: the slot-to-session mapping, read
-        # non-pruning. It is the FALLBACK rather than the answer -- the latch reads
-        # the slot's own crew log units first, because an allocation whose history
-        # replay is pending holds the prior resumable id in the mapping on purpose
-        # and the mapping then names a generation older than the newest store.
+        # non-pruning. It is the FALLBACK rather than the answer -- the latch
+        # prefers the store this slot last handed to a `session/opened`, because an
+        # allocation whose history replay is pending holds the prior resumable id in
+        # the mapping on purpose and the mapping is then a generation behind.
         slot.latch_crew_log_previous(sessions.mapped_sid(session_key))
         # speculative=True keeps the one-shot first-turn flag armed for
         # the real first message (atomically, at registration) and
@@ -10545,9 +10545,10 @@ async def _run_chat(
         #
         # What a mapping read alone cannot answer is a replay-pending allocation,
         # which keeps the prior resumable id here so a restart can still resume it.
-        # The mapping then names a store older than the newest one this slot wrote.
-        # So this id is the fallback and the slot's own units are the authority: the
-        # latch reads them and takes this value only when they answer nothing.
+        # The mapping is then a generation behind the store the slot is writing. So
+        # this id is the fallback, and the authority is the store this slot last
+        # handed to a `session/opened`, which the latch prefers when it has one --
+        # an in-process read, so this coroutine still makes no store read at all.
         slot.latch_crew_log_previous(state.sessions.mapped_sid(session_key))
         # ONE allocation site (the crew-log latch above must sit right before
         # it): the cold-start branch claims under the lock without waiting for
@@ -10849,8 +10850,10 @@ async def _run_chat(
             # writes one only on a CREATE naming a different store, so handing
             # the value over on a re-attach costs nothing and leaving it behind
             # would make the slot's next store cite this store's predecessor
-            # instead of this store.
-            previous_sid=slot.take_crew_log_previous(),
+            # instead of this store. `now_writing` records which store the slot
+            # is on as the edge is spent, which is what the next allocation names
+            # as its predecessor without reading anything outside this process.
+            previous_sid=slot.take_crew_log_previous(now_writing=_crew_log_sid),
         )
         agent_label = kiro_agent or slot.agent or "default"
         # The label states what the session RUNS on, so a withheld pin reports the

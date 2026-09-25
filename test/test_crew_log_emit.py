@@ -5644,11 +5644,12 @@ def test_the_turn_path_reads_the_predecessor_through_the_non_pruning_accessor():
         "slot.latch_crew_log_previous(sessions.mapped_sid(session_key))",
         "slot.latch_crew_log_previous(state.sessions.mapped_sid(session_key))",
     ], f"the predecessor is latched somewhere unexpected: {latches}"
-    # Spent exactly once, at the emitter call. A second consumer would hand the
-    # same edge to two entries; none would leave it for the slot's next store.
+    # Spent exactly once, at the emitter call, which is also where the slot is told
+    # which store it is now on. A second consumer would hand the same edge to two
+    # entries; none would leave it for the slot's next store.
     takes = [line.strip() for line in source.splitlines() if "take_crew_log_previous(" in line]
     assert takes == [
-        "previous_sid=slot.take_crew_log_previous(),"
+        "previous_sid=slot.take_crew_log_previous(now_writing=_crew_log_sid),"
     ], f"the predecessor edge is consumed somewhere unexpected: {takes}"
 
 

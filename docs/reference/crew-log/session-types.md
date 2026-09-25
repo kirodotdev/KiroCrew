@@ -136,14 +136,15 @@ same-slot rule below rather than trusting it. It reports WHY it stopped, and onl
 `first` means it reached the slot's first crew log; no shipped route calls it yet.
 
 `previous` always names a crew log of the SAME slot, and that is verified rather
-than assumed. The id is the slot's own newest crew log unit, taken from the store's
-slot index and latched by whichever allocation observes it first. The store is the
-authority here because a unit's header names its slot, is written once at create and
-is never rewritten. The slot-to-session mapping, read without pruning, is the fallback
-for a slot whose units cannot be read, and it cannot be the authority: an allocation
-whose replay is still pending holds the prior resumable id in the mapping on purpose,
-so that a restart can still resume it, and for that window a mapping read names the
-crew log BEFORE the newest one — two successive crew logs would then cite one
+than assumed. The id is the store this slot last handed to a `session/opened`,
+recorded on the slot as that entry's edge is spent and latched by whichever
+allocation observes it first. That record is the authority because it is the
+writer's own statement about which store the slot is on, taken with no clock and
+no store read. The slot-to-session mapping, read without pruning, is the fallback
+for a slot this process has not opened a crew log for, and it cannot be the
+authority: an allocation whose replay is still pending holds the prior resumable
+id in the mapping on purpose, so that a restart can still resume it, and the
+mapping is then a generation behind — two successive crew logs would cite one
 predecessor and the crew log between them would be cited by nobody, which a chain
 walker steps over without any sign that a crew log is missing. The mapping can also
 name a crew log

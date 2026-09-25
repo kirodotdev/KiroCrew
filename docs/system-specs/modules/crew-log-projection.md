@@ -800,12 +800,17 @@ clock, so a backward step across a restart gives the newer log the earlier stamp
 two creates inside one millisecond tie. The edge inverts in neither case, which is
 why it was recorded.
 
-One gap is inherited rather than introduced, and the walk cannot detect it: an
-allocation whose replay is still pending does not publish its fresh id over the
-mapping, so two successive logs can cite one predecessor and the log between them is
-cited by nobody. It is tracked with the rest of the supersede work in #12148. No
+One gap is inherited rather than introduced, and the walk cannot detect it: the edge's id is
+the store a slot last handed to a `session/opened`, recorded in the gateway process that wrote
+it, and a slot this process has not opened one for falls back to the slot-to-session mapping.
+An allocation whose replay is still pending holds the prior resumable id in that mapping on
+purpose, so a gateway that restarts inside that window has only the behind-by-one answer: two
+successive logs then cite one predecessor and the log between them is cited by nobody. Closing
+it needs a durable per-slot record of the store a slot is on, which this store does not keep --
+`header.createdAt` cannot stand in for one, per the rule above. No
 shipped route calls this walk yet; closing a superseded log's own interrupted turn
-and tool calls is a WRITE into another log and is tracked there too.
+and tool calls is a WRITE into another log and is tracked with the rest of the supersede work
+in #12148.
 
 ## 7. Savepoints on disk
 

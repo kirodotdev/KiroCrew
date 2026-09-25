@@ -19,19 +19,13 @@ mapping for itself.
 
 from __future__ import annotations
 
-import itertools
-import json
 import unittest.mock
-from pathlib import Path
 
 import pytest
 from test_chat_runner_coverage import _drive, _runner_state, _slot
 from test_chat_send_agent_model_default import _config, _pin_sync_accessors, _turn_state
 
 from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.crew_log import crew_log_path
-from kiro_crew.crew_log import emit as crew_log_emit
-from kiro_crew.crew_log import store as crew_log_store
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.chat_runner import _eager_spawn
 
@@ -95,16 +89,16 @@ class TestTheSlotLatch:
         # A slot's first session has no predecessor. "" must stay "" rather than
         # become a store with an empty name, which a chain walker would follow.
         assert slot._crew_log_previous_sid == ""
-        assert slot.take_crew_log_previous() == ""
+        assert slot.take_crew_log_previous(now_writing=PREWARMED) == ""
 
     def test_taking_the_edge_clears_it(self):
         slot = _slot()
         slot.latch_crew_log_previous(PREDECESSOR)
 
-        assert slot.take_crew_log_previous() == PREDECESSOR
+        assert slot.take_crew_log_previous(now_writing=NEWEST) == PREDECESSOR
         # Left behind, it would make the slot's NEXT store cite this store's
         # predecessor and skip this store -- a gap a chain walker cannot see.
-        assert slot.take_crew_log_previous() == ""
+        assert slot.take_crew_log_previous(now_writing=NEWEST) == ""
 
 
 class TestTheEagerPrefetchLatchesFirst:
@@ -185,118 +179,113 @@ class TestTheTurnCitesThePredecessorNotThePrewarm:
         assert slot._crew_log_previous_sid == ""
 
 
-@pytest.fixture
-def _crew_log_home(tmp_path, monkeypatch):
-    """An isolated store plus a stepping clock, so real units order deterministically.
+class TestAReplayPendingAllocationLeavesTheMappingBehind:
+    """The mapping can be a generation behind the store the slot is writing.
 
-    The units of one slot are ordered by their header's ``createdAt``, and two
-    creates inside one millisecond tie and fall back to the unit id -- an order
-    that has nothing to do with which store was opened first. The clock steps once
-    per reading here, so each unit's header carries a distinct time and the order
-    under test is the order the stores were opened in.
-    """
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "crew-log-home"))
-    monkeypatch.setenv(crew_log_emit.CREW_LOG_ENV, "1")
-    stepping = itertools.count(1_700_000_000_000, 1000)
-    monkeypatch.setattr(crew_log_store, "now_ms", lambda: next(stepping))
-    crew_log_emit.reset_caches()
-    yield
-    crew_log_emit.drain_for_shutdown(timeout=2.0)
-    crew_log_emit.reset_caches()
-
-
-def _open_store(sid: str, slot_key: str, *, previous_sid: str = "") -> None:
-    """Create a real unit for *sid* whose header names *slot_key*."""
-    crew_log_emit.on_session_opened(
-        sid,
-        agent="kirocrew",
-        slot=slot_key,
-        cwd="/home/dev/project",
-        previous_sid=previous_sid,
-    )
-    assert crew_log_emit.flush()
-
-
-def _cited_predecessor(sid: str) -> "dict | None":
-    """The ``previous`` object on *sid*'s one ``session/opened`` entry."""
-    path: Path = crew_log_path("session", sid)
-    with path.open("r", encoding="utf-8") as handle:
-        entries = [json.loads(line) for line in handle if line.strip()]
-    opened = [entry for entry in entries[1:] if entry.get("type") == "session/opened"]
-    assert len(opened) == 1, f"{sid} has {len(opened)} opening entries"
-    return opened[0]["data"].get("previous")
-
-
-class TestTheMappingCanAnswerOlderThanTheNewestStore:
-    """A deferred promotion leaves the mapping naming a store that is not the newest.
-
-    An allocation whose history replay is still pending keeps the prior resumable
-    id in the mapping on purpose, so the mapping and the store disagree for that
-    window: the store the slot is writing is newer than the id the mapping holds.
-    The slot's own units are the authority on which store it wrote last, and the
-    latch reads them, so the window cannot make an edge point at a generation
-    older than the newest store.
+    An allocation whose history replay is pending keeps the prior resumable id in
+    the mapping on purpose, so the id a restart can resume stays durable. The store
+    the slot is actually writing is newer than that. What the slot last handed to a
+    `session/opened` is the one source that states it, so the latch prefers it and
+    the window cannot make an edge point at an older generation.
     """
 
-    def test_the_latch_names_the_newest_store_not_the_mapped_one(self, _crew_log_home):
+    def test_the_latch_names_the_store_the_slot_is_on_not_the_mapped_one(self):
         slot = _slot()
-        _open_store(PREDECESSOR, slot.key)
-        _open_store(NEWEST, slot.key, previous_sid=PREDECESSOR)
+        slot.take_crew_log_previous(now_writing=NEWEST)
 
         # What `mapped_sid` answers inside the deferral window: the generation
-        # before the newest store, because the newest one was never published.
+        # before the store this slot is on, because the newer id was never
+        # published over the mapping.
         slot.latch_crew_log_previous(PREDECESSOR)
 
         assert slot._crew_log_previous_sid == NEWEST
 
-    def test_three_successive_stores_cite_three_different_predecessors(self, _crew_log_home):
-        """The chain, end to end: no store is cited twice and none is cited by nobody."""
+    def test_three_successive_stores_cite_three_different_predecessors(self):
+        """The chain: no store is cited twice and none is left cited by nobody."""
+        cited: list[str] = []
+
         slot = _slot()
-        _open_store(PREDECESSOR, slot.key)
+        slot.latch_crew_log_previous("")
+        cited.append(slot.take_crew_log_previous(now_writing=PREDECESSOR))
+
+        # The mapping is stuck on the first store for both allocations after it.
+        slot.latch_crew_log_previous(PREDECESSOR)
+        cited.append(slot.take_crew_log_previous(now_writing=NEWEST))
 
         slot.latch_crew_log_previous(PREDECESSOR)
-        _open_store(NEWEST, slot.key, previous_sid=slot.take_crew_log_previous())
+        cited.append(slot.take_crew_log_previous(now_writing=SUCCESSOR))
 
-        # The mapping is still stuck on the first store for this allocation too.
-        slot.latch_crew_log_previous(PREDECESSOR)
-        _open_store(SUCCESSOR, slot.key, previous_sid=slot.take_crew_log_previous())
+        assert cited == ["", PREDECESSOR, NEWEST], "the chain skipped a store"
 
-        assert _cited_predecessor(PREDECESSOR) is None
-        assert _cited_predecessor(NEWEST) == {"sid": PREDECESSOR}
-        assert _cited_predecessor(SUCCESSOR) == {"sid": NEWEST}, "the chain skipped a store"
-
-    def test_a_slot_with_no_store_yet_keeps_the_mapped_answer(self, _crew_log_home):
-        """Nothing to read means the mapping is the only source, and it is used."""
+    def test_a_slot_this_process_has_not_opened_keeps_the_mapped_answer(self):
+        """Nothing recorded means the mapping is the only source, and it is used."""
         slot = _slot()
 
         slot.latch_crew_log_previous(PREDECESSOR)
 
         assert slot._crew_log_previous_sid == PREDECESSOR
 
-    def test_another_slot_s_store_is_never_taken_as_this_slot_s_predecessor(self, _crew_log_home):
-        """The units are read by slot, so a busier neighbour cannot supply the edge."""
-        slot = _slot()
-        _open_store("sid-belonging-to-another-slot", "chat-someone-else")
+    def test_the_record_is_kept_when_no_entry_carried_the_edge(self):
+        """A warm turn writes no opening entry, and the slot is still on that store.
 
-        slot.latch_crew_log_previous("")
-
-        assert slot._crew_log_previous_sid == ""
-
-    def test_the_first_answer_survives_the_store_that_allocation_goes_on_to_open(
-        self, _crew_log_home
-    ):
-        """Write-once, tested against the newer store the latching allocation opens.
-
-        The prefetch latches, its session then opens a store of its own, and the
-        turn that follows latches again. Replacing the latch there would name the
-        store the turn is writing FOR: the emitter drops a self-edge, so the
-        predecessor would go uncited with no second chance to add it.
+        The record states which store the slot is ON rather than what was appended,
+        so a turn that hands over an empty edge must still leave it behind: the next
+        allocation has nothing else that names the store it supersedes.
         """
         slot = _slot()
-        _open_store(PREDECESSOR, slot.key)
+
+        assert slot.take_crew_log_previous(now_writing=NEWEST) == ""
+
+        slot.latch_crew_log_previous(PREDECESSOR)
+        assert slot._crew_log_previous_sid == NEWEST
+
+    def test_the_record_does_not_reopen_a_latch_already_filled(self):
+        """Write-once holds on the record path too, not just the mapping path.
+
+        The eager prefetch and the first real turn both latch, and the turn's
+        observation is the successor the prefetch just produced. Replacing the edge
+        there would name the store the turn is writing FOR: the emitter drops a
+        self-edge, so the predecessor would go uncited with no second chance.
+        """
+        slot = _slot()
+        slot.take_crew_log_previous(now_writing=NEWEST)
         slot.latch_crew_log_previous(PREDECESSOR)
 
-        _open_store(PREWARMED, slot.key, previous_sid=PREDECESSOR)
-        slot.latch_crew_log_previous(PREWARMED)
+        slot.latch_crew_log_previous(SUCCESSOR)
 
-        assert slot._crew_log_previous_sid == PREDECESSOR
+        assert slot._crew_log_previous_sid == NEWEST
+
+    def test_a_store_with_no_name_is_not_recorded(self):
+        """An emitter call with no session id must not make the slot's record empty."""
+        slot = _slot()
+        slot.take_crew_log_previous(now_writing=NEWEST)
+
+        slot.take_crew_log_previous(now_writing="")
+
+        slot.latch_crew_log_previous(PREDECESSOR)
+        assert slot._crew_log_previous_sid == NEWEST
+
+    @pytest.mark.asyncio
+    async def test_two_turns_on_one_slot_cite_two_different_predecessors(
+        self, tmp_path, _runner_config
+    ):
+        """The defect through the real turn path, with the mapping held still.
+
+        Both allocations read the same mapped id, which is what a replay-pending
+        allocation leaves behind: it keeps the prior resumable id rather than
+        publishing its successor. The second turn must cite the store the first turn
+        opened, not repeat the id the first turn cited.
+        """
+        _runner_config(_config(tmp_path))
+        state, client = _turn_state(tmp_path)
+        slot = _slot()
+        state.sessions.mapped_sid = unittest.mock.MagicMock(return_value=PREDECESSOR)
+
+        cited: list[str] = []
+        for opened_store in (NEWEST, SUCCESSOR):
+            client.session_id = opened_store
+            with _capture_opened() as opened:
+                await _drive(state, slot)
+            cited.append(opened.call_args.kwargs["previous_sid"])
+
+        assert cited == [PREDECESSOR, NEWEST], "the second store repeated the first's predecessor"
