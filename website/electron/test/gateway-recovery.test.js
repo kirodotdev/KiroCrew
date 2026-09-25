@@ -452,3 +452,38 @@ describe("isStaleBundleSignal", () => {
     assert.equal(isStaleBundleSignal({}), false);
   });
 });
+
+describe("waitForBundledGatewayRestart", () => {
+  const { waitForBundledGatewayRestart } = require("../gateway-recovery");
+  async function run(frames) {
+    let index = 0;
+    return waitForBundledGatewayRestart({
+      installedVersion: "0.7.1",
+      fetchHealth: async () => frames[index].health,
+      incumbentAlive: () => frames[index].alive,
+      portFree: async () => frames[index].free,
+      sleep: async () => { index += 1; },
+      now: () => index * 500,
+      waitMs: (frames.length - 1) * 500,
+    });
+  }
+  it("recognizes a new image after a socket gap while exec preserves the PID", async () => {
+    assert.equal(await run([
+      { health: { app: "kirocrew", version: "0.7.0" }, alive: true, free: false },
+      { health: null, alive: true, free: true },
+      { health: null, alive: true, free: true },
+      { health: { app: "kirocrew", version: "0.7.1" }, alive: true, free: false },
+    ]), "updated");
+  });
+  it("permits replacement only after the incumbent dies and releases its port", async () => {
+    assert.equal(await run([{ health: null, alive: false, free: true }]), "exited");
+    assert.equal(await run([{ health: null, alive: false, free: false }]), "timeout");
+  });
+  it("keeps a live incumbent recoverable when restart is refused or slower than the budget", async () => {
+    for (const frame of [
+      { health: { app: "kirocrew", version: "0.7.0" }, alive: true, free: false },
+      { health: null, alive: true, free: true },
+      { health: { app: "other", version: "0.7.1" }, alive: true, free: false },
+    ]) assert.equal(await run([frame]), "timeout");
+  });
+});
