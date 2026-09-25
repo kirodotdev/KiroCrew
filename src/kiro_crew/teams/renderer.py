@@ -380,7 +380,10 @@ class TeamsRenderer(Renderer):
         # the shared cap, so the user still learns those choices exist.
         content, kept = apply_options_cap(content, choices, self.capabilities)
         chunks = await asyncio.to_thread(
-            split_markdown_safe, content, self.capabilities.max_message_chars
+            split_markdown_safe,
+            content,
+            self.capabilities.max_message_chars,
+            redactor=_default_redactor,
         ) or ([] if (kept or files) else ["…"])
         for index, chunk in enumerate(chunks):
             # Reuse the progress bubble for the first chunk so a turn that showed
@@ -740,7 +743,10 @@ class TeamsRenderer(Renderer):
         # so the note has no bound of its own and a single over-cap activity would
         # be refused whole -- losing the only record that the image went missing.
         chunks = await asyncio.to_thread(
-            split_markdown_safe, safe, self.capabilities.max_message_chars
+            split_markdown_safe,
+            safe,
+            self.capabilities.max_message_chars,
+            redactor=_default_redactor,
         )
         for chunk in chunks:
             try:

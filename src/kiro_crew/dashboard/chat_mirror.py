@@ -585,7 +585,7 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
         text, _ = redact_for_display(
             strip_control_comments(backfill_content(row)), redact_via_context
         )
-        return split_markdown_safe(f"{speaker}: {text}", max_chars)
+        return split_markdown_safe(f"{speaker}: {text}", max_chars, redactor=redact_via_context)
 
     # Bound the INLINE delivery. Unlike the Slack drain this cannot be
     # backgrounded -- the per-unit governance re-check below has to be able to
