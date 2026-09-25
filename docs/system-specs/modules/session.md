@@ -127,6 +127,24 @@ missing member carrier reports memory unavailable and never chooses Global.
 Existing ordinary V1 sessions retain their V1 behavior; old V2 grants are not
 migrated or used as a second authority.
 
+One record shape is backfilled instead of refused: a persistent session written
+before the field existed (0.7.0.5), carrying `agent` and a `memory_store` that
+names a declared V2 store but no `execution_context`. `read_session_execution`
+derives the carrier from the store's `owner_member_id` only when that id names
+exactly one configured member, that member resolves to the same store, and the
+record's `agent` names that member by alias or id; it then writes the carrier
+into the record with a compare-and-set against the exact legacy shape it read,
+so every later read decodes it like any other session. The derived identity is
+never vouched -- the store came from the session's own record -- so the session
+stands where a member session stands after a restart. A record with no `agent`,
+an `agent` naming anyone else, an explicit template pick, a store the
+start-of-process migration could not attribute, a `member_id` marker, or a
+restricted mode is left unchanged and still refused, and the refusal names the
+remedy that works for that store: open a new chat with the same member (or
+archive this one) when the store has an attributed owner, or the legacy store
+repair `kirocrew doctor` names when the start-of-process migration could not
+attribute it. A successful backfill logs one INFO line naming the session.
+
 Persistent sessions serialize this record in their existing owner metadata.
 Incognito and Temporary sessions keep it in live session state and suppress
 Crew transcript/body persistence. Incognito may read memory; Temporary does not.

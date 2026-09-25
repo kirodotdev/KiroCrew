@@ -1140,6 +1140,15 @@ it was handed receives the same values. `member-memory.json` and the old
 `memory_meta` rows are left in place. One store's failure is logged and never
 blocks start or another store.
 
+The store migration never touches session records. A member chat written on
+0.7.0.5 carries `{agent, memory_store}` and no `execution_context`, and is
+backfilled at first read instead: `execution_context.read_session_execution`
+derives the carrier from the repaired store's `owner_member_id` when that owner
+is unique and the record's `agent` names it, and persists it with a
+compare-and-set (see [session](session.md), *Agent selection provenance*). A
+record the store migration left unattributed stays refused, with the remedy in
+the message.
+
 V2 labels owner changes as Edit and retained older experiences as Replaced
 experiences. Recall explains which context the member would receive; the record
 list remains available for browsing and editing. Included rules have a summary
