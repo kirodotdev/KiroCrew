@@ -3421,6 +3421,70 @@ class TestRunChatLocalCommands:
         assert slot.messages[-1]["role"] == "done"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "provider,acp_backend,refused",
+        [
+            ("acp", "", True),
+            ("acp", "kas", True),
+            ("claude_code", "", False),
+            ("acp", "claude", False),
+        ],
+    )
+    async def test_todos_is_refused_only_where_the_harness_lacks_it(
+        self, tmp_path, provider, acp_backend, refused
+    ):
+        """/todos is kiro-only: the claude harness answers on either provider axis."""
+        state, client = _runner_state(tmp_path)
+        _set_stream(client, [_complete()])
+        slot = _slot()
+        cfg = await asyncio.to_thread(chat_runner.KiroCrewConfig.load)
+        cfg.agent.provider = provider
+        cfg.agent.acp_backend = acp_backend
+
+        with patch.object(chat_runner.KiroCrewConfig, "load", return_value=cfg):
+            await _drive(state, slot, "/todos")
+
+        notices = [
+            m for m in slot.messages if "not available in the dashboard" in m.get("content", "")
+        ]
+        assert bool(notices) is refused
+        if refused:
+            state.sessions.get_or_create.assert_not_awaited()
+        else:
+            state.sessions.get_or_create.assert_awaited()
+
+    def test_kiro_only_members_are_still_forwarded_once_unblocked(self):
+        """The gate drops these for the claude harness; forwarding must then happen.
+
+        ``is_harness_slash_command`` reads the provider axis alone, so it only
+        agrees with the widened gate while every kiro-only member is in
+        ``_SLASH_COMMANDS`` and forwards on any provider.
+        """
+        from kiro_crew.dashboard.chat_utils import (
+            _KIRO_ONLY_BLOCKED_SLASH_COMMANDS,
+            _SLASH_COMMANDS,
+            is_harness_slash_command,
+        )
+
+        assert _KIRO_ONLY_BLOCKED_SLASH_COMMANDS
+        assert _KIRO_ONLY_BLOCKED_SLASH_COMMANDS <= _SLASH_COMMANDS
+        for cmd in _KIRO_ONLY_BLOCKED_SLASH_COMMANDS:
+            assert is_harness_slash_command(cmd, cc_provider=False) is True, cmd
+
+    @pytest.mark.asyncio
+    async def test_terminal_only_commands_stay_blocked_on_the_claude_harness(self, tmp_path):
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        cfg = await asyncio.to_thread(chat_runner.KiroCrewConfig.load)
+        cfg.agent.acp_backend = "claude"
+
+        with patch.object(chat_runner.KiroCrewConfig, "load", return_value=cfg):
+            await _drive(state, slot, "/quit")
+
+        state.sessions.get_or_create.assert_not_awaited()
+        assert any("not available in the dashboard" in m.get("content", "") for m in slot.messages)
+
+    @pytest.mark.asyncio
     async def test_goal_command_is_handled_locally(self, tmp_path):
         state, client = _runner_state(tmp_path)
         slot = _slot()

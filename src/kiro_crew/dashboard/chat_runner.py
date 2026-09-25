@@ -60,6 +60,7 @@ from kiro_crew.agent_discovery import (
     session_skill_globs,
     warm_project_agent_names,
 )
+from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
 from kiro_crew.agent_sdk.capabilities import capabilities_of
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.autonudge import get_instance
@@ -120,6 +121,7 @@ from kiro_crew.dashboard.chat_title import (
 )
 from kiro_crew.dashboard.chat_utils import (
     _BLOCKED_SLASH_COMMANDS,
+    _KIRO_ONLY_BLOCKED_SLASH_COMMANDS,
     _MAX_TOOL_PURPOSE,
     ResetCause,
     _append_compaction_notice,
@@ -9885,14 +9887,24 @@ async def _run_chat(
 
     # ── Slash commands: detect early, before session acquisition ──
     first_word = message.split()[0] if message.strip() else ""
-    _is_cc_provider = is_claude_code(KiroCrewConfig.load().agent.provider)
+    _cfg_agent = KiroCrewConfig.load().agent
+    _is_cc_provider = is_claude_code(_cfg_agent.provider)
+    # The claude harness answers on either provider axis: the claude_code seam, or
+    # the acp seam spawning the claude backend (both selectable in this build).
+    _is_cc_harness = _is_cc_provider or is_claude_backend_name(
+        getattr(_cfg_agent, "acp_backend", "")
+    )
     # Named rather than inlined so the quick-prompt exception is one testable rule
     # instead of a condition only reachable by driving this whole function: a macro
     # must NOT be forwarded to the harness as a command.
     is_slash = is_harness_slash_command(first_word, cc_provider=_is_cc_provider)
 
-    # Block dangerous/local-only commands before acquiring a session
-    if first_word in _BLOCKED_SLASH_COMMANDS:
+    # Block dangerous/local-only commands before acquiring a session. The
+    # kiro-only members are skipped where the harness implements them itself.
+    _blocked = _BLOCKED_SLASH_COMMANDS
+    if _is_cc_harness:
+        _blocked -= _KIRO_ONLY_BLOCKED_SLASH_COMMANDS
+    if first_word in _blocked:
         sel().log_tool_invocation(
             session_key="",
             agent=slot.agent or "kirocrew",

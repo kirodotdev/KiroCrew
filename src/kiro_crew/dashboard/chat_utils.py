@@ -372,6 +372,10 @@ _SLASH_COMMANDS = frozenset(
     }
 )
 
+# Blocked on the kiro path ONLY: the KiroACP harness does not implement /todos
+# and rejects it with an "unknown variant" error, while Claude Code has its own.
+_KIRO_ONLY_BLOCKED_SLASH_COMMANDS = frozenset({"/todos"})
+
 # Commands that exist in kiro-cli's interactive TUI but cannot work in the
 # dashboard (they drive a local terminal: quitting it, pasting from its
 # clipboard, opening an editor, or toggling checkpoint modes the dashboard's
@@ -380,10 +384,9 @@ _SLASH_COMMANDS = frozenset(
 # GET /api/slash-commands suggestion payload, so every surface hides them at
 # once — advertising a command that only yields a warning teaches a gesture
 # that does not work.
-# /todos was removed because the KiroACP harness does not implement it and
-# rejects it with an "unknown variant" error.
-_BLOCKED_SLASH_COMMANDS = frozenset(
-    {"/quit", "/exit", "/q", "/chat", "/paste", "/reply", "/editor", "/tangent", "/todos"}
+_BLOCKED_SLASH_COMMANDS = (
+    frozenset({"/quit", "/exit", "/q", "/chat", "/paste", "/reply", "/editor", "/tangent"})
+    | _KIRO_ONLY_BLOCKED_SLASH_COMMANDS
 )
 
 # Single source of truth for slash-command descriptions surfaced by the
