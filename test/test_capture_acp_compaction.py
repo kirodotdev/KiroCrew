@@ -314,13 +314,13 @@ def test_host_marker_sweep_uses_the_repository_gates_patterns(cap):
 # ── environment reporting ───────────────────────────────────────────────────────
 
 
-def test_a_missing_binary_is_reported_with_the_install_command(cap, monkeypatch, capsys):
+def test_a_missing_binary_is_reported_with_the_install_command(cap, monkeypatch, capsys, tmp_path):
     from kiro_crew.acp import client as acp_client
 
     monkeypatch.setattr(
         acp_client, "_resolve_self_served_bin", lambda backend: (None, "/usr/bin:/bin")
     )
-    assert cap.main(["--harness", "goose"]) == cap.EXIT_USAGE
+    assert cap.main(["--harness", "goose", "--cwd", str(tmp_path)]) == cap.EXIT_USAGE
     err = capsys.readouterr().err
     assert "goose not found" in err
     assert "download_cli.sh" in err  # the launch record's own install command

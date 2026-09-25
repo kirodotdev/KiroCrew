@@ -344,22 +344,28 @@ class TestSemanticRecallWiring(_Env):
 
         store = VectorMemoryStore(db_path=self.tmp / "memory.db", embedding_dim=2)
         store.init()
-        self.assertTrue(
-            store.write_episodic(
-                ledger_index.entry_text(literal),
-                embedding=[0.0, 1.0],
-                tags=[ledger_index.SOURCE_TAG],
-                source="ops-ledger",
+        # A failed write raises before the store is returned, so dispatch never runs its
+        # own close(); on Windows the still-open memory.db then makes tearDown's rmtree
+        # leak self.tmp.
+        try:
+            self.assertTrue(
+                store.write_episodic(
+                    ledger_index.entry_text(literal),
+                    embedding=[0.0, 1.0],
+                    tags=[ledger_index.SOURCE_TAG],
+                    source="ops-ledger",
+                )
             )
-        )
-        self.assertTrue(
-            store.write_episodic(
-                ledger_index.entry_text(semantic),
-                embedding=[1.0, 0.0],
-                tags=[ledger_index.SOURCE_TAG],
-                source="ops-ledger",
+            self.assertTrue(
+                store.write_episodic(
+                    ledger_index.entry_text(semantic),
+                    embedding=[1.0, 0.0],
+                    tags=[ledger_index.SOURCE_TAG],
+                    source="ops-ledger",
+                )
             )
-        )
+        finally:
+            store.close()
         return store, literal, semantic
 
     def test_production_dispatch_uses_a_bounded_query_vector(self) -> None:
