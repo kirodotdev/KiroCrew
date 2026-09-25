@@ -351,9 +351,9 @@ pointer to the stub. A capability-materialized owned member is the exception:
 that heal, so one still carrying the `file://` pointer keeps delivering the
 persona natively — the same double delivery tracked in #13305. The two readers
 that must not deliver the managed contract twice (member essentials and the
-session-start load in `context.py`) recognise both spellings through
-`is_managed_prompt`: essentials omit the contract, and the session-start load
-resolves it to the contract file for ANY spec carrying it — owner template,
+session-start load in `context.py`) recognise the stub and managed file URIs
+through `is_managed_prompt`: essentials omit the contract, and the session-start load
+resolves it to the current contract file for ANY spec carrying it — owner template,
 fork or template copy alike — so a fork inheriting the managed contract is
 delivered exactly once, resolved, via the injection. The stub text is frozen
 once shipped: forks carry it verbatim on disk and `is_managed_prompt` matches
@@ -361,6 +361,13 @@ by equality, so a respelled stub would leave every existing fork with the old
 stub text as a custom persona. An agent whose `prompt` names its OWN persona
 file is out of scope: it still receives that persona both natively and through
 the injection.
+
+The reader also recognizes an older managed `file://` pointer under a Crew data
+home or installed package. A desktop update or fallback gateway can leave that
+URI in the saved spec while the running package lives elsewhere. It is still the
+product contract, so member essentials must not try to read it as a project
+document; the current contract is injected at session start instead. Custom
+persona paths outside those managed locations retain their normal handling.
 
 `systemPrompt` is not a field Kiro Crew reads. Use `prompt`.
 
