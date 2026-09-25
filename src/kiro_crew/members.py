@@ -33,6 +33,7 @@ from kiro_crew import platform_compat
 from kiro_crew.artifacts import slugify
 from kiro_crew.atomic_write import atomic_write, fsync_dir, read_bytes_with_retry
 from kiro_crew.config.paths import data_home
+from kiro_crew.external_text import external_text_requires_redaction
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.pinned_fs import (
     PinnedPathRefusal,
@@ -40,6 +41,7 @@ from kiro_crew.pinned_fs import (
     supports_pinned_walk,
 )
 from kiro_crew.slugs import slug_hash_fallback
+from kiro_crew.validation import MAX_SHORT_STRING, normalize_unicode, sanitize_string
 
 logger = logging.getLogger(__name__)
 
@@ -363,8 +365,107 @@ _SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?\Z")
 _TRACEABLE_MEMORY_MODES = frozenset({"persistent"})
 
 
+MEMBER_NAME_MAX_CHARS = MAX_SHORT_STRING
+
+
+class MemberNameError(ValueError):
+    """Raised when a Crew Member display name is unsafe or unusable."""
+
+
 class MemberSlugError(ValueError):
     """Raised when a member slug is unusable or cannot be allocated."""
+
+
+def validate_member_name(name: object) -> str:
+    """Return an exact Crew Member display name, else raise MemberNameError."""
+    if not isinstance(name, str) or not name:
+        raise MemberNameError("name must be a non-empty string")
+    if len(name) > MEMBER_NAME_MAX_CHARS:
+        raise MemberNameError(f"name must be at most {MEMBER_NAME_MAX_CHARS} characters")
+    if name != name.strip():
+        raise MemberNameError("name must not start or end with whitespace")
+    try:
+        name.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise MemberNameError("name must be valid UTF-8 text") from exc
+    if len(name.splitlines()) != 1 or "\t" in name:
+        raise MemberNameError("name must not contain line breaks or tabs")
+    if sanitize_string(name) != name:
+        raise MemberNameError("name must not contain hidden or non-canonical characters")
+    # ``.`` and ``..`` are URL path segments every client normalizes away before
+    # the request leaves the browser, so a crew so named could be created but
+    # never addressed at ``/api/agents/{name}`` for edit or delete.
+    if not name.strip("."):
+        raise MemberNameError("name must not consist only of periods")
+    return name
+
+
+def is_valid_member_name(value: object) -> bool:
+    """Return whether *value* is a valid Crew Member display name."""
+    try:
+        validate_member_name(value)
+    except MemberNameError:
+        return False
+    return True
+
+
+def is_readable_member_name(value: object) -> bool:
+    """Return whether an exact stored Crew Member name may identify local data."""
+    if not isinstance(value, str) or len(value) > MEMBER_NAME_MAX_CHARS:
+        return False
+    if is_valid_member_name(value):
+        return True
+    nfc = normalize_unicode(value)
+    return sanitize_string(value) == nfc and is_valid_member_name(nfc)
+
+
+def is_dispatchable_member_name(value: object) -> bool:
+    """Return whether a stored Crew Member name can safely reach a model.
+
+    Legacy NFD spellings pass only when their NFC form is valid and both forms
+    are safe to expose.
+    """
+    if not is_readable_member_name(value):
+        return False
+    assert isinstance(value, str)
+    nfc = normalize_unicode(value)
+    return not external_text_requires_redaction(value) and (
+        nfc == value or not external_text_requires_redaction(nfc)
+    )
+
+
+def is_configured_dispatchable_member(name: object, config=None) -> bool:
+    """Return whether *name* is a stored Crew Member that can safely reach a model.
+
+    The agent-choice guards (chat send, slot agent switch, OpenAI-compatible
+    ``model``) admit a bare template or legacy name by the identifier grammar
+    (``validation._AGENT_NAME_RE``). A free-form display name -- ``dr. eggbot`` --
+    fails that grammar, so those guards admit it ONLY when it is a configured
+    member: the roster lists exactly these names, and a string that is not a
+    member key never reaches the template lookup as if it were a template. Loads
+    the config only when called, so callers check the grammar first and pay this
+    read on the free-form path alone.
+    """
+    if not isinstance(name, str) or not name:
+        return False
+    if config is None:
+        # Function-local like ``member_slug`` below: ``config.loader`` imports
+        # ``select_provider_backend`` from this module, so a module-scope import
+        # here would close the cycle.
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        config = KiroCrewConfig.load()
+    return name in config.agents and is_dispatchable_member_name(name)
+
+
+def member_pin_matches(mode: object, current_agent: object, requested_agent: object) -> bool:
+    """Return whether a request preserves a dispatchable Crew Member pin."""
+    return (
+        mode == DM_SLOT_MODE
+        and is_dispatchable_member_name(current_agent)
+        and isinstance(requested_agent, str)
+        and requested_agent == current_agent
+    )
 
 
 def members_root() -> Path:

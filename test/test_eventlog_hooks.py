@@ -93,20 +93,11 @@ def test_member_name_for_slug_returns_the_exact_configured_name():
     assert eventlog_hooks.member_name_for_slug(cfg, slug_for_name(name)) == name
 
 
-def test_member_name_for_slug_declines_a_name_outside_the_agent_grammar():
-    """A roster name with a space resolves to None, and that is the contract.
+def test_member_name_for_slug_returns_a_free_form_display_name():
+    name = "Review Agent"
+    cfg = _Cfg({name: object()})
 
-    The primary resolver skips any name failing the agent-name grammar (which
-    allows only alphanumerics, hyphens and underscores), so such a row is not
-    addressable here -- it cannot have been created through the validated CRUD
-    surface, and a hand-edited config row must not become addressable by writing
-    it. Worth pinning because the slug itself round-trips fine, so the None looks
-    surprising until you know it is the grammar talking.
-    """
-    spaced = "Review Agent"
-    cfg = _Cfg({spaced: object()})
-
-    assert eventlog_hooks.member_name_for_slug(cfg, slug_for_name(spaced)) is None
+    assert eventlog_hooks.member_name_for_slug(cfg, slug_for_name(name)) == name
 
 
 def test_member_name_for_slug_is_none_without_a_slug():

@@ -55,11 +55,13 @@ def agents_dir(tmp_path, monkeypatch):
     return d
 
 
-def _write_spec(agents_dir: Path, *, servers: dict, tools: list | None) -> None:
-    spec: dict = {"name": "kirocrew", "mcpServers": servers}
+def _write_spec(
+    agents_dir: Path, *, servers: dict, tools: list | None, name: str = "kirocrew"
+) -> None:
+    spec: dict = {"name": name, "mcpServers": servers}
     if tools is not None:
         spec["tools"] = tools
-    (agents_dir / "kirocrew.json").write_text(json.dumps(spec), encoding="utf-8")
+    (agents_dir / f"{name}.json").write_text(json.dumps(spec), encoding="utf-8")
 
 
 def _write_project_spec(project_dir: Path, *, servers: dict, tools: list | None) -> None:
@@ -177,6 +179,15 @@ class TestElementShape:
 
 
 class TestMounting:
+    def test_dotted_template_keeps_its_mcp_allowlist(self, agents_dir):
+        _write_spec(
+            agents_dir,
+            name="reviewer.v2",
+            servers={"granted": {"command": "/bin/a"}, "ungranted": {"command": "/bin/b"}},
+            tools=["@granted"],
+        )
+        assert set(_by_name(session_mcp.session_mcp_servers("reviewer.v2"))) == {"granted"}
+
     def test_server_not_referenced_by_tools_is_withheld(self, agents_dir):
         _write_spec(
             agents_dir,

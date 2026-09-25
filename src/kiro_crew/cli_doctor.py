@@ -110,6 +110,7 @@ from kiro_crew.mcp_cleanup import ALWAYS_ON_BIN_MCP_SERVERS as _ALWAYS_ON_MCPS
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS as _MANAGED_MCPS
 from kiro_crew.mcp_cleanup import OPT_IN_BIN_MCP_SERVERS as _OPT_IN_MCPS
 from kiro_crew.mcp_discovery import McpServerInfo, probe_server
+from kiro_crew.members import is_dispatchable_member_name
 from kiro_crew.model_registry import acp_id_correction
 from kiro_crew.platform import (
     PlatformCompositionError,
@@ -133,7 +134,7 @@ from kiro_crew.session_pid_sig import signing_health
 from kiro_crew.stall_attribution import attribute_dump, describe
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 from kiro_crew.transcribe import _find_ffmpeg, availability_detail, ensure_ffmpeg_in_path
-from kiro_crew.validation import _AGENT_NAME_RE
+from kiro_crew.validation import is_registered_agent_name
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +175,56 @@ def _safe_display(value: object) -> str:
     return repr(value)
 
 
+#: Printed by the two member sections when the redaction policy that decides
+#: dispatchability cannot be consulted. Doctor is the one command that runs on a
+#: host whose platform failed to compose (``cli.py`` exempts it from the
+#: fail-closed re-raise), and ``is_dispatchable_member_name`` reaches
+#: ``platform.context.redact_via_context``, which re-raises that failure rather
+#: than degrade. The Platform section already reports the composition error as
+#: the blocking issue, so these sections say "not checked" and move on instead
+#: of aborting the report -- or double-counting the same issue.
+_MEMBER_NAMES_NOT_CHECKED = (
+    "  ⚠️  not checked: the platform did not compose, so stored Crew Member names "
+    "cannot be vetted (see the Platform section above)"
+)
+
+
+def _member_dispatchability(cfg: KiroCrewConfig) -> dict[str, bool] | None:
+    """Dispatchability per configured member, or ``None`` when it cannot be decided.
+
+    ``None`` -- never a partial dict -- when the redaction policy is unavailable:
+    a member whose eligibility is unknown must not be printed by name, because
+    the redaction that would have masked a credential-shaped one is exactly what
+    failed. The two member sections fail closed on disclosure by skipping.
+    """
+    try:
+        return {name: is_dispatchable_member_name(name) for name in cfg.agents}
+    except PlatformCompositionError:
+        return None
+    except Exception:  # noqa: BLE001 -- doctor must survive a broken setup
+        return None
+
+
+def _doctor_member_dispatchability(cfg: KiroCrewConfig, issues: list[str]) -> None:
+    """Report non-dispatchable stored member names without printing them."""
+    dispatchable = _member_dispatchability(cfg)
+    if dispatchable is None:
+        print("\nCrew Member Names")
+        print(_MEMBER_NAMES_NOT_CHECKED)
+        return
+    count = sum(1 for ok in dispatchable.values() if not ok)
+    if not count:
+        return
+    noun = "name" if count == 1 else "names"
+    print("\nCrew Member Names")
+    print(f"  count:       {count} stored Crew Member {noun} cannot reach a model")
+    print("               Open Crew Manager and create a replacement with a safe name.")
+    print("               If needed, make the replacement the default. Then delete the old member.")
+    print("               The replacement gets a new member identity. The old member's DM")
+    print("               history stays under its old key and is not transferred automatically.")
+    issues.append("stored Crew Member names are not dispatchable")
+
+
 def _doctor_member_memory_bindings(cfg: KiroCrewConfig, issues: list[str]) -> None:
     """Check every configured member's existing binding without initializing memory."""
     from kiro_crew.memory_stores import (
@@ -192,7 +243,17 @@ def _doctor_member_memory_bindings(cfg: KiroCrewConfig, issues: list[str]) -> No
     print("\nMember Memory Bindings")
     if not cfg.agents:
         print("  (no configured members)")
+    dispatchable = _member_dispatchability(cfg)
+    if dispatchable is None:
+        # Every binding line below names its member; with no way to vet the
+        # names, none of them may be printed.
+        print(_MEMBER_NAMES_NOT_CHECKED)
+        return
     for name, member in cfg.agents.items():
+        if not dispatchable[name]:
+            # The dispatchability report counts this record without naming it;
+            # building the binding string here would disclose the stored name.
+            continue
         store = getattr(member, "memory_store", None)
         binding = f"{_safe_display(name)} -> {_safe_display(store)}"
         if isinstance(store, str) and store in legacy and not legacy[store]:
@@ -210,7 +271,9 @@ def _doctor_member_memory_bindings(cfg: KiroCrewConfig, issues: list[str]) -> No
             print(f"  {binding}: valid binding")
     for store, reason in legacy.items():
         if not reason:
-            continue  # pending: reported above through its one bound member
+            # Dispatchable owners report pending stores above. Unsafe owners are
+            # counted without names in the Crew Member Names section.
+            continue
         print(
             f"  store {_safe_display(store)}: no member identity and not upgradable "
             f"({_safe_display(reason)}); to repair it, {LEGACY_MEMBER_STORE_REMEDY}"
@@ -294,15 +357,9 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
         bound = "kirocrew"
     # kiro_agent is free text in config.json and this name reaches a path join.
     # An ABSOLUTE value would make pathlib discard the directory on the left
-    # (`base / "/etc/passwd.json"` is `/etc/passwd.json`), so an unvalidated
-    # binding turns a spec lookup into an arbitrary read. The type check is not
-    # redundant with the grammar: the config loader deliberately KEEPS a
-    # type-mismatched value ("validated by its consumer"), so a hand-edited
-    # non-string reaches here intact and `re.match` would raise TypeError --
-    # aborting the one command a user runs BECAUSE their config is broken.
-    # Anything outside a plain string in the shared grammar is reported and then
-    # treated as unbound.
-    if not isinstance(bound, str) or not _AGENT_NAME_RE.match(bound):
+    # (`base / "/etc/passwd.json"` is `/etc/passwd.json`), so anything outside
+    # the registered agent grammar is reported and treated as unbound.
+    if not is_registered_agent_name(bound):
         print(f"  bound agent: ⚠️  {_safe_display(bound)} is not a valid agent name")
         issues.append("configured kiro_agent is not a valid agent name")
         bound = "kirocrew"
@@ -4784,6 +4841,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     # agent.model, and the whole point here is that the global is not
     # necessarily what a new session gets.
     _doctor_effective_model(cfg, proj, issues)
+    _doctor_member_dispatchability(cfg, issues)
     _doctor_member_memory_bindings(cfg, issues)
 
     # ── Stored defaults a release has since changed ──

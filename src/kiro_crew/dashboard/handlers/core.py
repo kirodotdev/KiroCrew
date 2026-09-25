@@ -85,6 +85,7 @@ from kiro_crew.dashboard.token_auth import (
 )
 from kiro_crew.effort import EFFORT_LEVELS
 from kiro_crew.executors import discovery_executor
+from kiro_crew.external_text import redact_external_text as _redact_external
 from kiro_crew.mcp_gateway.socketsec import PeerCredResult, check_peer_is_self
 from kiro_crew.metrics import provider as _metrics_provider
 from kiro_crew.security_posture import build_posture_snapshot_async, posture_counts_async
@@ -190,13 +191,8 @@ def _mask_agent_free_text(value: object) -> object:
     makes for schema-sensitive values.
 
     Keyed on ``_redact_external`` itself rather than a second detector so this
-    rule and the roster's cannot drift apart. The import is function-local to
-    match this module's handler-import style, not for boot-path weight —
-    ``handlers.agents`` already imports ``discover`` at module level, so it is
-    loaded at handler setup regardless.
+    rule and the roster's cannot drift apart.
     """
-    from kiro_crew.dashboard.handlers.discover import _redact_external
-
     if not isinstance(value, str):
         return _SENSITIVE_MASK
     # No falsy pre-check on purpose: ``_redact_external`` returns falsy input

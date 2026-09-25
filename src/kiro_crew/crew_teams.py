@@ -119,9 +119,13 @@ TEAMS_MAX = 200
 #: Hard cap on the crewmates one team lists. Same posture as ``TEAMS_MAX``.
 TEAM_MEMBERS_MAX = 500
 
-#: A member is an exact crew name; the agent-name grammar (``_AGENT_NAME_RE``)
-#: allows at most 64 characters. Bounded on read as well as write.
-MEMBER_NAME_MAX_CHARS = 64
+#: A member is an exact crew name -- a free-form display name, bounded by the
+#: same cap ``members.validate_member_name`` applies (``validation.MAX_SHORT_STRING``),
+#: so every crew the roster lists can be teamed. Spelled as a literal because
+#: ``validation`` imports ``security``, which imports this module through
+#: ``memory_stores``; ``test_member_names_are_display_names_not_identifiers``
+#: pins the two equal. Bounded on read as well as write.
+MEMBER_NAME_MAX_CHARS = 500
 
 #: Ids are minted by :func:`_new_team_id` -- 12 lowercase hex characters.
 #: Always applied with ``fullmatch``: ``$`` alone admits a trailing newline.
@@ -133,15 +137,15 @@ _TEAM_ID_RE = re.compile(r"^[0-9a-f]{12}$")
 #: largest document the caps allow -- see :func:`max_document_bytes` and the
 #: test that pins the inequality -- so a valid sequence of writes can never
 #: produce a file the read refuses.
-TEAMS_FILE_MAX_BYTES = 40_000_000
+TEAMS_FILE_MAX_BYTES = 320_000_000
 
 
 def max_document_bytes() -> int:
     """Upper bound on a document every cap admits, in UTF-8 JSON bytes.
 
     Names are capped in CHARACTERS: a team name at ``TEAM_NAME_MAX_CHARS`` and a
-    crew name at the 64 the agent-name grammar allows, each up to 4 bytes per
-    character and up to 6 for a JSON escape. The arithmetic is deliberately
+    crew name at ``MEMBER_NAME_MAX_CHARS`` (the display-name cap), each up to 4
+    bytes per character and up to 6 for a JSON escape. The arithmetic is deliberately
     loose (every entry at its widest, every character escaped) because the point
     is the inequality with :data:`TEAMS_FILE_MAX_BYTES`, not the exact size.
     """

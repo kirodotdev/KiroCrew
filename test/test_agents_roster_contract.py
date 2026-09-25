@@ -628,14 +628,18 @@ class TestCredentialShapedNamesAreRefusedAtCreation:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "bad", ["Issue Radar", "-radar", "radar-", "Радар", "ra/dar", "a" * 65]
+        "bad",
+        [" Issue Radar", "radar ", "ra\tdar", "ra\ndar", "ra\u200bdar", "a" * 501],
     )
     async def test_creation_refuses_a_name_the_roster_would_skip(
         self, tmp_path: Path, bad: str
     ) -> None:
-        """``GET /api/members`` drops any row failing ``_AGENT_NAME_RE``; a name that
-        fails it must never be persisted, or the crew exists and no roster can
-        show or open it. Refused at the source, for every client of this route."""
+        """``GET /api/members`` drops any row failing ``members.validate_member_name``
+        (edge whitespace, a tab or line break, a hidden character, over the cap);
+        a name that fails it must never be persisted, or the crew exists and no
+        roster can show or open it. Refused at the source, for every client of
+        this route. Spaces, periods, non-ASCII letters and ``/`` inside a name
+        are display text and pass -- ``dr. eggbot`` is a valid crew."""
         seed = _seed_config_with_every_field_set()
         tmp = tmp_path / "config.json"
         tmp.write_text(json.dumps(seed), encoding="utf-8")
@@ -657,7 +661,7 @@ class TestCredentialShapedNamesAreRefusedAtCreation:
                 )
                 assert resp.status == 400, await resp.text()
                 payload = await resp.json()
-                assert payload["code"] == "invalid_agent_name"
+                assert payload["code"] == "invalid_member_name"
                 assert bad not in json.loads(tmp.read_text(encoding="utf-8")).get("agents", {})
 
     @pytest.mark.asyncio

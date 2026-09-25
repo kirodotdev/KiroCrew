@@ -13,6 +13,7 @@ neighbouring ``test_members_dm_thread.py``.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from types import SimpleNamespace
@@ -220,6 +221,36 @@ class TestApiMembersProjections:
         }
 
     @pytest.mark.asyncio
+    async def test_a_placeholder_header_is_served_but_never_written_through(
+        self, tmp_path, monkeypatch
+    ):
+        """Serving a placeholder log's projection is a read; reconciling the row's
+        config INTO it is a write into a log whose owner cannot be told apart
+        from a retired member handed the same slug. The row still renders, but
+        the roster read appends nothing to that log."""
+        named = "Code_Reviewer"
+        slug = members.slug_for_name(named)
+        empty = _fake_config({})
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", lambda: empty
+        )
+        svc = get_service()
+        svc.ensure(slug, slug)
+        svc.append(slug, types.SLOT_OPENED, {"slot_key": "member-code-reviewer"})
+        assert svc.logged_name(slug) == slug
+        before = svc.last_seq(slug)
+
+        cfg = _fake_config({named: _agent(model="claude-x")}, default=named)
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", lambda: cfg)
+        state = _make_state(tmp_path)
+        async with TestClient(TestServer(_members_app(state))) as client:
+            data = await (await client.get("/api/members")).json()
+        proj = data["members"][0]["projections"]
+        assert proj["asOfSeq"] >= 0
+        assert svc.last_seq(slug) == before, "the roster read wrote into a placeholder log"
+        assert "model" not in proj["values"].get(types.PROJ_ROSTER, {})
+
+    @pytest.mark.asyncio
     async def test_a_fresh_log_resolves_a_placeholder_name_from_the_roster(
         self, tmp_path, monkeypatch
     ):
@@ -340,6 +371,211 @@ class TestStartupReconcile:
         assert eventlog_hooks.reconcile_members_at_startup(cfg, state, autonudge) == 0
         assert svc.last_seq(slug) == seq_after
 
+    def test_a_colliding_free_form_slug_is_never_reconciled(self, caplog):
+        owner = "dr. eggbot"
+        other = "Dr. Eggbot"
+        slug = members.slug_for_name(owner)
+        assert members.slug_for_name(other) == slug
+        cfg = _fake_config(
+            {owner: _agent(model="owner-model"), other: _agent(model="other-model")},
+            default=owner,
+        )
+        svc = get_service()
+        svc.ensure(slug, owner)
+        before = svc.last_seq(slug)
+
+        eventlog_hooks.reconcile_members_at_startup(
+            cfg, SimpleNamespace(_slots={}), SimpleNamespace(get_by_slot=lambda key: None)
+        )
+
+        assert svc.last_seq(slug) == before
+        assert "model" not in svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {})
+        assert [
+            record.getMessage()
+            for record in caplog.records
+            if record.name == "kiro_crew.eventlog_hooks" and record.levelname == "WARNING"
+        ] == ["member event-log startup reconcile skipped ambiguous slug='dr-eggbot' (2 members)"]
+
+    def test_a_malformed_colliding_claimant_blocks_reconciliation(self, caplog):
+        owner = "dr. eggbot"
+        malformed = "Dr. Eggbot "
+        slug = members.slug_for_name(owner)
+        assert members.slug_for_name(malformed) == slug
+        cfg = _fake_config(
+            {owner: _agent(model="owner-model"), malformed: _agent(model="other-model")},
+            default=owner,
+        )
+        svc = get_service()
+        svc.ensure(slug, owner)
+        before = svc.last_seq(slug)
+
+        eventlog_hooks.reconcile_members_at_startup(
+            cfg, SimpleNamespace(_slots={}), SimpleNamespace(get_by_slot=lambda key: None)
+        )
+
+        assert svc.last_seq(slug) == before
+        assert "model" not in svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {})
+        warnings = [
+            record.getMessage()
+            for record in caplog.records
+            if record.name == "kiro_crew.eventlog_hooks" and record.levelname == "WARNING"
+        ]
+        assert warnings == [
+            "member event-log startup reconcile skipped 1 non-dispatchable name(s) and 0 unresolved slug(s)",
+            "member event-log startup reconcile skipped ambiguous slug='dr-eggbot' (2 members)",
+        ]
+        assert malformed not in caplog.text
+
+    def test_a_foreign_log_header_is_never_reconciled(self, caplog):
+        name = "dr. eggbot"
+        slug = members.slug_for_name(name)
+        cfg = _fake_config({name: _agent(model="member-model")}, default=name)
+        svc = get_service()
+        svc.ensure(slug, "former member")
+        before = svc.last_seq(slug)
+
+        eventlog_hooks.reconcile_members_at_startup(
+            cfg, SimpleNamespace(_slots={}), SimpleNamespace(get_by_slot=lambda key: None)
+        )
+
+        assert svc.last_seq(slug) == before
+        assert svc.logged_name(slug) == "former member"
+        assert [
+            record.getMessage()
+            for record in caplog.records
+            if record.name == "kiro_crew.eventlog_hooks" and record.levelname == "WARNING"
+        ] == ["member event-log startup reconcile skipped slug='dr-eggbot' with foreign header"]
+
+    def test_invalid_names_and_unresolved_slugs_are_counted_without_values(
+        self, caplog, monkeypatch
+    ):
+        invalid = "unsafe password=shortvalue "
+        unresolved = "valid member"
+        cfg = _fake_config(
+            {invalid: _agent(model="invalid-model"), unresolved: _agent(model="valid-model")},
+            default=unresolved,
+        )
+
+        real_member_slug = members.member_slug
+
+        def _resolve_or_fail(name, config):
+            if name == unresolved:
+                raise RuntimeError
+            return real_member_slug(name, config)
+
+        monkeypatch.setattr(members, "member_slug", _resolve_or_fail)
+        eventlog_hooks.reconcile_members_at_startup(
+            cfg, SimpleNamespace(_slots={}), SimpleNamespace(get_by_slot=lambda key: None)
+        )
+
+        messages = [
+            record.getMessage()
+            for record in caplog.records
+            if record.name == "kiro_crew.eventlog_hooks" and record.levelname == "WARNING"
+        ]
+        assert messages == [
+            "member event-log startup reconcile skipped 1 non-dispatchable name(s) and 1 unresolved slug(s)"
+        ]
+        assert invalid not in caplog.text
+        assert unresolved not in caplog.text
+
+    def test_reconcile_failure_does_not_log_exception_text(self, caplog, monkeypatch):
+        name = "dr. eggbot"
+        slug = members.slug_for_name(name)
+        cfg = _fake_config({name: _agent(model="member-model")}, default=name)
+        svc = get_service()
+        svc.ensure(slug, name)
+        private_header = "HEADER_PRIVATE_VALUE"
+
+        def _fail_logged_name(_slug):
+            raise RuntimeError(private_header)
+
+        monkeypatch.setattr(svc, "logged_name", _fail_logged_name)
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.eventlog_hooks"):
+            eventlog_hooks.reconcile_members_at_startup(
+                cfg, SimpleNamespace(_slots={}), SimpleNamespace(get_by_slot=lambda key: None)
+            )
+
+        assert private_header not in caplog.text
+        assert [
+            record.getMessage()
+            for record in caplog.records
+            if record.name == "kiro_crew.eventlog_hooks" and record.levelname == "WARNING"
+        ] == ["member event-log startup reconcile failed for slug='dr-eggbot'"]
+
+    def test_a_placeholder_log_header_is_ambiguous_and_never_reconciled(self, caplog):
+        """A header equal to the slug names nobody, and a slug can be REUSED, so
+        the sweep cannot tell "this member's own log, written before the roster
+        knew the name" from "a retired member's log whose slug a new member was
+        handed". A write into the wrong log is append-only and unrecoverable;
+        the sweep skips and reports the slug, exactly like a foreign header."""
+        name = "dr. eggbot"
+        slug = members.slug_for_name(name)
+        cfg = _fake_config({name: _agent(model="member-model")}, default=name)
+        svc = get_service()
+        svc.ensure(slug, slug)
+        before = svc.last_seq(slug)
+
+        eventlog_hooks.reconcile_members_at_startup(
+            cfg, SimpleNamespace(_slots={}), SimpleNamespace(get_by_slot=lambda key: None)
+        )
+
+        assert svc.last_seq(slug) == before
+        assert svc.logged_name(slug) == slug
+        assert "model" not in svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {})
+        assert [
+            record.getMessage()
+            for record in caplog.records
+            if record.name == "kiro_crew.eventlog_hooks" and record.levelname == "WARNING"
+        ] == ["member event-log startup reconcile skipped slug='dr-eggbot' with placeholder header"]
+
+    def test_a_recreated_member_handed_a_retired_slug_never_inherits_the_old_log(self, caplog):
+        """The reuse sequence: a package-discovered template is registered with no
+        ``member_id`` under a hyphenated name that folds onto itself as slug, its
+        log is written under that slug, the row is pruned, and a display-name
+        member is later created -- the allocator finds nothing reserving the slug
+        and hands the new member the identical ``member_id``. Reconciliation
+        must not write the new member's configuration into the retired log."""
+        retired = "issue-radar"
+        slug = members.slug_for_name(retired)
+        assert slug == retired, "fixture needs a name that folds onto itself"
+        svc = get_service()
+        # The retired template's own writer: name == slug, so the header holds
+        # the slug (the nameless-writer placeholder shape).
+        old_cfg = _fake_config({retired: _agent(model="retired-model")}, default=retired)
+        svc.ensure(slug, retired)
+        eventlog_hooks.reconcile_member_config(
+            slug, retired, old_cfg.agents[retired], svc.snapshot(slug)["values"].get("roster", {})
+        )
+        svc.append(slug, types.PATROL_STARTED, {"slot_key": "member-issue-radar"})
+        before = svc.last_seq(slug)
+
+        # Pruned, then recreated as a display-name member that was allocated the
+        # very same identity (nothing reserved the slug once the row was gone).
+        new_name = "Issue Radar"
+        assert new_name != slug
+        new_cfg = _fake_config(
+            {new_name: _agent(member_id=slug, model="new-model")}, default=new_name
+        )
+        assert members.member_slug(new_name, new_cfg) == slug
+
+        eventlog_hooks.reconcile_members_at_startup(
+            new_cfg, SimpleNamespace(_slots={}), SimpleNamespace(get_by_slot=lambda key: None)
+        )
+
+        assert svc.last_seq(slug) == before, "the retired log received the new member's events"
+        assert svc.logged_name(slug) == retired
+        roster = svc.snapshot(slug)["values"][types.PROJ_ROSTER]
+        assert roster["model"] == "retired-model"
+        assert [
+            record.getMessage()
+            for record in caplog.records
+            if record.name == "kiro_crew.eventlog_hooks" and record.levelname == "WARNING"
+        ] == [
+            "member event-log startup reconcile skipped slug='issue-radar' with placeholder header"
+        ]
+        assert new_name not in caplog.text
+
     def test_an_explicit_member_id_decides_which_log_is_reconciled(self):
         """Reconcile by persisted identity, not by folding the display name.
 
@@ -347,10 +583,8 @@ class TestStartupReconcile:
         sweep that folds the name instead creates and reconciles a SECOND log,
         so the member's history splits and their real log is never corrected.
         """
-        # No space: the sweep skips any name failing _AGENT_NAME_RE, so a
-        # two-word fixture would be skipped and the test would pass vacuously.
-        name = "AliceExample"
-        member_id = "alice-two"
+        name = "dr. eggbot"
+        member_id = "eggbot-two"
         folded = members.slug_for_name(name)
         assert folded != member_id, "fixture must distinguish the two identities"
 

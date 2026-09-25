@@ -175,6 +175,18 @@ def test_publish_writes_the_derived_spec_beside_the_base_and_only_when_it_change
     assert json.loads(target.read_text(encoding="utf-8"))["allowedTools"] == []
 
 
+def test_publish_accepts_a_dotted_base_template(agents_dir):
+    base = dict(_BASE, name="reviewer.v2")
+    (agents_dir / "reviewer.v2.json").write_text(json.dumps(base), encoding="utf-8")
+
+    published = srs.publish_readonly_spec("reviewer.v2")
+
+    assert published.name == "reviewer.v2--readonly"
+    derived = json.loads((agents_dir / f"{published.name}.json").read_text(encoding="utf-8"))
+    assert derived["name"] == "reviewer.v2--readonly"
+    assert derived["allowedTools"] == []
+
+
 def test_publish_prefers_the_project_scope_base_spec(agents_dir, tmp_path):
     """kiro-cli resolves ``--agent`` against the project's ``.kiro/agents`` first,
     so the derivation reads the same spec the backend would load — and names the

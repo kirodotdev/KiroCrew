@@ -1535,6 +1535,14 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # orchestration and reporting names (`_redacted_upload_copy`,
         # `_report_redaction`, `_report_redacted_bundle`).
         "snapshot.py",
+        # Defines the shared external-text redactor used by output boundaries and
+        # creation guards. It emits nothing itself.
+        "external_text.py",
+        # Consumes that redactor as a yes/no predicate, not as a rewrite:
+        # `is_dispatchable_member_name` asks whether a stored Crew Member name
+        # WOULD need redaction and refuses the pin when it would. Nothing is
+        # emitted here; the chat routes that act on the answer are the sinks.
+        "members.py",
         # Inbound / gate-side: redacts what comes IN or what a gate logs, not what
         # goes out to a human.
         "context.py",

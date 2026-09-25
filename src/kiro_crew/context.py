@@ -3568,6 +3568,7 @@ class ContextBuilder:
         # Every VARIABLE payload is scrubbed before the genuine headers are
         # minted around it — see _MEMBER_MARKER_RES for why this runs at
         # content time rather than in the structural-marker scan.
+        member = _scrub_member_payload(member)
         description = _scrub_member_payload(description)
         triggers = _scrub_member_payload(triggers)
         rules = _scrub_member_payload(rules)

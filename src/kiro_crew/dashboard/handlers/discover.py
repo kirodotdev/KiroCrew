@@ -19,6 +19,7 @@ from aiohttp import web
 
 from kiro_crew import platform_compat
 from kiro_crew.dashboard.handlers._shared import _get_skills
+from kiro_crew.external_text import redact_external_text as _redact_external
 from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
 from kiro_crew.security import redact, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel as _sel
@@ -39,49 +40,6 @@ _SAFE_SLUG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$")
 # gating one identity while registering another.
 _GITHUB_NAME = "github"
 _GITHUB_API_BASE = "https://api.github.com"
-
-
-# Credential-bearing URL query/fragment parameters. ``redact_credentials`` matches
-# credential SHAPES (AKIA…, xoxb-…, PEM headers) and ``redact_exfiltration_urls``
-# is a length/entropy heuristic, so a SHORT opaque value in a conventionally-named
-# parameter -- ``?api_key=abc123`` -- slips past both. Provider and
-# package-manager output is exactly where such a URL appears (an endpoint echoed
-# on failure), so here the parameter NAME is the signal, not the value's shape.
-# The `(?!\[REDACTED)` guard skips a value an earlier layer already replaced.
-# Without it, `?token=AKIA…` (which `redact_credentials` turns into
-# `?token=[REDACTED: credential]`) gets re-matched: the value class stops at the
-# space, so only `[REDACTED:` is replaced and the label is left mangled as
-# `[REDACTED] credential]`. The secret was gone either way — this keeps the
-# message readable.
-_URL_SECRET_PARAM_RE = re.compile(
-    r"(?i)\b(access_token|refresh_token|id_token|api[-_]?key|auth|token|"
-    r"password|passwd|secret|signature|sig|credential)"
-    r"(=|%3D)(?!\[REDACTED)[^\s&#\"']+"
-)
-
-
-def _redact_external(text: str) -> str:
-    """Scrub provider-sourced strings before returning them to the dashboard.
-
-    Any skills.sh publisher -- or, via the capability seam, any edition package
-    manager -- controls these fields, so scan for credential patterns and
-    exfiltration URLs per the security-controls guideline. Benign content passes
-    through unchanged.
-
-    Three layers, and the ORDER is load-bearing at both seams.
-    ``security.redact`` -- the canonical exfiltration-then-credentials
-    composition (``redact_with_findings`` records why that order: the URL pass
-    classifies partly by query LENGTH (``_EXFIL_QUERY_MIN_LEN``) and replaces
-    the ENTIRE url when it fires, so any pass that rewrites query values ahead
-    of it drops the query below that threshold and every OTHER parameter, the
-    actual payload, renders verbatim) -- runs first as one unit, and the
-    purely-lexical URL-parameter scrub runs LAST so it only sees values the
-    real passes left standing (its ``(?!\\[REDACTED)`` guard skips what they
-    already replaced).
-    """
-    if not text:
-        return text
-    return _URL_SECRET_PARAM_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}[REDACTED]", redact(text))
 
 
 def _build_registry() -> ProviderRegistry:

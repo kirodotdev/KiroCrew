@@ -15,13 +15,26 @@ from kiro_crew.crew_log.schema import KIND_MEMBER
 from kiro_crew.crew_log.store import crew_log_path
 from kiro_crew.members import (
     ACTIVITY_FILE_NAME,
+    DM_SLOT_MODE,
+    MEMBER_NAME_MAX_CHARS,
+    MemberNameError,
     MemberSlugError,
+    is_dispatchable_member_name,
+    is_readable_member_name,
     member_dir,
+    member_pin_matches,
     members_root,
     read_activity,
     record_activity,
     slug_for_name,
+    validate_member_name,
     validate_slug,
+)
+from kiro_crew.validation import (
+    _AGENT_NAME_RE,
+    TEMPLATE_NAME_RE,
+    WORKSPACE_NAME_RE,
+    normalize_unicode,
 )
 
 
@@ -56,6 +69,11 @@ class TestSlugForName:
         # addressable.
         assert slug_for_name("\u4f1a\u8bae\u7eaa\u8981") == "member"
 
+    def test_traversal_shaped_display_name_is_derived_not_interpreted(self):
+        slug = slug_for_name("../../etc/passwd")
+        assert slug == "etc-passwd"
+        assert member_dir(slug).parent == members_root().resolve()
+
     def test_result_always_satisfies_the_slug_pattern(self):
         for name in ("Code Review", "Café Crew", "!!!", "a" * 200, "-leading", "trailing-"):
             validate_slug(slug_for_name(name))
@@ -64,6 +82,148 @@ class TestSlugForName:
         slug = slug_for_name("x" * 100)
         assert len(slug) <= 80
         assert not slug.endswith("-")
+
+
+class TestMemberName:
+    @pytest.mark.parametrize(
+        "name",
+        ["dr. eggbot", "Review & QA", "アシスタント", "family 👨\u200d👩\u200d👧"],
+    )
+    def test_accepts_bounded_display_text(self, name):
+        assert validate_member_name(name) == name
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "",
+            " leading",
+            "trailing ",
+            "line\nbreak",
+            "tab\tname",
+            "nul\x00name",
+            "hidden\u200bname",
+            "bidi\u202ename",
+            "line\u2028separator",
+            "bad\ud800text",
+            "x" * (MEMBER_NAME_MAX_CHARS + 1),
+            # URL path segments a browser normalizes away: unaddressable once created.
+            ".",
+            "..",
+            "...",
+        ],
+    )
+    def test_rejects_unsafe_or_unbounded_text(self, name):
+        with pytest.raises(MemberNameError):
+            validate_member_name(name)
+
+
+class TestMemberPinMatches:
+    @pytest.mark.parametrize(
+        ("mode", "current", "requested", "expected"),
+        [
+            (DM_SLOT_MODE, "dr. eggbot", "dr. eggbot", True),
+            (DM_SLOT_MODE, "AKIAIOSFODNN7EXAMPLE", "AKIAIOSFODNN7EXAMPLE", False),
+            (DM_SLOT_MODE, "crew password=shortvalue", "crew password=shortvalue", False),
+            (DM_SLOT_MODE, "dr. eggbot", "other", False),
+            ("", "dr. eggbot", "dr. eggbot", False),
+            (DM_SLOT_MODE, None, "dr. eggbot", False),
+            (DM_SLOT_MODE, "dr. eggbot", None, False),
+        ],
+    )
+    def test_accepts_only_the_exact_existing_member_pin(self, mode, current, requested, expected):
+        assert member_pin_matches(mode, current, requested) is expected
+
+    def test_nfd_pin_matches_only_the_exact_nfd_spelling(self):
+        nfd = "Cafe\u0301"
+        nfc = normalize_unicode(nfd)
+        assert nfd != nfc
+        assert member_pin_matches(DM_SLOT_MODE, nfd, nfd) is True
+        assert member_pin_matches(DM_SLOT_MODE, nfd, nfc) is False
+
+
+class TestDispatchableLegacyNfcName:
+    NFD = "Cafe\u0301"
+
+    def test_nfd_is_rejected_by_validation_but_dispatchable(self):
+        with pytest.raises(MemberNameError):
+            validate_member_name(self.NFD)
+        assert is_dispatchable_member_name(self.NFD) is True
+
+    @pytest.mark.parametrize(
+        "unsafe",
+        [
+            " Cafe\u0301",
+            "Cafe\u0301 ",
+            "Caf\u200be\u0301",
+            "Cafe\u0301\tQA",
+            "Cafe\u0301\nQA",
+            "e\u0301" * 251,
+        ],
+    )
+    def test_nfd_with_an_unsafe_addition_stays_non_dispatchable(self, unsafe):
+        assert is_dispatchable_member_name(unsafe) is False
+
+    def test_raw_only_redaction_makes_the_name_non_dispatchable(self, monkeypatch):
+        monkeypatch.setattr(
+            "kiro_crew.members.external_text_requires_redaction",
+            lambda text: text == self.NFD,
+        )
+        assert is_dispatchable_member_name(self.NFD) is False
+
+    def test_nfc_only_redaction_makes_the_name_non_dispatchable(self, monkeypatch):
+        nfc = normalize_unicode(self.NFD)
+        monkeypatch.setattr(
+            "kiro_crew.members.external_text_requires_redaction",
+            lambda text: text == nfc,
+        )
+        assert is_dispatchable_member_name(self.NFD) is False
+
+
+class TestReadableMemberName:
+    NFD = "Cafe\u0301"
+    CREDENTIAL_SHAPED = "".join(["AKIA", "IOSFODNN7", "EXAMPLE"])
+
+    def test_readable_member_accepts_a_safe_nfd_name(self):
+        assert is_readable_member_name(self.NFD) is True
+
+    def test_readable_member_accepts_a_credential_shaped_name_not_dispatchable(self):
+        assert is_dispatchable_member_name(self.CREDENTIAL_SHAPED) is False
+        assert is_readable_member_name(self.CREDENTIAL_SHAPED) is True
+
+    @pytest.mark.parametrize(
+        "malformed",
+        [
+            " Cafe\u0301",
+            "Cafe\u0301 ",
+            "Cafe\u0301\nQA",
+            "Cafe\u0301\tQA",
+            "Caf\u200be\u0301",
+            "e\u0301" * 251,
+            "bad\ud800surrogate",
+            b"bytes",
+            None,
+        ],
+    )
+    def test_readable_member_rejects_malformed_names(self, malformed):
+        assert is_readable_member_name(malformed) is False
+
+    @pytest.mark.parametrize("name", ["QA", "Cafe\u0301", "code-review"])
+    def test_every_dispatchable_name_is_a_readable_member_name(self, name):
+        assert is_dispatchable_member_name(name) is True
+        assert is_readable_member_name(name) is True
+
+
+class TestStrictIdentifierPatterns:
+    def test_workspace_names_share_the_agent_name_grammar(self):
+        assert WORKSPACE_NAME_RE is _AGENT_NAME_RE
+
+    def test_rejects_a_trailing_newline(self):
+        assert _AGENT_NAME_RE.match("valid-name") is not None
+        assert _AGENT_NAME_RE.match("valid-name\n") is None
+
+    def test_template_names_allow_dots_but_not_display_name_spaces(self):
+        assert TEMPLATE_NAME_RE.fullmatch("reviewer.v2") is not None
+        assert TEMPLATE_NAME_RE.fullmatch("dr. eggbot") is None
 
 
 class TestValidateSlug:

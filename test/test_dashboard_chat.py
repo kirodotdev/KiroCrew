@@ -9267,6 +9267,7 @@ class TestRuntimeWiring:
         must live in the finally, on every exit path."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
 
+        from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
         from kiro_crew.context import ContextBuilder
         from kiro_crew.memory import MemoryStore
         from kiro_crew.skills import SkillsLoader
@@ -9282,7 +9283,11 @@ class TestRuntimeWiring:
         )
 
         state = _make_state(tmp_path, context_builder=ctx_builder)
-        slot = state.get_or_create_slot("member-rearm-test", mode="member")
+        cfg = KiroCrewConfig()
+        cfg.agents["rearm-test"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
+        cfg.default_agent = "rearm-test"
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner.KiroCrewConfig.load", lambda: cfg)
+        slot = state.get_or_create_slot("member-rearm-test", agent="rearm-test", mode="member")
 
         mock_client = MagicMock()
         # Empty stream: the turn ends with no landing and NO exception — the
@@ -12460,6 +12465,27 @@ class TestApiChatAgentPassing:
                 )
             assert resp.status == 400
             mock_emit.assert_called_once_with("s1", "../evil", outcome="denied_invalid")
+
+    @pytest.mark.asyncio
+    async def test_credential_shaped_invalid_agent_is_redacted_in_sel(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from unittest.mock import MagicMock, patch
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("member-dr-eggbot", agent="dr. eggbot", mode="member")
+        unsafe = "crew password=shortvalue"
+        audit = MagicMock()
+        with patch("kiro_crew.dashboard.chat_utils.sel", return_value=audit):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                response = await client.post(
+                    "/api/chat?ws=1",
+                    json={"message": "hello", "slot": slot.key, "agent": unsafe},
+                )
+
+        assert response.status == 400
+        event = audit.log.call_args.args[0]
+        assert event.agent == "crew password=[REDACTED]"
+        assert unsafe not in event.agent
 
     @pytest.mark.asyncio
     async def test_non_string_agent_logs_actual_value(self, tmp_path, monkeypatch):

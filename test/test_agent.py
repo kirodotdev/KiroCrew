@@ -7518,7 +7518,18 @@ class TestAgentSpecPathRejectsTraversal:
 
     @pytest.mark.parametrize(
         "name",
-        ["../victim", "a/b", "..", "", "with space", "sub/../../x", "tab\tname"],
+        [
+            "../victim",
+            "a/b",
+            "..",
+            ".hidden",
+            "trailing.",
+            "",
+            "with space",
+            "sub/../../x",
+            "tab\tname",
+            "reviewer.v2\n",
+        ],
     )
     def test_names_outside_the_grammar_are_refused(self, tmp_path: Path, monkeypatch, name):
         import kiro_crew.agent as agent_mod
@@ -7528,16 +7539,15 @@ class TestAgentSpecPathRejectsTraversal:
         monkeypatch.setattr(agent_mod, "kiro_agents_dir_path", lambda: agents)
         assert agent_mod.agent_spec_path(name) is None
 
-    def test_a_valid_name_still_resolves(self, tmp_path: Path, monkeypatch):
+    @pytest.mark.parametrize("name", ["my-agent_2", "reviewer.v2", "a" * 64])
+    def test_a_valid_name_still_resolves(self, tmp_path: Path, monkeypatch, name):
         import kiro_crew.agent as agent_mod
 
         agents = tmp_path / "agents"
         agents.mkdir()
-        (agents / "my-agent_2.json").write_text(
-            json.dumps({"name": "my-agent_2"}), encoding="utf-8"
-        )
+        (agents / f"{name}.json").write_text(json.dumps({"name": name}), encoding="utf-8")
         monkeypatch.setattr(agent_mod, "kiro_agents_dir_path", lambda: agents)
-        assert agent_mod.agent_spec_path("my-agent_2") == agents / "my-agent_2.json"
+        assert agent_mod.agent_spec_path(name) == agents / f"{name}.json"
 
 
 class TestSpecPathRefusesSymlinks:

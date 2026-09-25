@@ -2530,21 +2530,21 @@ class TestEffectiveModelSection:
         and printed a reset command for the wrong agent."""
         self._install_spec(None)
         agents_dir = self._agents_dir()
-        (agents_dir / "custom-agent.json").write_text(
-            json.dumps({"name": "custom-agent", "model": "claude-opus-4.8"}), encoding="utf-8"
+        (agents_dir / "custom.agent.json").write_text(
+            json.dumps({"name": "custom.agent", "model": "claude-opus-4.8"}), encoding="utf-8"
         )
-        cfg = self._bind_custom_agent(self._cfg("auto"), "custom-agent")
+        cfg = self._bind_custom_agent(self._cfg("auto"), "custom.agent")
         issues: list[str] = []
 
         cli_doctor._doctor_effective_model(cfg, "", issues)
 
         out = capsys.readouterr().out
         assert "effective:   'claude-opus-4.8'" in out
-        assert "decided by:  bound agent pin ('custom-agent')" in out
+        assert "decided by:  bound agent pin ('custom.agent')" in out
         # The repair must name the agent that actually holds the pin.
-        assert "kirocrew agent reset-model --agent 'custom-agent'" in out
+        assert "kirocrew agent reset-model --agent 'custom.agent'" in out
         # And the tier the resolver skipped for the built-in agent is shown here.
-        assert "bound agent pin ('custom-agent'):" in out
+        assert "bound agent pin ('custom.agent'):" in out
         assert "out of date" not in out, "report must agree with the resolver"
         assert issues == []
 

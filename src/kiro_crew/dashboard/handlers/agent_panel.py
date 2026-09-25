@@ -44,12 +44,11 @@ from kiro_crew.dashboard.handlers.members import (
 from kiro_crew.dashboard.handlers.session_ledger import _session_unit
 from kiro_crew.dashboard.state import DashboardState, _normalize_slot_key
 from kiro_crew.history import is_incognito_transcript
-from kiro_crew.members import MemberSlugError
+from kiro_crew.members import MemberSlugError, is_readable_member_name
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.sel import sel
 from kiro_crew.session_ledger import _APPEND_FLUSH_SECONDS
 from kiro_crew.validation import (
-    _AGENT_NAME_RE,
     PANEL_PUBLISH_SCHEMA,
     ValidationError,
     validate_tool_args,
@@ -602,7 +601,7 @@ async def api_member_panel(request: web.Request) -> web.Response:
     # asking crew's own record, and making the parameter required makes the mixed
     # read impossible by construction rather than a caller obligation.
     member = request.query.get("member", "")
-    if not member or not _AGENT_NAME_RE.match(member):
+    if not is_readable_member_name(member):
         return web.json_response(
             {"error": "member query parameter required", "code": "missing_member"}, status=400
         )

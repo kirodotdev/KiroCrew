@@ -34,8 +34,8 @@ from kiro_crew.dashboard.chat_persistence import (
 from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.state import DashboardState, request_slot_origin
+from kiro_crew.external_text import redact_external_text
 from kiro_crew.members import MemberSlugError
-from kiro_crew.validation import _AGENT_NAME_RE
 
 logger = logging.getLogger(__name__)
 
@@ -108,20 +108,18 @@ async def _deny_app_caller(request: web.Request, operation: str) -> web.Response
     return web.json_response({"error": "not found", "code": "not_found"}, status=404)
 
 
+def _member_name_is_addressable(value: object) -> bool:
+    return members_mod.is_dispatchable_member_name(value)
+
+
 def _member_names_for_slug(cfg: KiroCrewConfig, slug: str) -> list[str]:
-    """Crew names whose derived slug equals *slug*, in config order.
+    """Addressable crew names for *slug*, in deterministic config order.
 
-    Config order is insertion order, so "first name wins" is deterministic for
-    a colliding slug. Names failing the agent-name grammar are skipped rather
-    than matched: they cannot have been created through the validated CRUD
-    surface, so a hand-edited config row never becomes addressable here.
-
-    ADDRESSABILITY only. A caller asking whether a crew still EXISTS must use
-    :func:`_slug_is_claimed_by_any_member` instead -- see the contrast there.
+    Malformed hand-edited names remain unaddressable.
     """
     out: list[str] = []
     for name in cfg.agents:
-        if not _AGENT_NAME_RE.match(name):
+        if not _member_name_is_addressable(name):
             continue
         try:
             if members_mod.member_slug(name, cfg) == slug:
@@ -132,32 +130,16 @@ def _member_names_for_slug(cfg: KiroCrewConfig, slug: str) -> list[str]:
 
 
 def _slug_is_claimed_by_any_member(cfg: KiroCrewConfig, slug: str, owner_key: str) -> bool:
-    """Whether a crew named in the roster still derives *slug* and *owner_key*.
+    """Whether a registered crew still owns *slug* and *owner_key*.
 
-    The same enumeration as :func:`_member_names_for_slug` WITHOUT the grammar
-    filter, and the difference is the point. That filter is right for deciding
-    what a route may address -- an ungrammatical row stays unreachable -- and
-    wrong for deciding whether a crew is still there, because the create route
-    validates a crew name only against the credential-shape check, so a name the
-    grammar rejects can be a real, live crew. Filtering it out here would report
-    a live owner as gone, and the caller reads "gone" as permission to take its
-    record over.
+    Unlike :func:`_member_names_for_slug`, this check includes malformed legacy
+    names. Dropping a live owner would let a colliding crew take its record.
 
-    Compared on the ownership DIGEST, like every other check on this path, so no
-    crew name has to be carried around to make the comparison.
+    This check uses ``member_slug`` rather than ``slug_for_name`` because a
+    persisted ``member_id`` deliberately differs after member recreation.
 
-    Resolved through ``member_slug``, the same function the publish path uses to
-    choose which record to write, and NOT through ``slug_for_name``. The two
-    disagree for a crew whose persisted ``member_id`` is not what its name
-    derives -- which provisioning produces deliberately, to keep a recreated
-    crew off a deleted namesake's records. Resolving one side by persisted
-    identity and the other by name would skip exactly that crew here, report a
-    live owner as gone, and hand its record to the next writer.
-
-    ``agent_panel`` is imported HERE rather than at module scope because this
-    module is pulled in while the gateway boots, and the panel subsystem is
-    optional: loading it before the socket is bound delays readiness for every
-    installation, including the ones that never assign a panel.
+    ``agent_panel`` is imported here because importing the optional panel
+    subsystem during gateway boot delays readiness.
     """
     from kiro_crew import agent_panel as agent_panel_mod
 
@@ -264,7 +246,7 @@ async def api_members(request: web.Request) -> web.Response:
 
     rows: list[dict] = []
     for name, agent_cfg in cfg.agents.items():
-        if not _AGENT_NAME_RE.match(name):
+        if not _member_name_is_addressable(name):
             continue
         try:
             slug = members_mod.member_slug(name, cfg)
@@ -365,12 +347,7 @@ async def api_members(request: web.Request) -> web.Response:
             return {}
 
         def _sanitize(text: str) -> str:
-            # Same redaction chain the sessions list uses, injected so it
-            # runs BEFORE the preview's length cap — a credential split by
-            # truncation leaves a partial token the patterns cannot match.
-            text, _ = _h.redact_exfiltration_urls(text)
-            text, _ = _h.redact_credentials(text)
-            return text
+            return redact_external_text(text)
 
         out: dict[str, tuple[float, str, bool, bool]] = {}
         for row in rows:
@@ -538,7 +515,14 @@ async def api_members(request: web.Request) -> web.Response:
                 values = snap.get("values", {}) if isinstance(snap, dict) else {}
                 agent_cfg = agent_cfgs.get(row["name"])
                 appended = False
-                if agent_cfg is not None:
+                # Serving the placeholder log's projection is a READ. Reconciling
+                # this row's config or preview into it is a WRITE into a log whose
+                # owner cannot be told from a retired member handed the same slug
+                # (the startup sweep in ``eventlog_hooks`` refuses for the same
+                # reason), so the write-through runs only for a log with no header
+                # yet or one the exact name owns.
+                owned = logged is None or logged == row["name"]
+                if agent_cfg is not None and owned:
                     appended = (
                         eventlog_hooks.reconcile_member_config(
                             slug, row["name"], agent_cfg, values.get("roster", {})
@@ -552,7 +536,7 @@ async def api_members(request: web.Request) -> web.Response:
                 # the roster observed BEFORE the transcript read (not this
                 # later snapshot), so a message that spoke in between refuses
                 # the correction instead of being overwritten by it.
-                if row["slot_key"] in preview_authoritative:
+                if owned and row["slot_key"] in preview_authoritative:
                     appended = (
                         eventlog_hooks.reconcile_member_preview(
                             slug,
@@ -1020,7 +1004,7 @@ async def api_member_activity(request: web.Request) -> web.Response:
             {"error": "invalid member slug", "code": "invalid_member_slug"}, status=400
         )
     member = request.query.get("member", "")
-    if not member or not _AGENT_NAME_RE.match(member):
+    if not members_mod.is_dispatchable_member_name(member):
         return web.json_response(
             {"error": "member query parameter required", "code": "missing_member"}, status=400
         )
@@ -1193,7 +1177,10 @@ async def api_member_briefing(request: web.Request) -> web.Response:
             {"error": "invalid member slug", "code": "invalid_member_slug"}, status=400
         )
     member = request.query.get("member", "")
-    if not member or not _AGENT_NAME_RE.match(member):
+    # Same eligibility bar as the rules endpoint: the briefing is prompt-injected
+    # working memory, so a stored name that cannot reach a model has no notes to
+    # show. Display names are free-form text; the identifier grammar is not the test.
+    if not members_mod.is_dispatchable_member_name(member):
         return web.json_response(
             {"error": "member query parameter required", "code": "missing_member"}, status=400
         )
@@ -1313,7 +1300,7 @@ async def api_member_rules_get(request: web.Request) -> web.Response:
             {"error": "invalid member slug", "code": "invalid_member_slug"}, status=400
         )
     member = request.query.get("member", "")
-    if not member or not _AGENT_NAME_RE.match(member):
+    if not members_mod.is_dispatchable_member_name(member):
         return web.json_response(
             {"error": "member query parameter required", "code": "missing_member"}, status=400
         )
@@ -1407,7 +1394,7 @@ async def api_member_rules_put(request: web.Request) -> web.Response:
             {"error": "rules field required", "code": "missing_rules"}, status=400
         )
     rules = body.get("rules", "")
-    if not isinstance(member, str) or not member or not _AGENT_NAME_RE.match(member):
+    if not members_mod.is_dispatchable_member_name(member):
         return web.json_response(
             {"error": "member field required", "code": "missing_member"}, status=400
         )
@@ -1443,10 +1430,6 @@ async def api_member_rules_put(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "no crew member for this slug", "code": "member_not_found"}, status=404
         )
-    # Same collision scan the roster/thread paths use — the central helper
-    # applies the agent-name grammar filter and tolerates MemberSlugError, so
-    # a hand-edited config key that is not a valid agent name can neither
-    # crash this scan nor manufacture a phantom collision.
     colliding = _member_names_for_slug(cfg, slug)
     if colliding != [member]:
         return web.json_response(
