@@ -804,6 +804,54 @@ any run made under it.
 (`ci.yml` -> `CI`), never by job name, so every job inside `ci.yml` is already
 part of the required `CI` verdict.
 
+## WebKit opt-in lane: `webkit-mobile`
+
+`website/playwright/*.webkit.spec.ts` run on Playwright's WebKit engine with
+iPhone emulation, for behaviour that only mobile Safari exhibits (today: the
+transcript's hide/return re-placement in
+`chat-visibility-replace.webkit.spec.ts`). The engine is not installed by the
+gate above (`npx playwright install chromium`), so the specs live under an
+opt-in project: `PLAYWRIGHT_RUN_WEBKIT=1` adds the `webkit-mobile` project
+(`devices['iPhone 13']`, `testMatch: /\.webkit\.spec\.ts$/`) and the
+`chromium` project `testIgnore`s the same files, so a default run never
+collects them and cannot skip-pass them under the darkening floor. Specs that
+drive turns carry `@needs-agent` like every other turn-driving spec, so they
+only run against the fake-ACP harness.
+
+WebKit needs a set of shared libraries the gate's runner image does not
+carry and this repository's Linux dev hosts often lack, so the supported way
+to run the lane is Microsoft's Playwright image against a harness gateway on
+the host:
+
+```bash
+# host: boot a --test-mode harness gateway serving this checkout (see
+# test/test_playwright_e2e.py for the spawn_feature_gateway rig), note PORT/TOKEN
+cd website
+docker run --rm --network host -u "$(id -u):$(id -g)" -e HOME=/tmp \
+  -v "$PWD":/work -w /work \
+  -e PLAYWRIGHT_BASE_URL="http://localhost:$PORT" -e PLAYWRIGHT_TOKEN="$TOKEN" \
+  -e PLAYWRIGHT_RUN_WEBKIT=1 -e PLAYWRIGHT_RUN_AGENT_SPECS=1 -e KIROCREW_E2E_EPHEMERAL=1 \
+  mcr.microsoft.com/playwright:v1.58.2-noble \
+  npx playwright test playwright/chat-visibility-replace.webkit.spec.ts \
+    --project=webkit-mobile --reporter=list --workers=1
+```
+
+### Who runs the WebKit lane, and when
+
+No workflow runs it: a fork pull request cannot add a browser install to the
+gate, and the engine download is not budgeted there. Until a maintainer-owned
+job picks it up, the lane is run by hand at two named moments:
+
+| Owner | When | Mode |
+|---|---|---|
+| The PR author | before requesting review on a change to the transcript follow/pin path (`website/src/hooks/virtualizer/useVirtualChat.ts`, `FollowController.ts`) or to any `*.webkit.spec.ts` | required |
+| The release verifier | before a release that bumps `@playwright/test`, since the image tag above must match the installed version | required |
+
+A pass is recorded in the PR body's Manual verification section with the
+observed values the spec prints (`[webkit-visibility]` lines and the attached
+`webkit-observations.json`), so the evidence is quotable rather than a bare
+"passed".
+
 ## The pod scenario suite (nightly on every OS; per-PR Windows is boot-only unless labelled)
 
 A second E2E lane, orthogonal to the browser gate above. `test/e2e/scenarios/`

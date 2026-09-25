@@ -139,11 +139,21 @@ describe('useVirtualChat: visibility return re-places a DISTURBED follower', () 
     })
     expect(view.result.current.getFollow()).toBe(false)
 
+    // The scroll-up also carried the mounted window into mid-history (in a
+    // real engine the window follows the reader up; here the jump mounts it).
+    act(() => { view.result.current.mountIndex(5) })
+    const midWindow = view.result.current.virtualItems
+    expect(midWindow[midWindow.length - 1].index).toBeLessThan(49)
+
     // The return sees follow released against a snapshot that had it engaged:
-    // the live end is the position, so it re-pins and re-arms follow.
+    // the live end is the position, so it re-pins and re-arms follow -- and it
+    // remounts the TAIL window in the same commit, so the pin lands the live
+    // turn rather than the bottom spacer with rows still to mount.
     act(() => { setHidden(false) })
     expect(el.scrollTop).toBe(4600)
     expect(view.result.current.getFollow()).toBe(true)
+    const tail = view.result.current.virtualItems
+    expect(tail[tail.length - 1].index).toBe(49)
   })
 
   it('force-pins when the position was clamped while hidden, ignoring a stale persisted anchor', () => {
