@@ -1262,11 +1262,12 @@ async def _stage_loop(
     if pending_stage is not None and not 1 <= pending_stage <= total:
         pending_stage = None
         stage_boundary_for(slot).clear()
-    start_idx = (
-        pending_stage - 1
-        if pending_stage is not None
-        else (tracker.current_stage if tracker._stage_rounds else 0)
-    )
+    if pending_stage is not None:
+        start_idx = pending_stage - 1
+    elif tracker._stage_rounds:
+        start_idx = tracker.current_stage
+    else:
+        start_idx = 0
     # A consumed final-stage boundary still has to emit the one completion
     # summary; an ordinary Go after completion must not emit it again.
     plan_had_work = start_idx < total

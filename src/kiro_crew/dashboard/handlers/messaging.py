@@ -797,19 +797,14 @@ async def api_spawn(request: web.Request) -> web.Response:
         # cannot undo the submission or turn an unknown selection into "auto".
         selection: tuple[str, str] | None
         try:
-            selection = (
-                ("template", agent)
-                if agent
-                else (
-                    ("member", crew)
-                    if crew
-                    else (
-                        state.sessions.get_agent_selection(parent_session)
-                        if parent_session
-                        else ("template", "")
-                    )
-                )
-            )
+            if agent:
+                selection = ("template", agent)
+            elif crew:
+                selection = ("member", crew)
+            elif parent_session:
+                selection = state.sessions.get_agent_selection(parent_session)
+            else:
+                selection = ("template", "")
         except Exception:
             selection = None
 

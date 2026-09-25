@@ -7699,6 +7699,20 @@ def _session_stop_generation_for(sessions: Any, session_key: str) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
+def _retry_cancel_reason(rebound: bool, superseded: bool, stopped: bool) -> str:
+    """The tail of a "retry cancelled" notice, naming why the retry was dropped.
+
+    A rebind reads as a move only when the retry was neither superseded nor
+    stopped; a newer message outranks a Stop, so a superseded turn never reads
+    as stopped.
+    """
+    if rebound and not (superseded or stopped):
+        return "this chat moved to another session."
+    if superseded:
+        return "your newer message runs instead."
+    return "the turn was stopped."
+
+
 async def _start_next_queued_turn(
     state: DashboardState,
     slot: _ChatSlot,
@@ -7858,16 +7872,15 @@ async def _start_next_queued_turn(
             # Branch on the trigger: only a real user follow-up "takes over"; a Stop
             # with nothing queued ran nothing — do not promise a takeover that
             # never happens.
-            _correction = (
-                "ℹ️ Auto-continue cancelled — your message takes over."
-                if _user_input
-                else (
+            if _user_input:
+                _correction = "ℹ️ Auto-continue cancelled — your message takes over."
+            elif _rebound_since_enqueue:
+                _correction = (
                     "ℹ️ Auto-continue cancelled — this chat moved to another "
                     "session, nothing was run."
-                    if _rebound_since_enqueue
-                    else "ℹ️ Auto-continue cancelled — the turn was stopped, nothing was run."
                 )
-            )
+            else:
+                _correction = "ℹ️ Auto-continue cancelled — the turn was stopped, nothing was run."
             slot.append("notice", _correction, "msg msg-info")
             logger.info(
                 "Purged %d superseded promise-only continuation(s) before dispatch "
@@ -8019,15 +8032,7 @@ async def _start_next_queued_turn(
                 slot.append(
                     "notice",
                     "ℹ️ Content-filter retry cancelled — "
-                    + (
-                        "this chat moved to another session."
-                        if _replay_rebound and not (_replay_superseded or _replay_stopped)
-                        else (
-                            "your newer message runs instead."
-                            if _replay_superseded
-                            else "the turn was stopped."
-                        )
-                    ),
+                    + _retry_cancel_reason(_replay_rebound, _replay_superseded, _replay_stopped),
                     "msg msg-info",
                 )
                 logger.info(
@@ -9471,14 +9476,8 @@ async def _run_chat(
             slot.append(
                 "notice",
                 "ℹ️ Model-fallback retry cancelled — "
-                + (
-                    "this chat moved to another session."
-                    if _ma_rebound_consume and not (_ma_superseded_consume or _ma_stopped_consume)
-                    else (
-                        "your newer message runs instead."
-                        if _ma_superseded_consume
-                        else "the turn was stopped."
-                    )
+                + _retry_cancel_reason(
+                    _ma_rebound_consume, _ma_superseded_consume, _ma_stopped_consume
                 ),
                 "msg msg-info",
             )
@@ -9549,15 +9548,7 @@ async def _run_chat(
             slot.append(
                 "notice",
                 "ℹ️ Content-filter retry cancelled — "
-                + (
-                    "this chat moved to another session."
-                    if _rv_rebound and not (_rv_superseded or _rv_stopped)
-                    else (
-                        "your newer message runs instead."
-                        if _rv_superseded
-                        else "the turn was stopped."
-                    )
-                ),
+                + _retry_cancel_reason(_rv_rebound, _rv_superseded, _rv_stopped),
                 "msg msg-info",
             )
             logger.info(

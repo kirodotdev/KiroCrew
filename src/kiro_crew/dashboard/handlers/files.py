@@ -2076,8 +2076,6 @@ class _WorkspaceConflict(Exception):
 
 async def api_workspaces_create(request: web.Request) -> web.Response:
     """POST /api/workspaces — create a new workspace."""
-    import shutil  # noqa: F811
-
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
     from kiro_crew.validation import WORKSPACE_NAME_RE  # noqa: F811
 
