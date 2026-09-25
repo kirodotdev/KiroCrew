@@ -164,6 +164,7 @@ from kiro_crew.messaging.queue_receipt import STEER_ACK_EMOJI as _STEER_ACK_EMOJ
 from kiro_crew.messaging.queue_receipt import (
     ReceiptQueue,
     ReceiptSurface,
+    receipt_address_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -1933,12 +1934,17 @@ class TelegramDispatcher:
 
         class _Surface:
             label = "telegram"
+            # ``chat_id`` alone, deliberately: ``edit_message`` addresses a message by
+            # its id within its chat, so two surfaces differing only by Topic reach the
+            # same message and must compare EQUAL. ``thread`` routes a send, which the
+            # bubble's own retained surface already carries.
+            address_key = receipt_address_key("telegram", chat_id)
 
             async def send_receipt(self, body: str) -> Any | None:
                 return await reply(chat_id, body, thread=thread)
 
-            async def edit_receipt(self, msg_id: Any, body: str) -> None:
-                await client.edit_message(chat_id, msg_id, body)
+            async def edit_receipt(self, msg_id: Any, body: str) -> bool:
+                return await client.edit_message(chat_id, msg_id, body)
 
         return _Surface()
 

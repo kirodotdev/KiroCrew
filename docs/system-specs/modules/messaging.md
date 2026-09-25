@@ -1535,7 +1535,10 @@ The **channel-neutral half of the queue receipt is shared**, not duplicated:
 lifecycle transitions and the receipt body formatting. Each channel reaches it
 through a `ReceiptSurface` whose address is bound at construction, which is why
 the shared module never sees a `chat_id` / `channel_id` / forum thread and
-Telegram's forum routing stays entirely channel-local. `_handle_busy` and
+Telegram's forum routing stays entirely channel-local. What it does see is that
+surface's `address_key` -- an opaque string, comparable and nothing else -- which is
+how it can insist a bubble is only written from its own conversation without knowing
+what a conversation is on any channel. `_handle_busy` and
 `_drain_queue` deliberately stay per-channel: they re-enter their own
 `handle_message` (whose signature differs per channel) and own the per-channel
 `_active_renderers`. `_handle_stop` is NOT in that exclusion — see
@@ -1621,6 +1624,62 @@ collapse into `…and N more` so a large burst cannot blow the message cap.
 Neither dispatcher calls a delete API on it. This is deliberate: the receipt is
 the durable record of what the user asked and how it was routed, so deleting it
 would erase the only evidence that a message was accepted at all.
+
+**A transition is published only once its edit LANDS.** `ReceiptSurface.edit_receipt`
+returns whether the write landed, and each channel wrapper passes its client's own
+answer through, because a refusal is an ordinary non-2xx answer rather than an
+exception: a rate-limited chat, or a bubble past the per-message edit cap Webex
+documents. A surface that cannot tell may return `None`; that is silence, not a
+reported failure, and counts as landed -- reading it as failure would keep every
+receipt in the registry for good.
+
+A refused **grow** needs nothing further: that message is still queued, which is
+exactly what the entry's lines track, so the registry and the queue still agree and
+the next message's edit re-renders the whole list. Only a transition whose messages
+have already LEFT the queue can strand a bubble, and for those the entry is KEPT and
+becomes **terminal**, carrying `owed_bodies` -- the records it owes, oldest first. A
+terminal entry is
+not live (`has_receipt` reports it absent) and is never grown, because growing it
+would put already-answered text back under `⏳ Queued` beside the new message; the
+next mid-turn message writes the owed record first and opens a FRESH bubble. The body
+travels with the entry so a retry writes the record that transition computed, and a
+later transition never recomputes it: writing `🛑 Cancelled` over an owed
+`▶️ Now answering` would say the opposite of what happened, permanently.
+
+More than one record can be owed at once, and that is the point of a list. A
+transition meeting an entry that already owes one is meeting a channel that is usually
+still refusing, so its own record has nowhere to go either; a single slot dropped it on
+the floor, and since those messages had already left the queue and a retired key is
+revisited by nothing, that record reached nobody ever. It JOINS the debt instead, behind
+the older one. The list is capped at `RECEIPT_MAX_OWED` at the same seam that stores a
+body, so an outage cannot grow it without bound; on overflow the OLDEST is released,
+because the newest record is the one that corrects what the reader can currently see.
+What is released is COUNTED at that same seam and named on the next record to reach the
+reader, since a shortened list is otherwise indistinguishable from a burst that produced
+no such records at all.
+
+The key is released only once the record is on the bubble, because that entry is the
+bubble's only handle. Editing is tried first, so the record lands in the bubble the
+reader is already looking at; when the bubble refuses edits the record is POSTED as a
+new message instead, since past a per-message edit cap no edit of that id will ever
+land and retrying alone would owe the record for the life of the process. The stale
+bubble still reading `⏳ Queued` and the posted record are together true; a silent
+bubble alone is not. Several owed records publish OLDEST FIRST -- only the oldest can
+take the bubble, since there is one bubble and the rest arrived after it, so each later
+one is posted beneath it. Each leaves the debt only once it LANDS, one at a time, so a
+failure part-way through keeps exactly what has not reached anybody and republishes
+nothing.
+
+Both of those writes go through `opened_on`, the surface the bubble was OPENED on,
+and never through the surface of the transition that happens to retry it. That is the
+one address in this subsystem not taken from the message in hand, and it has to be:
+under `unified` the key spans several people's chats, so the arriving message may come
+from a different one, while the edit targets an id valid only in the bubble's own chat
+and the post arrives there as a fresh notified message. That the body is safe to show
+there is established where it was BUILT -- every transition renders from
+`texts_at_address` -- because at the retry there is nothing left to check it against.
+An entry with no bound surface is not written at all rather than falling back to a
+caller's.
 
 The enqueue and the receipt create/grow happen together under
 `ReceiptQueue.lock`, which the end-of-turn drain also takes across its dequeue
@@ -1752,11 +1811,14 @@ tail, the ordinary contract for any mid-turn message. And a peer whose drain rai
 waker has finished its own work by then, and one dead channel must not strand the
 others' accepted messages.
 
-The receipt registry itself is still keyed on the session key alone, so a second
-sender's mid-turn receipt edit targets the first sender's bubble; that is shared
-cross-channel state and is tracked in #12575. The drain's own receipt FLIP is not
-affected: it edits the bubble at the address of whoever queued first, taken from
-that entry's origin.
+The receipt registry itself is still keyed on the session key alone, so one bubble can
+list lines from more than one conversation; that is shared cross-channel state and is
+tracked in #12575. What each transition may write to it is settled, by the surface's
+`address_key`: a mid-turn message from the bubble's OWN address edits it (which is
+every single-conversation channel, and every member of a group space), and one from a
+different address is recorded without a write. The drain's own receipt FLIP asks the
+same question: it edits only when the origin it is answering addresses the bubble,
+taken from that entry's origin.
 
 The combined turn itself runs outside `ReceiptQueue.lock`, and the drain replays via
 `handle_message(..., interpret_commands=False)`. Drained payloads therefore
@@ -1820,26 +1882,105 @@ a channel wired up later cannot inherit a whole-queue clear by leaving it out;
 omitting the predicate at `clear_queue` still clears everything, which is what
 the whole-session callers mean (`/new`, a generation bump, teardown). The receipt
 follows, and what it may WRITE is bounded by the fact that one bubble can carry
-several principals' lines while its `msg_id` addresses a message in exactly one
-of their conversations -- whoever OPENED it. So a caller-scoped `/stop` withdraws
-the caller's lines from the record, DROPS the registry entry, and writes only when
-the caller is that opener: then `surface` addresses the bubble and it finalizes as
-`🛑 Cancelled` over the caller's own withdrawn lines, never over what remains,
-which belongs to other principals. When somebody else opened it, nothing is
-written at all.
+lines from several conversations while its `msg_id` addresses a message in exactly
+one of them -- the one it was OPENED in. `ReceiptSurface` therefore carries an
+`address_key`, built by `receipt_address_key` from the very values the channel's own
+edit call addresses a message with (Telegram's `chat_id`, Discord's `channel_id`,
+Teams' `service_url` + `conversation_id`, Webex's `room_id`), and every write rule
+below is decided on that key rather than on who is calling. Each part comes from the
+provider's own inbound payload, so the key names a conversation the provider
+assigned; a missing part makes it EMPTY, which reads as unknown and matches nothing,
+not even another empty one. A surface that cannot name its address opens no bubble at
+all -- without a key every later write would have to guess which chat the `msg_id`
+belongs to, and a wrong guess rewrites a stranger's message.
 
-Dropping the entry is what keeps a later drain safe. A drain flips using the chat
-of the entry it is answering, so an entry left behind after its opener stopped
-would hand that drain an id minted in a DIFFERENT chat, and `edit_message`
-addresses a message by that per-chat id pair -- the edit would land on whatever
-unrelated message holds that number there. The cost is that a bubble whose opener
-stopped goes stale rather than being flipped, and the next mid-turn burst opens a
-fresh one.
+Deciding on the address is what makes the rule true on both shared-key routes at
+once. Under `dm_scope = "unified"` two people's DMs share a session key and bind
+DIFFERENT chats, so neither may write to the other's; in a GROUP SPACE (`space:{room_id}`,
+shared under any scope) every member's surface binds the SAME room, so a second
+member's message both may and must update the one shared bubble. A test on who is
+calling cannot tell those apart -- it is the same "somebody else" in both, and
+treating the group-space member as a stranger leaves their message recorded but
+never shown.
 
-Which conversation a shared bubble belongs to is NOT settled here: it stays with
-the receipt registry's own key, which is `session_key` alone (#12575). Every
-transition therefore still takes its address from its caller, and `opened_by` is
-what lets a caller-scoped `/stop` tell whether its own address is the right one.
+So a caller-scoped `/stop` withdraws the caller's lines from the record, and writes
+only when the caller's surface addresses the bubble: it finalizes as `🛑 Cancelled`
+over the caller's own withdrawn lines, never over what remains, which may have
+arrived from another chat. A SECOND condition precedes that one and has nothing to do
+with addressing: while the bubble's OWN chat still has lines listed on it, nothing is
+written and the entry stays LIVE. Those messages are still queued, so "Cancelled"
+would say they went -- and retiring the key would strand the bubble on `⏳ Queued` for
+good, because the later drain finds no entry to flip and the next burst opens a second
+bubble beside the stale one. Lines from another chat do not hold the bubble: they were
+never rendered on it, so it owes them nothing and is finalized without them.
+
+The entry is dropped once it owes nothing, and a refused final edit does not by itself
+create a debt: the record is POSTED at the bubble's own address right away, because a
+retained body is written only by a LATER transition and a burst that ends at that
+refusal would otherwise leave the bubble asserting `⏳ Queued` over messages that were
+answered or cleared, with no path that ever corrects it. The stale bubble plus the
+posted record are together true. The entry is RETAINED only when that post fails too,
+and then it is terminal and carries what it owes. A refused GROW is the branch that
+matches this shape and must NOT take it: its message is still queued, so it owes no
+record and a post would announce something that has not happened.
+
+What keeps a later transition safe is therefore not the drop but the ADDRESS: an owed
+record is written through `opened_on`, the surface the bubble was opened on, so no
+transition is ever handed an id minted in a different chat -- `edit_message`
+addresses a message by its per-chat id pair, and in another conversation the same
+number is an unrelated message. That address also decides where the POST lands: it
+arrives as a fresh notified message, and on a channel with forum Topics in the Topic's
+own send address rather than the parent chat. A terminal entry keeps only the records it
+owes -- `terminalize` drops `lines` at the same moment, so the bound on what is
+retained is applied where the retention happens rather than at a render site below it,
+each body is already bounded by the item cap and the per-item truncation, and how MANY
+are held is bounded at that same seam. A retained
+entry is not live and is never grown, so a later burst opens a fresh bubble instead of
+joining this one. A mid-turn message meeting a terminal entry therefore gets no bubble
+of its own yet and its line is not recorded either: no path reads a terminal entry's
+lines, so keeping them would change nothing a reader sees while holding a verbatim burst
+for as long as the channel refuses. Nothing is lost by that -- the caller enqueued
+before calling and the drain renders its record from what it dequeued -- and the
+residual is one missing `⏳ Queued` acknowledgement.
+
+Retiring an owed record does not retire the transition that retried it. A drain
+meeting a terminal entry publishes the OLDER record first -- writing this turn's words
+over what happened would say the opposite, permanently -- and once that lands the
+bubble is spent, so this turn's own record has no bubble left to edit and is POSTED
+beside it. The entry REMEMBERS that, because publishing a debt is resumable: a channel
+that recovers part-way lands the oldest record and then refuses the next, and a later
+retry that edited would erase the record the reader can already see and show the two in
+the wrong order. Publication is what spends the bubble, by either route -- a record that
+had to be posted sits BELOW the bubble, so the bubble is no longer ahead of it.
+Returning there instead would lose the drained burst's receipt for good: a
+retired key is revisited by nothing, and those messages have already left the queue.
+When the older record cannot be published at all, this turn's record is RETAINED behind
+it rather than dropped: that failure already tried an edit and a post, so a post for
+this body would fail the same way, and the debt is the only thing left that can carry
+it. The post, and that retention, are both withheld when the drain belongs to a
+different chat, because then its body is that chat's text.
+
+Which conversation a shared bubble belongs to is NOT settled here: it stays with the
+receipt registry's own key, which is `session_key` alone (#12575). What IS settled is
+that no write takes an address the bubble does not have, and that no body written
+there quotes a line from another conversation -- every rendered body comes from
+`texts_at_address`, the lines that arrived at the bubble's own address, so a
+whole-session cancel shows one DM's line under a unified scope and the whole room's
+under a group space. The remaining transitions each answer the same question. An owed
+record reads `opened_on` outright. The end-of-turn flip is addressed: one drained turn
+carries ONE envelope -- same sender, same chat, same Topic -- so a flip arriving on
+another chat's surface is answering that chat's messages, and writing it here would
+quote their text; nothing is stranded by staying silent, because those messages are
+still queued, which is why the entry goes back LIVE rather than being dropped.
+
+A **grow** from another conversation is the one case with no correct address at all.
+The bubble's chat would receive this sender's text, which this module has always
+refused; this sender's own chat holds no bubble, so the per-chat `msg_id` names an
+unrelated message there and the whole line list would overwrite it, permanently. So
+the line is RECORDED and nothing is written. That costs only a bubble not yet showing
+this line, because a grow owes no record: the message is still queued, and the next
+render in its own chat shows it. A grow from the SAME address -- the group-space
+member, and every single-conversation channel -- edits as before.
 
 The running turn is cancelled whoever it belongs to: a session records the
 asyncio task holding it, not the sender that task is answering. `session.cancelled`

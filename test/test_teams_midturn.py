@@ -54,7 +54,7 @@ class _Client:
 
     async def update_message(self, conversation_id, activity_id, content, service_url):
         self.updates.append((activity_id, content))
-        return True
+        return getattr(self, "update_ok", True)
 
     async def send_typing(self, conversation_id, service_url) -> None:
         return None
@@ -245,6 +245,21 @@ class TestQueueReceipt:
         await d._handle_stop(inbound)
 
         assert any("Cancelled" in body for _, body in client.updates)
+
+    @pytest.mark.asyncio
+    async def test_the_surface_reports_whether_the_edit_landed(self) -> None:
+        """The registry can only keep a refused transition retryable if the surface
+        reports the refusal -- a wrapper that swallows the client's answer makes an
+        unlanded edit indistinguishable from a durable record."""
+        sessions = _Sessions(_Provider())
+        client = _Client()
+        d = _dispatcher(sessions, client)
+        surface = d._receipt_surface(_inbound("x"))
+
+        client.update_ok = True
+        assert await surface.edit_receipt("m1", "body") is True
+        client.update_ok = False
+        assert await surface.edit_receipt("m1", "body") is False
 
 
 class TestCommandVocabulary:
