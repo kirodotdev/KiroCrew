@@ -170,9 +170,10 @@ function stubElectronForOpen() {
       this.webContents = new FakeWebContents();
       this.visible = false;
       this.showInactiveCalls = 0;
+      this.focusableCalls = [];
       created.push(this);
     }
-    setFocusable() {}
+    setFocusable(v) { this.focusableCalls.push(v); }
     setAcceptFirstMouse() {}
     setIgnoreMouseEvents() {}
     setVisibleOnAllWorkspaces() {}
@@ -272,6 +273,25 @@ test("the pet overlay is a non-activating panel on macOS only", () => {
     mod.closePetWindow();
   }
 });
+
+// #11865: on Windows a non-activatable window has every mouse button-down eaten
+// by Chromium (WM_MOUSEACTIVATE -> MA_NOACTIVATEANDEAT), so the pet could never
+// be clicked or dragged. It must stay activatable there, and only there.
+for (const [platform, expected] of [["win32", []], ["darwin", [false]], ["linux", [false]]]) {
+  test(`the pet overlay's setFocusable calls on ${platform}`, (t) => {
+    const orig = process.platform;
+    Object.defineProperty(process, "platform", { value: platform, configurable: true });
+    t.after(() => Object.defineProperty(process, "platform", { value: orig, configurable: true }));
+    const { mod, created } = loadPetOverlays();
+    try {
+      mod.openPetWindow("http://localhost:6777", "tok");
+      assert.strictEqual(created.length, 1);
+      assert.deepStrictEqual(created[0].focusableCalls, expected);
+    } finally {
+      mod.closePetWindow();
+    }
+  });
+}
 
 // ── Display-listener lifecycle (#4673) ─────────────────────────────────────
 // openPetWindow watches the display arrangement so the overlay set can follow

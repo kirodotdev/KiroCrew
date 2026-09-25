@@ -25,6 +25,9 @@ function stubElectron() {
       this.destroyed = false;
       this.ignoreMouse = null;
       this.focusable = true;
+      this.focusableCalls = [];
+      this.focusCalls = 0;
+      this.blurCalls = 0;
       this.workspaces = null;
       this.loadedUrl = "";
       this.shown = false;
@@ -44,7 +47,9 @@ function stubElectron() {
       };
       created.push(this);
     }
-    setFocusable(v) { this.focusable = v; }
+    setFocusable(v) { this.focusable = v; this.focusableCalls.push(v); }
+    focus() { this.focusCalls += 1; }
+    blur() { this.blurCalls += 1; }
     setContentProtection(v) { this.contentProtection = v; }
     setIgnoreMouseEvents(ignore, opts) { this.ignoreMouse = { ignore, opts }; }
     setVisibleOnAllWorkspaces(v, opts) { this.workspaces = { v, opts }; }
@@ -151,6 +156,13 @@ async function settle() {
   for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 10));
 }
 
+/** Run the rest of test `t` as if on `platform`; restored when `t` ends. */
+function forcePlatform(t, platform) {
+  const orig = process.platform;
+  Object.defineProperty(process, "platform", { value: platform, configurable: true });
+  t.after(() => Object.defineProperty(process, "platform", { value: orig, configurable: true }));
+}
+
 // ── the overlay window ──────────────────────────────────────────────────────
 
 test("opens one overlay per display, covering each display's full bounds", () => {
@@ -186,7 +198,9 @@ test("the overlay refuses mouse input by default, with forwarding on", () => {
   }
 });
 
-test("the overlay is transparent, frameless, always on top and not focusable", () => {
+test("the overlay is transparent, frameless, always on top and not focusable", (t) => {
+  // Non-focusable is the macOS/Linux shape; Windows is pinned separately below.
+  forcePlatform(t, "darwin");
   const stub = stubElectron();
   try {
     const { overlay } = loadModules();
@@ -254,6 +268,123 @@ test("the overlay accepts the first mouse click, or nothing in it can be clicked
       "undefined",
       "BrowserWindow has no setAcceptFirstMouse; the fake must not invent one",
     );
+  } finally {
+    stub.restore();
+  }
+});
+
+// ── Windows: the overlay must stay activatable (#11865) ─────────────────────
+//
+// On Windows setFocusable(false) makes Chromium answer WM_MOUSEACTIVATE with
+// MA_NOACTIVATEANDEAT, which discards every mouse button-down. No left click,
+// drag or menu item could ever work, and the full-display menu hitbox could not
+// be dismissed, locking the whole display. These pin that the overlay is never
+// made non-activatable there, by creation or by the panel's focusable IPC.
+
+/** The display overlays only; `created` also holds the hidden brain window. */
+const displayOverlays = (stub) => stub.created.filter((w) => w.opts.transparent === true);
+
+test("only Windows keeps the overlay activatable", () => {
+  const stub = stubElectron();
+  try {
+    const { overlay } = loadModules();
+    assert.strictEqual(overlay.overlayMayBeNonActivatable("win32"), false);
+    for (const platform of ["darwin", "linux"]) {
+      assert.strictEqual(overlay.overlayMayBeNonActivatable(platform), true, platform);
+    }
+  } finally {
+    stub.restore();
+  }
+});
+
+test("on Windows no overlay is made non-focusable at creation", (t) => {
+  forcePlatform(t, "win32");
+  const stub = stubElectron();
+  try {
+    const { overlay } = loadModules();
+    overlay.setOverlayTarget("http://localhost:5476", "");
+    overlay.openPetWindow();
+
+    assert.strictEqual(displayOverlays(stub).length, 2, "one overlay per display");
+    for (const win of displayOverlays(stub)) {
+      assert.deepStrictEqual(win.focusableCalls, [], "setFocusable never called");
+      // The rest of the overlay contract is unchanged: still click-through by
+      // default, still off the taskbar, still shown without taking focus.
+      assert.deepStrictEqual(win.ignoreMouse, { ignore: true, opts: { forward: true } });
+      assert.strictEqual(win.opts.skipTaskbar, true);
+      assert.strictEqual(win.shown, true);
+      assert.strictEqual(win.focusCalls, 0, "appearing does not steal focus");
+    }
+  } finally {
+    stub.restore();
+  }
+});
+
+for (const platform of ["darwin", "linux"]) {
+  test(`on ${platform} every overlay is still made non-focusable`, (t) => {
+    forcePlatform(t, platform);
+    const stub = stubElectron();
+    try {
+      const { overlay } = loadModules();
+      overlay.setOverlayTarget("http://localhost:5476", "");
+      overlay.openPetWindow();
+      assert.strictEqual(displayOverlays(stub).length, 2);
+      for (const win of displayOverlays(stub)) {
+        assert.deepStrictEqual(win.focusableCalls, [false]);
+      }
+    } finally {
+      stub.restore();
+    }
+  });
+}
+
+function initForFocusableIpc(stub) {
+  const { overlay, index } = loadModules();
+  overlay.setOverlayTarget("http://localhost:5476", "cred");
+  overlay.openPetWindow();
+  index.initCrewCompanion({
+    backendUrl: "http://127.0.0.1:9",
+    fetchLocalToken: async () => "cred",
+    glog: () => {},
+  });
+  const win = displayOverlays(stub)[0];
+  win.focusableCalls.length = 0;
+  const send = (focusable) =>
+    stub.ipcHandlers["crew-companion:focusable"]({ sender: win.webContents }, focusable);
+  return { index, win, send };
+}
+
+test("on Windows the panel's focusable IPC focuses and blurs without setFocusable", (t) => {
+  forcePlatform(t, "win32");
+  const stub = stubElectron();
+  try {
+    const { index, win, send } = initForFocusableIpc(stub);
+
+    send(true);
+    assert.strictEqual(win.focusCalls, 1, "panel open moves focus to the overlay");
+    send(false);
+    assert.strictEqual(win.blurCalls, 1, "panel close hands focus back");
+    // setFocusable(false) would re-break every click; setFocusable(true) would
+    // also clear skipTaskbar and put the overlay in the taskbar.
+    assert.deepStrictEqual(win.focusableCalls, []);
+    index.shutdownCrewCompanion();
+  } finally {
+    stub.restore();
+  }
+});
+
+test("on macOS the panel's focusable IPC still toggles setFocusable", (t) => {
+  forcePlatform(t, "darwin");
+  const stub = stubElectron();
+  try {
+    const { index, win, send } = initForFocusableIpc(stub);
+
+    send(true);
+    send(false);
+    assert.deepStrictEqual(win.focusableCalls, [true, false]);
+    assert.strictEqual(win.focusCalls, 1);
+    assert.strictEqual(win.blurCalls, 0);
+    index.shutdownCrewCompanion();
   } finally {
     stub.restore();
   }
