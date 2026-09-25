@@ -325,6 +325,11 @@ function measuredContentHeight(el: HTMLTextAreaElement): number {
   // path at the same width, and an off-screen node carrying a real placeholder
   // attribute would answer accessibility and test queries meant for the live one.
   twin.value = el.value || el.placeholder || ''
+  // A placeholder the stylesheet holds to one line must be MEASURED on one line;
+  // the copied `whiteSpace` above is the element's, which still wraps.
+  if (!el.value && el.placeholder && getComputedStyle(el, '::placeholder').whiteSpace === 'nowrap') {
+    twin.style.whiteSpace = 'nowrap'
+  }
   return twin.scrollHeight
 }
 
@@ -3577,6 +3582,20 @@ function ChatInput({
   const voiceModePlaceholder = voiceModeAvailable && !voiceHoldMode && !composerHasDraft && !placeholder
     ? i18nT('components.chatInput.send_a_message_or_tap_the_mic_for_voice')
     : ''
+  const activePlaceholder = !connected ? i18nT('components.chatInput.gateway_offline_message_will_not_send') : disabledProp ? i18nT('components.chatInput.stopping') : voiceRecording ? i18nT('components.chatInput.recording_click_mic_to_stop') : transcribingIsHonest ? i18nT('components.chatInput.transcribing_please_wait') : continuePlaceholder || voiceModePlaceholder || resolvedPlaceholder
+  // The sigil hint is a label and may be cut to one line. Every other
+  // placeholder here is a sentence the user needs whole, so it still wraps —
+  // including a caller's own `placeholder`, which `resolvedPlaceholder` carries.
+  const placeholderIsHint = !placeholder && activePlaceholder === resolvedPlaceholder
+  // Re-measure when the PLACEHOLDER swaps at an unchanged value: an empty composer
+  // measures its placeholder, and the value effect's deps cannot see it. The caret
+  // is NOT followed here — a placeholder only shows over an empty box, so there is
+  // no line of the user's to keep in view, and this effect also runs on a
+  // parent-driven value change, where snapping is what the seeded-prompt rule forbids.
+  useEffect(() => {
+    const el = inputRef.current
+    if (el && !dragging.current) applyHeight(el, manualHeight, prefillHint, parkedRef.current, false)
+  }, [activePlaceholder, manualHeight, prefillHint])
   /** Combined height of every strip currently stacked above the textarea,
    *  MEASURED rather than predicted from the strips' Tailwind classes. The
    *  manual-resize floor and the transient height adjustment below both work off
@@ -4203,7 +4222,7 @@ function ChatInput({
                 onSelectionChange={publishLexicalSelection}
                 sentMessages={sentMessages}
                 ariaLabel={inputAriaLabel ?? i18nT('components.chatInput.message_input')}
-                placeholder={!connected ? i18nT('components.chatInput.gateway_offline_message_will_not_send') : disabledProp ? i18nT('components.chatInput.stopping') : voiceRecording ? i18nT('components.chatInput.recording_click_mic_to_stop') : transcribingIsHonest ? i18nT('components.chatInput.transcribing_please_wait') : continuePlaceholder || voiceModePlaceholder || resolvedPlaceholder}
+                placeholder={activePlaceholder}
                 disabled={disabled}
                 readOnly={optimizing}
                 sendOnEnter={sendOnEnter}
@@ -4221,9 +4240,11 @@ function ChatInput({
           spellCheck={spellCheck}
           aria-describedby={pastePreviewPanelId ?? undefined}
           data-composer-typo
-          className={/* focus-cue-ok: the cue is the composer shell's focus-within border-accent brightening; a second ring on the textarea would double-paint one control. */ `relative w-full bg-transparent border-none ${INPUT_TYPO} text-text outline-hidden min-h-[44px] max-h-[50vh] placeholder:text-muted resize-none ${manualHeight !== null ? 'flex-1' : ''} ${disabled ? 'opacity-40 pointer-events-none' : ''} ${optimizing ? 'opacity-30' : ''}`}
+          // Chromium paints no `text-overflow` on a `::placeholder`, so the cut tail
+          // fades out instead, the way the app's other cut edges do.
+          className={/* focus-cue-ok: the cue is the composer shell's focus-within border-accent brightening; a second ring on the textarea would double-paint one control. */ `relative w-full bg-transparent border-none ${INPUT_TYPO} text-text outline-hidden min-h-[44px] max-h-[50vh] placeholder:text-muted resize-none ${placeholderIsHint ? 'placeholder:whitespace-nowrap placeholder:overflow-hidden placeholder:[mask-image:linear-gradient(to_right,black_calc(100%-1.5rem),transparent)] placeholder:[-webkit-mask-image:linear-gradient(to_right,black_calc(100%-1.5rem),transparent)]' : ''} ${manualHeight !== null ? 'flex-1' : ''} ${disabled ? 'opacity-40 pointer-events-none' : ''} ${optimizing ? 'opacity-30' : ''}`}
           style={manualHeight !== null ? { height: '100%' } : undefined}
-          placeholder={!connected ? i18nT('components.chatInput.gateway_offline_message_will_not_send') : disabledProp ? i18nT('components.chatInput.stopping') : voiceRecording ? i18nT('components.chatInput.recording_click_mic_to_stop') : transcribingIsHonest ? i18nT('components.chatInput.transcribing_please_wait') : continuePlaceholder || voiceModePlaceholder || resolvedPlaceholder}
+          placeholder={activePlaceholder}
           readOnly={optimizing}
           rows={1}
           value={value}
