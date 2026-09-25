@@ -427,9 +427,12 @@ made; no gate reads it back. Two consumers:
   newest seq it applied for the slot (a frame with no seq is always applied).
   The depth counts spawns that have not started: a `_resume_id` window entry is
   a resident run waiting for its slot back, not a queued spawn, and is excluded.
-  `GET /api/spawn?parent=<session key>` adds that parent's `queued` depth and
-  the current `queued_seq`; the composer chip's 30 s reconcile takes it, so a
-  count the event stream left wrong clears within one tick.
+  `GET /api/spawn?slot=<slot key>` adds the `queued` depth of the session that
+  slot's turns run on (resolved server-side, as stop-all resolves its slot: a
+  cron-born tab `cron-<id>` runs on `cron:<id>`, a channel-born tab on the
+  channel's own key) together with that key as `parent` and the current
+  `queued_seq`; the composer chip's 30 s reconcile takes it, so a count the
+  event stream left wrong clears within one tick.
 - `POST /api/spawn` answers the three DEFERRED kinds (`DEFERRED_QUEUED_REASONS`)
   with `status: "queued"`, `reason` and `reason_detail` under the same `id`;
   every reader of that answer relays it: `spawn_run` prints a

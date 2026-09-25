@@ -1317,6 +1317,11 @@ def _awaiting_spawn_approval(info: object) -> bool:
     )
 
 
+# The shape of a slot NAME as the spawn routes accept it from a client. Shared
+# by the list's ``?slot=`` and stop-all's body so the two cannot drift.
+_SLOT_NAME_RE = re.compile(r"[A-Za-z0-9_.-]{1,256}")
+
+
 async def api_spawn_list(request: web.Request) -> web.Response:
     """GET /api/spawn — list all subagents."""
     state: DashboardState = request.app["state"]
@@ -1373,20 +1378,30 @@ async def api_spawn_list(request: web.Request) -> web.Response:
             entry["context_withheld"] = withheld
         agents.append(entry)
     body: dict[str, object] = {"agents": agents}
-    # ``?parent=<session key>`` adds that parent's authoritative queued depth.
-    # The wave chip otherwise knows it only from ``subagent_queued`` events, so
-    # a count left non-zero by a lost or reordered event stayed on screen until
-    # the next reconnect; the chip's reconcile poll corrects it from here.
-    # ``queued_seq`` orders this answer against those events. A scoped caller
+    # ``?slot=<slot key>`` adds the queued depth of the session that slot's
+    # turns run on. The wave chip otherwise knows the depth only from
+    # ``subagent_queued`` events, so a count left non-zero by a lost or
+    # reordered event stayed on screen until the next reconnect; the chip's
+    # reconcile poll corrects it from here. The slot is resolved to its session
+    # HERE, as ``api_spawn_stop_all`` does, because the client cannot: a
+    # cron-born tab ``cron-<id>`` runs on ``cron:<id>`` and a channel-born tab
+    # ``slack_<ts>`` on ``slack:<ts>``, so a client guessing ``dashboard:<slot>``
+    # would read depth 0 for a queue that exists and clear it. The resolved key
+    # is returned as ``parent`` so the client filters the list on the same key.
+    # ``queued_seq`` orders this answer against the events. A scoped caller
     # only learns the depth of its own session, the same rule as the list.
     # The seq is read BEFORE the count: an emit scheduled during the awaited
     # store read then carries a higher seq than this answer, so the client
     # lets that newer frame win instead of pinning this answer over it.
-    parent = request.query.get("parent", "")
-    if parent and (scope is None or parent == caller):
-        queued_seq = state.subagents.queue_depth_seq
-        body["queued"] = await state.subagents.queued_count_for_async(parent)
-        body["queued_seq"] = queued_seq
+    slot_name = request.query.get("slot", "")
+    slot = state.get_slot(slot_name) if _SLOT_NAME_RE.fullmatch(slot_name) else None
+    if slot is not None:
+        parent = effective_session_key(slot)
+        if scope is None or parent == caller:
+            queued_seq = state.subagents.queue_depth_seq
+            body["parent"] = parent
+            body["queued"] = await state.subagents.queued_count_for_async(parent)
+            body["queued_seq"] = queued_seq
     return web.json_response(body)
 
 
@@ -1606,7 +1621,7 @@ async def api_spawn_stop_all(request: web.Request) -> web.Response:
     except Exception:
         return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     slot_name = body.get("slot") if isinstance(body, dict) else None
-    if not isinstance(slot_name, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,256}", slot_name):
+    if not isinstance(slot_name, str) or not _SLOT_NAME_RE.fullmatch(slot_name):
         return web.json_response(
             {"error": "valid slot is required", "code": "invalid_slot"}, status=400
         )

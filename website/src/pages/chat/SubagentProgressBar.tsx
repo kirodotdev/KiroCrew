@@ -102,8 +102,10 @@ interface SpawnListAgent {
 }
 interface SpawnListResponse {
   agents?: SpawnListAgent[]
-  /** The parent's queued depth, present when the list was asked for one
-   *  parent (`?parent=`) by a gateway that reports it. */
+  /** The session key the asked-for slot's turns run on, present when the
+   *  list was asked for one slot (`?slot=`) by a gateway that resolves it. */
+  parent?: string
+  /** That session's queued depth, present alongside `parent`. */
   queued?: number
   /** The `subagent_queued` seq that depth is ordered against. */
   queued_seq?: number
@@ -242,9 +244,15 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
     let cancelled = false
     const t = setInterval(() => setTick(n => 1 - n), 1000)
     const reconcile = setInterval(() => {
-      const parent = `dashboard:${slot}`
-      api.spawnList(parent).then((d: SpawnListResponse) => {
+      // The gateway resolves the slot to the session its turns run on and
+      // hands that key back: a cron-born tab (`cron-<id>` on `cron:<id>`) or a
+      // channel-born one (`slack_<ts>` on `slack:<ts>`) is not `dashboard:<slot>`,
+      // and filtering on a guessed key would read every agent of such a tab as
+      // untracked and its queue as empty. The guess stays only as the fallback
+      // for a gateway that resolves nothing.
+      api.spawnList(slot).then((d: SpawnListResponse) => {
         if (cancelled) return
+        const parent = d.parent ?? `dashboard:${slot}`
         const backendIds = new Set((d.agents || []).filter((a) => !a.done && a.parent === parent).map((a) => a.id))
         activeListRef.current.forEach(a => {
           if (!backendIds.has(a.id)) dispatch(sseSubagentDone({ slot, id: a.id, elapsed: Math.round((Date.now() - a.startedAt) / 1000), error: 'reconciliation: agent no longer tracked by backend' }))

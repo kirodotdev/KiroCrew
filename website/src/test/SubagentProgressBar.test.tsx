@@ -162,7 +162,7 @@ describe('SubagentProgressBar — queued / waiting count', () => {
 
       await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
 
-      expect(api.spawnList).toHaveBeenCalledWith(`dashboard:${SLOT}`)
+      expect(api.spawnList).toHaveBeenCalledWith(SLOT)
       expect(store.getState().chat.subagentQueued[SLOT]).toBeUndefined()
       expect(container).toBeEmptyDOMElement()
     } finally {
@@ -179,6 +179,84 @@ describe('SubagentProgressBar — queued / waiting count', () => {
       renderBar(store)
       await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
       expect(store.getState().chat.subagentQueued[SLOT]).toBe(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('SubagentProgressBar — reconcile on a tab whose session is not dashboard:<slot>', () => {
+  // A cron-born tab is named `cron-<id>` while its turns run on `cron:<id>`;
+  // the gateway keys queued depth and agent parents on the session key. The
+  // chip must ask by SLOT and let the gateway resolve the session, or a real
+  // queue reads as empty and real agents as untracked.
+  const CRON_SLOT = 'cron-job-7'
+  const CRON_SESSION = 'cron:job-7'
+
+  /** A gateway double: answers the depth of the session the asked-for slot
+   *  runs on, and knows nothing for any other key. */
+  function gatewayAnswering(queued: number, agents: { id: string; done: boolean; parent: string }[] = []) {
+    return (slot?: string) => Promise.resolve(
+      slot === CRON_SLOT
+        ? { agents, parent: CRON_SESSION, queued, queued_seq: 9 }
+        : { agents, queued: 0, queued_seq: 9 },
+    )
+  }
+
+  function cronStore() {
+    const store = configureStore({
+      reducer: { chat: chatReducer, dashboard: dashboardReducer, notifications: notificationsReducer },
+    })
+    store.dispatch(setActiveSlot(CRON_SLOT))
+    return store
+  }
+
+  function renderCronBar(store: ReturnType<typeof cronStore>) {
+    const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <Provider store={store}>
+          <SubagentProgressBar slot={CRON_SLOT} />
+        </Provider>
+      </QueryClientProvider>,
+    )
+  }
+
+  beforeEach(() => vi.clearAllMocks())
+
+  it('keeps a cron-born tab\'s real queued count across a reconcile tick', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.mocked(api.spawnList).mockImplementation(gatewayAnswering(2))
+      const store = cronStore()
+      store.dispatch(sseSubagentQueued({ slot: CRON_SLOT, queued: 2, seq: 7 }))
+      renderCronBar(store)
+      expect(screen.getByTestId('subagent-queued-count').textContent).toContain('2')
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+
+      expect(store.getState().chat.subagentQueued[CRON_SLOT]).toBe(2)
+      expect(screen.getByTestId('subagent-queued-count').textContent).toContain('2')
+      expect(api.spawnList).toHaveBeenCalledWith(CRON_SLOT)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps a cron-born tab\'s running agent that the gateway still tracks', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.mocked(api.spawnList).mockImplementation(
+        gatewayAnswering(0, [{ id: 'a1', done: false, parent: CRON_SESSION }]),
+      )
+      const store = cronStore()
+      store.dispatch(sseSubagentSpawn({ slot: CRON_SLOT, id: 'a1', task: 'task a1', agent: 'agent-a1' }))
+      renderCronBar(store)
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+
+      expect(store.getState().chat.subagents.a1?.status).toBe('running')
+      expect(screen.getByTestId('subagent-running-count').textContent).toContain('1')
     } finally {
       vi.useRealTimers()
     }

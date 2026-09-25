@@ -4529,7 +4529,7 @@ class SubagentManager:
         """The newest ``seq`` handed to a ``subagent_queued`` emit.
 
         A reader that reports a queued count outside the event stream (the
-        dashboard's ``GET /api/spawn?parent=``) pairs it with this value, so a
+        dashboard's ``GET /api/spawn?slot=``) pairs it with this value, so a
         client can order that answer against the events it also receives.
         """
         return self._queue_depth_seq

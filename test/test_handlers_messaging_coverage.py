@@ -776,14 +776,58 @@ class TestApiSpawnList:
         agents = _payload(_run(mod.api_spawn_list, _Req(_state(subagents=mgr))))["agents"]
         assert agents[0]["error"] == ""
 
-    def test_parent_query_reports_that_parents_queued_depth_and_seq(self) -> None:
+    def test_slot_query_reports_the_queued_depth_of_the_slots_own_session(self) -> None:
         """The wave chip's reconcile reads the authoritative depth from here, so
-        a count the ``subagent_queued`` stream left non-zero can be corrected."""
-        mgr = _mgr(queued_count_for_async=AsyncMock(return_value=0), queue_depth_seq=41)
-        req = _Req(_state(subagents=mgr), query={"parent": "dashboard:chat-1"})
-        body = _payload(_run(mod.api_spawn_list, req))
-        assert body["queued"] == 0 and body["queued_seq"] == 41
+        a count the ``subagent_queued`` stream left non-zero can be corrected.
+        The slot is resolved to its session server-side: a cron-born tab
+        ``cron-<id>`` runs on ``cron:<id>``, and a depth read for the guessed
+        ``dashboard:cron-<id>`` would be 0 for a queue that exists."""
+        mgr = _mgr(queued_count_for_async=AsyncMock(return_value=2), queue_depth_seq=41)
+        state = _state(subagents=mgr)
+        state.get_slot.return_value = SimpleNamespace(
+            key="cron-job-7", linked_session_key="cron:job-7"
+        )
+        body = _payload(_run(mod.api_spawn_list, _Req(state, query={"slot": "cron-job-7"})))
+        assert body["parent"] == "cron:job-7"
+        assert body["queued"] == 2 and body["queued_seq"] == 41
+        state.get_slot.assert_called_once_with("cron-job-7")
+        mgr.queued_count_for_async.assert_awaited_once_with("cron:job-7")
+
+    def test_slot_query_on_a_plain_dashboard_slot_resolves_to_its_dashboard_session(
+        self,
+    ) -> None:
+        mgr = _mgr(queued_count_for_async=AsyncMock(return_value=0), queue_depth_seq=3)
+        state = _state(subagents=mgr)
+        state.get_slot.return_value = SimpleNamespace(key="chat-1", linked_session_key="")
+        body = _payload(_run(mod.api_spawn_list, _Req(state, query={"slot": "chat-1"})))
+        assert body["parent"] == "dashboard:chat-1" and body["queued"] == 0
         mgr.queued_count_for_async.assert_awaited_once_with("dashboard:chat-1")
+
+    @pytest.mark.parametrize("slot_name", ["missing", "../other", ""])
+    def test_unknown_or_malformed_slot_adds_no_depth(self, slot_name: str) -> None:
+        mgr = _mgr(queued_count_for_async=AsyncMock(return_value=3))
+        state = _state(subagents=mgr)
+        state.get_slot.return_value = None
+        body = _payload(_run(mod.api_spawn_list, _Req(state, query={"slot": slot_name})))
+        assert body == {"agents": []}
+        mgr.queued_count_for_async.assert_not_awaited()
+
+    def test_scoped_caller_learns_only_its_own_sessions_depth(self, monkeypatch: Any) -> None:
+        monkeypatch.setattr(
+            mod, "internal_memory_scope", AsyncMock(return_value=("member-alice", None))
+        )
+        mgr = _mgr(queued_count_for_async=AsyncMock(return_value=3), queue_depth_seq=1)
+        state = _state(subagents=mgr)
+        state.get_slot.return_value = SimpleNamespace(
+            key="cron-job-7", linked_session_key="cron:job-7"
+        )
+        req = _Req(state, query={"slot": "cron-job-7"})
+        req.headers["X-Session-Key"] = "dashboard:chat-1"
+        assert _payload(_run(mod.api_spawn_list, req)) == {"agents": []}
+        mgr.queued_count_for_async.assert_not_awaited()
+        req.headers["X-Session-Key"] = "cron:job-7"
+        body = _payload(_run(mod.api_spawn_list, req))
+        assert body["parent"] == "cron:job-7" and body["queued"] == 3
 
     def test_queued_seq_is_read_before_the_awaited_count(self) -> None:
         """An emit scheduled while the count awaits the store takes a newer seq;
@@ -795,11 +839,12 @@ class TestApiSpawnList:
             return 1
 
         mgr.queued_count_for_async = _count
-        req = _Req(_state(subagents=mgr), query={"parent": "dashboard:chat-1"})
-        body = _payload(_run(mod.api_spawn_list, req))
+        state = _state(subagents=mgr)
+        state.get_slot.return_value = SimpleNamespace(key="chat-1", linked_session_key="")
+        body = _payload(_run(mod.api_spawn_list, _Req(state, query={"slot": "chat-1"})))
         assert body["queued"] == 1 and body["queued_seq"] == 7
 
-    def test_without_parent_query_the_payload_is_unchanged(self) -> None:
+    def test_without_slot_query_the_payload_is_unchanged(self) -> None:
         mgr = _mgr(queued_count_for_async=AsyncMock(return_value=3))
         body = _payload(_run(mod.api_spawn_list, _Req(_state(subagents=mgr))))
         assert body == {"agents": []}
