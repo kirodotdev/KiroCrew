@@ -76,6 +76,8 @@ def _provider(**attrs):
         "context_usage_pct": lambda: 0.0,
         "cwd": "",
         "is_process_alive": lambda: True,
+        # The registry calls this on a race loser before its shutdown.
+        "disown_work_dir": lambda: None,
     }
     base.update(attrs)
     return SimpleNamespace(**base)

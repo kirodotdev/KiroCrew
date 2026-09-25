@@ -8,9 +8,9 @@ concrete provider.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from functools import cached_property
-from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, AsyncContextManager, Literal, Protocol, runtime_checkable
 
 # Event kinds — re-exported from the single source of truth
 from kiro_crew.acp.types import (  # noqa: F401
@@ -338,6 +338,30 @@ class LLMProvider(ABC):
     def cwd(self) -> str:
         """Working directory the provider operates in. Default: empty string."""
         return ""
+
+    def set_work_dir_claim_probe(
+        self,
+        probe: Callable[[], AsyncContextManager[bool]],
+    ) -> None:
+        """Install the registry claim held across a work-directory reclaim.
+
+        The yielded answer is evaluated while the session registry lock remains
+        held through the reclaim operation, so a successor cannot register
+        between the ownership decision and deletion. Default no-op for a
+        provider that never reclaims a directory.
+        """
+        return None
+
+    def disown_work_dir(self) -> None:
+        """Declare that this provider does not own its work directory for reclaim.
+
+        The session registry calls this before shutting down a provider whose
+        session KEY another live provider already holds: both derived the same
+        work directory from that key, so the one being discarded must not
+        remove it at shutdown (``session_work_dir``). Default no-op for a
+        provider that never reclaims a directory.
+        """
+        return None
 
     @property
     def served_model(self) -> str:

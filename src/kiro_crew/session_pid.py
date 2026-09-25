@@ -996,6 +996,36 @@ def _session_pid_entry_index(my_gw_pid: int) -> dict[int, tuple[str, str | None]
     return index
 
 
+def retained_gateway_pids() -> frozenset[int]:
+    """The gateway pids that still have an entry in ``kiro_session_pids.txt``.
+
+    Read-only, under the file's own lock, and the file is not changed. This is
+    the evidence ``session_work_dir`` uses for a predecessor gateway of THIS data
+    home: :func:`cleanup_orphaned_sessions` has already reaped every child it
+    could confirm dead or kill and removed those entries, so a gateway pid that
+    still has one may have something alive and its run directories are kept. A
+    ledger that cannot be read raises ``OSError`` rather than answering "nothing
+    retained": the callers decide a deletion on this answer and fail closed.
+    """
+    path = _session_pid_file_path()
+    with _session_pid_file_lock():
+        if not path.exists():
+            return frozenset()
+        lines = path.read_text(encoding="utf-8").splitlines()
+    retained: set[int] = set()
+    for line in lines:
+        parts = line.strip().split(":")
+        if len(parts) not in (2, 3):
+            continue
+        try:
+            gw_pid = int(parts[0])
+        except ValueError:
+            continue
+        if gw_pid > 0:
+            retained.add(gw_pid)
+    return frozenset(retained)
+
+
 def _kill_confirmed_and_writeback(
     my_gw_pid: int, confirmed: list[int], killed_or_dead: set[str]
 ) -> int:
