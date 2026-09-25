@@ -1092,7 +1092,8 @@ export interface GovernanceScopeDetail {
 export interface GovernanceScope {
   scope: string
   archetype: 'ruleset' | 'ordinal' | 'capability' | 'scopedmap'
-  /** false = neither policy nor profile governs it → the scope permits. */
+  /** false = neither policy nor profile governs it. Whether that absence permits is
+   *  the catalog row's default: it does unless `deny_when_ungoverned` is set. */
   governed: boolean
   source: 'policy' | 'profile' | 'policy+profile' | 'ungoverned'
   /** WHOSE ceiling this row describes, so a host-only pin is not read as
@@ -1102,6 +1103,10 @@ export interface GovernanceScope {
    *  surfaces enable them under their own profiles). `policy_wide` = policy alone
    *  governs, which applies to every surface. Absent/'' = ungoverned. */
   scope_note?: '' | 'host_profile' | 'policy_wide'
+  /** true = an absent row DENIES for this scope (an opt-in scope), so an
+   *  ungoverned row reads as "nothing allowed", not "not restricted". Only
+   *  present on flagged rows. */
+  deny_when_ungoverned?: boolean
   detail: GovernanceScopeDetail
 }
 

@@ -1192,6 +1192,11 @@ SCOPEDMAP = "scopedmap"
 # SCOPE_CATALOG key whose deny-mode deny list is force-pinned (un-opt-out-able).
 COMMANDS_SCOPE = "commands"
 
+# SCOPE_CATALOG key naming the canonical files a global steering leaf link may
+# read (``member_essential_context``). Named here so the collector and the
+# catalog row cannot drift on the spelling.
+STEERING_SOURCES_SCOPE = "steering.sources"
+
 
 @dataclass(frozen=True)
 class ScopeSpec:
@@ -1209,6 +1214,13 @@ class ScopeSpec:
     # loader's contract is that registering a scope needs no loader edit, and a
     # second scope with a floor should be a catalog entry, not another `if`.
     always_permitted: tuple[str, ...] = ()
+    # Disposition when NEITHER the policy nor the profile names the scope. The
+    # default (``False``) is the ungoverned permit every existing row relies on.
+    # ``True`` makes absence a denying ``Decision`` (``layer == "default"``) for a
+    # scope whose posture is opt-in: nothing is permitted until a host-controlled
+    # tier names it, and then the unchanged policy ∩ profile algebra decides. It
+    # is a consumption default for this scope, not an enterprise deny floor.
+    deny_when_ungoverned: bool = False
 
 
 # ── CAPABILITY-DEFAULT CONTRACT (read before touching any capability_default) ──
@@ -1280,6 +1292,9 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     "filesystem.write": ScopeSpec(RULESET, matcher="path"),
     "folders.read": ScopeSpec(RULESET, matcher="path"),
     "folders.write": ScopeSpec(RULESET, matcher="path"),
+    # Canonical targets a global steering leaf link may deliver; see
+    # docs/system-specs/modules/governance.md "Global steering leaf links".
+    STEERING_SOURCES_SCOPE: ScopeSpec(RULESET, matcher="path", deny_when_ungoverned=True),
     "network.egress": ScopeSpec(RULESET, matcher="host"),
     "channels": ScopeSpec(SCOPEDMAP),
     "approval_mode": ScopeSpec(ORDINAL, ordinal_scale="approval"),
@@ -3859,6 +3874,25 @@ def assert_policy_signature_satisfied(ceiling: Optional[GovernanceCeiling]) -> N
 _PERMIT_NOT_GOVERNED = Decision(True, "not governed", rule="default", layer="default")
 
 
+def ungoverned_decision(scope: str) -> Decision:
+    """The outcome when NEITHER level names *scope*: the catalog row decides.
+
+    Every ruleset row permits by default; a row flagged
+    ``deny_when_ungoverned`` denies. Both :func:`resolve` and the chokepoint
+    helper's no-ceiling-no-profile shortcut consult this, so no caller can reach
+    a different answer for the same absent scope.
+    """
+    spec = SCOPE_CATALOG.get(scope)
+    if spec is not None and spec.deny_when_ungoverned:
+        return Decision(
+            False,
+            f"{scope} is not named by any policy or profile; denied until one names it",
+            rule="default",
+            layer="default",
+        )
+    return _PERMIT_NOT_GOVERNED
+
+
 def _query_level(control: object, scope: str, item: str) -> Decision:
     """Query ONE level's control for *item* in *scope* (Rule 1).
 
@@ -3907,16 +3941,22 @@ def resolve(
     Policy is the hard ceiling; the profile can only further restrict.  Either
     level being ``None`` (or not governing the scope) contributes a permit, so
     ``resolve(None, None, …)`` permits everything (the ungoverned standalone
-    default) and a policy-deny is final regardless of the profile.
+    default) and a policy-deny is final regardless of the profile. The one
+    metadata-driven exception is a catalog row flagged ``deny_when_ungoverned``:
+    when neither level names it, :func:`ungoverned_decision` denies instead.
     """
     policy_control = ceiling.get(scope) if ceiling is not None else None
+    profile_control = profile.get(scope) if profile is not None else None
+    if policy_control is None and profile_control is None:
+        absent = ungoverned_decision(scope)
+        if not absent.permitted:
+            return absent
     policy_dec = _query_level(policy_control, scope, item)
     if not policy_dec.permitted:
         return Decision(
             False, f"policy denies: {policy_dec.reason}", rule=policy_dec.rule, layer="policy"
         )
 
-    profile_control = profile.get(scope) if profile is not None else None
     profile_dec = _query_level(profile_control, scope, item)
     if not profile_dec.permitted:
         return Decision(
