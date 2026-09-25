@@ -1,4 +1,36 @@
-const { contextBridge, ipcRenderer, webUtils } = require("electron");
+const {
+  contextBridge: electronContextBridge,
+  ipcRenderer,
+  webUtils,
+} = require("electron");
+
+// The boot splash and token prompt are local file:// documents. An edition may
+// supply the splash at build time, so those pages must never inherit the full
+// dashboard bridge merely because they share its WebContents. Keep their
+// preload surface to the three channels the splash contract actually needs;
+// the token prompt needs no bridge at all and simply ignores this object.
+const isLocalShellPage =
+  typeof location !== "undefined" && location.protocol === "file:";
+const LOCAL_SHELL_ELECTRON_API = new Set([
+  "onStatus",
+  "onBootReady",
+  "bootComplete",
+]);
+const contextBridge = {
+  exposeInMainWorld(name, api) {
+    if (!isLocalShellPage) {
+      electronContextBridge.exposeInMainWorld(name, api);
+      return;
+    }
+    if (name !== "electronAPI") return;
+    electronContextBridge.exposeInMainWorld(
+      name,
+      Object.fromEntries(
+        Object.entries(api).filter(([key]) => LOCAL_SHELL_ELECTRON_API.has(key)),
+      ),
+    );
+  },
+};
 
 // Live `watchCursorAway` subscriptions in this renderer; see that method.
 let cursorAwaySubscribers = 0;
