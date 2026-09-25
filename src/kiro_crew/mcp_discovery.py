@@ -11,6 +11,7 @@ to auto-sync newly discovered servers into the agent config.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib
 import json
 import logging
@@ -41,6 +42,7 @@ from kiro_crew.env import (
     spec_env_path,
     spec_path_key,
 )
+from kiro_crew.executors import mcp_probe_executor
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.mcp_cleanup import (
     invalid_disabled_flag,
@@ -2061,8 +2063,43 @@ async def _read_stdio_jsonrpc_response(
             return parsed
 
 
+async def _probe_on_private_loop(
+    server: McpServerInfo, client_info: dict[str, str] | None
+) -> McpServerInfo:
+    """Run one local probe on a PRIVATE event loop owned by a pooled worker thread.
+
+    ``create_subprocess_exec`` forks and execs synchronously before its first
+    await, on every platform, so on the gateway loop a slow spawn freezes every tab.
+    A cancel is forwarded to the private task, whose ``finally`` reaps the child.
+    """
+    handle: list[tuple[asyncio.AbstractEventLoop, asyncio.Task[Any] | None]] = []
+
+    async def _main() -> McpServerInfo:
+        handle.append((asyncio.get_running_loop(), asyncio.current_task()))
+        return await probe_server(server, client_info=client_info, _on_private_loop=True)
+
+    def _own_loop() -> McpServerInfo:
+        with asyncio.Runner() as runner:
+            return runner.run(_main())
+
+    fut = asyncio.get_running_loop().run_in_executor(mcp_probe_executor(), _own_loop)
+    try:
+        return await asyncio.shield(fut)
+    except asyncio.CancelledError:
+        fut.cancel()
+        fut.add_done_callback(lambda f: f.cancelled() or f.exception())
+        for loop, task in handle:
+            if task is not None:
+                with contextlib.suppress(RuntimeError):  # private loop already closed
+                    loop.call_soon_threadsafe(task.cancel)
+        raise
+
+
 async def probe_server(
-    server: McpServerInfo, *, client_info: dict[str, str] | None = None
+    server: McpServerInfo,
+    *,
+    client_info: dict[str, str] | None = None,
+    _on_private_loop: bool = False,
 ) -> McpServerInfo:
     """Probe a single MCP server by spawning it and sending initialize.
 
@@ -2109,6 +2146,9 @@ async def probe_server(
         server.error = "no command"
         logger.warning("MCP probe failed [%s]: no command configured", server.name)
         return server
+
+    if not _on_private_loop:
+        return await _probe_on_private_loop(server, client_info)
 
     server.status = "probing"
     # The PATH the spawn will actually search, bound before the try so the

@@ -395,6 +395,7 @@ _lock = threading.Lock()
 _pool: ThreadPoolExecutor | None = None
 _subprocess_pool: ThreadPoolExecutor | None = None
 _kiro_spawn_pool: ThreadPoolExecutor | None = None
+_mcp_probe_pool: ThreadPoolExecutor | None = None
 _cron_pool: ThreadPoolExecutor | None = None
 _discovery_pool: ThreadPoolExecutor | None = None
 _embed_pool: ThreadPoolExecutor | None = None
@@ -501,6 +502,19 @@ def kiro_spawn_executor() -> ThreadPoolExecutor:
                 )
                 atexit.register(shutdown_maintenance_executor)
     return _kiro_spawn_pool
+
+
+def mcp_probe_executor() -> ThreadPoolExecutor:
+    """Local MCP probe pool: one private event loop per worker, 5 = PROBE_MAX_CONCURRENCY."""
+    global _mcp_probe_pool
+    if _mcp_probe_pool is None:
+        with _lock:
+            if _mcp_probe_pool is None:
+                _mcp_probe_pool = ThreadPoolExecutor(
+                    max_workers=5, thread_name_prefix="mc-mcpprobe"
+                )
+                atexit.register(shutdown_maintenance_executor)
+    return _mcp_probe_pool
 
 
 def cron_executor() -> ThreadPoolExecutor:
@@ -1109,11 +1123,12 @@ def shutdown_maintenance_executor() -> None:
     global _pool, _subprocess_pool, _cron_pool, _discovery_pool, _embed_pool, _recall_pool
     global _governance_pool, _image_pool, _cron_gate_pool, _stt_pool, _path_resolve_pool
     global _path_probe_pool, _path_transfer_pool
-    global _crew_log_pool, _kiro_spawn_pool
+    global _crew_log_pool, _kiro_spawn_pool, _mcp_probe_pool
     with _lock:
         pool, _pool = _pool, None
         subprocess_pool, _subprocess_pool = _subprocess_pool, None
         kiro_spawn_pool, _kiro_spawn_pool = _kiro_spawn_pool, None
+        mcp_probe_pool, _mcp_probe_pool = _mcp_probe_pool, None
         cron_pool, _cron_pool = _cron_pool, None
         discovery_pool, _discovery_pool = _discovery_pool, None
         embed_pool, _embed_pool = _embed_pool, None
@@ -1132,6 +1147,8 @@ def shutdown_maintenance_executor() -> None:
         subprocess_pool.shutdown(wait=False, cancel_futures=True)
     if kiro_spawn_pool is not None:
         kiro_spawn_pool.shutdown(wait=False, cancel_futures=True)
+    if mcp_probe_pool is not None:
+        mcp_probe_pool.shutdown(wait=False, cancel_futures=True)
     if cron_pool is not None:
         cron_pool.shutdown(wait=False, cancel_futures=True)
     if discovery_pool is not None:
