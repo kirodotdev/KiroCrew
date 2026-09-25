@@ -65,7 +65,7 @@ describe('SettingsSearch', () => {
     setup('/settings?tab=chat&channel=slack')
     fireEvent.change(input(), { target: { value: 'zoom' } })
     fireEvent.mouseDown(screen.getByText('Zoom Level'))
-    expect(screen.getByTestId('pathname').textContent).toBe('/settings/display')
+    expect(screen.getByTestId('pathname').textContent).toBe('/settings/display/zoom')
     const params = new URLSearchParams(screen.getByTestId('params').textContent ?? '')
     expect(params.get('highlight')).toBe('display.zoom-level')
     // The stale legacy params from the previous URL must not ride along.

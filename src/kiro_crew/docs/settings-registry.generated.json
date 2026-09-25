@@ -992,7 +992,7 @@
       "id": "display.command-completion",
       "label": "Command completion",
       "tab": "display",
-      "route": "/settings/display?highlight=key%3Adashboard.terminal.completion.enabled",
+      "route": "/settings/display/terminal?highlight=key%3Adashboard.terminal.completion.enabled",
       "description": "Show the completion popup while typing in the Terminal. Enter runs the line you typed; to take a suggestion, press ↑/↓ then Enter, or Tab. Off hides the popup; your shell's own Tab completion still works.",
       "configKey": "dashboard.terminal.completion.enabled"
     },
@@ -1000,14 +1000,14 @@
       "id": "display.default-for-new-sessions",
       "label": "Default for New Sessions",
       "tab": "display",
-      "route": "/settings/display?highlight=display.default-for-new-sessions",
+      "route": "/settings/display/sidebar?highlight=display.default-for-new-sessions",
       "description": "None, auto-cycle, or pick a fixed color."
     },
     {
       "id": "display.default-shell",
       "label": "Default shell",
       "tab": "display",
-      "route": "/settings/display?highlight=key%3Adashboard.terminal.shell",
+      "route": "/settings/display/terminal?highlight=key%3Adashboard.terminal.shell",
       "description": "Shell the built-in terminal launches — an absolute path or a command on PATH. Leave empty to use the system default ($SHELL).",
       "configKey": "dashboard.terminal.shell"
     },
@@ -1015,84 +1015,84 @@
       "id": "display.display-mode",
       "label": "Display Mode",
       "tab": "display",
-      "route": "/settings/display?highlight=display.display-mode",
+      "route": "/settings/display/sidebar?highlight=display.display-mode",
       "description": "How the session color is applied to the row."
     },
     {
       "id": "display.font",
       "label": "Font",
       "tab": "display",
-      "route": "/settings/display?highlight=display.font",
+      "route": "/settings/display/terminal?highlight=display.font",
       "description": "Font for the built-in terminal. Pick one installed on the machine you view the dashboard from, or type any font name — a Nerd Font renders Powerline and prompt-theme glyphs."
     },
     {
       "id": "display.font-family",
       "label": "Font Family",
       "tab": "display",
-      "route": "/settings/display?highlight=display.font-family",
+      "route": "/settings/display/zoom?highlight=display.font-family",
       "description": "UI font family for the dashboard. Code font follows the active theme, except OpenDyslexic which supplies its own."
     },
     {
       "id": "display.font-size",
       "label": "Font size",
       "tab": "display",
-      "route": "/settings/display?highlight=display.font-size",
+      "route": "/settings/display/terminal?highlight=display.font-size",
       "description": "Text size in the built-in terminal, measured in pixels."
     },
     {
       "id": "display.highlight-recent-sessions",
       "label": "Highlight recent sessions",
       "tab": "display",
-      "route": "/settings/display?highlight=display.highlight-recent-sessions",
+      "route": "/settings/display/sidebar?highlight=display.highlight-recent-sessions",
       "description": "Highlight the N most-recently-active sessions with a graded accent stripe (0 = off). Saved to your Kiro Crew config."
     },
     {
       "id": "display.intensity",
       "label": "Intensity",
       "tab": "display",
-      "route": "/settings/display?highlight=display.intensity",
+      "route": "/settings/display/sidebar?highlight=display.intensity",
       "description": "How visible the color tint is on sidebar rows."
     },
     {
       "id": "display.interface",
       "label": "Interface",
       "tab": "display",
-      "route": "/settings/display?highlight=display.interface",
+      "route": "/settings/display/view?highlight=display.interface",
       "description": "Chat bubbles or CLI-style line-by-line output"
     },
     {
       "id": "display.language",
       "label": "Language",
       "tab": "display",
-      "route": "/settings/display?highlight=display.language",
+      "route": "/settings/display/view?highlight=display.language",
       "description": "Language for the dashboard interface."
     },
     {
       "id": "display.mode",
       "label": "Mode",
       "tab": "display",
-      "route": "/settings/display?highlight=display.mode",
+      "route": "/settings/display/theme?highlight=display.mode",
       "description": "Light or dark appearance for the dashboard"
     },
     {
       "id": "display.palette",
       "label": "Palette",
       "tab": "display",
-      "route": "/settings/display?highlight=display.palette",
+      "route": "/settings/display/sidebar?highlight=display.palette",
       "description": "Choose a color palette for your sidebar sessions."
     },
     {
       "id": "display.theme",
       "label": "Theme",
       "tab": "display",
-      "route": "/settings/display?highlight=display.theme",
+      "route": "/settings/display/theme?highlight=display.theme",
       "description": "Select a theme for the dashboard"
     },
     {
       "id": "display.zoom-level",
       "label": "Zoom Level",
       "tab": "display",
-      "route": "/settings/display?highlight=display.zoom-level"
+      "route": "/settings/display/zoom?highlight=display.zoom-level"
     },
     {
       "id": "instances.auto-connect-crews",
@@ -1112,103 +1112,103 @@
       "id": "notifications.sound-category-approval",
       "label": "Approvals and questions",
       "tab": "notifications",
-      "route": "/settings/notifications?highlight=notifications.sound-category-approval",
+      "route": "/settings/notifications/percategory?highlight=notifications.sound-category-approval",
       "description": "When the agent needs a tool approval or an answer"
     },
     {
       "id": "notifications.sound-category-turn",
       "label": "Conversation handoffs",
       "tab": "notifications",
-      "route": "/settings/notifications?highlight=notifications.sound-category-turn",
+      "route": "/settings/notifications/percategory?highlight=notifications.sound-category-turn",
       "description": "When a conversation finishes or pauses for your input"
     },
     {
       "id": "notifications.sound-category-cron",
       "label": "Cron",
       "tab": "notifications",
-      "route": "/settings/notifications?highlight=notifications.sound-category-cron",
+      "route": "/settings/notifications/percategory?highlight=notifications.sound-category-cron",
       "description": "Scheduled job completions"
     },
     {
       "id": "notifications.sound-category-all",
       "label": "Default (all categories)",
       "tab": "notifications",
-      "route": "/settings/notifications?highlight=notifications.sound-category-all",
+      "route": "/settings/notifications/percategory?highlight=notifications.sound-category-all",
       "description": "Fallback sound when no category-specific override is set"
     },
     {
       "id": "notifications.sound-category-heartbeat",
       "label": "Heartbeat",
       "tab": "notifications",
-      "route": "/settings/notifications?highlight=notifications.sound-category-heartbeat",
+      "route": "/settings/notifications/percategory?highlight=notifications.sound-category-heartbeat",
       "description": "Heartbeat task results"
     },
     {
       "id": "notifications.notify-when-a-background-chat-finishes",
       "label": "Notify when a background chat finishes",
       "tab": "notifications",
-      "route": "/settings/notifications?highlight=notifications.notify-when-a-background-chat-finishes",
+      "route": "/settings/notifications/alerts?highlight=notifications.notify-when-a-background-chat-finishes",
       "description": "Shows a system notification naming the chat that finished, but only while this window is minimized or behind another app."
     },
     {
       "id": "notifications.play-sound-on-new-notifications",
       "label": "Play sound on new notifications",
       "tab": "notifications",
-      "route": "/settings/notifications?highlight=notifications.play-sound-on-new-notifications"
+      "route": "/settings/notifications/sound?highlight=notifications.play-sound-on-new-notifications"
     },
     {
       "id": "notifications.sound-category-agent",
       "label": "Proactive agent messages",
       "tab": "notifications",
-      "route": "/settings/notifications?highlight=notifications.sound-category-agent",
+      "route": "/settings/notifications/percategory?highlight=notifications.sound-category-agent",
       "description": "When the agent proactively messages you outside a chat"
     },
     {
       "id": "notifications.show-a-banner-for-new-notifications",
       "label": "Show a banner for new notifications",
       "tab": "notifications",
-      "route": "/settings/notifications?highlight=notifications.show-a-banner-for-new-notifications",
+      "route": "/settings/notifications/alerts?highlight=notifications.show-a-banner-for-new-notifications",
       "description": "A card slides in under the top bar when a notification arrives, then tucks into the bell."
     },
     {
       "id": "notifications.sound-category-skills",
       "label": "Skills",
       "tab": "notifications",
-      "route": "/settings/notifications?highlight=notifications.sound-category-skills",
+      "route": "/settings/notifications/percategory?highlight=notifications.sound-category-skills",
       "description": "New skill candidates awaiting your approval"
     },
     {
       "id": "notifications.sources",
       "label": "Sources",
       "tab": "notifications",
-      "route": "/settings/notifications?highlight=notifications.sources",
+      "route": "/settings/notifications/sources?highlight=notifications.sources",
       "description": "Mute notification sources or override their priority. Muted notifications stay in history but never badge, sound, or banner."
     },
     {
       "id": "notifications.sound-category-subagent",
       "label": "Subagent",
       "tab": "notifications",
-      "route": "/settings/notifications?highlight=notifications.sound-category-subagent",
+      "route": "/settings/notifications/percategory?highlight=notifications.sound-category-subagent",
       "description": "Background subagent completions"
     },
     {
       "id": "notifications.sound-category-taskrunner",
       "label": "Tasks",
       "tab": "notifications",
-      "route": "/settings/notifications?highlight=notifications.sound-category-taskrunner",
+      "route": "/settings/notifications/percategory?highlight=notifications.sound-category-taskrunner",
       "description": "Task Runner completions"
     },
     {
       "id": "notifications.volume",
       "label": "Volume",
       "tab": "notifications",
-      "route": "/settings/notifications?highlight=notifications.volume"
+      "route": "/settings/notifications/sound?highlight=notifications.volume"
     },
     {
       "id": "notifications.sound-category-hook",
       "label": "Webhook",
       "tab": "notifications",
-      "route": "/settings/notifications?highlight=notifications.sound-category-hook",
+      "route": "/settings/notifications/percategory?highlight=notifications.sound-category-hook",
       "description": "External hook triggers"
     },
     {

@@ -1701,10 +1701,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "tab": "display",
     "type": "toggle",
     "occurrence": 1,
+    "params": {
+      "sub": "terminal"
+    },
     "configKey": "dashboard.terminal.completion.enabled"
   },
   {
     "id": "display.default-for-new-sessions",
+    "params": {
+      "sub": "sidebar"
+    },
     "labelKey": "pages.settings.displayPanel.default_for_new_sessions",
     "tab": "display",
     "type": "buttonGroup",
@@ -1720,6 +1726,9 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "tab": "display",
     "type": "input",
     "occurrence": 1,
+    "params": {
+      "sub": "terminal"
+    },
     "configKey": "dashboard.terminal.shell"
   },
   {
@@ -1729,7 +1738,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "How the session color is applied to the row.",
     "tab": "display",
     "type": "buttonGroup",
-    "occurrence": 1
+    "occurrence": 1,
+    "params": {
+      "sub": "sidebar"
+    }
   },
   {
     "id": "display.font",
@@ -1738,7 +1750,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Font for the built-in terminal. Pick one installed on the machine you view the dashboard from, or type any font name — a Nerd Font renders Powerline and prompt-theme glyphs.",
     "tab": "display",
     "type": "select",
-    "occurrence": 1
+    "occurrence": 1,
+    "params": {
+      "sub": "terminal"
+    }
   },
   {
     "id": "display.font-family",
@@ -1747,7 +1762,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "UI font family for the dashboard. Code font follows the active theme, except OpenDyslexic which supplies its own.",
     "tab": "display",
     "type": "buttonGroup",
-    "occurrence": 1
+    "occurrence": 1,
+    "params": {
+      "sub": "zoom"
+    }
   },
   {
     "id": "display.font-size",
@@ -1756,7 +1774,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Text size in the built-in terminal, measured in pixels.",
     "tab": "display",
     "type": "stepper",
-    "occurrence": 1
+    "occurrence": 1,
+    "params": {
+      "sub": "terminal"
+    }
   },
   {
     "id": "display.highlight-recent-sessions",
@@ -1765,7 +1786,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Highlight the N most-recently-active sessions with a graded accent stripe (0 = off). Saved to your Kiro Crew config.",
     "tab": "display",
     "type": "stepper",
-    "occurrence": 1
+    "occurrence": 1,
+    "params": {
+      "sub": "sidebar"
+    }
   },
   {
     "id": "display.intensity",
@@ -1774,7 +1798,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "How visible the color tint is on sidebar rows.",
     "tab": "display",
     "type": "buttonGroup",
-    "occurrence": 1
+    "occurrence": 1,
+    "params": {
+      "sub": "sidebar"
+    }
   },
   {
     "id": "display.interface",
@@ -1783,7 +1810,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Chat bubbles or CLI-style line-by-line output",
     "tab": "display",
     "type": "buttonGroup",
-    "occurrence": 1
+    "occurrence": 1,
+    "params": {
+      "sub": "view"
+    }
   },
   {
     "id": "display.language",
@@ -1792,7 +1822,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Language for the dashboard interface.",
     "tab": "display",
     "type": "select",
-    "occurrence": 1
+    "occurrence": 1,
+    "params": {
+      "sub": "view"
+    }
   },
   {
     "id": "display.mode",
@@ -1801,7 +1834,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Light or dark appearance for the dashboard",
     "tab": "display",
     "type": "buttonGroup",
-    "occurrence": 1
+    "occurrence": 1,
+    "params": {
+      "sub": "theme"
+    }
   },
   {
     "id": "display.palette",
@@ -1810,7 +1846,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Choose a color palette for your sidebar sessions.",
     "tab": "display",
     "type": "buttonGroup",
-    "occurrence": 1
+    "occurrence": 1,
+    "params": {
+      "sub": "sidebar"
+    }
   },
   {
     "id": "display.theme",
@@ -1819,7 +1858,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Select a theme for the dashboard",
     "tab": "display",
     "type": "select",
-    "occurrence": 1
+    "occurrence": 1,
+    "params": {
+      "sub": "theme"
+    }
   },
   {
     "id": "display.zoom-level",
@@ -1827,7 +1869,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "labelKey": "pages.settings.displayPanel.zoom_level",
     "tab": "display",
     "type": "stepper",
-    "occurrence": 1
+    "occurrence": 1,
+    "params": {
+      "sub": "zoom"
+    }
   },
   {
     "id": "instances.auto-connect-crews",
@@ -1849,6 +1894,9 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   },
   {
     "id": "notifications.sound-category-approval",
+    "params": {
+      "sub": "percategory"
+    },
     "labelKey": "pages.settings.notificationsPanel.category_approval",
     "tab": "notifications",
     "type": "select",
@@ -1858,6 +1906,9 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   },
   {
     "id": "notifications.sound-category-turn",
+    "params": {
+      "sub": "percategory"
+    },
     "labelKey": "pages.settings.notificationsPanel.category_turn",
     "tab": "notifications",
     "type": "select",
@@ -1867,6 +1918,9 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   },
   {
     "id": "notifications.sound-category-cron",
+    "params": {
+      "sub": "percategory"
+    },
     "labelKey": "pages.settings.notificationsPanel.category_cron",
     "tab": "notifications",
     "type": "select",
@@ -1876,6 +1930,9 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   },
   {
     "id": "notifications.sound-category-all",
+    "params": {
+      "sub": "percategory"
+    },
     "labelKey": "pages.settings.notificationsPanel.category_all",
     "tab": "notifications",
     "type": "select",
@@ -1885,6 +1942,9 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   },
   {
     "id": "notifications.sound-category-heartbeat",
+    "params": {
+      "sub": "percategory"
+    },
     "labelKey": "pages.settings.notificationsPanel.category_heartbeat",
     "tab": "notifications",
     "type": "select",
@@ -1899,7 +1959,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Shows a system notification naming the chat that finished, but only while this window is minimized or behind another app.",
     "tab": "notifications",
     "type": "toggle",
-    "occurrence": 1
+    "occurrence": 1,
+    "params": {
+      "sub": "alerts"
+    }
   },
   {
     "id": "notifications.play-sound-on-new-notifications",
@@ -1907,10 +1970,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "labelKey": "pages.settings.notificationsPanel.play_sound_on_new_notifications",
     "tab": "notifications",
     "type": "toggle",
-    "occurrence": 1
+    "occurrence": 1,
+    "params": {
+      "sub": "sound"
+    }
   },
   {
     "id": "notifications.sound-category-agent",
+    "params": {
+      "sub": "percategory"
+    },
     "labelKey": "pages.settings.notificationsPanel.category_agent",
     "tab": "notifications",
     "type": "select",
@@ -1925,10 +1994,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "A card slides in under the top bar when a notification arrives, then tucks into the bell.",
     "tab": "notifications",
     "type": "toggle",
-    "occurrence": 1
+    "occurrence": 1,
+    "params": {
+      "sub": "alerts"
+    }
   },
   {
     "id": "notifications.sound-category-skills",
+    "params": {
+      "sub": "percategory"
+    },
     "labelKey": "pages.settings.notificationsPanel.category_skills",
     "tab": "notifications",
     "type": "select",
@@ -1938,6 +2013,9 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   },
   {
     "id": "notifications.sources",
+    "params": {
+      "sub": "sources"
+    },
     "labelKey": "pages.settings.notificationsPanel.sources",
     "tab": "notifications",
     "type": "toggle",
@@ -1947,6 +2025,9 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   },
   {
     "id": "notifications.sound-category-subagent",
+    "params": {
+      "sub": "percategory"
+    },
     "labelKey": "pages.settings.notificationsPanel.category_subagent",
     "tab": "notifications",
     "type": "select",
@@ -1956,6 +2037,9 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   },
   {
     "id": "notifications.sound-category-taskrunner",
+    "params": {
+      "sub": "percategory"
+    },
     "labelKey": "pages.settings.notificationsPanel.category_taskrunner",
     "tab": "notifications",
     "type": "select",
@@ -1965,6 +2049,9 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   },
   {
     "id": "notifications.volume",
+    "params": {
+      "sub": "sound"
+    },
     "labelKey": "pages.settings.notificationsPanel.volume",
     "tab": "notifications",
     "type": "stepper",
@@ -1973,6 +2060,9 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   },
   {
     "id": "notifications.sound-category-hook",
+    "params": {
+      "sub": "percategory"
+    },
     "labelKey": "pages.settings.notificationsPanel.category_hook",
     "tab": "notifications",
     "type": "select",

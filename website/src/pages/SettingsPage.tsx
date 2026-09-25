@@ -232,9 +232,9 @@ export default function SettingsPage() {
         {tab === 'overview' && <OverviewPanel />}
         {tab === 'imports' && <ImportPanel />}
         {tab === 'chat' && <ChatPanel basePath={SETTINGS_BASE_PATH} />}
-        {tab === 'display' && <DisplayPanel />}
+        {tab === 'display' && <DisplayPanel basePath={SETTINGS_BASE_PATH} />}
         {tab === 'voice' && <VoicePanel />}
-        {tab === 'notifications' && <NotificationsPanel />}
+        {tab === 'notifications' && <NotificationsPanel basePath={SETTINGS_BASE_PATH} />}
         {tab === 'shortcuts' && <ShortcutsPanel />}
         {tab === 'skills' && <SkillsPanel />}
         {tab === 'channels' && <ChannelsPanel basePath={SETTINGS_BASE_PATH} />}
