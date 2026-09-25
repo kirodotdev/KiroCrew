@@ -34,6 +34,7 @@ Dependency direction is ``webex -> messaging`` (allowed).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -57,7 +58,7 @@ from kiro_crew.messaging.renderer import (
     redaction_notice,
     split_options_trailer,
 )
-from kiro_crew.messaging.split import chunk_utf8_bytes
+from kiro_crew.messaging.split import bounded_for_delivery, chunk_utf8_bytes
 from kiro_crew.messaging.tables import TABLE_POLICY_CARDS
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -113,6 +114,22 @@ def _redact_all(text: str) -> str:
     out, _ = redact_exfiltration_urls(text)
     out, _ = redact_credentials(out)
     return out
+
+
+def _bounded_chunks(content: str) -> list[str]:
+    """Credential-safe chunks of *content*, none over Webex's byte cap.
+
+    The splitter answers with the text WHOLE when no budget cuts without rejoining
+    a key, which is its fail-closed answer and costs the caller a chunk over the
+    budget. This client's cap is hard -- it truncates a larger payload and the
+    answer's tail goes with no notice -- so the sequence is graded once more and,
+    when the grade repairs it, cut again to the budget. The repair is safe to bound
+    again by contract, which is what makes one pass enough here.
+
+    Runs on a worker thread: the grade rescans the text per candidate boundary.
+    """
+    chunks = chunk_utf8_bytes(content, WEBEX_MAX_TEXT, redactor=_redact_all)
+    return bounded_for_delivery(chunks, WEBEX_MAX_TEXT, _redact_all, chunk_utf8_bytes)
 
 
 def webex_display_safe(text: str) -> str:
@@ -393,7 +410,19 @@ class WebexRenderer(Renderer):
         # budget) that a hand-rolled copy of this loop spins forever on. And
         # deliberately the FENCE-BLIND one, not ``split_markdown_bytes``: the
         # answer path above re-seals its own fences.
-        chunks = chunk_utf8_bytes(content, WEBEX_MAX_TEXT, redactor=_redact_all) or ["…"]
+        # OFFLOADED, like every other site that hands this splitter a redactor:
+        # the grade redacts and rescans the text once per candidate boundary and
+        # the search tries many budgets, so a final answer where no cut is clean
+        # holds the thread for seconds. This gateway runs every channel, every turn
+        # and the liveness heartbeat on one loop, and the watchdog exits the
+        # process when that loop goes quiet.
+        #
+        # RE-BOUND after the grade, because this transport's cap is hard: when no
+        # budget cuts safely the splitter declines to cut and answers with the text
+        # whole, and this client truncates anything over its byte cap, which would
+        # drop the answer's tail with no notice. ``repaired_for_delivery`` makes a
+        # sequence safe to bound again, so the result can be re-cut to the budget.
+        chunks = await asyncio.to_thread(_bounded_chunks, content) or ["…"]
         first, rest = chunks[0], chunks[1:]
         delivered = False
         if self._placeholder_id is not None:

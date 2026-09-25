@@ -286,7 +286,9 @@ def to_whatsapp_text(content: str) -> str:
     return text.strip()
 
 
-def render_chunks(content: str, limit: int = WHATSAPP_CHUNK_LIMIT) -> list[str]:
+def render_chunks(
+    content: str, limit: int = WHATSAPP_CHUNK_LIMIT, *, stable: bool = False
+) -> list[str]:
     """Delivery-ready chunks of WhatsApp-dialect text (see module docstring).
 
     Every rewrite -- the display screen, the reductions, dialect conversion --
@@ -295,14 +297,22 @@ def render_chunks(content: str, limit: int = WHATSAPP_CHUNK_LIMIT) -> list[str]:
     any chunk outgrowing the budget it was cut to, and several of them do: a
     flattened table row carries its column labels, a diagram gains a heading, and
     a redacted credential becomes a marker longer than the key it replaces.
+
+    ``stable`` is for the streaming turn renderer, which re-splits its growing
+    body every frame and treats all but the last chunk as delivered: it keeps the
+    text redacted while leaving every boundary where this budget puts it, so a
+    later arrival cannot revise a message already sent. That caller grades its own
+    seam before it counts a chunk final.
     """
     text = to_whatsapp_text(content)
     if not text:
         return []
-    return split_markdown_safe(text, limit, redactor=_redact_all)
+    return split_markdown_safe(text, limit, redactor=_redact_all, stable=stable)
 
 
-async def render_chunks_off_loop(content: str, limit: int = WHATSAPP_CHUNK_LIMIT) -> list[str]:
+async def render_chunks_off_loop(
+    content: str, limit: int = WHATSAPP_CHUNK_LIMIT, *, stable: bool = False
+) -> list[str]:
     """:func:`render_chunks` on a worker thread.
 
     The shared splitter terminates on pathological delimiter input but its CPU
@@ -310,4 +320,4 @@ async def render_chunks_off_loop(content: str, limit: int = WHATSAPP_CHUNK_LIMIT
     every turn and the liveness heartbeat on one event loop. Discord offloads
     the same call for the same reason.
     """
-    return await asyncio.to_thread(render_chunks, content, limit)
+    return await asyncio.to_thread(render_chunks, content, limit, stable=stable)
