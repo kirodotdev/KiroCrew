@@ -4351,10 +4351,12 @@ class SessionSummaryConfig:
         metadata=_meta(
             "Assistant Excerpt Size",
             "Characters kept from each end of an assistant message when building "
-            "the summarization input (>=80). User messages are always included in "
-            "full -- they carry intent and are small -- while assistant output is "
+            "the summarization input (>=80). User messages are included in full "
+            "unless the whole input exceeds the fixed 40,000-character summary input "
+            "limit -- they carry intent and are small -- while assistant output is "
             "excerpted because it holds the progress detail but dominates the "
-            "transcript.",
+            "transcript. Past that limit, middle turns are dropped and any turn is "
+            "cut to about 5,000 characters per end, so larger values stop helping.",
         ),
     )
 

@@ -30,7 +30,7 @@ from kiro_crew.session_summary import (
     extract_turns,
     last_activity_ts,
     normalize_payload,
-    render_input,
+    render_bounded_input,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -339,8 +339,8 @@ async def _generate_locked(
     # (chat_persistence caps the restore), so summarizing the in-memory tail of
     # a long session would regenerate from a truncated view and overwrite the
     # sidecar -- earlier intents would silently vanish from the panel. Disk is
-    # the same source the history endpoint serves, and extract_turns bounds
-    # what the model actually reads.
+    # the same source the history endpoint serves. render_bounded_input caps
+    # the total and keeps the first user turns that fit, then the newest ones.
     records = await asyncio.to_thread(log.read_messages_chained, key)
     turns = extract_turns(
         records,
@@ -366,7 +366,7 @@ async def _generate_locked(
         slot._summary_turn_mark = user_turns
         return False
 
-    prompt = _PROMPT + render_input(turns)
+    prompt = _PROMPT + render_bounded_input(turns)
     model = cfg.agent.resolve_model(_SUMMARY_ROLE)
     text = await run_bg_oneliner(
         state.sessions,
