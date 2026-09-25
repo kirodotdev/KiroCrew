@@ -224,7 +224,7 @@ describe('KiroPrerequisiteGate', () => {
     expect(screen.queryByRole('button', { name: 'Sign in to Kiro' })).not.toBeInTheDocument()
     expect(screen.queryByText(/unverified executable/)).not.toBeInTheDocument()
     // A PATH install: bare commands, nothing muted, no bundled-copy hint.
-    expect(screen.queryByText(/built into the desktop app/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/desktop app.s own copy of Kiro CLI/)).not.toBeInTheDocument()
   })
 
   it('explains then mutes the shared bundled path', async () => {
@@ -259,11 +259,35 @@ describe('KiroPrerequisiteGate', () => {
     for (const code of codes) {
       expect(code.querySelector('span.text-muted')?.textContent).toBe(`${bin} `)
     }
-    const hints = screen.getAllByText(/Kiro CLI from the desktop app/)
+    const hints = screen.getAllByText(/desktop app.s own copy of Kiro CLI.*exactly as shown/)
     expect(hints).toHaveLength(1)
     expect(
       hints[0].compareDocumentPosition(codes[0]) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
+  })
+
+  it('a copy that fails says so under the box instead of painting Copied', async () => {
+    // Both clipboard paths can be denied (no API, execCommand refused). The
+    // command is the only instruction on this screen, so a silent miss strands
+    // the user; the failure renders through ErrorNotice and clears on success.
+    const { copyToClipboard } = await import('../utils/clipboard')
+    vi.mocked(copyToClipboard).mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({ installed: true }))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    await screen.findByText(/Sign in with Kiro CLI on the gateway host/)
+    const [button] = screen.getAllByRole('button', { name: /Copy command/ })
+    fireEvent.click(button)
+    const notice = await screen.findByTestId('kiro-gate-copy-failed')
+    expect(notice.textContent).toMatch(/Copy failed/)
+    expect(screen.queryByRole('button', { name: /Copied/ })).toBeNull()
+
+    fireEvent.click(button)
+    await waitFor(() => expect(screen.queryByTestId('kiro-gate-copy-failed')).toBeNull())
+    expect(screen.getAllByRole('button', { name: /Copied/ }).length).toBeGreaterThan(0)
   })
 
   it('exposes no way to start a sign-in from the dashboard', async () => {

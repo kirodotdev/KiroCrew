@@ -1047,14 +1047,20 @@ print(p["sha256"])' "$cache/manifest.json" "$file")"
   # The file name contains a space ("Kiro CLI.dmg"), so the URL path is
   # percent-encoded. The archive is verified against the sha fail-closed
   # before anything is extracted; a cached copy that no longer matches is
-  # fetched again.
-  local dl archive
+  # fetched again. The download lands in a fresh temp file in the cache dir
+  # and is renamed into place only once verified: `curl -o` onto the cache
+  # path would write THROUGH a pre-existing symlink there, and a rename
+  # replaces the link itself instead of following it.
+  local dl archive fresh
   dl="$version/$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1]))' "$file")"
   archive="$cache/$version-$file"
   if [ ! -f "$archive" ] || ! kiro_cli_sha_ok "$sha" "$archive"; then
-    curl --proto '=https' --tlsv1.2 -fsSL "$release_base/$dl" -o "$archive"
-    kiro_cli_sha_ok "$sha" "$archive" \
-      || { echo "ERROR: kiro-cli sha256 mismatch for $file: refusing to bundle" >&2; exit 1; }
+    fresh="$(mktemp "$cache/.download.XXXXXX")"
+    curl --proto '=https' --tlsv1.2 -fsSL "$release_base/$dl" -o "$fresh"
+    kiro_cli_sha_ok "$sha" "$fresh" \
+      || { rm -f "$fresh"; echo "ERROR: kiro-cli sha256 mismatch for $file: refusing to bundle" >&2; exit 1; }
+    rm -f "$archive"
+    mv -f "$fresh" "$archive"
   fi
 
   if [ "$OS" = "darwin" ]; then
@@ -1111,33 +1117,58 @@ print(p["sha256"])' "$cache/manifest.json" "$file")"
   # Build-time gate: the staged copy must actually run on this host class, in a
   # clean room -- empty HOME, minimal PATH -- so no user install on the build
   # machine can answer for it (the launcher used to pass this gate that way).
-  # Two probes: `--version`, then one ACP `initialize` round trip over stdio,
+  # Three probes: `--version`, `login --help`, then one ACP `initialize` round trip,
   # the call every Kiro Crew session opens with. A binary that answers it here,
   # alone in its directory, is self-contained on THIS platform, which is the
   # premise the resolver rests on when it hands sessions exactly this file.
   # Enforced on EVERY platform: the Linux zip is selected by the build host's
   # own architecture (karch=HOST_ARCH), so the binary is always executable here
-  # and a failure means a broken artifact, not a cross-arch limitation. Windows
-  # keeps the runner's system-tool PATH: ACP startup may invoke Windows helpers
-  # outside System32. The explicit staged executable and empty profile still
-  # prevent an installed kiro-cli from answering either probe.
-  local clean_home clean_path probe_binary
+  # and a failure means a broken artifact, not a cross-arch limitation.
+  #
+  # Every probe runs under an EXPLICIT environment (`env -i` + the list below),
+  # never the job's: the release lanes hold the signing role's AWS_* session in
+  # the step env, and the probed file is a freshly downloaded executable. POSIX
+  # gets an empty HOME and a system-only PATH, so a signed-in system copy's
+  # state cannot answer. Windows keeps the runner's own profile and PATH: with
+  # HOME/USERPROFILE redirected to an empty directory the exe exits 1 at startup
+  # with "home directory not found" (observed on two consecutive runs), and ACP
+  # startup may invoke Windows helpers outside System32. The explicit staged
+  # executable is what pins which binary answers on both.
+  local clean_home probe_binary name
+  local -a probe_environ=()
   clean_home="$(mktemp -d)"
-  clean_path="/usr/bin:/bin"
   probe_binary="$dest/$entry"
   if [ "$OS" = "windows" ]; then
-    clean_path="$PATH"
     # Native Python does not perform Git Bash's MSYS path conversion.
     probe_binary="$(cygpath -w "$probe_binary")"
+    for name in SYSTEMROOT SystemRoot SYSTEMDRIVE SystemDrive WINDIR windir COMSPEC ComSpec \
+      PATHEXT TEMP TMP USERPROFILE HOMEDRIVE HOMEPATH APPDATA LOCALAPPDATA \
+      PROGRAMDATA ProgramData USERNAME; do
+      [ -n "${!name:-}" ] && probe_environ+=("$name=${!name}")
+    done
+    probe_environ+=("PATH=$PATH")
+  else
+    probe_environ+=("HOME=$clean_home" "PATH=/usr/bin:/bin")
   fi
-  if ! HOME="$clean_home" USERPROFILE="$clean_home" PATH="$clean_path" \
-    "$dest/$entry" --version >/dev/null 2>&1; then
+  probe_environ+=("KIRO_NO_AUTO_UPDATE=1")
+  if ! env -i "${probe_environ[@]}" "$dest/$entry" --version >/dev/null 2>&1; then
     rm -rf "$clean_home"
     echo "ERROR: staged kiro-cli does not execute" >&2; exit 1
   fi
-  if ! python3 - "$probe_binary" "$clean_home" <<'PY'
+  # `login` is the command the setup gate gives a fresh machine. Prove the
+  # staged entry accepts the device-flow flag without starting a network login.
+  if ! env -i "${probe_environ[@]}" "$dest/$entry" login --help 2>/dev/null \
+    | grep -q -- '--use-device-flow'; then
+    rm -rf "$clean_home"
+    echo "ERROR: staged kiro-cli does not accept login --use-device-flow" >&2; exit 1
+  fi
+  # The interpreter runs in the build's own env; the CHILD gets exactly the
+  # list above, handed over as argv so one allowlist covers all three probes.
+  if ! python3 - "$probe_binary" "$OS" "${probe_environ[@]}" <<'PY'
 import json, os, queue, subprocess, sys, threading, time
-binary, home = sys.argv[1], sys.argv[2]
+binary, build_os = sys.argv[1], sys.argv[2]
+child_env = dict(entry.split("=", 1) for entry in sys.argv[3:])
+started = time.monotonic()
 request = json.dumps({
     "jsonrpc": "2.0", "id": 1, "method": "initialize",
     "params": {"protocolVersion": 1, "clientCapabilities": {}},
@@ -1147,16 +1178,7 @@ request = json.dumps({
 proc = subprocess.Popen(
     [binary, "acp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
     stderr=subprocess.STDOUT,
-    env=(
-        {
-            **os.environ,
-            "HOME": home,
-            "USERPROFILE": home,
-            "PATH": os.environ.get("PATH", ""),
-        }
-        if os.name == "nt"
-        else {"HOME": home, "PATH": "/usr/bin:/bin"}
-    ),
+    env=child_env,
 )
 proc.stdin.write(request)
 proc.stdin.flush()
@@ -1195,7 +1217,10 @@ try:
 except subprocess.TimeoutExpired:
     proc.kill()
 if answered is None:
-    sys.exit("ERROR: staged kiro-cli did not answer ACP initialize within 120s")
+    elapsed = time.monotonic() - started
+    sys.exit("ERROR: staged kiro-cli did not answer ACP initialize "
+             f"(exit={proc.returncode}, elapsed={elapsed:.1f}s, "
+             f"python={sys.executable}, os.name={os.name}, build_os={build_os})")
 print("    acp initialize: answered (protocolVersion "
       f"{answered['result'].get('protocolVersion')})")
 PY

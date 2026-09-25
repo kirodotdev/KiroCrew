@@ -190,6 +190,9 @@ code.
      `<version>/kirocli-x86_64-linux.zip`, `<version>/kirocli-aarch64-linux.zip`,
      and `<version>/kiro-cli-x86_64-pc-windows-msvc.msi`) as
      `<sha>  <version>/<file>` lines, replacing the previous version's. A
+     Linux pin bump must also measure each staged binary's highest `GLIBC_*`
+     requirement as described in [desktop-app](desktop-app.md); neither arch
+     may exceed the desktop app's documented `GLIBC_2.34` compatibility floor.
      version bump without its sha lines FAILS the desktop build lane with that
      procedure in the error, never by shipping unverified bytes. A stale pin is
      not a build failure: the pinned artifact stays downloadable under its own

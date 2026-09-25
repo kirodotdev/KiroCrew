@@ -145,9 +145,87 @@ test("a source checkout has no resources path and is never probed", () => {
   assert.deepStrictEqual(bundledKiroCliEnvironment(fakeFs, path.posix, ""), {});
 });
 
-test("the owned gateway spawn exports the bundled kiro-cli directory", () => {
+test("a bundled copy is exported only after it answers --version on this machine", () => {
+  // The gateway resolver ranks the bundled directory first without probing it,
+  // so a copy that cannot run here (glibc floor, quarantine, truncated payload)
+  // would fail every session. The shell asks once, with the update check off,
+  // and a green answer keeps the pre-probe contract byte for byte.
+  const fakeFs = { statSync: () => ({ isDirectory: () => true }) };
+  const calls = [];
+  const spawnSync = (file, args, options) => {
+    calls.push({ file, args, options });
+    return { status: 0, signal: null };
+  };
+  const env = bundledKiroCliEnvironment(fakeFs, path.posix, "/res", {
+    platform: "linux",
+    spawnSync,
+    env: { PATH: "/usr/bin", KIRO_NO_AUTO_UPDATE: undefined },
+    log: () => assert.fail("a passing probe logs nothing"),
+  });
+  assert.deepStrictEqual(env, {
+    KIROCREW_BUNDLED_KIRO_DIR: "/res/backend-dist/kiro-cli",
+    KIRO_NO_AUTO_UPDATE: "1",
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].file, "/res/backend-dist/kiro-cli/kiro-cli-chat");
+  assert.deepStrictEqual(calls[0].args, ["--version"]);
+  assert.equal(calls[0].options.env.KIRO_NO_AUTO_UPDATE, "1");
+  assert.equal(calls[0].options.env.PATH, "/usr/bin");
+  assert.ok(calls[0].options.timeout > 0, "the probe is bounded");
+});
+
+test("the probe names kiro-cli.exe on Windows", () => {
+  const fakeFs = { statSync: () => ({ isDirectory: () => true }) };
+  const seen = [];
+  bundledKiroCliEnvironment(fakeFs, path.win32, String.raw`C:\App\resources`, {
+    platform: "win32",
+    spawnSync: (file) => { seen.push(file); return { status: 0, signal: null }; },
+  });
+  assert.deepStrictEqual(seen, [String.raw`C:\App\resources\backend-dist\kiro-cli\kiro-cli.exe`]);
+});
+
+test("a bundled copy that does not run here is NOT exported, and the reason is logged", () => {
+  // Fall-through, not failure: the env var must be ABSENT so discovery uses the
+  // user's own kiro-cli, and KIRO_NO_AUTO_UPDATE must not leak onto it.
+  const fakeFs = { statSync: () => ({ isDirectory: () => true }) };
+  const logged = [];
+  const nonzero = bundledKiroCliEnvironment(fakeFs, path.posix, "/res", {
+    platform: "linux",
+    spawnSync: () => ({ status: 1, signal: null }),
+    log: (line) => logged.push(line),
+  });
+  assert.deepStrictEqual(nonzero, {});
+
+  const enoent = new Error("spawnSync ENOENT");
+  const failedSpawn = bundledKiroCliEnvironment(fakeFs, path.posix, "/res", {
+    platform: "darwin",
+    spawnSync: () => ({ error: enoent, status: null, signal: null }),
+    log: (line) => logged.push(line),
+  });
+  assert.deepStrictEqual(failedSpawn, {});
+
+  const timedOut = bundledKiroCliEnvironment(fakeFs, path.posix, "/res", {
+    platform: "linux",
+    spawnSync: () => ({ error: new Error("ETIMEDOUT"), status: null, signal: "SIGTERM" }),
+    log: (line) => logged.push(line),
+  });
+  assert.deepStrictEqual(timedOut, {});
+
+  assert.equal(logged.length, 3);
+  for (const line of logged) {
+    assert.match(line, /bundled kiro-cli at \/res\/backend-dist\/kiro-cli\/kiro-cli-chat does not run here/);
+    assert.match(line, /falling through to the kiro-cli installed on this machine/);
+  }
+  assert.match(logged[0], /exit 1/);
+  assert.match(logged[1], /ENOENT/);
+});
+
+test("the owned gateway spawn exports the bundled kiro-cli directory after probing it", () => {
   const supervisor = fs.readFileSync(path.join(__dirname, "..", "gateway-supervisor.js"), "utf8");
-  assert.match(supervisor, /env:\s*buildGatewayEnvironment\(\{[\s\S]*?bundledKiroCliEnvironment\(fs, path, processObj\.resourcesPath\)/);
+  assert.match(
+    supervisor,
+    /env:\s*buildGatewayEnvironment\(\{[\s\S]*?bundledKiroCliEnvironment\(fs, path, processObj\.resourcesPath, \{[\s\S]*?spawnSync: defaultSpawnSync,[\s\S]*?log: glog,[\s\S]*?\}\)/,
+  );
 });
 
 test("the one desktop gateway spawn uses the hardened environment builder", () => {

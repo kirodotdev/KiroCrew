@@ -120,22 +120,57 @@ def login_commands_for(
     asserts "installed" while its only on-screen instruction fails with
     command-not-found on a fresh machine. POSIX paths use shell quoting. Windows
     commands name PowerShell explicitly, which also lets the same copied command
-    run from cmd.exe. Any other resolution keeps the bare constants: the binary
-    is on PATH by construction there.
+    run from cmd.exe. An operator's ``KIROCREW_KIRO_BIN`` override gets the same
+    treatment when its resolved file is not what the user's shell would run as
+    ``kiro-cli``: the bare command would then fail or sign in a different
+    install. Any other resolution keeps the bare constants: the binary is on
+    PATH by construction there.
     """
-    if is_bundled_kiro_cli(binary, environ):
+    bundled = is_bundled_kiro_cli(binary, environ)
+    if bundled or _is_off_path_override(binary, environ):
         if platform_compat.IS_WINDOWS:
             # A quoted executable path alone is data in PowerShell; its call
             # operator is required. Wrapping the command in powershell.exe keeps
             # this one display string runnable from both PowerShell and cmd.exe.
+            # The user's terminal is outside the gateway's process tree, so the
+            # KIRO_NO_AUTO_UPDATE the Electron shell sets does not reach this
+            # run; upstream compiles the startup self-update only for Windows,
+            # and without the switch a fresh sign-in would rewrite the sealed
+            # bundled exe. ``Set-Item`` rather than ``$env:`` because an outer
+            # interactive PowerShell interpolates ``$env:`` inside the double
+            # quotes before powershell.exe ever sees it.
             quoted = binary.replace("'", "''")
-            prefix = f"powershell.exe -NoProfile -Command \"& '{quoted}'"
+            prefix = (
+                'powershell.exe -NoProfile -Command "Set-Item Env:KIRO_NO_AUTO_UPDATE 1; '
+                f"& '{quoted}'"
+            )
             suffix = '"'
         else:
             prefix = shlex.quote(binary)
             suffix = ""
-        return f"{prefix}{_LOGIN_TAIL}{suffix}", f"{prefix}{_SSO_LOGIN_TAIL}{suffix}", True
+        return f"{prefix}{_LOGIN_TAIL}{suffix}", f"{prefix}{_SSO_LOGIN_TAIL}{suffix}", bundled
     return KIRO_CLI_LOGIN_COMMAND, KIRO_CLI_SSO_LOGIN_COMMAND, False
+
+
+def _is_off_path_override(binary: str, environ: Mapping[str, str]) -> bool:
+    """Whether *binary* came from ``KIROCREW_KIRO_BIN`` and sits in no ``PATH``
+    directory, so a bare ``kiro-cli`` typed in the user's shell would not run it.
+
+    Pure string work, like :func:`is_bundled_kiro_cli`: the callers run on the
+    event loop, so no ``which``/stat may happen here. A directory match is the
+    whole test -- an override named ``kiro-cli-chat`` inside a ``PATH`` dir is
+    left bare, which is the pre-existing behaviour for every ``PATH`` install.
+    """
+    override = environ.get("KIROCREW_KIRO_BIN", "")
+    if not override or not binary:
+        return False
+    if os.path.normpath(override) != os.path.normpath(binary):
+        return False
+    binary_dir = os.path.normpath(os.path.dirname(binary))
+    path_dirs = {
+        os.path.normpath(entry) for entry in environ.get("PATH", "").split(os.pathsep) if entry
+    }
+    return binary_dir not in path_dirs
 
 
 # Why ``update_cli`` refuses the desktop app's bundled copy. Shown verbatim in the
@@ -361,6 +396,7 @@ _PROBE_ENV_KEYS = frozenset(
         # headless) simply don't set them, so this is a no-op there.
         "DBUS_SESSION_BUS_ADDRESS",
         "HOME",
+        "KIRO_NO_AUTO_UPDATE",
         "LANG",
         "LC_ALL",
         "LOCALAPPDATA",
