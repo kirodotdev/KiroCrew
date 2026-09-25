@@ -981,6 +981,41 @@ class TestSameSecondRunCollapse:
         assert outputs["status_state"] == "failure"
         assert outputs["label"] == "readiness: action required"
 
+    @pytest.mark.parametrize(
+        ("later", "state"),
+        [
+            ([(400, "success", "00:02:01")], "success"),
+            ([(400, "success", "00:01:57")], "success"),
+            ([(400, "success", "00:01:55")], "failure"),
+            ([(400, "success", "00:02:01"), (300, "failure", "00:02:05")], "failure"),
+        ],
+    )
+    def test_cancelled_max_id_yields_only_to_the_latest_started_run(
+        self, runner: Runner, later: list, state: str
+    ):
+        # Fork approval started lower-id runs last, so they cancelled the
+        # max-id twin. The latest-started run is the verdict, red or green.
+        runs = [
+            {
+                "id": 500,
+                "status": "completed",
+                "conclusion": "cancelled",
+                "run_started_at": "2026-08-11T00:01:57Z",
+            }
+        ] + [
+            {
+                "id": run_id,
+                "status": "completed",
+                "conclusion": conclusion,
+                "run_started_at": f"2026-08-11T{start}Z",
+            }
+            for run_id, conclusion, start in later
+        ]
+        (runner.fixtures / "ci_runs.json").write_text(_runs_json("ci.yml", runs))
+        proc, outputs = runner.evaluate()
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == state
+
     def test_all_runs_cancelled_still_reads_failure_class(
         self, runner: Runner
     ):

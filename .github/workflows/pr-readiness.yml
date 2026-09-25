@@ -931,6 +931,7 @@ jobs:
                 [.workflow_runs[] | select(.path == $path)]
                 | max_by(.id) // empty
               ' <<<"$runs")"
+              src="$runs"
             else
               # Bind the run to this PR by (head repository, head branch), NOT
               # by `.pull_requests`: that array is empty on every fork run, so
@@ -947,12 +948,10 @@ jobs:
               # API order and `last` picked the OLDEST run -- when that run
               # was concurrency-cancelled, a lane whose newest run succeeded
               # read as a blocking failure. max_by(.id) orders same-second
-              # runs correctly because ids increase monotonically, and it is
-              # sufficient on its own: a concurrency-cancelled twin is always
-              # superseded by a same-head run with a HIGHER id, so the newest
-              # run is never the cancelled duplicate. Deliberately NO
-              # cancelled-run filter here: dropping a cancelled newest run
-              # would revive an older verdict -- a manually cancelled rerun
+              # runs correctly because ids increase monotonically. A cancelled
+              # newest run yields only to a LATER-STARTED run (below), so
+              # there is deliberately no plain cancelled-run filter: dropping
+              # it would revive an older verdict -- a manually cancelled rerun
               # must read failure-class, not resurface a stale green.
               run="$(jq -c --arg path ".github/workflows/$file" \
                 --arg head_repo "$HEAD_REPO" --arg head_ref "$HEAD_REF" '
@@ -962,6 +961,19 @@ jobs:
                           and .head_branch == $head_ref)]
                 | max_by(.id) // empty
               ' <<<"$pr_runs")"
+              src="$pr_runs"
+            fi
+            # Fork approval can start runs out of id order, so the max-id twin gets
+            # cancelled; the latest-started same-head run wins (ties: whole seconds).
+            if [ "$(jq -r '.conclusion // ""' <<<"${run:-null}")" = "cancelled" ]; then
+              run="$(jq -c --argjson n "$run" '
+                [.workflow_runs[]
+                 | select(.path == $n.path and .head_branch == $n.head_branch
+                          and .head_repository.full_name == $n.head_repository.full_name
+                          and .id != $n.id and .run_started_at != null
+                          and .run_started_at >= $n.run_started_at)]
+                | max_by([.run_started_at, .conclusion != "cancelled"]) // $n
+              ' <<<"$src")"
             fi
             if [ -z "$run" ]; then
               pending+=("$label (not started)")
