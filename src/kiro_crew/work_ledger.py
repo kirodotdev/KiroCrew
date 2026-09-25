@@ -2341,10 +2341,14 @@ def purge_conductor(slot_key: str, *, allow_unreadable: bool, idle_for: timedelt
     writing to this instant. It refuses -- ``WorkLedgerError`` with
     code :data:`CODE_LEDGER_NOT_FINISHED` -- when any item is non-terminal, when
     the items directory cannot be enumerated, when any item record is unreadable
-    unless *allow_unreadable* says the operator asked for that too, and when the
+    unless *allow_unreadable* says the operator asked for that too, and -- when
+    *idle_for* is POSITIVE -- when the
     ledger's newest activity by EITHER writer (an item close, a header rewrite or
     any write under ``items/`` -- see :func:`_newest_activity`) is younger than
-    *idle_for*. The caller's scan measured age outside the lock; a
+    *idle_for*. A non-positive *idle_for* is a caller declining a retention
+    window, and age is then not consulted at all; every other refusal above still
+    applies, so "no window" buys no unreadable record, no open item and no live
+    writer. The caller's scan measured age outside the lock; a
     ``goal`` round-bump between that scan and this hold is a live conductor, and
     the recheck is what catches it. ``_create_item`` and ``_write_goal`` take
     this same lock across their whole transaction, so neither can land while the
@@ -2487,7 +2491,28 @@ def _purge_conductor_locked(
                 field="state",
             )
         latest = _newest_activity(directory, census)
-        if latest is not None and datetime.now().astimezone() - latest < idle_for:
+        # A NON-POSITIVE WINDOW HAS NOTHING TO CHECK, and asking anyway is a bug.
+        # ``idle_for=timedelta(0)`` is the caller saying "do not hold this store
+        # back on age grounds", so an age refusal under it is wrong whatever the
+        # store's timestamps read. The subtraction alone does not honour that:
+        # ``_newest_activity`` sources a candidate from ``st_mtime``, a file
+        # timestamp can order AHEAD of a later ``datetime.now()`` reading where
+        # the filesystem's resolution is finer than the clock's advance, and the
+        # elapsed time is then a small negative timedelta -- which is less than a
+        # zero window, so the guard refuses a purge that asked for no window. The
+        # window's sign is therefore the first thing consulted.
+        #
+        # A POSITIVE window still refuses on that same future reading, and must:
+        # there the caller did ask for an age judgement, a store whose newest
+        # write reads ahead of the clock has just been written to, and refusing is
+        # the conservative half of an irreversible delete. The sweep's scanner
+        # reaches the same verdict by clamping elapsed time at zero before
+        # comparing (``ledger_sweep._age_of``), so both halves agree.
+        if (
+            latest is not None
+            and idle_for > timedelta(0)
+            and datetime.now().astimezone() - latest < idle_for
+        ):
             raise WorkLedgerError(
                 "conductor ledger changed within the retention window; refusing to purge it",
                 code=CODE_LEDGER_NOT_FINISHED,
