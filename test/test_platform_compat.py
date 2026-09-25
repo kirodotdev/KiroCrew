@@ -3013,6 +3013,208 @@ class TestProcessDescendants:
             pc.close_process_handle(root_handle)
 
 
+class TestWindowsRecycledDescendantAgeDisproof:
+    """A stranger holding a recycled PID must not make the owned tree unkillable.
+
+    Toolhelp reports numeric parent PIDs. When a genuine intermediate exits, its
+    PID can be reused by an unrelated, far older process whose stale parent field
+    still names a PID inside this tree, so the numeric walk pulls that stranger
+    in as a candidate. A termination handle on a stranger is refused, and an
+    unopenable surviving candidate is a fatal incomplete tree -- so the provider
+    returns without killing anything it actually owns.
+
+    A process that already existed before the root cannot descend from it. The
+    creation instant is readable through a query-only handle, which is granted
+    where a termination handle is refused, so that disproof is available exactly
+    when it is needed. Every other shape stays fail-closed.
+    """
+
+    ROOT_PID = 100
+    ROOT_HANDLE = 8001
+    ROOT_CREATED = 1_000
+
+    def _install(self, monkeypatch, *, first_map, fresh_map, opens, identities, query_handles):
+        """Drive the Windows branch on any host; return the observed call log."""
+
+        scans = 0
+        closed: list[int] = []
+        query_opens: list[int] = []
+        query_closed: list[int] = []
+
+        def snapshot():
+            nonlocal scans
+            scans += 1
+            return dict(first_map) if scans == 1 else dict(fresh_map)
+
+        def open_termination(child_pid, **_kwargs):
+            return opens.get(child_pid)
+
+        def open_query(child_pid):
+            query_opens.append(child_pid)
+            return query_handles.get(child_pid)
+
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_windows_process_parent_map", snapshot)
+        monkeypatch.setattr(pc, "_open_process_termination_handle", open_termination)
+        monkeypatch.setattr(
+            pc,
+            "_windows_process_handle_identity",
+            lambda handle, **_kwargs: identities.get(handle),
+        )
+        monkeypatch.setattr(pc, "_open_process_query_handle", open_query)
+        monkeypatch.setattr(pc, "_close_process_handle", query_closed.append)
+        monkeypatch.setattr(pc, "close_process_handle", closed.append)
+        monkeypatch.setattr(pc, "pid_exists", lambda _pid: False)
+        return closed, query_opens, query_closed
+
+    def test_older_unopenable_stranger_does_not_block_the_owned_tree(self, monkeypatch):
+        closed, query_opens, query_closed = self._install(
+            monkeypatch,
+            first_map={101: self.ROOT_PID, 102: 101},
+            fresh_map={101: self.ROOT_PID, 102: 101},
+            opens={101: 9001},
+            identities={
+                self.ROOT_HANDLE: (self.ROOT_PID, self.ROOT_CREATED, None),
+                9001: (101, 1_100, None),
+                7102: (102, 500, None),
+            },
+            query_handles={102: 7102},
+        )
+
+        handles = pc.descendant_termination_handles(self.ROOT_PID, {}, self.ROOT_HANDLE)
+
+        assert handles == {101: 9001}
+        assert closed == []
+        assert query_opens == [102]
+        assert query_closed == [7102]
+
+    def test_a_disproven_stranger_takes_its_own_numeric_subtree_with_it(self, monkeypatch):
+        closed, _query_opens, _query_closed = self._install(
+            monkeypatch,
+            first_map={101: self.ROOT_PID, 102: 101, 103: 102},
+            fresh_map={101: self.ROOT_PID, 102: 101, 103: 102},
+            opens={101: 9001, 103: 9003},
+            identities={
+                self.ROOT_HANDLE: (self.ROOT_PID, self.ROOT_CREATED, None),
+                9001: (101, 1_100, None),
+                9003: (103, 1_200, None),
+                7102: (102, 500, None),
+            },
+            query_handles={102: 7102},
+        )
+
+        handles = pc.descendant_termination_handles(self.ROOT_PID, {}, self.ROOT_HANDLE)
+
+        # 103's only claimed route to the root runs through a process that
+        # predates the root, so its own recent creation proves nothing.
+        assert handles == {101: 9001}
+        assert closed == [9003]
+
+    @pytest.mark.parametrize(
+        "created, query_handle",
+        [
+            pytest.param(1_000, 7102, id="equal_to_root"),
+            pytest.param(1_050, 7102, id="later_than_root"),
+            pytest.param(None, 7102, id="identity_unreadable"),
+            pytest.param(None, None, id="query_handle_refused"),
+        ],
+    )
+    def test_an_undisprovable_unopenable_candidate_stays_fail_closed(
+        self, monkeypatch, created, query_handle
+    ):
+        identities = {
+            self.ROOT_HANDLE: (self.ROOT_PID, self.ROOT_CREATED, None),
+            9001: (101, 1_100, None),
+        }
+        if created is not None:
+            identities[7102] = (102, created, None)
+        closed, _query_opens, _query_closed = self._install(
+            monkeypatch,
+            first_map={101: self.ROOT_PID, 102: 101},
+            fresh_map={101: self.ROOT_PID, 102: 101},
+            opens={101: 9001},
+            identities=identities,
+            query_handles={102: query_handle} if query_handle else {},
+        )
+
+        with pytest.raises(OSError, match="Windows descendant handles unavailable"):
+            pc.descendant_termination_handles(self.ROOT_PID, {}, self.ROOT_HANDLE)
+
+        assert closed == [9001]
+
+    def test_a_pinned_retained_identity_under_a_stranger_stays_fail_closed(self, monkeypatch):
+        closed, _query_opens, _query_closed = self._install(
+            monkeypatch,
+            first_map={101: self.ROOT_PID, 102: 101, 103: 102},
+            fresh_map={101: self.ROOT_PID, 102: 101, 103: 102},
+            opens={101: 9001},
+            identities={
+                self.ROOT_HANDLE: (self.ROOT_PID, self.ROOT_CREATED, None),
+                9001: (101, 1_100, None),
+                9003: (103, 1_200, None),
+                7102: (102, 500, None),
+            },
+            query_handles={102: 7102},
+        )
+
+        # Dropping 103 would discard authority an earlier scan already proved,
+        # so the contradiction is reported rather than resolved by guessing.
+        with pytest.raises(OSError, match="Windows descendant handles unavailable"):
+            pc.descendant_termination_handles(self.ROOT_PID, {103: 9003}, self.ROOT_HANDLE)
+
+        assert closed == [9001]
+
+    def test_a_vanished_unopenable_candidate_is_not_queried_for_its_age(self, monkeypatch):
+        closed, query_opens, _query_closed = self._install(
+            monkeypatch,
+            first_map={101: self.ROOT_PID, 102: 101},
+            fresh_map={101: self.ROOT_PID},
+            opens={101: 9001},
+            identities={
+                self.ROOT_HANDLE: (self.ROOT_PID, self.ROOT_CREATED, None),
+                9001: (101, 1_100, None),
+            },
+            query_handles={},
+        )
+
+        handles = pc.descendant_termination_handles(self.ROOT_PID, {}, self.ROOT_HANDLE)
+
+        # Fresh absence already accounts for this candidate; an exited process
+        # has no readable creation instant to disprove anything with.
+        assert handles == {101: 9001}
+        assert closed == []
+        assert query_opens == []
+
+    @pytest.mark.skipif(not pc.IS_WINDOWS, reason="Win32 handle-rights premise")
+    def test_a_protected_process_refuses_termination_but_answers_its_creation(self):
+        """Prove on a real kernel the premise every faked case above assumes.
+
+        The disproof only ever runs for a candidate whose termination handle was
+        refused, so it is worth nothing unless a creation instant is still
+        readable for such a process. Were that false, the disproof would never
+        fire on a real host and the recycled-PID abort would survive with every
+        faked test above still green.
+
+        The System process is the stable instance of that shape: terminating it
+        is denied to every caller, while ``PROCESS_QUERY_LIMITED_INFORMATION``
+        exists precisely so an unprivileged reader can still identify it. A
+        positive instant here also proves the read validated its own handle,
+        since an identity naming another PID is reported as unknown.
+        """
+
+        system_pid = 4
+        granted = pc._open_process_termination_handle(system_pid)
+        if granted is not None:
+            pc.close_process_handle(granted)
+        assert granted is None, "the System process granted a termination handle"
+
+        instant = pc._windows_process_query_creation(system_pid)
+        assert isinstance(instant, int) and instant > 0, (
+            "a query-only handle could not read the System process creation instant, "
+            "so the creation-order disproof cannot fire on this host"
+        )
+
+
 @pytest.mark.skipif(
     not pc.IS_WINDOWS,
     reason="exercises the real Windows ctypes identity path (ctypes.WinDLL, "
@@ -7347,7 +7549,13 @@ class TestWindowsDescendantFailureDiagnostics:
             pc.descendant_termination_handles(100, {}, 8001)
         assert "open=winerror=5" in str(exc.value)
         assert "query_unvalidated=winerror=87" in str(exc.value)
-        assert calls == [(0x101001, False, 101), (0x1000, False, 101)]
+        # Termination open, then the creation-order read that tries to disprove
+        # this candidate's ancestry, then the diagnostic's own unvalidated look.
+        assert calls == [
+            (0x101001, False, 101),
+            (0x1000, False, 101),
+            (0x1000, False, 101),
+        ]
 
     def test_diagnostics_bound_candidates_and_ancestry(self, monkeypatch):
         queried = []

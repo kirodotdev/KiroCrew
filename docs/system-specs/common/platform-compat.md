@@ -208,7 +208,21 @@ confirms the same PID/creation time and a published exit time. A surviving child
 PPID must still agree; its creation time must precede that intermediary's exit.
 Changed parent links and positively disproven identities/lifetimes are excluded.
 Unknown is not an exclusion: an unopenable candidate must be absent from a fresh,
-successful full process snapshot, or discovery raises `OSError`. Absence alone
+successful full process snapshot, or be positively disproven by creation order,
+or discovery raises `OSError`. Creation order disproves descent because a
+descendant is created after the root it descends from: a chain node whose process
+already existed before the root holds a recycled PID naming an unrelated process,
+so it disqualifies itself and every observed PID whose only ancestry route to the
+root runs through it, including a descendant whose own termination handle opened
+successfully -- those handles are closed before discovery returns. That instant is
+read through a validated query-only handle, which answers where a termination
+handle is refused; a node already pinned by a handle is read from that handle
+instead, whose object cannot have been recycled. The drop is abandoned wholesale,
+and discovery raises, when any disqualified PID is a retained identity: dropping
+it would discard authority an earlier scan already proved. Creation order
+disproves nothing, and discovery raises, when the instant is unreadable, when the
+query-only handle is itself refused, or when the instant is at or after the
+root's. Absence alone
 is insufficient when that same fresh snapshot contains an entry referencing the
 observed, now-vanished unopened parent: discovery refuses even if the child and
 its descendants first appeared after the initial snapshot. This guard reports
@@ -224,9 +238,11 @@ includes failure-only diagnostics for at most three candidates and eight PIDs
 per first/fresh ancestry chain. The opener captures the immediate native error
 (or Python exception type only); the report includes the root identity at scan
 start and current identity/lifetime observations from already-pinned relevant
-handles. A separate query-only handle may observe the candidate, but is always
-closed and is explicitly unvalidated: no observation changes the refusal or
-provides kill authority. Diagnostic failures leave the original refusal intact.
+handles. A separate query-only handle may observe the candidate for this report,
+but is always closed and is explicitly unvalidated: no diagnostic observation
+changes the refusal or provides kill authority, which is why the creation-order
+disproof above is a distinct validated read taken before the refusal is decided.
+Diagnostic failures leave the original refusal intact.
 No command lines, environment, file contents, or unrelated process inventory
 are emitted, and successful discovery does not collect or log this report.
 All newly opened handles are closed on failure, including failures partway through
