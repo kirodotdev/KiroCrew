@@ -335,9 +335,10 @@ def test_crew_tools_are_available_on_both_channels_and_absent_on_neither() -> No
     """The union that carries Crew's own tools, checked from both sides.
 
     The kiro family loads Crew's agent spec itself and the array members are
-    handed the server list per session; a harness in neither has none of Crew's
-    tools, which is the line this card exists to make visible. Pi is that harness
-    today: it ACCEPTS the array and never forwards it.
+    handed the server list per session; Pi receives the same tools through the
+    sealed MCP bridge extension (not the inert session/new array). A harness in
+    none of those channels has none of Crew's tools, which is the line this card
+    exists to make visible.
     """
 
     def crew_tools(backend: str) -> bool:
@@ -347,7 +348,7 @@ def test_crew_tools_are_available_on_both_channels_and_absent_on_neither() -> No
 
     assert crew_tools(ACP_BACKEND_KIRO) is True
     assert crew_tools(ACP_BACKEND_DEEPSEEK) is True
-    assert crew_tools(ACP_BACKEND_PI) is False
+    assert crew_tools(ACP_BACKEND_PI) is True
 
 
 def test_effort_reads_available_on_the_harness_that_uses_a_slash_command() -> None:

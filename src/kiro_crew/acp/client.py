@@ -97,8 +97,14 @@ from kiro_crew.acp.liveness import (
 )
 from kiro_crew.acp.mcp_ref_guard import warn_unresolved_server_refs
 from kiro_crew.acp.mcp_session_report import McpSessionReport
+from kiro_crew.acp.pi_mcp_broker import PiMcpBroker, broker_socket_path
 from kiro_crew.acp.prompt_blocks import build_prompt_blocks
-from kiro_crew.acp.session_mcp import agent_spec_snapshot, session_mcp_deny_rules
+from kiro_crew.acp.session_mcp import (
+    CONTROL_PLANE_SERVERS,
+    agent_spec_snapshot,
+    session_mcp_deny_rules,
+    session_mcp_projection,
+)
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
@@ -189,6 +195,7 @@ from kiro_crew.agent import (
     DerivedSpecStale,
     ForkGovernanceUnresolved,
     ensure_agent_materialized,
+    managed_mcp_spec_entry,
     require_fork_governance,
     require_fresh_derived_spec,
     require_unchanged_derived_spec,
@@ -238,6 +245,11 @@ from kiro_crew.mcp_gateway.session_servers import (
 from kiro_crew.metrics.tool_calls import note_tool_call_started, record_tool_call_finished
 from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.providers.mirrors import MIRRORS, mirror_for
+from kiro_crew.providers.mirrors.identity import (
+    control_plane_identity_env,
+    identity_bound_crew_servers,
+    with_env,
+)
 from kiro_crew.recovery.ladder import L3_ACP_RUNTIME as _L3_ACP_RUNTIME
 from kiro_crew.recovery.ladder import LADDER as _LADDER
 from kiro_crew.resource_status import inject_xdist_auto_cap
@@ -607,6 +619,9 @@ _DSH_GATE_PROBE_EXIT_S = 15.0
 # The plugin's real marker is a few hundred bytes. This cap bounds child-controlled
 # memory before JSON parsing while leaving ample room for the complete routing snapshot.
 _DSH_GATE_MARKER_MAX_BYTES = 64 * 1024
+_ENV_PI_MCP_BROKER_SOCK = "KIROCREW_PI_MCP_BROKER_SOCK"
+# Probe command the MCP bridge extension registers (see kiro_crew_mcp_bridge.ts).
+_PI_MCP_BRIDGE_PROBE_COMMAND = "kiro-crew-mcp-bridge"
 # SHA-256 of the shipped gate extension. The file lives in the package tree,
 # which on a source or user install an agent's own file tools may be able to
 # write; a read-back that matched the probe by name and path alone would accept
@@ -619,11 +634,12 @@ _DSH_GATE_MARKER_MAX_BYTES = 64 * 1024
 # digest over the raw bytes would read every Windows install as tampered and refuse
 # every pi session there. ``.gitattributes`` pins the checkout LF as well; the
 # normalization here is what keeps the property from resting on a repo-config line.
-PI_GATE_EXTENSION_SHA256 = "33caa696e70e3b0c0793a705b0c6e06c372c52478e3ac4abf75f0e8d67d1e600"
+PI_GATE_EXTENSION_SHA256 = "4194b5c885bd803c6b7192717ca46f471d52dc7003cc989955a2c8aa5bab6a82"
 # Same seal, same reason, for the DeepSeek Harness gate plugin. Pinned by
 # ``test_acp_deepseek_backend``, so editing the plugin is a deliberate two-file
 # edit.
 DEEPSEEK_GATE_EXTENSION_SHA256 = "d95796f59d8e30f840dbb12ad4253c18f09e5b3972435e5b5f307d6b7d994351"
+PI_MCP_BRIDGE_EXTENSION_SHA256 = "95243d49e9a1fcc234993b1df97e7ae4300457c043cdcaf57e219b51468fedba"
 # ── deepseek (ACP_BACKEND_DEEPSEEK) ──
 # DeepSeek Harness is a plugin host, and ACP is one of the profiles it boots. So the
 # argv is the harness's own binary plus the profile selector -- the plain-binary
@@ -1205,7 +1221,7 @@ def _opencode_readback_remedy() -> str:
 
 _pi_acp_argv_cache: tuple[list[str] | None, str] | object = _UNRESOLVED
 _pi_bin_cache: tuple[str | None, str] | object = _UNRESOLVED
-_pi_gate_launcher_cache: dict[tuple[str, str], str] = {}
+_pi_gate_launcher_cache: dict[tuple[str, tuple[str, ...]], str] = {}
 
 
 def _resolve_pi_acp_bin() -> tuple[list[str] | None, str]:
@@ -1645,35 +1661,103 @@ def _publish_gate_artifact(
     return target
 
 
-def _pi_gate_launcher_body(pi_bin: str, extension_path: str) -> str:
-    """The launcher pi-acp is told to run in place of ``pi``.
+def pi_mcp_bridge_extension_path() -> str:
+    """Absolute path of the MCP bridge extension Kiro Crew ships for pi.
 
-    It forwards every argument the adapter passes and appends the extension flag,
-    so the harness process is the one the adapter meant to start plus Crew's gate.
-    A shell script on POSIX; a ``.cmd`` on Windows, where the adapter itself uses a
-    shell for exactly that extension.
+    Package data beside the gate extension, resolved the same way so a wheel
+    install and a source checkout name the same file. Returned as a string
+    because it is handed to the shell launcher and compared against the
+    sealed digest.
     """
-    if platform_compat.IS_WINDOWS:
-        return f'@echo off\r\n"{pi_bin}" %* {_PI_EXTENSION_FLAG} "{extension_path}"\r\n'
-    return (
-        "#!/bin/sh\n"
-        f'exec {shlex.quote(pi_bin)} "$@" {_PI_EXTENSION_FLAG} {shlex.quote(extension_path)}\n'
+    return str(
+        Path(agent_sdk.__file__).resolve().parent
+        / "gate_extensions"
+        / "pi"
+        / "kiro_crew_mcp_bridge.ts"
     )
 
 
-def _ensure_pi_gate_launcher(pi_bin: str, extension_path: str) -> str:
+def _seal_pi_mcp_bridge_extension() -> str:
+    """Verify the shipped MCP bridge extension and return a sealed copy to load.
+
+    Same posture as :func:`_seal_pi_gate_extension`: refuse unless the packaged
+    bytes match :data:`PI_MCP_BRIDGE_EXTENSION_SHA256`, then write a read-only
+    copy under the owner-only pi-gate artifact directory. Blocking; callers run
+    it off the loop.
+    """
+    source = pi_mcp_bridge_extension_path()
+    try:
+        with open(source, "rb") as fh:
+            payload = _pi_gate_extension_bytes(fh.read())
+    except OSError as exc:
+        raise PiGateExtensionTampered(
+            f"the pi MCP bridge extension at {source} cannot be read ({exc}); a "
+            "session cannot start on a bridge whose code this build did not ship. "
+            "Reinstall Kiro Crew."
+        ) from exc
+    digest = hashlib.sha256(payload).hexdigest()
+    if digest != PI_MCP_BRIDGE_EXTENSION_SHA256:
+        raise PiGateExtensionTampered(
+            f"the pi MCP bridge extension at {source} does not match the digest "
+            f"this build pinned ({digest[:12]}… vs {PI_MCP_BRIDGE_EXTENSION_SHA256[:12]}…); "
+            "a session cannot start on a bridge whose code this build did not ship. "
+            "Reinstall Kiro Crew."
+        )
+    artifact_dir = _pi_gate_artifact_dir()
+    sealed = os.path.join(artifact_dir, f"kirocrew_pi_mcp_bridge_{os.getpid()}.ts")
+    try:
+        with open(sealed, "rb") as fh:
+            if fh.read() == payload:
+                return sealed
+    except OSError:
+        pass
+    fd, tmp = tempfile.mkstemp(
+        dir=artifact_dir, prefix=f"kirocrew_pi_mcp_bridge_{os.getpid()}_", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(payload)
+        if not platform_compat.IS_WINDOWS:
+            os.chmod(tmp, 0o400)
+        os.replace(tmp, sealed)
+    except OSError:
+        with suppress(OSError):
+            os.remove(tmp)
+        raise
+    return sealed
+
+
+def _pi_gate_launcher_body(pi_bin: str, extension_paths: str | list[str]) -> str:
+    """The launcher pi-acp is told to run in place of ``pi``.
+
+    It forwards every argument the adapter passes and appends one
+    :data:`_PI_EXTENSION_FLAG` per extension path (gate first, then MCP bridge),
+    so the harness process is the one the adapter meant to start plus Crew's
+    extensions. A shell script on POSIX; a ``.cmd`` on Windows, where the adapter
+    itself uses a shell for exactly that extension.
+    """
+    paths = [extension_paths] if isinstance(extension_paths, str) else list(extension_paths)
+    if platform_compat.IS_WINDOWS:
+        flags = "".join(f' {_PI_EXTENSION_FLAG} "{p}"' for p in paths)
+        return f'@echo off\r\n"{pi_bin}" %*{flags}\r\n'
+    flags = "".join(f" {_PI_EXTENSION_FLAG} {shlex.quote(p)}" for p in paths)
+    return "#!/bin/sh\n" f'exec {shlex.quote(pi_bin)} "$@"' + flags + "\n"
+
+
+def _ensure_pi_gate_launcher(pi_bin: str, extension_paths: str | list[str]) -> str:
     """Write (once per process and inputs) the launcher and return its path.
 
     Lives in the owner-only pi gate artifact directory, which the sandbox exposes
-    read-only because the child has to exec this launcher and read the sealed gate
-    extension. Written under a unique ``mkstemp`` name
-    that is published to the cache only after the write and the mode change have
-    finished, so a concurrent spawn never reads a half-written file, and cached so
-    N sessions share one launcher rather than leaving N files behind.
+    read-only because the child has to exec this launcher and read the sealed
+    extensions. Written under a unique ``mkstemp`` name that is published to the
+    cache only after the write and the mode change have finished, so a concurrent
+    spawn never reads a half-written file, and cached so N sessions share one
+    launcher rather than leaving N files behind.
 
     Blocking (writes a file); callers run it off the loop.
     """
-    key = (pi_bin, extension_path)
+    paths = (extension_paths,) if isinstance(extension_paths, str) else tuple(extension_paths)
+    key = (pi_bin, paths)
     cached = _pi_gate_launcher_cache.get(key)
     if cached and os.path.isfile(cached):
         return cached
@@ -1684,7 +1768,7 @@ def _ensure_pi_gate_launcher(pi_bin: str, extension_path: str) -> str:
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
-            fh.write(_pi_gate_launcher_body(pi_bin, extension_path))
+            fh.write(_pi_gate_launcher_body(pi_bin, list(paths)))
         if not platform_compat.IS_WINDOWS:
             os.chmod(tmp, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501  # fmt: skip
     except OSError:
@@ -1754,6 +1838,35 @@ def _pi_commands_from_readback(stdout: str) -> object:
         commands = data.get("commands") if isinstance(data, dict) else None
         return commands if isinstance(commands, list) else None
     return None
+
+
+def _pi_bridge_probe_issue(observed_commands: object, bridge_extension_path: str) -> str:
+    """Why the MCP bridge extension is not loaded, from pi's command registry.
+
+    ``""`` means the registry lists :data:`_PI_MCP_BRIDGE_PROBE_COMMAND` sourced
+    from *bridge_extension_path* — the sealed copy Crew named on the launcher.
+    Soft-fail callers discard the servers file and skip advertising when this
+    returns a non-empty issue; the session still starts for chat.
+    """
+    if not isinstance(observed_commands, list):
+        return "the harness's command registry could not be read for the MCP bridge probe"
+    sources: list = []
+    for entry in observed_commands:
+        if not isinstance(entry, dict) or entry.get("name") != _PI_MCP_BRIDGE_PROBE_COMMAND:
+            continue
+        info = entry.get("sourceInfo")
+        sources.append(info.get("path") if isinstance(info, dict) else None)
+    if not sources:
+        return (
+            f"the harness's command registry does not list {_PI_MCP_BRIDGE_PROBE_COMMAND!r}, "
+            "so the MCP bridge extension did not load"
+        )
+    if bridge_extension_path not in sources:
+        return (
+            f"the harness lists {_PI_MCP_BRIDGE_PROBE_COMMAND!r} but from a file that is not "
+            "Kiro Crew's sealed MCP bridge extension"
+        )
+    return ""
 
 
 def _unlink_readback_launcher(path: str) -> None:
@@ -5451,6 +5564,14 @@ class AcpClient:
         # of denied calls, which must never reach ``completed``.
         self._pi_gate_request_tool: dict[str, str] = {}
         self._pi_gate_denied_ids: set[str] = set()
+        # Pi MCP bridge: True only after seal AND get_commands lists the bridge
+        # probe from the sealed extension. Soft-fail clears tools while keeping
+        # chat; advertise KIROCREW_PI_MCP_BROKER_SOCK only when that probe passes
+        # AND the host broker is up (secrets never enter Pi's namespace — GPT F1).
+        self._pi_mcp_bridge_sealed = False
+        self._pi_mcp_broker: PiMcpBroker | None = None
+        self._pi_mcp_expected_servers: tuple[str, ...] = ()
+        self._pi_mcp_broker_endpoint = ""
         self._session_key = session_key
         # When set, this client emits a per-tool-call SEL audit from the ACP
         # dispatch loop. Used by app/worker-pool clients (e.g. code-review-sage,
@@ -6227,6 +6348,10 @@ class AcpClient:
             # Reading it here would be the disk touch this site must not have.
             return
         try:
+            if self._is_pi:
+                broker = getattr(self, "_pi_mcp_broker", None)
+                mounted = broker.initialized_servers if broker is not None else frozenset()
+                spec = {**spec, "mcpServers": {name: {} for name in mounted}}
             unresolved = warn_unresolved_server_refs(
                 spec,
                 wire_servers,
@@ -6722,7 +6847,9 @@ class AcpClient:
                 )
         return "", ""
 
-    def _verify_pi_gate(self, argv: list[str], extension_path: str) -> tuple[str, str]:
+    def _verify_pi_gate(
+        self, argv: list[str], extension_path: str
+    ) -> tuple[str, str, object | None]:
         """Ask the harness's own command registry whether Crew's gate extension loaded.
 
         The half that makes this routing VERIFIED. *argv* is the gate launcher plus
@@ -6737,10 +6864,11 @@ class AcpClient:
         the client per call; that is the adapter's contract, and the frame corpus
         carries the observation of it.
 
-        Returns ``("", "")`` when the gate is loaded, else the issue and the remedy
-        that can clear it -- a harness problem (could not run, could not parse) gets
-        the harness remedy, a registry that answers without the gate gets the
-        gate's.
+        Returns ``("", "", commands)`` when the gate is loaded (*commands* is the
+        registry list, so the caller can also soft-check the MCP bridge probe),
+        else ``(issue, remedy, None)`` -- a harness problem (could not run, could
+        not parse) gets the harness remedy, a registry that answers without the
+        gate gets the gate's.
 
         Blocking (spawns a short-lived child); callers run it off the loop.
         """
@@ -6773,6 +6901,7 @@ class AcpClient:
             return (
                 f"the harness's command registry could not be read back ({exc})",
                 _pi_readback_remedy(),
+                None,
             )
         commands = _pi_commands_from_readback(completed.stdout)
         if commands is None:
@@ -6785,6 +6914,7 @@ class AcpClient:
             return (
                 f"the harness's command registry could not be read back ({detail})",
                 _pi_readback_remedy(),
+                None,
             )
         # Same FILE, not same string. pi reports the path it loaded from in its own
         # spelling -- Node's realpath through a symlinked install, a Windows drive
@@ -6796,8 +6926,8 @@ class AcpClient:
             self.backend, _same_file_spelling_all(commands), _same_file_spelling(extension_path)
         )
         if issue:
-            return issue, acp_tool_gate.remediation_for(self.backend)
-        return "", ""
+            return issue, acp_tool_gate.remediation_for(self.backend), None
+        return "", "", commands
 
     @staticmethod
     def _read_deepseek_gate_marker(marker_path: str) -> object:
@@ -8225,6 +8355,28 @@ class AcpClient:
 
     # ── Process Management ──
 
+    def _stop_pi_mcp_broker(self) -> None:
+        """Stop this session's host broker and forget its endpoint."""
+        self._pi_mcp_bridge_sealed = False
+        self._pi_mcp_broker_endpoint = ""
+        broker = getattr(self, "_pi_mcp_broker", None)
+        self._pi_mcp_broker = None
+        if broker is not None:
+            # Best-effort: teardown may already be on the loop; schedule stop.
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                try:
+                    cleanup_loop = asyncio.new_event_loop()
+                    try:
+                        cleanup_loop.run_until_complete(broker.stop())
+                    finally:
+                        cleanup_loop.close()
+                except Exception:
+                    pass
+            else:
+                loop.create_task(broker.stop())
+
     def _discard_sandbox_cleanup(self) -> None:
         """Unlink and forget the sandbox temp file allocated by ``wrap_argv``.
 
@@ -8234,13 +8386,45 @@ class AcpClient:
         each attempt leaks one file into the temp dir for the gateway's
         lifetime (nothing else references the path after ``_spawn`` reassigns
         ``self._sandbox_cleanup``).
+
+        Synchronous on purpose for ``_reset_state`` / exception paths that cannot
+        await. Async callers MUST prefer :meth:`_discard_sandbox_cleanup_async`
+        so broker teardown and sandbox unlink can be awaited.
         """
+        self._stop_pi_mcp_broker()
         if self._sandbox_cleanup:
             try:
                 os.remove(self._sandbox_cleanup)
             except OSError:
                 pass
             self._sandbox_cleanup = None
+
+    async def _stop_pi_mcp_broker_async(self) -> None:
+        """Off-loop variant of :meth:`_stop_pi_mcp_broker`."""
+        self._pi_mcp_bridge_sealed = False
+        self._pi_mcp_broker_endpoint = ""
+        broker = getattr(self, "_pi_mcp_broker", None)
+        self._pi_mcp_broker = None
+        if broker is not None:
+            try:
+                await broker.stop()
+            except Exception:
+                logger.debug("pi-mcp-broker stop failed", exc_info=True)
+
+    async def _discard_sandbox_cleanup_async(self) -> None:
+        """Stop the Pi broker and unlink the sandbox temp off-loop."""
+        await self._stop_pi_mcp_broker_async()
+        cleanup = self._sandbox_cleanup
+        self._sandbox_cleanup = None
+        if cleanup:
+
+            def _unlink(path: str = str(cleanup)) -> None:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+
+            await asyncio.to_thread(_unlink)
 
     async def _discard_bound_workspace(self) -> None:
         """Close the parent copy of a macOS workspace identity off-loop."""
@@ -8305,7 +8489,7 @@ class AcpClient:
         try:
             return await asyncio.to_thread(fn, *args, **kwargs)
         except BaseException:
-            self._discard_sandbox_cleanup()
+            await self._discard_sandbox_cleanup_async()
             raise
 
     async def _resolve_self_served_launch(self) -> tuple[str, list[str], str, str]:
@@ -8641,14 +8825,171 @@ class AcpClient:
             # probe to be sourced from it, so a rewritten package file is refused
             # here rather than loaded. Off-loop: a file read and possibly a write.
             extension_path = await asyncio.to_thread(_seal_pi_gate_extension)
-            self._pi_gate_nonce = uuid.uuid4().hex
-            self._pi_gate_launcher = await asyncio.to_thread(
-                _ensure_pi_gate_launcher, pi_bin, extension_path
+            # Project session MCP early so we only seal the bridge when there is
+            # something to bridge. An empty list keeps the proven single-extension
+            # gate launcher (Design/FP: do not put an unverified second --extension
+            # on every pi session). Uses session_mcp_projection so the derived-spec
+            # snapshot lands beside the sealed list; the shared post-consume
+            # require_unchanged_derived_spec bracket then covers Pi the same way
+            # it covers array-backed hosts.
+            try:
+                work_dir = getattr(self, "_work_dir", None)
+
+                def _project_pi_mcp_servers_early():
+                    # Same stub yield as array-backed hosts: without stub_server_names
+                    # the projection would emit the raw entry for a pooled server and
+                    # the session would bypass the broker (#927 / Opus finding).
+                    try:
+                        stubbed = injection_server_names(
+                            self._mcp_gateway_overlay,
+                            self._agent,
+                            **overlay_project_scope(self.backend, work_dir),
+                        )
+                    except Exception:
+                        stubbed = frozenset()
+                    return session_mcp_projection(
+                        self._agent,
+                        stub_server_names=stubbed,
+                        work_dir=work_dir,
+                    )
+
+                early_proj = await asyncio.to_thread(_project_pi_mcp_servers_early)
+                early_servers = list(early_proj.servers or [])
+                early_disabled = frozenset(early_proj.disabled_tools or ())
+                # Same freshness bracket other backends get from
+                # _resolve_session_mcp_servers: retain the snapshot the projection
+                # verified against so the post-session/new check can refuse a
+                # derived spec that changed under us.
+                self._session_mcp_snapshot = early_proj.derived_spec_snapshot
+            except Exception:
+                logger.warning(
+                    "could not resolve session MCP servers before pi spawn; "
+                    "continuing without the MCP bridge",
+                    exc_info=True,
+                )
+                early_servers, early_disabled = [], frozenset()
+                self._session_mcp_snapshot = None
+                early_proj = None  # type: ignore[assignment]
+            # Identity-bound non-control-plane Crew servers are withheld — mounting
+            # them without a rebuildable credential is the present-but-unusable
+            # shape identity.py exists to kill. Restricted (per-tool deny) stays:
+            # the bridge/host broker honour disabledTools. Control-plane entries
+            # get control_plane_identity_env merged in. Pooled stubs are appended
+            # after the projection's yielded list (same as array-backed hosts).
+            identity_bound = identity_bound_crew_servers()
+            identity = control_plane_identity_env(
+                self._session_key or "",
+                self._channel_id or "",
+                label="pi-mcp-bridge",
+                session_token=getattr(self, "_stub_session_token", "") or "",
             )
-            # Wrapped in the SAME sandbox with the SAME credential mask as the
-            # session spawn below, for the same reason the opencode read-back is:
-            # this child is the agent itself, loading extensions out of the
-            # operator's own directories, moments before the masked spawn.
+            stdio_early: list[dict[str, Any]] = []
+            host_control_plane_servers: set[str] = set()
+            for s in early_servers:
+                if not isinstance(s, dict):
+                    continue
+                if s.get("disabled"):
+                    continue
+                if s.get("type", "stdio") not in ("stdio", None, ""):
+                    continue
+                command = s.get("command")
+                if not command:
+                    continue
+                name = str(s.get("name") or "mcp")
+                if name in identity_bound:
+                    logger.info(
+                        "pi MCP bridge: withholding server %r (identity-bound "
+                        "without a rebuildable credential)",
+                        name,
+                    )
+                    continue
+                entry: dict[str, Any] = {
+                    "name": name,
+                    "command": command,
+                    "args": list(s.get("args") or []),
+                }
+                if s.get("env") is not None:
+                    entry["env"] = s.get("env")
+                if name in CONTROL_PLANE_SERVERS and identity:
+                    entry = with_env(entry, identity)
+                    # A name alone is insufficient: only the host's current
+                    # managed invocation may read its protected binding.
+                    managed = await asyncio.to_thread(managed_mcp_spec_entry, name)
+                    if managed and (entry["command"], entry["args"]) == (
+                        managed.get("command"),
+                        list(managed.get("args") or []),
+                    ):
+                        host_control_plane_servers.add(name)
+                disabled_for_server = sorted(
+                    tool for server, tool in early_disabled if server == entry["name"]
+                )
+                if disabled_for_server:
+                    entry["disabledTools"] = disabled_for_server
+                stdio_early.append(entry)
+            # Append pooled broker stubs (secrets stay on gatewayd; stub env is
+            # empty + per-session token). Host broker holds these — never exposed
+            # into Pi's namespace.
+            try:
+                stubs = await asyncio.to_thread(self._pooled_broker_stubs)
+                for stub in stubs:
+                    if not isinstance(stub, dict):
+                        continue
+                    name = str(stub.get("name") or "")
+                    if not name or name in identity_bound:
+                        continue
+                    # Pooled transport does not grant access to an unreferenced
+                    # server. A failed projection must not bypass this filter.
+                    if early_proj is None or not early_proj.allowlist.grants(name):
+                        continue
+                    if any(e.get("name") == name for e in stdio_early):
+                        continue
+                    entry = dict(stub)
+                    disabled_for_server = {
+                        tool for server, tool in early_disabled if server == name
+                    }
+                    disabled_for_server.update(
+                        tool for tool in entry.get("disabledTools", []) if isinstance(tool, str)
+                    )
+                    if disabled_for_server:
+                        entry["disabledTools"] = sorted(disabled_for_server)
+                    stdio_early.append(entry)
+            except Exception:
+                logger.warning(
+                    "pi MCP bridge: could not resolve pooled broker stubs; "
+                    "continuing with the projection list alone",
+                    exc_info=True,
+                )
+            self._pi_mcp_bridge_sealed = False
+            await self._stop_pi_mcp_broker_async()
+            self._pi_mcp_expected_servers = tuple(str(s["name"]) for s in stdio_early)
+            extension_paths = [extension_path]
+            # Mint the session nonce before sealing artifacts so filenames and
+            # the broker socket can carry it (alongside the process PID).
+            self._pi_gate_nonce = uuid.uuid4().hex
+            bridge_path: str | None = None
+            # Server specifications remain in host memory.
+            if stdio_early:
+                try:
+                    bridge_path = await asyncio.to_thread(_seal_pi_mcp_bridge_extension)
+                    extension_paths.append(bridge_path)
+                except Exception:
+                    # Soft-fail: chat still starts; tools simply stay unavailable.
+                    logger.warning(
+                        "pi MCP bridge extension could not be sealed; "
+                        "starting the session without Crew MCP tools",
+                        exc_info=True,
+                    )
+                    bridge_path = None
+                    self._pi_mcp_bridge_sealed = False
+                    await self._stop_pi_mcp_broker_async()
+                    extension_paths = [extension_path]
+            self._pi_gate_launcher = await asyncio.to_thread(
+                _ensure_pi_gate_launcher, pi_bin, extension_paths
+            )
+            # Read-back WITHOUT starting the host broker: the bridge probe
+            # registers before any broker connect, so credentials need not be
+            # live for the short-lived probe. Main spawn starts the broker only
+            # after probe OK.
             readback_argv, readback_cleanup = await wrap_argv_async(
                 [self._pi_gate_launcher, *_PI_RPC_ARGS],
                 mode=self._sandbox_mode,
@@ -8658,12 +8999,43 @@ class AcpClient:
                 _prepare=wrap_argv,
             )
             try:
-                routing_issue, routing_remedy = await asyncio.to_thread(
+                routing_issue, routing_remedy, readback_commands = await asyncio.to_thread(
                     self._verify_pi_gate, readback_argv, extension_path
                 )
             finally:
                 if readback_cleanup:
                     await asyncio.to_thread(_unlink_readback_launcher, readback_cleanup)
+            if routing_issue and bridge_path is not None:
+                # Two-extension premise unverified: a repeated --extension that
+                # pi/pi-acp rejects would hard-kill every MCP-configured Pi session.
+                # Degrade to the proven single-extension gate launcher and soft-fail
+                # the bridge so chat (and the gate) still start (Design/FP).
+                logger.warning(
+                    "pi gate readback failed with bridge extension loaded (%s); "
+                    "retrying gate-only and starting without Crew MCP tools",
+                    routing_issue,
+                )
+                await self._stop_pi_mcp_broker_async()
+                bridge_path = None
+                self._pi_mcp_bridge_sealed = False
+                self._pi_gate_launcher = await asyncio.to_thread(
+                    _ensure_pi_gate_launcher, pi_bin, [extension_path]
+                )
+                readback_argv, readback_cleanup = await wrap_argv_async(
+                    [self._pi_gate_launcher, *_PI_RPC_ARGS],
+                    mode=self._sandbox_mode,
+                    strip_python_env=True,
+                    extra_hidden_dirs=adapter_hidden_dirs,
+                    extra_expose_files=adapter_expose,
+                    _prepare=wrap_argv,
+                )
+                try:
+                    routing_issue, routing_remedy, readback_commands = await asyncio.to_thread(
+                        self._verify_pi_gate, readback_argv, extension_path
+                    )
+                finally:
+                    if readback_cleanup:
+                        await asyncio.to_thread(_unlink_readback_launcher, readback_cleanup)
             if routing_issue:
                 # Refused before the first prompt: without the extension loaded this
                 # harness runs every tool call unasked, so a session that cannot
@@ -8676,6 +9048,54 @@ class AcpClient:
                     )
                 except acp_tool_gate.ToolGateUnroutable as exc:
                     raise AcpToolGateUnroutable(str(exc)) from None
+            # Soft-check the MCP bridge probe on the SAME get_commands readback.
+            # Only start the host broker (and advertise its endpoint) when the
+            # sealed bridge file actually registered its probe — seal success
+            # alone must not claim Crew tools are mounted (Design/FP honesty).
+            # Server credentials stay in the host broker.
+            if bridge_path and stdio_early:
+                bridge_issue = _pi_bridge_probe_issue(
+                    _same_file_spelling_all(readback_commands),
+                    _same_file_spelling(bridge_path),
+                )
+                if bridge_issue:
+                    logger.warning(
+                        "pi MCP bridge probe failed after seal (%s); "
+                        "starting the session without Crew MCP tools",
+                        bridge_issue,
+                    )
+                    self._pi_mcp_bridge_sealed = False
+                    await self._stop_pi_mcp_broker_async()
+                else:
+                    try:
+                        sock_path = broker_socket_path(
+                            artifact_dir=_pi_gate_artifact_dir(),
+                            pid=os.getpid(),
+                            nonce=self._pi_gate_nonce,
+                        )
+                        broker = PiMcpBroker(
+                            stdio_early,
+                            socket_path=sock_path,
+                            sandbox_mode=self._sandbox_mode,
+                            hidden_dirs=adapter_hidden_dirs,
+                            host_control_plane_servers=frozenset(host_control_plane_servers),
+                        )
+                        await broker.start()
+                        self._pi_mcp_broker = broker
+                        self._pi_mcp_broker_endpoint = broker.endpoint
+                        self._pi_mcp_bridge_sealed = True
+                    except Exception:
+                        logger.warning(
+                            "pi MCP host broker could not start; "
+                            "starting the session without Crew MCP tools",
+                            exc_info=True,
+                        )
+                        self._pi_mcp_bridge_sealed = False
+                        await self._stop_pi_mcp_broker_async()
+            else:
+                # No bridge attempt, or seal / two-extension soft-failed earlier.
+                self._pi_mcp_bridge_sealed = False
+
         elif self._is_deepseek:
             # This harness is a plugin host and ACP is one of the profiles it boots,
             # so the argv is its own binary plus the profile selector: no adapter
@@ -9074,6 +9494,12 @@ class AcpClient:
             # Reaches the pi process through the adapter, which spawns it with its
             # own environment; the extension echoes it in every dialog.
             env[_ENV_PI_GATE_SESSION] = self._pi_gate_nonce
+            # Host broker endpoint only — never the secret-bearing servers JSON
+            # path (GPT F1). Advertised only when the bridge probe verified AND
+            # the host broker started. Soft-fail clears the sealed flag.
+            env.pop(_ENV_PI_MCP_BROKER_SOCK, None)
+            if self._pi_mcp_bridge_sealed and self._pi_mcp_broker_endpoint:
+                env[_ENV_PI_MCP_BROKER_SOCK] = self._pi_mcp_broker_endpoint
         if self._is_opencode and self._opencode_config_content:
             # The seed the read-back above verified, applied unconditionally: the
             # merge in ``_opencode_routing_config`` already preserved every key the
@@ -9269,7 +9695,7 @@ class AcpClient:
             )
         except BaseException:
             await self._discard_bound_workspace()
-            self._discard_sandbox_cleanup()
+            await self._discard_sandbox_cleanup_async()
             raise
         self._pid = self._process.pid
         # Minted with the process it names, random rather than pid-derived: a
@@ -11079,6 +11505,19 @@ class AcpClient:
         """
         self._mcp_report_frame_floor = len(self._mcp_notifications)
         self._mcp_report.begin_session(servers)
+        if self._is_pi:
+            broker = getattr(self, "_pi_mcp_broker", None)
+            for name in getattr(self, "_pi_mcp_expected_servers", ()):
+                error = (
+                    broker.server_failures.get(name, "MCP server did not initialize")
+                    if broker is not None and name not in broker.initialized_servers
+                    else "" if broker is not None else "Pi MCP bridge unavailable for this session"
+                )
+                self._mcp_report.record_event(
+                    EVENT_MCP_SERVER_INIT_FAILURE if error else EVENT_MCP_SERVER_INITIALIZED,
+                    name,
+                    error,
+                )
 
     def mcp_session_report(self) -> McpSessionReport:
         """This session's MCP registration report (see ``mcp_session_report``).
@@ -12078,22 +12517,34 @@ class AcpClient:
         keeps kiro-cli ("allow_once"/"allow_always") and claude-agent-acp
         ("allow"/"allow_always") working without caller knowledge.
         """
-        # An approved call may complete; forget the envelope mapping so the map
-        # stays bounded by the calls still awaiting an answer.
+        broker = getattr(self, "_pi_mcp_broker", None)
         getattr(self, "_pi_gate_request_tool", {}).pop(str(request_id), None)
+        recorded = self._permission_options.pop(request_id, None)
         resolved_id = option_id
         if resolved_id is None:
-            recorded = self._permission_options.pop(request_id, None)
-            # A recorded entry may carry only a "reject" id (a request that
-            # advertised a reject option but no allow option), so use .get and
-            # fall back to the canonical allow id rather than KeyError-ing.
             resolved_id = (recorded or {}).get("always" if always else "once")
             if resolved_id is None:
                 resolved_id = OPTION_ALLOW_ALWAYS if always else OPTION_ALLOW_ONCE
-        await self._send_response(
-            request_id,
-            {"outcome": {"outcome": OUTCOME_SELECTED, "optionId": resolved_id}},
-        )
+        delivered_allow = resolved_id in {
+            value for key, value in (recorded or {}).items() if key in ("once", "always")
+        }
+        generation = None
+        if broker is not None:
+            if delivered_allow:
+                generation = broker.stage_permission(str(request_id))
+            else:
+                broker.reject_permission(str(request_id))
+        try:
+            await self._send_response(
+                request_id,
+                {"outcome": {"outcome": OUTCOME_SELECTED, "optionId": resolved_id}},
+            )
+        except BaseException:
+            if broker is not None and generation is not None:
+                broker.reject_permission(str(request_id), generation)
+            raise
+        if broker is not None and delivered_allow:
+            broker.approve_permission(str(request_id), generation)
 
     def _note_pi_gate_denied(self, request_id: str | int) -> None:
         """Remember that the host DENIED the gate-extension dialog for this request.
@@ -12103,6 +12554,9 @@ class AcpClient:
         in band like the other two: a denied call that later reports ``completed``
         trips :meth:`_tripwire_pi_gate`. No-op for a request no envelope named.
         """
+        broker = getattr(self, "_pi_mcp_broker", None)
+        if broker is not None:
+            broker.reject_permission(str(request_id))
         tool_call_id = getattr(self, "_pi_gate_request_tool", {}).pop(str(request_id), None)
         if tool_call_id:
             self._pi_gate_denied_ids.add(tool_call_id)
@@ -12478,6 +12932,11 @@ class AcpClient:
         # Before the branch: on a session that judges nothing no event is built here,
         # and the gate tripwire still needs to know this call was asked about.
         self._note_pi_gate_asked(msg)
+        if (
+            getattr(self, "_pi_mcp_broker", None) is not None
+            and not self._judges_permission_requests
+        ):
+            self._build_permission_event(msg)
         if self._judges_permission_requests:
             event = self._build_permission_event(msg)
             if await self._deny_spec_disabled_tool(event):
@@ -12844,6 +13303,9 @@ class AcpClient:
         # pi-acp maps ``tool_execution_end`` the same way, and that capture shows
         # the second terminal for an id arriving only with the id's second call.
         # ``in_progress`` frames are not terminal and leave the state alone.
+        broker = getattr(self, "_pi_mcp_broker", None)
+        if broker is not None:
+            broker.finish_call(tool_call_id)
         asked = tool_call_id in self._pi_gate_asked_ids
         denied = tool_call_id in self._pi_gate_denied_ids
         self._pi_gate_asked_ids.discard(tool_call_id)
@@ -13885,6 +14347,9 @@ class AcpClient:
             envelope = gate_envelope(tool_call, pi_nonce)
             if envelope is not None and envelope["toolCallId"]:
                 tool_call_id = envelope["toolCallId"]
+                broker = getattr(self, "_pi_mcp_broker", None)
+                if broker is not None and msg.id is not None:
+                    broker.note_permission(str(msg.id), envelope)
         elif getattr(self, "_deepseek_gate_nonce", ""):
             candidate = tool_call.get("toolCallId")
             if isinstance(candidate, str):

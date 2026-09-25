@@ -43,6 +43,7 @@ from kiro_crew import acp_tool_gate, sandbox, security
 from kiro_crew.acp import client as acp_client
 from kiro_crew.acp._dispatch import GATE_ENVELOPE_MARKER, build_permission_event, gate_envelope
 from kiro_crew.acp.client import (
+    _PI_EXTENSION_FLAG,
     _READBACK_FAULT_MAX_SHAPES,
     _READBACK_FAULT_SHAPES,
     _READBACK_STDERR_SCAN_CHARS,
@@ -50,6 +51,7 @@ from kiro_crew.acp.client import (
     PI_BIN,
     PI_GATE_EXTENSION_SHA256,
     PI_INSTALL_COMMAND,
+    PI_MCP_BRIDGE_EXTENSION_SHA256,
     PROTOCOL_VERSION_PI,
     AcpClient,
     AcpToolGateUnroutable,
@@ -63,6 +65,7 @@ from kiro_crew.acp.client import (
     _resolve_pi_bin,
     _seal_pi_gate_extension,
     pi_gate_extension_path,
+    pi_mcp_bridge_extension_path,
 )
 from kiro_crew.acp.types import JsonRpcMessage
 from kiro_crew.acp_backends import (
@@ -241,6 +244,19 @@ class TestGateLauncher:
         # Different inputs are a different launcher, not a stale one.
         other = _ensure_pi_gate_launcher(str(tmp_path / "pi2"), str(tmp_path / "gate.ts"))
         assert other != first
+
+    def test_launcher_body_accepts_multiple_extensions(self):
+        body = _pi_gate_launcher_body("/opt/pi", ["/site/gate.ts", "/site/bridge.ts"])
+        assert _PI_EXTENSION_FLAG in body
+        assert body.count(_PI_EXTENSION_FLAG) == 2
+        assert "/site/gate.ts" in body
+        assert "/site/bridge.ts" in body
+
+    def test_bridge_extension_digest_matches_pin(self):
+        payload = acp_client._pi_gate_extension_bytes(
+            Path(pi_mcp_bridge_extension_path()).read_bytes()
+        )
+        assert hashlib.sha256(payload).hexdigest() == PI_MCP_BRIDGE_EXTENSION_SHA256
 
     def test_nothing_is_written_into_the_work_dir_or_the_pi_directory(self, monkeypatch, tmp_path):
         run_dir = tmp_path / "run"
@@ -1008,7 +1024,7 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
         return AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_PI, **kw)
 
     def test_a_missing_launcher_is_an_issue_with_the_harness_remedy(self, tmp_path):
-        issue, remedy = self._client(tmp_path)._verify_pi_gate(
+        issue, remedy, _commands = self._client(tmp_path)._verify_pi_gate(
             [str(tmp_path / "not-there"), "--mode", "rpc"], self.EXT
         )
         assert issue
@@ -1021,7 +1037,7 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
             stderr = ""
 
         monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
-        issue, remedy = self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)
+        issue, remedy, _commands = self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)
         assert "exit 3" in issue and "get_commands" in remedy
 
     def test_the_childs_own_reason_reaches_the_refusal(self, tmp_path, monkeypatch):
@@ -1039,7 +1055,7 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
             stderr = "/bin/sh: /Users/me/.local/bin/pi: Permission denied\n"
 
         monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
-        issue, _remedy = self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)
+        issue, _remedy, _commands = self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)
         assert "exit 126" in issue
         assert "the OS refused to execute it" in issue
         assert "/Users/me" not in issue
@@ -1053,7 +1069,7 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
             stderr = "   \n\t\n"
 
         monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
-        issue, _remedy = self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)
+        issue, _remedy, _commands = self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)
         assert issue.endswith("(exit 126)")
 
     def test_a_response_that_never_came_still_reports_the_childs_reason(
@@ -1067,7 +1083,7 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
             stderr = "pi: unknown flag --extension\n"
 
         monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
-        issue, _remedy = self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)
+        issue, _remedy, _commands = self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)
         assert "no response" in issue
         assert "a flag this harness version does not accept" in issue
 
@@ -1087,7 +1103,7 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
 
             _Completed.stderr = stderr
             monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
-            issue, _remedy = self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)
+            issue, _remedy, _commands = self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)
             return issue
 
         unknown = _run(f"mystery: key={_AWS_SECRET_SHAPE} rejected\n")
@@ -1107,7 +1123,7 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
             stderr = ""
 
         monkeypatch.setattr(acp_client.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
-        issue, remedy = self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)
+        issue, remedy, _commands = self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)
         assert PROBE in issue
         assert "gate extension" in remedy
 
@@ -1125,7 +1141,7 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
             return _Completed()
 
         monkeypatch.setattr(acp_client.subprocess_mod, "run", _fake_run)
-        assert self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT) == ("", "")
+        assert self._client(tmp_path)._verify_pi_gate(self.ARGV, self.EXT)[:2] == ("", "")
         # Used VERBATIM: the caller hands over an argv already through the sandbox
         # wrapper, so anything rebuilt here would run unwrapped.
         assert seen["argv"] == self.ARGV
@@ -1764,7 +1780,8 @@ class TestTheReadBackAgainstARealChild:
     def test_a_launcher_the_os_will_not_run_reports_the_bare_exit(self, tmp_path):
         """A silent child reports only its exit status."""
         argv = self._fake(tmp_path, "exec 2>/dev/null\nexit 126\n")
-        issue, remedy = self._verify(tmp_path, argv)
+        issue, remedy, commands = self._verify(tmp_path, argv)
+        assert commands is None
         assert "the harness's command registry could not be read back" in issue
         assert issue.endswith("(exit 126)")
         assert PI_INSTALL_COMMAND in remedy
@@ -1775,7 +1792,9 @@ class TestTheReadBackAgainstARealChild:
         Path(sealed).write_text("// gate\n")
         payload = _response(_registry((PROBE, sealed))).replace("'", "'\\''")
         argv = self._fake(tmp_path, f"cat >/dev/null\nprintf '%s\\n' '{payload}'\n")
-        assert self._verify(tmp_path, argv, sealed) == ("", "")
+        issue, remedy, commands = self._verify(tmp_path, argv, sealed)
+        assert (issue, remedy) == ("", "")
+        assert isinstance(commands, list)
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX shell launcher")
     def test_a_response_shape_this_gateway_cannot_read_is_refused(self, tmp_path):
@@ -1790,7 +1809,8 @@ class TestTheReadBackAgainstARealChild:
             }
         ).replace("'", "'\\''")
         argv = self._fake(tmp_path, f"cat >/dev/null\nprintf '%s\\n' '{drifted}'\n")
-        issue, remedy = self._verify(tmp_path, argv)
+        issue, remedy, commands = self._verify(tmp_path, argv)
+        assert commands is None
         assert "could not be read back" in issue
         assert "no response" in issue
         assert PI_INSTALL_COMMAND in remedy
@@ -2316,3 +2336,234 @@ class TestThePushNeverNeedsARefusal:
         assert "EFFORT_LEVELS[: start + 1]" in body
         assert "_is_config_value_rejection(exc, effort_option)" in body
         assert "effort_config_option_value(self._client.backend, level)" in body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("allowed", [True, False])
+async def test_pi_broker_permissions_come_from_host_response(tmp_path, monkeypatch, allowed):
+    from unittest.mock import AsyncMock
+
+    from kiro_crew.acp.pi_mcp_broker import PiMcpBroker
+
+    client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_PI)
+    client._pi_gate_nonce = NONCE
+    broker = PiMcpBroker([], socket_path=str(tmp_path / "unused.sock"))
+    client._pi_mcp_broker = broker
+    monkeypatch.setattr(client, "_send_response", AsyncMock())
+    title = "mcp__echo__ping"
+    frame = _permission_frame(_envelope(tool=title, input={"x": 1}), title=title)
+    client._build_permission_event(frame)
+    with pytest.raises(PermissionError):
+        broker._consume_approval(
+            "call_v0prcvqi",
+            title,
+            {"x": 1},
+            generation=broker._grant_generations.get("call_v0prcvqi"),
+        )
+    if allowed:
+        await client.approve_tool(frame.id)
+        broker._consume_approval(
+            "call_v0prcvqi",
+            title,
+            {"x": 1},
+            generation=broker._grant_generations.get("call_v0prcvqi"),
+        )
+    else:
+        await client.reject_tool(frame.id)
+        with pytest.raises(PermissionError):
+            broker._consume_approval(
+                "call_v0prcvqi",
+                title,
+                {"x": 1},
+                generation=broker._grant_generations.get("call_v0prcvqi"),
+            )
+
+
+def test_pi_bridge_failure_is_in_session_report(tmp_path):
+    client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_PI)
+    client._pi_mcp_expected_servers = ("kirocrew-core",)
+    client._begin_session_report([])
+    report = client.mcp_session_report().payload()
+    assert report["failed"] == ["kirocrew-core"]
+    assert "unavailable" in report["failures"]["kirocrew-core"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["error", "cancel", "no", "unknown"])
+async def test_broker_grant_requires_delivered_allow(tmp_path, monkeypatch, outcome):
+    from kiro_crew.acp.pi_mcp_broker import PiMcpBroker
+
+    client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_PI)
+    client._pi_gate_nonce = NONCE
+    broker = PiMcpBroker([], socket_path=str(tmp_path / "unused.sock"))
+    client._pi_mcp_broker = broker
+    title = "mcp__echo__ping"
+    frame = _permission_frame(_envelope(tool=title, input={"x": 1}), title=title)
+    client._build_permission_event(frame)
+
+    async def send(*args):
+        with pytest.raises(PermissionError):
+            broker._consume_approval(
+                "call_v0prcvqi",
+                title,
+                {"x": 1},
+                generation=broker._grant_generations.get("call_v0prcvqi"),
+            )
+        if outcome == "error":
+            raise OSError("send failed")
+        if outcome == "cancel":
+            raise asyncio.CancelledError()
+
+    monkeypatch.setattr(client, "_send_response", send)
+    if outcome in ("error", "cancel"):
+        with pytest.raises((OSError, asyncio.CancelledError)):
+            await client.approve_tool(frame.id)
+    else:
+        await client.approve_tool(frame.id, option_id=outcome)
+    with pytest.raises(PermissionError):
+        broker._consume_approval(
+            "call_v0prcvqi",
+            title,
+            {"x": 1},
+            generation=broker._grant_generations.get("call_v0prcvqi"),
+        )
+    assert not broker._delivering
+
+
+@pytest.mark.asyncio
+async def test_broker_call_waits_for_allow_delivery(tmp_path, monkeypatch):
+    from kiro_crew.acp.pi_mcp_broker import PiMcpBroker
+
+    client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_PI)
+    client._pi_gate_nonce = NONCE
+    broker = PiMcpBroker([], socket_path=str(tmp_path / "unused.sock"))
+    client._pi_mcp_broker = broker
+    title = "mcp__echo__ping"
+    frame = _permission_frame(_envelope(tool=title, input={"x": 1}), title=title)
+    client._build_permission_event(frame)
+    waiting = None
+
+    async def send(*args):
+        nonlocal waiting
+        waiting = asyncio.create_task(broker.wait_for_delivery("call_v0prcvqi"))
+        await asyncio.sleep(0)
+        assert not waiting.done()
+
+    monkeypatch.setattr(client, "_send_response", send)
+    await client.approve_tool(frame.id)
+    await waiting
+    broker._consume_approval(
+        "call_v0prcvqi", title, {"x": 1}, generation=broker._grant_generations.get("call_v0prcvqi")
+    )
+
+
+@pytest.mark.asyncio
+async def test_pi_broker_auto_approval_records_advertised_options(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from kiro_crew.acp.pi_mcp_broker import PiMcpBroker
+
+    client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_PI)
+    client._pi_gate_nonce = NONCE
+    broker = PiMcpBroker([], socket_path=str(tmp_path / "unused.sock"))
+    client._pi_mcp_broker = broker
+    monkeypatch.setattr(client, "_send_response", AsyncMock())
+    title = "mcp__echo__ping"
+    frame = _permission_frame(_envelope(tool=title, input={"x": 1}), title=title)
+    await client._handle_permission(frame)
+    broker._consume_approval(
+        "call_v0prcvqi", title, {"x": 1}, generation=broker._grant_generations.get("call_v0prcvqi")
+    )
+
+
+@pytest.mark.parametrize("grant", ["referenced", "unreferenced", "wildcard", "no-spec", "failed"])
+def test_pi_pooled_stubs_obey_projected_allowlist(tmp_path, monkeypatch, grant):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    import acp_launch_capture
+
+    from kiro_crew.acp.session_mcp import ToolsAllowlist
+
+    projection = SimpleNamespace(
+        servers=[],
+        disabled_tools=frozenset({("pooled", "fresh_off")}),
+        derived_spec_snapshot=None,
+        allowlist=ToolsAllowlist(
+            applies=grant != "no-spec",
+            grant_all=grant == "wildcard",
+            refs=frozenset({"pooled"} if grant == "referenced" else {"other"}),
+        ),
+    )
+    broker = MagicMock()
+    broker.start = AsyncMock()
+    broker.endpoint = "fixture-broker"
+    factory = MagicMock(return_value=broker)
+    original = acp_launch_capture._stub_common
+
+    def stub_common(stack, rec, path, backend):
+        original(stack, rec, path, backend)
+        stack.extend(
+            [
+                patch.object(
+                    acp_client,
+                    "session_mcp_projection",
+                    side_effect=(
+                        RuntimeError("projection unavailable") if grant == "failed" else None
+                    ),
+                    return_value=projection,
+                ),
+                patch.object(acp_client, "injection_server_names", return_value={"pooled"}),
+                patch.object(acp_client, "identity_bound_crew_servers", return_value=frozenset()),
+                patch.object(
+                    AcpClient,
+                    "_pooled_broker_stubs",
+                    return_value=[
+                        {
+                            "name": "pooled",
+                            "command": "/stub",
+                            "args": [],
+                            "disabledTools": ["old_off"],
+                        }
+                    ],
+                ),
+                patch.object(acp_client, "_pi_bridge_probe_issue", return_value=""),
+                patch.object(acp_client, "PiMcpBroker", factory),
+            ]
+        )
+
+    monkeypatch.setattr(acp_launch_capture, "_stub_common", stub_common)
+    acp_launch_capture.capture(ACP_BACKEND_PI, tmp_path)
+    if grant in {"referenced", "wildcard", "no-spec"}:
+        assert factory.call_args.args[0] == [
+            {
+                "name": "pooled",
+                "command": "/stub",
+                "args": [],
+                "disabledTools": ["fresh_off", "old_off"],
+            }
+        ]
+        broker.start.assert_awaited_once()
+        assert factory.call_args.kwargs["host_control_plane_servers"] == frozenset()
+    else:
+        factory.assert_not_called()
+
+
+@pytest.mark.parametrize("mounted", [None, frozenset(), frozenset({"third-party"})])
+def test_pi_unresolved_refs_require_initialized_broker_servers(tmp_path, mounted):
+    from types import SimpleNamespace
+
+    client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_PI)
+    spec = {
+        "tools": ["@third-party", "@kirocrew-computer"],
+        "mcpServers": {"third-party": {}, "kirocrew-computer": {}},
+    }
+    client._mcp_ref_spec = spec
+    client._pi_mcp_broker = (
+        None if mounted is None else SimpleNamespace(initialized_servers=mounted)
+    )
+    client._guard_unresolved_mcp_refs([])
+    expected = ("@kirocrew-computer",) if mounted else ("@kirocrew-computer", "@third-party")
+    assert client.mcp_session_report().unresolved_refs == expected
+    assert client._mcp_ref_spec is spec
+    assert set(spec["mcpServers"]) == {"third-party", "kirocrew-computer"}

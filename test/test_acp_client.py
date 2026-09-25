@@ -6330,9 +6330,12 @@ class TestApproveTool:
         )
 
     @pytest.mark.asyncio
-    async def test_explicit_option_id_skips_recorded_pop(self, tmp_path):
-        """Explicit option_id bypasses the recorded entry — defensive retries
-        with a recorded entry left intact still send the explicit id."""
+    async def test_explicit_option_id_consumes_recorded_options(self, tmp_path):
+        """An explicit id is sent, then the pending options are consumed.
+
+        The Pi broker uses that recorded set to avoid granting a call when the
+        explicit id was not one of the advertised allow options.
+        """
         from kiro_crew.acp.types import OUTCOME_SELECTED
 
         client = AcpClient(work_dir=tmp_path)
@@ -6343,7 +6346,7 @@ class TestApproveTool:
             46,
             {"outcome": {"outcome": OUTCOME_SELECTED, "optionId": "custom_id"}},
         )
-        assert client._permission_options[46] == {"once": "allow", "always": "allow_always"}
+        assert 46 not in client._permission_options
 
     @pytest.mark.asyncio
     async def test_reject_only_recorded_falls_back_to_literal_on_approve(self, tmp_path):

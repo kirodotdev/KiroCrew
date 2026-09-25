@@ -849,11 +849,13 @@ class TestSelectedBackendProjectionRow:
         asserts -- but it IS the state an operator gets told about, so the set is
         pinned by name and a new one is a deliberate change to this assertion.
 
-        ``pi`` is the one member, on evidence rather than absence: pi-acp accepts the
-        ``session/new`` MCP array and never hands it to the pi process (a stdio server
-        placed in it produced no error and no tool, verified live on pi-acp 0.0.33),
-        so the row below is what tells the operator a pi session carries none of
-        Kiro Crew's own tools. The case that follows pins that the row is rendered.
+        No backend ships ``no-channel`` today. ``pi`` was the last member, on the
+        evidence that pi-acp accepts the ``session/new`` MCP array and never hands
+        it to the pi process; Crew tools now reach pi through the sealed MCP bridge
+        extension (``ACP_BACKENDS_PI_MCP_BRIDGE`` / ``LINE_CREW_TOOLS``), so its
+        projection is ``external`` and the selected-backend no-channel row stays
+        silent for it. The case that follows pins that silence, and the ability
+        card still names the external kind.
         """
         from kiro_crew.providers.mirrors import PROJECTIONS, ProjectionKind
 
@@ -862,13 +864,17 @@ class TestSelectedBackendProjectionRow:
             for backend, declared in PROJECTIONS.items()
             if declared.kind is ProjectionKind.NO_CHANNEL
         }
-        assert gaps == {ACP_BACKEND_PI}, f"no-channel backends shipping: {sorted(gaps)}"
+        assert gaps == set(), f"no-channel backends shipping: {sorted(gaps)}"
 
-    def test_the_real_pi_declaration_drives_the_no_channel_row(self, capsys):
-        """Read off the SHIPPED declaration: the operator is told, not left to find out."""
-        cli_doctor._doctor_selected_backend_projection(self._cfg("pi"))
+    def test_the_real_pi_declaration_is_external_not_no_channel(self, capsys):
+        """Pi's bridge channel: projection row silent; ability card names external."""
+        cli_doctor._doctor_selected_backend_projection(self._cfg(ACP_BACKEND_PI))
+        assert capsys.readouterr().out == ""
+
+        cli_doctor._doctor_backend_ability_cards(self._cfg(ACP_BACKEND_PI))
         out = capsys.readouterr().out
-        assert "carries none of Kiro Crew's own tools" in out
+        assert "projection: 'external'" in out
+        assert "carries none of Kiro Crew's own tools" not in out
 
     def test_a_backend_that_does_receive_its_servers_prints_nothing(self, capsys):
         """Silence is the whole point on a stock install.

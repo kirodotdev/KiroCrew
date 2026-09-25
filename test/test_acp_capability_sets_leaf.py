@@ -191,9 +191,13 @@ def test_membership_is_unchanged_by_the_move() -> None:
     assert ACP_BACKENDS_SESSION_EVICTION == frozenset(
         {ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CODEX}
     )
-    # The spec's own servers reach kiro-cli from disk and KAS as a projected agent
-    # definition; codex mounts exactly the array it is sent, so it is judged by it.
-    assert ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE == frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+    # The spec's own servers reach kiro-cli from disk, KAS as a projected agent
+    # definition, and Pi through the sealed MCP bridge extension (EXTERNAL /
+    # ACP_BACKENDS_PI_MCP_BRIDGE) rather than the inert session/new array; codex
+    # mounts exactly the array it is sent, so it is judged by it.
+    assert ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE == frozenset(
+        {ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_PI}
+    )
     assert backends_retired_by_host_logout() == frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
     # The provider-advertised-model seams. claude for the spelling fold; codex
     # because its configOptions ``model`` select is the ONLY source of ids the
