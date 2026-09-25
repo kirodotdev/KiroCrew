@@ -593,3 +593,29 @@ def skill_view_sidecar_dirs() -> tuple[str, str]:
     )
 
     return (_PROJECTION_METADATA_DIR_NAME, _PROJECTION_LEASE_DIR_NAME)
+
+
+def chat_runtime_retire_pid(pid: int) -> int:
+    """Stop new chat sessions landing on the pooled runtime at *pid*.
+
+    The application layer must not import the runtime pool, so the identity
+    sweep asks through here when a credential change retires the sessions a
+    process serves. Returns how many pooled entries were marked, 0 when the pool
+    holds nothing on that pid -- which is also the answer when chat runtime
+    sharing is off.
+    """
+    from kiro_crew.acp.chat_runtime_pool import CHAT_RUNTIME_POOL
+
+    return CHAT_RUNTIME_POOL.retire_pid(pid)
+
+
+def chat_runtime_pid_has_tenants(pid: int) -> bool:
+    """Whether a pooled chat runtime on *pid* still has tenants holding it.
+
+    The application layer must not import the runtime pool, so the reset path
+    asks through here. False whenever the pool holds nothing live on that pid,
+    which is also the answer when chat runtime sharing is off.
+    """
+    from kiro_crew.acp.chat_runtime_pool import CHAT_RUNTIME_POOL
+
+    return CHAT_RUNTIME_POOL.pid_has_outstanding_leases(pid)

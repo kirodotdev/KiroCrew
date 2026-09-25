@@ -144,6 +144,28 @@ def test_injected_data_and_refusals_are_not_new_authority() -> None:
     )
 
 
+def test_scratch_guidance_namespaces_per_session_in_both_configurations() -> None:
+    """The scratch rule has to be true whether or not chat runtimes are shared.
+
+    ``$KIROCREW_SCRATCH`` belongs to the process, so with chat runtime sharing on
+    it is reachable by an unrelated session. The remedy is in the agent's own
+    hands -- a subdirectory it names itself and reuses -- which only works while
+    the prompt requires it, says no environment variable can supply the name, and
+    tells a parent to hand a child the full path.
+    """
+    rules = _section(_read(), "## Rules")
+    _require(
+        rules,
+        r"OWN subdirectory of \W{0,2}\$KIROCREW_SCRATCH",
+        r"no environment variable names your session",
+        r"chat_runtime_sharing.{0,2} on an unrelated dashboard chat can share your process",
+        r"hand them its full path",
+    )
+    # The claim sharing falsifies must not come back.
+    flat = " ".join(rules.replace("**", "").split())
+    assert "yours is not visible to them" not in flat
+
+
 def test_monitor_modes_have_distinct_stop_paths_and_real_exit_conditions() -> None:
     monitor = _section(_read(), "## Wait & Webhook Tools")
     _require(

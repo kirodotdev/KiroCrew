@@ -99,7 +99,12 @@ from kiro_crew.agent_sdk.context import (
     ContextPromptProvider,
     ContextStreamEvent,
 )
-from kiro_crew.agent_sdk.drivers.acp import context_provider_of, finish_suspended_spawn
+from kiro_crew.agent_sdk.drivers.acp import (
+    chat_runtime_pid_has_tenants,
+    chat_runtime_retire_pid,
+    context_provider_of,
+    finish_suspended_spawn,
+)
 from kiro_crew.agent_sdk.host_auth import (
     UNKNOWN_AGENT_AUTH,
     AgentAuthDeclaration,
@@ -122,6 +127,8 @@ class AgentTurnUsage(Protocol):
 
 
 __all__ = [
+    "chat_runtime_pid_has_tenants",
+    "chat_runtime_retire_pid",
     "ContextPromptProvider",
     "ContextStreamEvent",
     "CONTEXT_EVENT_AGENT_CHANGED",

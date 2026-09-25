@@ -738,7 +738,7 @@ repository is for review media (why: `references/rationale.md`). The exception i
 contributor with no write access, whose upload GitHub refuses; their path is the
 **Push access is required** bullet below.
 
-- **Capture into a local scratch dir** — `$KIROCREW_SCRATCH/evidence/`, or the gitignored `temp-screenshots/<feature>/` the capture scripts already write to. Neither reaches the commit.
+- **Capture into a local scratch dir** — `$KIROCREW_SCRATCH/<slug>/`, or the gitignored `temp-screenshots/<feature>/` the capture scripts already write to. Neither reaches the commit.
 - **Write ordinary local paths in the body file**, relative to the directory you run `gh` from: `![Settings page, empty state](./evidence/after.png)`. A video MUST stand alone in its own paragraph — `![](./evidence/demo.mp4)` with a blank line above and below — to render as an inline player; inside a sentence it renders as a link.
 - **Pass the same files to `gh`, one `--attach` per file** (gh >= 2.99; check `gh --version`, upgrade when older):
 

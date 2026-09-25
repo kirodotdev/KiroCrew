@@ -80,8 +80,9 @@ cd ..
   ```
 
   Never a bare `--override-ini=addopts=` for the multi-test gate.
-- Capture logs under `$KIROCREW_SCRATCH`; check the command's exit code, not a
-  pipe's last command. A green `tail` does not mean a green test.
+- Capture logs under your own subdirectory of `$KIROCREW_SCRATCH`; check the
+  command's exit code, not a pipe's last command. A green `tail` does not mean a
+  green test.
 - Reproduce a failure on a clean `origin/main` worktree before calling it
   pre-existing or flaky. A branch-only failure is yours. Never fix a flake with
   a retry, longer sleep, relaxed assertion or skip; use `writing-tests`.
@@ -89,7 +90,7 @@ cd ..
 
   ```bash
   gh run list --workflow=ci.yml --limit 250 --json databaseId,conclusion \
-    --jq '.[]|select(.conclusion=="failure")|.databaseId' > "$KIROCREW_SCRATCH/ci-ids"
+    --jq '.[]|select(.conclusion=="failure")|.databaseId' > "$KIROCREW_SCRATCH/flake-hunt/ci-ids"
   ```
 
   Read candidate runs with `gh run view <id> --log-failed`, rank recurring test
@@ -210,8 +211,9 @@ review-ready work; only explicit ship intent permits prepare-pr's auto-merge pat
 
 ## Cleanup and comments
 
-Keep scratch, PR bodies, logs and QA media under `$KIROCREW_SCRATCH`, not the
-worktree. Capture scripts' gitignored `temp-screenshots/` is also permitted;
+Keep scratch, PR bodies, logs and QA media under your own subdirectory of
+`$KIROCREW_SCRATCH`, not the worktree. Capture scripts' gitignored
+`temp-screenshots/` is also permitted;
 evidence is uploaded as attachments, never committed — with write access, which
 this agent has. (A fork contributor, whose `--attach` upload GitHub refuses, may
 instead `git add -f` the media there; see prepare-pr's *Screenshots*.) A directory

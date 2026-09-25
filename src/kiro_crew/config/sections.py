@@ -1292,6 +1292,38 @@ class AgentConfig:
             "processes.",
         ),
     )
+    chat_runtime_sharing: bool = field(
+        default=False,
+        metadata=_meta(
+            "Chat Runtime Sharing",
+            "Top-level dashboard chat sessions reuse one shared kiro-cli process "
+            "instead of spawning their own, the way subagents already share their "
+            "parent's. Saves one process's base memory for every chat session "
+            "after the first on a runtime; the per-session MCP stub "
+            "processes are minted per ACP session and remain. A session only joins "
+            "a runtime whose process-level spawn inputs match its own, and an "
+            "incognito or temporary session always gets its own process. One "
+            "process serves several sessions, so its death takes all of them "
+            "down together. Sessions on one process also share one "
+            "playwright-cli browser, since that name is per process; the "
+            "browser tool routes per session and is unaffected. They likewise "
+            "share the process's scratch tree ($KIROCREW_SCRATCH and $TMPDIR) "
+            "and its kiro-cli chat log, so an agent's staged files are visible "
+            "to an unrelated chat on the same process; the shipped guidance has "
+            "each session work in a subdirectory it names itself.",
+        ),
+    )
+    chat_runtime_sharing_max_sessions: int = field(
+        default=10,
+        metadata=_meta(
+            "Chat Runtime Sharing — max sessions per process",
+            "How many chat sessions one shared kiro-cli process may serve before "
+            "the next session spawns another. This is the blast radius of a single "
+            "process death, so a larger value pools more sessions onto one process "
+            "and loses more of them at once. Has no effect while chat runtime "
+            "sharing is off.",
+        ),
+    )
     max_subagents: int = field(
         default=0,
         metadata=_meta(

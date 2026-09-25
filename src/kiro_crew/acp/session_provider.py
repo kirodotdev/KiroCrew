@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import aclosing
 from pathlib import Path
 from typing import Any
@@ -81,12 +81,21 @@ class AcpSessionProvider(LLMProvider):
         owns_runtime: bool = False,
         session_key: str = "",
         channel_id: str | None = None,
+        runtime_release: "Callable[[], Awaitable[AcpRuntime | None]] | None" = None,
     ) -> None:
         self._handle = handle
         self._runtime = runtime
         # When True, shutdown() kills the runtime (parent session owns it).
         # When False, shutdown() only destroys the session handle (subagent).
         self._owns_runtime = owns_runtime
+        # Set when this session's runtime is REFCOUNTED by a pool, which is the
+        # case ``owns_runtime`` alone cannot express: the session that founded a
+        # shared process must not kill it while co-tenants are mid-turn, and the
+        # session that happens to leave LAST must kill it or the process leaks.
+        # Neither is a property of this provider, so the answer is asked of the
+        # pool at teardown: it returns the runtime when this was the last holder,
+        # and None while any other session still holds it.
+        self._runtime_release = runtime_release
         self._resumed_flag: bool = False
         self._resume_session_id: str = ""
         # The session this provider serves. ``rekey()`` sets it on a warm-pool
@@ -254,6 +263,78 @@ class AcpSessionProvider(LLMProvider):
         - Subagent sessions (owns_runtime=False): cancel any in-flight turn,
           then destroy the handle only.
         """
+        if self._runtime_release is not None:
+            # A pooled runtime: this session drops its reference and kills the
+            # process only if it was the last holder. The handle is destroyed
+            # either way, which is what evicts this session from a process that
+            # keeps running for its co-tenants.
+            #
+            # Cancel an in-flight turn FIRST, for the reason the shared arm below
+            # gives: destroy() unregisters this session's queue without telling the
+            # host to stop a running prompt, so an abandoned prompt keeps running
+            # on a process nothing here may kill, its frames are dropped as
+            # unknown-session, and it can wedge the next prompt on that sessionId.
+            # Bounded, so an unresponsive runtime cannot turn shutdown into a hang.
+            #
+            # Everything after the cancel is in a `finally`, for the reason the
+            # shared arm states and pays for: the cancel can be left through a
+            # door `except Exception` does not cover, because
+            # `asyncio.CancelledError` is a `BaseException`. Here that exit is
+            # delivered by the restart path's own
+            # `asyncio.wait_for(p.shutdown(), timeout=...)`, whose budget is
+            # larger than the 5s cancel budget below -- so a slow cancel is
+            # exactly where the cancellation lands. Sequentially, that skipped
+            # the release, and a lease that is never returned keeps its pool
+            # entry alive: the runtime is then reclaimed by neither the dead-entry
+            # drop nor `forget`, the session stays resident on it, and nothing
+            # retries, because every caller drops the provider afterwards.
+            last: AcpRuntime | None = None
+            try:
+                try:
+                    if self._handle.is_turn_active:
+                        try:
+                            await asyncio.wait_for(self._handle.cancel(), timeout=5.0)
+                        except Exception:
+                            logger.debug(
+                                "AcpSessionProvider.shutdown: pooled session cancel failed",
+                                exc_info=True,
+                            )
+                except Exception:
+                    logger.debug(
+                        "AcpSessionProvider.shutdown: pooled turn-active probe failed",
+                        exc_info=True,
+                    )
+            finally:
+                try:
+                    last = await self._runtime_release()
+                except Exception:
+                    logger.debug(
+                        "AcpSessionProvider.shutdown: pooled release failed", exc_info=True
+                    )
+                # The transcript is this session's resume material, and destroy()
+                # unlinks it unless told otherwise. The sole-owner arm below never
+                # reaches destroy() for a persistent session, so it keeps the
+                # transcript by never asking; a pooled session MUST ask, because it
+                # has to destroy the handle to leave the shared process. The setter
+                # already refuses for a non-persistent mode, which is the one case
+                # whose files are meant to go.
+                self.set_keep_transcript(True)
+                try:
+                    await self._handle.destroy()
+                except Exception:
+                    logger.debug(
+                        "AcpSessionProvider.shutdown: pooled handle destroy failed", exc_info=True
+                    )
+                if last is not None:
+                    try:
+                        await last.kill(
+                            expected=True, reason="provider shutdown (last pooled session)"
+                        )
+                    except Exception:
+                        logger.debug(
+                            "AcpSessionProvider.shutdown: pooled runtime kill failed", exc_info=True
+                        )
+            return
         if self._owns_runtime:
             # A runtime kill cancels only its reader tasks, so the handle's own
             # in-flight hook executions are stopped here first.

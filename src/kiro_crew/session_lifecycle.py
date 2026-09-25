@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, MutableMapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, MutableMapping, Sequence
 from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
@@ -365,6 +365,127 @@ def _turn_in_flight(session: Any, *, refuse_only_on_active_turn: bool = False) -
     # An unknown provider shape keeps the strict answer: refusing a teardown is recoverable,
     # tearing down a streaming reply is not.
     return bool(has_active_turn()) if callable(has_active_turn) else True
+
+
+def _provider_process_died(provider: Any) -> bool:
+    """Whether *provider*'s own child process is known to have exited.
+
+    ``is_process_alive`` is asked first and ``is_alive`` only as a fallback,
+    because the two answer different questions: the first is "the process
+    exists", the second folds in I/O staleness on some providers. A stalled but
+    living process must not read as dead here, or the guard below force-kills a
+    co-tenant's process over a slow pipe.
+
+    Only a definite exit answers True. A provider with neither probe, or one
+    whose probe raises, is unknowable, and the recoverable direction for an
+    unknown is to leave the process alone: a leaked child tree is reclaimable,
+    a co-tenant killed mid-turn is not.
+    """
+    for probe_name in ("is_process_alive", "is_alive"):
+        probe = getattr(provider, probe_name, None)
+        if not callable(probe):
+            continue
+        try:
+            return not bool(probe())
+        except Exception:  # noqa: BLE001 - an unreadable probe is an unknown, not a death
+            return False
+    return False
+
+
+def _retire_pooled_runtime_of(
+    provider: Any,
+    *,
+    log: logging.Logger | None = None,
+    log_label: str = "Identity sweep",
+) -> int:
+    """Mark *provider*'s pooled runtime unclaimable; returns entries marked.
+
+    Called when a credential change retires a session, so a chat starting after
+    the change cannot land on the process that authenticated before it. The
+    question goes to the pool through ``kiro_crew.agent_sdk``, because
+    application code must not import the agent-backend layer.
+
+    Best-effort by construction: a provider with no readable pid, a pool holding
+    nothing on it, and sharing switched off all answer 0, and none of them is a
+    reason to hold up the sweep.
+    """
+    client = getattr(provider, "_client", None)
+    pid = getattr(client, "_pid", None) if client else None
+    if not isinstance(pid, int):
+        return 0
+    log = log or logging.getLogger(__name__)
+    try:
+        from kiro_crew.agent_sdk import chat_runtime_retire_pid
+
+        return chat_runtime_retire_pid(pid)
+    except Exception:
+        log.debug("%s: pooled runtime for PID %s not retired", log_label, pid, exc_info=True)
+        return 0
+
+
+def _pid_has_live_tenant(
+    pid: int,
+    *,
+    sessions: Mapping[Any, Any],
+    exclude_key: Any,
+    exclude_session: Any,
+    pool_tenancy: Callable[[int], bool] | None = None,
+    log: logging.Logger | None = None,
+    log_label: str = "Reset",
+) -> bool:
+    """Whether anything OTHER than the session being reset still holds a live *pid*.
+
+    A refcounted chat runtime outlives one session's shutdown by design -- its
+    co-tenants hold it and the last one to leave kills it -- so this decides
+    both whether to SIGKILL a pid that outlived shutdown and whether to sweep
+    its escaped children. One flag governs both, because a process worth
+    keeping is a process whose children are in use.
+
+    Two sources are unioned, because neither sees the whole picture:
+
+    * The live session table covers a process shared for any reason at all,
+      including reasons the chat runtime pool knows nothing about. But a session
+      enters that table only once ``provider.start`` RETURNS, while a joining
+      session takes its pool lease INSIDE start, so for the length of a cold
+      start the table shows no survivor.
+    * The pool's own lease count closes exactly that window, asked through
+      ``kiro_crew.agent_sdk`` because application code must not import the
+      agent-backend layer.
+
+    Each source requires the process to be ALIVE, which is what keeps the
+    union from having an inverse failure: a crashed runtime leaves both a
+    registered session and an outstanding lease pointing at a pid that no
+    longer exists, and counting either would suppress the reap and the child
+    sweep of a genuinely dead process, stranding its escaped children. The
+    predicate is liveness of the PROCESS, not registration of a session, which
+    is why it still admits a joiner that holds a lease on a live runtime while
+    being absent from the session table.
+    """
+    for other_key, other in list(sessions.items()):
+        if other_key == exclude_key or other is exclude_session:
+            continue
+        other_provider = getattr(other, "provider", None)
+        other_client = getattr(other_provider, "_client", None)
+        other_pid = getattr(other_client, "_pid", None) if other_client else None
+        if not (isinstance(other_pid, int) and other_pid == pid):
+            continue
+        if _provider_process_died(other_provider):
+            continue
+        return True
+    log = log or logging.getLogger(__name__)
+    if pool_tenancy is None:
+        try:
+            from kiro_crew.agent_sdk import chat_runtime_pid_has_tenants
+
+            pool_tenancy = chat_runtime_pid_has_tenants
+        except Exception:
+            log.debug("%s: pooled tenancy for PID %s unreachable", log_label, pid, exc_info=True)
+            return False
+    try:
+        return bool(pool_tenancy(pid))
+    except Exception:
+        log.debug("%s: pooled tenancy for PID %s unreadable", log_label, pid, exc_info=True)
+        return False
 
 
 class SessionLifecycleService:
@@ -942,7 +1063,32 @@ class SessionLifecycleService:
                 shutdown_error = exc
             platform_compat = self._deps.get_platform_compat()
             if pid:
-                if platform_compat.pid_exists(pid):
+                # A process another LIVE session is still bound to is not a
+                # survivor to reap. A refcounted chat runtime outlives this
+                # session's shutdown by design -- its co-tenants hold it, and
+                # whichever session leaves last kills it -- so SIGKILLing a pid
+                # merely because it outlived one shutdown would end every other
+                # session on it mid-turn, and the child sweep would take the MCP
+                # servers they are using with it.
+                #
+                # Both sources of that answer, and why each of them requires the
+                # process to be alive, are in ``_pid_has_live_tenant``.
+                shared_with_others = _pid_has_live_tenant(
+                    pid,
+                    sessions=self._owner._sessions,
+                    exclude_key=key,
+                    exclude_session=session,
+                    log=logger,
+                    log_label=f"Reset {key}",
+                )
+                if shared_with_others:
+                    logger.info(
+                        "Reset %s: PID %d still serves other live sessions; leaving it and "
+                        "its children alone",
+                        key,
+                        pid,
+                    )
+                elif platform_compat.pid_exists(pid):
                     logger.warning("Reset %s: PID %d survived shutdown, force-killing", key, pid)
                     try:
                         await platform_compat.kill_process_tree_async(
@@ -954,7 +1100,7 @@ class SessionLifecycleService:
                             await platform_compat.kill_pid_async(pid, platform_compat.SIGKILL)
                         except (ProcessLookupError, OSError):
                             pass
-                if child_pids:
+                if child_pids and not shared_with_others:
                     try:
                         sweep_loop = asyncio.get_running_loop()
                         await sweep_loop.run_in_executor(
@@ -1382,6 +1528,18 @@ class SessionLifecycleService:
                         sess = owner._sessions[key]
                         if not self._deps.provider_uses_kiro_identity_store(sess.provider):
                             continue
+                        # A pooled process outlives the sessions on it, and the
+                        # credential it authenticated with is the one being
+                        # retired -- so stop NEW sessions landing there before
+                        # deciding what happens to this one. Asked through
+                        # ``kiro_crew.agent_sdk`` because application code must
+                        # not import the agent-backend layer. It matters most for
+                        # the busy branch below, which can only MARK its session:
+                        # that lease keeps the entry alive, and an unmarked entry
+                        # is still the first compatible runtime with room.
+                        _retire_pooled_runtime_of(
+                            sess.provider, log=logger, log_label=f"Reset {key}"
+                        )
                         if sess.semaphore.locked():
                             sess.retire_on_identity_change = True
                             invalidated_keys.append(key)

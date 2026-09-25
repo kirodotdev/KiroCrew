@@ -2725,6 +2725,10 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         tool_search_min_pct=_safe_int(agent_data.get("tool_search_min_pct", 5), 5),
         tool_search_min_tokens=_safe_int(agent_data.get("tool_search_min_tokens", 50000), 50000),
         session_sharing=bool(agent_data.get("session_sharing", True)),
+        chat_runtime_sharing=bool(agent_data.get("chat_runtime_sharing", False)),
+        chat_runtime_sharing_max_sessions=_safe_int(
+            agent_data.get("chat_runtime_sharing_max_sessions", 10), 10, 1
+        ),
         max_subagents=_safe_int(
             agent_data.get("max_subagents", 0), 0, 0, SUBAGENT_AUTO_MAX_CEILING
         ),

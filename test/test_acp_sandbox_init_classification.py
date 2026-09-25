@@ -742,12 +742,18 @@ async def test_the_shared_runtimes_cold_start_is_classified(crew_wrap, layer):
 
 
 def test_every_shared_runtime_startup_site_consults_the_latch():
-    """Wiring, asserted on the source: three sites, all three converted.
+    """Wiring, asserted on the source: two sites, both converted.
 
     A behavioural test per site would need the whole ``start()`` preamble; what
     can go wrong here is a site left behind, and that is a property of the file.
-    Counted against the auth latch it sits beside, so adding a fourth startup
+    Counted against the auth latch it sits beside, so adding a third startup
     path without the sandbox check fails here.
+
+    One of the two serves both the first spawn and the post-resume respawn: they
+    share a single spawn helper, so the check is written once and both paths
+    reach it. The receiver is matched as ANY name rather than as ``runtime``,
+    because that helper holds its process in a local of its own and a
+    name-specific pattern would read the spelling as a site that vanished.
     """
     import re
     from pathlib import Path
@@ -755,9 +761,9 @@ def test_every_shared_runtime_startup_site_consults_the_latch():
     import kiro_crew.providers.acp as provider_mod
 
     source = Path(provider_mod.__file__).read_text()
-    auth_sites = len(re.findall(r"runtime\.saw_not_logged_in\(\)", source))
-    sandbox_sites = len(re.findall(r"sandbox_init_failure_for_runtime\(runtime\)", source))
-    assert auth_sites == 3, f"the auth latch is read at {auth_sites} sites, not 3"
+    auth_sites = len(re.findall(r"\w+\.saw_not_logged_in\(\)", source))
+    sandbox_sites = len(re.findall(r"sandbox_init_failure_for_runtime\(\w+\)", source))
+    assert auth_sites == 2, f"the auth latch is read at {auth_sites} sites, not 2"
     assert sandbox_sites == auth_sites, (
         f"{sandbox_sites} of {auth_sites} shared-runtime startup sites classify a "
         "sandbox refusal; a site left behind reports it as a generic death and the "

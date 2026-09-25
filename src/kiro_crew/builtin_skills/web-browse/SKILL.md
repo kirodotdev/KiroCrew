@@ -100,10 +100,14 @@ permission, is the thing to get right:
 ## Your PROCESS owns its browser, and `attach` binds to it
 
 Kiro Crew sets `PLAYWRIGHT_CLI_SESSION` per process, so bare commands address your
-browser without needing `-s=` to separate unrelated chats.
+browser. Unrelated chats normally each have their own process, so no `-s=` is needed
+to separate them -- but with `agent.chat_runtime_sharing` on two unrelated chats can
+share one process, and then one `playwright-cli` browser.
 
 **Isolation is per session FAMILY, not per agent.** A parent and its subagents
-normally share one browser; task-runner steps share their run's browser too.
+normally share one browser; task-runner steps share their run's browser too. With
+`agent.chat_runtime_sharing` on, a family can also be two unrelated top-level chats
+that happen to share a process, so treat a peer chat the same way as a sibling.
 Some spawns have separate processes, but a subagent must assume sharing. If your
 parent or a sibling may browse concurrently, choose ONE task-specific
 `-s=<name>` (not `tmp`) and use it on every command, `attach` / `open` included.

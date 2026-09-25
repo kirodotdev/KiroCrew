@@ -48,10 +48,14 @@ ffmpeg is available — converts it to mp4 and a palette-optimized GIF.
 ```
 python3 <skill-dir>/scripts/record_browser.py \
   --url http://127.0.0.1:5173/settings \
-  --scenario $KIROCREW_SCRATCH/demo-scenario.mjs \
+  --scenario $KIROCREW_SCRATCH/settings-demo/demo-scenario.mjs \
   --project /path/to/frontend \
-  --size 1280x800 --name settings-flow --out $KIROCREW_SCRATCH/rec
+  --size 1280x800 --name settings-flow --out $KIROCREW_SCRATCH/settings-demo/rec
 ```
+
+`settings-demo` stands for your session's own subdirectory of `$KIROCREW_SCRATCH`
+(see the scratch rule in your instructions): another chat can share the process
+that names that variable, so pick your own and reuse it.
 
 Two optional timing flags: `--settle-ms` (default 600) waits after page load
 before the scenario runs, and `--tail-ms` (default 400) waits after the scenario
@@ -61,9 +65,9 @@ flow gets cut off at the end of the video.
 Last lines of stdout are machine-readable:
 
 ```
-WEBM $KIROCREW_SCRATCH/rec/settings-flow.webm
-MP4 $KIROCREW_SCRATCH/rec/settings-flow.mp4
-GIF $KIROCREW_SCRATCH/rec/settings-flow.gif
+WEBM $KIROCREW_SCRATCH/settings-demo/rec/settings-flow.webm
+MP4 $KIROCREW_SCRATCH/settings-demo/rec/settings-flow.mp4
+GIF $KIROCREW_SCRATCH/settings-demo/rec/settings-flow.gif
 ```
 
 ## Workflow
