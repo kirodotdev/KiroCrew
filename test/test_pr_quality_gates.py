@@ -249,6 +249,31 @@ class TestScreenshotEvidence:
         assert "never committed — with write access, which\nthis agent has" in worktree
         assert "see prepare-pr's *Screenshots*" in worktree
 
+    def test_the_ci_doc_describes_the_committed_read_as_the_script_performs_it(self):
+        """The CI doc's Design-lane paragraph describes where committed media is
+        read from. Every lane that admits it sources one script, and that
+        script reads each blob with `git cat-file` at `HEAD_SHA` -- there is no
+        working-tree read for a same-repo pull request to take instead. A doc
+        sentence that enumerates a per-lane mechanism ("same-repo only",
+        "from the checkout on a same-repo PR") describes a path the script does
+        not have. So the paragraph is checked against the script, not against
+        a fixed wording: it names the script, states the object-store read, and
+        carries neither enumeration. The wording around those anchors is free
+        to change."""
+        root = WORKFLOWS.parents[1]
+        script = (root / ".github" / "scripts" / "pr-committed-evidence.sh").read_text(
+            encoding="utf-8"
+        )
+        assert 'git cat-file blob "$HEAD_SHA:$path"' in script
+        ci_doc = (root / "docs" / "ci" / "ci-and-reviews.md").read_text(encoding="utf-8")
+        paragraph = ci_doc.split("The Design trigger accepts the same evidence", 1)[1]
+        paragraph = paragraph.split("\n\n", 1)[0]
+        assert ".github/scripts/pr-committed-evidence.sh" in paragraph
+        assert "object store" in paragraph
+        assert "same-repo only" not in paragraph
+        assert "from the checkout on a same-repo PR" not in paragraph
+        assert "fork head is never checked" not in paragraph
+
     def test_the_committed_path_states_its_own_ceiling_next_to_the_instruction(self):
         """`Limits: 10 MB per image/GIF, 100 MB per video.` describes the
         ATTACHMENT path. The committed path the next paragraph offers a fork

@@ -1795,9 +1795,11 @@ The Design trigger accepts the same evidence the UX lane admits: a
 HEAD -- and it reads presence the same way. Both Design lanes run a "Collect
 rendered evidence" step that sources the shared allowlisted fetch script, downloads
 and types every attachment the description offers, lists the committed images the
-revision adds or changes (from the checkout on a same-repo PR; out of the object
-store on a fork, by `pr-committed-evidence.sh`, since the fork head is never checked
-out as files), and writes one evidence file the prompt is told to read; the
+revision adds or changes (by sourcing `.github/scripts/pr-committed-evidence.sh`,
+which reads every blob out of the object store at the head SHA with `git cat-file`
+and never off a working tree -- one admission path through one set of gates for a
+same-repo PR and a fork PR alike; the two differ only in where the workflow learns
+the head SHA), and writes one evidence file the prompt is told to read; the
 description's text is not the predicate, so a fabricated or dead URL does not count
 as evidence. A transport failure is listed as "presence unconfirmed" and caps the
 Design verdict at `CONCERNS` rather than failing the lane, because the UX lane fails

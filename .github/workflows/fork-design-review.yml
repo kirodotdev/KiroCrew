@@ -574,9 +574,9 @@ jobs:
               a URL that did not download is not evidence) and no committed
               image or recording it names (media this revision adds or changes
               under temp-screenshots/ or .github/screenshots/ counts the same
-              as an attachment -- in a same-repo checkout as the file at HEAD,
-              on a fork pull request as bytes the workflow read out of the
-              object store; a committed path the list does not name was not
+              as an attachment -- read as bytes out of the object store at the
+              head SHA, never off a working tree, on a same-repo and a fork pull
+              request alike; a committed path the list does not name was not
               admitted and is not evidence -- the rule the UX lanes apply). An
               image hosted off a commit outside this PR, or one the description
               itself says shows another PR's state, is not evidence of this

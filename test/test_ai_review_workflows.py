@@ -4263,20 +4263,25 @@ class TestUxReviewReadsTheScreenshotsBlindFirst:
         assertions name the stale shapes; the positive ones name the rule the
         trigger states instead. The design trigger is checked in BOTH design
         lanes because their calibration blocks are pinned identical, so its
-        wording has to be true of a same-repo checkout and of a fork read out
-        of the object store alike. The CANNOT-EVALUATE contract itself is
+        wording has to be true of a same-repo and a fork pull request alike --
+        which it is only as the one read the shared script performs: bytes out
+        of the object store at the head SHA, never off a working tree. A
+        per-lane split ("in a same-repo checkout as the file at HEAD") names a
+        read the script does not perform. The CANNOT-EVALUATE contract itself is
         untouched: the point is which evidence counts, not when the lane may
         refuse."""
         for lane in DESIGN_LANES:
             design_prompt = _flat(_step(lane, "Design review (Fable 5)")["with"]["prompt"])
             assert "THIS checkout can render" not in design_prompt, lane
             assert "a committed image is not evidence here" not in design_prompt, lane
+            assert "in a same-repo checkout as the file at HEAD" not in design_prompt, lane
             assert "no committed image or recording it names" in design_prompt, lane
             assert "counts the same as an attachment" in design_prompt, lane
             assert (
-                "on a fork pull request as bytes the workflow read out of the object store"
-                in design_prompt
+                "read as bytes out of the object store at the head SHA, never off a "
+                "working tree, on a same-repo and a fork pull request alike" in design_prompt
             ), lane
+            assert "a committed path the list does not name was not admitted" in design_prompt, lane
             # The lane still refuses when the list names nothing, and still
             # says a URL the workflow could not download is not evidence.
             assert "CANNOT EVALUATE -- REQUIRED EVIDENCE MISSING" in design_prompt, lane
