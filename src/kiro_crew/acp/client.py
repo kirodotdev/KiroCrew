@@ -7804,10 +7804,12 @@ class AcpClient:
         default is not in its own served list runs a session that fails on its
         first prompt.
 
-        Only the kiro backend: its advertised ids are exactly the ids
+        The served-list check is kiro only: its advertised ids are exactly the ids
         ``session/set_model`` accepts, so "absent from the list" genuinely means
         unusable. The claude backend advertises a different namespace than the
-        model it runs and announces its own substitutions instead.
+        model it runs and announces its own substitutions instead. Its gap is a
+        different one, closed by :meth:`_reassert_adapter_resolved_model`: the
+        model it reports is not always the model Claude Code runs.
 
         ``self._model`` is deliberately left alone. ``""``/``"auto"`` there mean
         "inherit" to every reader of that field (the settings seed, the
@@ -7835,6 +7837,54 @@ class AcpClient:
                 ", ".join(advertised),
                 fallback,
             )
+        elif self._is_claude:
+            await self._reassert_adapter_resolved_model()
+
+    async def _reassert_adapter_resolved_model(self) -> None:
+        """Send an inheriting claude session the model its adapter reports.
+
+        claude-agent-acp resolves an inheriting session's model from
+        ``ANTHROPIC_MODEL`` or the user's ``settings.model`` and reports it as the
+        ``model`` option's current value. When that value is the setting verbatim it
+        does not pass it on, trusting Claude Code to have read the same setting; a
+        resumed session can instead run Claude Code's built-in default while the
+        adapter still reports the settings model. A custom gateway that does not
+        serve that built-in default then refuses every turn. The report cannot tell
+        the two cases apart, so the reported id is sent back over
+        ``session/set_config_option``: the write the picker and ``/model`` make,
+        which the adapter always passes on to Claude Code.
+
+        Nothing is sent when the reported id is the head of the advertised list:
+        with no model setting the adapter reports that entry (its ``default``
+        pseudo-model), so there is no setting to re-apply. Nothing is sent for an
+        id the list does not carry either, since the adapter would refuse it.
+
+        Best effort: the session started without this write, so a refused value or
+        a failed request leaves it on the adapter's own model and only logs. A dead
+        process still propagates, because the session cannot continue.
+        """
+        advertised = self._advertised_model_ids()
+        reported = self._resolved_model_id or ""
+        if reported not in advertised or reported == advertised[0]:
+            return
+        _reported_log = redact_log_via_context(reported)
+        # An advisory belongs to the request that emitted it (see set_model).
+        self._last_substitution_model = None
+        try:
+            sent = await self._push_model_config_option(reported, strict=False)
+        except AcpProcessDied:
+            raise
+        except AcpError as exc:
+            logger.warning(
+                "ACP model %s reported by the backend could not be re-applied: %s",
+                _reported_log,
+                redact_log_via_context(str(exc)),
+            )
+            return
+        if not sent:
+            return
+        self._resolved_model_id = self._last_substitution_model or sent
+        logger.info("ACP model: re-applied %s, resolved by the backend's settings", _reported_log)
 
     async def _apply_startup_model(self) -> None:
         """Apply the configured model to a freshly initialized session.
@@ -7876,7 +7926,11 @@ class AcpClient:
         and a startup application agree on one exact spelling.
         """
         if not self._model or self._model == DEFAULT_MODEL:
-            logger.info("ACP model: %s (from agent config)", self._model or "auto")
+            logger.info(
+                "ACP model: %s (from agent config; backend reports %s)",
+                self._model or "auto",
+                redact_log_via_context(self._resolved_model_id or "") or "none",
+            )
             # Inheriting is only safe when the inherited model is served; the
             # backend can default to one this partition does not carry.
             await self._ensure_served_default()

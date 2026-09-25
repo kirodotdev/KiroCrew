@@ -265,6 +265,12 @@ keys are omitted so a stale static allowlist cannot collapse a versioned `[1m]`
 id to the 200K window. The post-capture re-seed fills them after `session/new`
 records the backend's actual list.
 
+With `agent.model` at `auto` the seed writes no `model` key, so the adapter takes the
+model from the user's own settings (`ANTHROPIC_MODEL`, then `settings.model`). After
+`session/new` or `session/load`, Crew sends that reported id back to the adapter.
+Otherwise a resumed session can run Claude Code's built-in default instead
+([model-selection.md](../common/model-selection.md#-only-inherits-a-served-default)).
+
 **Crew creates the file, or adopts only a byte-for-byte Crew-authored orphan;
 otherwise it leaves the path entirely alone.** `work_dir` is routinely a checked-out
 project the user also drives with `claude` by hand, so a foreign
