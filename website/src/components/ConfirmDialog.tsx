@@ -14,9 +14,11 @@ import { i18nT } from '../i18n/t'
  * This dialog is the themed, non-blocking replacement: the confirm button
  * restates the action instead of "OK", and the caller awaits a boolean.
  *
- * The confirm button is always styled destructively and the cancel label is
- * always the shared one: every current caller confirms a destructive act, so
- * the knobs would ship without a consumer. Add them when a caller needs them.
+ * The confirm button is styled destructively by default and the cancel label
+ * is always the shared one. `danger: false` is the one knob for a caller whose
+ * confirmed action is NOT destructive (e.g. promoting an ephemeral session to
+ * persistent) — a red button on a positive, reversible action reads as a
+ * warning the action does not deserve.
  */
 export interface ConfirmOptions {
   /** Short dialog title. A question restating the stakes reads best. */
@@ -104,8 +106,21 @@ export function useConfirm(): {
       }
     >
       {/* Full-contrast body: this line carries the consequence ("permanently
-          deletes bucket …"), which must not read quieter than the buttons. */}
-      {opts.body != null ? <p className="text-sm text-text m-0">{opts.body}</p> : null}
+          deletes bucket …"), which must not read quieter than the buttons.
+          A string body split by a blank line renders as separate paragraphs,
+          so a caller can lift a decision-critical caveat out of a wall of
+          text; a ReactNode body is rendered as given. */}
+      {opts.body != null
+        ? typeof opts.body === 'string'
+          ? opts.body
+              .split(/\n{2,}/)
+              .map((para, i) => (
+                <p key={i} className="text-sm text-text m-0 mb-2 last:mb-0">
+                  {para}
+                </p>
+              ))
+          : <p className="text-sm text-text m-0">{opts.body}</p>
+        : null}
     </Modal>
   ) : null
 

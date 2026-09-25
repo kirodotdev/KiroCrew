@@ -107,6 +107,23 @@ describe('useConfirm', () => {
     expect(onAnswer).toHaveBeenLastCalledWith(true)
   })
 
+  it('defaults the confirm button to the destructive style', async () => {
+    const user = userEvent.setup()
+    render(<Probe onAnswer={vi.fn()} />)
+    await user.click(screen.getByText('ask'))
+    const confirmBtn = await screen.findByRole('button', { name: 'Discard draft' })
+    expect(confirmBtn.className).toContain('text-danger')
+    expect(confirmBtn.className).not.toContain('bg-accent')
+  })
+
+  it('danger: false drops the destructive styling for a non-destructive confirm', async () => {
+    const user = userEvent.setup()
+    render(<Probe onAnswer={vi.fn()} opts={{ confirmLabel: 'Keep it', danger: false }} />)
+    await user.click(screen.getByText('ask'))
+    const confirmBtn = await screen.findByRole('button', { name: 'Keep it' })
+    expect(confirmBtn.className).not.toContain('text-danger')
+  })
+
   it('an unmount while open answers "no" so the awaiting caller is released', async () => {
     const onAnswer = vi.fn()
     const user = userEvent.setup()

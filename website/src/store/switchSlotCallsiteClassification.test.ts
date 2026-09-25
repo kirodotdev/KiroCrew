@@ -42,7 +42,7 @@ const PINNED: Record<string, Counts> = {
   'src/hooks/useSceneInteraction.tsx': { announced: 1, keepTarget: 0, plain: 0, reason: 'worlds-scene click announces' },
   'src/hooks/useSessionActions.ts': { announced: 0, keepTarget: 0, plain: 1, reason: 'switches to a just-created slot (data.key)' },
   'src/pages/ArtifactDetailPage.tsx': { announced: 0, keepTarget: 0, plain: 2, reason: 'in-page nav intent + just-created slot; both self-handle within the page' },
-  'src/pages/ChatPage.tsx': { announced: 2, keepTarget: 1, plain: 7, reason: 'flyout row + split-collapse announce; create path keeps target; the plain sites are deep-link restore, just-created slots, side-chat wiring and awaited flows with in-page error UI' },
+  'src/pages/ChatPage.tsx': { announced: 2, keepTarget: 1, plain: 8, reason: 'flyout row + split-collapse announce; create path keeps target; the plain sites are deep-link restore, just-created slots (fork and promote), side-chat wiring and awaited flows with in-page error UI' },
   'src/pages/ChatSidebar.tsx': { announced: 4, keepTarget: 0, plain: 0, reason: 'sidebar rows and adopted-session activation announce' },
   'src/pages/ProjectsPage.tsx': { announced: 0, keepTarget: 0, plain: 1, reason: 'switches to a just-created slot' },
   'src/pages/chat/SubagentRunCard.tsx': { announced: 1, keepTarget: 0, plain: 0, reason: 'run-card session link announces' },
