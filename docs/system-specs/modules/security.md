@@ -77,9 +77,70 @@ kept the same object on both sides.** The pass runs in the gateway and the mask 
 the launcher child, so a name swapped between them is judged once and bound twice.
 `_pin_mount_path` resolves each mask target ONCE into an `O_PATH` descriptor, classifies it
 with `fstat` on that descriptor, and the mount takes `/proc/self/fd/<fd>` — a path that
-names the object the descriptor holds however the name reads by then. Symlinks are still
-followed at the pin, exactly as the `isdir`/`isfile` guards it replaces followed them, so a
-supported symlinked data home keeps working. Pinning alone closes only half the window:
+names the object the descriptor holds however the name reads by then.
+
+**The expectation is CARRIED from the gateway, not taken again in the child.** A look taken
+inside the launcher lands on the far side of the script build, the `mkstemp` that writes it
+and the `fork`/`unshare`, so an occupant read there and compared there answers about the same
+instant twice and closes nothing. `_refuse_aliased_masked_leaves` already `lstat`s every crew
+hidden leaf to refuse an aliased one, so it records what it saw at no extra syscall; the four
+materialisers' established targets and `~/.ssh` are added beside it. The builder serialises
+that map as `MASK_OCCUPANTS` and probes nothing, which is the property
+`test_the_builder_does_not_stat_the_hidden_paths` pins for it. `_pin_mount_path` then looks
+its OWN target up in that map rather than taking an `expect_occupant` argument from each
+caller: every hiding mount reaches that one function, so binding the check to the function
+makes a new call site covered the day it is written, with no keyword for it to forget.
+
+**Not every masked target carries one, and the boundary is measured rather than assumed.** A
+strict spawn masks 409 targets; 99 of them are observed by a pre-spawn pass and 310 are not,
+including `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`, `.config/gcloud` and the read-only
+ceiling set. Requiring a carried identity for a name no pass observed would mean refusing a
+link there, which is the `stow` cost above charged on exactly the directories a dotfile
+manager symlinks. Observing all 409 in the gateway is the other tempting answer and is worse:
+it puts a per-target probe per spawn back on the single event loop, which is the defect
+`test_the_builder_does_not_stat_the_hidden_paths` exists to describe. So a name with no
+carried entry keeps the previous behaviour -- the mask covers what the link resolves to -- and
+that residual is stated here rather than left to read as covered.
+
+**The comparison is on DEVICE AND INODE, and it carries NO exceptions.** Weaker attributes do
+not identify an object: comparing only link-ness admits a same-kind decoy, because a directory
+swapped for another directory satisfies it while the real tree sits unmasked at whatever name
+the writer moved it to. An inode is what the five findings on this path were all asking for.
+
+The cost of having no exceptions is that EVERY inode change at a protected name refuses,
+and some inode changes are ordinary rather than hostile:
+
+| Change at the name | Outcome | Ordinary cause |
+|---|---|---|
+| untouched | proceeds | -- |
+| real object recreated | REFUSES | a staging directory rebuilt mid-flight (`aws-control-staging`, measured) |
+| real object atomically rewritten | REFUSES | any `atomic_write` / `os.replace` publish; the helper renames onto the destination, so the inode always changes |
+| symlink recreated | REFUSES | a dotfile manager restow |
+| real object replaced by a symlink | REFUSES | the substitution this exists to catch |
+| symlink replaced by a real object | REFUSES | a dotfile manager unlinking |
+
+Which of those a sandbox should permit is a decision about what the operator's own tooling may
+do to a protected name while an agent is running. It is not derivable from the launcher, and a
+list invented there would either break ordinary hosts or quietly reopen the hole, so the code
+carries none and says so at the comparison. This table is the list to choose from.
+
+**The FIRST look does not follow, and a link is still followed once -- those are two
+different statements and both are needed.** A link occupying a protected name has two
+unrelated causes wanting opposite answers: an ordinary `stow` or `chezmoi` layout has had
+one there since before the gateway started, and refusing it fails every strict spawn on a
+supported machine; a link SUBSTITUTED for a directory while the launcher looks is a
+redirect, and following it masks the planter's decoy while the real directory, renamed
+aside, stays readable. Nothing at a single instant separates them -- both show a link -- so
+the launcher does not try. `_name_occupant` opens the name `O_PATH | O_NOFOLLOW`, which
+does not refuse a link but returns a descriptor on the link ITSELF, and reports the
+identity of whatever occupies the name. The pin takes that identity back as
+`expect_occupant` and refuses when a later look finds a DIFFERENT occupant. A link that was
+already there is the same link at both looks and passes; a directory replaced by a link is
+not. `O_DIRECTORY | O_NOFOLLOW` would refuse a link outright instead, and that refusal
+lands on the supported layout rather than on the planter, which is why it is not used.
+Once the occupant is known, a link is followed exactly ONCE so the mask covers the store
+the keys actually live in, as the `isdir`/`isfile` guards it replaces did, so a supported
+symlinked data home keeps working. Pinning alone closes only half the window:
 with the mask on the inspected object, a rename leaves the NAME reaching the racing
 writer's replacement — not a leak of what was there, a WRITABLE object at a protected name,
 which for the leaves the gateway reads back as authoritative buys forged records. So
@@ -88,8 +149,9 @@ that mount's stand-in. The read-only ceiling seal reaches the same invariant by 
 step in the other direction: its remount can only name the mount its bind just created, so
 it re-resolves once and requires the object it reaches to be the object it bound.
 
-**Four refusal classes are new on the spawn path, and each fails CLOSED**: a target that
-exists and cannot be pinned (`open` denied where `stat` succeeded), a masked name that does
+**Five refusal classes are new on the spawn path, and each fails CLOSED**: a target that
+exists and cannot be pinned (`open` denied where `stat` succeeded), a masked name whose
+occupant changed between a caller's first look and its pin, a masked name that does
 not reach its stand-in afterwards, a ceiling whose identity changed between being bound
 and being sealed, and a protected target that was present pre-spawn and absent by the time
 the child mounts. That last one is decided in two places, and the split is forced rather

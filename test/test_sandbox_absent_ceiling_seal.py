@@ -819,7 +819,7 @@ class TestTheDeliberateAliasExceptions:
             source.index("_materialize_maskable_dirs("),
             source.index("_materialize_md_notebook_mask_targets("),
             source.index("_materialize_live_target_mask_target("),
-            source.index("_refuse_aliased_masked_leaves()"),
+            source.index("_refuse_aliased_masked_leaves("),
         ]
         assert order == sorted(order), "the alias pass must run last"
 
