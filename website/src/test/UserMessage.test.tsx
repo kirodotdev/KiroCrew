@@ -103,26 +103,15 @@ describe('UserMessage', () => {
     expect(screen.getByText('Cancel')).toBeInTheDocument()
   })
 
-  it('enters edit mode on double-click of the bubble', () => {
+  it('does not enter edit mode on double-click of the bubble', () => {
+    // Regression guard for the revert of #7911: a double-click on the read-only
+    // bubble must keep native word selection and never open the editor, even
+    // when editing is enabled. The pencil button is the only edit path.
     const { container } = render(<UserMessage content="original" renderContent={renderContent} canEdit onEditResend={() => {}} />)
     const bubble = container.querySelector('.msg-content') as HTMLElement
     fireEvent.doubleClick(bubble)
-    expect(screen.getByRole('textbox')).toHaveValue('original')
-    expect(screen.getByText('Send')).toBeInTheDocument()
-  })
-
-  it('does not enter edit mode on double-click when onEditResend is not provided', () => {
-    const { container } = render(<UserMessage content="original" renderContent={renderContent} canEdit />)
-    const bubble = container.querySelector('.msg-content') as HTMLElement
-    fireEvent.doubleClick(bubble)
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
-  })
-
-  it('does not enter edit mode on double-click when canEdit is false', () => {
-    const { container } = render(<UserMessage content="original" renderContent={renderContent} onEditResend={() => {}} />)
-    const bubble = container.querySelector('.msg-content') as HTMLElement
-    fireEvent.doubleClick(bubble)
-    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+    expect(screen.getByTestId('content')).toBeInTheDocument()
   })
 
   it('cancels edit on Cancel click', () => {
