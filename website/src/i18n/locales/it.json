@@ -17760,5 +17760,9 @@
     "resolve_explanation": "Mantieni il valore attuale. Applica registra questa decisione e chiude le proposte in sospeso.",
     "forget_count": "Dimentica i ricordi selezionati: {{count}}",
     "retry_preview_page": "Riprova la pagina di anteprima"
+  },
+  "featurePreviewsTab": {
+    "layout_harness": "Layout componibile",
+    "layout_harness_desc": "Anteprima riservata agli sviluppatori del meccanismo di layout guidato dal posizionamento (renderer + ambito + editor), costruita accanto alla pagina Membri. Disattivata per impostazione predefinita; il meccanismo è ancora in fase di costruzione e non ha ancora un proprio accesso."
   }
 }

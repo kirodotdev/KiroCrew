@@ -17760,5 +17760,9 @@
     "resolve_explanation": "Conserva el valor actual. Aplicar registra esta decisión y cierra sus propuestas pendientes.",
     "forget_count": "Olvidar recuerdos seleccionados: {{count}}",
     "retry_preview_page": "Reintentar página de vista previa"
+  },
+  "featurePreviewsTab": {
+    "layout_harness": "Diseño componible",
+    "layout_harness_desc": "Vista previa solo para desarrolladores del mecanismo de diseño guiado por colocación (renderizador + ámbito + editor), construida junto a la página de Miembros. Desactivada de forma predeterminada; el mecanismo aún se está construyendo y todavía no tiene una entrada propia."
   }
 }

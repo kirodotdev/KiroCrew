@@ -17516,5 +17516,9 @@
     "resolve_explanation": "Aktuellen Wert behalten. Anwenden speichert diese Entscheidung und schließt ausstehende Vorschläge.",
     "forget_count": "Ausgewählte Erinnerungen vergessen: {{count}}",
     "retry_preview_page": "Vorschauseite erneut laden"
+  },
+  "featurePreviewsTab": {
+    "layout_harness": "Komponierbares Layout",
+    "layout_harness_desc": "Nur für Entwickler gedachte Vorschau des platzierungsgesteuerten Layout-Mechanismus (Renderer + Scope + Editor), gebaut neben der Mitglieder-Seite. Standardmäßig aus; der Mechanismus wird noch gebaut und hat noch keinen eigenen Zugang."
   }
 }

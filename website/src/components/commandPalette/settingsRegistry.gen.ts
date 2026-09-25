@@ -1608,6 +1608,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "developer.composable-layout",
+    "label": "Composable layout",
+    "labelKey": "featurePreviewsTab.layout_harness",
+    "description": "Dev-only preview of the placement-driven layout mechanism (renderer + scope + editor), built beside the Members page. Off by default; the mechanism is still being built and has no door of its own yet.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "developer.crewmates",
     "label": "Crewmates",
     "labelKey": "pages.developer.featurePreviewsTab.crew_members",

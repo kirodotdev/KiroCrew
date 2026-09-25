@@ -75,6 +75,10 @@
     "input_count": "Needs you: {{countText}}",
     "summary": "Running {{running}} · Blocked {{blocked}} · Approvals {{approvals}}"
   },
+  "featurePreviewsTab": {
+    "layout_harness": "Composable layout",
+    "layout_harness_desc": "Dev-only preview of the placement-driven layout mechanism (renderer + scope + editor), built beside the Members page. Off by default; the mechanism is still being built and has no door of its own yet."
+  },
   "terminalTab": {
     "rename": "Rename",
     "name": "Terminal name",

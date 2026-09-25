@@ -17760,5 +17760,9 @@
     "resolve_explanation": "Conservez la valeur actuelle. Appliquer enregistre cette décision et clôt ses propositions en attente.",
     "forget_count": "Oublier les souvenirs sélectionnés : {{count}}",
     "retry_preview_page": "Réessayer la page d’aperçu"
+  },
+  "featurePreviewsTab": {
+    "layout_harness": "Mise en page composable",
+    "layout_harness_desc": "Aperçu réservé aux développeurs du mécanisme de mise en page piloté par placement (moteur de rendu + portée + éditeur), construit à côté de la page Membres. Désactivé par défaut ; le mécanisme est encore en cours de construction et n’a pas encore sa propre entrée."
   }
 }

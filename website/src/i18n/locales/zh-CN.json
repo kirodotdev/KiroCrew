@@ -17272,5 +17272,9 @@
     "resolve_explanation": "保留当前值。应用后记录此决定，并关闭其待处理提案。",
     "forget_count": "忘记所选记忆：{{count}}",
     "retry_preview_page": "重试预览页面"
+  },
+  "featurePreviewsTab": {
+    "layout_harness": "可组合布局",
+    "layout_harness_desc": "由放置驱动的布局机制（渲染器 + 作用域 + 编辑器）的仅开发者预览，构建在成员页面旁边。默认关闭；该机制仍在构建中，目前还没有自己的入口。"
   }
 }

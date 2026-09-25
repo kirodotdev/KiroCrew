@@ -17272,5 +17272,9 @@
     "resolve_explanation": "현재 값을 유지합니다. 적용하면 결정을 기록하고 대기 중인 제안을 닫습니다.",
     "forget_count": "선택한 기억 잊기: {{count}}",
     "retry_preview_page": "미리 보기 페이지 다시 시도"
+  },
+  "featurePreviewsTab": {
+    "layout_harness": "구성 가능한 레이아웃",
+    "layout_harness_desc": "배치 기반 레이아웃 메커니즘(렌더러 + 스코프 + 에디터)의 개발자 전용 미리 보기로, 멤버 페이지 옆에 구축되었습니다. 기본적으로 꺼져 있습니다. 이 메커니즘은 아직 구축 중이며 아직 자체 진입점이 없습니다."
   }
 }

@@ -17760,5 +17760,9 @@
     "resolve_explanation": "Mantenha o valor atual. Aplicar registra esta decisão e encerra as propostas pendentes.",
     "forget_count": "Esquecer memórias selecionadas: {{count}}",
     "retry_preview_page": "Tentar página de prévia novamente"
+  },
+  "featurePreviewsTab": {
+    "layout_harness": "Layout combinável",
+    "layout_harness_desc": "Prévia apenas para desenvolvedores do mecanismo de layout guiado por posicionamento (renderizador + escopo + editor), construída ao lado da página de Membros. Desativada por padrão; o mecanismo ainda está sendo construído e ainda não tem uma entrada própria."
   }
 }

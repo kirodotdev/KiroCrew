@@ -920,6 +920,13 @@
       "description": "Adds “New chat on crew” to the create menu, which starts a session on a remote crew — another machine you have connected under Settings > Remote Crew. Unfinished: the session opens in that crew’s own pane and is not listed in this dashboard’s sessions yet, so to return to it later, switch to that crew’s pane."
     },
     {
+      "id": "developer.composable-layout",
+      "label": "Composable layout",
+      "tab": "developer",
+      "route": "/settings/developer?highlight=developer.composable-layout",
+      "description": "Dev-only preview of the placement-driven layout mechanism (renderer + scope + editor), built beside the Members page. Off by default; the mechanism is still being built and has no door of its own yet."
+    },
+    {
       "id": "developer.crewmates",
       "label": "Crewmates",
       "tab": "developer",
