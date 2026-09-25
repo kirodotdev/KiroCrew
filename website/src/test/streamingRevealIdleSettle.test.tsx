@@ -58,6 +58,20 @@ describe('streaming reveal idle settle', () => {
     expect(cls).toContain('ft-idle')
   })
 
+  it('composes the root class list from one term per state: group, smooth, streaming, then the settle', () => {
+    mount(LONG)
+    expect(root().className).toBe('group ft-anim-smooth ft-streaming')
+    act(() => void vi.advanceTimersByTime(500))
+    expect(root().className).toBe('group ft-anim-smooth ft-streaming ft-idle')
+    // Without `smooth` every animation term is absent, streaming or not.
+    const plain = render(
+      <div data-testid="mdwrap-plain">
+        <MarkdownRenderer content={LONG} streaming />
+      </div>,
+    )
+    expect((plain.getByTestId('mdwrap-plain').firstElementChild as HTMLElement).className).toBe('group')
+  })
+
   it('keeps the settle latched when a chunk arrives after it settled', () => {
     // The monotonicity guarantee. Spans persist across chunks and `--ft-o` is
     // per-slot, so un-settling would transition the whole edge from 1 back down

@@ -6980,7 +6980,7 @@
       "click_to_switch_to_this_session": "クリックしてこのセッションに切り替え",
       "close": "閉じる",
       "copied": "コピーしました！",
-      "ctrl_click_to_copy": "Ctrl+クリックでコピー",
+      "ctrl_click_to_copy": "Ctrl/Cmd+クリックでコピー",
       "download_d": "ダウンロード (d)",
       "download_image": "画像をダウンロード",
       "generating_diagram": "ダイアグラムを生成中…",
@@ -7013,7 +7013,11 @@
       "remote_media_loaded_from": "<host/> から読み込みました",
       "remote_media_site": "サイト: <host/>",
       "remote_media_sites": "サイト: <host/>",
-      "remote_media_gateway_refused": "メディアを読み込みませんでした。アドレスがこのダッシュボード自身のサーバーを経由するため、最終的にアクセスするサイトを表示できません。"
+      "remote_media_gateway_refused": "メディアを読み込みませんでした。アドレスがこのダッシュボード自身のサーバーを経由するため、最終的にアクセスするサイトを表示できません。",
+      "couldnt_copy_select_the_text_to_copy_it_manually": "コピーできませんでした — テキストを選択して手動でコピーしてください",
+      "the_copy_failed_ctrl_cmd_click_copies_the_full_session_id_for_label": "コピーできませんでした。Ctrl/Cmd+クリックで {{label}} の完全なセッション ID をコピーします。",
+      "couldnt_copy_the_image_path": "画像のパスをコピーできませんでした",
+      "the_copy_failed_ctrl_cmd_click_copies_the_path_label": "コピーできませんでした。Ctrl/Cmd+クリックでパス {{label}} をコピーします。"
     },
     "markdownToc": {
       "contents": "目次",

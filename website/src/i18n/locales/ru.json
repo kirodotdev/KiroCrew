@@ -7301,7 +7301,7 @@
       "click_to_switch_to_this_session": "Нажмите, чтобы переключиться на эту сессию",
       "close": "Закрыть",
       "copied": "Скопировано!",
-      "ctrl_click_to_copy": "Ctrl+клик для копирования",
+      "ctrl_click_to_copy": "Ctrl/Cmd+клик для копирования",
       "download_d": "Скачать (d)",
       "download_image": "Скачать изображение",
       "generating_diagram": "создание диаграммы…",
@@ -7334,7 +7334,11 @@
       "remote_media_loaded_from": "Загружено с <host/>",
       "remote_media_site": "Сайт: <host/>",
       "remote_media_sites": "Сайты: <host/>",
-      "remote_media_gateway_refused": "Медиа не загружено: адрес проходит через собственный сервер этой панели, поэтому нельзя показать, к какому сайту он обратится."
+      "remote_media_gateway_refused": "Медиа не загружено: адрес проходит через собственный сервер этой панели, поэтому нельзя показать, к какому сайту он обратится.",
+      "couldnt_copy_select_the_text_to_copy_it_manually": "Не удалось скопировать — выдели текст, чтобы скопировать его вручную",
+      "the_copy_failed_ctrl_cmd_click_copies_the_full_session_id_for_label": "Скопировать не удалось. Ctrl/Cmd+клик копирует полный ID сессии для {{label}}.",
+      "couldnt_copy_the_image_path": "Не удалось скопировать путь к изображению",
+      "the_copy_failed_ctrl_cmd_click_copies_the_path_label": "Скопировать не удалось. Ctrl/Cmd+клик копирует путь {{label}}."
     },
     "markdownToc": {
       "contents": "Содержание",

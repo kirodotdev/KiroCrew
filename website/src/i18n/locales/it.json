@@ -7194,7 +7194,7 @@
       "click_to_switch_to_this_session": "Clicca per passare a questa sessione",
       "close": "Chiudi",
       "copied": "Copiato!",
-      "ctrl_click_to_copy": "Ctrl+clic per copiare",
+      "ctrl_click_to_copy": "Ctrl/Cmd+clic per copiare",
       "download_d": "Scarica (d)",
       "download_image": "Scarica immagine",
       "generating_diagram": "generazione del diagramma…",
@@ -7227,7 +7227,11 @@
       "remote_media_loaded_from": "Caricato da <host/>",
       "remote_media_site": "Sito: <host/>",
       "remote_media_sites": "Siti: <host/>",
-      "remote_media_gateway_refused": "Contenuto non caricato: il suo indirizzo passa dal server di questa dashboard, quindi il sito che raggiungerebbe non può essere mostrato."
+      "remote_media_gateway_refused": "Contenuto non caricato: il suo indirizzo passa dal server di questa dashboard, quindi il sito che raggiungerebbe non può essere mostrato.",
+      "couldnt_copy_select_the_text_to_copy_it_manually": "Impossibile copiare — seleziona il testo per copiarlo manualmente",
+      "the_copy_failed_ctrl_cmd_click_copies_the_full_session_id_for_label": "La copia non è riuscita. Ctrl/Cmd+clic copia l’ID di sessione completo di {{label}}.",
+      "couldnt_copy_the_image_path": "Impossibile copiare il percorso dell’immagine",
+      "the_copy_failed_ctrl_cmd_click_copies_the_path_label": "La copia non è riuscita. Ctrl/Cmd+clic copia il percorso {{label}}."
     },
     "markdownToc": {
       "contents": "Contenuto",

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, fireEvent, act, screen } from '@testing-library/react'
-import MarkdownRenderer, { COPY_FAILED_FLASH_MS } from '../components/MarkdownRenderer'
+import MarkdownRenderer, { COPIED_FLASH_MS, COPY_FAILED_FLASH_MS } from '../components/MarkdownRenderer'
 import { OPEN_DELAY_MS } from '../components/InstantTip'
 import { copyToClipboard } from '../utils/clipboard'
 
@@ -67,7 +67,7 @@ describe('InlineCode click-to-copy (non-path chips)', () => {
     expect(screen.getByRole('tooltip')).toHaveTextContent('Copied!')
     expect(status).toHaveTextContent('Copied!')
 
-    act(() => { vi.advanceTimersByTime(1500) })
+    act(() => { vi.advanceTimersByTime(COPIED_FLASH_MS) })
     expect(screen.getByRole('tooltip')).toHaveTextContent('Click to copy')
     expect(status).toHaveTextContent('')
   })
@@ -89,7 +89,9 @@ describe('InlineCode click-to-copy (non-path chips)', () => {
     // rendered through ErrorNotice (icon, danger tone, role="alert"), and NOT in
     // the text flow — the paragraph carries no notice, so the prose never shifts.
     const notice = screen.getByTestId('md-chip-copy-error')
-    expect(notice).toHaveTextContent('Copy failed')
+    // The notice says what to do next, not only that it failed: the text is
+    // still on screen, so selecting it is the recovery.
+    expect(notice).toHaveTextContent('Couldn’t copy — select the text to copy it manually')
     expect(screen.getByRole('tooltip').contains(notice)).toBe(true)
     expect(code.parentElement!.querySelector('[data-testid="md-chip-copy-error"]')).toBeNull()
     // Announced ONCE, through the notice: it is accessible (no aria-hidden
@@ -151,15 +153,15 @@ describe('InlineCode click-to-copy (non-path chips)', () => {
     fireEvent.mouseEnter(code)
     act(() => { vi.advanceTimersByTime(OPEN_DELAY_MS) })
     await act(async () => { fireEvent.click(code) })
-    expect(screen.getByRole('tooltip')).toHaveTextContent('Copy failed')
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Couldn’t copy')
 
     fireEvent.mouseLeave(code)
-    expect(screen.getByRole('tooltip')).toHaveTextContent('Copy failed')
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Couldn’t copy')
     // Longer than the confirmation: a failure is the outcome the user did not
     // expect, so it gets the time to be noticed and read.
-    act(() => { vi.advanceTimersByTime(1500) })
-    expect(screen.getByRole('tooltip')).toHaveTextContent('Copy failed')
-    act(() => { vi.advanceTimersByTime(COPY_FAILED_FLASH_MS - 1500) })
+    act(() => { vi.advanceTimersByTime(COPIED_FLASH_MS) })
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Couldn’t copy')
+    act(() => { vi.advanceTimersByTime(COPY_FAILED_FLASH_MS - COPIED_FLASH_MS) })
     expect(screen.queryByRole('tooltip')).toBeNull()
     expect(screen.queryByTestId('md-chip-copy-error')).toBeNull()
   })
@@ -184,7 +186,7 @@ describe('InlineCode click-to-copy (non-path chips)', () => {
     act(() => { vi.advanceTimersByTime(500) })
     vi.mocked(copyToClipboard).mockResolvedValue(false)
     await act(async () => { fireEvent.click(code) })
-    expect(screen.getByRole('tooltip')).toHaveTextContent('Copy failed')
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Couldn’t copy')
     expect(screen.getByRole('tooltip')).not.toHaveTextContent('Copied!')
     expect(status).toHaveTextContent('')
     // The failure is announced exactly once, through the notice itself — the
@@ -198,11 +200,11 @@ describe('InlineCode click-to-copy (non-path chips)', () => {
     expect(vi.getTimerCount()).toBe(idle + 1)
 
     // Where the stale clear would have fired, nothing changes: no late flip.
-    act(() => { vi.advanceTimersByTime(1500) })
+    act(() => { vi.advanceTimersByTime(COPIED_FLASH_MS) })
     expect(status).toHaveTextContent('')
-    expect(screen.getByRole('tooltip')).toHaveTextContent('Copy failed')
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Couldn’t copy')
     // The failure's flash ends; still focused, so the bubble stays with the prompt.
-    act(() => { vi.advanceTimersByTime(COPY_FAILED_FLASH_MS - 1500) })
+    act(() => { vi.advanceTimersByTime(COPY_FAILED_FLASH_MS - COPIED_FLASH_MS) })
     expect(screen.getByRole('tooltip')).toHaveTextContent('Click to copy')
     expect(screen.queryByTestId('md-chip-copy-error')).toBeNull()
     expect(document.querySelectorAll('[role="alert"]')).toHaveLength(0)
@@ -236,7 +238,7 @@ describe('InlineCode click-to-copy (non-path chips)', () => {
     expect(status).toHaveTextContent('Copied!')
     expect(screen.getByRole('tooltip')).toHaveTextContent('Copied!')
     expect(screen.queryByTestId('md-chip-copy-error')).toBeNull()
-    act(() => { vi.advanceTimersByTime(1500) })
+    act(() => { vi.advanceTimersByTime(COPIED_FLASH_MS) })
     expect(status).toHaveTextContent('')
 
     // Order 2: the latest press is refused, then the earlier one succeeds late.
@@ -246,9 +248,9 @@ describe('InlineCode click-to-copy (non-path chips)', () => {
     fireEvent.click(code)
     fireEvent.click(code)
     await act(async () => { fourth.resolve(false) })
-    expect(screen.getByTestId('md-chip-copy-error')).toHaveTextContent('Copy failed')
+    expect(screen.getByTestId('md-chip-copy-error')).toHaveTextContent('Couldn’t copy')
     await act(async () => { third.resolve(true) })
-    expect(screen.getByTestId('md-chip-copy-error')).toHaveTextContent('Copy failed')
+    expect(screen.getByTestId('md-chip-copy-error')).toHaveTextContent('Couldn’t copy')
     expect(status).toHaveTextContent('')
     expect(screen.getByRole('tooltip')).not.toHaveTextContent('Copied!')
   })
@@ -326,7 +328,7 @@ describe('InlineCode click-to-copy (non-path chips)', () => {
     fireEvent.mouseLeave(code)
     expect(screen.queryByRole('tooltip')).toBeNull()
     await act(async () => {})
-    expect(screen.getByRole('tooltip')).toHaveTextContent('Copy failed')
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Couldn’t copy')
     expect(screen.getAllByRole('alert')).toHaveLength(1)
     act(() => { vi.advanceTimersByTime(COPY_FAILED_FLASH_MS) })
     expect(screen.queryByRole('tooltip')).toBeNull()
@@ -344,23 +346,23 @@ describe('InlineCode click-to-copy (non-path chips)', () => {
     fireEvent.mouseEnter(code)
     act(() => { vi.advanceTimersByTime(OPEN_DELAY_MS) })
     await act(async () => { fireEvent.click(code) })
-    expect(screen.getByRole('tooltip')).toHaveTextContent('Copy failed')
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Couldn’t copy')
 
     fireEvent.scroll(window)
     expect(screen.queryByRole('tooltip')).toBeNull()
     await act(async () => { fireEvent.click(code) })
-    expect(screen.getByRole('tooltip')).toHaveTextContent('Copy failed')
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Couldn’t copy')
     expect(screen.getAllByRole('alert')).toHaveLength(1)
 
     fireEvent.keyDown(window, { key: 'Escape' })
     expect(screen.queryByRole('tooltip')).toBeNull()
     await act(async () => { fireEvent.click(code) })
-    expect(screen.getByRole('tooltip')).toHaveTextContent('Copy failed')
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Couldn’t copy')
     expect(screen.getAllByRole('alert')).toHaveLength(1)
   })
 
   it('moving to the next chip does not take a held outcome: the neighbour\'s hint waits for the flash', async () => {
-    // One bubble at a time, held ones first. A "Copy failed" lives ONLY in
+    // One bubble at a time, held ones first. A "Couldn’t copy" notice lives ONLY in
     // the bubble now, and a mouse user moves on right after clicking: the
     // neighbour's hint must not evict the only sign the write was refused.
     vi.useFakeTimers()

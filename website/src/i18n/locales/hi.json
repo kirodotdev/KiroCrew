@@ -7087,7 +7087,7 @@
       "click_to_switch_to_this_session": "इस सत्र पर जाने के लिए क्लिक करें",
       "close": "बंद करें",
       "copied": "कॉपी हो गया!",
-      "ctrl_click_to_copy": "कॉपी के लिए Ctrl+क्लिक",
+      "ctrl_click_to_copy": "कॉपी के लिए Ctrl/Cmd+क्लिक",
       "download_d": "डाउनलोड (d)",
       "download_image": "छवि डाउनलोड करें",
       "generating_diagram": "डायग्राम बन रहा है…",
@@ -7120,7 +7120,11 @@
       "remote_media_loaded_from": "<host/> से लोड किया गया",
       "remote_media_site": "साइट: <host/>",
       "remote_media_sites": "साइटें: <host/>",
-      "remote_media_gateway_refused": "मीडिया लोड नहीं हुआ: इसका पता इसी डैशबोर्ड के अपने सर्वर से होकर जाता है, इसलिए यह जिस साइट तक पहुँचेगा, वह दिखाई नहीं जा सकती।"
+      "remote_media_gateway_refused": "मीडिया लोड नहीं हुआ: इसका पता इसी डैशबोर्ड के अपने सर्वर से होकर जाता है, इसलिए यह जिस साइट तक पहुँचेगा, वह दिखाई नहीं जा सकती।",
+      "couldnt_copy_select_the_text_to_copy_it_manually": "कॉपी नहीं हो सकी — टेक्स्ट चुनकर उसे मैन्युअल रूप से कॉपी करो",
+      "the_copy_failed_ctrl_cmd_click_copies_the_full_session_id_for_label": "कॉपी नहीं हो सकी। Ctrl/Cmd+क्लिक से {{label}} की पूरी सत्र आईडी कॉपी होती है।",
+      "couldnt_copy_the_image_path": "छवि पथ कॉपी नहीं किया जा सका",
+      "the_copy_failed_ctrl_cmd_click_copies_the_path_label": "कॉपी नहीं हो सकी। Ctrl/Cmd+क्लिक से पथ {{label}} कॉपी होता है।"
     },
     "markdownToc": {
       "contents": "विषय-सूची",

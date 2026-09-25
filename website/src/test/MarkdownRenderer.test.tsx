@@ -699,7 +699,7 @@ describe('MarkdownRenderer path chips — stat gate', () => {
     )
     await waitFor(() => {
       const code = container.querySelector('code[data-path-kind]')!
-      expect(code.getAttribute('title')).toBe(`${path}\n${hint}\nCtrl+click to copy`)
+      expect(code.getAttribute('title')).toBe(`${path}\n${hint}\nCtrl/Cmd+click to copy`)
     })
   })
 
@@ -712,7 +712,7 @@ describe('MarkdownRenderer path chips — stat gate', () => {
     await waitFor(() => {
       const code = container.querySelector('code[data-path-kind]')!
       expect(code.getAttribute('title')).toBe(
-        '/home/user/a.md\nClick to open / Shift+click to show in file manager\nCtrl+click to copy',
+        '/home/user/a.md\nClick to open / Shift+click to show in file manager\nCtrl/Cmd+click to copy',
       )
     })
   })

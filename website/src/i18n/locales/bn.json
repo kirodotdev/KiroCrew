@@ -7087,7 +7087,7 @@
       "click_to_switch_to_this_session": "এই সেশনে যেতে ক্লিক করুন",
       "close": "বন্ধ করুন",
       "copied": "কপি হয়েছে!",
-      "ctrl_click_to_copy": "কপি করতে Ctrl+ক্লিক",
+      "ctrl_click_to_copy": "কপি করতে Ctrl/Cmd+ক্লিক",
       "download_d": "ডাউনলোড (d)",
       "download_image": "ছবি ডাউনলোড করুন",
       "generating_diagram": "ডায়াগ্রাম তৈরি হচ্ছে…",
@@ -7120,7 +7120,11 @@
       "remote_media_loaded_from": "<host/> থেকে লোড করা হয়েছে",
       "remote_media_site": "সাইট: <host/>",
       "remote_media_sites": "সাইটগুলো: <host/>",
-      "remote_media_gateway_refused": "মিডিয়া লোড হয়নি: এর ঠিকানা এই ড্যাশবোর্ডের নিজের সার্ভারের মধ্য দিয়ে যায়, তাই এটি কোন সাইটে পৌঁছাবে তা দেখানো যায় না।"
+      "remote_media_gateway_refused": "মিডিয়া লোড হয়নি: এর ঠিকানা এই ড্যাশবোর্ডের নিজের সার্ভারের মধ্য দিয়ে যায়, তাই এটি কোন সাইটে পৌঁছাবে তা দেখানো যায় না।",
+      "couldnt_copy_select_the_text_to_copy_it_manually": "কপি করা যায়নি — টেক্সট নির্বাচন করে ম্যানুয়ালি কপি করো",
+      "the_copy_failed_ctrl_cmd_click_copies_the_full_session_id_for_label": "কপি করা যায়নি। Ctrl/Cmd+ক্লিক দিয়ে {{label}}-এর পূর্ণ সেশন আইডি কপি হয়।",
+      "couldnt_copy_the_image_path": "ছবির পাথ কপি করা যায়নি",
+      "the_copy_failed_ctrl_cmd_click_copies_the_path_label": "কপি করা যায়নি। Ctrl/Cmd+ক্লিক দিয়ে পাথ {{label}} কপি হয়।"
     },
     "markdownToc": {
       "contents": "বিষয়সূচি",

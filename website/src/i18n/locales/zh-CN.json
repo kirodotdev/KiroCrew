@@ -6980,7 +6980,7 @@
       "click_to_switch_to_this_session": "点击切换到此会话",
       "close": "关闭",
       "copied": "已复制！",
-      "ctrl_click_to_copy": "Ctrl+点击复制",
+      "ctrl_click_to_copy": "Ctrl/Cmd+点击复制",
       "download_d": "下载（d）",
       "download_image": "下载图片",
       "generating_diagram": "正在生成图表…",
@@ -7013,7 +7013,11 @@
       "remote_media_loaded_from": "已从 <host/> 加载",
       "remote_media_site": "站点：<host/>",
       "remote_media_sites": "站点：<host/>",
-      "remote_media_gateway_refused": "媒体未加载：它的地址经过本仪表板自己的服务器转发，无法显示它最终会访问哪个站点。"
+      "remote_media_gateway_refused": "媒体未加载：它的地址经过本仪表板自己的服务器转发，无法显示它最终会访问哪个站点。",
+      "couldnt_copy_select_the_text_to_copy_it_manually": "无法复制 — 请选中文本手动复制",
+      "the_copy_failed_ctrl_cmd_click_copies_the_full_session_id_for_label": "复制失败。Ctrl/Cmd+点击可复制 {{label}} 的完整会话 ID。",
+      "couldnt_copy_the_image_path": "无法复制图片路径",
+      "the_copy_failed_ctrl_cmd_click_copies_the_path_label": "复制失败。Ctrl/Cmd+点击可复制路径 {{label}}。"
     },
     "markdownToc": {
       "contents": "目录",

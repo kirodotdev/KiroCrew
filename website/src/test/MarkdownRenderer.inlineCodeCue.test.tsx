@@ -12,7 +12,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, fireEvent, act, screen, waitFor } from '@testing-library/react'
-import MarkdownRenderer from '../components/MarkdownRenderer'
+import MarkdownRenderer, { COPIED_FLASH_MS } from '../components/MarkdownRenderer'
 import { OPEN_DELAY_MS } from '../components/InstantTip'
 import { copyToClipboard } from '../utils/clipboard'
 import { __resetPathKindCache } from '../hooks/usePathKind'
@@ -183,7 +183,7 @@ describe('inline-code chips: each class names its own click', () => {
     render(<MarkdownRenderer content={'See `/home/user/a.md` for details.'} onFileOpen={onFileOpen} />)
     const chip = await screen.findByRole('button', { name: 'Open /home/user/a.md' })
     const restTitle = chip.getAttribute('title')
-    expect(restTitle).toContain('Ctrl+click to copy')
+    expect(restTitle).toContain('Ctrl/Cmd+click to copy')
     const flow = chip.closest('p')!
     const flowRest = flow.innerHTML
 
@@ -204,7 +204,14 @@ describe('inline-code chips: each class names its own click', () => {
     // paragraph is byte-for-byte what it was at rest.
     const notices = screen.getAllByTestId('md-chip-copy-error')
     expect(notices).toHaveLength(1)
-    expect(notices[0]).toHaveTextContent('Copy failed')
+    // The shared title-cued notice names WHAT failed to copy — this chip copies
+    // the path — and never the copy chip's "select the text" recovery: that
+    // sentence belongs to the chip whose value IS its visible text. The gesture
+    // leads the sentence, so it reads as what failed — never as advice to try
+    // Ctrl+click — and a reader who did not press it does not learn that a
+    // plain click copies.
+    expect(notices[0]).toHaveTextContent(/^The copy failed\. Ctrl\/Cmd\+click copies the path a\.md\.$/)
+    expect(notices[0]).not.toHaveTextContent(/select the text/i)
     expect(screen.getByRole('tooltip').contains(notices[0])).toBe(true)
     expect(flow.innerHTML).toBe(flowRest)
     expect(screen.getAllByRole('alert')).toEqual([notices[0]])
@@ -263,8 +270,165 @@ describe('inline-code chips: each class names its own click', () => {
     expect(chip.querySelectorAll('svg').length).toBe(before.svgs)
     expect(chip.className).not.toMatch(ATOMIC)
 
-    act(() => { vi.advanceTimersByTime(1500) })
+    act(() => { vi.advanceTimersByTime(COPIED_FLASH_MS) })
     expect(screen.getByRole('status')).toHaveTextContent('')
+  })
+
+  it('a chip past the message\'s first line opens its bubble BELOW while it fits inside the message; one that would cross the message\'s bottom opens above', () => {
+    // A bubble above a chip on a lower line covers the preceding prose — the
+    // sentence the reader is in the middle of. The rendered message is the
+    // flow: a chip on its first line opens above (off the message), a lower
+    // chip opens under its own box — unless the bubble would cross the
+    // message's bottom edge and sit on what follows it (in a transcript the
+    // timestamp and action row); then it opens above after all. jsdom lays
+    // nothing out, so the first line is handed over through Range.getClientRects
+    // (100..118), the root's box is 100..240, the bubble 30px tall, and each
+    // chip's rects are set by hand.
+    const rect = (top: number, left: number, right: number, height = 20): DOMRect =>
+      ({ top, left, right, bottom: top + height, width: right - left, height, x: left, y: top, toJSON: () => ({}) }) as DOMRect
+    Object.defineProperty(Range.prototype, 'getClientRects', { configurable: true, value: () => [rect(100, 20, 60, 18)] })
+    const savedHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight')
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, value: 30 })
+    try {
+      render(<MarkdownRenderer content={'Run `npm test` first.\n\nThen set `NODE_ENV=production` before the build.\n\nFinally `npm run preview` serves it.'} />)
+      // The flow container is the renderer's own per-message root: the element
+      // that already carries the lightbox's `data-image-scope`, now also marked
+      // `data-tip-flow` for the bubble — the hook's own attribute, so the two
+      // features share a root, not a meaning. Nothing else on the root changes
+      // (its click delegation and class list are main's).
+      const root = document.querySelector('[data-tip-flow]') as HTMLElement | null
+      expect(root).not.toBeNull()
+      expect(root!.getAttributeNames().filter(n => n.startsWith('data-'))).toEqual(['data-image-scope', 'data-tip-flow'])
+      expect(root!.contains(screen.getByRole('button', { name: 'Copy npm test' }))).toBe(true)
+      root!.getBoundingClientRect = () => rect(100, 0, 600, 140)
+      const first = screen.getByRole('button', { name: 'Copy npm test' })
+      const middle = screen.getByRole('button', { name: 'Copy NODE_ENV=production' })
+      const last = screen.getByRole('button', { name: 'Copy npm run preview' })
+      first.getBoundingClientRect = () => rect(102, 40, 110)
+      middle.getBoundingClientRect = () => rect(152, 60, 220)
+      last.getBoundingClientRect = () => rect(212, 70, 190)
+      fireEvent.focus(first)
+      let tip = screen.getByRole('tooltip')
+      expect(tip).toHaveAttribute('data-placement', 'above')
+      expect(parseFloat(tip.style.top)).toBe(94)
+      fireEvent.blur(first)
+      fireEvent.focus(middle)
+      tip = screen.getByRole('tooltip')
+      // Below at 180..210, inside the root's box (bottom 240).
+      expect(tip).toHaveAttribute('data-placement', 'below')
+      expect([parseFloat(tip.style.top), parseFloat(tip.style.left)]).toEqual([180, 60])
+      fireEvent.blur(middle)
+      fireEvent.focus(last)
+      tip = screen.getByRole('tooltip')
+      // Below would run 240..270, past the root's bottom: above instead.
+      expect(tip).toHaveAttribute('data-placement', 'above')
+      expect([parseFloat(tip.style.top), parseFloat(tip.style.left)]).toEqual([204, 70])
+    } finally {
+      delete (Range.prototype as unknown as Record<string, unknown>).getClientRects
+      if (savedHeight) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', savedHeight)
+      else delete (HTMLElement.prototype as unknown as Record<string, unknown>).offsetHeight
+    }
+  })
+
+  it("a message's own raw-HTML data-tip-flow — which the sanitizer lets through — does not capture the bubble: the flow container is the outermost, the message root", () => {
+    // rehypeSanitize allows every `data-*` attribute, so a message can carry
+    // `<div data-tip-flow>` around one of its chips. Bound to that div, the
+    // chip's bubble would take the div's first line and bottom for the
+    // message's: here the div (150..200) is too short for the below bubble
+    // (180..210), which would flip above — over the sentence the reader is in.
+    // Bound to the root (100..240) it opens below, inside the message. Same
+    // layout hand-over as above: first line 100..118, bubble 30px.
+    const rect = (top: number, left: number, right: number, height = 20): DOMRect =>
+      ({ top, left, right, bottom: top + height, width: right - left, height, x: left, y: top, toJSON: () => ({}) }) as DOMRect
+    Object.defineProperty(Range.prototype, 'getClientRects', { configurable: true, value: () => [rect(100, 20, 60, 18)] })
+    const savedHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight')
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, value: 30 })
+    try {
+      render(<MarkdownRenderer content={'Run `npm test` first.\n\n<div data-tip-flow="">Then set <code>NODE_ENV=production</code> before the build.</div>\n\nFinally `npm run preview` serves it.'} />)
+      const marked = Array.from(document.querySelectorAll('[data-tip-flow]')) as HTMLElement[]
+      // The premise: the message's own attribute is in the DOM, nested in the root.
+      expect(marked).toHaveLength(2)
+      const [root, inner] = marked
+      expect(root.contains(inner)).toBe(true)
+      expect(inner.tagName).toBe('DIV')
+      root.getBoundingClientRect = () => rect(100, 0, 600, 140)
+      inner.getBoundingClientRect = () => rect(150, 0, 600, 50)
+      const middle = screen.getByRole('button', { name: 'Copy NODE_ENV=production' })
+      expect(inner.contains(middle)).toBe(true)
+      middle.getBoundingClientRect = () => rect(152, 60, 220)
+      fireEvent.focus(middle)
+      const tip = screen.getByRole('tooltip')
+      expect(tip).toHaveAttribute('data-placement', 'below')
+      expect([parseFloat(tip.style.top), parseFloat(tip.style.left)]).toEqual([180, 60])
+    } finally {
+      delete (Range.prototype as unknown as Record<string, unknown>).getClientRects
+      if (savedHeight) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', savedHeight)
+      else delete (HTMLElement.prototype as unknown as Record<string, unknown>).offsetHeight
+    }
+  })
+
+  it('data-tip-flow marks the per-message root only, never a nested subtree — so every chip\'s flow container is its own message', () => {
+    // The bubble finds its flow container as the OUTERMOST `[data-tip-flow]`, the
+    // attribute the renderer sets on its per-message root for exactly this — the
+    // same element the lightbox marks `data-image-scope`. The outermost rule keeps
+    // a message's own raw HTML from capturing the measurement (pinned above); what
+    // it cannot guard is the renderer's OWN nesting — a message rendered inside
+    // another message's root would bind its chips to the outer scope. Two messages,
+    // each with the nesting the renderer produces — a quoted paragraph holding
+    // a chip and an image, a nested list, a table, a fenced block — pin one
+    // marked root per message, none nested, and each chip resolving to its own;
+    // and the lightbox's attribute keeps the same shape on the same roots.
+    const nested = [
+      'Intro `alpha` here.',
+      '',
+      '> Quoted `beta` with an image:',
+      '>',
+      '> ![diagram](/tmp/flow/a.png)',
+      '>',
+      '> - outer `gamma`',
+      '>   - inner `delta`',
+      '',
+      '| col | value |',
+      '| --- | --- |',
+      '| a | `epsilon` |',
+      '',
+      '```sh',
+      'npm test',
+      '```',
+      '',
+      '[a link with `zeta`](https://example.com/) and ![second](/tmp/flow/b.png)',
+    ].join('\n')
+    render(
+      <>
+        <MarkdownRenderer content={nested} />
+        <MarkdownRenderer content={'Second message: `eta`.'} />
+      </>,
+    )
+    const roots = Array.from(document.querySelectorAll('[data-tip-flow]'))
+    expect(roots).toHaveLength(2)
+    for (const root of roots) {
+      // A marked root has no marked ancestor and no marked descendant, and it
+      // is the same element the lightbox scopes images by.
+      expect(root.parentElement!.closest('[data-tip-flow]')).toBeNull()
+      expect(root.querySelectorAll('[data-tip-flow]')).toHaveLength(0)
+      expect(root.hasAttribute('data-image-scope')).toBe(true)
+      expect(root.querySelectorAll('[data-image-scope]')).toHaveLength(0)
+    }
+    expect(document.querySelectorAll('[data-tip-flow] [data-tip-flow]')).toHaveLength(0)
+    expect(Array.from(document.querySelectorAll('[data-image-scope]'))).toEqual(roots)
+    // Every chip — first line, quoted, nested list, table cell — resolves to the
+    // root of the message it is written in (code inside a link is the link's,
+    // not a chip; it resolves the same way); so do the images the lightbox
+    // groups, which is the same element.
+    for (const name of ['alpha', 'beta', 'gamma', 'delta', 'epsilon']) {
+      expect(screen.getByRole('button', { name: `Copy ${name}` }).closest('[data-tip-flow]')).toBe(roots[0])
+    }
+    expect(screen.getByText('zeta').closest('[data-tip-flow]')).toBe(roots[0])
+    expect(screen.getByRole('button', { name: 'Copy eta' }).closest('[data-tip-flow]')).toBe(roots[1])
+    for (const img of Array.from(roots[0].querySelectorAll('img'))) {
+      expect(img.closest('[data-image-scope]')).toBe(roots[0])
+    }
+    expect(roots[0].querySelectorAll('img').length).toBeGreaterThan(0)
   })
 
   it('a session chip names its switch AND keeps the visible key in the name, with the actionable look', () => {
