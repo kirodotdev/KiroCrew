@@ -77,7 +77,9 @@ The digest is read **before** the fold consumes the file and re-checked after th
 
 That recheck governs the restored **state** and not only the write. The identity block and the digest are both read while the savepoints load, so a change below the watermark inside the same pass is admitted on bytes that were still intact, and a resumed fold never returns to that region to notice. Refusing the write is not enough there: the state is already in the registry and would be served for the life of the instance while disagreeing with every cold fold. So a resume whose prefix stopped holding — and one that produced no witness to check, which leaves nothing to compare — is discarded and the pass folds from the start instead. A pass that resumed nothing skips the recheck, having already folded the whole file through its own tail.
 
-`_get_log` restores every unit it can and then folds the tail past the **lowest** watermark of the set: units save independently, a unit already past an event drops it on its own watermark, so one shared pass cannot double-count and costs the newer units nothing. That tail fold announces nothing, exactly as a fold from the start does not: its events are history the store already holds, and a `member_projection` frame per historical transition would republish a member's whole log to every already-connected socket as live change. A write is spent only once the folded tail passes 256 events, matching the crew log's own `MIN_ADVANCE_ENTRIES`, because a lagging savepoint is still correct and rewriting every unit's file on every load is the cost savepoints exist to remove rather than relocate; the write goes through `atomic_write`, so a failure leaves the in-memory state authoritative and the previous file intact. `ensure` stays on the plain fold, since it appends migration events immediately afterwards and a savepoint written there would be stale on arrival. What this removes is the fold, not the read: `MemberLog` materialises its event list on load either way, so the saving is one `apply` per unit per skipped event.
+`_get_log` restores every unit it can and then folds the tail past the **lowest** watermark of the set: units save independently, a unit already past an event drops it on its own watermark, so one shared pass cannot double-count and costs the newer units nothing. That tail fold announces nothing, exactly as a fold from the start does not: its events are history the store already holds, and a `member_projection` frame per historical transition would republish a member's whole log to every already-connected socket as live change. A write is spent only once the folded tail passes 256 events, matching the crew log's own `MIN_ADVANCE_ENTRIES`, because a lagging savepoint is still correct and rewriting every unit's file on every load is the cost savepoints exist to remove rather than relocate; the write goes through `atomic_write`, so a failure leaves the in-memory state authoritative and the previous file intact. `ensure` reads through `_get_log`, so it takes the same resume: it is called once per member on every roster read and once per message, and a fold from the start there puts each member's whole history on the request. A log `ensure` publishes itself is folded from the start, which costs nothing because that log holds no events yet. A savepoint written by the pass just before the migration appends its events lags by them, which is what a savepoint is allowed to do -- the next load folds that tail. What this removes is the fold, not the read: `MemberLog` materialises its event list on load either way, so the saving is one `apply` per unit per skipped event.
+
+A held instance can be arbitrarily behind the file, because the gateway is not the log's only writer, so a read that finds the file changed folds what another process committed before serving anything. That catch-up drives the range above the lowest watermark of the set — except when nothing is folded yet, where it primes over the same range instead. A log with no events leaves every unit's cell at the empty watermark, and a cell still holding `init()` cannot take a range: driving one event at it would fold that event alone and stamp its `seq`, after which the entries before it are below the watermark and dropped for good. Priming reaches the state a cold fold reaches, and the append path bounds the range below its own event so its `drive` remains the call that announces the change, which priming deliberately does not do.
 
 One unit's state blocks the shortcut today: `DrivingProjection` holds its open slots as a `frozenset`, which the kernel store cannot serialize, so its file never reaches disk — and a set missing one unit drops the floor to empty, so every load folds cold. The guard above is therefore in place ahead of the shortcut it protects; making that state serializable is what turns the shortcut on, and doing it without the guard is what would make the disagreement live.
 
@@ -170,11 +172,32 @@ added to withhold, and would do it on the one input redaction could not handle, 
 the failure mode would leak more reliably than the success path protects. A dropped
 frame costs one projection update that the next change to that projection re-sends.
 
-The first `ensure(slug, name)` for a member with no log creates the header. Every
-`ensure` then resumes the legacy fold under the member unit's cross-process lease,
+The first `ensure(slug, name)` for a member with no log creates the header. The
+legacy fold then resumes under the member unit's cross-process lease,
 in order: the DM binding, the rules text, then every line of `activity.jsonl.1` and
 `activity.jsonl`. Each item is deduplicated independently, so a crash can resume
-without replaying completed work. Once the activity read completes, the service
+without replaying completed work. One pass that read every legacy source to its end
+settles the member for the life of the process and every later `ensure` skips the
+fold, the lease included; a pass refused the lease, one that dies part-way, one whose
+activity read came back short of the file — an unreachable path, a file over the byte
+budget, an `OSError` mid-read — and one whose binding read answered "not bound" while
+a binding file is present all record nothing, so a later call folds again. That last
+case exists because `read_dm_binding` is total by contract: an unreadable file, a
+`slot_key` that is not canonical, and a `member` that slugifies to another slug all come
+back as "not bound", exactly as an absent file does. So any of them with the file present
+holds that member open until the file is repaired, and that member alone keeps paying the
+lease and the legacy reads -- which is what every member pays without the memo.
+`read_member_rules` raises on a file it cannot use, so the rules item needs no such check.
+
+The fold carries a second duty, and the memo narrows it deliberately. A binding is written
+twice: the trust file first, then a best-effort event emit that never fails a binding the
+fence already persisted. A fold on every `ensure` therefore repaired a member whose emit was
+lost, seconds later. With one settled pass remembered per process, that repair becomes
+restart-scoped: the next process folds again and picks it up. This is the accepted scope for
+the memo rather than an oversight. Invalidating the memo for a slug from the emit's own
+failure branch is the alternative, and it belongs with the writer that knows the emit
+failed -- the handler performing the dual-write -- not with a reader guessing from presence.
+Once the activity read completes, the service
 durably creates `.legacy-activity-folded` inside the fenced unit directory before
 retiring the source files by rename; the binding and rules sources remain because
 their own events gate re-import. `api_members` reconciles the folded roster against
@@ -376,9 +399,24 @@ The migration is resumable, per item. `ensure` returning early on `log.exists()`
 meant a process that died between `create` and the end of the migration left that
 member's bindings, rules and activity unmigrated on every later call, because
 nothing deletes the legacy files and so their presence cannot say whether the pass
-ran. It now runs on every `ensure`, and each of the three items is skipped once the
-log carries that item's event -- so whatever a dead run got through stays done and
-the rest is picked up next time. A completion-marker EVENT is deliberately not used:
+ran. It runs from every `ensure` until one pass completes, and each of the three
+items is skipped once the log carries that item's event -- so whatever a dead run got
+through stays done and the rest is picked up next time. A completed pass is
+remembered per PROCESS, which takes the lease acquire and the legacy path reads off
+every later call for that member; the fold itself answers whether it read every
+source to the end, because a short read RETURNS rather than raises, so a pass that
+saw less than the file holds is not recorded and a later call re-reads it. The
+retirement answers too: the memo waits until the fenced marker is durably recorded,
+so a failed marker sync leaves the member unsettled and a later `ensure` in the same
+process retries it rather than suppressing the retry for the life of the process. An
+entry a failed sync leaves behind is KEPT. A member already retired reads as a
+complete fold with no rows, so a later process retires it again and meets the marker
+an earlier one recorded; removing that entry on a sync failure would free the live
+legacy name with nothing recorded against it, which is the forgery the marker closes.
+A rename that fails after the marker is recorded still settles the member, because
+the marker alone closes that path and the rows were appended before it ran. The memo
+is not a file, so a run that dies mid-fold leaves the next process to fold again.
+A completion-marker EVENT is deliberately not used:
 it would sit in every member's sequence forever. The fenced sidecar file records only
 the activity fold's one-time completion without shifting later event numbers.
 
