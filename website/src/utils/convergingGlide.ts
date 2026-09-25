@@ -23,9 +23,13 @@ import { CONVERGE_MAX_MS, claimScrollOwnership, pollRowSettled } from './searchS
  *
  * 1. TRAVEL — an eased interpolation from the starting position to the LIVE
  *    goal, over `durationMs`, driven by this module's own frame loop. Because
- *    the goal is re-read each frame, drift during travel is absorbed into the
- *    remaining motion rather than left over. The final travel frame lands on
- *    the goal as read that frame.
+ *    the goal is re-read each frame, drift during travel is folded into the
+ *    remaining motion — for as long as there IS remaining motion to fold it
+ *    into. Late in an ease-out there is almost none, so a destination that moves
+ *    there arrives whole in a single frame, against the direction of travel.
+ *    `GLIDE_MAX_BACK_STEP_PX` bounds what one frame may give back, and travel
+ *    runs on for a few frames to finish anything over that bound. The final
+ *    travel frame lands on the goal as read that frame.
  * 2. CONVERGE — `pollRowSettled` (utils/searchScroll), with the live goal as
  *    the measured quantity and "write the goal" as the step: keep writing the
  *    live goal until it has held still for `quietMs` (and at least two frames),
@@ -73,6 +77,40 @@ export const GLIDE_PX_PER_MS = 24
  * iframe build for a jump INTO a widget, and a pinned prompt is never one.
  */
 export const GLIDE_QUIET_MS = 250
+
+/**
+ * Largest single-frame move AGAINST the direction of travel that the glide will
+ * write.
+ *
+ * Travel interpolates toward a LIVE goal, so when the goal is refined the write
+ * moves by the refinement. Most refinements are small and the remaining eased
+ * motion swallows them — the reader sees a slowdown. One is not small: on a far
+ * jump the goal is the height-index estimate until the target row mounts, and
+ * the row mounts near the end of the ease, where the estimate's whole error
+ * arrives at once and there is no remaining motion left to swallow it.
+ *
+ * The number is the point where the glide's own speed stops covering the
+ * correction. Interpolating an `estimateRowTop` error of 86px over a 24 500px
+ * travel, the correction and the frame's forward motion cross at 46.5px: a
+ * correction up to that size is smaller than the step the glide was already
+ * taking, so it reads as a slowdown and travel writes it unchanged. Past it the
+ * correction would be a visible lurch backwards, so it is paid down at HALF this
+ * budget per frame until what remains is within that slice — not merely within
+ * the budget, which would leave a final frame of up to a whole budget landing at
+ * tail speed. So a correction travel does not write whole is never written
+ * faster than half of this.
+ */
+export const GLIDE_MAX_BACK_STEP_PX = 47
+
+/**
+ * Frames travel may run past `durationMs` to finish paying down a correction.
+ * At half the budget each, this covers a correction of ~190px, far beyond the
+ * height-index error a far jump produces. A goal that keeps receding faster
+ * than the pay-down exhausts this instead of extending travel without bound,
+ * and the remainder is left to the CONVERGE phase, which exists for a goal that
+ * is still moving.
+ */
+export const GLIDE_BACK_CATCHUP_FRAMES = 8
 
 /** Travel duration for a jump of `distancePx`, clamped to the bounds above. */
 export function glideDurationMs(distancePx: number): number {
@@ -172,15 +210,44 @@ export function runConvergingGlide(deps: ConvergingGlideDeps): () => void {
       onEnd: finish,
     })
   }
+  let pos = from
+  let dir = 0
+  let paying = false
+  let catchup = 0
   const travel = () => {
     if (done) return
     const g = goal()
     if (g == null) return finish('lost')
     const t = reduced ? 1 : Math.min(1, (now() - t0) / durationMs)
-    // The goal is live, so the interpolation's endpoint moves with it and the
-    // residual is folded into the remaining motion; the last frame lands on it.
-    write(t < 1 ? from + (g - from) * easeOutCubic(t) : g)
+    // Where the ease says this frame belongs, against the goal as it reads now:
+    // a live endpoint, so a destination that moves is folded into the motion
+    // that is left. The final frame's nominal IS the goal.
+    const nominal = t < 1 ? from + (g - from) * easeOutCubic(t) : g
+    if (dir === 0) dir = Math.sign(g - from)
+    const step = nominal - pos
+    // A step against the travel direction is a refinement of the destination
+    // arriving after the glide has already passed it. Within the budget it is
+    // smaller than the motion the glide was making, so it reads as a slowdown
+    // and goes through untouched. Over the budget it would be a lurch, so it is
+    // paid a slice at a time — and once a pay-down is under way the test tightens
+    // to the slice, because dropping back to the budget here would dump whatever
+    // is left, up to a whole budget, into one frame at tail speed: the same lurch
+    // one size smaller.
+    const slice = GLIDE_MAX_BACK_STEP_PX / 2
+    const lurching = dir !== 0
+      && Math.sign(step) === -dir
+      && Math.abs(step) > (paying ? slice : GLIDE_MAX_BACK_STEP_PX)
+    paying = lurching
+    pos = lurching ? pos - dir * slice : nominal
+    write(pos)
     if (t < 1) {
+      schedule(travel)
+      return
+    }
+    // Travel is over on the clock, but a correction still outstanding would
+    // otherwise be handed to convergence as the single lurch this budget
+    // exists to prevent.
+    if (lurching && catchup++ < GLIDE_BACK_CATCHUP_FRAMES) {
       schedule(travel)
       return
     }
