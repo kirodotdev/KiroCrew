@@ -738,6 +738,14 @@ def _collect_system_metrics() -> dict[str, object]:
         data["resource_available_gb"] = round(status.available_gb, 2)
         data["resource_pressure_gb"] = status.pressure_gb
         data["resource_critical_gb"] = status.critical_gb
+        # Agent-slice task ceiling. -1 means "not measurable here" (no cgroup v2
+        # delegation, or not Linux); a breach of this ceiling fails fork() for
+        # every agent on the host at once, so the count is reported even though
+        # nothing gates on it.
+        data["resource_slice_tasks"] = status.slice_tasks
+        data["resource_slice_tasks_limit"] = status.slice_tasks_limit
+        data["resource_slice_tasks_own"] = status.slice_tasks_own
+        data["resource_slice_tasks_tight"] = status.slice_tasks_tight
         try:
             cfg = KiroCrewConfig.load()
             data["subagent_cap"] = compute_max_subagents(cfg)
@@ -752,6 +760,10 @@ def _collect_system_metrics() -> dict[str, object]:
         data["resource_available_gb"] = -1.0
         data["resource_pressure_gb"] = 4.0
         data["resource_critical_gb"] = 2.0
+        data["resource_slice_tasks"] = -1
+        data["resource_slice_tasks_limit"] = -1
+        data["resource_slice_tasks_own"] = -1
+        data["resource_slice_tasks_tight"] = False
         data["subagent_cap"] = 3
 
     return data

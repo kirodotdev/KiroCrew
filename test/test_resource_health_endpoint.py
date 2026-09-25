@@ -117,3 +117,73 @@ async def test_api_system_resource_posture_ample(monkeypatch):
     assert body["resource_posture"] == "ample"
     assert body["resource_available_gb"] == 16.0
     assert body["subagent_cap"] == 11
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "current,limit,own,tight",
+    [
+        (29500, 32768, 22000, True),  # a host approaching the wall
+        (1000, 32768, 500, False),
+        (-1, -1, -1, False),  # no cgroup task ceiling to measure
+    ],
+)
+async def test_api_system_includes_slice_task_ceiling(
+    monkeypatch, current: int, limit: int, own: int, tight: bool
+):
+    """The slice task figures reach the dashboard payload as raw numbers.
+
+    A breach of this ceiling fails fork() for every agent on the host at once, so
+    the count is served even though nothing gates on it; -1 carries "cannot be
+    measured here" rather than a fabricated zero.
+    """
+    status = ResourceStatus(
+        available_gb=16.0,
+        cpu_count=4,
+        load_per_cpu=0.2,
+        posture="ample",
+        pressure_gb=8.0,
+        critical_gb=3.0,
+        slice_tasks=current,
+        slice_tasks_limit=limit,
+        slice_tasks_own=own,
+    )
+    with (
+        patch(
+            "kiro_crew.dashboard.handlers_system._resource_probe",
+            return_value=status,
+            create=True,
+        ),
+        patch.object(hs, "_local_ip", return_value="127.0.0.1"),
+    ):
+        monkeypatch.setattr("kiro_crew.resource_status.probe", lambda cfg=None: status)
+        monkeypatch.setattr("kiro_crew.subagent.compute_max_subagents", lambda cfg: 7)
+        resp = await hs.api_system(_Req())
+
+    import json
+
+    body = json.loads(resp.body)
+    assert body["resource_slice_tasks"] == current
+    assert body["resource_slice_tasks_limit"] == limit
+    assert body["resource_slice_tasks_own"] == own
+    assert body["resource_slice_tasks_tight"] is tight
+
+
+@pytest.mark.asyncio
+async def test_api_system_slice_task_fields_degrade_on_probe_failure(monkeypatch):
+    """A failed probe serves the unmeasurable sentinel, never a zero count."""
+
+    def _failing_probe(cfg=None):
+        raise RuntimeError("probe unavailable")
+
+    with patch.object(hs, "_local_ip", return_value="127.0.0.1"):
+        monkeypatch.setattr("kiro_crew.resource_status.probe", _failing_probe)
+        resp = await hs.api_system(_Req())
+
+    import json
+
+    body = json.loads(resp.body)
+    assert body["resource_slice_tasks"] == -1
+    assert body["resource_slice_tasks_limit"] == -1
+    assert body["resource_slice_tasks_own"] == -1
+    assert body["resource_slice_tasks_tight"] is False

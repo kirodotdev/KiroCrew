@@ -25,6 +25,15 @@ The memory figure reuses :func:`kiro_crew.subagent._available_memory_gb`, the
 same cgroup-clamped, container-aware probe that auto-sizes the sub-agent cap, so
 the two never disagree. It is imported lazily to keep this module import-cheap
 and free of any import cycle (``context`` imports this; ``subagent`` is heavy).
+
+Alongside memory the probe reads one more ceiling: the agent slice's TASK count
+against its ``pids.max`` (see :func:`_read_agent_slice_tasks`). The slice's
+memory headroom already reaches the posture through the cgroup-clamped memory
+probe, while its task headroom reached nothing — a breach there fails ``fork()``
+for every agent on the host at once, yet the count that approaches it was
+readable only from ``/sys/fs/cgroup`` by hand. It is REPORTED, never gated: the
+posture stays a single memory scalar, so :func:`admission_check` and
+:func:`prewarm_allowance` behave exactly as before at any task count.
 """
 
 from __future__ import annotations
@@ -86,6 +95,67 @@ def _read_load_per_cpu(cpu_count: int) -> float | None:
     return round(one_min / cpu_count, 2)
 
 
+#: Fraction of the agent slice's ``pids.max`` at which its task count reads as
+#: tight. Deliberately a constant, not a config key: the ceiling it is measured
+#: against is already the operator's knob (``resource_limits.max_total_processes``),
+#: and a second knob for the reporting ratio would only let a host silence the
+#: reading without raising the ceiling it is about to hit.
+_SLICE_TASKS_TIGHT_RATIO = 0.90
+
+#: cgroup v2 files holding a cgroup's live task count and its task ceiling.
+_PIDS_CURRENT = "pids.current"
+_PIDS_MAX = "pids.max"
+
+
+def _read_agent_slice_tasks() -> tuple[int, int, int]:
+    """Agent-slice task count, its ceiling, and this instance's share of it.
+
+    cgroup v2 ``pids.current`` counts TASKS — threads, not processes — so this is
+    the figure that actually reaches ``pids.max``, and a host can sit at 95% of
+    the ceiling while its process count looks unremarkable.
+
+    The aggregate is read from the SHARED ``kirocrew-agents.slice``, because that
+    is where the ceiling lives: a per-instance child slice carries no ``pids.max``
+    of its own, so a per-instance count alone cannot say how close the host is to
+    the wall. Reading the shared parent is sound where operating on it would not
+    be — a count attributes nothing to anyone, while a kill needs an owner — and
+    the instance's own child is read as a separate figure so an install can tell
+    its contribution from a co-resident gateway's.
+
+    Returns ``(current, limit, own)``. A figure that cannot be read is ``-1``
+    (not Linux, no cgroup v2 delegation, or the slice not currently
+    materialized). ``limit`` is ``0`` when the slice has no ceiling at all
+    (``pids.max`` holds the kernel's ``max`` sentinel), and ``own`` is ``-1``
+    when this install has no per-instance slice to attribute tasks to.
+    """
+    try:
+        from kiro_crew import sandbox
+
+        slice_dir = sandbox._agents_slice_cgroup_dir()
+        if slice_dir is None:
+            return -1, -1, -1
+        current = sandbox.read_cgroup_int(slice_dir / _PIDS_CURRENT)
+        # read_cgroup_int folds an absent file and the ``max`` sentinel into the
+        # same None. The slice directory existing means the file does too, so
+        # None here is "this slice has no ceiling", not "unreadable".
+        raw_limit = sandbox.read_cgroup_int(slice_dir / _PIDS_MAX)
+        child_name = sandbox._agents_slice_name()
+        own = -1
+        if child_name != sandbox._CGROUP_AGENTS_SLICE:
+            child = slice_dir / child_name
+            if not child.is_dir():
+                # systemd releases an empty slice's directory, so an absent
+                # child is a true zero rather than a failed read.
+                own = 0
+            else:
+                own_current = sandbox.read_cgroup_int(child / _PIDS_CURRENT)
+                own = -1 if own_current is None else own_current
+        return (-1 if current is None else current), (0 if raw_limit is None else raw_limit), own
+    except Exception:  # pragma: no cover - defensive; the probe must never raise
+        logger.debug("agent-slice task probe failed", exc_info=True)
+        return -1, -1, -1
+
+
 @dataclass(frozen=True)
 class ResourceStatus:
     """A single advisory snapshot of host resource headroom."""
@@ -96,11 +166,53 @@ class ResourceStatus:
     posture: str  # one of the POSTURE_* constants
     pressure_gb: float  # tight threshold in effect
     critical_gb: float  # critical threshold in effect
+    # Agent-slice task ceiling (see _read_agent_slice_tasks). Defaulted so every
+    # existing construction stays valid and a caller that cannot measure tasks
+    # reports "unknown" rather than a fabricated zero.
+    slice_tasks: int = -1  # slice pids.current; -1 when unreadable
+    slice_tasks_limit: int = -1  # slice pids.max; 0 = no ceiling, -1 unreadable
+    slice_tasks_own: int = -1  # this instance's share; -1 when unattributable
 
     @property
     def under_pressure(self) -> bool:
         """True only for tight/critical — the gate for injecting the context line."""
         return self.posture in (POSTURE_TIGHT, POSTURE_CRITICAL)
+
+    @property
+    def slice_tasks_tight(self) -> bool:
+        """True when the slice's task count sits in the tight band of its ceiling.
+
+        Requires a real ceiling: a slice with no ``pids.max``, and a host where
+        the ceiling cannot be read at all, have no wall to approach. An
+        unreadable COUNT needs no branch of its own — it is ``-1``, which cannot
+        reach a positive threshold — so the reading it cannot substantiate is
+        refused by the comparison itself.
+
+        Independent of ``posture``, which stays a memory-only scalar: a host can
+        be tight on tasks and ample on memory, which is the case the memory
+        figure cannot express.
+        """
+        if self.slice_tasks_limit <= 0:
+            return False
+        return self.slice_tasks >= _SLICE_TASKS_TIGHT_RATIO * self.slice_tasks_limit
+
+    def slice_tasks_text(self) -> str:
+        """The task reading both surfaces print, so they can never disagree.
+
+        Empty when the count is unreadable, which is what keeps the figure off
+        every non-Linux host and out of every surface rather than printing an
+        "unknown" line nobody can act on.
+        """
+        if self.slice_tasks < 0:
+            return ""
+        if self.slice_tasks_limit <= 0:
+            text = f"{self.slice_tasks} tasks, no ceiling set"
+        else:
+            pct = round(100 * self.slice_tasks / self.slice_tasks_limit)
+            text = f"{self.slice_tasks} of {self.slice_tasks_limit} tasks ({pct}%)"
+        if self.slice_tasks_own >= 0:
+            text += f", this instance {self.slice_tasks_own}"
+        return text
 
     def _load_suffix(self) -> str:
         return f", load {self.load_per_cpu}/core" if self.load_per_cpu is not None else ""
@@ -109,15 +221,21 @@ class ResourceStatus:
         """The compact ``[RESOURCES]`` advisory injected on a pressured turn.
 
         Returns ``""`` when the line is disabled (``pressure_gb <= 0`` — the
-        documented off switch) or when not under pressure, so callers can append
-        unconditionally. Note this is the OFF switch for the injected line only;
-        ``posture`` / ``summary_lines`` still report the true state for the pull
-        tool. Kept short on purpose — it costs tokens every pressured turn.
+        documented off switch), or when neither ceiling is near: memory is ample
+        AND the slice's task count is outside its tight band, so callers can
+        append unconditionally. Note this is the OFF switch for the injected line
+        only; ``posture`` / ``summary_lines`` still report the true state for the
+        pull tool. Kept short on purpose — it costs tokens every pressured turn.
+
+        The task ceiling can raise the line by itself, because a host one fork
+        from its ``pids.max`` is not observable in the memory figure at all. It
+        does NOT touch ``posture``, so nothing that gates on the posture tier
+        changes behaviour with it.
         """
         if self.pressure_gb <= 0:
             return ""  # off switch: disables the line regardless of critical tier
         if not self.under_pressure:
-            return ""
+            return self._tasks_only_line()
         gb = f"{self.available_gb:.1f}"
         load = self._load_suffix()
         if self.posture == POSTURE_CRITICAL:
@@ -127,13 +245,34 @@ class ResourceStatus:
                 "parallel sub-agent waves) — it may fail or destabilize other "
                 "sessions on this host. Run only the lightest necessary steps, or "
                 "wait for memory to free. Call the resource_status tool to re-check."
-            )
+            ) + self._tasks_clause()
         return (
             f"[RESOURCES] Host memory is tight (~{gb} GB free{load}). Before heavy "
             "work, prefer the lighter path: run targeted tests instead of the full "
             "suite, avoid large parallel sub-agent waves, and serialize or defer "
             "memory-heavy builds/test runs. Call the resource_status tool to "
             "re-check before a heavy step."
+        ) + self._tasks_clause()
+
+    def _tasks_clause(self) -> str:
+        """Sentence appended to a memory advisory when tasks are ALSO near the cap."""
+        if not self.slice_tasks_tight:
+            return ""
+        return (
+            f" The agent slice is also near its task ceiling ({self.slice_tasks_text()}); "
+            "past it every agent's fork on this host fails at once, so close idle "
+            "sessions rather than adding more."
+        )
+
+    def _tasks_only_line(self) -> str:
+        """The advisory for a host tight on tasks while memory is fine."""
+        if not self.slice_tasks_tight:
+            return ""
+        return (
+            f"[RESOURCES] Host memory is fine, but the agent slice is near its task "
+            f"ceiling ({self.slice_tasks_text()}). Past it every agent's fork on this "
+            "host fails at once. Avoid large parallel sub-agent waves, close idle "
+            "sessions, and call the resource_status tool to re-check."
         )
 
     def summary_lines(self) -> list[str]:
@@ -149,6 +288,13 @@ class ResourceStatus:
         load = f"{self.load_per_cpu}/core" if self.load_per_cpu is not None else "unknown"
         lines.append(f"  CPU cores: {self.cpu_count}   1-min load: {load}")
         lines.append(f"  Posture: {self.posture.upper()}")
+        tasks = self.slice_tasks_text()
+        if tasks:
+            # Omitted, not reported as "unknown", where there is no cgroup task
+            # ceiling to approach (macOS, Windows, no cgroup v2 delegation): an
+            # unknown figure on those hosts is noise on every call.
+            band = " — TIGHT" if self.slice_tasks_tight else ""
+            lines.append(f"  Agent slice tasks: {tasks}{band}")
         lines.extend(adaptive_summary_lines())
         return lines
 
@@ -328,6 +474,7 @@ def probe(cfg: object | None = None) -> ResourceStatus:
     cpu_count = os.cpu_count() or 1
     load_per_cpu = _read_load_per_cpu(cpu_count)
     posture = _classify(available_gb, pressure_gb, critical_gb)
+    slice_tasks, slice_tasks_limit, slice_tasks_own = _read_agent_slice_tasks()
     return ResourceStatus(
         available_gb=available_gb,
         cpu_count=cpu_count,
@@ -335,6 +482,9 @@ def probe(cfg: object | None = None) -> ResourceStatus:
         posture=posture,
         pressure_gb=pressure_gb,
         critical_gb=critical_gb,
+        slice_tasks=slice_tasks,
+        slice_tasks_limit=slice_tasks_limit,
+        slice_tasks_own=slice_tasks_own,
     )
 
 
@@ -478,7 +628,10 @@ def admission_check(cfg: object | None = None) -> AdmissionDecision:
     admits. Callers on the two gated paths (scheduled cron firings, new
     subagent spawns) consult this once per admission decision; it reuses the
     same cheap :func:`probe` the advisory surfaces use (fingerprint-cached
-    config + one memory read) and adds no extra filesystem scanning.
+    config, one memory read, and a handful of single-value cgroup reads for the
+    slice's task figure) and never scans processes. The task figure is reported,
+    not gated: the verdict below turns on the memory posture alone, so no task
+    count can refuse work here.
 
     Fail-open by construction: an unreadable memory probe classifies as
     ``unknown`` (admitted), a disabled gate (``agent.admission_gate: false``)

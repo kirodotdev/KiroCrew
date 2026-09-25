@@ -5357,10 +5357,11 @@ class ContextBuilder:
                     f"[BOARD] tags: {_tag_names} · agent-writable: " f"{_writable or '(none)'}\n\n"
                 )
 
-        # Resource pressure — inject a compact advisory ONLY when host memory is
-        # tight/critical, so the model can choose the lighter path for heavy work
+        # Resource pressure — inject a compact advisory ONLY when a host ceiling
+        # is near: memory tight/critical, or the agent slice close to its cgroup
+        # task ceiling, so the model can choose the lighter path for heavy work
         # (targeted tests, smaller sub-agent waves, deferred builds). Silent (zero
-        # token cost) when memory is ample or unreadable. Agent-agnostic: rides
+        # token cost) when both are clear or unreadable. Agent-agnostic: rides
         # the gateway context rail, so it survives agent switches (a tool grant
         # cannot). Skipped for minimal contexts. Best-effort — never let a probe
         # failure break message assembly.
