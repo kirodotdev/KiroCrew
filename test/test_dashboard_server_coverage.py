@@ -521,6 +521,55 @@ class TestConnectionsWarmLifecycle:
             assert source.index(serving) < source.index(kick)
 
 
+# ── _kick_artifact_store ─────────────────────────────────────────────────
+
+
+class TestArtifactStoreKick:
+    @pytest.mark.asyncio
+    async def test_store_is_built_on_a_worker_thread_as_a_tracked_task(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """``ArtifactStore()`` resolves its root and loads or creates the token
+        key at construction -- filesystem work that belongs neither in front of
+        the listener nor on a handler's turn. The kick builds the default store
+        in a thread, post-bind, tracked in ``state._background_tasks``."""
+        import threading
+
+        from kiro_crew import artifacts as art_mod
+
+        monkeypatch.setattr(art_mod, "_default_store", None)
+        built_on: list[int] = []
+        real_init = art_mod.ArtifactStore.__init__
+
+        def spy_init(self: Any, root: Any = None) -> None:
+            built_on.append(threading.get_ident())
+            real_init(self, root=tmp_path / "artifacts")
+
+        monkeypatch.setattr(art_mod.ArtifactStore, "__init__", spy_init)
+        state = _state()
+        srv._kick_artifact_store(state)
+        assert len(state._background_tasks) == 1
+        await asyncio.gather(*state._background_tasks)
+        assert built_on and built_on[0] != threading.get_ident(), "constructed off the loop"
+        assert art_mod._default_store is not None
+        assert (tmp_path / "artifacts" / ".token_key").stat().st_size == 32
+
+    def test_both_gateway_modes_kick_it_after_the_bind(self) -> None:
+        kick = "_kick_artifact_store(state)"
+        for entrypoint in (srv.start_dashboard, srv.start_api_server):
+            source = inspect.getsource(entrypoint)
+            assert kick in source
+            # Same per-entrypoint serving step as the connections-warm test above:
+            # start_dashboard listens on its pre-reserved socket via SockSite,
+            # start_api_server binds via _start_site.
+            serving = (
+                "_start_site(site, port)"
+                if "_start_site(site, port)" in source
+                else "await site.start()"
+            )
+            assert source.index(serving) < source.index(kick)
+
+
 # ── _register_browser_view_cleanup ──────────────────────────────────────
 
 

@@ -585,6 +585,53 @@ def rename_noreplace(
     raise OSError(error, os.strerror(error), os.fspath(dst))
 
 
+#: The exchange flag for the same native seam: renameat2(RENAME_EXCHANGE) on
+#: Linux, renameatx_np(RENAME_SWAP) on macOS. Both are 2. Advertised through
+#: :data:`RENAME_EXCHANGE_AVAILABLE`; the function symbol is shared with
+#: :func:`rename_noreplace`, so where that resolved this does too.
+_RENAME_EXCHANGE_FLAG = 2
+RENAME_EXCHANGE_AVAILABLE: bool = _RENAME_NOREPLACE_FN is not None
+
+
+def rename_exchange(
+    a: str | os.PathLike,
+    b: str | os.PathLike,
+    *,
+    dir_fd: int,
+) -> None:
+    """Atomically EXCHANGE two existing names in one directory, or raise.
+
+    After the call *a* refers to what *b* referred to and vice versa, with no
+    instant at which either name is absent. This is the primitive a genuine
+    compare-and-swap file replace needs: install the staged payload by exchange,
+    inspect the inode that was displaced INTO the staging name, and exchange
+    back if it is not the one that was verified. ``os.rename`` cannot do this
+    -- it replaces whatever the destination names at that instant, and the
+    displaced inode is simply gone.
+
+    Both names are resolved relative to the caller-pinned *dir_fd*. Raises
+    :class:`NotImplementedError` where the platform or filesystem has no
+    exchange (Windows; NFS/SMB/FUSE mounts answering
+    ENOSYS/EINVAL/EOPNOTSUPP), so a caller can keep its documented
+    plain-rename fallback rather than fail closed.
+    """
+    fn = _RENAME_NOREPLACE_FN
+    if fn is None:
+        raise NotImplementedError("atomic rename exchange is unavailable")
+    a_bytes = os.fsencode(a)
+    b_bytes = os.fsencode(b)
+    ctypes.set_errno(0)
+    if fn(dir_fd, a_bytes, dir_fd, b_bytes, _RENAME_EXCHANGE_FLAG) == 0:
+        return
+    error = ctypes.get_errno()
+    unsupported = {errno.ENOSYS, errno.EINVAL}
+    unsupported.add(getattr(errno, "EOPNOTSUPP", errno.EINVAL))
+    unsupported.add(getattr(errno, "ENOTSUP", errno.EINVAL))
+    if error in unsupported:
+        raise NotImplementedError("filesystem lacks atomic rename exchange")
+    raise OSError(error, os.strerror(error), os.fspath(b))
+
+
 def publish_dir_noreplace(src: str | os.PathLike, dst: str | os.PathLike) -> None:
     """Atomically rename directory *src* to an ABSENT *dst*, never replacing.
 

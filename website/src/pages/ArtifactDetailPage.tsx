@@ -16,6 +16,7 @@ import { safeHttpUrl } from '../lib/safeUrl'
 import { buildSrcdoc, readThemeVars } from '../lib/widgetSrcdoc'
 import { api } from '../api/client'
 import { sendTurn } from '../chat-core/transport/sendTurn'
+import { ApiError } from '../api/apiError'
 import { PageHeader, Card, Badge, Btn, Input } from '../components/ui'
 import SimpleSelect from '../components/SimpleSelect'
 import { useConfirm } from '../components/ConfirmDialog'
@@ -242,13 +243,32 @@ const ActivityTimeline = memo(function ActivityTimeline({
 })
 
 /**
+ * "View the newer content" action under the 409 conflict banner. A child
+ * component for the same reason as ArtifactPopoutControl: the
+ * `useArtifactPopouts` subscription must only run on the main dashboard.
+ * Opens (or focuses) the artifact's popout window, which renders the LIVE
+ * content in view mode — letting the user inspect what they would overwrite
+ * without cancelling the edit buffer the banner promised to keep.
+ */
+function ConflictViewLiveAction({ slug, name }: { slug: string; name: string }) {
+  const { isPoppedOut, open, focus } = useArtifactPopouts()
+  return (
+    <div className="mb-3">
+      <Btn onClick={() => (isPoppedOut(slug) ? focus(slug) : open(slug, name))}>
+        <ExternalLink size={13} className="lucide-inline" />
+        {i18nT('pages.artifactDetailPage.view_the_newer_content')}
+      </Btn>
+    </div>
+  )
+}
+
+/**
  * The pop-out control in the artifact detail toolbar. Opens the artifact in its
  * own browser window and, once it's out, swaps to Focus + Bring-back (mirrors
  * the chat session popout menu). Kept as a child so the `useArtifactPopouts`
  * subscription only runs on the main dashboard — never inside the popout window
  * itself (where this control isn't rendered).
- */
-function ArtifactPopoutControl({ slug, name }: { slug: string; name: string }) {
+ */function ArtifactPopoutControl({ slug, name }: { slug: string; name: string }) {
   const { isPoppedOut, open, focus, bringBack } = useArtifactPopouts()
   if (isPoppedOut(slug)) {
     return (
@@ -361,6 +381,19 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   const [editedContent, setEditedContent] = useState('')
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+  // True when saveError is the 409 conflict notice — switches the banner title
+  // and reveals the view-newer-content affordance.
+  const [saveConflict, setSaveConflict] = useState(false)
+  // The optimistic-concurrency base is captured when editing starts and never
+  // rebased by a conflict. Sync-action flushes always use this token, so retrying
+  // one after a 409 cannot turn it into an unlabelled overwrite.
+  const editBaseToken = useRef<string | undefined>(undefined)
+  // A 409 may offer its current token to the explicitly labelled plain Save.
+  // Snapshot and sync-action paths never consume this overwrite capability.
+  const overwriteToken = useRef<string | undefined>(undefined)
+  // State is stale inside save callback closures, so an in-flight ref owns the
+  // synchronous guard against repeated shortcuts and clicks.
+  const saveInFlight = useRef(false)
   const [showPublish, setShowPublish] = useState(false)
   // Tag editing: tags shown in the header are editable inline. Adding a tag
   // posts metadata-only (no version bump). Removing a tag works the same way.
@@ -464,6 +497,9 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     // into a rendered preview.
     setPreviewDuringEdit(false)
     setSaveError(null)
+    setSaveConflict(false)
+    editBaseToken.current = undefined
+    overwriteToken.current = undefined
     setPopover(null)
     setAddingTag(false)
     setNewTag('')
@@ -661,8 +697,11 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   const startEditing = useCallback(() => {
     if (!artifact || !editable) return
     setEditedContent(artifact.content ?? '')
+    editBaseToken.current = artifact.content_token
+    overwriteToken.current = undefined
     setEditing(true)
     setSaveError(null)
+    setSaveConflict(false)
   }, [artifact, editable])
 
   // A freshly created blank document opens straight into the editor. Guarded on
@@ -763,20 +802,47 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     setEditing(false)
     setEditedContent('')
     setSaveError(null)
+    setSaveConflict(false)
+    editBaseToken.current = undefined
+    overwriteToken.current = undefined
     setPreviewDuringEdit(false)
   }, [dirty, confirm])
 
   const handleSave = useCallback(async (snapshot = false) => {
     if (!artifact || !dirty) return
+    // After a 409 only the labelled plain Save may overwrite. Snapshot keeps
+    // sending the edit base, so it would 409 again: clearing and re-arming the
+    // banner on every attempt reads as an unexplained loop, and the banner's
+    // "saving again will overwrite" is not true of Snapshot. Leave the banner
+    // exactly as it is; the disabled button's title says why.
+    if (snapshot && saveConflict) return
+    if (saveInFlight.current) return
+    saveInFlight.current = true
     // Same race as commitRename: the discard snapshot still reads empty until
     // the query refetches, so disarm synchronously or an unmount landing
     setSaving(true)
     setSaveError(null)
+    setSaveConflict(false)
     try {
       // snapshot=true → bumps version (creates a new numbered snapshot).
       // snapshot=false → silently updates the live state without versioning,
       // matching the explicit-snapshot model.
-      await api.updateArtifact(artifact.slug, { content: editedContent, snapshot })
+      //
+      // A plain Save after a 409 is visibly labelled as an overwrite and may
+      // consume the token offered by that conflict. Snapshot remains guarded
+      // by the original edit base because its button is not an overwrite
+      // affordance. Before any conflict, both paths use the edit base.
+      const saved = await api.updateArtifact(artifact.slug, {
+        content: editedContent,
+        snapshot,
+        expected_token: snapshot
+          ? editBaseToken.current
+          : (overwriteToken.current ?? editBaseToken.current),
+      }) as Artifact
+      // Roll both guards forward to what THIS save produced, so continued
+      // editing in the same session stays guarded against the next writer.
+      editBaseToken.current = saved.content_token
+      overwriteToken.current = saved.content_token
       await queryClient.invalidateQueries({ queryKey: ['artifact', slug] })
       if (snapshot) {
         await queryClient.invalidateQueries({ queryKey: ['artifact-versions', slug] })
@@ -789,13 +855,29 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
         setEditing(false)
         setEditedContent('')
         setPreviewDuringEdit(false)
+        overwriteToken.current = undefined
       }
     } catch (err) {
-      setSaveError(err instanceof Error ? err.message : String(err))
+      if (err instanceof ApiError && err.status === 409) {
+        // Conflict: the write was refused before anything changed, so the
+        // buffer is intact. Keep the edit base fixed and arm only the labelled
+        // plain Save with the current token from the 409 body.
+        try {
+          const body = JSON.parse((err as ApiError).body || '{}') as { current_token?: string }
+          if (body.current_token) overwriteToken.current = body.current_token
+        } catch { /* body not JSON — keep the stale token; Save keeps 409ing loudly */ }
+        setSaveConflict(true)
+        await queryClient.invalidateQueries({ queryKey: ['artifact', slug] })
+      } else {
+        overwriteToken.current = undefined
+        setSaveConflict(false)
+        setSaveError(err instanceof Error ? err.message : String(err))
+      }
     } finally {
+      saveInFlight.current = false
       setSaving(false)
     }
-  }, [artifact, dirty, editedContent, queryClient, slug])
+  }, [artifact, dirty, editedContent, queryClient, slug, saveConflict])
 
   // Stash for the keyboard handler effect — keeps deps minimal.
   const handleSaveRef = useRef(handleSave)
@@ -806,7 +888,31 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   // data-loss path where pulling mid-edit discarded the working buffer.
   const flushLiveEdits = useCallback(async () => {
     if (!editing || !dirty || !artifact) return
-    await api.updateArtifact(artifact.slug, { content: editedContent, snapshot: false })
+    // Same guard as Save: this flush writes the edit buffer, so it carries the
+    // token the buffer was opened against. A 409 here means the sync action
+    // would have pushed the user's stale buffer over content someone else
+    // changed — stop before it, keep the buffer, show the conflict notice, and
+    // let the caller's catch abort the pull/overwrite/snapshot.
+    try {
+      await api.updateArtifact(artifact.slug, {
+        content: editedContent,
+        snapshot: false,
+        expected_token: editBaseToken.current,
+      })
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) {
+        try {
+          const body = JSON.parse(err.body || '{}') as { current_token?: string }
+          if (body.current_token) overwriteToken.current = body.current_token
+        } catch { /* body not JSON — keep the stale token; the next attempt 409s loudly */ }
+        setSaveConflict(true)
+        await queryClient.invalidateQueries({ queryKey: ['artifact', slug] })
+        // The edit bar's conflict notice carries the explanation; the sync
+        // banner only needs to say why its action did not run.
+        throw new Error(i18nT('pages.artifactDetailPage.save_refused_content_changed'))
+      }
+      throw err
+    }
     // Drop out of edit mode after flushing. The buffer is now persisted (and a
     // subsequent pull checkpoints it as a version), so once the post-mutate
     // refetch lands the pulled/overwritten content the viewer must render
@@ -816,6 +922,12 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     setEditing(false)
     setEditedContent('')
     setPreviewDuringEdit(false)
+    editBaseToken.current = undefined
+    overwriteToken.current = undefined
+    // The edit is over, so a conflict warning about its draft is over too:
+    // the banner and the overwrite label describe a buffer that no longer
+    // exists.
+    setSaveConflict(false)
     await queryClient.invalidateQueries({ queryKey: ['artifact', slug] })
   }, [editing, dirty, artifact, editedContent, queryClient, slug])
 
@@ -828,6 +940,8 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     if (!artifact) return
     setSaving(true)
     setSaveError(null)
+    setSaveConflict(false)
+    overwriteToken.current = undefined
     try {
       // No content field — backend reads live state and snapshots it.
       await api.updateArtifact(artifact.slug, { snapshot: true })
@@ -851,6 +965,8 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     if (!ok) return
     setSaving(true)
     setSaveError(null)
+    setSaveConflict(false)
+    overwriteToken.current = undefined
     try {
       // Fetch the historical version's content (versionQuery may already have
       // it, but going through the API ensures we don't fight an in-flight
@@ -898,15 +1014,24 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
       // chord and then no-ops (onSaveRef is undefined) — so an already-prevented
       // event carries no save. Standing down on it would drop both the save and
       // the snapshot. This document handler is the only one that actually saves.
+      //
+      // A held key auto-repeats keydown. The first Cmd+S may come back 409 and
+      // arm the labelled Save with the live token (so the NEXT save is an
+      // informed overwrite); a repeat firing on the same hold would then be
+      // that next save, overwriting content the user has not seen. Repeats never save.
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
         e.preventDefault()
-        if (dirty) handleSaveRef.current(e.shiftKey)
+        if (e.repeat || !dirty) return
+        // After a 409 Snapshot is a no-op (its button is disabled for the same
+        // reason): only the labelled plain Save overwrites the newer content.
+        if (e.shiftKey && saveConflict) return
+        handleSaveRef.current(e.shiftKey)
       }
       if (e.key === 'Escape') cancelEditing()
     }
     document.addEventListener('keydown', h)
     return () => document.removeEventListener('keydown', h)
-  }, [editing, dirty, cancelEditing, confirmOpen])
+  }, [editing, dirty, cancelEditing, confirmOpen, saveConflict])
 
   // Tell the WS transport this artifact is being edited, so a live
   // `artifact_update` does not refetch the content out from under the editor and
@@ -1802,6 +1927,9 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                 }))) return
                 setEditing(false)
                 setEditedContent('')
+                editBaseToken.current = undefined
+                overwriteToken.current = undefined
+                setSaveConflict(false)
                 if (raw === 'live') {
                   setSelectedVersion(null)
                 } else {
@@ -1840,17 +1968,32 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                   onClick={() => handleSave(false)}
                   disabled={!dirty || saving}
                   className={`px-2 py-1 rounded-md text-[12px] font-medium border transition-all disabled:opacity-40 ${dirty ? 'border-accent text-accent-fg bg-accent cursor-pointer hover:bg-accent-hover' : 'border-border text-muted cursor-default'}`}
-                  title={i18nT('pages.artifactDetailPage.save_to_live_cmd_s_updates_the_live_state_withou')}
+                  title={i18nT(saveConflict
+                    ? 'pages.artifactDetailPage.save_overwrite_newer_content_title'
+                    : 'pages.artifactDetailPage.save_to_live_cmd_s_updates_the_live_state_withou')}
                 >
-                  {saving ? i18nT('pages.artifactDetailPage.saving') : i18nT('pages.artifactDetailPage.save')}
+                  {/* After a 409 only this plain Save can consume the separate
+                      overwrite token. The label says so while the conflict
+                      banner is up: a reflex second Cmd+S must read as the
+                      overwrite it is. */}
+                  {saving
+                    ? i18nT('pages.artifactDetailPage.saving')
+                    : saveConflict
+                      ? i18nT('pages.artifactDetailPage.save_overwrite_newer_content')
+                      : i18nT('pages.artifactDetailPage.save')}
                 </button>
                 <button
                   type="button"
                   onClick={() => handleSave(true)}
-                  disabled={!dirty || saving}
+                  disabled={!dirty || saving || saveConflict}
                   className="px-2 py-1 rounded-md text-[12px] font-medium border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all disabled:opacity-40"
-                  title={i18nT('pages.artifactDetailPage.snapshot_cmd_shift_s_save_and_create_a_new_versi')}
+                  title={i18nT(saveConflict
+                    ? 'pages.artifactDetailPage.snapshot_unavailable_after_conflict_title'
+                    : 'pages.artifactDetailPage.snapshot_cmd_shift_s_save_and_create_a_new_versi')}
                 >
+                  {/* Snapshot never consumes the overwrite token, so after a 409
+                      it can only 409 again. Disabled rather than looping the
+                      banner; the title names the one path that does overwrite. */}
                   <span className="inline-flex items-center gap-1"><Camera size={13} /> {i18nT('pages.artifactDetailPage.snapshot')}</span>
                 </button>
                 <button
@@ -2010,6 +2153,36 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
           title={i18nT('pages.artifactDetailPage.save_failed')}
           className="mb-3"
         />
+        {/* The conflict notice is its own state, not a flavour of saveError:
+            it must outlive a tag/pin/kind/rename action (each of which
+            clears saveError for its own message) because the 409 armed the
+            separate overwrite token and the Save button may consume it until
+            a save attempt, Cancel, Revert or navigation ends the edit. Clearing
+            the warning while keeping that capability would hide exactly what
+            the label warns about. Rendered only WHILE editing: the warning is
+            about the edit buffer, so whichever way an edit ends (Cancel, a
+            version switch, a flush before a pull, navigation) there is no draft
+            left for it to describe. */}
+        {/* No hand-off: editedContent is an unsaved draft that navigation would
+            discard -- the banner exists to keep it. */}
+        <ErrorNotice
+          message={editing && saveConflict ? i18nT('pages.artifactDetailPage.save_conflict_changed_since_read') : null}
+          title={i18nT('pages.artifactDetailPage.save_refused_content_changed')}
+          className="mb-1"
+        />
+        {/* The conflict banner promises an informed overwrite, so the newer
+            content must be inspectable WITHOUT leaving the edit buffer —
+            while editing, this page's body renders editedContent and Cancel
+            would discard the very draft the banner promised was kept. The
+            popout opens the artifact in its own window in view mode, which
+            renders the live content. Gated on !popout like its sibling
+            ArtifactPopoutControl: the useArtifactPopouts subscription is
+            main-dashboard-only, and inside a popout window isPoppedOut(slug)
+            reads false for the window's own slug, so the action would spawn
+            a duplicate window instead of revealing the live content. */}
+        {!popout && editing && saveConflict && artifact && (
+          <ConflictViewLiveAction slug={artifact.slug} name={artifact.name} />
+        )}
 
         {/* Read-only publication sync-error surface: keeps a persisted sync
             error visible (no controls) if a publishing provider is ever
