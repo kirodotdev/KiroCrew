@@ -1,0 +1,2879 @@
+{
+  "_comment": [
+    "Owner-gate census lists, read by test/test_owner_gate_route_census.py.",
+    "exempt: a mutating route that refuses a non-owner by another credential. The test asserts it refused.",
+    "known_ungated: counted debt. Only delete rows; the test fails when a row's route is gated or gone."
+  ],
+  "exempt": [
+    {
+      "method": "POST",
+      "path": "/api/agent-panel/publish",
+      "reason": "internal-secret only: token_auth grants internal_auth only with X-Internal-Secret; the handler refuses a cookie caller"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/apps/dev-fleet/live-target/removal-lease",
+      "reason": "Dev Fleet backend only: the lease is refused to any caller but the app backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/dev-fleet/live-target/removal-lease",
+      "reason": "Dev Fleet backend only: the lease is refused to any caller but the app backend"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/apps/dev-fleet/live-target/removal-lease",
+      "reason": "Dev Fleet backend only: the lease is refused to any caller but the app backend"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/dev-fleet/pod/down",
+      "reason": "internal-secret only: token_auth grants internal_auth only with X-Internal-Secret; the handler refuses a cookie caller"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/dev-fleet/pod/up",
+      "reason": "internal-secret only: token_auth grants internal_auth only with X-Internal-Secret; the handler refuses a cookie caller"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/{name}/token",
+      "reason": "app secret: mints an app token only against X-App-Secret"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/autonudge/{loop_id}",
+      "reason": "svc absent -> 503 autonudge_disabled before any mutation; legacy branch gated (round-9 Fixer A), structured branch owner-checked by _require_monitor_owner",
+      "expect": {
+        "status": 503,
+        "code": "autonudge_disabled"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/browser/command",
+      "reason": "loopback only: the browser-bridge command queue refuses any non-loopback peer"
+    },
+    {
+      "method": "POST",
+      "path": "/api/browser/command-drain",
+      "reason": "loopback only: the browser-bridge command queue refuses any non-loopback peer"
+    },
+    {
+      "method": "POST",
+      "path": "/api/browser/command-result",
+      "reason": "loopback only: the browser-bridge command queue refuses any non-loopback peer"
+    },
+    {
+      "method": "POST",
+      "path": "/api/channel-folders/backfill",
+      "reason": "direct local only: is_direct_local_request makes a remote (forwarded) session read-only here"
+    },
+    {
+      "method": "POST",
+      "path": "/api/channels/weixin/qr/start",
+      "reason": "direct local only: is_direct_local_request makes a remote (forwarded) session read-only here"
+    },
+    {
+      "method": "POST",
+      "path": "/api/channels/whatsapp/qr/start",
+      "reason": "direct local only: is_direct_local_request makes a remote (forwarded) session read-only here"
+    },
+    {
+      "method": "POST",
+      "path": "/api/channels/whatsapp/unlink",
+      "reason": "direct local only: is_direct_local_request makes a remote (forwarded) session read-only here"
+    },
+    {
+      "method": "POST",
+      "path": "/api/computer-use/frame",
+      "reason": "internal-secret only: token_auth grants internal_auth only with X-Internal-Secret; the handler refuses a cookie caller"
+    },
+    {
+      "method": "POST",
+      "path": "/api/computer-use/invoke",
+      "reason": "internal-secret only: token_auth grants internal_auth only with X-Internal-Secret; the handler refuses a cookie caller"
+    },
+    {
+      "method": "POST",
+      "path": "/api/crons/tools",
+      "reason": "internal-secret only: token_auth grants internal_auth only with X-Internal-Secret; the handler refuses a cookie caller"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/discord/config",
+      "reason": "direct local only: is_direct_local_request makes a remote (forwarded) session read-only here"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/feishu/config",
+      "reason": "direct local only: is_direct_local_request makes a remote (forwarded) session read-only here"
+    },
+    {
+      "method": "POST",
+      "path": "/api/hooks/agent",
+      "reason": "bearer webhook token: CI/bot inbound path, the handler checks its own token; an owner gate would close it"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/imessage/config",
+      "reason": "direct local only: is_direct_local_request makes a remote (forwarded) session read-only here"
+    },
+    {
+      "method": "POST",
+      "path": "/api/logout",
+      "reason": "local secret: requires the gateway's X-Local-Secret"
+    },
+    {
+      "method": "POST",
+      "path": "/api/notifications/agent",
+      "reason": "internal-secret only: token_auth grants internal_auth only with X-Internal-Secret; the handler refuses a cookie caller"
+    },
+    {
+      "method": "POST",
+      "path": "/api/notifications/push",
+      "reason": "app-token only: refuses a dashboard cookie, requires an App Kit app token"
+    },
+    {
+      "method": "POST",
+      "path": "/api/session-control/adopt",
+      "reason": "internal-secret only: token_auth grants internal_auth only with X-Internal-Secret; the handler refuses a cookie caller"
+    },
+    {
+      "method": "POST",
+      "path": "/api/session-control/close",
+      "reason": "internal-secret only: token_auth grants internal_auth only with X-Internal-Secret; the handler refuses a cookie caller"
+    },
+    {
+      "method": "POST",
+      "path": "/api/session-control/create",
+      "reason": "internal-secret only: token_auth grants internal_auth only with X-Internal-Secret; the handler refuses a cookie caller"
+    },
+    {
+      "method": "POST",
+      "path": "/api/session-control/fork",
+      "reason": "internal-secret only: token_auth grants internal_auth only with X-Internal-Secret; the handler refuses a cookie caller"
+    },
+    {
+      "method": "POST",
+      "path": "/api/session-control/release",
+      "reason": "internal-secret only: token_auth grants internal_auth only with X-Internal-Secret; the handler refuses a cookie caller"
+    },
+    {
+      "method": "POST",
+      "path": "/api/session-control/send",
+      "reason": "internal-secret only: token_auth grants internal_auth only with X-Internal-Secret; the handler refuses a cookie caller"
+    },
+    {
+      "method": "POST",
+      "path": "/api/session-control/stop",
+      "reason": "internal-secret only: token_auth grants internal_auth only with X-Internal-Secret; the handler refuses a cookie caller"
+    },
+    {
+      "method": "POST",
+      "path": "/api/session-directive",
+      "reason": "local caller only: refuses anything but the local MCP process"
+    },
+    {
+      "method": "POST",
+      "path": "/api/shutdown",
+      "reason": "loopback + X-Local-Secret HMAC"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/slack/config",
+      "reason": "direct local only: is_direct_local_request makes a remote (forwarded) session read-only here"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/teams/config",
+      "reason": "direct local only: is_direct_local_request makes a remote (forwarded) session read-only here"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/telegram/config",
+      "reason": "direct local only: is_direct_local_request makes a remote (forwarded) session read-only here"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/webex/config",
+      "reason": "direct local only: is_direct_local_request makes a remote (forwarded) session read-only here"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/wecom/config",
+      "reason": "direct local only: is_direct_local_request makes a remote (forwarded) session read-only here"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/weixin/config",
+      "reason": "direct local only: is_direct_local_request makes a remote (forwarded) session read-only here"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/whatsapp/config",
+      "reason": "direct local only: is_direct_local_request makes a remote (forwarded) session read-only here"
+    },
+    {
+      "method": "POST",
+      "path": "/api/work-ledger/rebuild",
+      "reason": "internal-secret only: token_auth grants internal_auth only with X-Internal-Secret; the handler refuses a cookie caller"
+    },
+    {
+      "method": "POST",
+      "path": "/api/work-ledger/record",
+      "reason": "internal-secret only: token_auth grants internal_auth only with X-Internal-Secret; the handler refuses a cookie caller"
+    },
+    {
+      "method": "POST",
+      "path": "/api/work-ledger/report",
+      "reason": "internal-secret only: token_auth grants internal_auth only with X-Internal-Secret; the handler refuses a cookie caller"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflows/runs/{run_id}/cancel",
+      "reason": "session-scoped: refused unless the run belongs to the caller's workflow memory scope"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflows/runs/{run_id}/rerun",
+      "reason": "session-scoped: refused unless the run belongs to the caller's workflow memory scope"
+    }
+  ],
+  "known_ungated": [
+    {
+      "method": "POST",
+      "path": "/api/apps/auto-improvement/calibrate",
+      "module": "kiro_crew.apps.builtins.auto_improvement.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/apps/auto-improvement/config",
+      "module": "kiro_crew.apps.builtins.auto_improvement.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/auto-improvement/deps/install",
+      "module": "kiro_crew.apps.builtins.auto_improvement.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/auto-improvement/draft-pr/{fp}",
+      "module": "kiro_crew.apps.builtins.auto_improvement.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/auto-improvement/findings/purge-dead",
+      "module": "kiro_crew.apps.builtins.auto_improvement.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/auto-improvement/findings/{fp}/commit",
+      "module": "kiro_crew.apps.builtins.auto_improvement.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/auto-improvement/findings/{fp}/forget",
+      "module": "kiro_crew.apps.builtins.auto_improvement.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/auto-improvement/findings/{fp}/purge",
+      "module": "kiro_crew.apps.builtins.auto_improvement.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/auto-improvement/run",
+      "module": "kiro_crew.apps.builtins.auto_improvement.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/auto-improvement/run/stop",
+      "module": "kiro_crew.apps.builtins.auto_improvement.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/apps/auto-improvement/sessions/{key}",
+      "module": "kiro_crew.apps.builtins.auto_improvement.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/apps/auto-improvement/sessions/{key}",
+      "module": "kiro_crew.apps.builtins.auto_improvement.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/auto-improvement/setup-clone",
+      "module": "kiro_crew.apps.builtins.auto_improvement.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/auto-improvement/watchers/{fp}/start",
+      "module": "kiro_crew.apps.builtins.auto_improvement.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/auto-improvement/watchers/{fp}/stop",
+      "module": "kiro_crew.apps.builtins.auto_improvement.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/auto-research/campaigns",
+      "module": "kiro_crew.apps.builtins.auto_research.handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/apps/auto-research/campaigns/{id}",
+      "module": "kiro_crew.apps.builtins.auto_research.handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/apps/auto-research/campaigns/{id}",
+      "module": "kiro_crew.apps.builtins.auto_research.handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/auto-research/campaigns/{id}/nudge",
+      "module": "kiro_crew.apps.builtins.auto_research.handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/auto-research/campaigns/{id}/questions",
+      "module": "kiro_crew.apps.builtins.auto_research.handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/auto-research/campaigns/{id}/to-artifact",
+      "module": "kiro_crew.apps.builtins.auto_research.handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/auto-research/campaigns/{id}/to-knowledge",
+      "module": "kiro_crew.apps.builtins.auto_research.handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/auto-research/grill/expand",
+      "module": "kiro_crew.apps.builtins.auto_research.handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/auto-research/validate",
+      "module": "kiro_crew.apps.builtins.auto_research.handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/code-review-sage/followup",
+      "module": "kiro_crew.apps.builtins.code_review_sage.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/code-review-sage/learnings/consolidate",
+      "module": "kiro_crew.apps.builtins.code_review_sage.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/apps/code-review-sage/namespaces",
+      "module": "kiro_crew.apps.builtins.code_review_sage.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/code-review-sage/namespaces",
+      "module": "kiro_crew.apps.builtins.code_review_sage.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/apps/code-review-sage/repos",
+      "module": "kiro_crew.apps.builtins.code_review_sage.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/code-review-sage/repos",
+      "module": "kiro_crew.apps.builtins.code_review_sage.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/code-review-sage/review",
+      "module": "kiro_crew.apps.builtins.code_review_sage.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/code-review-sage/review-repo",
+      "module": "kiro_crew.apps.builtins.code_review_sage.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/apps/code-review-sage/runs/{run_id}",
+      "module": "kiro_crew.apps.builtins.code_review_sage.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/code-review-sage/runs/{run_id}/archive",
+      "module": "kiro_crew.apps.builtins.code_review_sage.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/code-review-sage/runs/{run_id}/cancel",
+      "module": "kiro_crew.apps.builtins.code_review_sage.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/code-review-sage/runs/{run_id}/post",
+      "module": "kiro_crew.apps.builtins.code_review_sage.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/apps/code-review-sage/settings",
+      "module": "kiro_crew.apps.builtins.code_review_sage.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/crew-companion/appearances/colours",
+      "module": "kiro_crew.apps.builtins.crew_companion.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/crew-companion/appearances/delete",
+      "module": "kiro_crew.apps.builtins.crew_companion.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/crew-companion/appearances/import",
+      "module": "kiro_crew.apps.builtins.crew_companion.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/crew-companion/appearances/save",
+      "module": "kiro_crew.apps.builtins.crew_companion.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/crew-companion/appearances/save-sprite",
+      "module": "kiro_crew.apps.builtins.crew_companion.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/crew-companion/breathing-done",
+      "module": "kiro_crew.apps.builtins.crew_companion.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/crew-companion/petdex/fetch",
+      "module": "kiro_crew.apps.builtins.crew_companion.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/crew-companion/presence",
+      "module": "kiro_crew.apps.builtins.crew_companion.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/crew-companion/reminders/add",
+      "module": "kiro_crew.apps.builtins.crew_companion.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/crew-companion/reminders/config",
+      "module": "kiro_crew.apps.builtins.crew_companion.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/crew-companion/reminders/remove",
+      "module": "kiro_crew.apps.builtins.crew_companion.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/crew-companion/reminders/skip",
+      "module": "kiro_crew.apps.builtins.crew_companion.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/crew-companion/window",
+      "module": "kiro_crew.apps.builtins.crew_companion.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/design-critique/discover",
+      "module": "kiro_crew.apps.builtins.design_critique.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/design-critique/render",
+      "module": "kiro_crew.apps.builtins.design_critique.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/apps/issue-radar/crew",
+      "module": "kiro_crew.apps.builtins.issue_radar.backend.crew_routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/apps/issue-radar/crew",
+      "module": "kiro_crew.apps.builtins.issue_radar.backend.crew_routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/issue-radar/crew/pause",
+      "module": "kiro_crew.apps.builtins.issue_radar.backend.crew_routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/apps/issue-radar/crew/work",
+      "module": "kiro_crew.apps.builtins.issue_radar.backend.crew_routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/issue-radar/crews",
+      "module": "kiro_crew.apps.builtins.issue_radar.backend.crew_routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/apps/issue-radar/crews/settings",
+      "module": "kiro_crew.apps.builtins.issue_radar.backend.crew_routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/issue-radar/issue/comment",
+      "module": "kiro_crew.apps.builtins.issue_radar.backend.crew_routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/issue-radar/connect",
+      "module": "kiro_crew.apps.builtins.issue_radar.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/apps/issue-radar/investigation",
+      "module": "kiro_crew.apps.builtins.issue_radar.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/issue-radar/issue/assignees",
+      "module": "kiro_crew.apps.builtins.issue_radar.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/issue-radar/issue/state",
+      "module": "kiro_crew.apps.builtins.issue_radar.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/issue-radar/labels/apply",
+      "module": "kiro_crew.apps.builtins.issue_radar.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/issue-radar/labels/apply-bulk",
+      "module": "kiro_crew.apps.builtins.issue_radar.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/issue-radar/labels/create",
+      "module": "kiro_crew.apps.builtins.issue_radar.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/issue-radar/pull/auto-merge",
+      "module": "kiro_crew.apps.builtins.issue_radar.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/issue-radar/pull/comment",
+      "module": "kiro_crew.apps.builtins.issue_radar.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/issue-radar/pull/merge",
+      "module": "kiro_crew.apps.builtins.issue_radar.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/issue-radar/pull/review",
+      "module": "kiro_crew.apps.builtins.issue_radar.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/issue-radar/pull/run",
+      "module": "kiro_crew.apps.builtins.issue_radar.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/issue-radar/pull/state",
+      "module": "kiro_crew.apps.builtins.issue_radar.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/issue-radar/pulls/bulk",
+      "module": "kiro_crew.apps.builtins.issue_radar.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/issue-radar/recommendations",
+      "module": "kiro_crew.apps.builtins.issue_radar.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/apps/issue-radar/repos",
+      "module": "kiro_crew.apps.builtins.issue_radar.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/apps/issue-radar/settings",
+      "module": "kiro_crew.apps.builtins.issue_radar.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/issue-radar/settings/role",
+      "module": "kiro_crew.apps.builtins.issue_radar.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/issue-radar/tagging",
+      "module": "kiro_crew.apps.builtins.issue_radar.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/meetings/meetings/{meeting_id}/agents",
+      "module": "kiro_crew.apps.builtins.meetings.backend.routes.agents",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/meetings/meetings/{meeting_id}/dispatch",
+      "module": "kiro_crew.apps.builtins.meetings.backend.routes.agents",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/meetings/meetings/{meeting_id}/message",
+      "module": "kiro_crew.apps.builtins.meetings.backend.routes.agents",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/meetings/meetings/{meeting_id}/mute",
+      "module": "kiro_crew.apps.builtins.meetings.backend.routes.agents",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/meetings/meetings/{meeting_id}/reset",
+      "module": "kiro_crew.apps.builtins.meetings.backend.routes.agents",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/meetings/calendar/sync",
+      "module": "kiro_crew.apps.builtins.meetings.backend.routes.calendar",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/apps/meetings/meetings/{meeting_id}",
+      "module": "kiro_crew.apps.builtins.meetings.backend.routes.meeting_lifecycle",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/meetings/meetings/{meeting_id}/attachments",
+      "module": "kiro_crew.apps.builtins.meetings.backend.routes.meeting_lifecycle",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/meetings/meetings/{meeting_id}/init",
+      "module": "kiro_crew.apps.builtins.meetings.backend.routes.meeting_lifecycle",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/apps/meetings/meetings/{meeting_id}/outputs",
+      "module": "kiro_crew.apps.builtins.meetings.backend.routes.meeting_lifecycle",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/apps/meetings/meetings/{meeting_id}/outputs",
+      "module": "kiro_crew.apps.builtins.meetings.backend.routes.meeting_lifecycle",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/meetings/meetings/{meeting_id}/start",
+      "module": "kiro_crew.apps.builtins.meetings.backend.routes.meeting_lifecycle",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/meetings/meetings/{meeting_id}/status",
+      "module": "kiro_crew.apps.builtins.meetings.backend.routes.meeting_lifecycle",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/meetings/meetings/{meeting_id}/stop",
+      "module": "kiro_crew.apps.builtins.meetings.backend.routes.meeting_lifecycle",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/apps/meetings/config",
+      "module": "kiro_crew.apps.builtins.meetings.backend.routes.settings",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/meetings/dictionary",
+      "module": "kiro_crew.apps.builtins.meetings.backend.routes.settings",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/meetings/dictionary/reload",
+      "module": "kiro_crew.apps.builtins.meetings.backend.routes.settings",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/meetings/dictionary/remove",
+      "module": "kiro_crew.apps.builtins.meetings.backend.routes.settings",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/apps/meetings/meetings/{meeting_id}/tasks",
+      "module": "kiro_crew.apps.builtins.meetings.backend.routes.tasks",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/apps/meetings/meetings/{meeting_id}/tasks",
+      "module": "kiro_crew.apps.builtins.meetings.backend.routes.tasks",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/meetings/meetings/{meeting_id}/tasks",
+      "module": "kiro_crew.apps.builtins.meetings.backend.routes.tasks",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/meetings/meetings/{meeting_id}/tasks/file",
+      "module": "kiro_crew.apps.builtins.meetings.backend.routes.tasks",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/meetings/meetings/{meeting_id}/tasks/review",
+      "module": "kiro_crew.apps.builtins.meetings.backend.routes.tasks",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/mochi/displays",
+      "module": "kiro_crew.apps.builtins.mochi.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/mochi/mcp-tools/{name}",
+      "module": "kiro_crew.apps.builtins.mochi.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/mochi/packs",
+      "module": "kiro_crew.apps.builtins.mochi.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/mochi/packs/content",
+      "module": "kiro_crew.apps.builtins.mochi.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/mochi/packs/import",
+      "module": "kiro_crew.apps.builtins.mochi.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/apps/mochi/packs/{pack_id}",
+      "module": "kiro_crew.apps.builtins.mochi.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/mochi/peeking",
+      "module": "kiro_crew.apps.builtins.mochi.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/mochi/pet-event",
+      "module": "kiro_crew.apps.builtins.mochi.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/mochi/petdex/import",
+      "module": "kiro_crew.apps.builtins.mochi.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/mochi/pinned/mark-seen",
+      "module": "kiro_crew.apps.builtins.mochi.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/mochi/pinned/unpin",
+      "module": "kiro_crew.apps.builtins.mochi.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/mochi/presence",
+      "module": "kiro_crew.apps.builtins.mochi.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/mochi/quiet",
+      "module": "kiro_crew.apps.builtins.mochi.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/mochi/reset",
+      "module": "kiro_crew.apps.builtins.mochi.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/mochi/settings",
+      "module": "kiro_crew.apps.builtins.mochi.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/mochi/stat",
+      "module": "kiro_crew.apps.builtins.mochi.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/mochi/walk-distance",
+      "module": "kiro_crew.apps.builtins.mochi.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/mochi/walk-done",
+      "module": "kiro_crew.apps.builtins.mochi.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/mochi/watchlist/clear-completed",
+      "module": "kiro_crew.apps.builtins.mochi.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/mochi/watchlist/update",
+      "module": "kiro_crew.apps.builtins.mochi.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/ops-mission-control/dispatch",
+      "module": "kiro_crew.apps.builtins.ops_mission_control.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/ops-mission-control/incident/action",
+      "module": "kiro_crew.apps.builtins.ops_mission_control.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/ops-mission-control/incident/claim",
+      "module": "kiro_crew.apps.builtins.ops_mission_control.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/ops-mission-control/incident/proposal/decide",
+      "module": "kiro_crew.apps.builtins.ops_mission_control.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/ops-mission-control/incident/propose",
+      "module": "kiro_crew.apps.builtins.ops_mission_control.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/ops-mission-control/incident/transition",
+      "module": "kiro_crew.apps.builtins.ops_mission_control.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/apps/ops-mission-control/ledger",
+      "module": "kiro_crew.apps.builtins.ops_mission_control.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/ops-mission-control/ledger",
+      "module": "kiro_crew.apps.builtins.ops_mission_control.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/ops-mission-control/ledger/hygiene",
+      "module": "kiro_crew.apps.builtins.ops_mission_control.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/apps/ops-mission-control/providers/{provider_id}/config",
+      "module": "kiro_crew.apps.builtins.ops_mission_control.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/apps/ops-mission-control/providers/{provider_id}/secret",
+      "module": "kiro_crew.apps.builtins.ops_mission_control.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/apps/ops-mission-control/providers/{provider_id}/secret",
+      "module": "kiro_crew.apps.builtins.ops_mission_control.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/ops-mission-control/rotation/arm",
+      "module": "kiro_crew.apps.builtins.ops_mission_control.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/apps/ops-mission-control/settings",
+      "module": "kiro_crew.apps.builtins.ops_mission_control.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/ops-mission-control/webhook",
+      "module": "kiro_crew.apps.builtins.ops_mission_control.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/papyrus/compile",
+      "module": "kiro_crew.apps.builtins.papyrus.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/papyrus/compiler/provision",
+      "module": "kiro_crew.apps.builtins.papyrus.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/apps/papyrus/file",
+      "module": "kiro_crew.apps.builtins.papyrus.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/papyrus/file",
+      "module": "kiro_crew.apps.builtins.papyrus.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/apps/papyrus/file",
+      "module": "kiro_crew.apps.builtins.papyrus.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/papyrus/git/commit",
+      "module": "kiro_crew.apps.builtins.papyrus.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/papyrus/git/pull",
+      "module": "kiro_crew.apps.builtins.papyrus.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/papyrus/git/push",
+      "module": "kiro_crew.apps.builtins.papyrus.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/apps/papyrus/main",
+      "module": "kiro_crew.apps.builtins.papyrus.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/apps/papyrus/project",
+      "module": "kiro_crew.apps.builtins.papyrus.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/papyrus/projects",
+      "module": "kiro_crew.apps.builtins.papyrus.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/papyrus/projects/clone",
+      "module": "kiro_crew.apps.builtins.papyrus.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/personal-shopper/groups",
+      "module": "kiro_crew.apps.builtins.personal_shopper.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/apps/personal-shopper/groups/{id}",
+      "module": "kiro_crew.apps.builtins.personal_shopper.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/personal-shopper/history",
+      "module": "kiro_crew.apps.builtins.personal_shopper.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/apps/personal-shopper/history/{id}/feedback",
+      "module": "kiro_crew.apps.builtins.personal_shopper.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/personal-shopper/preferences",
+      "module": "kiro_crew.apps.builtins.personal_shopper.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/personal-shopper/preferences/reembed",
+      "module": "kiro_crew.apps.builtins.personal_shopper.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/personal-shopper/preferences/search",
+      "module": "kiro_crew.apps.builtins.personal_shopper.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/apps/personal-shopper/preferences/{id}",
+      "module": "kiro_crew.apps.builtins.personal_shopper.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/apps/personal-shopper/preferences/{id}",
+      "module": "kiro_crew.apps.builtins.personal_shopper.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/apps/personal-shopper/sites",
+      "module": "kiro_crew.apps.builtins.personal_shopper.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/pptx-maker/assets/provision",
+      "module": "kiro_crew.apps.builtins.pptx_maker.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/apps/pptx-maker/config",
+      "module": "kiro_crew.apps.builtins.pptx_maker.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/pptx-maker/engine/provision",
+      "module": "kiro_crew.apps.builtins.pptx_maker.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/apps/pptx-maker/styles",
+      "module": "kiro_crew.apps.builtins.pptx_maker.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/pptx-maker/styles/import",
+      "module": "kiro_crew.apps.builtins.pptx_maker.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/pptx-maker/styles/pin",
+      "module": "kiro_crew.apps.builtins.pptx_maker.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/pptx-maker/styles/rename",
+      "module": "kiro_crew.apps.builtins.pptx_maker.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/apps/pptx-maker/templates",
+      "module": "kiro_crew.apps.builtins.pptx_maker.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/pptx-maker/templates/import",
+      "module": "kiro_crew.apps.builtins.pptx_maker.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/pptx-maker/templates/rename",
+      "module": "kiro_crew.apps.builtins.pptx_maker.backend.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/spec-builder/settings",
+      "module": "kiro_crew.apps.builtins.spec_builder.backend.handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/apps/spec-builder/settings",
+      "module": "kiro_crew.apps.builtins.spec_builder.backend.handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/spec-builder/specs",
+      "module": "kiro_crew.apps.builtins.spec_builder.backend.handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/apps/spec-builder/specs/{name}",
+      "module": "kiro_crew.apps.builtins.spec_builder.backend.handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/spec-builder/specs/{name}/approve",
+      "module": "kiro_crew.apps.builtins.spec_builder.backend.handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/spec-builder/specs/{name}/archive",
+      "module": "kiro_crew.apps.builtins.spec_builder.backend.handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/spec-builder/specs/{name}/duplicate",
+      "module": "kiro_crew.apps.builtins.spec_builder.backend.handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/spec-builder/specs/{name}/execute",
+      "module": "kiro_crew.apps.builtins.spec_builder.backend.handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/spec-builder/specs/{name}/handoff",
+      "module": "kiro_crew.apps.builtins.spec_builder.backend.handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/spec-builder/specs/{name}/message",
+      "module": "kiro_crew.apps.builtins.spec_builder.backend.handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/spec-builder/specs/{name}/recover-decision",
+      "module": "kiro_crew.apps.builtins.spec_builder.backend.handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/spec-builder/specs/{name}/stop",
+      "module": "kiro_crew.apps.builtins.spec_builder.backend.handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/spec-builder/specs/{name}/task",
+      "module": "kiro_crew.apps.builtins.spec_builder.backend.handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/spec-builder/specs/{name}/title",
+      "module": "kiro_crew.apps.builtins.spec_builder.backend.handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/app-store/refresh",
+      "module": "kiro_crew.apps.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/install",
+      "module": "kiro_crew.apps.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/register",
+      "module": "kiro_crew.apps.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/apps/registries",
+      "module": "kiro_crew.apps.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/registries/refresh",
+      "module": "kiro_crew.apps.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/registry/install",
+      "module": "kiro_crew.apps.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/registry/install-stream",
+      "module": "kiro_crew.apps.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/apps/{name}/config",
+      "module": "kiro_crew.apps.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/{name}/dev",
+      "module": "kiro_crew.apps.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/{name}/disable",
+      "module": "kiro_crew.apps.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/{name}/enable",
+      "module": "kiro_crew.apps.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/apps/{name}/migrate-cleanup",
+      "module": "kiro_crew.apps.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/{name}/open",
+      "module": "kiro_crew.apps.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/{name}/uninstall",
+      "module": "kiro_crew.apps.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/apps/{name}/update",
+      "module": "kiro_crew.apps.routes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/project-scaffold/create",
+      "module": "kiro_crew.dashboard.chat_folder_scaffold",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/project-scaffold/scan",
+      "module": "kiro_crew.dashboard.chat_folder_scaffold",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/folders",
+      "module": "kiro_crew.dashboard.chat_folders",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/folders/reorder",
+      "module": "kiro_crew.dashboard.chat_folders",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/chat/folders/{id}",
+      "module": "kiro_crew.dashboard.chat_folders",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/chat/folders/{id}",
+      "module": "kiro_crew.dashboard.chat_folders",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/chat/slots/{slot}/folder",
+      "module": "kiro_crew.dashboard.chat_folders",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/chat/slots/{slot}/mode",
+      "module": "kiro_crew.dashboard.chat_folders",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/chat/slots/{slot}/pin",
+      "module": "kiro_crew.dashboard.chat_folders",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/slots/{slot}/fork",
+      "module": "kiro_crew.dashboard.chat_fork",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/slots",
+      "module": "kiro_crew.dashboard.chat_handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/slots/cleanup",
+      "module": "kiro_crew.dashboard.chat_handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/slots/model",
+      "module": "kiro_crew.dashboard.chat_handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/chat/slots/{slot}",
+      "module": "kiro_crew.dashboard.chat_handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/slots/{slot}/autocompact",
+      "module": "kiro_crew.dashboard.chat_handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/chat/slots/{slot}/color",
+      "module": "kiro_crew.dashboard.chat_handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/slots/{slot}/context",
+      "module": "kiro_crew.dashboard.chat_handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/slots/{slot}/continue",
+      "module": "kiro_crew.dashboard.chat_handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/slots/{slot}/end-wait",
+      "module": "kiro_crew.dashboard.chat_handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/slots/{slot}/interrupt",
+      "module": "kiro_crew.dashboard.chat_handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/slots/{slot}/note",
+      "module": "kiro_crew.dashboard.chat_handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/slots/{slot}/project",
+      "module": "kiro_crew.dashboard.chat_handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/chat/slots/{slot}/queue/order",
+      "module": "kiro_crew.dashboard.chat_handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/chat/slots/{slot}/queue/{queue_id}",
+      "module": "kiro_crew.dashboard.chat_handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/chat/slots/{slot}/queue/{queue_id}",
+      "module": "kiro_crew.dashboard.chat_handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/slots/{slot}/reload",
+      "module": "kiro_crew.dashboard.chat_handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/slots/{slot}/reset-conversation",
+      "module": "kiro_crew.dashboard.chat_handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/slots/{slot}/resume",
+      "module": "kiro_crew.dashboard.chat_handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/slots/{slot}/summary",
+      "module": "kiro_crew.dashboard.chat_handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/slots/{name}/mirror-link",
+      "module": "kiro_crew.dashboard.chat_mirror",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/slots/{name}/mirror-pause",
+      "module": "kiro_crew.dashboard.chat_mirror",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/slots/{name}/mirror-unlink",
+      "module": "kiro_crew.dashboard.chat_mirror",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/slots/{slot}/mirror-link",
+      "module": "kiro_crew.dashboard.chat_mirror",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/slots/{slot}/mirror-pause",
+      "module": "kiro_crew.dashboard.chat_mirror",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/slots/{slot}/mirror-unlink",
+      "module": "kiro_crew.dashboard.chat_mirror",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/nav/resolve-links",
+      "module": "kiro_crew.dashboard.chat_nav",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/slots/{slot}/plan-action",
+      "module": "kiro_crew.dashboard.chat_orchestrator",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/pins",
+      "module": "kiro_crew.dashboard.chat_pins",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/chat/pins/by-query",
+      "module": "kiro_crew.dashboard.chat_pins",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/chat/pins/{id}",
+      "module": "kiro_crew.dashboard.chat_pins",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/slots/{slot}/edit-resend",
+      "module": "kiro_crew.dashboard.chat_regenerate",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/slots/{slot}/regenerate",
+      "module": "kiro_crew.dashboard.chat_regenerate",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/slots/{slot}/switch-variant",
+      "module": "kiro_crew.dashboard.chat_regenerate",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/slots/{slot}/rewind",
+      "module": "kiro_crew.dashboard.chat_rewind",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/slots/{name}/slack-link",
+      "module": "kiro_crew.dashboard.chat_slack",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/slots/{name}/slack-pause",
+      "module": "kiro_crew.dashboard.chat_slack",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/slots/{name}/slack-unlink",
+      "module": "kiro_crew.dashboard.chat_slack",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/slots/{slot}/slack-link",
+      "module": "kiro_crew.dashboard.chat_slack",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/slots/{slot}/slack-pause",
+      "module": "kiro_crew.dashboard.chat_slack",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/slots/{slot}/slack-unlink",
+      "module": "kiro_crew.dashboard.chat_slack",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/slots/{slot}/drop",
+      "module": "kiro_crew.dashboard.chat_tags",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/chat/slots/{slot}/tags",
+      "module": "kiro_crew.dashboard.chat_tags",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/tag-columns",
+      "module": "kiro_crew.dashboard.chat_tags",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/chat/tag-columns/order",
+      "module": "kiro_crew.dashboard.chat_tags",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/chat/tag-columns/{id}",
+      "module": "kiro_crew.dashboard.chat_tags",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/chat/tag-columns/{id}",
+      "module": "kiro_crew.dashboard.chat_tags",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/tags",
+      "module": "kiro_crew.dashboard.chat_tags",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/chat/tags/{id}",
+      "module": "kiro_crew.dashboard.chat_tags",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/chat/tags/{id}",
+      "module": "kiro_crew.dashboard.chat_tags",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/threads/{mid}/reply",
+      "module": "kiro_crew.dashboard.chat_threads",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/slots/{slot}/generate-title",
+      "module": "kiro_crew.dashboard.chat_title",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/chat/slots/{slot}/title",
+      "module": "kiro_crew.dashboard.chat_title",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/voice/cancel",
+      "module": "kiro_crew.dashboard.chat_voice",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/voice/config",
+      "module": "kiro_crew.dashboard.chat_voice",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/voice/synthesize",
+      "module": "kiro_crew.dashboard.chat_voice",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/tasks/{task_id}",
+      "module": "kiro_crew.dashboard.handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/tasks/{task_id}/cancel",
+      "module": "kiro_crew.dashboard.handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/artifact-folders",
+      "module": "kiro_crew.dashboard.handlers.artifacts",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/artifact-folders/{id}",
+      "module": "kiro_crew.dashboard.handlers.artifacts",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/artifact-folders/{id}",
+      "module": "kiro_crew.dashboard.handlers.artifacts",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/artifacts",
+      "module": "kiro_crew.dashboard.handlers.artifacts",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/artifacts/materialize",
+      "module": "kiro_crew.dashboard.handlers.artifacts",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/artifacts/{slug}",
+      "module": "kiro_crew.dashboard.handlers.artifacts",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/artifacts/{slug}",
+      "module": "kiro_crew.dashboard.handlers.artifacts",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/artifacts/{slug}/comments",
+      "module": "kiro_crew.dashboard.handlers.artifacts",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/artifacts/{slug}/comments/{comment_id}",
+      "module": "kiro_crew.dashboard.handlers.artifacts",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/artifacts/{slug}/comments/{comment_id}",
+      "module": "kiro_crew.dashboard.handlers.artifacts",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/artifacts/{slug}/comments/{comment_id}/reopen",
+      "module": "kiro_crew.dashboard.handlers.artifacts",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/artifacts/{slug}/comments/{comment_id}/reply",
+      "module": "kiro_crew.dashboard.handlers.artifacts",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/artifacts/{slug}/comments/{comment_id}/resolve",
+      "module": "kiro_crew.dashboard.handlers.artifacts",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/artifacts/{slug}/comments/{comment_id}/review",
+      "module": "kiro_crew.dashboard.handlers.artifacts",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/artifacts/{slug}/events",
+      "module": "kiro_crew.dashboard.handlers.artifacts",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/artifacts/{slug}/folder",
+      "module": "kiro_crew.dashboard.handlers.artifacts",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/artifacts/{slug}/overwrite-remote",
+      "module": "kiro_crew.dashboard.handlers.artifacts",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/artifacts/{slug}/pin",
+      "module": "kiro_crew.dashboard.handlers.artifacts",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/artifacts/{slug}/publish",
+      "module": "kiro_crew.dashboard.handlers.artifacts",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/artifacts/{slug}/publish",
+      "module": "kiro_crew.dashboard.handlers.artifacts",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/artifacts/{slug}/publish/refresh",
+      "module": "kiro_crew.dashboard.handlers.artifacts",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/artifacts/{slug}/publish/reprobe-notice",
+      "module": "kiro_crew.dashboard.handlers.artifacts",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/artifacts/{slug}/pull-latest",
+      "module": "kiro_crew.dashboard.handlers.artifacts",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/artifacts/{slug}/relocate",
+      "module": "kiro_crew.dashboard.handlers.artifacts",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/artifacts/{slug}/settle",
+      "module": "kiro_crew.dashboard.handlers.artifacts",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/artifacts/{slug}/sharing",
+      "module": "kiro_crew.dashboard.handlers.artifacts",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/remote-artifacts/{provider}/clone",
+      "module": "kiro_crew.dashboard.handlers.artifacts",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/remote-artifacts/{provider}/fork",
+      "module": "kiro_crew.dashboard.handlers.artifacts",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/remote-artifacts/{provider}/{external_id}/comments",
+      "module": "kiro_crew.dashboard.handlers.artifacts",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/remote-artifacts/{provider}/{external_id}/comments/{comment_id}",
+      "module": "kiro_crew.dashboard.handlers.artifacts",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/remote-artifacts/{provider}/{external_id}/comments/{comment_id}/reply",
+      "module": "kiro_crew.dashboard.handlers.artifacts",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/remote-artifacts/{provider}/{external_id}/comments/{comment_id}/review",
+      "module": "kiro_crew.dashboard.handlers.artifacts",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/mobile-link",
+      "module": "kiro_crew.dashboard.handlers.auth_mobile",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/logout",
+      "module": "kiro_crew.dashboard.handlers.auth_refresh",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/refresh",
+      "module": "kiro_crew.dashboard.handlers.auth_refresh",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/config/kirocrew",
+      "module": "kiro_crew.dashboard.handlers.core",
+      "note": "round-7 S32: not a finding (three bounded ints)"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/config/kirocrew",
+      "module": "kiro_crew.dashboard.handlers.core",
+      "note": "round-7 S32: not a finding (three bounded ints)"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/config/stt",
+      "module": "kiro_crew.dashboard.handlers.core",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/config/theme",
+      "module": "kiro_crew.dashboard.handlers.core",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/stt/ffmpeg/download",
+      "module": "kiro_crew.dashboard.handlers.core",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/stt/polish",
+      "module": "kiro_crew.dashboard.handlers.core",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/stt/prepare",
+      "module": "kiro_crew.dashboard.handlers.core",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/stt/prewarm",
+      "module": "kiro_crew.dashboard.handlers.core",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/stt/transcribe",
+      "module": "kiro_crew.dashboard.handlers.core",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/cron-folders",
+      "module": "kiro_crew.dashboard.handlers.cron",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/cron-folders/{folder_id}",
+      "module": "kiro_crew.dashboard.handlers.cron",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/cron-folders/{folder_id}",
+      "module": "kiro_crew.dashboard.handlers.cron",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/crons",
+      "module": "kiro_crew.dashboard.handlers.cron",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/crons/{job_id}",
+      "module": "kiro_crew.dashboard.handlers.cron",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/crons/{job_id}",
+      "module": "kiro_crew.dashboard.handlers.cron",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/crons/{job_id}/ack",
+      "module": "kiro_crew.dashboard.handlers.cron",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/crons/{job_id}/cancel",
+      "module": "kiro_crew.dashboard.handlers.cron",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/crons/{job_id}/enable",
+      "module": "kiro_crew.dashboard.handlers.cron",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/crons/{job_id}/run",
+      "module": "kiro_crew.dashboard.handlers.cron",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/crons/{job_id}/to-chat",
+      "module": "kiro_crew.dashboard.handlers.cron",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/lessons",
+      "module": "kiro_crew.dashboard.handlers.cron",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/lessons",
+      "module": "kiro_crew.dashboard.handlers.cron",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/diagnostics/collect",
+      "module": "kiro_crew.dashboard.handlers.diagnostics",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/feedback/submit",
+      "module": "kiro_crew.dashboard.handlers.feedback",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/file-delivery/consent/approve",
+      "module": "kiro_crew.dashboard.handlers.file_delivery_consent",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/channel/upload-file",
+      "module": "kiro_crew.dashboard.handlers.files",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/file-grep",
+      "module": "kiro_crew.dashboard.handlers.files",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/outbox/notify",
+      "module": "kiro_crew.dashboard.handlers.files",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/reveal",
+      "module": "kiro_crew.dashboard.handlers.files",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/screenshot",
+      "module": "kiro_crew.dashboard.handlers.files",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/slack/upload-file",
+      "module": "kiro_crew.dashboard.handlers.files",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/upload",
+      "module": "kiro_crew.dashboard.handlers.files",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/upload/file",
+      "module": "kiro_crew.dashboard.handlers.files",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/knowledge/agent-document",
+      "module": "kiro_crew.dashboard.handlers.knowledge",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/knowledge/embedding/generate",
+      "module": "kiro_crew.dashboard.handlers.knowledge",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/knowledge/import",
+      "module": "kiro_crew.dashboard.handlers.knowledge",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/knowledge/ingest",
+      "module": "kiro_crew.dashboard.handlers.knowledge",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/knowledge/items/{id}",
+      "module": "kiro_crew.dashboard.handlers.knowledge",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/knowledge/items/{id}",
+      "module": "kiro_crew.dashboard.handlers.knowledge",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/knowledge/pick-folder",
+      "module": "kiro_crew.dashboard.handlers.knowledge",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/knowledge/sources",
+      "module": "kiro_crew.dashboard.handlers.knowledge",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/knowledge/sources/{id}",
+      "module": "kiro_crew.dashboard.handlers.knowledge",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/knowledge/sources/{id}",
+      "module": "kiro_crew.dashboard.handlers.knowledge",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/knowledge/sources/{id}/confirm",
+      "module": "kiro_crew.dashboard.handlers.knowledge",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/knowledge/sources/{id}/files/retry",
+      "module": "kiro_crew.dashboard.handlers.knowledge",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/knowledge/sources/{id}/files/skip",
+      "module": "kiro_crew.dashboard.handlers.knowledge",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/knowledge/sources/{id}/ingest-text",
+      "module": "kiro_crew.dashboard.handlers.knowledge",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/knowledge/sources/{id}/pause",
+      "module": "kiro_crew.dashboard.handlers.knowledge",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/knowledge/sources/{id}/resume",
+      "module": "kiro_crew.dashboard.handlers.knowledge",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/knowledge/sources/{id}/sync",
+      "module": "kiro_crew.dashboard.handlers.knowledge",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/mcp-apps/call",
+      "module": "kiro_crew.dashboard.handlers.mcp_apps",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/mcp-apps/message",
+      "module": "kiro_crew.dashboard.handlers.mcp_apps",
+      "note": "added by #13615 (096bd2eb0a) after census base; round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/memory/consolidate",
+      "module": "kiro_crew.dashboard.handlers.memory",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/memory/disable-embeddings",
+      "module": "kiro_crew.dashboard.handlers.memory",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/memory/embedding-model",
+      "module": "kiro_crew.dashboard.handlers.memory",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/memory/enable-embeddings",
+      "module": "kiro_crew.dashboard.handlers.memory",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/delete-message",
+      "module": "kiro_crew.dashboard.handlers.messaging",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/messaging/teams",
+      "module": "kiro_crew.dashboard.handlers.messaging",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/notifications",
+      "module": "kiro_crew.dashboard.handlers.messaging",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/notifications/ack",
+      "module": "kiro_crew.dashboard.handlers.messaging",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/notifications/ack-all",
+      "module": "kiro_crew.dashboard.handlers.messaging",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/notifications/channels/settings",
+      "module": "kiro_crew.dashboard.handlers.messaging",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/notifications/clear",
+      "module": "kiro_crew.dashboard.handlers.messaging",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/notifications/unack",
+      "module": "kiro_crew.dashboard.handlers.messaging",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/send-message",
+      "module": "kiro_crew.dashboard.handlers.messaging",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/slack-profile",
+      "module": "kiro_crew.dashboard.handlers.messaging",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/slack/pins",
+      "module": "kiro_crew.dashboard.handlers.messaging",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/slack/reactions",
+      "module": "kiro_crew.dashboard.handlers.messaging",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/spawn/lost",
+      "module": "kiro_crew.dashboard.handlers.messaging",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/spawn/mark-collected",
+      "module": "kiro_crew.dashboard.handlers.messaging",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/spawn/stop-all",
+      "module": "kiro_crew.dashboard.handlers.messaging",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/spawn/{agent_id}",
+      "module": "kiro_crew.dashboard.handlers.messaging",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/spawn/{agent_id}/continue",
+      "module": "kiro_crew.dashboard.handlers.messaging",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/spawn/{agent_id}/release",
+      "module": "kiro_crew.dashboard.handlers.messaging",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/spawn/{agent_id}/retry",
+      "module": "kiro_crew.dashboard.handlers.messaging",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/spawn/{agent_id}/steer",
+      "module": "kiro_crew.dashboard.handlers.messaging",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/update-message",
+      "module": "kiro_crew.dashboard.handlers.messaging",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/optimizer/optimize",
+      "module": "kiro_crew.dashboard.handlers.optimizer",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/portability/preview",
+      "module": "kiro_crew.dashboard.handlers.portability",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/skills/-/discover",
+      "module": "kiro_crew.dashboard.handlers.prompts",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/sandbox-doc",
+      "module": "kiro_crew.dashboard.handlers.sandbox_doc",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/session-ledger/record",
+      "module": "kiro_crew.dashboard.handlers.session_ledger",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/system/session-storage/cleanup",
+      "module": "kiro_crew.dashboard.handlers.session_storage",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/system/session-storage/empty",
+      "module": "kiro_crew.dashboard.handlers.session_storage",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/system/session-storage/restore",
+      "module": "kiro_crew.dashboard.handlers.session_storage",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/system/session-storage/trash",
+      "module": "kiro_crew.dashboard.handlers.session_storage",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/approvals/{id}/{action}",
+      "module": "kiro_crew.dashboard.handlers.sessions",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/session-keepalive",
+      "module": "kiro_crew.dashboard.handlers.sessions",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/sessions",
+      "module": "kiro_crew.dashboard.handlers.sessions",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/restart",
+      "module": "kiro_crew.dashboard.handlers.sessions",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/summarize",
+      "module": "kiro_crew.dashboard.handlers.sessions",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/usage/refresh",
+      "module": "kiro_crew.dashboard.handlers.sessions",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/sessions/{key}",
+      "module": "kiro_crew.dashboard.handlers.sessions",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/slots/{slot}/side/close",
+      "module": "kiro_crew.dashboard.handlers.side",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/slots/{slot}/side/open",
+      "module": "kiro_crew.dashboard.handlers.side",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/chat/slots/{slot}/side/queue/{queue_id}",
+      "module": "kiro_crew.dashboard.handlers.side",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/chat/slots/{slot}/side/queue/{queue_id}",
+      "module": "kiro_crew.dashboard.handlers.side",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/themes",
+      "module": "kiro_crew.dashboard.handlers.themes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/themes/install",
+      "module": "kiro_crew.dashboard.handlers.themes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/themes/{slug}",
+      "module": "kiro_crew.dashboard.handlers.themes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/themes/{slug}",
+      "module": "kiro_crew.dashboard.handlers.themes",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/logs/level",
+      "module": "kiro_crew.dashboard.handlers.updates",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/restart",
+      "module": "kiro_crew.dashboard.handlers.updates",
+      "note": "step-up protected (host-only nonce / loopback); round-10 review"
+    },
+    {
+      "method": "POST",
+      "path": "/api/update/approve",
+      "module": "kiro_crew.dashboard.handlers.updates",
+      "note": "step-up protected (host-only nonce / loopback); round-10 review"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/update/arm",
+      "module": "kiro_crew.dashboard.handlers.updates",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/update/arm",
+      "module": "kiro_crew.dashboard.handlers.updates",
+      "note": "step-up protected (host-only nonce / loopback); round-10 review"
+    },
+    {
+      "method": "POST",
+      "path": "/api/update/auto",
+      "module": "kiro_crew.dashboard.handlers.updates",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/update/cancel",
+      "module": "kiro_crew.dashboard.handlers.updates",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/update/channel",
+      "module": "kiro_crew.dashboard.handlers.updates",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflows/author",
+      "module": "kiro_crew.dashboard.handlers.workflows",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/channels",
+      "module": "kiro_crew.dashboard.handlers_channel",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/channels/{id}",
+      "module": "kiro_crew.dashboard.handlers_channel",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/channels/{id}/agents",
+      "module": "kiro_crew.dashboard.handlers_channel",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/channels/{id}/agents/{aid}",
+      "module": "kiro_crew.dashboard.handlers_channel",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/channels/{id}/agents/{aid}",
+      "module": "kiro_crew.dashboard.handlers_channel",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/channels/{id}/agents/{aid}/approve",
+      "module": "kiro_crew.dashboard.handlers_channel",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/channels/{id}/agents/{aid}/wake",
+      "module": "kiro_crew.dashboard.handlers_channel",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/channels/{id}/clear-context",
+      "module": "kiro_crew.dashboard.handlers_channel",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/channels/{id}/messages",
+      "module": "kiro_crew.dashboard.handlers_channel",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/comments",
+      "module": "kiro_crew.dashboard.handlers_project",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/comments/{id}",
+      "module": "kiro_crew.dashboard.handlers_project",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/projects",
+      "module": "kiro_crew.dashboard.handlers_project",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/projects/{id}",
+      "module": "kiro_crew.dashboard.handlers_project",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/projects/{id}",
+      "module": "kiro_crew.dashboard.handlers_project",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/chat/completions",
+      "module": "kiro_crew.dashboard.openai_compat",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/slots/import",
+      "module": "kiro_crew.dashboard.session_transfer",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/deploy/config",
+      "module": "kiro_crew.deploy.handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/deploy/deploy",
+      "module": "kiro_crew.deploy.handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/deploy/destroy",
+      "module": "kiro_crew.deploy.handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/deploy/pending/{id}/confirm",
+      "module": "kiro_crew.deploy.handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/deploy/pending/{id}/dismiss",
+      "module": "kiro_crew.deploy.handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/deploy/profiles",
+      "module": "kiro_crew.deploy.handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/deploy/profiles/{name}",
+      "module": "kiro_crew.deploy.handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/deploy/profiles/{name}",
+      "module": "kiro_crew.deploy.handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/deploy/recall",
+      "module": "kiro_crew.deploy.handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/deploy/teardown/{slug}",
+      "module": "kiro_crew.deploy.handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/deploy/verify",
+      "module": "kiro_crew.deploy.handlers",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/feature-videos/feedback",
+      "module": "kiro_crew.feature_videos",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/feature-videos/fetch-all",
+      "module": "kiro_crew.feature_videos_cache",
+      "note": "untriaged, round-10 lead"
+    },
+    {
+      "method": "POST",
+      "path": "/api/tips/feedback",
+      "module": "kiro_crew.tips",
+      "note": "untriaged, round-10 lead"
+    }
+  ]
+}
