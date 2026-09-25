@@ -1713,9 +1713,10 @@ async def test_the_gateway_registers_exactly_these_paths_without_importing_us():
 # one thing that makes that selection safe: the publish route writes the file
 # BEFORE it appends the history entry, and returns without appending if that write
 # fails. So every publish is in the file while only the ones whose append landed
-# are in the fold, and the file can never be the staler of the two. The four pins
-# below are that sentence made executable -- the order, the fail-closed branch,
-# every refusal branch, and the size of the caller population it holds for.
+# are in the fold, and the file can never be the staler of the two. The five pins
+# below are that sentence made executable -- the order, the call-level fail-closed
+# branch, its end state on the fold, every refusal branch, and the size of the
+# caller population it holds for.
 
 
 def _publish_handler_ast():
@@ -1781,20 +1782,26 @@ async def test_the_file_is_written_before_the_history_is_appended(vetted, monkey
 
 
 async def test_a_failed_file_write_appends_no_history_row(vetted, monkeypatch):
-    """A file write that fails costs the publish its history row too.
+    """A file write that fails never reaches the history append at all.
 
-    The fold must never carry a cycle the file lacks. If the append ran anyway,
-    ``_panel_record`` would hand the drawer a fold record with no file behind it,
-    which is the case its file-wins branch is written to be free of.
+    The CALL-level half of the guarantee: the emitter is not invoked. Its
+    end-state half -- that the fold holds no record either -- is measured by
+    ``test_the_fold_never_holds_a_publish_the_file_lacks``, which runs the real
+    emitter and so can observe a fold that a spy would leave empty whatever the
+    route did.
     """
     appended: list[tuple[Any, ...]] = []
+    real_append = crew_log_emit.on_panel_published
 
     def _refuse_write(*_a: Any, **_kw: Any):
         raise OSError("the record could not be written")
 
     def _spy_append(*a: Any, **kw: Any) -> bool:
         appended.append(a)
-        return True
+        # Delegates rather than answering True, so the spy adds an observation
+        # instead of replacing the emitter's effect. A recording-only spy makes
+        # every downstream read of the fold answer empty for its own reason.
+        return real_append(*a, **kw)
 
     monkeypatch.setattr(agent_panel, "publish", _refuse_write)
     monkeypatch.setattr(crew_log_emit, "on_panel_published", _spy_append)
@@ -1809,7 +1816,56 @@ async def test_a_failed_file_write_appends_no_history_row(vetted, monkeypatch):
         assert (await resp.json())["code"] == "panel_write_failed"
 
     assert appended == [], "a publish whose file write failed still appended a history row"
-    assert _folded() is None, "the fold holds a publish the file never received"
+
+
+async def test_the_fold_never_holds_a_publish_the_file_lacks(vetted, monkeypatch):
+    """END STATE: the fold never gets AHEAD of the file.
+
+    The property ``_panel_record``'s file-wins branch is written to be free of, and
+    it is asserted on the two records themselves rather than on a call count, so a
+    writer that reaches the log by any route -- not only through the emitter this
+    file spies on elsewhere -- is still caught.
+
+    A first publish is allowed to land, so both halves compare VALUES. Asserting
+    absence after a single failed publish would prove nothing on either side:
+    ``read`` answers ``None`` for a malformed file as readily as for a missing one,
+    so it cannot see a partial record, and an empty fold is what an empty log looks
+    like anyway.
+
+    The second publish is refused at the WRITE SEAM, so the real ``publish`` runs
+    its lock, its ownership check and its write attempt. Refusing ``publish``
+    itself would exercise none of that -- it is the record's only writer, so the
+    file would be untouched by construction rather than by the code under test.
+    """
+    async with _client() as c:
+        first = await c.post(
+            "/api/agent-panel/publish",
+            json={"data": {"cycle": 1}, "title": "landed"},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert first.status == 200, await first.text()
+
+    def _refuse_write(*_a: Any, **_kw: Any):
+        raise OSError("the record could not be written")
+
+    monkeypatch.setattr(agent_panel, "atomic_write", _refuse_write)
+
+    async with _client() as c:
+        resp = await c.post(
+            "/api/agent-panel/publish",
+            json={"data": {"cycle": 2}, "title": "refused"},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert resp.status == 503, await resp.text()
+
+    stored = agent_panel.read(SLUG)
+    assert stored is not None, "the first publish left no file to compare against"
+    assert stored["data"] == {"cycle": 1}, "the refused write changed the stored record"
+
+    folded = _folded()
+    assert folded is not None, "the first publish recorded no history"
+    assert folded["data"] == {"cycle": 1}, "the fold holds a publish the file never received"
+    assert folded["publishes"] == 1, "the fold counted a publish the file never received"
 
 
 async def test_every_refused_publish_returns_before_the_history_append():
@@ -1853,6 +1909,11 @@ async def test_every_refused_publish_returns_before_the_history_append():
     assert blocks[0].handlers, "the publish write is unguarded, so a failure cannot be refused"
 
 
+# On this test alone, not on ``pytestmark``: it is the only item here that reads
+# ``test/source_corpus.py``'s shared text cache, and grouping the module's other
+# tests with it would cost them their parallelism to buy a de-duplication that
+# cannot happen -- a single corpus reader lands on one worker either way.
+@pytest.mark.xdist_group(name="tree_scan_test_agent_panel_routes")
 async def test_the_history_append_has_exactly_one_call_site():
     """``on_panel_published`` is called from exactly one place in the package.
 
@@ -1865,14 +1926,17 @@ async def test_the_history_append_has_exactly_one_call_site():
     it is what clears the failure.
     """
     import ast
-    from pathlib import Path
 
-    import kiro_crew
+    import source_corpus
 
-    root = Path(kiro_crew.__file__).parent
+    root = source_corpus.src_root()
+    # Only files whose TEXT holds the identifier are parsed. `ast` cannot produce a
+    # call to a name the source does not contain, so the rest of the package cannot
+    # contribute a site, and parsing it all is the cost `source_corpus` exists to
+    # remove -- its corpus read is cached once per module rather than per test.
+    candidates = list(source_corpus.parsed_candidates(require_all=("on_panel_published",)))
     sites: list[str] = []
-    for path in sorted(root.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for path, _text, tree in candidates:
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -1887,7 +1951,15 @@ async def test_the_history_append_has_exactly_one_call_site():
                 # The MODULE, not the line: a line number turns every unrelated edit
                 # above the call into a failure of this pin. The COUNT is kept beside
                 # it so a second caller inside this same module is caught too.
-                sites.append(str(path.relative_to(root)))
+                #
+                # ``as_posix``, not ``str``: on a Windows shard the native rendering
+                # is backslash-separated and would never equal the literal below.
+                sites.append(path.relative_to(root).as_posix())
+
+    # Said out loud so a reader sees the scan reached something. A filter that matched
+    # nothing would leave ``sites`` empty, and an empty list is also what a package
+    # with no emitter at all looks like -- this pin must not read those two alike.
+    assert candidates, "the corpus filter matched no file, so this pin measured nothing"
 
     assert sites == ["dashboard/handlers/agent_panel.py"], (
         f"on_panel_published is called from {sites}; the publish order is the caller's "
