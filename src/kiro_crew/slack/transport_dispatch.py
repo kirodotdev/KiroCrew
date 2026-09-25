@@ -1206,6 +1206,11 @@ async def handle_message_transport(
         except Exception:
             pass
     finally:
+        # An approval window the driver never awaited -- the blocks went out and
+        # the turn then ended before the decider -- has no wait of its own to close
+        # it, so a later click would resolve a future nobody reads while the user
+        # is told their decision was applied.
+        SlackApprovalDecider.discard_session(session_key)
         # A turn that consumed the post-compaction flag but never landed
         # discarded the prompt carrying the re-injected context; put the flag
         # back so the next turn re-injects it.

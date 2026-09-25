@@ -190,6 +190,31 @@ class PendingApproval:
 _PENDING: dict[str, PendingApproval] = {}
 
 
+def adoptable_reservation(
+    pending: "asyncio.Future[bool] | None", loop: asyncio.AbstractEventLoop
+) -> "asyncio.Future[bool] | None":
+    """*pending* when this loop can still use it as a reservation, else ``None``.
+
+    A channel's approval registry is process-global and outlives any one event
+    loop, so a reservation a closed loop left behind stays reachable by key.
+    Awaiting it raises ``RuntimeError: attached to a different loop``, and its
+    lack of a result is not a decision either -- so from here it is not a
+    reservation at all, and the caller opens a fresh window instead.
+
+    Foreign-loop entries are refused whether or not they carry a result, because
+    a decision belongs to the turn that asked for it: a verdict recorded on a
+    loop that has ended cannot answer a request made after it.
+
+    Lives here rather than in each channel because a reservation's adoption rule
+    is one rule. Three copies of it is how the per-channel registries diverged.
+    """
+    if pending is None:
+        return None
+    if pending.get_loop() is not loop:
+        return None
+    return pending
+
+
 def _registry_key(session_key: str, request_id: str) -> str:
     return f"{session_key}\n{request_id}"
 

@@ -43,6 +43,7 @@ import time
 from typing import Any, Awaitable, Callable
 
 from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT, strip_control_comments
+from kiro_crew.messaging.approval import adoptable_reservation
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.outbound_files import (
     OutboundFile,
@@ -257,6 +258,13 @@ class SlackApprovalDecider:
     clicked; :meth:`__call__` (the ``TurnDriver`` decider) awaits that result.
     Registry is keyed by request id (stringified). ``session_key`` lets the
     interaction handler map a click back to its session (for per-session Trust).
+
+    The decision window opens when the prompt is rendered, not when the wait
+    starts: :meth:`reserve` opens it and ``__call__`` adopts it. So a click lands
+    inside the window from the moment the blocks are built, including across the
+    post that makes them visible. It closes at the decision, at the wait's
+    timeout, or at a :meth:`discard` / :meth:`discard_session` for a prompt that
+    never went out or was never awaited.
     """
 
     #: Process-global registry mapping request_id -> the decider currently
@@ -274,8 +282,26 @@ class SlackApprovalDecider:
         self.last_deny_cause = ""
         rid = str(getattr(event, "request_id", ""))
         key = _approval_registry_key(self.session_key, rid)
+        # Adopt the reservation opened when the prompt was rendered. The click may
+        # ALREADY have landed, in the gap between the blocks going out and this
+        # wait starting, in which case the reservation holds the user's decision
+        # and there is nothing left to await. Minting a fresh future here would
+        # discard that decision and deny when the window elapsed.
         loop = asyncio.get_running_loop()
-        fut: asyncio.Future[bool] = loop.create_future()
+        reserved = adoptable_reservation(self._futures.get(rid), loop)
+        if reserved is not None and reserved.done():
+            if reserved.cancelled() or reserved.exception() is not None:
+                # A torn-down reservation, not a decision. Open a fresh window
+                # rather than read it as consent or as a refusal.
+                reserved = None
+            else:
+                try:
+                    return bool(reserved.result())
+                finally:
+                    self._futures.pop(rid, None)
+                    if SlackApprovalDecider._REGISTRY.get(key) is self:
+                        SlackApprovalDecider._REGISTRY.pop(key, None)
+        fut: asyncio.Future[bool] = reserved if reserved is not None else loop.create_future()
         # _futures is per-decider, so keying by the bare rid is unambiguous
         # here; the process-global _REGISTRY must use the session-namespaced
         # key to avoid cross-session collisions (kiro-cli rids restart at 1).
@@ -293,6 +319,81 @@ class SlackApprovalDecider:
             self._futures.pop(rid, None)
             if SlackApprovalDecider._REGISTRY.get(key) is self:
                 SlackApprovalDecider._REGISTRY.pop(key, None)
+
+    def reserve(self, request_id: str | int) -> None:
+        """Open the decision window BEFORE the prompt is posted.
+
+        Called by the renderer as it renders the prompt, because ``TurnDriver``
+        dispatches ``PROMPT_CHOICE`` and only then awaits the decider: between the
+        blocks becoming visible in the thread and ``__call__`` registering, a click
+        that arrived found no decider in ``_REGISTRY``, so ``resolve_global``
+        reported it as already expired and the request denied itself when the
+        window elapsed. Reserving first means the window is open for the whole time
+        the buttons are clickable.
+
+        Registers the decider in the process-global registry too, since that is
+        what the interaction handler resolves and reads Trust's session through --
+        a reserved future nobody can reach would close no gap at all.
+
+        Never replaces a LIVE future, in either direction: a second reserve for one
+        request, or a reserve that follows the wait, keeps the object the waiter is
+        blocked on. Replacing it would leave that waiter on a future nobody
+        resolves. A DONE future IS replaced, so a decision left unawaited cannot be
+        adopted by the next request to reuse this id.
+
+        Inert off the event loop: a reservation is a promise to a wait that runs on
+        THIS loop, so without one there is no waiter to hold a window open for, and
+        a caller that cannot await the decider cannot be raced by a click.
+        """
+        rid = str(request_id)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        pending = adoptable_reservation(self._futures.get(rid), loop)
+        if pending is None or pending.done():
+            self._futures[rid] = loop.create_future()
+        SlackApprovalDecider._REGISTRY[_approval_registry_key(self.session_key, rid)] = self
+
+    def discard(self, request_id: str | int) -> None:
+        """Close a window whose prompt never went out (idempotent).
+
+        ``__call__`` clears its own entry in a ``finally``, but a renderer that
+        reserves and then fails to post has no wait to run it, and the driver
+        unwinds with the raise rather than reaching the decider. Without this the
+        reservation would outlive a prompt nobody saw, and a later click would
+        resolve a future nobody awaits while the user is told it worked.
+        """
+        rid = str(request_id)
+        self._futures.pop(rid, None)
+        key = _approval_registry_key(self.session_key, rid)
+        if SlackApprovalDecider._REGISTRY.get(key) is self:
+            SlackApprovalDecider._REGISTRY.pop(key, None)
+
+    @classmethod
+    def discard_session(cls, session_key: str) -> None:
+        """Drop *session_key*'s unawaited reservations at the end of its turn.
+
+        Covers the one case neither ``__call__`` nor :meth:`discard` can: the
+        prompt went out and the turn then ended before the driver reached the
+        decider -- a cancellation, or a failure between the two. No wait ever ran,
+        so nothing else closes that window, and a click landing in it would resolve
+        a future nobody awaits and be reported to the user as applied.
+
+        Drops only PENDING reservations, so a decision already delivered is left
+        alone, and matches on the namespaced prefix with its own ``:`` so one
+        session key cannot match another that merely starts the same way.
+        """
+        prefix = f"{session_key}:"
+        for key in [k for k in cls._REGISTRY if k.startswith(prefix)]:
+            dec = cls._REGISTRY.get(key)
+            if dec is None:
+                continue
+            rid = key.rsplit(":", 1)[-1]
+            fut = dec._futures.get(rid)
+            if fut is not None and not fut.done():
+                dec._futures.pop(rid, None)
+                cls._REGISTRY.pop(key, None)
 
     def resolve(self, request_id: str | int, approved: bool) -> bool:
         """Resolve a pending approval. Returns True iff a future was waiting."""
@@ -1313,12 +1414,28 @@ class SlackRenderer(Renderer):
         # only resolve THIS session's pending tool (kiro-cli rids restart at 1
         # per session — a bare id would collide across concurrent threads).
         session_key = self.decider.session_key if self.decider else ""
-        await self.slack.post_blocks(
-            self.channel,
-            build_approval_blocks(title, request_id, session_key),
-            "Tool approval requested",
-            self.thread_ts,
-        )
+        # Open the decision window BEFORE the blocks go out. The driver awaits the
+        # decider only after this returns, and the post below suspends, so a click
+        # landing in that gap would otherwise find no decider registered and be
+        # reported as an approval that already expired.
+        if self.decider is not None:
+            self.decider.reserve(request_id)
+        try:
+            await self.slack.post_blocks(
+                self.channel,
+                build_approval_blocks(title, request_id, session_key),
+                "Tool approval requested",
+                self.thread_ts,
+            )
+        except BaseException:
+            # The prompt never reached the thread, so nothing can be clicked and
+            # the driver unwinds with this raise rather than reaching the decider:
+            # no wait will run the ``finally`` that normally closes this window.
+            # Raised on, because swallowing it would leave the turn waiting out the
+            # whole window on an invisible prompt.
+            if self.decider is not None:
+                self.decider.discard(request_id)
+            raise
 
     async def on_compaction(self, context_usage_pct: float) -> None:
         # Best-effort: MUST NOT raise. Decoration only.
