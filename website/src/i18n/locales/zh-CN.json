@@ -6320,7 +6320,7 @@
       "nightly": "Nightly 版",
       "report_problem": "反馈问题",
       "report_problem_on_build": "反馈此 {{channel}} 的问题",
-      "request_feature_starts_agent": "开始一段聊天，由它起草你的请求，并在你确认后提交到 GitHub。会消耗你套餐的本月用量。"
+      "request_feature_starts_agent": "开始一段聊天，由它起草你的请求，并在你确认后提交到 GitHub。和任何一轮聊天一样，会消耗你套餐的本月用量。"
     },
     "fileCard": {
       "audio": "音频：{{name}}",
@@ -9803,7 +9803,7 @@
         "elsewhere_settings_hint": "“设置 → 对话”在主对话窗口里。请到那里更改默认模型。",
         "sign_in": "登录 Kiro",
         "sign_in_hint": "打开“设置 → 概览 → Kiro 登录”重新登录，然后重新发送消息。",
-        "feature_request_form": "打开功能请求表单",
+        "feature_request_form": "打开 GitHub 表单（不消耗本月用量）",
         "feature_request_form_hint": "本月用量已用完 — 可以改为通过此表单在 GitHub 上提交请求。此表单不经过代理：它会打开 GitHub 的 Issue 表单，由你自行填写，不消耗本月用量。",
         "session_start_repeat_hint": "代理会话已连续多次启动失败，继续只会再次执行同一次启动。请在终端运行 {{command}} 重启 gateway，然后重新发送消息。"
       },

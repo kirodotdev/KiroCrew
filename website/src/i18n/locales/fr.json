@@ -6518,7 +6518,7 @@
       "nightly": "Nightly",
       "report_problem": "Signaler un problème",
       "report_problem_on_build": "Signaler un problème sur cette version {{channel}}",
-      "request_feature_starts_agent": "Démarre une conversation qui rédige ta demande et la dépose sur GitHub une fois que tu l'as approuvée. Consomme le quota mensuel de ton forfait."
+      "request_feature_starts_agent": "Démarre une conversation qui rédige ta demande et la dépose sur GitHub une fois que tu l'as approuvée. Consomme le quota mensuel de ton forfait, comme tout tour de conversation."
     },
     "fileCard": {
       "audio": "Audio : {{name}}",
@@ -10079,7 +10079,7 @@
         "elsewhere_settings_hint": "Paramètres → Chat est dans la fenêtre de chat principale. Ouvrez-la pour changer le modèle par défaut.",
         "sign_in": "Se connecter à Kiro",
         "sign_in_hint": "Ouvrez Paramètres → Aperçu → Connexion Kiro, reconnectez-vous, puis renvoyez votre message.",
-        "feature_request_form": "Ouvrir le formulaire de demande de fonctionnalité",
+        "feature_request_form": "Ouvrir le formulaire GitHub (ne consomme pas de quota mensuel)",
         "feature_request_form_hint": "Ton quota mensuel est épuisé — dépose plutôt ta demande sur GitHub avec ce formulaire. Ce formulaire contourne l’agent : il ouvre le formulaire d’issue GitHub que tu remplis toi-même et ne consomme rien de ton quota mensuel.",
         "session_start_repeat_hint": "La session de l’agent n’a pas pu démarrer plusieurs fois de suite ; reprendre ne ferait que relancer le même démarrage. Redémarre le gateway depuis un terminal avec {{command}}, puis renvoie ton message."
       },

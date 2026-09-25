@@ -203,8 +203,15 @@ export interface ErrorCardProps {
   featureRequestFormUrl?: string
 }
 
+// No `shrink-0` and no `truncate`: every action sits in a flex row, and a
+// label longer than the card (the feature-request form's, which names its
+// destination and its cost, runs 44 chars in English and 62 in German) must
+// break into lines inside the card rather than run past its edge. The control
+// shrinks to its longest word and `text-balance` splits the label into two
+// even lines instead of a long line and a stray word. The icon beside the
+// label keeps its own `shrink-0`, so only the text gives.
 const ACTION_BTN =
-  'shrink-0 inline-flex items-center gap-2 text-[12px] leading-5 font-medium px-3 py-1 rounded-md border-none cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed transition-colors'
+  'inline-flex items-center gap-2 text-[12px] leading-5 font-medium text-balance px-3 py-1 rounded-md border-none cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed transition-colors'
 
 /** The restart hint with its command as a `<code>` chip. The command is
  *  interpolated verbatim (never translated) inside the `i18nT` call, and the

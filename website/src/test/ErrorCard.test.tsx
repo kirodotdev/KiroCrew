@@ -265,6 +265,24 @@ describe('ErrorCard — feature request refused for a usage limit', () => {
     cleanup()
   })
 
+  it('lets the action wrap inside the card instead of running past its edge: the label is long by design (destination and cost; 62 chars in de), so the control may shrink and balance its lines', () => {
+    render(<ErrorCard content={prose} onContinue={() => undefined} featureRequestFormUrl={FEATURE_REQUEST_FORM_URL} />)
+    const link = screen.getByTestId('error-card-feature-request-form')
+    const classes = link.className.split(/\s+/)
+    // `shrink-0` on a flex item in the wrapping action row pins it at its full
+    // one-line width, so a card narrower than the label is overflowed, not
+    // wrapped. Without it the control shrinks to its longest word and the
+    // label breaks into lines.
+    expect(classes).not.toContain('shrink-0')
+    expect(classes).not.toContain('truncate')
+    expect(classes).not.toContain('whitespace-nowrap')
+    // Balanced lines: two similar halves, not one long line and one word.
+    expect(classes).toContain('text-balance')
+    // The icon beside the label keeps its size when the control shrinks.
+    expect(link.querySelector('svg')?.getAttribute('class') ?? '').toMatch(/\bshrink-0\b/)
+    cleanup()
+  })
+
   it('points at the repo\'s feature_request issue template, not a blank issue', () => {
     const url = new URL(FEATURE_REQUEST_FORM_URL)
     expect(url.origin + url.pathname).toBe('https://github.com/kirodotdev/KiroCrew/issues/new')
