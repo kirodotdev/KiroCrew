@@ -1001,26 +1001,126 @@ def _write_unit_order(path: Path, lines: tuple[str, ...]) -> None:
     and renamed over the name, which replaces a planted link rather than writing
     through it. Where the platform supports descriptor-relative writes the parent is
     PINNED first (``O_DIRECTORY | O_NOFOLLOW``), so a link planted at the directory
-    is refused too; elsewhere every ancestor and the name itself are screened with
-    :func:`platform_compat.is_link_or_junction`, which unlike ``is_symlink`` also
-    answers for a Windows directory junction -- the platform without descriptor-
-    relative writes is the one where junctions exist, so an ``islink``-only check
-    would leave that fallback with no boundary at all.
+    is refused too.
+
+    Elsewhere -- the platform with no descriptor-relative rename, which is also the
+    platform that has junctions -- the write still names the path, so the screen
+    alone is not enough: it answers about a NAME, and the write below resolves that
+    same name again. :func:`_hold_chain_no_follow` closes the gap by holding every
+    component of the parent open for as long as the write takes, so the object the
+    screen inspected is the object the write reaches. The name screens stay on top of
+    it: :func:`platform_compat.is_link_or_junction` unlike ``is_symlink`` also
+    answers for a Windows directory junction, and an ``islink``-only check would
+    leave this branch with no leaf boundary at all.
     Whole-file writes are cheap here: the file holds at most
     :data:`_MAX_ORDERED_UNITS` short lines.
     """
     content = "".join(f"{line}\n" for line in lines)
-    path.parent.mkdir(parents=True, exist_ok=True)
     if atomic_write_module.pinned_parent_replace_supported():
+        path.parent.mkdir(parents=True, exist_ok=True)
         parent_fd = platform_compat.pin_directory(path.parent)
         try:
             atomic_write(path, content, fsync=True, newline="", parent_dir_fd=parent_fd)
         finally:
             os.close(parent_fd)
         return
-    if platform_compat.is_link_or_junction(path) or platform_compat.first_linked_ancestor(path):
-        raise OSError(f"{path} is reached through a link; the unit order is not written through it")
-    atomic_write(path, content, fsync=True, newline="")
+    held = _hold_chain_no_follow(path.parent)
+    try:
+        if platform_compat.is_link_or_junction(path) or platform_compat.first_linked_ancestor(path):
+            raise OSError(
+                f"{path} is reached through a link; the unit order is not written through it"
+            )
+        atomic_write(path, content, fsync=True, newline="")
+    finally:
+        for fd in reversed(held):
+            try:
+                os.close(fd)
+            except OSError:
+                logger.debug("crew ledger: a held unit-order component would not close")
+
+
+def _hold_chain_no_follow(directory: Path) -> list[int]:
+    """Open every component of *directory* without following a link, and keep them open.
+
+    Returns the descriptors, outermost first, and the CALLER closes them. Holding
+    them is the whole point, so there is no context manager that could tempt a caller
+    into releasing them before the work they protect: the window this closes is
+    between the screen and the write, and a descriptor released at the end of the walk
+    protects nothing.
+
+    Each component is opened by :func:`platform_compat.pin_directory`, which opens a
+    reparse point AS ITSELF rather than following it, so a junction or symlink sitting
+    at a component fails the open instead of being traversed. That refusal is the
+    security property and it is atomic: no ``lstat`` verdict is taken and then trusted,
+    which matters on Windows because resolving a junction aimed at a UNC share is
+    itself an outbound authentication as this process, to a host whoever planted the
+    link chose. Components are walked ROOT-FIRST, so each open runs only after every
+    component above it is held and proved.
+
+    What the hold buys differs by platform, and the caller relies on both halves:
+
+    * Windows: the handle omits ``FILE_SHARE_DELETE``, so while it lives that
+      directory can be neither renamed nor deleted -- nor can anything above it. A
+      by-name write underneath therefore cannot be re-pointed after the walk.
+    * POSIX: the descriptor pins the inode the walk verified. A rename is not blocked
+      (POSIX has no such lock), which is why the POSIX callers write through the
+      descriptor instead; this branch exists for the platform that cannot.
+
+    A component that does not exist yet is CREATED, one component at a time, while
+    everything above it is held -- the routine case for a store whose directory a
+    reader may have taken away, and a whole ``mkdir(parents=True)`` would resolve the
+    missing tail by name outside any hold. A component that EXISTS and cannot be
+    opened refuses rather than becoming the boundary: treating it as one would leave a
+    resolution passing through an object nothing proved.
+
+    The walk starts at *directory*'s own root, so a caller must not hand it a UNC
+    path -- the first open would then be the outbound authentication this exists to
+    prevent. :func:`_unit_order_path` builds from :func:`data_home`, which is local.
+    """
+    held: list[int] = []
+    try:
+        for component in [*reversed(directory.parents), directory]:
+            held.append(_pin_or_create(component))
+    except BaseException:
+        for fd in reversed(held):
+            try:
+                os.close(fd)
+            except OSError:
+                logger.debug("crew ledger: a held unit-order component would not close")
+        raise
+    return held
+
+
+def _pin_or_create(component: Path) -> int:
+    """Hold *component* open without following a link, creating it if it is absent.
+
+    ``FileNotFoundError`` is the ONLY outcome that creates: every other ``OSError``
+    refuses. A link at the name reports something else on each platform -- POSIX
+    ``O_NOFOLLOW`` fails a symlink with ``ELOOP`` and a file with ``ENOTDIR``, and on
+    Windows the open succeeds and the reparse-point attribute read off the descriptor
+    raises -- so refusing everything but absence is what keeps both of them out.
+
+    A second writer creating the same component first is not an error: the retry pins
+    whatever is now at the name, and the pin is what decides whether it is admissible.
+    """
+    try:
+        return platform_compat.pin_directory(component)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise OSError(
+            f"{component} could not be held open; the unit order is not written under it"
+        ) from exc
+    try:
+        os.mkdir(component)
+    except FileExistsError:
+        pass
+    try:
+        return platform_compat.pin_directory(component)
+    except OSError as exc:
+        raise OSError(
+            f"{component} could not be held open; the unit order is not written under it"
+        ) from exc
 
 
 def crew_log_units(

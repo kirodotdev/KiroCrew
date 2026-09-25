@@ -3579,3 +3579,262 @@ def test_a_write_that_does_not_move_the_item_leaves_phase_off_the_event_line(tmp
         "implementing",
         "awaiting-ci",
     ]
+
+
+# ── the unit-order fallback holds its chain open across the write ───────────────
+#
+# The fallback branch is taken where there is no descriptor-relative rename, which
+# is Windows -- and Windows is also where a junction can be planted. It writes by
+# NAME, so a screen that answers about a name and a write that resolves that name
+# again are two separate resolutions. These pin that the components the screen
+# inspected are held open for as long as the write takes.
+#
+# What a POSIX host can prove is here: the walk opens each component no-follow,
+# refuses a real link on disk rather than consulting a stubbed verdict, holds every
+# descriptor across the write, and each held descriptor is the component the walk
+# screened. The other half -- that a Windows handle without FILE_SHARE_DELETE blocks
+# a rename of that directory and of everything above it -- is a property of
+# ``platform_compat.pin_directory`` and is not observable on a POSIX host, so none of
+# these claims it.
+
+
+def _fallback_only(monkeypatch):
+    """Take the by-name branch on a host that would otherwise write through a fd."""
+    from kiro_crew import atomic_write as atomic_write_module
+
+    monkeypatch.setattr(atomic_write_module, "pinned_parent_replace_supported", lambda: False)
+
+
+def test_the_unit_order_fallback_holds_every_component_open_across_the_write(tmp_path, monkeypatch):
+    """Every component of the parent is still open, and is still the object the walk
+    screened, at the moment the write runs.
+
+    Two separate claims, asserted from inside the write rather than after it, because
+    each fails for its own reason. LIFETIME: ``os.fstat`` on each descriptor the walk
+    returned must succeed -- descriptors closed at the end of the walk would satisfy an
+    after-the-fact check and protect nothing. IDENTITY: the ``st_dev``/``st_ino`` off
+    the descriptor must equal the pair read from the NAME, which is the comparison a
+    component swapped after the walk would break, and a descriptor that is open but
+    refers to some other object is not a hold of the path that was screened."""
+    crew, sid = _live_crew(tmp_path)
+    cid = crew["id"]
+    order = cs._unit_order_path(OWNER, REPO, cid, tmp_path)
+    _fallback_only(monkeypatch)
+
+    parent = order.parent
+    components = [*reversed(parent.parents), parent]
+    handed: list[int] = []
+    real_walk = cs._hold_chain_no_follow
+
+    def remember(directory):
+        fds = real_walk(directory)
+        handed.extend(fds)
+        return fds
+
+    checked: list[str] = []
+    real_write = cs.atomic_write
+
+    def write_with_the_chain_still_held(path, content, **kw):
+        assert len(handed) == len(components), "the walk held one descriptor per component"
+        for component, fd in zip(components, handed, strict=True):
+            try:
+                info = os.fstat(fd)
+            except OSError as exc:  # pragma: no cover - the mutation's path
+                raise AssertionError(f"{component} was not held open during the write") from exc
+            on_disk = os.stat(component)
+            assert (info.st_dev, info.st_ino) == (
+                on_disk.st_dev,
+                on_disk.st_ino,
+            ), f"the descriptor held for {component} is not that component"
+            checked.append(os.fspath(component))
+        return real_write(path, content, **kw)
+
+    monkeypatch.setattr(cs, "_hold_chain_no_follow", remember)
+    monkeypatch.setattr(cs, "atomic_write", write_with_the_chain_still_held)
+    cs._write_unit_order(order, (sid,))
+
+    assert order.read_text(encoding="utf-8").split() == [sid], "the write still landed"
+    assert checked == [os.fspath(c) for c in components], "every component was checked while held"
+    for fd in handed:
+        with pytest.raises(OSError):
+            os.fstat(fd)
+    assert parent.is_dir(), "the components outlive their descriptors"
+
+
+def test_the_unit_order_fallback_refuses_a_real_link_at_a_component(tmp_path, monkeypatch):
+    """A link planted at a component of the parent refuses the write, and nothing lands
+    in what the link points at.
+
+    The link is real and on disk, and the refusal comes from the OPEN rather than from
+    a separate verdict: the walk never takes an ``lstat`` answer and then trusts it,
+    which is what closes the window between the two. ``make_dir_link`` plants a
+    junction on Windows, so the case stays exercised on the platform that takes this
+    branch at all."""
+    crew, sid = _live_crew(tmp_path)
+    cid = crew["id"]
+    order = cs._unit_order_path(OWNER, REPO, cid, tmp_path)
+    _fallback_only(monkeypatch)
+
+    victim = tmp_path / "operator-dir"
+    victim.mkdir()
+    crews = order.parent
+    keep = crews.with_name(crews.name + ".keep")
+    crews.rename(keep)
+    make_dir_link(crews, victim)
+    try:
+        with pytest.raises(OSError, match="could not be held open"):
+            cs._write_unit_order(order, (sid,))
+        assert list(victim.iterdir()) == [], "nothing was written into the link's target"
+    finally:
+        cs.platform_compat.unlink_link_or_junction(crews)
+        keep.rename(crews)
+
+
+def test_the_unit_order_fallback_creates_a_missing_tail_one_component_at_a_time(
+    tmp_path, monkeypatch
+):
+    """A parent that is not there yet is created and written, and the components are
+    created OUTERMOST FIRST, one per step.
+
+    The routine case: a reader may have taken the store's directory away between the
+    call that built the path and this write. A whole ``mkdir(parents=True)`` would
+    resolve the missing tail by name outside any hold, so the walk creates one
+    component per step and pins each before descending -- pinned here by removing TWO
+    levels and reading the order they come back in. Only the distinct set is asserted
+    beyond that, because :func:`atomic_write` ensures its own parent idempotently and
+    that call is not the walk's."""
+    import shutil
+
+    crew, sid = _live_crew(tmp_path)
+    cid = crew["id"]
+    order = cs._unit_order_path(OWNER, REPO, cid, tmp_path)
+    _fallback_only(monkeypatch)
+
+    crews = order.parent
+    repo_dir = crews.parent
+    shutil.rmtree(repo_dir)
+    assert not repo_dir.exists(), "two levels really are missing"
+
+    created: list[str] = []
+    real_mkdir = os.mkdir
+
+    def record(path, *a, **kw):
+        created.append(os.fspath(path))
+        return real_mkdir(path, *a, **kw)
+
+    monkeypatch.setattr(cs.os, "mkdir", record)
+    cs._write_unit_order(order, (sid,))
+
+    assert created[:2] == [
+        str(repo_dir),
+        str(crews),
+    ], f"outermost first, one per step; got {created}"
+    assert set(created) == {str(repo_dir), str(crews)}, "no other component was created"
+    assert order.read_text(encoding="utf-8").split() == [sid], "and the write landed"
+
+
+def test_the_unit_order_fallback_refuses_a_component_it_cannot_open(tmp_path, monkeypatch):
+    """A component that EXISTS and cannot be opened refuses; it does not become the
+    boundary the walk stops at.
+
+    Stopping there would leave the write resolving the rest of the path through an
+    object nothing proved, which is the shape being removed -- so the refusal is the
+    correct answer even though it is stricter than the by-name write was. The failure
+    is injected at the pin for the ONE component under test, so the rest of the walk
+    is the real one."""
+    crew, sid = _live_crew(tmp_path)
+    cid = crew["id"]
+    order = cs._unit_order_path(OWNER, REPO, cid, tmp_path)
+    _fallback_only(monkeypatch)
+
+    crews = order.parent
+    order.parent.mkdir(parents=True, exist_ok=True)
+    real_pin = cs.platform_compat.pin_directory
+
+    def refuse_that_one(component):
+        if Path(component) == crews:
+            raise PermissionError(13, "permission denied", os.fspath(component))
+        return real_pin(component)
+
+    monkeypatch.setattr(cs.platform_compat, "pin_directory", refuse_that_one)
+    with pytest.raises(OSError, match="could not be held open"):
+        cs._write_unit_order(order, (sid,))
+    assert not order.exists(), "an unopenable component wrote nothing"
+
+
+def test_the_unit_order_fallback_writes_an_ordinary_file_and_replaces_it(tmp_path, monkeypatch):
+    """The clean case: an ordinary parent and an ordinary file still write, and a
+    second write REPLACES the first rather than appending to it.
+
+    A hardening change that widened the refusal surface would show up here, and the
+    replacement half is what the fold depends on -- a unit recorded twice must appear
+    once."""
+    crew, sid = _live_crew(tmp_path)
+    cid = crew["id"]
+    other = _unit(cid)
+    order = cs._unit_order_path(OWNER, REPO, cid, tmp_path)
+    _fallback_only(monkeypatch)
+
+    cs._write_unit_order(order, (sid,))
+    assert order.read_text(encoding="utf-8") == f"{sid}\n"
+    first = order.stat()
+
+    cs._write_unit_order(order, (other, sid))
+    assert order.read_text(encoding="utf-8") == f"{other}\n{sid}\n", "replaced, not appended"
+    assert order.stat().st_ino != first.st_ino, "replaced by rename, not written in place"
+
+
+def test_the_unit_order_fallback_keeps_the_name_screens_on_top_of_the_hold(tmp_path, monkeypatch):
+    """The junction-aware name screens still refuse, and still run inside the hold.
+
+    The hold settles the components; it does not make the existing fail-closed screens
+    redundant, and removing one of them would be a security regression dressed as a
+    simplification. Pinned by reporting a link through each predicate in turn while
+    the filesystem holds plain directories."""
+    crew, sid = _live_crew(tmp_path)
+    cid = crew["id"]
+    order = cs._unit_order_path(OWNER, REPO, cid, tmp_path)
+    _fallback_only(monkeypatch)
+
+    monkeypatch.setattr(
+        cs.platform_compat, "is_link_or_junction", lambda p: os.fspath(p) == os.fspath(order)
+    )
+    with pytest.raises(OSError, match="reached through a link"):
+        cs._write_unit_order(order, (sid,))
+
+    monkeypatch.setattr(cs.platform_compat, "is_link_or_junction", lambda p: False)
+    monkeypatch.setattr(cs.platform_compat, "first_linked_ancestor", lambda p: str(order.parent))
+    with pytest.raises(OSError, match="reached through a link"):
+        cs._write_unit_order(order, (sid,))
+    assert not order.exists(), "neither refusal wrote the file"
+
+
+def test_the_pinned_parent_branch_is_unchanged_on_a_posix_host(tmp_path):
+    """Where a descriptor-relative rename exists, the write goes through the pinned
+    parent and the held walk is not used at all.
+
+    POSIX production takes this branch, so this is the pin that says POSIX behaviour
+    did not move: the walk is reached only through the by-name fallback."""
+    from kiro_crew import atomic_write as atomic_write_module
+
+    if not atomic_write_module.pinned_parent_replace_supported():
+        pytest.skip("this host has no descriptor-relative rename; the fallback is the only path")
+
+    crew, sid = _live_crew(tmp_path)
+    cid = crew["id"]
+    order = cs._unit_order_path(OWNER, REPO, cid, tmp_path)
+
+    walked: list[str] = []
+    real_walk = cs._hold_chain_no_follow
+
+    def note(directory):
+        walked.append(os.fspath(directory))
+        return real_walk(directory)
+
+    cs._hold_chain_no_follow = note  # noqa: B010 - restored below
+    try:
+        cs._write_unit_order(order, (sid,))
+    finally:
+        cs._hold_chain_no_follow = real_walk
+    assert walked == [], "the pinned-parent branch must not take the by-name walk"
+    assert order.read_text(encoding="utf-8").split() == [sid]
