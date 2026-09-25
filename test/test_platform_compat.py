@@ -7458,5 +7458,5 @@ class TestStripExtendedLengthPrefix:
             return real(path)
 
         monkeypatch.setattr(pc, "strip_extended_length_prefix", record)
-        workflow_memory._allocator_path(tmp_path / "run-ids.json")
+        workflow_memory._allocator_path(tmp_path / "run-ids.json", tmp_path)
         assert calls, "workflow_memory did not reach the shared fold"

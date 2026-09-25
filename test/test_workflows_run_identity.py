@@ -215,7 +215,7 @@ def test_crash_before_enablement_can_finish_initialization(existing_counter):
     root.mkdir(parents=True)
     (root / ".run-id.lock").touch()
     if existing_counter:
-        _write_run_high_water(root / ".run-id.json", 8)
+        _write_run_high_water(root / ".run-id.json", 8, root.parent)
     assert allocate_run_id() == ("wf_000009" if existing_counter else "wf_000001")
     assert (root / ".run-id.lock").read_bytes() == b"1"
 
@@ -472,3 +472,143 @@ def test_invalid_witness_never_resets_counter():
     (_allocator_root() / ".run-id.lock").write_bytes(b"2")
     with pytest.raises(WorkflowMemoryError, match="witness"):
         allocate_run_id()
+
+
+@pytest.fixture
+def linked_default_home(tmp_path, monkeypatch, request):
+    """The default data home reached THROUGH a link, as an operator's layout has it.
+
+    ``home``: ``$HOME`` itself is a link (``/home/u -> /local/home/u`` on a cloud
+    desktop). ``crew``: the data home ``~/.kiro/crew`` is a link onto another disk.
+    Both sit at or above the workflows directory, so a link there is the
+    operator's deployment choice, the same two layouts ``atomic_write``'s
+    parent-link guard documents as supported. ``KIROCREW_HOME`` is dropped
+    because its override branch resolves the path and never had this bug; the
+    memoised default home is reset with it so the test reads its own home.
+
+    Returns ``(lexical_root, real_root)`` -- the workflows directory as named
+    through the link, and where it really lives.
+    """
+    from conftest import make_dir_link
+    from kiro_crew.config import paths as config_paths
+
+    real_home = tmp_path / "home-real"
+    real_home.mkdir()
+    if request.param == "home":
+        home = tmp_path / "home-link"
+        make_dir_link(home, real_home)
+        real_crew = real_home / ".kiro" / "crew"
+    else:
+        home = real_home
+        (home / ".kiro").mkdir()
+        real_crew = tmp_path / "another-disk"
+        real_crew.mkdir()
+        make_dir_link(home / ".kiro" / "crew", real_crew)
+    monkeypatch.delenv("KIROCREW_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setattr(config_paths, "_resolved_home", None)
+    monkeypatch.setattr(config_paths, "_config_dir_memo", None)
+    return home / ".kiro" / "crew" / "workflows", real_crew / "workflows"
+
+
+@pytest.mark.parametrize("linked_default_home", ["home", "crew"], indirect=True)
+def test_workflow_allocator_allocates_under_a_linked_data_home(linked_default_home):
+    lexical, real = linked_default_home
+    assert _allocator_root() == lexical
+    assert lexical.resolve() != lexical
+
+    assert allocate_run_id() == "wf_000001"
+    assert allocate_run_id() == "wf_000002"
+    assert (real / ".run-id.lock").read_bytes() == b"1"
+    assert (real / ".run-id.json").read_text(encoding="utf-8") == '{"version": 1, "high_water": 2}'
+
+
+@pytest.mark.parametrize("linked_default_home", ["home"], indirect=True)
+@pytest.mark.parametrize("name", [".run-id.lock", ".run-id.json"])
+def test_linked_data_home_still_refuses_a_planted_file_link(linked_default_home, tmp_path, name):
+    """The trusted link at ``$HOME`` does not extend trust to the allocator's files."""
+    from kiro_crew.workflow_memory import WorkflowMemoryError
+
+    _, real = linked_default_home
+    assert allocate_run_id() == "wf_000001"
+    path = real / name
+    original = path.read_bytes()
+    path.unlink()
+    outside = tmp_path / "outside"
+    outside.write_bytes(original)
+    try:
+        path.symlink_to(outside)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("real file symlinks require Windows Developer Mode")
+        raise
+    with pytest.raises(WorkflowMemoryError):
+        allocate_run_id()
+    assert outside.read_bytes() == original
+
+
+@pytest.mark.parametrize("linked_default_home", ["home"], indirect=True)
+def test_linked_data_home_still_refuses_a_redirected_workflows_dir(linked_default_home, tmp_path):
+    from conftest import make_dir_link
+    from kiro_crew.workflow_memory import WorkflowMemoryError
+
+    lexical, real = linked_default_home
+    real.parent.mkdir(parents=True, exist_ok=True)
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    make_dir_link(real, foreign)
+    with pytest.raises(WorkflowMemoryError, match="redirected"):
+        allocate_run_id()
+    assert not list(foreign.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_admission_errors_name_allocator_failures_and_log_them(caplog):
+    import logging
+
+    from kiro_crew.workflow_memory import WorkflowAllocatorError, admission_errors
+
+    @admission_errors
+    async def start():
+        try:
+            raise OSError("disk says no")
+        except OSError as exc:
+            raise WorkflowAllocatorError("Workflow allocator I/O failed") from exc
+
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.workflow_memory"):
+        result = await start()
+    assert result["ok"] is False
+    assert result["admission_rejected"] is True
+    assert result["code"] == "workflow_allocator_unavailable"
+    assert "Workflow allocator I/O failed" in result["error"]
+    assert result["errors"] == [result["error"]]
+    assert "Global fallback" not in result["error"]
+    assert "disk says no" not in result["error"]
+    logged = [record.getMessage() for record in caplog.records]
+    assert any(
+        "Workflow allocator I/O failed" in line and "disk says no" in line for line in logged
+    )
+
+
+@pytest.mark.asyncio
+async def test_admission_errors_keep_the_memory_refusal_text_and_log_the_cause(caplog):
+    import logging
+
+    from kiro_crew.workflow_memory import WorkflowMemoryError, admission_errors
+
+    @admission_errors
+    async def start():
+        raise WorkflowMemoryError("Workflow caller and delivery memory must match")
+
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.workflow_memory"):
+        result = await start()
+    assert result == {
+        "ok": False,
+        "error": "Workflow memory is unavailable; no Global fallback was used.",
+        "errors": ["Workflow memory is unavailable; no Global fallback was used."],
+        "code": "workflow_memory_unavailable",
+        "admission_rejected": True,
+    }
+    assert any("must match" in record.getMessage() for record in caplog.records)
