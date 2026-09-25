@@ -961,7 +961,7 @@ carry **metadata only** — the probe never emits transcript text:
 
 ```
 🔔 <key>  <age>s <TAG> i=<index> d=<digest12>
-BANNED pid=<pid> rule=<regex> cwd=fleet|unknown age=<secs|?>s scope=suite|paths|unknown cmd=<program,flags,+withheld>
+BANNED pid=<pid> rule=<regex|argv:<shape>> cwd=fleet|unknown age=<secs|?>s scope=suite|paths|unknown cmd=<program,flags,+withheld>
 OK <n> watched, <m> fired | load/cpu <x> (ok|hot) | mem <n>G | banned <n> | foreign <n> | deliver init-timeout <a>, watchdog <b>
 ```
 
@@ -978,11 +978,29 @@ included — `-n0` prints as `-n`, because a custom rule can point this scan at 
 program whose `-n` value is a numeric secret and nothing tells that apart from a
 worker count. Recognised means drawn from a fixed list, so a program or long option
 the list does not name is counted rather than printed — a word that looks like a
-program name is also exactly what an opaque credential looks like. An inline
+program name is also exactly what an opaque credential looks like. One program
+spelling is recognised by SHAPE instead: a versioned pytest alias, which prints as
+the fixed label `pytest-<version>` or `py.test-<version>` rather than as itself, so
+the version it carried never reaches the line. An inline
 `KEY=value` in front of the command is withheld whole. Read it before stopping
 anyone — it is what separates a real uncapped run from a command that merely names
 one, and no argv is echoed. When the program itself is withheld, `rule=` is what
 identifies the command: it is the rule that selected this pid.
+
+`rule=` carries one of two vocabularies. A value that reads as a regex is the
+banned-process rule whose match selected the pid. A value prefixed `argv:` names a
+shape the probe recognises from the argv tokens instead, because the joined command
+line cannot express it: `argv:pytest-runner-uncapped` is a runner spelling that is
+also a well-formed filename or path component — a versioned alias (`pytest-3`),
+`py.test`, or `pytest.exe` — standing in the program position with no numeric worker
+cap among its own arguments. There is no regex to look up for such a row, so `cmd=`
+is the corroborating field: the runner name prints there, because an `argv:` row has
+no rule text to identify it by. An `argv:` shape is offered whatever the rule list
+holds, because rule ORIGIN is what carries built-in authority here — the same basis
+the wrapper exemption is written against — so a `banned_process_res` edit cannot
+switch it off. What can is the named opt-out `argv_runner_detection: false`, which
+disables this shape and nothing else. The two settings are independent: replacing the
+rule list leaves the shape on, and disabling the shape leaves the rules in force.
 
 The handled set keeps the last dispositioned PAYLOAD report as `settled`, so a
 later `IDLE` or `NOPROGRESS` mark on the same session cannot resurrect a ruling

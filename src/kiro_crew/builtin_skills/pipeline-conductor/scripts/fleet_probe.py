@@ -19,7 +19,8 @@ Config (JSON):
       "banned_process_res": [...], # cmdline regexes for banned ops (optional)
       "init_timeout_res": [...],   # initialize-timeout tails (optional)
       "watchdog_res": [...],       # turn-ended-by-stall-watchdog tails (optional)
-      "fleet_worktrees": [...]     # absolute roots this fleet owns (optional)
+      "fleet_worktrees": [...],    # absolute roots this fleet owns (optional)
+      "argv_runner_detection": true # false switches OFF the argv-side runner shape
     }
 
 Every regex key is validated at load time: a bad pattern is malformed config
@@ -66,8 +67,8 @@ Metadata only, by design: transcript-derived text never appears in the output,
 so no private session content crosses into the caller's context whatever keys
 the config watches. Content, when a ruling needs it, is read through the
 workspace-authorized session tools.
-    BANNED pid=<pid> rule=<regex> cwd=fleet|unknown age=<secs|?>s scope=suite|paths|unknown
-       cmd=<program,flags,+withheld>
+    BANNED pid=<pid> rule=<regex|argv:<shape>> cwd=fleet|unknown age=<secs|?>s
+       scope=suite|paths|unknown cmd=<program,flags,+withheld>
     OK <n> watched, <m> fired | load/cpu <x> (<posture>) | mem <G>G
        | banned <k> | foreign <k> | deliver init-timeout <a>, watchdog <b>
 
@@ -349,7 +350,9 @@ DEFAULT_BANNED_RES = (
 )
 
 #: Token bases that identify the test runner inside a ``/proc`` argv.
-_RUNNER_BASES = frozenset({"pytest", "pytest.exe", "py.test", "vitest", "vitest.cmd"})
+_RUNNER_BASES = frozenset(
+    {"pytest", "pytest.exe", "py.test", "py.test.exe", "vitest", "vitest.cmd"}
+)
 
 #: A versioned runner alias, as a whole argv TOKEN base: ``pytest-3``,
 #: ``pytest-3.12``, ``py.test-3``. Distributions install the runner under this name
@@ -366,14 +369,50 @@ _RUNNER_BASES = frozenset({"pytest", "pytest.exe", "py.test", "vitest", "vitest.
 #: on the argv side only, by ``_argv_is_uncapped_argv_only_runner``.
 _ALIAS_RUNNER_BASE_RE = re.compile(r"^(?:pytest|py\.test)-\d+(?:\.\d+)*(?:\.exe)?$")
 
-#: The other runner spelling the joined-line rule cannot express. ``py.test`` is the
-#: legacy entry point and is already in ``_RUNNER_BASES`` -- this file treats it as a
-#: runner everywhere the argv is read -- but no rule above spells it, so an uncapped
-#: ``py.test test/`` is reported by neither. It is admitted on the argv side with the
-#: versioned alias because it needs the same two things and for the same reason: the
-#: dot makes it a plausible FILENAME (``py.test.log``), so only its position separates
-#: an invocation from data.
-_ARGV_ONLY_RUNNER_BASES = frozenset({"py.test", "py.test.exe"})
+#: The two labels an alias is PRINTED as. The pattern above is a shape, so the text it
+#: admits is caller-chosen past the stem; a label names the stem and nothing else, which
+#: is what keeps the printed program vocabulary a closed set.
+_ALIAS_PROGRAM_LABELS = (("pytest-", "pytest-<version>"), ("py.test-", "py.test-<version>"))
+
+
+def _alias_program_label(canonical: str) -> str | None:
+    """The fixed label for a versioned alias, or None when *canonical* is not one.
+
+    Read by the command redactor instead of the token. A shape test cannot bound what it
+    admits past its stem -- ``pytest-123456`` satisfies the pattern exactly as
+    ``pytest-3.12`` does -- so echoing the token would put an arbitrary caller-chosen
+    string on a line that lands in the conductor's context. The stem is the part that
+    identifies the invocation, and there are only two of them.
+    """
+    if not _ALIAS_RUNNER_BASE_RE.match(canonical):
+        return None
+    for stem, label in _ALIAS_PROGRAM_LABELS:
+        if canonical.startswith(stem):
+            return label
+    return None
+
+
+#: The other runner spellings the joined-line rule cannot express. ``py.test`` is the
+#: legacy entry point and ``pytest.exe`` the Windows one; both are already in
+#: ``_RUNNER_BASES`` -- this file treats them as runners everywhere the argv is read --
+#: but no rule above spells either, because the dot defeats the token boundary the rule
+#: anchors on. They are admitted on the argv side with the versioned alias because they
+#: need the same two things and for the same reason: the dot makes each a plausible
+#: FILENAME (``py.test.log``, ``pytest.exe.bak``), so only position separates an
+#: invocation from data.
+#:
+#: ``vitest.cmd`` is in ``_RUNNER_BASES`` and is deliberately NOT admitted here. Its
+#: rule above spells an uncapped run as ``vitest run`` with nothing following it, not as
+#: a missing ``-n``, so routing it through ``_argv_declares_a_worker_cap`` -- which reads
+#: pytest's cap grammar -- would report a bounded vitest run as unbounded.
+_ARGV_ONLY_RUNNER_BASES = frozenset({"py.test", "py.test.exe", "pytest.exe"})
+
+
+#: Shapes a launcher consumes as part of its OWN grammar, so that a token carrying one
+#: is not the command's subject. Three qualify: an option, a bare number (an option's
+#: value, as in ``timeout 900`` and ``nice -n 10``), and a ``KEY=value`` assignment,
+#: which is ``env``'s whole operand grammar.
+_ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 
 #: Options that consume the FOLLOWING token as their value, so that token must not
@@ -450,8 +489,24 @@ def _runner_token_index(argv: list[str]) -> int | None:
     wear the same spelling. None means no runner token stands alone -- a wrapper, an
     unknown name, or a module flag glued to the runner -- and both callers answer
     conservatively rather than guessing from a position they could not find.
+
+    A token that cannot be a program NAME is skipped before the question is asked at
+    all, and that is load bearing rather than tidy. ``_token_base`` reduces a token to
+    its last path component, so an option's or an assignment's VALUE reduces to one too:
+    ``TMPDIR=/tmp/pytest-of-ci/pytest-3`` becomes ``pytest-3``, which the runner
+    vocabulary admits. Answering with that position hands both callers the wrong span --
+    the cap reader then sees a LAUNCHER's ``-n 10`` as the run's own cap and a genuinely
+    uncapped run goes unreported, and the scope reader sees the runner's path as a target
+    and calls a whole-suite run ``paths``. Every pytest temp directory is named after the
+    runner, so the shape is ordinary rather than contrived.
+
+    This also makes ``_is_runner_base``'s own precondition true: it is asked only about a
+    token that could stand alone in argv, which is why it may admit the versioned alias
+    without a path component or a package name ever reaching it.
     """
     for index, token in enumerate(argv):
+        if token.startswith("-") or _ENV_ASSIGNMENT_RE.match(token) is not None:
+            continue
         if _is_runner_base(_token_base(token)):
             return index
     return None
@@ -675,8 +730,11 @@ def _redacted_command(cmd: str, span: tuple[int, int]) -> str:
       vocabulary -- the program's name is what identifies the command, while its
       directory is the part that leaks a checkout layout. The vocabulary is the point:
       a program-shaped word is the same text as a credential with no ``/`` and no
-      ``=`` in it, so a shape test here would echo whatever the command carried, and
-      an unrecognised program is counted instead. A token holding ``=`` is never a
+      ``=`` in it, so echoing whatever a shape test admitted would put a secret on the
+      line, and an unrecognised program is counted instead. A versioned alias is
+      RECOGNISED by a shape and PRINTED as a fixed label (``_alias_program_label``), so
+      what lands on the line is still drawn from a closed set: the digits the command
+      carried never appear. A token holding ``=`` is never a
       program name: it is an inline environment assignment, whose value can itself
       contain ``/``, so the ``=`` is tested BEFORE the directory is dropped --
       otherwise the tail of ``AWS_SECRET_ACCESS_KEY=…/abc`` arrives as ``abc``;
@@ -738,16 +796,32 @@ def _redacted_command(cmd: str, span: tuple[int, int]) -> str:
         name = bare.split("=", 1)[0]
         if len(kept) >= _MAX_CMD_TOKENS:
             withheld += 1
-        elif canonical in _RUNNER_BASES or (
-            index == 0 and (canonical in _LAUNCHER_BASES or _PYTHON_BASE_RE.match(canonical))
+        elif (
+            _is_runner_base(canonical)
+            or canonical in _ARGV_ONLY_RUNNER_BASES
+            or (index == 0 and (canonical in _LAUNCHER_BASES or _PYTHON_BASE_RE.match(canonical)))
         ):
             # The CANONICAL form, not the token as read. What this branch establishes
-            # is that the token equals an entry of ``_RUNNER_BASES``, ``_LAUNCHER_BASES``
-            # or the ``_PYTHON_BASE_RE`` family, case-insensitively -- so the entry is
-            # what it has licence to print. Echoing the token instead would put its
-            # casing on the line, and casing is the one caller-chosen thing left in a
-            # word already known to be one of those.
-            keep(canonical)
+            # is that the token is one this file calls a runner -- an entry of
+            # ``_RUNNER_BASES``, an ``_ARGV_ONLY_RUNNER_BASES`` spelling, or the
+            # versioned alias ``_ALIAS_RUNNER_BASE_RE`` admits -- or an entry of
+            # ``_LAUNCHER_BASES`` or the ``_PYTHON_BASE_RE`` family, case-insensitively.
+            # The alias belongs here for the same reason the rest do: the row this file
+            # emits for it names no joined-line rule, so the program name is the only
+            # thing that separates a real uncapped run from a command that merely names
+            # one. Echoing the token instead would put its casing on the line, and
+            # casing is the one caller-chosen thing left in a word already known to be
+            # one of those.
+            #
+            # An alias is the exception, and it is printed as a fixed LABEL rather than
+            # as itself. ``_ALIAS_RUNNER_BASE_RE`` is a SHAPE, so what it admits is
+            # ``pytest-`` or ``py.test-`` followed by any digits -- and a secret of that
+            # shape is a secret this branch would otherwise echo onto the line and into
+            # the conductor's context. The label says which stem fired, which is the
+            # whole reason the program name is printed, and carries none of the digits.
+            # That also keeps the printed vocabulary genuinely FIXED, as the guarantee
+            # above states: every word this branch can emit is one of a closed set.
+            keep(_alias_program_label(canonical) or canonical)
         elif name in _SAFE_LONG_FLAG_NAMES or _SAFE_SHORT_FLAG_RE.match(name):
             keep(name)
         elif not assigned and _SAFE_SHORT_FLAG_RE.match(bare[:2]):
@@ -1323,6 +1397,25 @@ def _trusted_program_base(proc_entry: Path) -> str | None:
     Read only for a pid whose cmdline ALREADY matched a banned rule, so this is one
     extra syscall per match -- a handful per scan -- not one per process.
     """
+    normalized = _kernel_program_path(proc_entry)
+    if normalized is None:
+        return None
+    if normalized.rpartition("/")[0] not in _TRUSTED_PROGRAM_DIRS:
+        return None
+    return _basename(normalized)
+
+
+def _kernel_program_path(proc_entry: Path) -> str | None:
+    """Normalised target of ``/proc/<pid>/exe``, or None when the link will not read.
+
+    The kernel maintains the link and the process cannot rewrite it, so this is the
+    only answer to "what binary is this" that ``argv[0]`` cannot contradict. It is
+    kept separate from the directory gate above because the two callers ask different
+    questions of the same link: a SHELL's basename outside a system directory is a
+    claim about a file anybody could have placed there, while a RUNNER's basename is
+    the same fact wherever the binary sits -- a venv's own ``bin`` is the ordinary
+    home of one.
+    """
     try:
         target = os.readlink(proc_entry / "exe")
     except OSError:
@@ -1343,9 +1436,7 @@ def _trusted_program_base(proc_entry: Path) -> str | None:
     # ``pytest``, which is reported exactly as before.
     if normalized.endswith(_PROCFS_DELETED_MARKER):
         normalized = normalized[: -len(_PROCFS_DELETED_MARKER)]
-    if normalized.rpartition("/")[0] not in _TRUSTED_PROGRAM_DIRS:
-        return None
-    return _basename(normalized)
+    return normalized
 
 
 def _is_shell_command_wrapper(argv: list[str], exe_base: str | None) -> bool:
@@ -1517,22 +1608,68 @@ ARGV_RUNNER_RULE_LABEL = "argv:pytest-runner-uncapped"
 _BUILTIN_SHAPES = frozenset(DEFAULT_BANNED_RES) | {ARGV_RUNNER_RULE_LABEL}
 
 
-def _argv_only_runner_index(argv: list[str]) -> int | None:
-    """Where a runner spelling the joined-line rule cannot express stands, or None.
+def _argv_only_runner_indices(argv: list[str]) -> list[int]:
+    """EVERY position holding a runner spelling the joined-line rule cannot express.
 
-    Two spellings qualify -- a versioned alias and ``py.test`` -- and they share the
-    property that makes this an argv question: each one is also a well-formed path
-    component or filename, so nothing but its position separates the invocation from
-    the data.
+    Two categories qualify -- a versioned alias (``pytest-3``, ``pytest-3.12``,
+    ``py.test-3``, ``pytest-3.exe``) and the dotted plain spellings ``py.test``,
+    ``py.test.exe`` and ``pytest.exe`` -- and every one shares the property that makes
+    this an argv question: each is also a well-formed path component or filename, so
+    nothing but its position separates the invocation from the data.
+
+    All of them, not the first, because that property cuts both ways: an ``env``
+    assignment whose value ends in a pytest temp path reduces to an alias-shaped base and
+    can stand in FRONT of a genuine run. Answering only the first candidate would let
+    ``env TMPDIR=/var/tmp/pytest-of-ci/pytest-3 pytest-3 test/`` be decided by the
+    assignment and hide the uncapped runner two tokens later.
     """
+    found = []
     for index, token in enumerate(argv):
         base = _token_base(token)
         if base in _ARGV_ONLY_RUNNER_BASES or _ALIAS_RUNNER_BASE_RE.match(base):
-            return index
-    return None
+            found.append(index)
+    return found
 
 
-def _stands_in_program_position(argv: list[str], index: int) -> bool:
+#: Launchers whose whole job is to adjust the environment and then exec the command that
+#: follows, so the command's own first word is the program. These are the only launchers
+#: a runner spelling may stand IMMEDIATELY behind.
+#:
+#: Every other entry of ``_LAUNCHER_BASES`` interposes a subject of its own -- a target,
+#: a subcommand, a script -- and ``make pytest-3.12`` is why that distinction has to be
+#: made at the immediate position too, not only after an operand. A per-interpreter test
+#: matrix spelling its targets ``pytest-3.11``, ``pytest-3.12`` is an ordinary Makefile,
+#: each target wraps a CAPPED run, and admitting it emits a fleet-owned line against a
+#: healthy worker with no automatic recovery.
+#:
+#: The split is small and stable because it is the same question the operand allow-list
+#: asks, one position earlier: a launcher is transparent exactly when its own grammar is
+#: options, numbers and assignments and everything after that grammar is the command.
+_TRANSPARENT_LAUNCHER_BASES = frozenset({"env", "nice", "timeout", "xvfb-run"})
+
+
+def _is_launcher_own_operand(token: str) -> bool:
+    """Is *token* part of the LAUNCHER's own grammar rather than the command's subject?
+
+    Three shapes are: an option, a bare number (an option's value, as in ``timeout 900``
+    and ``nice -n 10``), and a ``KEY=value`` assignment, which is ``env``'s whole operand
+    grammar. Anything else is a word the launcher will run or hand on -- a subcommand
+    (``npm run``, ``poetry run``, ``make clean``) or a script (``coverage run worker.py``)
+    -- so the command already has a subject and a runner spelling after it is that
+    subject's argument.
+
+    Naming what MAY be skipped is the point, not an accident of ordering. A deny-list of
+    suspicious shapes has to enumerate every way a program can be spelled and silently
+    accepts the ordinary word it missed; this declines an operand it does not recognise.
+    The cost is a missed alias run behind a launcher whose grammar is not described here,
+    which is the same direction this file already takes for a launcher nobody listed.
+    """
+    return token.startswith("-") or token.isdigit() or _ENV_ASSIGNMENT_RE.match(token) is not None
+
+
+def _stands_in_program_position(
+    argv: list[str], index: int, proc_entry: Path | None = None
+) -> bool:
     """Is the token at *index* the PROGRAM being run, rather than an argument to one?
 
     This is the whole reason these spellings are detected on the argv side. ``pytest-3``
@@ -1540,42 +1677,268 @@ def _stands_in_program_position(argv: list[str], index: int) -> bool:
     ``py.test`` is a real invocation and a plausible filename. In each case the strings
     are identical -- so what separates them is what stands in FRONT.
 
-    The token qualifies at index 0, or when the command opens with a launcher this
-    script recognises: a launcher's job is to run something else, so a runner after one
-    is still the program. Between the launcher and the runner, an option and a bare
-    operand are allowed (``nice -n 10 pytest-3``, ``timeout 900 pytest-3``), because a
-    launcher's own options are not the runner's -- ``_argv_declares_a_worker_cap``
-    already starts its scan after the runner's token for that same reason.
+    The token qualifies at ``argv[0]`` unless the kernel's own binary for this pid
+    contradicts it, or when the command opens with a launcher this script recognises: a
+    launcher's job is to run something else, so a runner after one is still the program
+    -- but only until the launcher's own subject appears.
+
+    An INTERPRETER is the sharp case, because it puts the program in two places and
+    neither is ``argv[0]``. Python runs exactly one thing -- the module named by ``-m``,
+    or the SCRIPT standing as its first non-option operand -- and every token after that
+    belongs to it. So the runner qualifies at exactly one index, located by
+    ``_python_execution_target`` from python's own grammar. The script spelling is
+    not an edge case: a packaged ``pytest-3`` has a python shebang, so the kernel's argv
+    for it is ``python3 /usr/bin/pytest-3 …`` and this is the ONLY position the ordinary
+    alias run ever occupies. ``python3 worker.py pytest-3`` declines because ``worker.py``
+    is the program and the alias follows it; ``python3 worker.py -m pytest-3`` declines
+    for the same reason even though an ``-m`` sits right in front of the alias, because a
+    script may spell its own options however it likes and python's selector came earlier;
+    and ``python3 cleanup.py /var/tmp/pytest-of-ci/pytest-3`` declines with an operand
+    that is a pytest temp path whose last component is alias-shaped exactly as every
+    pytest temp path's is.
+
+    A SCRIPT position carries one further requirement the module position does not. A
+    module name is resolved by the import machinery, so ``-m pytest-3`` can only mean an
+    installed distribution; a script is a path, and a path proves only that a file of
+    that name sits there. ``python3 tools/pytest-3`` and ``python3 pytest-3`` run a file
+    a checkout holds, named from the same namespace as the runner and indistinguishable
+    from it by name, so the script has to be an installed entry point -- see
+    ``_is_installed_entry_point``.
+
+    ``argv[0]`` itself is the one position with no token in front of it to read, so
+    there the process's own claim is checked against the kernel's binary; see
+    ``_kernel_program_confirms`` for why that link has to CONFIRM, so an unreadable
+    one declines rather than reporting on the process's own word.
+
+    Behind a TRANSPARENT launcher -- one whose job is to adjust the environment and then
+    exec what follows -- only that launcher's own grammar may stand in between; see
+    ``_is_launcher_own_operand``. ``timeout 900 pytest-3`` and ``nice -n 10 pytest-3``
+    qualify because a number is an option's value.
+
+    Every other launcher interposes a subject of its own and therefore never puts the
+    runner in the program position, at any distance. ``npm run build pytest-3`` and
+    ``coverage run worker.py pytest-3`` pass an alias to a subcommand's program, and
+    ``make pytest-3.12`` names a target: a per-interpreter test matrix spelling its
+    targets that way is an ordinary Makefile, each target wraps a run that caps its own
+    workers, and reporting it stops a healthy worker with no automatic recovery.
 
     An UNRECOGNISED first token disqualifies, and that is the direction to fail in
     here. ``ls /var/tmp/pytest-of-ci/pytest-3`` and ``pip install pytest-3`` are the
     two shapes the issue measured as the cost of matching the alias in the joined line,
     and both are disqualified by their own first token rather than by a pattern that has
-    to guess. The cost of declining is a missed alias run behind a launcher nobody
-    listed, which is exactly today's behaviour and loses nothing that exists now.
-
-    A recognised launcher whose OPERAND happens to be alias-shaped -- ``make pytest-3``
-    naming a make target -- does qualify. That target overwhelmingly runs the runner,
-    and over-reporting a pid an operator can dismiss is the direction this file already
-    chose over hiding an unbounded run for a whole session.
+    to guess. The cost of declining is a missed alias run behind a launcher this file
+    does not describe, which is the direction it already takes for a launcher nobody
+    listed at all -- and a missed line costs a signal, where a false one costs a turn.
     """
     if index == 0:
-        return True
+        return _kernel_program_confirms(proc_entry, argv[0])
     first = _token_base(argv[0])
-    if first not in _LAUNCHER_BASES and not _PYTHON_BASE_RE.match(first):
-        return False
-    # Everything between the launcher and the runner must look like the launcher's own
-    # option or operand, never a target: a path-shaped token there means the command
-    # already had a subject before the alias, so the alias is not the program.
-    for token in argv[1:index]:
-        if token.startswith("-"):
-            continue
-        if "/" in token or "\\" in token:
+    if _PYTHON_BASE_RE.match(first):
+        target = _python_execution_target(argv)
+        if target is None or target[0] != index:
             return False
-    return True
+        # ONLY the script position, and only an installed one. A MODULE name is what
+        # python's import machinery resolves, and no pytest module carries a version
+        # suffix -- the packaged ``pytest-3`` is a console SCRIPT, while the module has
+        # always been plain ``pytest``, which the joined-line rule already matches. So
+        # ``python -m pytest-3`` is not a pytest run at all: it runs a checkout-local
+        # ``pytest-3.py``, and reporting one stops a healthy worker. The cost of
+        # declining the module position is a missed ``python -m py.test``, a spelling
+        # modern pytest does not provide.
+        return target[1] == "script" and _is_installed_entry_point(argv[index], argv[0])
+    if first not in _TRANSPARENT_LAUNCHER_BASES:
+        return False
+    # The CANDIDATE has to be checked too, not only what stands in front of it. With the
+    # candidate at index 1 the slice ``argv[1:1]`` is empty and ``all([])`` is vacuously
+    # true, so ``env TMPDIR=/var/tmp/pytest-of-ci/pytest-3 make test`` would qualify: the
+    # assignment's last path component is alias-shaped for the same reason every pytest
+    # temp path's is, and the process is a ``make`` run with no pytest in it at all.
+    # An assignment is ``env``'s own grammar, which is precisely what
+    # ``_is_launcher_own_operand`` already says is not the command's subject.
+    return not _is_launcher_own_operand(argv[index]) and all(
+        _is_launcher_own_operand(token) for token in argv[1:index]
+    )
 
 
-def _argv_is_uncapped_argv_only_runner(argv: list[str]) -> bool:
+def _is_installed_entry_point(path: str, interpreter: str) -> bool:
+    """Is *path* a console script installed beside the interpreter that is running it?
+
+    Asked only of python's SCRIPT position, where the kernel's binary is the interpreter
+    and no ``/proc`` fact can say what the script is. Being in a directory NAMED ``bin``
+    is not evidence: any checkout can hold one, so a rule satisfied by the name reports
+    ``python3 <worktree>/bin/pytest-3`` -- a file the repository happens to carry -- and
+    stops a healthy worker over it.
+
+    What installing a console script actually does is write it into the same directory as
+    the interpreter it was installed for, because that is what an entry point IS: the
+    script's shebang names its neighbour. So the question is whether the interpreter is
+    there, and *interpreter* is the name ``argv[0]`` carries -- which for the shape this
+    matters for is written by the KERNEL, not chosen by the process: running
+    ``/usr/bin/pytest-3`` makes the kernel build ``argv`` from the script's shebang line.
+
+    That asks the filesystem for ONE named file, never for a directory's contents, which
+    is the same shape ``_venv_root`` already uses for ``pyvenv.cfg``. Deciding from the
+    installation rather than from a list of locations is what keeps the packaged run
+    reportable everywhere the interpreter really sits beside its scripts -- a system
+    prefix, a virtualenv and a version-manager prefix each do, so all three answer yes
+    without the rule naming any of them, and a host whose interpreter is a global shim is
+    not a special case at all.
+
+    A ``pip install --user`` is a KNOWN MISS, named here rather than claimed: it writes
+    the console script into ``~/.local/bin`` and no interpreter with it, so the shebang
+    names the base interpreter, this check looks for ``~/.local/bin/python3``, finds
+    nothing and declines. An uncapped run spelled that way emits no line. Confirming it
+    would mean reading the script's own shebang -- its CONTENTS, at a path an argument
+    supplied -- which is a wider surface than the directory listing this check replaced,
+    so the miss is accepted and stated instead of closed.
+
+    Both failure directions cost a signal rather than a turn. A RELATIVE path cannot be
+    resolved from here, because the probe's working directory is not the scanned
+    process's, so it declines; and a name the filesystem does not confirm declines too.
+    """
+    normalized = path.replace("\\", "/")
+    if not normalized.startswith("/"):
+        return False
+    neighbour = normalized.rpartition("/")[0]
+    # The raw basename, not `_basename`: that one lowercases for comparison against a
+    # vocabulary, while this is a filesystem lookup and a POSIX path is case sensitive.
+    program = interpreter.replace("\\", "/").rpartition("/")[2]
+    if not program:
+        return False
+    try:
+        return os.path.isfile(f"{neighbour}/{program}")
+    except OSError:
+        return False
+
+
+#: Single-letter ``python`` flags that carry no value, so a bundle of them stands
+#: between the interpreter and its script without being the script.
+#:
+#: Transcribed from CPython 3.12's ``python --help`` option list, which is the version to
+#: diff against: a flag a newer interpreter adds is unknown here, and an unknown option
+#: makes the grammar walk decline rather than guess, so a real run would go unreported
+#: until this set is widened. The direction is deliberate -- a missed line costs a signal
+#: where a guessed one costs a turn -- but it is a maintenance obligation, not a property.
+_PYTHON_FLAG_LETTERS = frozenset("bBdEhiIOPqRsStuvVx3")
+
+#: Single-letter ``python`` options whose value may be attached (``-Wignore``) or
+#: separate (``-W ignore``). Neither spelling is the script operand, and the separate
+#: spelling's value is not one either.
+_PYTHON_VALUE_LETTERS = frozenset("WXQJ")
+
+#: Long ``python`` options that take their value as the NEXT token. Written as the set
+#: that does, rather than as a rule about long options generally, because the value of
+#: ``--check-hash-based-pycs always`` is dashless and would otherwise be read as the
+#: script -- declining the real invocation one position later.
+_PYTHON_LONG_VALUE_OPTS = frozenset({"--check-hash-based-pycs"})
+
+
+def _python_execution_target(argv: list[str]) -> tuple[int, str] | None:
+    """Index and KIND of the ONE thing the interpreter runs, or None when it is not a token.
+
+    Python runs exactly one program and its grammar says which: ``python [flags]
+    (-m module | -c command | - | script) [args…]``. The first of those selectors to
+    appear wins, and every token after it belongs to the thing being run. So this walk
+    returns a single index plus which selector produced it -- the module after ``-m``,
+    or the script operand -- and a caller compares against it rather than testing tokens
+    near the candidate. The kind matters because a module name is resolved by the import
+    machinery while a script is a path, so only one of the two can be checked for being
+    an installed entry point.
+
+    That single-index shape is the point. Asking only whether the PREVIOUS token is
+    ``-m`` accepts ``python3 worker.py -m pytest-3``, where ``worker.py`` is the program
+    and ``-m pytest-3`` is a pair of arguments that script was handed -- a script may
+    spell its own options however it likes. Reporting that stops a healthy worker and
+    discards its turn, so the selector has to be python's own first one, not any ``-m``
+    anywhere in the line.
+
+    Both selector positions matter for this file. A packaged ``pytest-3`` is a python
+    script with a shebang, so the kernel's argv for ``/usr/bin/pytest-3 test/x.py`` is
+    ``python3 /usr/bin/pytest-3 test/x.py``: the alias stands as the SCRIPT and never
+    appears at ``argv[0]``. ``python3 -m pytest-3`` names it as a MODULE. Both are the
+    program; ``python3 worker.py pytest-3`` and ``python3 cleanup.py
+    /var/tmp/pytest-of-ci/pytest-3`` are neither.
+
+    A token this grammar cannot classify returns None, which declines. That keeps the
+    failure in the direction this file fails in everywhere else: an unrecognised shape
+    is not detected rather than reported, because a missed line costs a signal and a
+    false one costs a turn. ``-mpytest`` and ``python -c`` are declined for that reason
+    -- the first spells its module inside one token, the second runs no named program.
+    """
+    position = 1
+    while position < len(argv):
+        token = argv[position]
+        if token == "-m":
+            return (position + 1, "module") if position + 1 < len(argv) else None
+        if token in {"-c", "-"}:
+            return None
+        if not token.startswith("-"):
+            return (position, "script")
+        if token.startswith("--"):
+            position += 2 if token in _PYTHON_LONG_VALUE_OPTS else 1
+            continue
+        letters = token[1:]
+        unknown = next((c for c in letters if c not in _PYTHON_FLAG_LETTERS), None)
+        if unknown is None:
+            position += 1
+            continue
+        if unknown == "m" and letters.endswith("m"):
+            # ``-Om`` selects a module whose name is the NEXT token. ``-mpytest`` spells
+            # the module inside this one token, so the grammar cannot point at it and it
+            # falls through to the decline below.
+            return (position + 1, "module") if position + 1 < len(argv) else None
+        if unknown in _PYTHON_VALUE_LETTERS:
+            # ``-Wignore`` carries its value; a bare ``-W`` takes the next token,
+            # which is a value and so can never be the script.
+            position += 1 if len(letters) > letters.index(unknown) + 1 else 2
+            continue
+        return None
+    return None
+
+
+def _kernel_program_confirms(proc_entry: Path | None, claimed: str) -> bool:
+    """Does the kernel's own binary CONFIRM that ``argv[0]``'s claim is a runner?
+
+    ``argv[0]`` is chosen by the process, so ``exec -a pytest-3 sleep 600`` presents a
+    sleeping shell as a test runner, and this is the one position with no earlier token
+    to read -- so without the kernel's answer this path would stop a healthy worker on
+    the strength of a name the process picked for itself.
+
+    The link must CONFIRM, and an unreadable one therefore declines. This is the
+    opposite direction from the wrapper check one screen up, which needs positive
+    evidence to EXEMPT a pid a rule already matched, so an unreadable link grants it
+    nothing: here the check is what ACCUSES, and an accusation with no evidence behind
+    it is exactly the shape that costs a turn. A process can make its own link
+    unreadable by going non-dumpable, so treating that silence as permission to report
+    would put the stop back under the process's own control.
+
+    "Unreadable link means the pid is already sorted foreign or unknown" is NOT a
+    mitigation, and the measurement matters more than the reasoning: ``_owner_class``
+    falls back to ``_program_class``, which reads the SAME process-chosen argv, so an
+    argv[0] naming a path under a fleet worktree is classified ``fleet`` with no link
+    and no readable ``cwd`` at all -- one token, a fleet-owned ``BANNED`` row, a stopped
+    worker, and no restore of its discarded turn anywhere in the emit path.
+
+    What declining costs is an alias-named process whose link this uid cannot read,
+    which is a missed signal. An interpreter is NOT a confirmation, and the reason is
+    worth stating because the opposite looks plausible: a shebang script's kernel binary
+    is indeed the interpreter, but the kernel also puts that interpreter at ``argv[0]``
+    and the runner one position later, so a shebang run is answered by the script-operand
+    rule and never reaches this check. The shape that does reach it with an interpreter
+    behind it is ``exec -a pytest-3 python3 -c …``, which is the spoof.
+    """
+    if proc_entry is None:
+        return False
+    normalized = _kernel_program_path(proc_entry)
+    if normalized is None:
+        return False
+    kernel_base = _token_base(_basename(normalized))
+    if kernel_base == _token_base(claimed):
+        return True
+    return _is_runner_base(kernel_base) or kernel_base in _ARGV_ONLY_RUNNER_BASES
+
+
+def _argv_is_uncapped_argv_only_runner(argv: list[str], proc_entry: Path | None = None) -> bool:
     """Is *argv* a run of an argv-only runner spelling that declared no worker cap?
 
     Consulted ONLY for a pid no joined-line rule matched, so it can add a ``BANNED``
@@ -1583,11 +1946,15 @@ def _argv_is_uncapped_argv_only_runner(argv: list[str]) -> bool:
     separates with NUL: the runner has to stand in a program position, and the cap is
     re-asked of the runner's own arguments -- so ``pytest-3 -n0 test/x.py`` stays quiet
     for the same reason and through the same function as ``pytest -n0 test/x.py``.
+
+    *proc_entry* is the pid's own ``/proc`` directory, passed so the program position
+    at ``argv[0]`` can be checked against the kernel's binary rather than the name the
+    process chose for itself.
     """
-    index = _argv_only_runner_index(argv)
-    if index is None:
-        return False
-    if not _stands_in_program_position(argv, index):
+    if not any(
+        _stands_in_program_position(argv, index, proc_entry)
+        for index in _argv_only_runner_indices(argv)
+    ):
         return False
     return not _argv_declares_a_worker_cap(argv)
 
@@ -1818,6 +2185,12 @@ def _host_lines(cfg: dict[str, Any]) -> tuple[list[str], str]:
     banned_res = [
         re.compile(rx) for rx in cfg.get("banned_process_res") or list(DEFAULT_BANNED_RES)
     ]
+    # The argv-side shape is switched off by ONE named key and by nothing else. An
+    # operator who wants it gone says so about this shape; supplying, replacing or
+    # emptying ``banned_process_res`` does not touch it, because a protection that
+    # disappears as a side effect of an edit aimed at something else is removed by
+    # someone who never decided to remove it.
+    argv_shape_enabled = cfg.get("argv_runner_detection", True) is not False
     fleet = [p for p in cfg.get("fleet_worktrees") or []]
     lines: list[str] = []
     # /proc, with an env seam for the test harness only -- not a config key,
@@ -1872,7 +2245,18 @@ def _host_lines(cfg: dict[str, Any]) -> tuple[list[str], str]:
                     # unless the token's POSITION is read. Asked here, of the argv,
                     # AFTER every rule has declined -- so this path can only ADD a
                     # line, never change the rule a matching pid reports.
-                    if not _argv_is_uncapped_argv_only_runner(argv):
+                    #
+                    # It is asked whatever the rule list holds, because rule ORIGIN is
+                    # what carries built-in authority in this file -- the same basis
+                    # ``_is_shell_command_wrapper``'s exemption is written against. A
+                    # gate on ``banned_process_res`` merely being SET would let a
+                    # config edit switch a built-in protection off, which is a worse
+                    # property than the extra line it would suppress. An operator who
+                    # wants this shape gone says so with ``argv_runner_detection``,
+                    # which names the shape it disables.
+                    if not argv_shape_enabled:
+                        continue
+                    if not _argv_is_uncapped_argv_only_runner(argv, entry):
                         continue
                     matched = ARGV_RUNNER_RULE_LABEL
                     match_span = (0, len(cmd))
@@ -2288,6 +2672,16 @@ def _config_error(cfg: dict[str, Any]) -> str | None:
     for item in cfg.get("sessions") or []:
         if not _KEY_RE.fullmatch(item):
             return f"session key {item!r} is not a plain key (keys are stems, never paths)"
+    # The opt-out must be a real boolean when it is present at all. A string or a number
+    # would be read as "not False" and silently leave the shape ON, so an operator who
+    # meant to disable it keeps a protection they decided to remove -- and would find out
+    # only from a line they thought they had switched off. The other direction is worse
+    # still: a value read as falsey would disable a protection nobody named. ``null`` is
+    # deliberately NOT refused: it means the key is not set, which is the same as omitting
+    # it, and an unset key leaves the shape ON -- the safe direction either way.
+    argv_detection = cfg.get("argv_runner_detection")
+    if argv_detection is not None and not isinstance(argv_detection, bool):
+        return "argv_runner_detection must be true or false"
     # A relative worktree root would be compared against an absolute
     # /proc/<pid>/cwd target and could never match, so every banned run inside
     # the fleet would be filed as foreign and go unreported. Say so at load time
