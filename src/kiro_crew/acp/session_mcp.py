@@ -73,13 +73,16 @@ otherwise easy to argue backwards:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import time
 from collections.abc import Collection, Mapping
 from pathlib import Path
 from typing import Any, NamedTuple
 
 from kiro_crew import agent as _agent_mod
+from kiro_crew import hooks as _hooks
 from kiro_crew import mcp_provenance
 from kiro_crew.acp.mcp_session_report import sanitize_sink_text
 from kiro_crew.agent import (
@@ -227,23 +230,106 @@ class _Unread:
 _UNREAD = _Unread()
 
 
+#: Pauses before the retries of the gated read in :func:`_read_mcp_settings`, in
+#: seconds; the first attempt runs before any of them. Only used off the loop:
+#: on a loop thread there is exactly one attempt (see :func:`_read_mcp_settings`).
+#: The read fails transiently in two ways, both seen on a live host: a writer
+#: renames a new file over the one we opened (the descriptor check then names
+#: the unlinked inode), and the sensitive-path resolver pool is saturated so a
+#: resolution never starts inside its budget and the gate refuses fail-closed.
+#: The first clears on an immediate re-check (``0.0``). The second clears once
+#: the pool drains, and the pool drains at the pace of its own budget: a
+#: candidate resolution that has not finished within
+#: ``security.paths._PATH_RESOLVE_TIMEOUT_SECS`` (2.0 s) is refused and its
+#: worker classed wedged, so a 2.0 s pause is the longest a healthy in-flight
+#: job can hold a worker before the queue moves. One pause of that size, then a
+#: final attempt. No other refusal changes with time inside this call: a
+#: stall-prefix cooldown holds for 30-1800 s without touching the filesystem,
+#: and a non-regular, missing-permission or oversized file fails identically
+#: every time, so more pauses would only delay the fail-closed answer. Losing
+#: this read withholds every identity element from a kiro session for its whole
+#: life (see :func:`kiro_control_plane_servers`), which is why the one pause is
+#: worth 2 s of an off-loop thread.
+_SETTINGS_READ_BACKOFF_SECS: tuple[float, ...] = (0.0, 2.0)
+
+#: The pause primitive :func:`_read_mcp_settings` uses, held as a module attribute
+#: so a test can replace it without touching the shared ``time`` module that
+#: pytest and logging read from.
+_sleep = time.sleep
+
+
+def _on_loop_thread() -> bool:
+    """True when the calling thread is running an asyncio event loop.
+
+    :func:`_read_mcp_settings` is reached from both kinds of thread: the spawn
+    path warms ``AcpClient._session_mcp_cache`` off the loop, but a cold cache is
+    resolved inline on the loop by ``_session_mcp_servers``, and the non-strict
+    :func:`_global_settings` readers sit on synchronous paths that may run on
+    either. A ``time.sleep`` on the loop thread stalls every session the gateway
+    serves, under exactly the load that makes the read fail, so the pauses are
+    conditional on this answer rather than on a claim about the call graph.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
 def _read_mcp_settings(path: Path) -> dict[str, Any]:
-    """Read settings through the credential gate; only absence means no restrictions."""
+    """Read settings through the credential gate; only absence means no restrictions.
+
+    Off the event loop, a gated read that fails transiently is retried (see
+    :data:`_SETTINGS_READ_BACKOFF_SECS`): the first attempt, one immediate
+    re-check, one pause, one final attempt. Each retry re-runs the whole gate,
+    so a path that is really refused stays refused, and a read that keeps
+    failing still raises: the caller's fail-closed reading of "unreadable" is
+    unchanged.
+
+    On a thread running an event loop, exactly ONE attempt runs, with no re-check
+    and no pause: the same single gated read the caller made before retries
+    existed. Every attempt is two to three bounded sensitive-path resolutions
+    (``validate_file_path``, ``safe_read_file_bytes``'s own ``validate_file_path``,
+    then the descriptor check's ``is_sensitive_path``), and each resolution can
+    block the calling thread for its 2 s budget plus up to 3 s of grace. The
+    resolver caps one thread's waits at 12 s per 25 s window and refuses
+    fail-closed for the rest of the window once that is spent, so one failing
+    attempt already prices at up to 12 s of blocked loop, and a second attempt
+    there would only add refusals to a thread that has just exhausted its
+    allowance while every session the gateway serves waits. Off the loop the
+    same cap bounds the three attempts at 12 s of waits plus the 2 s pause; the
+    rename-over race is cleared by the re-check, and a saturated pool by the
+    pause. A stall that reaches the loop thread is left to the fail-closed
+    contract rather than bought with a blocked loop.
+    """
     from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes, validate_file_path
 
-    # Screen before even probing existence: a Windows link can name an untrusted share.
-    if validate_file_path(str(path)) is None:
-        raise ValueError("MCP settings path was refused")
-    try:
-        path.lstat()
-    except FileNotFoundError:
-        return {}
-    try:
-        raw = safe_read_file_bytes(str(path))
-    except FileTooLargeError as exc:
-        raise ValueError("MCP settings exceed the safe read limit") from exc
-    if raw is None:
-        raise ValueError("MCP settings could not be safely read")
+    refusal = "MCP settings could not be safely read"
+    if _on_loop_thread():
+        # One attempt, never a re-check or a pause: see the docstring.
+        schedule: tuple[float, ...] = (0.0,)
+    else:
+        schedule = (0.0, *_SETTINGS_READ_BACKOFF_SECS)
+    for pause in schedule:
+        if pause:
+            _sleep(pause)
+        # Screen before even probing existence: a Windows link can name an untrusted share.
+        if validate_file_path(str(path)) is None:
+            refusal = "MCP settings path was refused"
+            continue
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return {}
+        try:
+            raw = safe_read_file_bytes(str(path))
+        except FileTooLargeError as exc:
+            raise ValueError("MCP settings exceed the safe read limit") from exc
+        if raw is not None:
+            break
+        refusal = "MCP settings could not be safely read"
+    else:
+        raise ValueError(refusal)
     try:
         settings = json.loads(raw.decode("utf-8"))
     except RecursionError as exc:
@@ -1101,7 +1187,8 @@ def native_settings_sources(work_dir: str | Path | None) -> list[NativeSettingsS
     for and ``session/new`` receives as ``cwd``.
 
     Raises :class:`NativeSettingsUnreadable` when a file exists but fails the
-    gated read; the caller then withholds EVERY element, because a restriction
+    gated read, or, off the event loop, when a file is replaced or rewritten
+    during every bracketed pass; the caller then withholds EVERY element, because a restriction
     it cannot read must stay authoritative. An absent file contributes nothing.
     """
     reads: list[tuple[str, Path, Any]] = [
@@ -1110,8 +1197,73 @@ def native_settings_sources(work_dir: str | Path | None) -> list[NativeSettingsS
     if work_dir:
         project_path = Path(work_dir) / ".kiro" / "settings" / "mcp.json"
         reads.append((NATIVE_SOURCE_PROJECT, project_path, _read_mcp_settings))
+    if _on_loop_thread():
+        # No read on the loop thread pauses, so no pause can open a gap between
+        # the two reads; bracketing there would only add blocked resolutions.
+        return _read_native_sources_once(reads)
+    # Off the loop a read may pause for a retry, and a file replaced during that
+    # pause leaves the pass holding a snapshot of the OTHER file that is older
+    # than session start. Bracket each pass with every file's identity: a pass
+    # is kept only when no file was replaced or rewritten while it ran. Identity,
+    # not content, is compared, so a file swapped away and back to equal content
+    # still voids the pass.
+    paths = [path for _label, path, _read in reads]
+    changed: tuple[str, Path] = (reads[0][0], reads[0][1])
+    for _ in range(_NATIVE_SOURCES_BRACKETED_PASSES):
+        before = [_settings_file_identity(path) for path in paths]
+        sources = _read_native_sources_once(reads)
+        after = [_settings_file_identity(path) for path in paths]
+        moved = [
+            (label, path)
+            for (label, path, _read), was, now in zip(reads, before, after)
+            if was != now or was is _IDENTITY_UNKNOWN
+        ]
+        if not moved:
+            return sources
+        changed = moved[0]
+    raise NativeSettingsUnreadable(*changed)
+
+
+#: How many bracketed passes :func:`native_settings_sources` makes off the event
+#: loop before refusing the set. The known writers replace a file every 35-40 s,
+#: so a sub-second pass is voided at most once by an ordinary save; a file that
+#: moves under every pass is churning faster than any snapshot can be trusted,
+#: and the set is refused like an unreadable file.
+_NATIVE_SOURCES_BRACKETED_PASSES = 4
+
+#: Identity of a settings file whose identity could not be taken safely. It
+#: never matches, so a pass it brackets is voided.
+_IDENTITY_UNKNOWN = object()
+
+
+def _settings_file_identity(path: Path) -> Any:
+    """``(st_dev, st_ino, st_mtime_ns, st_size)`` of *path*, ``None`` when absent.
+
+    An atomic replace always yields a new inode and an in-place write moves the
+    mtime or size, so two equal identities mean the file was neither replaced
+    nor rewritten in between. Every sample goes through
+    :func:`kiro_crew.hooks.safe_file_identity`, which screens the path afresh
+    and reads the identity from a no-reparse descriptor, so no sample follows a
+    link swapped in after an earlier one. A refused or unopenable path returns
+    :data:`_IDENTITY_UNKNOWN`.
+    """
+    try:
+        return _hooks.safe_file_identity(str(path))
+    except OSError:
+        return _IDENTITY_UNKNOWN
+
+
+def _read_native_sources_once(
+    reads: list[tuple[str, Path, Any]],
+) -> list[NativeSettingsSource]:
+    """One gated read of every settings source, returned in global-first order.
+
+    The global file is read LAST: it is the one the dashboard's tool toggle
+    writes, so no retry pause on the project read can fall between the global
+    read and session start.
+    """
     sources: list[NativeSettingsSource] = []
-    for label, path, read in reads:
+    for label, path, read in reversed(reads):
         try:
             settings = read(path)
         except (OSError, ValueError) as exc:
@@ -1120,6 +1272,7 @@ def native_settings_sources(work_dir: str | Path | None) -> list[NativeSettingsS
         sources.append(
             NativeSettingsSource(label, path, declared if isinstance(declared, dict) else {})
         )
+    sources.reverse()
     return sources
 
 
@@ -1391,7 +1544,17 @@ def kiro_control_plane_servers(
     try:
         settings = native_settings_sources(work_dir)
     except NativeSettingsUnreadable as exc:
-        logger.debug("session MCP: withholding Kiro overrides: %s", exc)
+        # Withholding is the right direction (a native restriction we cannot read
+        # must stay authoritative), but unpooled Crew servers that kiro-cli mounts
+        # from the spec lose their session identity element, so their calls are
+        # refused ``identity_unattested``. Pooled broker stubs keep their token.
+        logger.warning(
+            "session MCP: MCP settings unreadable (%s); agent %r gets no identity"
+            " elements for unpooled Kiro Crew servers mounted from its spec, so their"
+            " calls will refuse identity_unattested",
+            exc,
+            agent,
+        )
         return NativeControlPlaneMount([], {name: exc for name in IDENTITY_BOUND_SERVERS})
     out: list[dict[str, Any]] = []
     withheld_by_name: dict[str, NativeMountWithholding | NativeSettingsUnreadable] = {}
