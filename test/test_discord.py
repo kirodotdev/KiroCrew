@@ -4379,7 +4379,9 @@ class TestInteractions:
         Carrying the first answer forward would be a value taken before a suspension,
         which is the defect class this change exists to close. Pinned by answering
         `permitted` to the first read and `denied` to the second, which no reuse of a
-        single answer can satisfy.
+        single answer can satisfy. Both entry points share one answering function
+        because the reads are on opposite sides of the resolve and read opposite
+        directions: the press arriving is inbound, the verdict written is outbound.
         """
         d, cli, _ = _dispatcher({"u1"})
         answers = [True, False]
@@ -4393,10 +4395,49 @@ class TestInteractions:
 
         try:
             with mock.patch.object(td_mod, "channel_inbound_permitted", _ceiling):
-                await d.on_interaction(self._itx(f"a:r1:{nonce}:1"))
+                with mock.patch.object(td_mod, "channel_outbound_permitted", _ceiling):
+                    await d.on_interaction(self._itx(f"a:r1:{nonce}:1"))
             assert fut.result() is True, "the approval resolved under the first reading"
             assert answers == [], "both readings must actually be taken"
             assert cli.edits == [], "the verdict must not be written after the withdrawal"
+        finally:
+            DiscordApprovalDecider._REGISTRY.pop(key, None)
+            DiscordApprovalDecider._NONCES.pop(key, None)
+
+    @pytest.mark.asyncio
+    async def test_the_confirmation_gate_reads_the_outbound_authority(self) -> None:
+        """The verdict edit is a write this process makes, so the OUTBOUND ceiling
+        decides it.
+
+        Both entry points read the same `channels` allowlist, so a test that only
+        watched the verdict could not tell them apart. Pinned by answering permitted
+        inbound and denied OUTBOUND: the press resolves, because the inbound gate let
+        it through, and the edit is still withheld, which only a gate reading the
+        outbound entry point can do. Filing an egress refusal under an ingress name
+        leaves an operator asking why a message did not go out reading the wrong row.
+        """
+        d, cli, _ = _dispatcher({"u1"})
+        read: list[str] = []
+        key = DiscordApprovalDecider.key(d._session_key("u1"), "r1")
+        fut: "asyncio.Future[bool]" = asyncio.get_running_loop().create_future()
+        DiscordApprovalDecider._REGISTRY[key] = fut
+        nonce = DiscordApprovalDecider.register_nonce(key)
+
+        async def _inbound(_channel: str) -> bool:
+            read.append("inbound")
+            return True
+
+        async def _outbound(_channel: str) -> bool:
+            read.append("outbound")
+            return False
+
+        try:
+            with mock.patch.object(td_mod, "channel_inbound_permitted", _inbound):
+                with mock.patch.object(td_mod, "channel_outbound_permitted", _outbound):
+                    await d.on_interaction(self._itx(f"a:r1:{nonce}:1"))
+            assert fut.result() is True, "the inbound gate permitted the press"
+            assert "outbound" in read, "the verdict gate must consult the outbound ceiling"
+            assert cli.edits == [], "an outbound-denied channel gets no verdict written"
         finally:
             DiscordApprovalDecider._REGISTRY.pop(key, None)
             DiscordApprovalDecider._NONCES.pop(key, None)
@@ -4425,7 +4466,8 @@ class TestInteractions:
 
         try:
             with mock.patch.object(td_mod, "channel_inbound_permitted", _ceiling):
-                await d.on_interaction(self._itx(f"a:r1:{nonce}:1"))
+                with mock.patch.object(td_mod, "channel_outbound_permitted", _ceiling):
+                    await d.on_interaction(self._itx(f"a:r1:{nonce}:1"))
             assert len(calls) == 2, calls
             assert cli.edits == [], "a roster read placed before the ceiling await is stale"
         finally:

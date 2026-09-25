@@ -33,11 +33,13 @@ from kiro_crew.discord import client as dc
 from kiro_crew.discord import transport as dt
 from kiro_crew.discord.client import (
     _REVOKED_DETAIL,
+    _UNATTRIBUTABLE_DETAIL,
     DISCORD_BLOCKED,
     DISCORD_OK,
     DISCORD_TRANSIENT,
     DiscordClient,
     DiscordInbound,
+    SendPermission,
     _guarded_destination,
 )
 from kiro_crew.discord.transport import DiscordTransport
@@ -151,6 +153,10 @@ class _Harness:
     events: list[tuple[str, Any]] = field(default_factory=list)
     #: Every destination the roster predicate was asked about.
     asked: list[str] = field(default_factory=list)
+    #: What the injected roster predicate answers for a destination it does not
+    #: admit. A withdrawal by default, since that is what an id the roster can
+    #: place and refuses means; a test that wants the other ground sets it.
+    refusal: SendPermission = field(default_factory=SendPermission.revoked)
 
     @property
     def sleeps(self) -> list[float]:
@@ -206,9 +212,11 @@ def _harness(
             harness.roster.clear()
         return harness.ceiling["open"]
 
-    def _still_permitted(channel_id: str) -> bool:
+    def _still_permitted(channel_id: str) -> SendPermission:
         harness.asked.append(channel_id)
-        return channel_id in harness.roster
+        if channel_id in harness.roster:
+            return SendPermission.allow()
+        return harness.refusal
 
     monkeypatch.setattr(client, "_ensure_session", _ensure)
     monkeypatch.setattr(dc, "time", clock)
@@ -606,6 +614,127 @@ class TestCallerSuppliedDestination:
         assert leaked == [], f"a refusal notice is gated by the authority it announces: {leaked}"
 
 
+# -- The refusal's own ground -----------------------------------------------
+
+
+class TestRefusalNamesItsOwnGround:
+    """A refusal reports WHY, because two different events end a send the same way.
+
+    A destination an authority can place and refuses is a withdrawal. A
+    destination nothing can place is one this process cannot attribute -- a
+    proactive DM whose channel id came from a link written before the process
+    started has no pairing, and no operator touched anything. Both stop the send,
+    which is correct at an egress boundary, but reporting the second as the first
+    sends whoever is debugging it after a policy change that never happened.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "wait",
+        ["preemptive-hold", "429", "global-429", "5xx", "connector"],
+    )
+    async def test_an_unattributable_destination_is_not_reported_as_a_withdrawal(
+        self, monkeypatch: pytest.MonkeyPatch, wait: str
+    ) -> None:
+        """Every wait site, because each one reports the refusal itself.
+
+        A site that names the withdrawal detail directly instead of the ground the
+        predicate reported looks correct from any single other site, so pinning one
+        wait would leave the other four free to hardcode it.
+        """
+        sequences: dict[str, list[Any]] = {
+            "preemptive-hold": [
+                _Resp(200, {"id": "1"}, headers=_bucket_headers("b1", 0, "4.0")),
+                _Resp(200, {"id": "2"}),
+            ],
+            "429": [_rate_limited(2.0), _Resp(200, {"id": "2"})],
+            "global-429": [_rate_limited(20.0, is_global=True), _Resp(200, {"id": "2"})],
+            "5xx": [_Resp(503, {}), _Resp(200, {"id": "2"})],
+            "connector": [aiohttp.ClientConnectionError("boom"), _Resp(200, {"id": "2"})],
+        }
+        harness = _harness(monkeypatch, sequences[wait])
+        if wait == "preemptive-hold":
+            # This wait is only reached on the SECOND call: the first one is what
+            # exhausts the bucket it then holds against.
+            assert await harness.client.api_json("POST", _SEND_PATH, {})
+        harness.refusal = SendPermission.unattributable()
+        harness.roster.clear()
+
+        result = await harness.client.api_json("POST", _SEND_PATH, {})
+
+        assert result.outcome == DISCORD_BLOCKED
+        assert result.detail == _UNATTRIBUTABLE_DETAIL
+        assert result.detail != _REVOKED_DETAIL
+
+    @pytest.mark.asyncio
+    async def test_an_unattributable_destination_still_stops_the_send(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Naming the ground must not soften the answer: at an egress boundary
+        "cannot tell" still reads as no."""
+        harness = _harness(monkeypatch, [_rate_limited(2.0), _Resp(200, {"id": "2"})])
+        harness.refusal = SendPermission.unattributable()
+        harness.roster.clear()
+
+        result = await harness.client.api_json("POST", _SEND_PATH, {})
+
+        assert result.outcome == DISCORD_BLOCKED
+        assert len(harness.requests) == 1, "the retry must never be issued"
+
+    @pytest.mark.asyncio
+    async def test_a_withdrawn_destination_is_still_reported_as_a_withdrawal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The control. Naming the new ground must not rename the old one."""
+        harness = _harness(monkeypatch, [_rate_limited(2.0), _Resp(200, {"id": "2"})])
+        harness.refusal = SendPermission.revoked()
+        harness.roster.clear()
+
+        result = await harness.client.api_json("POST", _SEND_PATH, {})
+
+        assert result.outcome == DISCORD_BLOCKED
+        assert result.detail == _REVOKED_DETAIL
+
+    @pytest.mark.asyncio
+    async def test_a_predicate_answering_a_bare_bool_reports_a_withdrawal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A predicate that answers a plain `False` names no ground, so the ladder
+        reports the one it can defend: something that could place this destination
+        declined it."""
+        harness = _harness(monkeypatch, [_rate_limited(2.0), _Resp(200, {"id": "2"})])
+
+        def _plain(channel_id: str) -> bool:
+            return False
+
+        harness.client.still_permitted = _plain
+
+        result = await harness.client.api_json("POST", _SEND_PATH, {})
+
+        assert result.outcome == DISCORD_BLOCKED
+        assert result.detail == _REVOKED_DETAIL
+
+    def test_the_transport_arms_answer_their_own_grounds(self) -> None:
+        """The transport is the only place the two can be told apart, so each arm
+        names its own. A paired peer the roster dropped is a withdrawal; an id no
+        roster places and no pairing names is unattributable."""
+        transport, client = _transport(allowed_user_ids=["u9"], allowed_channel_ids=["555666777"])
+
+        on_roster = transport._still_may_send_to("555666777")
+        assert on_roster.permitted is True
+        assert on_roster.detail == ""
+
+        client.remember_dm_recipient("dm-chan-9", "u-not-allowed")
+        dropped_peer = transport._still_may_send_to("dm-chan-9")
+        assert dropped_peer.permitted is False
+        assert dropped_peer.detail == _REVOKED_DETAIL
+
+        for unplaceable in ("", "999000111"):
+            verdict = transport._still_may_send_to(unplaceable)
+            assert verdict.permitted is False
+            assert verdict.detail == _UNATTRIBUTABLE_DETAIL
+
+
 # -- Fail-closed -------------------------------------------------------------
 
 
@@ -672,7 +801,7 @@ class TestTransportPredicate:
 
     def test_a_thread_on_the_roster_is_still_permitted(self) -> None:
         transport, _ = _transport(allowed_thread_ids=["555666777"])
-        assert transport._still_may_send_to("555666777") is True
+        assert transport._still_may_send_to("555666777").permitted is True
 
     def test_an_unattributable_dm_is_refused(self) -> None:
         """The roster admitting SOMEBODY is not the same as admitting this peer.
@@ -683,17 +812,17 @@ class TestTransportPredicate:
         revoked one, so the arm refuses instead.
         """
         transport, _ = _transport(allowed_user_ids=["u1"])
-        assert transport._still_may_send_to("444555666") is False
+        assert transport._still_may_send_to("444555666").permitted is False
 
     def test_an_empty_roster_refuses_every_destination(self) -> None:
         """Deny-by-default: an empty allow-list authorizes nobody, so a send in
         flight to a DM is refused on it."""
         transport, _ = _transport(allowed_user_ids=[])
-        assert transport._still_may_send_to("444555666") is False
+        assert transport._still_may_send_to("444555666").permitted is False
 
     def test_a_missing_channel_id_is_refused(self) -> None:
         transport, _ = _transport(allowed_user_ids=["u1"])
-        assert transport._still_may_send_to("") is False
+        assert transport._still_may_send_to("").permitted is False
 
     def test_an_unseen_channel_type_is_refused_by_the_final_arm_not_a_guess(self) -> None:
         """``None`` from the cache means "not known here", so the thread arm does
@@ -703,9 +832,9 @@ class TestTransportPredicate:
         transport permits a channel whose peer it can actually name.
         """
         transport, client = _transport(allowed_user_ids=["u1"])
-        assert transport._still_may_send_to("123456789") is False
+        assert transport._still_may_send_to("123456789").permitted is False
         client._dm_recipients["123456789"] = "u1"
-        assert transport._still_may_send_to("123456789") is True
+        assert transport._still_may_send_to("123456789").permitted is True
 
     def test_a_dm_this_process_opened_is_decided_on_its_own_peer(self) -> None:
         """The client kept the pairing when it created the channel, so the roster
@@ -717,12 +846,12 @@ class TestTransportPredicate:
         """
         transport, client = _transport(allowed_user_ids=["u-keeps"])
         client._dm_recipients["444555666"] = "u-revoked"
-        assert transport._still_may_send_to("444555666") is False
+        assert transport._still_may_send_to("444555666").permitted is False
 
     def test_a_dm_this_process_opened_for_an_allowed_peer_passes(self) -> None:
         transport, client = _transport(allowed_user_ids=["u-keeps"])
         client._dm_recipients["444555666"] = "u-keeps"
-        assert transport._still_may_send_to("444555666") is True
+        assert transport._still_may_send_to("444555666").permitted is True
 
     @pytest.mark.asyncio
     async def test_an_authorized_inbound_dm_can_be_replied_to(self) -> None:
@@ -735,7 +864,7 @@ class TestTransportPredicate:
         roster and just spoke, which is a dropped reply rather than a withheld one.
         """
         transport, client = _transport(allowed_user_ids=["u1"])
-        assert transport._still_may_send_to("dm-chan-1") is False
+        assert transport._still_may_send_to("dm-chan-1").permitted is False
         await transport.receive(
             DiscordInbound(
                 channel_id="dm-chan-1",
@@ -747,7 +876,7 @@ class TestTransportPredicate:
             )
         )
         assert client.cached_dm_recipient("dm-chan-1") == "u1"
-        assert transport._still_may_send_to("dm-chan-1") is True
+        assert transport._still_may_send_to("dm-chan-1").permitted is True
 
     @pytest.mark.asyncio
     async def test_a_guild_message_records_no_pairing(
@@ -793,7 +922,7 @@ class TestTransportPredicate:
         assert client.cached_dm_recipient("g-chan-1") is None
         assert client.cached_dm_recipient("g-thread-1") is None
         # It passes on the roster it is actually on, not on a pairing.
-        assert transport._still_may_send_to("g-chan-1") is True
+        assert transport._still_may_send_to("g-chan-1").permitted is True
 
     def test_this_file_never_hand_rolls_an_event_loop(self) -> None:
         """Structural, because the damage is invisible to the test that causes it.
@@ -923,11 +1052,11 @@ class TestTransportPredicate:
         decides, so a peer removed after speaking is refused."""
         transport, client = _transport(allowed_user_ids=["u1"])
         client.remember_dm_recipient("dm-chan-1", "u-revoked")
-        assert transport._still_may_send_to("dm-chan-1") is False
+        assert transport._still_may_send_to("dm-chan-1").permitted is False
 
     def test_a_shared_channel_on_the_roster_is_still_permitted(self) -> None:
         transport, _ = _transport(allowed_user_ids=["u1"], allowed_channel_ids=["777888999"])
-        assert transport._still_may_send_to("777888999") is True
+        assert transport._still_may_send_to("777888999").permitted is True
 
     def test_a_reclassified_id_is_not_read_as_a_withdrawal(self) -> None:
         """An operator who mislabels a shared channel in ``allowed_thread_ids`` and
@@ -943,15 +1072,15 @@ class TestTransportPredicate:
         transport.reconfigure(
             SimpleNamespace(allowed_thread_ids=[], allowed_channel_ids=["777888999"])
         )
-        assert transport._still_may_send_to("777888999") is True
+        assert transport._still_may_send_to("777888999").permitted is True
 
     def test_a_reloaded_channel_roster_keeps_admitting_what_it_has_seen(self) -> None:
         """The admitted set grows across a reload, so a channel added by config and
         later withdrawn is still distinguishable from an id never seen."""
         transport, _ = _transport(allowed_user_ids=["u1"], allowed_channel_ids=["777888999"])
         transport.reconfigure(SimpleNamespace(allowed_channel_ids=["101112131"]))
-        assert transport._still_may_send_to("101112131") is True
-        assert transport._still_may_send_to("777888999") is False
+        assert transport._still_may_send_to("101112131").permitted is True
+        assert transport._still_may_send_to("777888999").permitted is False
 
 
 # -- The refusal is audited --------------------------------------------------
@@ -1143,7 +1272,7 @@ class TestRetentionIsBounded:
         transport, _ = _transport(allowed_user_ids=["u1"])
         recorder = _Sel()
         monkeypatch.setattr(dt, "sel", lambda: recorder)
-        assert transport._still_may_send_to("444555666") is False
+        assert transport._still_may_send_to("444555666").permitted is False
         reasons = [c["operation"] for c in recorder.calls]
         assert not any("truncation" in r for r in reasons), reasons
 
@@ -1191,7 +1320,7 @@ class TestRetentionIsBounded:
         assert "chan-u0" in client._evicted_dm_channels
         recorder = _Sel()
         monkeypatch.setattr(dc, "sel", lambda: recorder)
-        assert client._roster_still_permits("chan-u0") is False
+        assert client._roster_still_permits("chan-u0").permitted is False
         reasons = [c["operation"] for c in recorder.calls]
         assert any("pairing_truncated" in r for r in reasons), reasons
         assert not any(r.endswith(".roster") for r in reasons), reasons
@@ -1216,7 +1345,7 @@ class TestRetentionIsBounded:
         recorder = _Sel()
         monkeypatch.setattr(dc, "sel", lambda: recorder)
         # Still authorized, so this one is an allow -- and it is not a truncation.
-        assert client._roster_still_permits("chan-u0") is True
+        assert client._roster_still_permits("chan-u0").permitted is True
         reasons = [c["operation"] for c in recorder.calls]
         assert not any("pairing_truncated" in r for r in reasons), reasons
 
