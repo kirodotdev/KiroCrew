@@ -3220,7 +3220,13 @@ class VectorMemoryStore:
         return True
 
     def delete_semantic(
-        self, key: str, source: str, *, expect_value_json: str | None = None
+        self,
+        key: str,
+        source: str,
+        *,
+        expect_value_json: str | None = None,
+        superseded_by: str | None = None,
+        supersede_reason: str | None = None,
     ) -> bool:
         """Tombstone a semantic memory entry with its full prior revision.
 
@@ -3234,8 +3240,52 @@ class VectorMemoryStore:
 
         A caller that omits it deletes whatever is stored under *key*, which is what
         an explicit forget wants.
+
+        Pass *superseded_by* (the winning row's key) and optionally
+        *supersede_reason* (why it won, e.g. ``"62% keyword overlap"``) when this
+        deletion is a dedup SUPERSEDE rather than an explicit forget. Two audit
+        surfaces then carry the attribution durably, so a supersession can be told
+        apart from a forget and traced to its winner AFTER the fact -- even when the
+        ``learn_add`` reply that named it was lost to a timed-out write:
+
+        * the record's status is stamped ``superseded`` in ``memory_record_meta``
+          (not the default ``"forgotten"`` a plain forget records), and that value is
+          preserved in each revision snapshot -- so the tombstone reads apart from a
+          forget both in current state and in history. (The ``memory_revisions.status``
+          COLUMN is the revision's own workflow state, always ``"accepted"`` here; the
+          ``superseded`` record status lives in ``memory_record_meta`` and in the
+          revision's ``after`` snapshot, which is what ``get_record_metadata`` reads.)
+        * the audit event records ``superseded_by`` / ``supersede_reason`` as its
+          ``new_value`` instead of a bare ``None``.
+
+        IDENTITIES only -- ``superseded_by`` is the winner's ``lesson.<digest>`` row
+        id, never its text. A lesson can hold whatever the user tells the agent, and
+        both sinks persist to disk; the row TEXT belongs in the redacted result
+        ``superseded`` field, not here.
         """
         now = _now_iso()
+        is_supersede = superseded_by is not None
+        # Structural guards for the "identities only, never lesson text" invariant:
+        # both fields are code-derived (superseded_by is a lesson.<digest> row id from
+        # _lesson_key; the reason is a tag like an overlap ratio, a cosine, "contains"),
+        # so both are single-line and short. Enforce that at the sink rather than trust
+        # every future caller -- a value built from rule text would otherwise carry
+        # lesson content into a disk-persisted audit row.
+        for _label, _val, _cap in (
+            ("supersede_reason", supersede_reason, 120),
+            ("superseded_by", superseded_by, 200),
+        ):
+            if _val is not None and ("\n" in _val or len(_val) > _cap):
+                raise ValueError(f"{_label} must be a short single-line identifier, not text")
+        # A supersede records who won and why; a forget stays a bare None, unchanged.
+        new_value = (
+            json.dumps(
+                {"superseded_by": superseded_by, "reason": supersede_reason or ""},
+                separators=(",", ":"),
+            )
+            if is_supersede
+            else None
+        )
         with self._db_lock, self.db:
             row = self.db.execute(
                 "SELECT * FROM semantic_memory WHERE key=? AND is_deleted=0", (key,)
@@ -3260,9 +3310,29 @@ class VectorMemoryStore:
                 key,
                 dict(row),
                 source,
-                operation="forget",
+                # A supersede stamps the retained revision "superseded" so it reads
+                # apart from an explicit forget; only "status" rides here because
+                # normalize_metadata rejects any field outside its fixed set, and
+                # the winner/reason are recorded on the audit event below.
+                metadata={"status": "superseded"} if is_supersede else None,
+                operation="supersede" if is_supersede else "forget",
             )
-        self._log_event("delete", "semantic", key, row["value_json"], None, source)
+            if is_supersede:
+                # The attribution event is part of the supersede transaction, so the
+                # tombstone, revision, and winner/reason commit or roll back together.
+                # Same columns the event-log helper writes.
+                self.db.execute(
+                    "INSERT INTO memory_events (event_type, memory_type, memory_key, "
+                    "old_value, new_value, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    ("delete", "semantic", key, row["value_json"], new_value, source, now),
+                )
+        if not is_supersede:
+            # A forget writes its audit event best-effort AFTER committing the
+            # tombstone, through the shared helper -- an unavailable event table
+            # must not fail a forget. Only the supersede branch inlines the INSERT
+            # inside the transaction, where losing the winner/reason is the data
+            # loss this change exists to prevent.
+            self._log_event("delete", "semantic", key, row["value_json"], new_value, source)
         return True
 
     def _retire_one_episodic(self, mem_id: str, text: str, superseded_by: str) -> None:
@@ -6017,17 +6087,31 @@ class VectorMemoryStore:
         # row sharing that key fails it, and no separate same-key check is needed.
         #
         # A supersede is LOGGED here because this is where one happens; the scan only
-        # nominates rows. IDENTITIES only, never row text -- a lesson holds whatever
-        # the user once told the agent, and this sink persists to disk.
+        # nominates rows. IDENTITIES only, never row text -- a lesson can hold
+        # whatever the user tells the agent, and this sink persists to disk.
+        #
+        # The attribution is passed INTO delete_semantic (winning key + reason), so
+        # the tombstone's record status and audit event record it durably in the
+        # database rather than only in the ``learn_add`` reply, which a
+        # timed-out-but-committed write can lose. The DB event/status write is that
+        # durable trace; the line below logs at WARNING so the same deletion is
+        # visible to a human tailing gateway.log (a default install records WARNING+
+        # to disk), not only to a query against the audit table.
         for d_key, d_report, d_body, d_reason in deferred_supersedes:
-            if not self.delete_semantic(d_key, source, expect_value_json=d_body):
+            if not self.delete_semantic(
+                d_key,
+                source,
+                expect_value_json=d_body,
+                superseded_by=key,
+                supersede_reason=d_reason,
+            ):
                 logger.info(
                     "Lesson supersede skipped: %s changed or went while %s was written",
                     d_key,
                     key,
                 )
                 continue
-            logger.info(
+            logger.warning(
                 "Lesson supersede: %s replaces %s [%s] (%s), %d so far",
                 key,
                 d_key,
