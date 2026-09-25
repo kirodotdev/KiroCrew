@@ -245,3 +245,170 @@ def test_inbound_ungoverned_permit_survives_audit_failure(monkeypatch, tmp_path)
         assert asyncio.run(identity.channel_inbound_permitted("discord")) is True
     finally:
         gp.reset_store()
+
+
+# ── Outbound channels-governance gate (a send is not a received message) ──
+
+
+def test_outbound_permitted_when_no_policy(monkeypatch, tmp_path) -> None:
+    # Default OSS build: no channels policy → every transport's outbound permits,
+    # so sends are byte-identical to a build without this gate.
+    from kiro_crew.platform import governance_profiles as gp
+
+    monkeypatch.setattr(gp, "_PROFILES_DIR", tmp_path / "profiles")
+    gp.reset_store()
+    try:
+        assert asyncio.run(identity.channel_outbound_permitted("discord")) is True
+        assert asyncio.run(identity.channel_outbound_permitted("telegram")) is True
+    finally:
+        gp.reset_store()
+
+
+def test_outbound_fail_closed_on_governance_error(monkeypatch) -> None:
+    # The caller is about to write to a destination whose standing it cannot
+    # establish, so an evaluation error DENIES.
+    def _boom(*_a, **_k):
+        raise RuntimeError("evaluation glitch")
+
+    monkeypatch.setattr("kiro_crew.messaging.identity.governance_permits", _boom)
+    assert asyncio.run(identity.channel_outbound_permitted("discord")) is False
+
+
+def test_outbound_reraises_platform_composition_error(monkeypatch) -> None:
+    # Matches the inbound sibling and the host gate: a broken composition surfaces.
+    from kiro_crew.platform.context import PlatformCompositionError
+
+    def _boom(*_a, **_k):
+        raise PlatformCompositionError("companion mismatch")
+
+    monkeypatch.setattr("kiro_crew.messaging.identity.governance_permits", _boom)
+    import pytest
+
+    with pytest.raises(PlatformCompositionError):
+        asyncio.run(identity.channel_outbound_permitted("discord"))
+
+
+def _decision(permitted: bool, layer: str):
+    return type("_D", (), {"permitted": permitted, "layer": layer, "rule": "r", "reason": "why"})()
+
+
+def test_outbound_rows_name_the_outbound_direction(monkeypatch) -> None:
+    # A send filed under an ingress name is unreadable to whoever later asks why a
+    # message did not go out, so the direction is part of the record.
+    rows: list[dict] = []
+
+    class _Sel:
+        def log_governance_decision(self, **kw):
+            rows.append(kw)
+
+    monkeypatch.setattr("kiro_crew.messaging.identity.sel", lambda: _Sel())
+    monkeypatch.setattr(
+        "kiro_crew.messaging.identity.governance_permits",
+        lambda *a, **k: _decision(False, "policy"),
+    )
+    assert asyncio.run(identity.channel_outbound_permitted("discord")) is False
+    assert [r["tool_name"] for r in rows] == ["outbound:discord"]
+    assert rows[0]["outcome"] == "denied"
+
+
+def test_the_governed_outbound_allow_row_is_written_critically(monkeypatch) -> None:
+    # The unguarded call site is what makes the failure propagate, but the flag is
+    # what tells SEL to treat the write as one that may not be dropped. Nothing else
+    # asserts it: a fake store that raises on every call fails the same way with the
+    # flag absent, so without this pin it could be removed silently.
+    rows: list[dict] = []
+
+    class _Sel:
+        def log_governance_decision(self, **kw):
+            rows.append(kw)
+
+    monkeypatch.setattr("kiro_crew.messaging.identity.sel", lambda: _Sel())
+    monkeypatch.setattr(
+        "kiro_crew.messaging.identity.governance_permits",
+        lambda *a, **k: _decision(True, "policy"),
+    )
+    assert asyncio.run(identity.channel_outbound_permitted("discord")) is True
+    assert [r["tool_name"] for r in rows] == ["outbound:discord"]
+    assert rows[0].get("critical") is True
+
+
+def test_an_unrecordable_governed_allow_fails_closed(monkeypatch) -> None:
+    # A governed allow nobody can record is not an allow: the row IS the permission
+    # event, and an egress decision is the one a reader needs most. Matches the
+    # inbound sibling, whose governed-allow write is critical and unguarded, so an
+    # unwritable store cannot leave one direction recorded and the other silent.
+    class _Sel:
+        def log_governance_decision(self, **kw):
+            raise OSError("read-only file system")
+
+    monkeypatch.setattr("kiro_crew.messaging.identity.sel", lambda: _Sel())
+    monkeypatch.setattr(
+        "kiro_crew.messaging.identity.governance_permits",
+        lambda *a, **k: _decision(True, "policy"),
+    )
+    assert asyncio.run(identity.channel_outbound_permitted("discord")) is False
+
+
+def test_an_unwritable_audit_store_still_lets_a_deny_answer(monkeypatch) -> None:
+    # The refusal already stands, so the deny row is best-effort: audit-store disk
+    # health must not turn a clean "no" into a degraded one. Asserting False alone
+    # would prove nothing -- a deny is False either way -- so this watches WHICH
+    # handler absorbed the write failure: the deny's own, not the outer degrade path.
+    degraded: list[str] = []
+
+    class _Sel:
+        def log_governance_decision(self, **kw):
+            raise OSError("read-only file system")
+
+    monkeypatch.setattr("kiro_crew.messaging.identity.sel", lambda: _Sel())
+    monkeypatch.setattr(
+        "kiro_crew.messaging.identity.audit_governance_degraded",
+        lambda *a, **k: degraded.append(a[0] if a else ""),
+    )
+    monkeypatch.setattr(
+        "kiro_crew.messaging.identity.governance_permits",
+        lambda *a, **k: _decision(False, "policy"),
+    )
+    assert asyncio.run(identity.channel_outbound_permitted("discord")) is False
+    assert degraded == []
+
+
+def test_an_unrecordable_governed_allow_reports_itself_degraded(monkeypatch) -> None:
+    # The mirror of the pin above: the allow's write is critical, so its failure must
+    # reach the outer handler and be recorded as a degraded refusal rather than pass
+    # silently. Together the two pins fix each write's criticality in place.
+    degraded: list[str] = []
+
+    class _Sel:
+        def log_governance_decision(self, **kw):
+            raise OSError("read-only file system")
+
+    monkeypatch.setattr("kiro_crew.messaging.identity.sel", lambda: _Sel())
+    monkeypatch.setattr(
+        "kiro_crew.messaging.identity.audit_governance_degraded",
+        lambda *a, **k: degraded.append(a[0] if a else ""),
+    )
+    monkeypatch.setattr(
+        "kiro_crew.messaging.identity.governance_permits",
+        lambda *a, **k: _decision(True, "policy"),
+    )
+    assert asyncio.run(identity.channel_outbound_permitted("discord")) is False
+    assert degraded == ["outbound:discord"]
+
+
+def test_an_ungoverned_outbound_allow_writes_no_row(monkeypatch) -> None:
+    # Nothing was governed, so there is no decision to record, and a row per send
+    # on an install with no policy would be hot-path write amplification.
+    rows: list[dict] = []
+
+    class _Sel:
+        def log_governance_decision(self, **kw):
+            rows.append(kw)
+
+    monkeypatch.setattr("kiro_crew.messaging.identity.sel", lambda: _Sel())
+    monkeypatch.setattr(
+        "kiro_crew.messaging.identity.governance_permits",
+        lambda *a, **k: _decision(True, ""),
+    )
+    assert asyncio.run(identity.channel_outbound_permitted("discord")) is True
+    assert rows == []

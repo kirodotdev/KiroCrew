@@ -549,7 +549,6 @@ test/test_dev_fleet_node_toolchain.py
 test/test_dev_fleet_repo_accessor.py
 test/test_dev_fleet_server_more_coverage.py
 test/test_diagnostics.py
-test/test_discord_client_coverage.py
 test/test_display_time_redaction.py
 test/test_doc_parser.py
 test/test_docker_entrypoint.py

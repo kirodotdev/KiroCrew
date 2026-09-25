@@ -177,8 +177,11 @@ class FakeClient(MultipartFake):
         self.edit_channels: list[str] = []
         self.component_edits: list[tuple[str, Any]] = []
         self.acked: list[str] = []
+        self.acked_destinations: list[str] = []
+        self.dm_pairings: dict[str, str] = {}
         #: (interaction_id, text, ephemeral) per interaction callback response.
         self.responses: list[tuple[str, str, bool]] = []
+        self.response_destinations: list[str] = []
         self.reactions: list[tuple[str, str]] = []
         self.thread_channels: set[str] = set()
         self.created_threads: list[tuple[str, str, str]] = []
@@ -240,8 +243,11 @@ class FakeClient(MultipartFake):
         self.component_edits.append((message_id, components))
         return True
 
-    async def ack_component_interaction(self, interaction_id: str, interaction_token: str) -> None:
+    async def ack_component_interaction(
+        self, interaction_id: str, interaction_token: str, *, destination: str = ""
+    ) -> None:
         self.acked.append(interaction_id)
+        self.acked_destinations.append(destination)
 
     async def respond_interaction(
         self,
@@ -251,12 +257,17 @@ class FakeClient(MultipartFake):
         *,
         ephemeral: bool = True,
         components: Any = None,
+        destination: str = "",
     ) -> bool:
         self.responses.append((interaction_id, text, ephemeral))
+        self.response_destinations.append(destination)
         return True
 
     async def add_reaction(self, channel_id: str, message_id: str, emoji: str) -> None:
         self.reactions.append((message_id, emoji))
+
+    def remember_dm_recipient(self, channel_id: str, user_id: str) -> None:
+        self.dm_pairings[channel_id] = user_id
 
     async def create_dm_channel(self, user_id: str) -> str:
         return f"dm-{user_id}"
@@ -3731,6 +3742,111 @@ class TestInteractions:
         finally:
             DiscordApprovalDecider._REGISTRY.pop(key, None)
             DiscordApprovalDecider._NONCES.pop(key, None)
+
+    @pytest.mark.asyncio
+    async def test_authorization_withdrawn_during_the_ack_stops_the_approval(self) -> None:
+        """The rosters are read once before the ack, and the ack serves the REST
+        ladder's own waits while the governance read after it is off-loop.
+
+        An operator who withdraws the user across that window must not have a stale
+        Approve press execute the governed tool, so the same two things the pre-ack
+        gate established are read again before anything resolves.
+        """
+        d, cli, _ = _dispatcher({"u1"})
+        key = DiscordApprovalDecider.key(d._session_key("u1"), "r1")
+        fut: "asyncio.Future[bool]" = asyncio.get_running_loop().create_future()
+        DiscordApprovalDecider._REGISTRY[key] = fut
+        nonce = DiscordApprovalDecider.register_nonce(key)
+
+        original_ack = cli.ack_component_interaction
+
+        async def _ack_then_revoke(*args: Any, **kwargs: Any) -> None:
+            await original_ack(*args, **kwargs)
+            d._allowed.discard("u1")
+
+        cli.ack_component_interaction = _ack_then_revoke  # type: ignore[method-assign]
+        try:
+            await d.on_interaction(self._itx(f"a:r1:{nonce}:1"))
+            assert cli.acked == ["i1"], "the ack itself still happens"
+            assert not fut.done(), "a withdrawn user must not resolve the approval"
+        finally:
+            DiscordApprovalDecider._REGISTRY.pop(key, None)
+            DiscordApprovalDecider._NONCES.pop(key, None)
+
+    @pytest.mark.asyncio
+    async def test_a_reject_press_still_lands_after_a_withdrawal(self) -> None:
+        """A REJECT is a denial, which is what a withdrawal wants. Dropping it would
+        strand the pending approval until it times out.
+
+        Its CONFIRMATION is a different thing: an outbound write into the channel.
+        The reject reaches the resolution without the re-read the sibling branch does,
+        and the edit may serve no wait at all, in which case the ladder's own re-check
+        never runs and nothing else judges it. So the verdict is withheld.
+        """
+        d, cli, _ = _dispatcher({"u1"})
+        key = DiscordApprovalDecider.key(d._session_key("u1"), "r1")
+        fut: "asyncio.Future[bool]" = asyncio.get_running_loop().create_future()
+        DiscordApprovalDecider._REGISTRY[key] = fut
+        nonce = DiscordApprovalDecider.register_nonce(key)
+
+        original_ack = cli.ack_component_interaction
+
+        async def _ack_then_revoke(*args: Any, **kwargs: Any) -> None:
+            await original_ack(*args, **kwargs)
+            d._allowed.discard("u1")
+
+        cli.ack_component_interaction = _ack_then_revoke  # type: ignore[method-assign]
+        try:
+            await d.on_interaction(self._itx(f"a:r1:{nonce}:0"))
+            assert fut.result() is False, "the denial still resolves"
+            assert cli.edits == [], "the verdict must not reach a withdrawn destination"
+        finally:
+            DiscordApprovalDecider._REGISTRY.pop(key, None)
+            DiscordApprovalDecider._NONCES.pop(key, None)
+
+    @pytest.mark.asyncio
+    async def test_a_reject_press_writes_its_verdict_while_still_authorized(self) -> None:
+        """The paired case, so the guard above cannot pass by never writing at all."""
+        d, cli, _ = _dispatcher({"u1"})
+        key = DiscordApprovalDecider.key(d._session_key("u1"), "r1")
+        fut: "asyncio.Future[bool]" = asyncio.get_running_loop().create_future()
+        DiscordApprovalDecider._REGISTRY[key] = fut
+        nonce = DiscordApprovalDecider.register_nonce(key)
+        try:
+            await d.on_interaction(self._itx(f"a:r1:{nonce}:0"))
+            assert fut.result() is False
+            assert any("Denied" in t for _, t, _ in cli.edits)
+        finally:
+            DiscordApprovalDecider._REGISTRY.pop(key, None)
+            DiscordApprovalDecider._NONCES.pop(key, None)
+
+    @pytest.mark.asyncio
+    async def test_a_dm_interaction_records_its_pairing_before_any_callback(self) -> None:
+        """Every callback answers the DM channel the press arrived on, without ever
+        opening it, and the mid-send re-check runs inside the first one.
+
+        Without the pairing a rate-limited reply to an authorized presser is refused,
+        which drops the reply rather than withholding it.
+        """
+        d, cli, _ = _dispatcher({"u1"})
+        key = DiscordApprovalDecider.key(d._session_key("u1"), "r1")
+        fut: "asyncio.Future[bool]" = asyncio.get_running_loop().create_future()
+        DiscordApprovalDecider._REGISTRY[key] = fut
+        nonce = DiscordApprovalDecider.register_nonce(key)
+        try:
+            await d.on_interaction(self._itx(f"a:r1:{nonce}:1"))
+            assert cli.dm_pairings.get("c1") == "u1"
+        finally:
+            DiscordApprovalDecider._REGISTRY.pop(key, None)
+            DiscordApprovalDecider._NONCES.pop(key, None)
+
+    @pytest.mark.asyncio
+    async def test_a_denied_presser_records_no_pairing(self) -> None:
+        """Recorded on the authorized path only, so a denied presser cannot plant a
+        pairing that would answer for their channel later."""
+        d, cli, _ = _dispatcher({"someone-else"})
+        await d.on_interaction(self._itx("a:r1:n:1"))
+        assert cli.dm_pairings == {}
 
     @pytest.mark.asyncio
     async def test_channels_deny_drops_approval_interaction(self, tmp_path, monkeypatch) -> None:

@@ -46,9 +46,10 @@ from typing import Any, Awaitable, Callable, TypeVar
 import aiohttp
 
 from kiro_crew.messaging.display_safety import redact_for_display
-from kiro_crew.messaging.identity import channel_inbound_permitted
+from kiro_crew.messaging.identity import channel_outbound_permitted
 from kiro_crew.messaging.outbound_files import OutboundFile, upload_filename
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.sel import sel
 
 _T = TypeVar("_T")
 
@@ -267,6 +268,25 @@ _BREAKER_COOLOFF_SECS = 120.0
 #: (one entry per verb per channel), so the maps are capped least-recently-used.
 _MAX_TRACKED_ROUTES = 256
 
+#: Upper bound on remembered ``DM channel id -> user id`` pairings. One entry per
+#: distinct peer this process has opened a DM with, so an operator-sized roster
+#: never approaches it. Capped least-recently-used: dropping a pairing costs only
+#: the exact peer attribution for that channel, which returns the mid-send
+#: re-check to the answer it gives for any DM it never opened.
+_MAX_TRACKED_DM_PEERS = 512
+
+#: Upper bound on remembered EVICTED DM channel ids. Reaching the pairing cap makes
+#: a later refusal of that channel mean "this process forgot the peer" rather than
+#: "an operator withdrew it", and only the id itself can tell those apart. Holding a
+#: few decides no send -- it selects the audit reason -- so this is deliberately much
+#: smaller than the pairing cap and drops the oldest first.
+_MAX_EVICTED_DM_CHANNELS = 128
+
+#: Longest accepted Discord snowflake. They are 64-bit ids rendered as decimal
+#: digits, so 20 characters is the real ceiling; the slack absorbs a future
+#: widening without retaining an unbounded string.
+_MAX_SNOWFLAKE_LEN = 32
+
 #: ``DiscordApiResult.detail`` when authorization ended while the ladder was
 #: suspended in one of its own waits. Distinct from every other blocked reason so
 #: a caller, and an operator reading the log, can tell a withdrawn destination
@@ -348,18 +368,30 @@ def _header_int(headers: Mapping[str, str], name: str) -> int | None:
     return None if value is None else int(value)
 
 
-def _remember(store: dict[str, _T], key: str, value: _T) -> None:
-    """Insert into a bounded most-recently-used map.
+def _remember(
+    store: dict[str, _T], key: str, value: _T, cap: int = _MAX_TRACKED_ROUTES
+) -> list[str]:
+    """Insert into a bounded most-recently-used map. Returns the keys it dropped.
 
     Dropping the least recently touched entry costs only the pre-emption it
     carried: the next call on that route earns a 429 and re-learns its bucket,
     which is exactly the behaviour with no accounting at all. An unbounded map
     in a process that runs for weeks is the worse failure.
+
+    ``cap`` lets a caller retaining something other than routes name its own
+    bound, so every store that grows has one. The dropped keys are returned
+    because for some stores the eviction changes what a later refusal MEANS, and
+    a caller that must say so cannot see it otherwise; a caller that does not
+    care ignores the value, as the route store does.
     """
     store.pop(key, None)
     store[key] = value
-    while len(store) > _MAX_TRACKED_ROUTES:
-        del store[next(iter(store))]
+    dropped: list[str] = []
+    while len(store) > cap:
+        oldest = next(iter(store))
+        del store[oldest]
+        dropped.append(oldest)
+    return dropped
 
 
 #: URL path separator for a Discord REST route. Fixed by the URL grammar, so
@@ -574,6 +606,16 @@ class DiscordClient:
         # channel_id -> Discord channel type. This proves a configured ID is
         # actually a thread before any shared-channel turn can run.
         self._channel_types: dict[str, int] = {}
+        # DM channel id -> the user snowflake it was opened for, learned in
+        # ``create_dm_channel``. In-process only: a DM opened before a restart is
+        # absent, which ``cached_dm_recipient`` reports as unknown rather than
+        # guessing.
+        self._dm_recipients: dict[str, str] = {}
+        # Channel ids whose pairing the cap dropped, newest last, and how many were
+        # dropped in all. Neither decides a send: they only let a refusal say that
+        # this process forgot the peer rather than that an operator withdrew it.
+        self._evicted_dm_channels: dict[str, None] = {}
+        self._dm_pairings_evicted: int = 0
         # Rate-limit accounting, per client rather than per process: the limits
         # it models are per bot token, and a second client (a test, a second
         # channel) must not inherit another's holds or breaker state.
@@ -950,6 +992,7 @@ class DiscordClient:
         *,
         ephemeral: bool = True,
         components: list[dict] | None = None,
+        destination: str = "",
     ) -> bool:
         """Answer an interaction with an immediate message.
 
@@ -966,11 +1009,16 @@ class DiscordClient:
             },
         }
         result = await self._api(
-            "POST", f"/interactions/{interaction_id}/{interaction_token}/callback", payload
+            "POST",
+            f"/interactions/{interaction_id}/{interaction_token}/callback",
+            payload,
+            destination=destination,
         )
         return result is not None
 
-    async def ack_component_interaction(self, interaction_id: str, interaction_token: str) -> None:
+    async def ack_component_interaction(
+        self, interaction_id: str, interaction_token: str, *, destination: str = ""
+    ) -> None:
         """Acknowledge a button press without changing the message.
 
         DEFERRED_UPDATE_MESSAGE stops Discord's "interaction failed" spinner;
@@ -980,6 +1028,7 @@ class DiscordClient:
             "POST",
             f"/interactions/{interaction_id}/{interaction_token}/callback",
             {"type": _CALLBACK_DEFERRED_UPDATE_MESSAGE},
+            destination=destination,
         )
 
     async def download_attachment(self, url: str, dest: str) -> None:
@@ -1023,7 +1072,82 @@ class DiscordClient:
         id, or empty string on failure. Needed for proactive sends — outbound
         messages address a channel, not a user."""
         result = await self._api("POST", "/users/@me/channels", {"recipient_id": user_id})
-        return str(result.get("id")) if result else ""
+        if not result:
+            return ""
+        channel_id = str(result.get("id"))
+        if channel_id and len(channel_id) <= _MAX_SNOWFLAKE_LEN:
+            # Discord answers with the channel alone, so this call is the one place
+            # the pairing is known for free. Holding it lets the mid-send re-check
+            # name the peer a DM channel belongs to and decide on THAT user instead
+            # of asking whether the roster admits anybody. Bounded: the store is
+            # capped least-recently-used, and both ids are length-checked before
+            # they are retained.
+            peer = str(user_id)
+            if len(peer) <= _MAX_SNOWFLAKE_LEN:
+                self._remember_dm_pairing(channel_id, peer)
+        return channel_id
+
+    def remember_dm_recipient(self, channel_id: str, user_id: str) -> None:
+        """Record a ``DM channel id -> user id`` pairing learned from inbound.
+
+        ``create_dm_channel`` is not the only place the pairing is knowable: an
+        inbound DM names both, and a reply goes to that SAME channel without ever
+        opening it. Without this, replying to an authorized DM would meet a
+        re-check that can place no peer for the channel and refuse the reply.
+
+        Bounded on the same terms as the outbound half: both ids are length-checked
+        and the store is capped least-recently-used.
+        """
+        if not channel_id or len(channel_id) > _MAX_SNOWFLAKE_LEN:
+            return
+        if not user_id or len(user_id) > _MAX_SNOWFLAKE_LEN:
+            return
+        self._remember_dm_pairing(channel_id, user_id)
+
+    def _remember_dm_pairing(self, channel_id: str, user_id: str) -> None:
+        """Record one pairing, and account for anything the cap drops to make room.
+
+        The eviction matters because it changes what a later refusal of that channel
+        MEANS: the peer is gone from this process, not from the operator's roster.
+        Recording the id keeps that distinguishable, and it is audited so an operator
+        can see the cap was reached at all rather than inferring it from refusals.
+        Re-learning a channel clears it again, so a genuine withdrawal after a
+        re-learn is not mislabelled.
+        """
+        self._evicted_dm_channels.pop(channel_id, None)
+        for dropped in _remember(
+            self._dm_recipients, channel_id, user_id, cap=_MAX_TRACKED_DM_PEERS
+        ):
+            self._dm_pairings_evicted += 1
+            _remember(self._evicted_dm_channels, dropped, None, cap=_MAX_EVICTED_DM_CHANNELS)
+            logger.info(
+                "Discord REST: the DM pairing cache is at its %d-entry cap; forgot the "
+                "peer for one channel (%d dropped in this process). A waited send to it "
+                "will be refused until the pairing is learned again.",
+                _MAX_TRACKED_DM_PEERS,
+                self._dm_pairings_evicted,
+            )
+            self._audit_mid_send_decision(dropped, "pairing_evicted", "recorded")
+
+    def cached_dm_recipient(self, channel_id: str) -> str | None:
+        """Which user does this DM channel belong to, from the cache ALONE?
+
+        ``None`` when this process never opened the channel, which is the ordinary
+        state for a proactive send whose destination came from a persisted link
+        written before a restart. Network-free by contract: the mid-send re-check
+        runs inside the REST ladder and must not issue a call that re-enters it.
+
+        Reading REFRESHES recency. The store is capped least-recently-used, so a
+        pairing that is read but never rewritten would age out while it is still in
+        active use, and the next waited send to that channel would be refused for
+        want of a peer it had.
+        """
+        peer = self._dm_recipients.get(channel_id)
+        if peer is None:
+            return None
+        self._dm_recipients.pop(channel_id, None)
+        self._dm_recipients[channel_id] = peer
+        return peer
 
     async def is_thread_channel(self, channel_id: str) -> bool:
         """Confirm ``channel_id`` is a Discord thread, failing closed.
@@ -1042,24 +1166,6 @@ class DiscordClient:
         channel_type = int(result["type"])
         self._channel_types[channel_id] = channel_type
         return channel_type in _THREAD_CHANNEL_TYPES
-
-    def cached_channel_is_thread(self, channel_id: str) -> bool | None:
-        """Is this channel a thread, from the cache ALONE? ``None`` when unseen.
-
-        The synchronous, network-free half of :meth:`is_thread_channel`, for a
-        caller that must not issue a REST call: the transport's mid-send
-        revocation predicate runs INSIDE the REST ladder, so resolving a type
-        there would re-enter the ladder it is guarding and take that call's own
-        waits. ``None`` is an honest "not known here" and the caller decides what
-        an unknown type means, rather than being handed a False that reads as
-        "confirmed not a thread".
-
-        Discord channel types are immutable, so a cached answer never goes stale.
-        """
-        cached = self._channel_types.get(channel_id)
-        if cached is None:
-            return None
-        return cached in _THREAD_CHANNEL_TYPES
 
     async def edit_message_components(
         self, channel_id: str, message_id: str, components: list[dict]
@@ -1427,7 +1533,7 @@ class DiscordClient:
             return wait
         return 0.0
 
-    async def _destination_still_permitted(self, path: str) -> bool:
+    async def _destination_still_permitted(self, path: str, destination_hint: str = "") -> bool:
         """May this route still reach its destination RIGHT NOW? Fails closed.
 
         Asked again after each of the ladder's own waits, because a wait is time
@@ -1438,33 +1544,107 @@ class DiscordClient:
         Two authorities, both consulted, neither sufficient alone:
 
         * the operator's ``channels`` ceiling for Discord, which the messaging seam
-          owns for every channel. Global to the channel, so it is answerable from
-          the client alone and is read even with no predicate wired;
+          owns for every channel, read through the OUTBOUND entry point so the row
+          it leaves names the direction it decided. Global to the channel, so it is
+          answerable from the client alone and is read even with no predicate wired;
         * the transport's live rosters via :attr:`still_permitted`, which is where
           the per-destination decision lives. The client holds no roster of its
           own on purpose -- duplicating one here is how outbound and inbound drift
           apart.
 
-        Only the ceiling is read for a route that names no channel, and neither is
-        read on the happy path: this runs solely after a wait was served, so a
-        send that never waits pays nothing for it.
+        The route is classified FIRST, but only to settle WHICH id names the
+        destination: a route naming a channel in its path uses that, a route naming
+        none uses the ``destination_hint`` its caller supplied, and a route naming
+        neither reads nothing. Both authorities then apply to whichever id was
+        settled on, in that order, with the ROSTER LAST -- the governance read is an
+        await, so a roster reading taken before it describes a destination that may
+        already have been withdrawn.
+
+        Neither authority is read on the happy path either: this runs solely after a
+        wait was served, so a send that never waits pays nothing for it.
+
+        Every outcome is audited, allow as well as refusal. This is a network egress
+        decision taken on an already-composed, user-visible message, and the ladder's
+        own result carries it no further than the caller, so the SEL row is the record
+        it leaves. Only a route that actually waited reaches here, so the rows are
+        paced by rate limits and back-offs rather than by traffic.
         """
-        if not await channel_inbound_permitted("discord"):
+        # The path names the destination when it can; otherwise the caller does.
+        # An interaction or webhook reply carries its destination inside an opaque
+        # token, so its path cannot yield one while the dispatcher holds it.
+        destination = _guarded_destination(path) or destination_hint
+        if not destination:
+            return True
+        if not await channel_outbound_permitted("discord"):
+            self._audit_mid_send_decision(destination, "channels_ceiling", "denied")
             return False
-        destination = _guarded_destination(path)
-        if not destination or self.still_permitted is None:
+        if self.still_permitted is None:
+            # The ceiling is the whole decision when no roster is installed, so it
+            # is the allow that gets recorded.
+            self._audit_mid_send_decision(destination, "channels_ceiling", "allowed")
+            return True
+        # The governance read above is itself an await, so any roster reading taken
+        # before it describes a destination that could have been withdrawn since.
+        # This read is the LAST thing that happens before the caller writes, which
+        # is the whole contract of this predicate: a cheaper ordering that answers
+        # from a reading taken before a suspension reintroduces the defect one
+        # layer up.
+        return self._roster_still_permits(destination)
+
+    def _roster_still_permits(self, destination: str) -> bool:
+        """Ask the transport's live rosters about one destination. Fails closed.
+
+        Synchronous and in-memory by contract, so it is the half of the re-check a
+        deadline-bound route can afford. A predicate that cannot answer is read as
+        a refusal: this is a network egress boundary.
+        """
+        if self.still_permitted is None:
             return True
         try:
-            return bool(self.still_permitted(destination))
+            if self.still_permitted(destination):
+                self._audit_mid_send_decision(destination, "roster", "allowed")
+                return True
+            # A destination whose pairing THIS process dropped to honour the cap is
+            # refused for want of a peer, which is not the same event as an operator
+            # withdrawing it. Reading them as one sends whoever is debugging it after
+            # a policy change that never happened.
+            authority = (
+                "pairing_truncated" if destination in self._evicted_dm_channels else "roster"
+            )
+            self._audit_mid_send_decision(destination, authority, "denied")
+            return False
         except Exception:
             logger.warning(
                 "Discord REST: the destination predicate raised while re-checking a "
                 "route after a wait; treating the destination as withdrawn",
                 exc_info=True,
             )
+            self._audit_mid_send_decision(destination, "predicate_raised", "denied")
             return False
 
-    async def _wait_then_revalidate(self, path: str, delay: float) -> bool:
+    def _audit_mid_send_decision(self, destination: str, authority: str, outcome: str) -> None:
+        """Record one mid-send egress decision, naming which authority decided.
+
+        Best-effort on purpose: the decision itself already stands, and letting an
+        unwritable audit store raise here would turn every throttled send on a
+        governed install into an exception instead of a clean answer.
+        """
+        try:
+            sel().log_api_access(
+                caller=destination,
+                operation=f"discord_client.mid_send_revocation.{authority}",
+                outcome=outcome,
+                source="discord",
+            )
+        except Exception:
+            logger.warning(
+                "Discord REST: could not record the mid-send decision audit event",
+                exc_info=True,
+            )
+
+    async def _wait_then_revalidate(
+        self, path: str, delay: float, destination_hint: str = ""
+    ) -> bool:
         """Serve one of the ladder's back-offs, then re-ask authorization.
 
         The two belong together: a back-off served without the re-check after it
@@ -1472,7 +1652,7 @@ class DiscordClient:
         new wait site from being added with only half of the pair.
         """
         await asyncio.sleep(delay)
-        return await self._destination_still_permitted(path)
+        return await self._destination_still_permitted(path, destination_hint)
 
     def _note_rate_limit(self, route: str, data: Any, headers: Mapping[str, str]) -> float:
         """Record a 429 and return the back-off this attempt must serve.
@@ -1549,7 +1729,13 @@ class DiscordClient:
     # -- Request ladder -----------------------------------------------------
 
     async def api_json(
-        self, method: str, path: str, payload: dict | list | None, *, timeout: int = 30
+        self,
+        method: str,
+        path: str,
+        payload: dict | list | None,
+        *,
+        timeout: int = 30,
+        destination: str = "",
     ) -> DiscordApiResult:
         """Call a REST endpoint with a JSON body, reporting the outcome.
 
@@ -1557,7 +1743,11 @@ class DiscordClient:
         takes a top-level JSON array, not an object.
         """
         return await self._api_request(
-            method, path, timeout=timeout, build=lambda: {"json": payload}
+            method,
+            path,
+            timeout=timeout,
+            build=lambda: {"json": payload},
+            destination=destination,
         )
 
     async def api_files(
@@ -1584,12 +1774,20 @@ class DiscordClient:
         )
 
     async def _api(
-        self, method: str, path: str, payload: dict | list | None, timeout: int = 30
+        self,
+        method: str,
+        path: str,
+        payload: dict | list | None,
+        timeout: int = 30,
+        *,
+        destination: str = "",
     ) -> Any:
         """:meth:`api_json` reduced to its body: the parsed JSON ({} for a 204)
         or None on any failure. The verbs that can only answer "did it land"
         use this; anything that must act on WHY calls ``api_json``."""
-        return (await self.api_json(method, path, payload, timeout=timeout)).data
+        return (
+            await self.api_json(method, path, payload, timeout=timeout, destination=destination)
+        ).data
 
     async def _api_multipart(
         self,
@@ -1613,6 +1811,7 @@ class DiscordClient:
         *,
         timeout: int,
         build: Callable[[], dict[str, Any]],
+        destination: str = "",
     ) -> DiscordApiResult:
         """Shared REST ladder. ``build`` supplies the per-ATTEMPT body kwargs.
 
@@ -1643,7 +1842,7 @@ class DiscordClient:
                 return _failed(DISCORD_BLOCKED, detail="invalid-request breaker open")
             if not served_backoff:
                 if await self._await_capacity(route, exempt=exempt) > 0:
-                    if not await self._destination_still_permitted(path):
+                    if not await self._destination_still_permitted(path, destination):
                         return _failed(DISCORD_BLOCKED, detail=_REVOKED_DETAIL)
             served_backoff = False
             try:
@@ -1687,7 +1886,7 @@ class DiscordClient:
                                 delay,
                             )
                             return _failed(DISCORD_TRANSIENT, status=429, detail="rate limited")
-                        if not await self._wait_then_revalidate(path, delay):
+                        if not await self._wait_then_revalidate(path, delay, destination):
                             return _failed(DISCORD_BLOCKED, detail=_REVOKED_DETAIL)
                         served_backoff = True
                         continue
@@ -1711,7 +1910,7 @@ class DiscordClient:
                             resp.status,
                             backoff,
                         )
-                        if not await self._wait_then_revalidate(path, backoff):
+                        if not await self._wait_then_revalidate(path, backoff, destination):
                             return _failed(DISCORD_BLOCKED, detail=_REVOKED_DETAIL)
                         continue
                     # Anything else below 500 will fail identically forever: a
@@ -1741,7 +1940,9 @@ class DiscordClient:
                 )
                 if transient > _TRANSIENT_RETRIES:
                     return _failed(DISCORD_TRANSIENT, detail=type(exc).__name__)
-                if not await self._wait_then_revalidate(path, _TRANSIENT_BACKOFF_SECS * transient):
+                if not await self._wait_then_revalidate(
+                    path, _TRANSIENT_BACKOFF_SECS * transient, destination
+                ):
                     return _failed(DISCORD_BLOCKED, detail=_REVOKED_DETAIL)
 
 

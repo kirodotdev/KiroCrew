@@ -36,6 +36,7 @@ class _Client(MultipartFake):
         self.sent: list[tuple[str, Any]] = []
         self.edits: list[tuple[str, str, Any]] = []
         self.acked: list[str] = []
+        self.dm_pairings: dict[str, str] = {}
         self._mid = 100
         self.send_fails = False
 
@@ -72,7 +73,12 @@ class _Client(MultipartFake):
     ) -> bool:
         return True
 
-    async def ack_component_interaction(self, interaction_id: str, token: str) -> None:
+    def remember_dm_recipient(self, channel_id: str, user_id: str) -> None:
+        self.dm_pairings[channel_id] = user_id
+
+    async def ack_component_interaction(
+        self, interaction_id: str, token: str, *, destination: str = ""
+    ) -> None:
         self.acked.append(interaction_id)
 
     async def send_typing(self, channel_id: str) -> None:
