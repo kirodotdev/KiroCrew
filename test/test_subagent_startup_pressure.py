@@ -4,9 +4,9 @@ monitoring.py).
 A fan-out is bounded by three different quantities. ``_max_concurrent`` bounds
 how many agents RUN; ``_spawn_stagger_secs`` bounds the RATE of starts; and --
 new here -- ``_startup_cap`` bounds how many admitted agents are IN STARTUP at
-once (``_exec_started`` set, no runtime PID, no first provider stream, no turn
--- plus a ``ClaimPoint`` reservation not yet registered; an agent parked at the
-spawn-approval prompt is NOT counted, its release is metered by the pump).
+once (``_exec_started`` set, no runtime PID, no answer on its own session, no
+turn -- plus a ``ClaimPoint`` reservation not yet registered; an agent parked at
+the spawn-approval prompt is NOT counted, its release is metered by the pump).
 Without the third bound one start was admitted per interval however long each
 took, and under slow starts a wide fan-out piled dozens of agents into startup
 together; the fixed 120s startup watchdog then reaped healthy starts as
@@ -15,7 +15,7 @@ together; the fixed 120s startup watchdog then reaped healthy starts as
 
 Guard A: ``_should_stagger_queue`` and the drain pump hold further spawns in the
 EXISTING queue while the in-startup population is at ``_startup_cap``; the
-queue wakes on a PID / first stream (``_note_startup_progress``) and on the
+queue wakes on a PID / first answer (``_note_startup_progress``) and on the
 slot-release drain of a terminal, including the watchdog's reap of a wedged
 start, so a wedged population cannot hold the queue past its reap.
 
@@ -29,6 +29,7 @@ the single-agent contract of ``test_subagent_startup_watchdog.py`` intact.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -560,11 +561,144 @@ async def test_a_released_start_that_is_stopped_while_waiting_never_runs() -> No
             await mgr._force_reap(third.id, live, 1.0, reason="user_stop")
             await _settle()
             assert live.done is True
+            # A stop is a stop, not a rejection: the reap owns the record and
+            # the release path writes nothing over it.
+            assert live.user_stopped is True
+            assert "spawn rejected" not in live.error
             assert not mgr._queue  # the entry went with it
             runs.progress(mgr, first)
             await _settle()
             assert runs.started == [first.id, second.id]  # never metered in
         finally:
+            await _close(mgr, runs)
+
+
+@pytest.mark.asyncio
+async def test_a_reap_while_waiting_is_announced_as_a_reap_not_a_rejection() -> None:
+    """Same wait, ended by the watchdog's reap instead of a stop: the error
+    names the interrupted wait (the reap's own vocabulary), the spawn is never
+    recorded as started, and no ``rejected`` audit is written."""
+    pending: dict[str, asyncio.Future] = {}
+    trusted: list = []
+    with _StartupRuns() as runs:
+        mgr = _manager(max_concurrent=8, gate_width=1)
+        mgr._spawn_stagger_secs = 0.0
+        _interactive(mgr, pending, trusted)
+        mgr._sessions.reset = AsyncMock()
+        mgr._sigkill_session = AsyncMock()  # type: ignore[method-assign]
+        mgr._write_tombstone = MagicMock()  # type: ignore[method-assign]
+        mgr._record_cost = MagicMock()  # type: ignore[method-assign]
+        mgr._fire_event = AsyncMock()  # type: ignore[method-assign]
+        mgr._log_spawned = MagicMock()  # type: ignore[method-assign]
+        await mgr.wait_taskq_ready()
+        try:
+            first, second, third = [await _spawn(mgr, f"p-{i}") for i in range(3)]
+            trusted.append(True)
+            for fut in list(pending.values()):
+                fut.set_result(True)
+            await _settle()
+            assert runs.started == [first.id, second.id]
+            live = mgr._agents[third.id]
+            assert live._start_release is not None
+            # Only the two starts that actually ran are recorded as spawned.
+            assert [c.args[0].id for c in mgr._log_spawned.call_args_list] == [first.id, second.id]
+
+            with patch("kiro_crew.subagent.sel") as sel_mock:
+                await mgr._force_reap(third.id, live, 300.0, reason="timeout")
+                await _settle()
+                audited = [
+                    c.kwargs.get("outcome")
+                    for c in sel_mock.return_value.log_tool_invocation.call_args_list
+                ]
+            assert live.done is True and live.reaped is True
+            assert "waiting to be admitted into startup after spawn approval" in live.error
+            assert "spawn rejected" not in live.error
+            assert "rejected" not in audited
+            assert [c.args[0].id for c in mgr._log_spawned.call_args_list] == [first.id, second.id]
+        finally:
+            await _close(mgr, runs)
+
+
+@pytest.mark.asyncio
+async def test_a_temporary_start_reaped_while_waiting_leaves_nothing_on_disk() -> None:
+    """A non-persistent spawn is recorded (its live-run state seeded) only once
+    it is admitted, so a reap while it waits for the bound finds neither that
+    state nor a ``state.json``: the run's own mode is what keeps its tombstone
+    off the disk. The real ``_write_tombstone`` runs here."""
+    from kiro_crew.subagent_persistence import _agent_dir
+
+    pending: dict[str, asyncio.Future] = {}
+    trusted: list = []
+    with _StartupRuns() as runs:
+        mgr = _manager(max_concurrent=8, gate_width=1)
+        mgr._spawn_stagger_secs = 0.0
+        _interactive(mgr, pending, trusted)
+        mgr._memory_mode_for_session = lambda _key: "temporary"
+        mgr._sessions.reset = AsyncMock()
+        mgr._sigkill_session = AsyncMock()  # type: ignore[method-assign]
+        mgr._record_cost = MagicMock()  # type: ignore[method-assign]
+        mgr._fire_event = AsyncMock()  # type: ignore[method-assign]
+        await mgr.wait_taskq_ready()
+        try:
+            first, second, third = [await _spawn(mgr, f"t-{i}") for i in range(3)]
+            trusted.append(True)
+            for fut in list(pending.values()):
+                fut.set_result(True)
+            await _settle()
+            assert runs.started == [first.id, second.id]
+            live = mgr._agents[third.id]
+            assert live.memory_mode == "temporary"
+            assert live._start_release is not None
+            await mgr._force_reap(third.id, live, 300.0, reason="timeout")
+            await _settle()
+            assert live.done is True and live.reaped is True
+            assert not (_agent_dir(third.id) / "tombstone.json").exists()
+            assert not _agent_dir(third.id).exists()
+        finally:
+            await _close(mgr, runs)
+
+
+@pytest.mark.asyncio
+async def test_admission_closed_at_release_refuses_the_approved_start() -> None:
+    """The prompt resolves after the updater closed gateway admission: the
+    start is refused with its own rejection (slot released, ``rejected`` /
+    ``admission_closed`` audited, parent announced), is never recorded as
+    spawned, and never runs."""
+    pending: dict[str, asyncio.Future] = {}
+    trusted: list = []
+    announced: list = []
+
+    async def _on_done(info):  # noqa: ANN001
+        announced.append(info)
+
+    with _StartupRuns() as runs:
+        mgr = _manager(max_concurrent=8, gate_width=1)
+        mgr._spawn_stagger_secs = 0.0
+        _interactive(mgr, pending, trusted)
+        mgr._on_done = _on_done
+        mgr._log_spawned = MagicMock()  # type: ignore[method-assign]
+        await mgr.wait_taskq_ready()
+        try:
+            only = await _spawn(mgr, "late")
+            assert mgr._running_count == 1
+            mgr._sessions.admission_closed = True
+            with patch("kiro_crew.subagent.sel") as sel_mock:
+                pending.pop(f"spawn:{only.id}").set_result(True)
+                await _settle()
+                reasons = [
+                    c.kwargs.get("metadata", {}).get("reason")
+                    for c in sel_mock.return_value.log_tool_invocation.call_args_list
+                    if c.kwargs.get("outcome") == "rejected"
+                ]
+            live = mgr._agents[only.id]
+            assert runs.started == []
+            assert live.done is True and "gateway closed admission" in live.error
+            assert reasons == ["admission_closed"]
+            assert mgr._running_count == 0
+            assert [a.id for a in announced] == [only.id]
+            mgr._log_spawned.assert_not_called()
+        finally:
+            mgr._sessions.admission_closed = False
             await _close(mgr, runs)
 
 
@@ -698,6 +832,408 @@ async def test_reaper_sweep_reaps_at_the_base_deadline_under_a_crowd(monkeypatch
 
     assert reaped == [("wedged", "startup_timeout")]
     assert fresh.done is False
+
+
+# ── Leaving startup takes a produced event, not an opened stream ───────────
+
+
+class TestStreamOpenIsNotProgress:
+    @staticmethod
+    def _sessions_with_stream(stream_factory) -> MagicMock:
+        provider = AsyncMock()
+        provider.start = AsyncMock()
+        provider.shutdown = AsyncMock()
+        provider.context_usage_pct = lambda: 0.0
+        provider.context_used_tokens = MagicMock(return_value=0)
+        provider.context_window_tokens = MagicMock(return_value=0)
+        # Synchronous on the provider contract: as an AsyncMock child it would
+        # hand back a coroutine nobody awaits.
+        provider.mcp_session_report = MagicMock(return_value=None)
+        provider.stream = MagicMock(side_effect=stream_factory)
+        sessions = mock_sessions()
+        sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
+        sessions.record_success = MagicMock()
+        return sessions
+
+    @pytest.mark.asyncio
+    async def test_a_stream_that_opens_and_yields_nothing_is_still_reaped(self) -> None:
+        """A provider whose ``stream()`` is entered but never yields is a start
+        that is not starting: it stays in startup (``_in_startup`` True, no
+        first-stream stamp, no pump wake) and the watchdog reaps it at the base
+        deadline. Stamping at stream open would let exactly this hang evade
+        both."""
+        from kiro_crew.execution_context import execution_for_store
+        from kiro_crew.subagent_persistence import create_agent_folder
+
+        opened = asyncio.Event()
+        never = asyncio.get_event_loop().create_future()
+
+        async def _hung_stream(*_a, **_k):
+            opened.set()
+            await never
+            yield  # pragma: no cover -- unreachable
+
+        sessions = self._sessions_with_stream(_hung_stream)
+        ctx = MagicMock()
+        ctx.build_message = MagicMock(return_value=("message", None))
+        ctx.hooks.auto_approve_subagent_tools = False
+        mgr = SubagentManager(sessions=sessions, ctx_builder=ctx, startup_timeout=120)
+        mgr._should_use_session_sharing = MagicMock(return_value=False)  # type: ignore[method-assign]
+        mgr._note_startup_progress = MagicMock()  # type: ignore[method-assign]
+        info = _info("f00d1234", execution_context=execution_for_store(""))
+        _register(mgr, info)
+        await asyncio.to_thread(
+            create_agent_folder, info.id, execution_context=info.execution_context
+        )
+        task = asyncio.ensure_future(mgr._run_inner(info, "subagent:f00d1234"))
+        try:
+            await asyncio.wait_for(opened.wait(), 5.0)
+            await _settle()
+            assert info._exec_started is not None
+            assert info._first_stream_started is None
+            assert SubagentManager._in_startup(info) is True
+            mgr._note_startup_progress.assert_not_called()
+            assert mgr._is_startup_stalled(info, now=info._exec_started + 120.5) is True
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_the_first_event_received_leaves_startup(self) -> None:
+        """The counterpart: one event out of the stream stamps the marker,
+        takes the run out of startup and wakes the pump once."""
+        from kiro_crew.execution_context import execution_for_store
+        from kiro_crew.providers.base import EVENT_COMPLETE
+        from kiro_crew.subagent_persistence import create_agent_folder
+
+        async def _one_event(*_a, **_k):
+            yield SimpleNamespace(kind=EVENT_COMPLETE, stop_reason="end_turn", runtime_global=False)
+
+        sessions = self._sessions_with_stream(_one_event)
+        ctx = MagicMock()
+        ctx.build_message = MagicMock(return_value=("message", None))
+        ctx.hooks.auto_approve_subagent_tools = False
+        mgr = SubagentManager(sessions=sessions, ctx_builder=ctx, startup_timeout=120)
+        mgr._should_use_session_sharing = MagicMock(return_value=False)  # type: ignore[method-assign]
+        mgr._note_startup_progress = MagicMock()  # type: ignore[method-assign]
+        info = _info("f00d5678", execution_context=execution_for_store(""))
+        _register(mgr, info)
+        await asyncio.to_thread(
+            create_agent_folder, info.id, execution_context=info.execution_context
+        )
+        await mgr._run_inner(info, "subagent:f00d5678")
+        assert info._first_stream_started is not None
+        mgr._note_startup_progress.assert_called_once_with(info)
+
+    @pytest.mark.asyncio
+    async def test_a_completion_withheld_for_recovery_is_an_answer(self) -> None:
+        """A recoverable completion as the stream's FIRST frame never reaches the
+        loop that consumes the stream (it is withheld for in-place recovery),
+        but it is the backend answering: the run leaves startup on it, before
+        the recovery wait, not after."""
+        from kiro_crew.acp.types import STOP_REASON_TOOL_STALL
+        from kiro_crew.execution_context import execution_for_store
+        from kiro_crew.providers.base import EVENT_COMPLETE
+        from kiro_crew.subagent_persistence import create_agent_folder
+
+        seen: dict[str, object] = {}
+        calls: list[str] = []
+
+        async def _stream(msg, *_a, **_k):
+            calls.append(msg)
+            if len(calls) == 1:
+                yield SimpleNamespace(
+                    kind=EVENT_COMPLETE,
+                    stop_reason=STOP_REASON_TOOL_STALL,
+                    text="",
+                    title="",
+                    tool_input="",
+                    runtime_global=False,
+                )
+                return
+            yield SimpleNamespace(kind=EVENT_COMPLETE, stop_reason="end_turn", runtime_global=False)
+
+        sessions = self._sessions_with_stream(_stream)
+        ctx = MagicMock()
+        ctx.build_message = MagicMock(return_value=("message", None))
+        ctx.hooks.auto_approve_subagent_tools = False
+        mgr = SubagentManager(sessions=sessions, ctx_builder=ctx, startup_timeout=120)
+        mgr._should_use_session_sharing = MagicMock(return_value=False)  # type: ignore[method-assign]
+        mgr._note_startup_progress = MagicMock()  # type: ignore[method-assign]
+        info = _info("f00dcafe", execution_context=execution_for_store(""))
+        _register(mgr, info)
+
+        async def _recovery(live, _event):
+            seen["marker"] = live._first_stream_started
+            seen["in_startup"] = SubagentManager._in_startup(live)
+            return "continue"
+
+        mgr._yield_for_stop_recovery = _recovery  # type: ignore[method-assign]
+        await asyncio.to_thread(
+            create_agent_folder, info.id, execution_context=info.execution_context
+        )
+        await mgr._run_inner(info, "subagent:f00dcafe")
+        assert calls[1] == "continue"
+        assert seen["marker"] is not None
+        assert seen["in_startup"] is False
+        mgr._note_startup_progress.assert_called_once_with(info)
+
+
+# ── A PID ends startup before any stream, on every runtime-backed start ────
+#
+# The first-answer marker is the startup exit only for a start that publishes
+# no runtime PID. Both AcpRuntime-backed paths record one before the stream
+# opens -- the dedicated path from ``get_pid`` after ``get_or_create``, the
+# shared path from ``runtime.pid`` at ``_bind_shared_handle`` -- so for them the
+# startup window closes at the PID and never reaches the first frame of the
+# turn. That ordering is what keeps the window a start budget rather than a
+# first-token budget on these paths; pinned here so moving the PID record past
+# the stream cannot pass silently.
+
+
+class TestAPidEndsStartupBeforeTheStream:
+    @pytest.mark.asyncio
+    async def test_dedicated_start_is_out_of_startup_when_its_stream_opens(self) -> None:
+        from kiro_crew.execution_context import execution_for_store
+        from kiro_crew.providers.base import EVENT_COMPLETE
+        from kiro_crew.subagent_persistence import create_agent_folder
+
+        at_open: dict[str, object] = {}
+        holder: dict[str, SubagentInfo] = {}
+
+        async def _stream(*_a, **_k):
+            live = holder["info"]
+            at_open.update(
+                pid=live._pid,
+                marker=live._first_stream_started,
+                in_startup=SubagentManager._in_startup(live),
+            )
+            yield SimpleNamespace(kind=EVENT_COMPLETE, stop_reason="end_turn", runtime_global=False)
+
+        sessions = TestStreamOpenIsNotProgress._sessions_with_stream(_stream)
+        sessions.get_pid = MagicMock(return_value=_UNALLOCATABLE_PID)
+        ctx = MagicMock()
+        ctx.build_message = MagicMock(return_value=("message", None))
+        ctx.hooks.auto_approve_subagent_tools = False
+        mgr = SubagentManager(sessions=sessions, ctx_builder=ctx, startup_timeout=120)
+        mgr._should_use_session_sharing = MagicMock(return_value=False)  # type: ignore[method-assign]
+        mgr._note_startup_progress = MagicMock()  # type: ignore[method-assign]
+        info = _info("f00d0001", execution_context=execution_for_store(""))
+        holder["info"] = info
+        _register(mgr, info)
+        await asyncio.to_thread(
+            create_agent_folder, info.id, execution_context=info.execution_context
+        )
+        await mgr._run_inner(info, "subagent:f00d0001")
+        assert at_open == {"pid": _UNALLOCATABLE_PID, "marker": None, "in_startup": False}
+
+    @pytest.mark.asyncio
+    async def test_shared_start_is_out_of_startup_at_bind(self) -> None:
+        from kiro_crew.execution_context import execution_for_store
+        from kiro_crew.subagent_persistence import create_agent_folder
+
+        mgr = _manager()
+        mgr._note_startup_progress = MagicMock()  # type: ignore[method-assign]
+        info = _starting("f00d0002", execution_context=execution_for_store(""))
+        _register(mgr, info)
+        await asyncio.to_thread(
+            create_agent_folder, info.id, execution_context=info.execution_context
+        )
+        runtime = MagicMock()
+        runtime.pid = _UNALLOCATABLE_PID
+        handle = MagicMock()
+        handle.session_id = "shared-session-1"
+        handle.memory_mode = "persistent"
+        assert SubagentManager._in_startup(info) is True
+        await mgr._bind_shared_handle(info, "subagent:f00d0002", runtime, handle)
+        assert info._pid == _UNALLOCATABLE_PID
+        assert info._first_stream_started is None
+        assert SubagentManager._in_startup(info) is False
+        mgr._note_startup_progress.assert_called_once_with(info)
+
+
+# ── A co-tenant's fanned-out frame is not this start's answer ─────────────
+
+
+def _shared_runtime(work_dir) -> tuple[object, asyncio.StreamReader, list[dict]]:
+    """A REAL ``AcpRuntime`` over in-memory pipes.
+
+    A line fed to the returned reader goes through the real ``_reader_loop`` --
+    routing by ``sessionId``, the ownerless broadcast and its ``fanout_no_owner``
+    mark -- and every request the runtime writes is parsed into the list.
+    """
+    from kiro_crew.acp.runtime import AcpRuntime
+
+    runtime = AcpRuntime(work_dir=str(work_dir))
+    reader = asyncio.StreamReader()
+    written: list[dict] = []
+    stdin = MagicMock()
+    stdin.write = MagicMock(side_effect=lambda data: written.append(json.loads(data)))
+    stdin.drain = AsyncMock()
+    proc = MagicMock()
+    proc.stdout = reader
+    proc.stdin = stdin
+    proc.returncode = None
+    proc.pid = _UNALLOCATABLE_PID
+    runtime._process = proc
+    runtime._pid = _UNALLOCATABLE_PID
+    runtime._initialized = True
+    return runtime, reader, written
+
+
+async def _until(predicate, what: str, ceiling: float = 10.0) -> None:
+    """Wait on observable state, never on a guessed sleep."""
+    deadline = time.monotonic() + ceiling
+    while not predicate():
+        if time.monotonic() > deadline:
+            raise AssertionError(f"never observed: {what}")
+        await asyncio.sleep(0.01)
+
+
+class TestOnlyThisSessionsFrameIsItsAnswer:
+    @pytest.mark.asyncio
+    async def test_a_routed_roster_frame_is_the_sessions_own_answer(self) -> None:
+        """Provenance, not event kind: the SAME roster kind reached through a
+        routed frame (the KAS sub-agent lifecycle path) belongs to this session,
+        so it takes the run out of startup and issues the ``running`` mark. An
+        event-kind exclusion would keep this run in startup on its own
+        progress."""
+        from kiro_crew.execution_context import execution_for_store
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_SUBAGENT_LIST
+        from kiro_crew.subagent_persistence import create_agent_folder
+
+        seen: dict[str, object] = {}
+        holder: dict[str, SubagentInfo] = {}
+
+        async def _stream(*_a, **_k):
+            live = holder["info"]
+            yield SimpleNamespace(kind=EVENT_SUBAGENT_LIST, subagents=[], runtime_global=False)
+            seen.update(
+                marker=live._first_stream_started,
+                marked=live._taskq_running_marked,
+                in_startup=SubagentManager._in_startup(live),
+            )
+            yield SimpleNamespace(kind=EVENT_COMPLETE, stop_reason="end_turn", runtime_global=False)
+
+        sessions = TestStreamOpenIsNotProgress._sessions_with_stream(_stream)
+        ctx = MagicMock()
+        ctx.build_message = MagicMock(return_value=("message", None))
+        ctx.hooks.auto_approve_subagent_tools = False
+        mgr = SubagentManager(sessions=sessions, ctx_builder=ctx, startup_timeout=120)
+        mgr._should_use_session_sharing = MagicMock(return_value=False)  # type: ignore[method-assign]
+        mgr._note_startup_progress = MagicMock()  # type: ignore[method-assign]
+        info = _info("f00d0004", execution_context=execution_for_store(""))
+        holder["info"] = info
+        _register(mgr, info)
+        await asyncio.to_thread(
+            create_agent_folder, info.id, execution_context=info.execution_context
+        )
+        await mgr._run_inner(info, "subagent:f00d0004")
+        assert seen["marker"] is not None
+        assert seen["marked"] is True
+        assert seen["in_startup"] is False
+        mgr._note_startup_progress.assert_called_once_with(info)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("fanned_out", ["roster", "mcp_registration"])
+    async def test_a_co_tenants_fanned_out_frame_neither_starts_nor_marks_the_run(
+        self, tmp_path, fanned_out: str
+    ) -> None:
+        """Two sessions on ONE real runtime. The runtime fans an ownerless frame
+        out to both -- the roster (``_kiro.dev/subagent/list_update``) or an MCP
+        registration naming no session (``_kiro.dev/mcp/server_initialized``);
+        the subagent's real ``AcpSessionHandle`` turns it into a
+        ``runtime_global`` event of that kind and the real ``AcpSessionProvider``
+        hands it to ``_run_inner``. That is another tenant's traffic: the run
+        keeps its startup marker clear and issues no ``running`` mark on it. The
+        first frame addressed to its own session does both. Both kinds are
+        driven so a test on one event kind cannot stand in for the provenance
+        test."""
+        from kiro_crew.acp.session_handle import AcpSessionHandle
+        from kiro_crew.acp.types import (
+            METHOD_MCP_SERVER_INITIALIZED,
+            METHOD_SUBAGENT_LIST_UPDATE,
+        )
+        from kiro_crew.execution_context import execution_for_store
+        from kiro_crew.subagent_persistence import create_agent_folder
+
+        frame = (
+            {"method": METHOD_SUBAGENT_LIST_UPDATE, "params": {"subagents": []}}
+            if fanned_out == "roster"
+            else {"method": METHOD_MCP_SERVER_INITIALIZED, "params": {"serverName": "other"}}
+        )
+
+        runtime, reader, written = _shared_runtime(tmp_path)
+        parent_q: asyncio.Queue = asyncio.Queue()
+        sub_q: asyncio.Queue = asyncio.Queue()
+        runtime._session_queues.update({"parent-sid": parent_q, "sub-sid": sub_q})
+        handle = AcpSessionHandle("sub-sid", sub_q, runtime)
+
+        ctx = MagicMock()
+        ctx.build_message = MagicMock(return_value=("message", None))
+        ctx.hooks.auto_approve_subagent_tools = False
+        mgr = SubagentManager(sessions=mock_sessions(), ctx_builder=ctx, startup_timeout=120)
+        mgr._should_use_session_sharing = MagicMock(return_value=True)  # type: ignore[method-assign]
+        mgr._note_startup_progress = MagicMock()  # type: ignore[method-assign]
+
+        async def _create_shared(info, session_key, _agent):
+            return await mgr._bind_shared_handle(info, session_key, runtime, handle)
+
+        mgr._create_shared_session = _create_shared  # type: ignore[method-assign]
+        info = _info("f00d0003", execution_context=execution_for_store(""))
+        _register(mgr, info)
+        await asyncio.to_thread(
+            create_agent_folder, info.id, execution_context=info.execution_context
+        )
+
+        def _feed(frame: dict) -> None:
+            reader.feed_data((json.dumps(frame) + "\n").encode())
+
+        pump = asyncio.ensure_future(runtime._reader_loop())
+        run = asyncio.ensure_future(mgr._run_inner(info, "subagent:f00d0003"))
+        try:
+            await _until(
+                lambda: any(r.get("method") == "session/prompt" for r in written),
+                "the subagent's session/prompt",
+            )
+            prompt_id = next(r["id"] for r in written if r.get("method") == "session/prompt")
+            _feed(frame)
+            # Delivered to BOTH sessions, and consumed off the subagent's queue.
+            await _until(
+                lambda: parent_q.qsize() == 1 and sub_q.empty(),
+                "the frame fanned out to both sessions",
+            )
+            await asyncio.sleep(0)
+            assert parent_q.get_nowait().fanout_no_owner is True
+            assert info._first_stream_started is None
+            assert info._taskq_running_marked is False
+            # The one wake so far is the runtime PID recorded at bind.
+            mgr._note_startup_progress.assert_called_once_with(info)
+
+            _feed(
+                {
+                    "method": "session/update",
+                    "params": {
+                        "sessionId": "sub-sid",
+                        "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "content": {"type": "text", "text": "working"},
+                        },
+                    },
+                }
+            )
+            await _until(
+                lambda: info._first_stream_started is not None,
+                "the run's own frame taking it out of startup",
+            )
+            assert info._taskq_running_marked is True
+            _feed({"id": prompt_id, "result": {"stopReason": "end_turn"}})
+            await asyncio.wait_for(run, timeout=10.0)
+        finally:
+            for task in (run, pump):
+                task.cancel()
+            await asyncio.gather(run, pump, return_exceptions=True)
+        assert info.streaming_text == "working"
 
 
 # ── Gate-exit start-clock reset on the DEDICATED-process path ─────────────

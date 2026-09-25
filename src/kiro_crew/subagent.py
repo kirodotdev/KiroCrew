@@ -583,8 +583,8 @@ _STARTUP_TIMEOUT_SECS = 120  # max seconds a subagent may sit pre-first-turn wit
 _STARTUP_CAP_GATE_ROUNDS = 2
 # How often a start released from the spawn-approval prompt re-pumps while it
 # waits for the in-startup bound (``_admit_released_start``). A backstop behind
-# the edges that pump anyway (PID, first stream, terminal, stagger boundary),
-# so it is slow.
+# the edges that pump anyway (PID, first answer, terminal, stagger boundary), so
+# it is slow.
 _RELEASE_REPUMP_SECS = 1.0
 _ON_DONE_TIMEOUT = 1200.0  # outer cap: max total seconds for semaphore wait + injection
 
@@ -1868,6 +1868,14 @@ class SubagentInfo:
     # startup watchdog measures from THIS timestamp so it never reaps an agent
     # that is merely waiting for approval. None until execution starts.
     _exec_started: float | None = None
+    # Wall-clock moment this execution's own session first answered its prompt
+    # (``SubagentManager._leave_startup``): the first frame addressed to this
+    # session, or a dependency verdict on the prompt. None until then, and reset
+    # by ``_run_inner`` for every execution. The startup watchdog and the
+    # in-startup bound read it only while ``_pid`` is None, because a runtime
+    # PID ends startup on its own and every AcpRuntime-backed start records one
+    # before its stream opens; the adaptive controller reads it as the floor of
+    # this run's progress.
     _first_stream_started: float | None = None
     # Wall-clock moment this run began waiting for a ``SessionStartGate``
     # permit (``_gate_wait_mark``); None outside that wait. While set, the
@@ -3824,8 +3832,9 @@ class SubagentManager:
 
         The same shape the startup watchdog reaps on (:meth:`_is_startup_stalled`),
         minus the clock: past ``_run_inner``'s first statement (``_exec_started``
-        set), no runtime PID, no first provider stream, no turn, and not already
-        ending. A queued spawn is not in it (not registered until admitted), and
+        set), no runtime PID, no answer on its own session yet
+        (:meth:`_leave_startup`), no turn, and not already ending. A queued
+        spawn is not in it (not registered until admitted), and
         neither is an agent PARKED at the spawn-approval prompt
         (``_awaiting_approval``, ``_exec_started`` still ``None``): it is
         starting nothing, so it must not consume the startup bound -- counting
@@ -3913,10 +3922,11 @@ class SubagentManager:
     def _note_startup_progress(self, info: SubagentInfo) -> None:
         """Wake the spawn queue when *info* leaves startup without ending.
 
-        A runtime PID or a first provider stream takes *info* out of the
-        in-startup population, which may open a slot under :meth:`_startup_cap`
-        that no other edge announces: the slot-release drain fires only on a
-        terminal, and the pump does not poll. Called from ``_run_inner`` at
+        A runtime PID (``_run_inner``'s PID record, ``_bind_shared_handle``) or
+        the first answer on its own session (:meth:`_leave_startup`) takes
+        *info* out of the in-startup population, which may open a slot under
+        :meth:`_startup_cap` that no other edge announces: the slot-release
+        drain fires only on a terminal, and the pump does not poll. Called at
         those two transitions -- at most twice per start -- and the pump
         returns at once when nothing waits and re-checks every gate itself, so
         a call that opens nothing is cheap. A pump failure is logged, never
@@ -3927,6 +3937,25 @@ class SubagentManager:
             self._drain_queue()
         except Exception:
             logger.debug("startup-progress queue pump failed for %s", info.id, exc_info=True)
+
+    def _leave_startup(self, info: SubagentInfo) -> None:
+        """Take *info* out of startup: its own session has answered its prompt.
+
+        Two moments prove that, and ``_run_inner`` calls this at both: the first
+        frame out of the provider stream that is addressed to THIS session, and
+        a dependency verdict on the prompt (``_yield_for_dependency``), which
+        the durable row records as ``starting -> running`` in the same step.
+        An opened stream proves neither, and neither does a ``runtime_global``
+        frame -- a co-tenant's traffic that a shared runtime fanned out to
+        every session on it. Stamps ``info._first_stream_started`` once per
+        execution and, on a first turn, wakes a spawn the in-startup bound is
+        holding (:meth:`_note_startup_progress`).
+        """
+        if info._first_stream_started is not None:
+            return
+        info._first_stream_started = time.time()
+        if info.turns == 0:
+            self._note_startup_progress(info)
 
     def set_cap_raise_listener(self, listener: Callable[[], object] | None) -> None:
         """Register the ONE hook a cap raise rings, or ``None`` to drop it.
@@ -4523,7 +4552,7 @@ class SubagentManager:
     def _drain_queue(self) -> None:
         return self._admission._drain_queue_impl()
 
-    async def _admit_released_start(self, info: SubagentInfo) -> bool:
+    async def _admit_released_start(self, info: SubagentInfo) -> str:
         return await self._admission._admit_released_start_impl(info)
 
     def _release_admitted_start(self) -> str:
@@ -4701,7 +4730,16 @@ class SubagentManager:
 
     @staticmethod
     def _write_tombstone(info: SubagentInfo, cause: str) -> None:
-        """Best-effort tombstone write for abnormal exits."""
+        """Best-effort tombstone write for abnormal exits.
+
+        A run that is not persistent gets no tombstone. ``write_tombstone``
+        refuses one whose live-run state or recorded mode says so, but a run
+        that ended before its folder was seeded -- a declined spawn prompt, a
+        stop or a reap while it waited for admission into startup -- has
+        neither, so the run's own mode decides here.
+        """
+        if info.memory_mode != "persistent":
+            return
         try:
 
             write_tombstone(
