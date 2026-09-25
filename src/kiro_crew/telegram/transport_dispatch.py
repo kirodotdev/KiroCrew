@@ -3246,8 +3246,11 @@ class TelegramDispatcher:
         fall through to Slack/dashboard" — for a key this dispatcher cannot turn
         back into a chat (``unified`` dm_scope drops the peer, a non-``telegram``
         key, an unparseable one) or when the client is not up. The operator's
-        ``channels`` governance ceiling is not consulted here: the seam checks it
-        before invoking any hook, so a denied channel never reaches this method.
+        ``channels`` governance ceiling is read TWICE for one prompt, and both
+        reads belong to the seam: before it invokes any hook, so a denied channel
+        is never prompted at all, and again through ``unpressed_wait_answer`` when
+        a wait elapses unpressed, because a deny can land inside that wait. This
+        method owns neither reading; it asks for the second one.
 
         The wait is the SAME deny-by-default one a tool prompt uses
         (:class:`TelegramApprovalDecider`, ``APPROVAL_TIMEOUT_S``): the press
@@ -3263,11 +3266,11 @@ class TelegramDispatcher:
         generation, so the recomputed key does not match the armed one, the press
         resolves nothing, and the prompt deny-by-defaults at the timeout (the user
         sees "already expired"). This mirrors how a mid-run tool prompt behaves
-        across a rotation. An elapsed wait is a DENY only while the prompt stayed
-        answerable for the whole wait: the prompt was surfaced, so ``False`` is a
-        real decision and the gate refuses the spawn on it. An elapsed wait whose
-        prompt STOPPED being answerable is a fall-through instead, because no press
-        could have resolved it. Two authorities can end answerability mid-wait and
+        across a rotation, and it stays a DENY: a rotation is the conversation
+        moving on, not a withdrawal of the right to answer. An elapsed wait is a
+        fall-through in one case only, when AUTHORIZATION ended during it -- the
+        prompt was surfaced, so otherwise ``False`` is a real decision and the gate
+        refuses the spawn on it. Two authorities can end authorization mid-wait and
         both are re-read when the wait elapses: this conversation's own
         authorization, which ``on_callback`` checks first for every press with no
         exemption (``_spawn_prompt_destination_permitted``, the same pair consulted
@@ -3340,10 +3343,12 @@ class TelegramDispatcher:
         event = SimpleNamespace(request_id=rid)
         approved = bool(await decider(event))
         if not approved and decider.last_deny_cause == DENY_CAUSE_APPROVAL_TIMEOUT:
-            # Nobody pressed. An elapsed wait is a deny-by-default only while the
-            # prompt was answerable for the whole wait; once it stopped being
-            # answerable, reporting ``False`` would refuse the spawn in the
-            # operator's name. Two authorities can end that, and both are asked:
+            # Nobody pressed. An elapsed wait is a deny-by-default except when
+            # AUTHORIZATION ended during it; reporting ``False`` then would refuse
+            # the spawn in the operator's name. A generation rotation is not in
+            # that set: it moves the conversation on rather than withdrawing the
+            # right to answer, and stays a deny like a mid-run tool prompt. Two
+            # authorities can end authorization, and both are asked:
             #
             # * this conversation's own authorization, which ``on_callback`` checks
             #   FIRST for every press with no exemption: the peer roster gates
