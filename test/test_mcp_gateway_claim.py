@@ -136,6 +136,7 @@ class _RecordingWriter:
 class _FakeBackend:
     supports_caller_identity = True
     control_plane = False
+    control_plane_denial = ""
     quarantined = False
 
     def __init__(self) -> None:
