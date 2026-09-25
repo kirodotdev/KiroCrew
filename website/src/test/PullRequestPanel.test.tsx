@@ -150,6 +150,10 @@ describe('PullRequestPanel', () => {
     expect(await screen.findByText('Add source tabs')).toBeInTheDocument()
     expect(screen.getByText('Github', { exact: false })).toBeInTheDocument()
     expect(screen.getByText('src/panel.tsx')).toBeInTheDocument()
+    // #8487: the per-file status renders through the catalog ("Modified"), not
+    // the raw wire value ("modified") CSS-capitalized.
+    expect(screen.getByText('Modified')).toBeInTheDocument()
+    expect(screen.queryByText('modified')).toBeNull()
     expect(screen.getByText('1 File Changed')).toBeInTheDocument()
     // Diffs stay unmounted until explicitly expanded, then mount after the
     // drawer animation deferral. Row CONTENT is not asserted here: Pierre

@@ -52,6 +52,28 @@ import { providerTerms } from '../lib/links'
 import { i18nT } from '../../../i18n/t'
 import ErrorNotice from '../../../components/ErrorNotice'
 import { fmtDateTime } from '../../../i18n/format'
+
+/**
+ * Catalog keys for GitHub's `mergeable_state` vocabulary — the merge-READINESS
+ * verdict shown while a PR is open and unmerged. The wire value arrives raw and
+ * lowercased (GitHub's REST `mergeable_state`, or the GraphQL `mergeStateStatus`
+ * lowercased), so it was printed verbatim and CSS-capitalized: untranslated in
+ * every locale and invisible to the i18n added-lines gate. Flat and indexed
+ * inline at the `i18nT()` call so the key gate resolves the whole map, matching
+ * `PullRequestPanel.tsx::LIFECYCLE_LABEL_KEY`. `?? unknown` covers any value the
+ * provider adds later, so an unmapped state still reads as a word, not a blank.
+ */
+const MERGEABLE_STATE_LABEL_KEY: Record<string, string> = {
+  clean: 'apps.issueRadar.components.prDetail.mergeable_state_clean',
+  dirty: 'apps.issueRadar.components.prDetail.mergeable_state_dirty',
+  unstable: 'apps.issueRadar.components.prDetail.mergeable_state_unstable',
+  blocked: 'apps.issueRadar.components.prDetail.mergeable_state_blocked',
+  behind: 'apps.issueRadar.components.prDetail.mergeable_state_behind',
+  has_hooks: 'apps.issueRadar.components.prDetail.mergeable_state_has_hooks',
+  draft: 'apps.issueRadar.components.prDetail.mergeable_state_draft',
+  unknown: 'apps.issueRadar.components.prDetail.mergeable_state_unknown',
+}
+
 /** A relative timestamp that flips to the absolute local date-time on click
  * (and shows it on hover). Renders nothing for a missing/unparseable value. */
 function RelTime({ iso, className = '' }: { iso?: string | null; className?: string }) {
@@ -1071,7 +1093,7 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
                 {mergeableState && !merged && state !== 'closed' && (
                   <div className="flex justify-between gap-2">
                     <dt className="text-muted">{i18nT('apps.issueRadar.components.prDetail.mergeable')}</dt>
-                    <dd className="text-text capitalize">{mergeableState.replace(/_/g, ' ')}</dd>
+                    <dd className="text-text">{i18nT(MERGEABLE_STATE_LABEL_KEY[mergeableState.toLowerCase()] ?? 'apps.issueRadar.components.prDetail.mergeable_state_unknown')}</dd>
                   </div>
                 )}
               </dl>

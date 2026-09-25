@@ -117,7 +117,7 @@ function detailData(over: Partial<PrDetailData> = {}): PrDetailData {
     deletions: 4,
     changed_files: 2,
     mergeable: true,
-    mergeable_state: 'legacy_default_clean',
+    mergeable_state: 'clean',
     base: 'main',
     head: 'feat/thing',
     head_sha: 'abc1234',
@@ -306,8 +306,10 @@ describe('PrDetail — sidebar metadata', () => {
     expect(within(changes).getByText('2')).toBeTruthy()
     expect(within(changes).getByText('+12')).toBeTruthy()
     expect(within(changes).getByText('−4')).toBeTruthy()
-    // Underscores are cosmetic in the mergeable state.
-    expect(within(changes).getByText('legacy default clean')).toBeTruthy()
+    // #8487: the mergeable state renders through the i18n catalog (a GitHub
+    // `mergeable_state` value -> a translated label), not the raw wire value
+    // CSS-capitalized. `clean` -> "Clean".
+    expect(within(changes).getByText('Clean')).toBeTruthy()
   })
 
   it('says "none" rather than inventing entries when the blocks are empty', async () => {
@@ -349,6 +351,40 @@ describe('PrDetail — sidebar metadata', () => {
     expect(within(changes).getByText('+5')).toBeTruthy()
     expect(within(changes).getByText('−0')).toBeTruthy()
     expect(within(changes).getByText('1')).toBeTruthy()
+  })
+
+  // #8487: the mergeable state used to print the raw wire value
+  // (`mergeable_state.replace(/_/g, ' ')`) with a CSS `capitalize` — untranslated
+  // in every locale and invisible to the i18n added-lines gate. It now renders
+  // MERGEABLE_STATE_LABEL_KEY[state] through the catalog, and an unmapped value
+  // falls back to the "Unknown" label rather than exposing a raw wire string.
+  it('renders the mergeable state from the catalog, with a mapped label', async () => {
+    api.pullDetail.mockResolvedValue(response({
+      detail: detailData({ mergeable_state: 'has_hooks' }),
+    }))
+    const { sidebar } = renderPane()
+    // Wait on the mergeable label itself: it renders only after the detail read
+    // lands, whereas the "Changes" section title is present from row enrichment.
+    await waitFor(() => expect(within(sidebar()).getByText('Clean (hooks)')).toBeTruthy())
+
+    const changes = block(sidebar(), 'Changes')
+    // has_hooks -> the catalog label, not "has hooks" CSS-capitalized.
+    expect(within(changes).getByText('Clean (hooks)')).toBeTruthy()
+    expect(within(changes).queryByText('has hooks')).toBeNull()
+  })
+
+  it('falls the mergeable state back to the Unknown label for an unmapped value', async () => {
+    api.pullDetail.mockResolvedValue(response({
+      // A value outside GitHub's vocabulary (e.g. a GitLab legacy state). It must
+      // NOT leak the raw wire string into the UI.
+      detail: detailData({ mergeable_state: 'legacy_default_clean' }),
+    }))
+    const { sidebar } = renderPane()
+    await waitFor(() => expect(within(block(sidebar(), 'Changes')).getByText('Unknown')).toBeTruthy())
+
+    const changes = block(sidebar(), 'Changes')
+    expect(within(changes).getByText('Unknown')).toBeTruthy()
+    expect(within(changes).queryByText('legacy default clean')).toBeNull()
   })
 })
 

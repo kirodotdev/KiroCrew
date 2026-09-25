@@ -2223,6 +2223,10 @@
     "issuePanel": {
       "add_to_chat": "Add to chat",
       "assigned_to": "Assigned to {{name}}",
+      "change_state_closed": "Closed",
+      "change_state_draft": "Draft",
+      "change_state_merged": "Merged",
+      "change_state_open": "Open",
       "cli_login_required": "{{provider}} CLI login required",
       "comments": "Comments",
       "could_not_load_this_issue": "Could not load this issue",
