@@ -1320,6 +1320,31 @@ class AgentConfig:
             "Minimum available memory (GB) required to spawn a subagent. 0 disables the check.",
         ),
     )
+    spawn_window_guard: str = field(
+        default="off",
+        metadata=_meta(
+            "Spawn Context-Window Guard",
+            "Pre-flight guard for a spawn_run subagent pinned to a small-window "
+            "model. The parent's startup context plus the task prompt are "
+            "injected first and can overflow a small window before the subagent "
+            "emits a useful token. 'off' (default) disables the check. 'warn' logs a "
+            "warning and lets the spawn proceed. 'error' refuses the spawn "
+            "with a clear message. Only acts when an explicit model override is "
+            "set and its window is known, resolved from the authoritative live "
+            "model list, and below spawn_window_floor_tokens.",
+        ),
+    )
+    spawn_window_floor_tokens: int = field(
+        default=256000,
+        metadata=_meta(
+            "Spawn Context-Window Floor (tokens)",
+            "Window size below which the spawn_window_guard fires. Default 256000 "
+            "flags models at or under 200k. Those were the windows observed to "
+            "overflow at boot on the combined startup-context-plus-prompt payload "
+            "while 1M-window models completed. Passes 256k and 1M models. Ignored "
+            "when spawn_window_guard is off.",
+        ),
+    )
     resource_pressure_gb: float = field(
         default=4.0,
         metadata=_meta(

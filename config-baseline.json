@@ -50,6 +50,8 @@
         "max_subagents": 0,
         "max_stop_hook_nudges": 100,
         "spawn_min_memory_gb": 4.0,
+        "spawn_window_guard": "off",
+        "spawn_window_floor_tokens": 256000,
         "resource_pressure_gb": 4.0,
         "resource_critical_gb": 2.0,
         "admission_gate": true,
@@ -720,6 +722,34 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 4.0
+    },
+    {
+      "path": "agent.spawn_window_guard",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Spawn Context-Window Guard",
+      "help": "Pre-flight guard for a spawn_run subagent pinned to a small-window model. The parent's startup context plus the task prompt are injected first and can overflow a small window before the subagent emits a useful token. 'off' (default) disables the check. 'warn' logs a warning and lets the spawn proceed. 'error' refuses the spawn with a clear message. Only acts when an explicit model override is set and its window is known, resolved from the authoritative live model list, and below spawn_window_floor_tokens.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "off"
+    },
+    {
+      "path": "agent.spawn_window_floor_tokens",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Spawn Context-Window Floor (tokens)",
+      "help": "Window size below which the spawn_window_guard fires. Default 256000 flags models at or under 200k. Those were the windows observed to overflow at boot on the combined startup-context-plus-prompt payload while 1M-window models completed. Passes 256k and 1M models. Ignored when spawn_window_guard is off.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 256000
     },
     {
       "path": "agent.resource_pressure_gb",
