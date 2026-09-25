@@ -3162,6 +3162,7 @@ def _is_git_publish(text_lower: str) -> bool:
 # Git global flags that consume a separate argument token (appear between
 # `git` and the subcommand).
 _GIT_ARG_FLAGS = frozenset({"-c", "-C", "--git-dir", "--work-tree", "--namespace"})
+_GIT_SUBCOMMAND_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
 def _is_git_push_via_normalizer(text_lower: str) -> bool:
@@ -3241,6 +3242,8 @@ def _is_git_push_via_normalizer(text_lower: str) -> bool:
                     j += 2  # skip flag + its argument
                 elif tokens[j].startswith("-"):
                     j += 1  # skip simple flag
+                elif not _GIT_SUBCOMMAND_RE.fullmatch(_cut_at_operator(tokens[j])):
+                    return True  # not a plain command name: may expand or glob to push
                 else:
                     break
             if j < len(tokens) and _resolves_to(tokens[j], "push"):

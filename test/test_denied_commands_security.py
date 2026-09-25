@@ -7719,6 +7719,44 @@ class TestEmptyArgvElementDoesNotBreakTheDenyView:
         # interposed empty word is still not a publish.
         assert is_denied('git "" stash push') is None
 
+    def test_an_unquoted_expansion_before_the_subcommand_fails_closed(self):
+        """A subcommand word that is not a plain command name may expand or glob to
+        ``push ...``, so the detector's subcommand seek treats it as a possible push."""
+        for cmd in (
+            "git $(echo '') push origin main",
+            "git ${UNSET} push origin main",
+            "git -c x=y ${UNSET} push origin main",
+            "git $UNSET push origin main",
+            "git `true` push origin main",
+            "git $(command true) push origin main",
+            "git $(true '(') push origin main",
+            "git ${X:+ } push origin main",
+            "git ${X:-${Y}} push origin main",
+            "git $A$B push origin main",
+            "git ${EMPTY}push origin main",
+            "git $X status",
+            "git p* origin main",
+            "git pu?h origin main",
+            "git [p]ush origin main",
+            "git pu\\sh origin main",
+        ):
+            assert _argv_floor._is_git_push_via_normalizer(cmd.lower()) is True, cmd
+            assert is_denied(cmd) is not None, cmd
+        # Read-only git without an expansion before the subcommand is untouched.
+        for cmd in (
+            "git status",
+            "git log --oneline",
+            "git -C /tmp/x status",
+            'git -C "$DIR" status',
+            "git -c core.pager=$P log",
+            "git stash push",
+            "git log --grep '$x'",
+            "(git status)",
+            "(cd sub && git status)",
+        ):
+            assert _argv_floor._is_git_push_via_normalizer(cmd.lower()) is False, cmd
+            assert is_denied(cmd) is None, cmd
+
     def test_a_whitespace_only_word_is_a_documented_residual(self):
         """DOCUMENTED GAP, pinned rather than claimed.
 
