@@ -69,7 +69,10 @@ from kiro_crew.history_consolidation import (  # noqa: F401 - facade re-exports
     _strip_code_fence,
     _strip_skill_frontmatter,
 )
-from kiro_crew.history_projection import (
+from kiro_crew.history_projection import (  # noqa: F401 - facade re-exports
+    METADATA_LINE_CORRUPT,
+    METADATA_LINE_READABLE,
+    METADATA_LINE_TRANSIENT,
     ChainRevision,
     SessionMetadataProjection,
     TranscriptPage,
@@ -820,11 +823,68 @@ def is_incognito_transcript(memory_mode: object) -> bool:
     return str(memory_mode or "").lower() in INCOGNITO_MEMORY_MODES
 
 
+class TranscriptWithheld(RuntimeError):
+    """A derivation read met a restricted (or unreadable) line under the transcript lock.
+
+    Raised by the ONE seam every reader that DERIVES from a transcript goes
+    through -- :meth:`ConversationLog.derive_messages`,
+    :meth:`ConversationLog.derive_messages_chained`,
+    :meth:`ConversationLog.derive_recent`,
+    :meth:`ConversationLog.publication_hold`, and
+    :meth:`ConversationLog.snapshot_for_consolidation` with
+    ``withhold_restricted=True`` -- when the metadata line says the session is
+    incognito or temporary, or cannot be read at all. The line and the rows are
+    read under the same lock hold, so what the caller gets can never be rows a
+    restricted line already governed. Nothing wrong has happened to the session:
+    it is simply one nothing may be learned from, so callers treat this as a
+    refusal (skip, 400, ``_CONSOLIDATION_REFUSED``), never as a failure.
+    """
+
+
+class TranscriptBusy(TranscriptWithheld):
+    """The derivation seam could not take the transcript lock in time.
+
+    The seam validates the line and reads the rows under ``_locked``, which is a
+    patient, cross-process acquire with a ceiling (:class:`HistoryLockTimeout`).
+    A reader that cannot obtain the lock cannot vouch for the contract, so it gets
+    no rows -- the same fail-closed answer as a restricted line, and a subclass so
+    every skip/continue that handles :class:`TranscriptWithheld` already handles
+    it. Kept distinct so a caller that answers a person can say "busy, retry"
+    (the export's retryable 503) instead of "private".
+    """
+
+
+def transcript_withholds_derivation(log: "ConversationLog", key: str) -> bool:
+    """True when *key*'s ON-DISK line forbids deriving anything from the transcript.
+
+    The metadata line's ``memory_mode`` is the file's privacy contract: every
+    reader that learns from the file gates on it, and any writer -- this process,
+    another gateway on the same data home, a subagent or cron appending to the
+    session -- may only ever tighten it. A reader that reads the ROWS from disk
+    but gates on a LIVE slot's mode (the session summary, the export) can
+    therefore lag the file: the line says restricted, the slot it kept in memory
+    still says persistent, and the private rows go to a model or a file. Such a
+    reader asks this predicate about the file it is about to read, and again
+    about the file it just read, so a tightening that lands between the two is
+    caught as well.
+
+    Fails CLOSED: a line that cannot be read answers ``True``, because a reader
+    that cannot see the contract has no business acting on the rows. An absent
+    file (no line yet) is not a refusal -- there is nothing on disk to protect.
+    """
+    metadata, readable = log.get_metadata_status(key)
+    if not readable:
+        return True
+    return is_incognito_transcript(metadata.get("memory_mode"))
+
+
 # The fields that record where a message came from: the session key it arrived
 # on (``source_thread``, e.g. ``slack:1785861252.833429``) and the platform user
 # who sent it (``source_user``). Written by :meth:`ConversationLog.append`, read
 # by :meth:`ConversationLog.get_source_threads` for cross-session citation and
 # by SEL attribution.
+
+
 PROVENANCE_FIELDS = ("source_thread", "source_user")
 
 
@@ -2686,8 +2746,189 @@ class ConversationLog:
         """
         return int(self._read_metadata(key).get("rotation_generation", 0) or 0)
 
-    def snapshot_for_consolidation(self, key: str) -> tuple[list[dict], int, int]:
+    # ------------------------------------------------------------------ #
+    # The derivation seam: the ONE place a reader that LEARNS from a transcript
+    # (a summary, an export or transfer bundle, a suggestions prompt, an MCP
+    # history tool, the consolidator, skill detection -- anything that hands rows
+    # to a model, a peer, a file or memory) obtains its rows.
+    #
+    # The metadata line's ``memory_mode`` is the file's privacy contract and a
+    # ratchet any writer may tighten; a reader that checked the line and then
+    # read the rows in a separate step, or that trusted a live slot's mode, could
+    # be handed rows a restricted line already governs (a same-key hand-over
+    # landing a closed restricted tab's rows; a second gateway on the same data
+    # home tightening the line). Here the line is validated and the rows are read
+    # under one ``_locked`` hold, so the two cannot disagree, and a restricted or
+    # unreadable line raises :class:`TranscriptWithheld` instead of yielding rows.
+    #
+    # The plain reads (``read_messages``, ``read_messages_chained``, ``recent``)
+    # stay for transcript PLUMBING -- resuming a tab, saving, rendering the
+    # History browser, migrating a file -- which must see a restricted transcript
+    # (that is the point of keeping it). ``test_transcript_derivation_seam.py``
+    # enumerates every plain-read call site in the tree, so a new consumer cannot
+    # be written against the raw reads without naming itself there as plumbing.
+    # Callers hold no loop: ``_locked`` is a blocking, cross-process acquire.
+    # ------------------------------------------------------------------ #
+
+    @contextlib.contextmanager
+    def derivation_hold(self, stems: Iterable[str]) -> Iterator[None]:
+        """Hold *stems* for a derivation read; a lock timeout is a refusal.
+
+        ``locked_stems`` raises :class:`HistoryLockTimeout` when a holder (this
+        session's own save, a cron append, a second gateway) outlasts the acquire
+        ceiling. For a deriving reader that is not an error to surface as a
+        500 or a failed tool: it is "cannot vouch for the contract right now",
+        answered as :class:`TranscriptBusy` so the caller's best-effort skip
+        holds and a person-facing caller can say retry.
+        """
+        try:
+            with self.locked_stems(stems):
+                yield
+        except HistoryLockTimeout as exc:
+            raise TranscriptBusy(f"transcript lock not acquired in time: {exc}") from exc
+
+    @contextlib.contextmanager
+    def publication_hold(
+        self, key: str, *, expected_keys: Sequence[str] | None = None
+    ) -> Iterator[None]:
+        """Hold and re-validate *key* for one transcript-derived publication.
+
+        The chained transcript locks stay held through exactly one durable write
+        or synchronous response commit. When *expected_keys* is supplied, it is
+        the chain whose rows produced the pending publication. Any membership
+        change is retryable because the pending output does not describe the
+        current chain. A restricted line raises :class:`TranscriptWithheld`; a
+        lock timeout, unreadable line, or changed chain raises
+        :class:`TranscriptBusy`. Callers must enter this off the event loop and
+        must never keep the hold across a model call or an ``await``.
+        """
+        keys = list(expected_keys) if expected_keys is not None else self.chained_keys(key)
+        keys = keys or [key]
+        stems = {stem for chained in keys for stem in transcript_lock_stems(chained)}
+        with self.derivation_hold(stems):
+            settled_chain = self.chained_keys(key)
+            settled = settled_chain or [key]
+            if set(settled) != set(keys):
+                raise TranscriptBusy(
+                    f"transcript chain for {key!r} changed while it was being locked"
+                )
+            for chained in settled:
+                self._withhold_if_restricted(chained)
+            yield
+
+    def _withhold_if_restricted(self, key: str) -> None:
+        """Raise :class:`TranscriptWithheld` unless *key*'s line permits derivation.
+
+        Called INSIDE ``_locked(key)`` so the verdict describes the same file
+        state the caller's row read sees. An absent file (no line yet) is not a
+        refusal. A line that cannot be READ is refused too, but as
+        :class:`TranscriptBusy`: nothing about the session's privacy was measured,
+        so a handler that maps the two must not tell the user the chat is
+        incognito -- it is a transient failure to retry, like a lock timeout, and
+        the subclass keeps every best-effort ``except TranscriptWithheld`` skip
+        failing closed exactly as before.
+        """
+        metadata, readable = self.get_metadata_status(key)
+        if not readable:
+            raise TranscriptBusy(
+                f"transcript {key!r} could not be read; nothing is derived from it"
+            )
+        if is_incognito_transcript(metadata.get("memory_mode")):
+            raise TranscriptWithheld(
+                f"transcript {key!r} is restricted; nothing is derived from it"
+            )
+
+    def derive_messages(self, key: str) -> list[dict]:
+        """Rows for a reader that derives from them; refused for a restricted line.
+
+        The guarded twin of :meth:`read_messages` (same rows, same shared cache
+        object -- callers must not mutate), read under the transcript lock after
+        the line has been validated in the same hold.
+        """
+        with self.derivation_hold(transcript_lock_stems(key)):
+            self._withhold_if_restricted(key)
+            return self.read_messages(key)
+
+    def chained_keys(self, key: str) -> list[str]:
+        """Every transcript key :meth:`read_messages_chained` concatenates for *key*."""
+        return self._read_projection.chained_keys(key)
+
+    def derive_messages_chained(self, key: str) -> list[dict]:
+        """Guarded twin of :meth:`read_messages_chained` (see :meth:`derive_messages`)."""
+        rows, _keys = self.derive_messages_chained_with_keys(key)
+        return rows
+
+    def derive_messages_chained_with_keys(self, key: str) -> tuple[list[dict], tuple[str, ...]]:
+        """Return guarded chained rows and the exact chain validated with them.
+
+        A chained read concatenates EVERY transcript sharing the tab id -- a legacy
+        tab's earlier files as well as the requested key -- so the contract that
+        governs the result is the strictest line among them, not the requested
+        key's alone: a sibling tightened to ``temporary`` would otherwise ride out
+        under a persistent sibling's line. Every chained transcript is locked (one
+        deterministic lock set, no partial holds) and validated before a single
+        row is read. The chain is resolved once more inside the hold, and only that
+        validated settled set is read; a member joining afterwards is never pulled
+        in by a third resolution outside the lock set. The returned keys let an
+        egress publication compare its pending bundle with this same settled set.
+        A member that joined between the resolve and the hold is unlocked and
+        unvalidated, so the read is refused -- as :class:`TranscriptBusy`, the
+        same answer :meth:`publication_hold` gives a changed chain: nothing about
+        the session's privacy was measured, so a person-facing caller says retry
+        rather than private.
+        """
+        keys = self.chained_keys(key) or [key]
+        stems = {stem for chained in keys for stem in transcript_lock_stems(chained)}
+        with self.derivation_hold(stems):
+            settled_chain = self.chained_keys(key)
+            settled = settled_chain or [key]
+            if set(settled) - set(keys):
+                # The chain grew between the resolve and the hold: its new member
+                # is not locked, so refuse rather than read it unvalidated. A
+                # membership change is "cannot vouch right now", not a privacy
+                # verdict, so it is the retryable refusal.
+                raise TranscriptBusy(
+                    f"transcript chain for {key!r} changed while it was being locked"
+                )
+            for chained in settled:
+                self._withhold_if_restricted(chained)
+            validated_keys = tuple(settled)
+            if not settled_chain:
+                # Preserve read_messages_chained's shared-cache identity when the
+                # index knows no chain for this key.
+                return self._read_messages(key), validated_keys
+            rows: list[dict] = []
+            for chained in settled:
+                rows.extend(self._read_messages(chained))
+            return rows or self._read_messages(key), validated_keys
+
+    def derive_recent(
+        self,
+        key: str,
+        max_messages: int = 20,
+        roles: AbstractSet[str] | None = None,
+    ) -> list[dict]:
+        """Guarded twin of :meth:`recent` (see :meth:`derive_messages`)."""
+        with self.derivation_hold(transcript_lock_stems(key)):
+            self._withhold_if_restricted(key)
+            return self.recent(key, max_messages, roles)
+
+    def snapshot_for_consolidation(
+        self, key: str, *, withhold_restricted: bool = False
+    ) -> tuple[list[dict], int, int]:
         """Atomically snapshot ``(unconsolidated_messages, total, generation)``.
+
+        With ``withhold_restricted=True`` the metadata line's ``memory_mode`` is
+        read under the SAME lock hold and validated with the rows: an incognito or
+        temporary line -- or one that cannot be read -- raises
+        :class:`TranscriptWithheld` instead of returning rows (the derivation
+        seam, see :meth:`derive_messages`). The
+        consolidator's own privacy check reads the line before this snapshot, and
+        a writer can tighten it in between (a same-key hand-over landing a
+        restricted tab's rows under a line that was persistent a moment ago);
+        rows and contract taken in one hold cannot disagree, so nothing the
+        consolidator sends to a model or writes to memory is ever rows a
+        restricted line already governed.
 
         The consolidator needs the unconsolidated tail, the total message count
         (the absolute offset it later passes to :meth:`mark_consolidated`), and
@@ -2707,7 +2948,14 @@ class ConversationLog:
         a fresh slice (never the shared ``_read_messages`` cache object), so the
         caller may treat it as owned.
         """
-        with self._locked(key):
+        hold = (
+            self.derivation_hold(transcript_lock_stems(key))
+            if withhold_restricted
+            else self._locked(key)
+        )
+        with hold:
+            if withhold_restricted:
+                self._withhold_if_restricted(key)
             messages = self._read_messages(key)
             meta = self._read_metadata(key)
             offset = meta.get("last_consolidated", 0)
@@ -3297,9 +3545,14 @@ class ConversationLog:
         guard: Callable[[dict], bool],
         *,
         require_existing: bool = False,
+        after_commit_under_lock: Callable[[], None] | None = None,
     ) -> bool:
         return self._metadata_projection.update_metadata_if(
-            key, fields, guard, require_existing=require_existing
+            key,
+            fields,
+            guard,
+            require_existing=require_existing,
+            after_commit_under_lock=after_commit_under_lock,
         )
 
     def _update_metadata_locked(self, key: str, fields: dict) -> None:
@@ -3447,6 +3700,9 @@ class ConversationLog:
     def get_metadata_status(self, key: str) -> tuple[dict, bool]:
         return self._read_projection.get_metadata_status(key)
 
+    def metadata_line_state(self, key: str) -> str:
+        return self._read_projection.metadata_line_state(key)
+
     def _pause_for_transient_retry(self) -> None:
         self._read_projection._pause_for_transient_retry()
 
@@ -3455,6 +3711,9 @@ class ConversationLog:
 
     def _read_metadata_status(self, key: str) -> tuple[dict, bool]:
         return self._read_projection._read_metadata_status(key)
+
+    def _read_metadata_state(self, key: str) -> tuple[dict, str]:
+        return self._read_projection._read_metadata_state(key)
 
     def sliding_window(self, key: str, keep_recent: int = 5) -> tuple[list[dict], list[dict]]:
         return self._read_projection.sliding_window(key, keep_recent)

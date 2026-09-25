@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -4103,7 +4104,7 @@ class TestSkillDetectionFullWindow:
 
         recorded: dict = {}
 
-        def fake_process(result, k):
+        def fake_process(result, k, **_kwargs):
             recorded["result"], recorded["key"] = result, k
 
         c._event_loop = _asyncio.get_running_loop()
@@ -4114,6 +4115,89 @@ class TestSkillDetectionFullWindow:
             "skill detection must fire from the full-session window even when the "
             "unconsolidated tail is trivial"
         )
+
+    @pytest.mark.asyncio
+    async def test_restricted_line_discards_candidate_before_publication(self, tmp_path, caplog):
+        """A mode tightening during extraction wins before skill staging."""
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.skills import SkillsLoader
+
+        conv_log = ConversationLog(base_dir=tmp_path / "sessions")
+        conv_log.init()
+        mem = MemoryStore(workspace=tmp_path / "memory")
+        mem.init()
+        skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        c = HistoryConsolidator(
+            log=conv_log,
+            memory=mem,
+            skills_loader=skills,
+            auto_skills_enabled=True,
+            approval_required=True,
+            auto_min_tool_calls=2,
+        )
+        key = "dashboard:chat-private-skill"
+        for i in range(3):
+            conv_log.append(key, "assistant", f"step {i}", tools=["execute_bash"])
+
+        async def fake_llm(_prompt, *, memory_store: str = "", session_key: str = ""):
+            await asyncio.to_thread(conv_log.update_metadata, key, {"memory_mode": "incognito"})
+            return {
+                "new_skill": {
+                    "slug": "private-procedure",
+                    "description": "Repeat a private procedure",
+                    "triggers": "private, procedure",
+                    "procedure_md": "## When to use\nNever\n## Steps\n1. Stop\n## Gotchas\nNone",
+                }
+            }
+
+        c._event_loop = asyncio.get_running_loop()
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.history"):
+            with patch.object(c, "_call_llm", side_effect=fake_llm):
+                await c._run_skill_detection(key)
+
+        assert skills.list_pending_skills() == []
+        assert "Discarding skill detection result" in caplog.text
+        assert "transcript became restricted during extraction" in caplog.text
+
+    def test_lock_timeout_discards_candidate_before_publication(self, tmp_path, monkeypatch):
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.skills import SkillsLoader
+
+        conv_log = ConversationLog(base_dir=tmp_path / "sessions")
+        conv_log.init()
+        mem = MemoryStore(workspace=tmp_path / "memory")
+        mem.init()
+        skills = SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False)
+        c = HistoryConsolidator(
+            log=conv_log,
+            memory=mem,
+            skills_loader=skills,
+            auto_skills_enabled=True,
+            approval_required=True,
+        )
+        key = "dashboard:chat-busy-skill"
+        conv_log.append(key, "assistant", "step", tools=["execute_bash"])
+
+        @contextlib.contextmanager
+        def _timeout(self, stems):
+            raise history.HistoryLockTimeout("skill publication lock held")
+            yield  # pragma: no cover
+
+        monkeypatch.setattr(type(conv_log), "locked_stems", _timeout)
+        c._process_auto_skills(
+            {
+                "new_skill": {
+                    "slug": "busy-procedure",
+                    "description": "Repeat a procedure",
+                    "triggers": "repeat, procedure",
+                    "procedure_md": "## When to use\nOften\n## Steps\n1. Act\n## Gotchas\nNone",
+                }
+            },
+            key,
+            guard_publication=True,
+        )
+
+        assert skills.list_pending_skills() == []
 
     @pytest.mark.asyncio
     async def test_length_guard_skips_unchanged_session(self, tmp_path):

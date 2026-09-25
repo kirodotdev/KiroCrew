@@ -4098,6 +4098,12 @@ class TestKiroReadinessQueueHandoff:
         state.sessions.record_failure = AsyncMock()
         state.conversation_log = MagicMock()
         state.conversation_log.read_messages.return_value = []
+        # The turn-start read-back folds the on-disk line into the live carrier;
+        # a mocked log must answer that read like an absent file (readable, no line).
+        state.conversation_log.get_metadata_status.return_value = ({}, True)
+        # The turn now reaches the transcript save; a MagicMock ``_path`` would
+        # otherwise materialise a ``MagicMock/`` tree in the current directory.
+        state.conversation_log._path.return_value = tmp_path / "transcript.jsonl"
         if wait_end == "deadline":
             monkeypatch.setattr("kiro_crew.memory_startup.MEMORY_ADMISSION_WAIT_SECONDS", 0.0)
         state.memory_startup_task = asyncio.create_task(prepare_memory())

@@ -871,6 +871,32 @@ writer:
   persistent slot recreated on a restricted key therefore writes under the
   restricted mode, with no store name (next bullet). An absent or unrecognised
   on-disk value reads as persistent and tightens nothing.
+- **An unreadable line is deferred; a corrupt line is rewritten strictest.**
+  `get_metadata_status` answers `readable=False` for two different facts, and
+  the writers tell them apart through `metadata_line_state` (`readable`,
+  `transient`, `corrupt`; `METADATA_LINE_*`). A TRANSIENT failure -- the file
+  could not be opened or decoded after the bounded retries -- clears on its
+  own, so the full save raises and `_dirty` stays armed, the empty-window merge
+  and `update_metadata_if` return without writing, and the next attempt
+  re-decides. A CORRUPT first line -- bytes on disk that are not JSON, which
+  every atomic line writer makes permanent rather than a write in flight --
+  never clears, and a writer that kept deferring on it would never persist a
+  row again: `closed` could never land and the tab would resurrect on every
+  restart. So the WRITERS rewrite it: the full save and `_update_metadata_locked`
+  (reached by `update_metadata_if`, which runs its guard against the line as it
+  will be rebuilt) replace the first line, keep the rows after it, and stamp
+  `memory_mode` at the STRICTEST mode (`STRICTEST_MEMORY_MODE`, the last of
+  `MEMORY_MODES`) with no `memory_store`, whatever the slot or the fields say.
+  The line's real contract is unknowable and the ratchet forbids relabelling it
+  looser, so the strictest mode is the only value the rewrite may carry; the
+  live slot then follows the tightened line like any other fold. A corrupt line
+  therefore becomes a restricted transcript, never a persistent one. The healed
+  line carries no `created_at` when the title or merge writer heals it (the
+  identity is unknowable, and a minted one would read to the owning slot's next
+  full save as a fresh incarnation after a delete); the full save's own heal
+  stamps the slot's recorded identity. READERS are unchanged: the derivation seam
+  and every identity-sensitive reader refuse both states, a corrupt line before
+  the heal because it cannot be read and after it because it is restricted.
 - **A restricted line names no `memory_store`.** See
   [session.md](session.md): with no carrier written for a restricted session,
   the store name is what the restart would read as a legacy owner claim and
@@ -886,24 +912,150 @@ writer:
   incognito/temporary slot includes `memory_mode`; a persistent slot's does
   not, because the transcript save owns the field. The title upsert folds the
   on-disk mode under the line lock like every other writer, and the full save
-  canonicalises a rehydrated slot mode before applying the stricter-mode fold.
+  canonicalises a rehydrated slot mode before applying the stricter-mode fold. If
+  the titler outlives a closed restricted slot and a persistent replacement now
+  holds the same transcript, it tightens that live replacement and its carrier
+  before the metadata write. A failed write re-reads the line off-loop and restores
+  the replacement only when the restricted mode did not become durable, matching
+  the rows-only hand-over's commit-witness rollback.
 - **A rows-only hand-over never files restricted rows under a looser line.**
   The close/cleanup drain (`_persist_handover_tail`) writes a popped original's
   unsaved tail with `rows_only=True`, which defers every slot-owned field —
   `memory_mode` included — to the line a same-key replacement published. A
   restricted original draining onto a PERSISTENT replacement's line would
-  therefore put private rows under a line that says persistent, and the line
-  cannot be tightened from the drain (it is the live replacement's own line,
-  over that slot's persistent rows, and a rows-only write owns none of its
-  fields). The save refuses that write (`False`, nothing written) when the
-  retained mode is stricter than the line's, and the drain reports the rows as
-  lost exactly as it reports a failed write — a 500 `history_save_failed` on
-  the close, a log line naming the count. The reverse (a persistent tail onto a
-  restricted line) commits and keeps the line's stricter mode, as
-  stricter-wins requires. The refusal is reachable only when the original
-  committed nothing before the close: a line it had published ratchets the
-  replacement's own save down to the restricted mode, so the drain then lands
-  the tail under it.
+  therefore put private rows under a line that says persistent. The line is a
+  ratchet any writer may tighten, so when the retained mode is stricter than
+  the line's the drain folds it in and TIGHTENS the line — `memory_mode`
+  becomes the stricter value and a carried `memory_store` is dropped, since a
+  restricted line names no store — and the rows land under it; the
+  replacement's title, folder, tags and pin are not the drain's and stay. The
+  LIVE replacement is tightened with it, in process and before the write
+  (`_tighten_replacement_to_restricted_original`): the session summary and the
+  export gate on `slot.memory_mode` and then read the whole transcript from
+  disk, so a persistent replacement would hand the original's rows to a model
+  or a file. The carrier compare-and-set runs before the live slot and restricted
+  marker mutate, and retries once from a fresh carrier read, so a failed compare-and-set
+  leaves no slot state to roll back. Its live carrier is tightened in place with its
+  identity intact;
+  the durable `execution_context` record carried on the line is folded to the
+  line's mode by the same save (`_tighten_carried_execution`, also on the
+  full-save carry), and the turn-start binding folds the line's canonical
+  `memory_mode` into a live-first carrier and republishes the stricter carrier
+  before memory context is built. A durable-only `read_session_execution`
+  already folds the line itself. This is the same file the
+  other race order reaches: a line the original had committed ratchets the
+  replacement's own save down to the restricted mode.
+  Refusing instead would lose the reply the user was watching with no retry
+  path (the slot is popped), which is why the drain tightens rather than
+  refuses. The reverse (a persistent tail onto a restricted line) commits and
+  keeps the line's stricter mode untouched, as stricter-wins requires. The
+  tightening is reachable only when the original committed nothing before the
+  close; the replacement's next full save folds the tightened line back in, so
+  the ratchet holds. If the hand-over save then fails, the line is re-read off
+  the event loop while holding the transcript derivation lock: a mode at least
+  as strict as the attempted tightening proves the atomic rows-and-line
+  replacement landed and keeps the live tightening; a persistent or absent line
+  permits restoring the replacement's prior mode, marker and same-generation
+  live carrier only while that exact witness is still current. The carrier
+  rollback runs inside the transcript hold and is safe off-loop because the live
+  execution registry serializes it with its own lock; loop-owned mode and marker
+  changes wait until the worker reports that rollback. Every line writer records
+  the live holder's monotonic pending mode after its atomic rewrite and before
+  releasing the transcript lock. Thus a concurrent tightener ordered before the
+  read is visible in the line, while one ordered after it is visible in the
+  pending witness re-checked on the event loop before rollback. An unreadable or
+  busy line keeps the tightening, as does any restricted rollback floor, failing
+  closed until a later read or save settles it. Carrier rollback never restores
+  vouched authority; the next binding re-establishes that from independent identity.
+- **A live slot follows a tightened line.** The hand-over tightens its replacement
+  in process (above); the other writers reach the live holder from the event
+  loop instead. A save thread that folds the line stricter than the slot's own
+  mode records it as pending state. Each off-loop save registers adoption on
+  its loop-bound executor future rather than after the await, and guarded saves
+  shield that future so worker completion applies the pending mode and re-derives
+  the restricted-key marker even when the awaiting task is cancelled; adoption
+  targets the slot on which the committed mode was recorded, including a live
+  same-key replacement, while the periodic flush remains a redundant convergence
+  path. The turn-start binding
+  reads the metadata
+  line beside the live-first carrier, republishes the carrier at the folded mode,
+  then tightens the slot from that same result. So a persistent slot
+  recreated on a restricted key is restricted in memory too, and export, the
+  summary and the memory gates never keep reading a persistent slot over a
+  restricted line.
+- **One derivation seam gates every reader that learns from a transcript.**
+  A reader that DERIVES from a transcript -- hands rows to a model, a peer, a
+  downloadable file or a memory store -- can be handed rows a restricted line
+  already governs if it checks a mode and then reads rows in separate steps: a
+  live slot can lag its file (a same-key persistent recreation of a closed
+  restricted tab; another writer -- a second gateway on the same data home, a
+  hand-over drain, a subagent or cron -- tightening the line while the slot
+  still reads persistent), and a line read once is a snapshot a writer can
+  tighten before the rows are read. Guarding each consumer separately does not
+  end that class, so it is removed at the read seam instead:
+  `ConversationLog.derive_messages` / `derive_messages_chained` /
+  `derive_recent`, and `snapshot_for_consolidation(key, withhold_restricted=True)`,
+  validate the line (`transcript_withholds_derivation`: `memory_mode` through
+  `is_incognito_transcript`, failing CLOSED on an unreadable line, an absent
+  file being no refusal) and read the rows under ONE `_locked` hold -- the same
+  lock every tightening writer takes -- and raise `TranscriptWithheld` instead
+  of yielding rows. `derive_messages_chained` locks and validates EVERY
+  transcript in the tab-id chain (`chained_keys`) before reading. It resolves
+  the chain once more inside the hold, validates that settled set, and reads
+  only those settled keys directly through `_read_messages`; it never performs
+  a third resolution that could pull in an unlocked, unvalidated member, and it
+  preserves the plain reader's shared-list identity when the index knows no
+  chain. A member that joined between the resolve and the hold is answered as
+  `TranscriptBusy`, the same answer `publication_hold` gives a changed chain: a
+  membership change is "cannot vouch right now", not a privacy verdict, so the
+  export maps it to its retryable 503 rather than to the privacy 400. A
+  restricted sibling of a legacy tab therefore governs the whole
+  chained result. The public `derivation_hold` context is the single
+  timeout-mapping seam for these reads. A lock the seam cannot take
+  within the acquire ceiling is answered as `TranscriptBusy` (a
+  `TranscriptWithheld`): the reader cannot
+  vouch for the contract, so it gets no rows and every best-effort skip holds;
+  the export and the tunnel map it to their retryable 503, the MCP
+  `get_chat_session` says retry rather than private. A full save that meets a
+  transiently unreadable EXISTING line refuses (raises, `_dirty` stays armed)
+  before the ratchet can fold an empty dict as `persistent` over a restricted
+  line; a corrupt line it rewrites under the strictest mode (the ratchet bullet
+  above). Every deriving consumer is on the seam: the session summary
+  (`chat_summary`, skip with reason `memory_mode`), every transfer bundle
+  (`session_transfer._read_chained_history`, shared by the file export -- 400
+  `export_slot_not_persistent` -- and the tunnel send -- 400
+  `transfer_slot_not_persistent`, each auditing `denied`), the History
+  browser's `list_sessions(summarize=true)` leg, the suggestions prompt
+  (`suggestions._build_context`, session dropped), the MCP history tools
+  (`search_chat_history` row dropped; `get_chat_session` refused as
+  `refused_incognito`), and the consolidator (both snapshots refuse as
+  `_CONSOLIDATION_REFUSED` with no failure charge; skill detection reads through
+  `derive_messages`). The plain reads (`read_messages`, `read_messages_chained`,
+  `recent`, ...) stay for transcript PLUMBING -- resume, save, rewind, fork,
+  mirror, the History browser, migrations, injections -- which must see a
+  restricted transcript. `test/test_transcript_derivation_seam.py` enumerates
+  every plain-read reference in the source tree against a named plumbing list,
+  so a new consumer written against a plain read fails the suite and must
+  either move to the seam or declare itself plumbing in the diff.
+- **One publication seam gates every transcript-derived durable or egress
+  publication.** `ConversationLog.publication_hold(key, expected_keys=...)`
+  takes the chained lock set used by `derive_messages_chained`, re-resolves and
+  validates every settled member's live metadata line, and holds those locks for
+  one durable write or synchronous response commit. Any chain membership change
+  raises `TranscriptBusy`; egress callers pass the exact settled keys returned
+  with the rows used to assemble their bundle. A restricted line raises
+  `TranscriptWithheld`; lock timeout or unreadable metadata also raises
+  `TranscriptBusy`. Intent and one-line summary sidecars, consolidation's
+  preference/project/lesson/episodic writes, and auto-skill stage/create/refine
+  writes enter this seam after their model calls. Export constructs its response
+  under the hold; transfer revalidates immediately before the tunnel POST. A
+  threading lock is never held across an await, so network transmission is the
+  accepted residual window. `test/test_transcript_derivation_seam.py` enumerates
+  the publish consumers, reasons the two await-bearing builder exceptions, and
+  pins revalidation between assembly and commit. History search's query-time
+  restricted-session filter reads the live metadata line (`list_sessions` plus
+  `get_metadata`) on every query; its text index only shortlists content and is
+  not the privacy snapshot.
 - **The suggestions builder skips restricted transcripts.**
   `suggestions._build_context` walks `list_sessions()` and pulls each
   session's last user messages into a prompt shipped to the model and cached
@@ -954,7 +1106,11 @@ both embed items via blocking in-process llama.cpp inference calls
 (`write_lesson` performs a rule embed plus up to `_MAX_BACKFILLS_PER_CALL` lazy
 backfill embeds per lesson), so they are invoked through `asyncio.to_thread()` —
 running them inline would freeze the gateway loop (heartbeats, Slack, dashboard)
-for the duration of each embed, and can trip the faulthandler hard-kill. (The
+for the duration of each embed, and can trip the faulthandler hard-kill. A
+transcript-derived pass resolves its lesson or episode embedding before entering
+`ConversationLog.publication_hold`; `rule_emb_resolved` / `embedding_resolved`
+prevent a second inference inside that short hold, and lazy lesson backfills
+remain for the standing repair sweep. (The
 model load itself never blocks the embed call — it runs on a background daemon
 thread; embed returns `None` until the model is resident.) The same
 applies to `TaskRunner._extract_lesson`, which calls `write_lesson` after a task

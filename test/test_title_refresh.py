@@ -41,6 +41,9 @@ def _fake_state():
     state = MagicMock()
     # conversation_log must be truthy for _persist_title to attempt a write.
     state.conversation_log = MagicMock()
+    # The title write looks up ``state._slots`` for the live holder of the key; a
+    # bare MagicMock there poses as a slot at every key. No slot is registered here.
+    state._slots = {}
     return state
 
 
@@ -708,7 +711,7 @@ class TestPersistWriteOrdering:
         writes: list[dict] = []
         real_update = log.update_metadata_if
 
-        def _racing_update(key, fields, guard):
+        def _racing_update(key, fields, guard, **kwargs):
             writes.append(dict(fields))
             if len(writes) == 1:
                 # Simulate the rename winning the race while this (stale)
@@ -717,7 +720,7 @@ class TestPersistWriteOrdering:
                 slot.title = "User chosen name"
                 slot._title_origin = _TITLE_ORIGIN_USER
                 slot._title_epoch += 1
-            return real_update(key, fields, guard)
+            return real_update(key, fields, guard, **kwargs)
 
         log.update_metadata_if = _racing_update  # type: ignore[method-assign]
 
@@ -746,10 +749,10 @@ class TestPersistWriteOrdering:
         count = 0
         real_update = log.update_metadata_if
 
-        def _counting(key, fields, guard):
+        def _counting(key, fields, guard, **kwargs):
             nonlocal count
             count += 1
-            return real_update(key, fields, guard)
+            return real_update(key, fields, guard, **kwargs)
 
         log.update_metadata_if = _counting  # type: ignore[method-assign]
         await chat_title._persist_title(state, slot)
@@ -1372,7 +1375,7 @@ class TestLowSignalPersistence:
         state = _fake_state()
         recorded: list[dict] = []
 
-        def _record(_key, fields, guard):
+        def _record(_key, fields, guard, **_kwargs):
             assert guard({})
             recorded.append(dict(fields))
             return True

@@ -16,13 +16,17 @@ from kiro_crew.context import ui_language_tag
 from kiro_crew.context_management import extract_plan_metadata, rephrase_plan
 from kiro_crew.dashboard.chat_folder_suggest import maybe_suggest_folder
 from kiro_crew.dashboard.chat_utils import (
+    apply_pending_slot_memory_mode,
     effective_session_key,
+    restore_replacement_if_handover_did_not_land,
     slot_history_key,
+    tighten_replacement_to_restricted_original,
 )
 from kiro_crew.dashboard.state import NEW_SESSION_TITLE, DashboardState, _ChatSlot
 from kiro_crew.execution_context import canonical_memory_mode, stricter_memory_mode
 from kiro_crew.history import is_incognito_transcript
 from kiro_crew.llm_helpers import background_turn, run_bg_oneliner
+from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -1083,7 +1087,26 @@ async def _persist_title(state: DashboardState, slot: _ChatSlot) -> bool:
 
     if not state.conversation_log:
         return True
+    from kiro_crew.dashboard.chat_persistence import (
+        _record_pending_memory_mode,  # circular import: persistence imports channel_slots
+    )
+
     history_key = slot_history_key(slot)
+    pending_mode_slot = slot
+    current = state._slots.get(slot.key)
+    if current is not None and slot_history_key(current) == history_key:
+        pending_mode_slot = current
+    slot_mode = canonical_memory_mode(getattr(slot, "memory_mode", "persistent"))
+    tightening = None
+    if is_incognito_transcript(slot_mode):
+        try:
+            tightening = tighten_replacement_to_restricted_original(state, slot.key, slot)
+        except UnknownMemoryStore:
+            logger.warning(
+                "Slot %s: replacement rebound twice during tightening; writing the tail "
+                "under the ratcheted line without tightening the live replacement",
+                slot.key,
+            )
     while True:
         epoch = slot._title_epoch
         fields: dict[str, Any] = {"title": slot.title}
@@ -1102,7 +1125,6 @@ async def _persist_title(state: DashboardState, slot: _ChatSlot) -> bool:
         # a title update on an existing restricted line must not loosen its mode.
         # Fold both values under the transcript lock; a persistent slot still
         # leaves an ordinary line's mode to the transcript save.
-        slot_mode = canonical_memory_mode(getattr(slot, "memory_mode", "persistent"))
 
         def _fold_memory_mode(metadata: dict) -> bool:
             retained_mode = stricter_memory_mode(
@@ -1118,13 +1140,23 @@ async def _persist_title(state: DashboardState, slot: _ChatSlot) -> bool:
                 history_key,
                 fields,
                 _fold_memory_mode,
+                after_commit_under_lock=lambda: _record_pending_memory_mode(
+                    pending_mode_slot, fields.get("memory_mode", "persistent")
+                ),
             )
             if not persisted:
                 logger.debug("Failed to persist title for slot %s", slot.key)
+                await restore_replacement_if_handover_did_not_land(
+                    state, slot.key, tightening, history_key
+                )
                 return False
+            apply_pending_slot_memory_mode(state, pending_mode_slot)
             logger.debug("Persisted title %r for slot %s", slot.title, slot.key)
         except Exception:
             logger.debug("Failed to persist title for slot %s", slot.key)
+            await restore_replacement_if_handover_did_not_land(
+                state, slot.key, tightening, history_key
+            )
             return False
         if slot._title_epoch == epoch:
             return True

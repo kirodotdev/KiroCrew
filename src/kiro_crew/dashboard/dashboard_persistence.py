@@ -89,6 +89,11 @@ class DashboardPersistenceCoordinator:
             # seam while a long-lived loop is already running.
             flush_dirty = self._owner_method(owner, "_flush_dirty_slots", self._flush_dirty_slots)
             await asyncio.get_running_loop().run_in_executor(None, flush_dirty)
+            # circular import: state -> dashboard_persistence -> chat_utils -> state
+            from kiro_crew.dashboard.chat_utils import apply_pending_slot_memory_mode
+
+            for slot in list(owner._slots.values()):
+                apply_pending_slot_memory_mode(owner, slot)
 
     def flush_slot_now(self, owner: Any, slot: Any) -> None:
         """Write one dirty slot and clear only the generation that was saved."""

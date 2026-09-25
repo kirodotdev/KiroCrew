@@ -153,7 +153,11 @@ from kiro_crew.dashboard.chat_utils import (
     owned_stage_delivery_entry,
     parse_workflow_command,
     remember_slack_options,
+    restore_replacement_if_handover_did_not_land,
     slack_mirror_is_paused,
+    slot_history_key,
+    tighten_live_slot_memory_mode,
+    tighten_replacement_to_restricted_original,
     user_text_span,
 )
 from kiro_crew.dashboard.handlers import (
@@ -230,6 +234,12 @@ from kiro_crew.deny_guidance import (
     classify_deny,
     resolve_credential_tool_hint,
 )
+from kiro_crew.execution_context import (
+    canonical_memory_mode,
+    read_session_execution,
+    stricter_memory_mode,
+    tighten_live_session_execution,
+)
 from kiro_crew.executors import run_in_embed_pool, subprocess_executor
 from kiro_crew.hooks import (
     HOOK_EVENT_AGENT_SPAWN,
@@ -275,6 +285,7 @@ from kiro_crew.llm_helpers import (
 )
 from kiro_crew.mcp_discovery import kirocrew_managed_names
 from kiro_crew.members import member_lifecycle, record_activity
+from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging.commands import compact_unsupported_reply
 from kiro_crew.messaging.dispatch import consume_reinjection, rearm_reinjection
 from kiro_crew.messaging.display_safety import redact_for_display
@@ -474,6 +485,79 @@ def _require_session_memory_assignment(session_key: str, memory_store: str | Non
             "This conversation retains its member memory assignment. "
             "Restore that member binding or open a new conversation."
         )
+
+
+def _read_and_tighten_turn_execution(
+    conversation_log: Any, session_key: str, transcript_key: str | None = None
+):
+    """Fold the transcript privacy line into the live turn carrier off-loop.
+
+    ``read_session_execution`` deliberately serves a live carrier without file I/O
+    because synchronous callers also use it on the event loop. Turn admission has
+    already moved to a worker thread, so this is the one read-back that can safely
+    compare the live carrier with the line and republish only a stricter mode.
+    """
+    execution = read_session_execution(session_key)
+    if execution is None:
+        return None
+    if conversation_log is None:
+        # No transcript store at all (history disabled, or a state built without
+        # one): there is no line on disk to fold, so the carrier stands as read.
+        return execution
+    # The carrier is addressed by the SESSION key; the privacy line lives on the
+    # TRANSCRIPT, which for an unbound channel-born slot is a different file
+    # (``slot_history_key`` vs ``effective_session_key``). Read the line by the
+    # transcript key, or the fold finds no line there and tightens nothing.
+    metadata, readable = conversation_log.get_metadata_status(transcript_key or session_key)
+    if not readable:
+        # An unreadable line is a transient read failure (fd exhaustion, a
+        # sharing violation while another writer's replace lands), not a mode
+        # -- and it leaves this turn with NO contract to run under. Neither
+        # extreme is right: tightening to Temporary would turn one failed read
+        # into a permanent ratchet on a persistent chat (everything this helper
+        # publishes only ever narrows), while proceeding on the carrier as read
+        # would let a line another writer already tightened -- Temporary over
+        # this process's persistent carrier -- go unseen for a whole turn, with
+        # memory injection and memory writes still enabled under the looser
+        # mode. So the turn is refused, retryably: the same answer the save
+        # gives when it meets an unreadable line ("deferred for retry"), and the
+        # same card every other memory-unavailable turn shows. Nothing ran,
+        # nothing was written; the next turn re-reads the line.
+        raise _MemoryUnavailable(
+            "memory_unavailable: this conversation's privacy line could not be read "
+            "just now; nothing was sent -- try again in a moment"
+        )
+    if "memory_mode" not in metadata:
+        return execution
+    retained_mode = stricter_memory_mode(
+        canonical_memory_mode(metadata.get("memory_mode")), execution.memory_mode
+    )
+    if retained_mode == execution.memory_mode:
+        return execution
+    tightened_live = tighten_live_session_execution(session_key, retained_mode, expected=execution)
+    return tightened_live or execution.with_mode(retained_mode)
+
+
+async def _persist_tool_result_rows(state: Any, slot: Any) -> Any:
+    """Persist tool rows without leaving a same-file replacement looser."""
+    history_key = slot_history_key(slot)
+    try:
+        tightening = tighten_replacement_to_restricted_original(state, slot.key, slot)
+    except UnknownMemoryStore:
+        tightening = None
+        logger.warning(
+            "Slot %s: replacement rebound twice during tightening; writing the tail "
+            "under the ratcheted line without tightening the live replacement",
+            slot.key,
+        )
+    try:
+        committed = await save_slot_off_loop(state, slot, rows_only=True)
+    except Exception:
+        await restore_replacement_if_handover_did_not_land(state, slot.key, tightening, history_key)
+        raise
+    if not committed:
+        await restore_replacement_if_handover_did_not_land(state, slot.key, tightening, history_key)
+    return committed
 
 
 def _empty_auto_continue_enabled() -> bool:
@@ -10905,6 +10989,18 @@ async def _run_chat(
                     replace_existing=previous_execution is not None,
                 )
             _require_current_binding()
+            tightened_execution = await asyncio.to_thread(
+                _read_and_tighten_turn_execution,
+                state.conversation_log,
+                session_key,
+                slot_history_key(slot),
+            )
+            _require_current_binding()
+            if tightened_execution is not None and tighten_live_slot_memory_mode(
+                state, slot.key, tightened_execution.memory_mode, expected_slot=slot
+            ):
+                execution_context = tightened_execution
+                bindings.execution_context = tightened_execution
 
         # FAIL-LOUD: an app-owned slot whose agent STILL did not resolve after the
         # self-heal must NOT run the default agent — that generic-substitution is
@@ -13261,7 +13357,7 @@ async def _run_chat(
                     # This does NOT clear `_dirty` -- only the flush passes do --
                     # so the `mcp_app_lead` flag written further below is still
                     # owed to the periodic flush exactly as before.
-                    persist_rows=lambda: save_slot_off_loop(state, slot, rows_only=True),
+                    persist_rows=lambda: _persist_tool_result_rows(state, slot),
                 )
                 _out = _render.text
                 # Rows this frame flags, by their own `ts`. That is enough HERE,

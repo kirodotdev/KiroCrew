@@ -78,6 +78,7 @@ import logging
 import platform
 import uuid
 import zlib
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import Any
 
@@ -115,6 +116,10 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.dashboard.state import MAX_LIVE_SLOTS, DashboardState, _ChatSlot
 from kiro_crew.dashboard.token_auth import effective_request_app
+from kiro_crew.history import (  # noqa: F401 - re-exported to the bundle's callers
+    TranscriptBusy,
+    TranscriptWithheld,
+)
 from kiro_crew.security import (
     redact_credentials,
     redact_exfiltration_urls,
@@ -139,6 +144,17 @@ BUNDLE_VERSION = 2
 #: best-effort parsed, because a silently misread field lands as corrupted
 #: conversation.
 _SUPPORTED_BUNDLE_VERSIONS = (1, 2)
+
+
+class TransferBundle(dict[str, Any]):
+    """Wire bundle plus the transcript chain validated during assembly."""
+
+    __slots__ = ("publication_keys",)
+
+    def __init__(self, payload: dict[str, Any], *, publication_keys: Sequence[str]) -> None:
+        super().__init__(payload)
+        self.publication_keys = tuple(publication_keys)
+
 
 #: Per-bundle limits. A bundle arrives from another instance, so it is untrusted
 #: input even though the peer is one the owner configured: these bound the work
@@ -267,15 +283,27 @@ def local_instance_label() -> str:
         return "another instance"
 
 
-def _read_chained_history(state: DashboardState, session_key: str) -> list[dict]:
+def _read_chained_history(
+    state: DashboardState, session_key: str
+) -> tuple[list[dict], tuple[str, ...]]:
     """Read a session's full on-disk transcript. **Blocking** — file IO + JSON.
 
     Split out so a caller on the event loop can push it to a thread; see
     :func:`build_transfer_bundle_async`.
+
+    Read through the DERIVATION seam
+    (:meth:`ConversationLog.derive_messages_chained_with_keys`), which validates
+    the file's own privacy contract and returns the exact chained membership under
+    the same lock as the rows. The callers carry those keys to their publication
+    hold so an assembled bundle is refused if that membership changes before
+    egress. Test doubles without the keyed seam retain their single-key behavior.
     """
     if state.conversation_log:
-        return state.conversation_log.read_messages_chained(session_key)
-    return []
+        keyed_reader = getattr(state.conversation_log, "derive_messages_chained_with_keys", None)
+        if callable(keyed_reader):
+            return keyed_reader(session_key)
+        return state.conversation_log.derive_messages_chained(session_key), (session_key,)
+    return [], (session_key,)
 
 
 def _events_jsonl_is_loadable(events: str) -> bool:
@@ -748,7 +776,7 @@ async def build_transfer_bundle_async(
     origin: str = "",
     with_source: bool = False,
     include_layer_b: bool = True,
-) -> dict[str, Any]:
+) -> TransferBundle:
     """Serialise *slot*'s visible conversation into a portable bundle, with the
     disk read off the event loop.
 
@@ -1076,14 +1104,14 @@ def _read_and_assemble(
     layer_b_sid: str = "",
     layer_b_skipped: bool = False,
     source: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+) -> TransferBundle:
     """Read the transcript + Layer B and assemble the bundle. **Runs in a thread.**
 
     Touches no slot state and no session map — *tail*, *title*, *agent*,
     *layer_b_sid* and *source* are all snapshots the caller took on the event
     loop — so it is safe off-loop. Only the file reads happen here.
     """
-    history = _read_chained_history(state, session_key)
+    history, publication_keys = _read_chained_history(state, session_key)
     history.extend(tail)
     layer_b = _read_layer_b(layer_b_sid)
     if layer_b_sid and layer_b is None:
@@ -1094,7 +1122,8 @@ def _read_and_assemble(
         # no resumable context behind it. Distinct from ``layer_b_sid == ""``,
         # which means there was never a context to carry.
         layer_b_skipped = True
-    return _assemble_bundle(history, title, agent, origin, layer_b, layer_b_skipped, source)
+    payload = _assemble_bundle(history, title, agent, origin, layer_b, layer_b_skipped, source)
+    return TransferBundle(payload, publication_keys=publication_keys)
 
 
 def _assemble_bundle(
