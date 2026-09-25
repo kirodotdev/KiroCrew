@@ -901,6 +901,26 @@ _WIDE_PROJECTIONS: Tuple[Tuple["re.Pattern[bytes]", int, int], ...] = (
 )
 
 
+def _baseline_symbol_tables_masked(raw_text: str) -> str:
+    """*raw_text* with the standard container symbol tables blanked, for a scan.
+
+    Deferred import for the reason :func:`redact_via_context` states: keep the
+    redaction regex stack off the platform module-load path. Only the narrow binary
+    scan below reaches here, and a gate that is already scanning content pays that
+    import willingly.
+
+    Returns the argument ITSELF when nothing is masked -- both when the helper
+    masks no table and when it cannot be imported at all. The caller reads that
+    identity as "the unmasked answer stands", so a broken import weakens no
+    refusal and costs no second scan.
+    """
+    try:
+        from kiro_crew.security.redaction import mask_baseline_symbol_tables
+    except Exception:
+        return raw_text
+    return mask_baseline_symbol_tables(raw_text)
+
+
 def wide_content_is_flagged(raw: bytes) -> bool:
     """Whether *raw* carries credential material written at UTF-16/UTF-32 spacing.
 
@@ -918,6 +938,16 @@ def wide_content_is_flagged(raw: bytes) -> bool:
     take that path. Searching for runs rather than striding the whole buffer is
     also what keeps the detectors from being handed a second stream of
     high-entropy bytes, which would widen the false-positive surface.
+
+    This leg does NOT ask the narrow pass's table-masked second question, because
+    no container reaches it carrying a table. A symbol table is written as
+    contiguous bytes at single-byte spacing, so it matches none of
+    :data:`_WIDE_PROJECTIONS`, whose patterns require printable ASCII alternating
+    with NUL; measured over baseline, grayscale, progressive and optimised JPEGs
+    from 692 bytes to 1.6 MB, and over palette and truecolour PNGs, every one of
+    them yields zero projections here. What does reach this leg is wide-encoded
+    TEXT -- an ID3v2 UTF-16 title, a UTF-16BE PDF string -- and a credential is
+    exactly what this leg exists to find in it.
 
     Synchronous, like :func:`binary_content_is_flagged`: an async gate calls it
     through ``asyncio.to_thread`` rather than on the event loop.
@@ -968,13 +998,28 @@ def binary_content_is_flagged(raw: bytes) -> bool:
     the owner-facing three honour the owner's recorded grant, the upload legs
     refuse unconditionally.
 
+    A positive answer is re-asked with the standard container symbol tables
+    masked, for the reason ``mask_baseline_symbol_tables`` documents: the standard
+    baseline Huffman table's printable tail reads as an unlabelled bot token, so
+    without the second question essentially every JPEG written with the default
+    tables is refused here. Masking is pinned to that one fixed constant, so the
+    re-ask cannot clear anything else.
+
+    The order is what keeps the cost off the common path. A buffer the detectors do
+    not flag is answered by the same single scan as ever; and when the masker finds
+    no table it returns the buffer ITSELF, which the identity test below reads as
+    "the unmasked answer stands" rather than paying the credential alternation a
+    second time over up to the read cap.
+
     Synchronous, and deliberately: the scan is CPU work over up to the 50 MB read
     cap, so an async gate must call it through ``asyncio.to_thread`` rather than
     on the event loop.
     """
     text = raw.decode("latin-1")
     if redact_via_context(text) != text:
-        return True
+        masked = _baseline_symbol_tables_masked(text)
+        if masked is text or redact_via_context(masked) != masked:
+            return True
     return wide_content_is_flagged(raw)
 
 
