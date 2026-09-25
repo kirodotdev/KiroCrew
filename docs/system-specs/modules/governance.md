@@ -17,7 +17,12 @@ implementation companion to the design doc (Pippin `kirocrew/MVTDhLpm2SSW`).
 > performs on behalf of the agent across every surface (CLI, dashboard, Slack,
 > cron, heartbeat, sub-agents, apps). The underlying kiro-cli agent config
 > (`~/.kiro/agents/*.json`) is **out of scope**: Kiro Crew enforces its own
-> ceiling at its own gate even when the kiro side grants more.
+> ceiling at its own gate even when the kiro side grants more. The one place a
+> kiro-cli spec field is READ at a Crew gate is the spawn gate's honouring of
+> the parent agent's `toolsSettings.subagent.availableAgents` — an
+> intersection with `capabilities.spawn.scopes.agents` that only ever narrows
+> (see [subagent](subagent.md) § Parent agent spec allowlist); it is not a
+> governance scope and never widens what this model denies.
 
 Subagent admission checks explicit target names. When execution resolves an
 omitted name from the original conversation or parent session, the runner also

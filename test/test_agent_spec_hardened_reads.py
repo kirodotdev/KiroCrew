@@ -1126,6 +1126,11 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("forward:operation", "forward:source"),
         ("resolve_agent_model", "unknown"),
     ],
+    # The spawn gate walks every spec for the PARENT agent's
+    # ``toolsSettings.subagent.availableAgents`` allowlist, and keeps a file the
+    # reader refuses as unreadable (refuse) rather than as "no spec"; a denial
+    # there belongs to the sub-agent surface that asked to spawn.
+    "kiro_crew/subagent.py": [("spawn_available_agents", "subagent")],
 }
 
 

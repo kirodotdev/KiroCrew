@@ -111,6 +111,7 @@ from kiro_crew.subagent import (
     DEFERRED_QUEUED_REASONS,
     effort_applied_note,
     effort_drop_reason,
+    parent_spawn_allowlists,
     stage_boundary_owner_for_run,
 )
 from kiro_crew.subagent_persistence import _agent_dir, read_state
@@ -616,6 +617,19 @@ async def api_spawn(request: web.Request) -> web.Response:
         parent_execution = caller.execution
         if parent_execution is None and parent_session:
             parent_execution = await asyncio.to_thread(read_session_execution, parent_session)
+        # The parent agent spec's ``availableAgents`` declaration, read off-loop
+        # from the template the record named, so the gate needs neither a second
+        # record read nor a directory scan on the loop. A parentless request has
+        # no declaration to honour: the synthesized context below carries the
+        # CHILD's template, which must not be mistaken for a parent.
+        parent_spawn_policy = (
+            (
+                parent_execution.template_id,
+                await asyncio.to_thread(parent_spawn_allowlists, parent_execution.template_id),
+            )
+            if parent_execution is not None
+            else ("", ())
+        )
         if parent_execution is None:
             parent_execution = ExecutionContext(
                 None, MemoryStoreRef("default"), "template", agent or "kirocrew"
@@ -752,6 +766,7 @@ async def api_spawn(request: web.Request) -> web.Response:
         _memory_mode=admitted_mode,
         _execution_context=admitted_execution.to_record(),
         _stage_boundary_owner=_stage_boundary_owner_for_parent(state, parent_session),
+        _parent_spawn_policy=parent_spawn_policy,
     )
     if not info:
         # Reached mgr.spawn (submission COUNTED at the top of spawn()) but

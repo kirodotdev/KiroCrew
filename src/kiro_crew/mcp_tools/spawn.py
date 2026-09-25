@@ -21,7 +21,7 @@ import json
 import logging
 import os
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 from urllib.parse import urlencode
 
@@ -30,6 +30,7 @@ from kiro_crew import resource_status as host_status
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.constants import DEFAULT_SUBAGENT_MAX_TURNS
 from kiro_crew.context_management import COMPLETION_KEEP_DEFAULT_CHARS
+from kiro_crew.execution_context import read_session_execution
 from kiro_crew.mcp_shared import ToolCancelled, is_tool_cancelled
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -43,7 +44,10 @@ from kiro_crew.solo_spawn import (
     solo_spawn_refusal,
 )
 from kiro_crew.subagent import (
+    AGENT_NOT_AVAILABLE_CODE,
     AGENT_NOT_FOUND_CODE,
+    agent_matches_allowlist,
+    parent_spawn_allowlists,
     resolve_max_subagents,
     visible_agent_names,
 )
@@ -96,6 +100,45 @@ def _audit_owner(parent_session: str) -> str:
     return f"{_OWNER_UNRESOLVED_PREFIX}{os.getpid()}"
 
 
+def _parent_template_for_roster() -> str:
+    """The kiro agent template THIS tool server's session runs as, or ``""``.
+
+    Advisory input to the roster only: the session key comes from the ordinary
+    resolver (token, env, PID map), and its execution record names the template.
+    A pool process that has not been rekeyed yet, a caller with no session, or a
+    record this process cannot read all answer ``""`` -- and an empty answer means
+    "filter nothing", the roster's pre-existing shape. The gateway's gate does its
+    own resolution and is the decision; this only stops the description from
+    advertising names that gate would refuse.
+    """
+    try:
+        session_key = mcp_core._resolve_session_key()
+        if not session_key:
+            return ""
+        execution = read_session_execution(session_key)
+    except Exception:
+        return ""
+    return execution.template_id if execution is not None else ""
+
+
+def _parent_allowlist_filter(names: Iterable[str]) -> tuple[list[str], bool]:
+    """Keep the *names* the parent agent's spec allows spawning.
+
+    Returns ``(kept, restricted)``: ``restricted`` is True only when the parent's
+    spec DECLARES ``toolsSettings.subagent.availableAgents``; an omitted key, an
+    unresolvable parent, or a spec the gate will refuse as unreadable (``None``
+    from the resolver -- the gate's own denial names that, and this roster is
+    advisory) keeps every name and reports False, so the roster a session without
+    a declaration sees is the one it always saw. Bare-name aliasing is not
+    applied here: this process has no verified app identity, and the roster
+    lists installed names as the gate will see them.
+    """
+    allowlists = parent_spawn_allowlists(_parent_template_for_roster())
+    if not allowlists:
+        return list(names), False
+    return [n for n in names if all(agent_matches_allowlist(n, al) for al in allowlists)], True
+
+
 def _agent_roster_hint() -> str:
     """Valid agent names, for the ``agent``/``agents`` parameter descriptions.
 
@@ -139,18 +182,30 @@ def _agent_roster_hint() -> str:
     try:
         # Sorted by DECLARED name, before redaction, so the order matches the
         # refusal roster's and a credential-shaped name is rewritten in place
-        # rather than re-sorted into a different slot.
-        shown, withheld = visible_agent_names(
-            sorted(a.name for a in mcp_core.list_agents() if a.name),
-            limit=_MAX_ROSTER_NAMES,
+        # rather than re-sorted into a different slot. Names the parent agent's
+        # spec forbids spawning are dropped FIRST: advertising them would send
+        # the model straight into the gate's refusal.
+        names, restricted = _parent_allowlist_filter(
+            sorted(a.name for a in mcp_core.list_agents() if a.name)
         )
+        shown, withheld = visible_agent_names(names, limit=_MAX_ROSTER_NAMES)
     except Exception:
         return ""  # never let a directory read break the tool advertisement
     if not shown:
-        return ""
+        # A declared allowlist that admits no installed agent is still a fact the
+        # caller needs: naming any agent will be refused, so say so rather than
+        # advertising nothing and letting it guess.
+        return (
+            " This agent's toolsSettings.subagent.availableAgents allows none of the "
+            "installed agents, so every spawn is refused; ask the operator to widen the list."
+            if restricted
+            else ""
+        )
     hint = f" Valid names right now: {', '.join(shown)}"
     if withheld:
         hint += f" (+{withheld} more)"
+    if restricted:
+        hint += " (restricted by this agent's toolsSettings.subagent.availableAgents)"
     return hint + "."
 
 
@@ -598,10 +653,11 @@ def schemas() -> list[dict[str, Any]]:
 
 
 def _is_unknown_agent_refusal(resp: Mapping[str, Any], agent: str) -> bool:
-    """True when *resp* is the gateway refusing *agent* as a name it cannot load.
+    """True when *resp* is the gateway refusing *agent* as a name this wave cannot use.
 
-    Reads the response's machine-readable ``code`` (``AGENT_NOT_FOUND_CODE``,
-    spelled once in ``subagent`` and imported by both sides), not its prose. The
+    Reads the response's machine-readable ``code`` (``AGENT_NOT_FOUND_CODE`` for a
+    name it cannot load, ``AGENT_NOT_AVAILABLE_CODE`` for one the parent agent's
+    spec forbids -- both spelled once in ``subagent`` and imported here), not its prose. The
     refusal text is advisory and free to be reworded; before this it WAS the
     contract, so any rewording silently disabled the wave short-circuit until a
     test caught it.
@@ -617,7 +673,7 @@ def _is_unknown_agent_refusal(resp: Mapping[str, Any], agent: str) -> bool:
     client newer than the gateway simply loses the short-circuit -- while using it
     to REJECT a spawn would not be.
     """
-    return bool(agent) and resp.get("code") == AGENT_NOT_FOUND_CODE
+    return bool(agent) and resp.get("code") in (AGENT_NOT_FOUND_CODE, AGENT_NOT_AVAILABLE_CODE)
 
 
 def _collapse_effort_verdicts(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
@@ -1117,9 +1173,16 @@ def spawn_list(name: str, args: dict[str, Any]) -> str:
     # elsewhere because it is reached by omitting ``agent`` -- but it is still a
     # name the gateway accepts, so a full listing shows it.
     try:
-        names, _ = visible_agent_names((a.name or "" for a in mcp_core.list_agents()), exclude=())
+        names, restricted = _parent_allowlist_filter(a.name or "" for a in mcp_core.list_agents())
+        names, _ = visible_agent_names(names, exclude=())
         if names:
             lines.append(f"\nAvailable agents: {', '.join(names)}")
+        if restricted:
+            lines.append(
+                "(restricted to this agent's toolsSettings.subagent.availableAgents; "
+                + ("other installed agents are" if names else "every installed agent is")
+                + " refused at spawn)"
+            )
     except Exception:
         pass  # list_agents failure is non-critical
     return "\n".join(lines)
