@@ -971,10 +971,18 @@ whose only "status" is in a tool call is silent as far as the probe is concerned
 and ages into `IDLE`.
 
 `cmd=` on a `BANNED` line is the matched command reduced to what cannot hold a
-secret: the program name, the runner name, option names with their values dropped
-(a digits-only value is kept, since that is the cap the rule judged), and `+<n>`
-for the arguments withheld. Read it before stopping anyone — it is what separates
-a real uncapped run from a command that merely names one, and no argv is echoed.
+secret: a recognised runner or launcher name, recognised option names with their
+values dropped, `+<n>` for the arguments withheld, and a trailing `~` on any single
+token long enough to be clipped. NO option value is printed, the cap flag's
+included — `-n0` prints as `-n`, because a custom rule can point this scan at a
+program whose `-n` value is a numeric secret and nothing tells that apart from a
+worker count. Recognised means drawn from a fixed list, so a program or long option
+the list does not name is counted rather than printed — a word that looks like a
+program name is also exactly what an opaque credential looks like. An inline
+`KEY=value` in front of the command is withheld whole. Read it before stopping
+anyone — it is what separates a real uncapped run from a command that merely names
+one, and no argv is echoed. When the program itself is withheld, `rule=` is what
+identifies the command: it is the rule that selected this pid.
 
 The handled set keeps the last dispositioned PAYLOAD report as `settled`, so a
 later `IDLE` or `NOPROGRESS` mark on the same session cannot resurrect a ruling
