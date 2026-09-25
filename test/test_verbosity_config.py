@@ -347,10 +347,9 @@ class TestAnswerOnlyBlock:
     def test_shape_check_draws_the_shape_in_the_form_the_surface_renders(self):
         """The old rule lived in the fourteenth paragraph as "prefer" and was
         never reached. Now it is the first check and imperative. The form is
-        gated on the surface, and on a widget-capable one it is a single
-        mandate rather than a menu: a "richest form" list of alternatives let a
-        model reach past the widget for the adjacent plain-table fallback and
-        ship a one-column table of sentences as its "picture". Elsewhere the
+        gated on the surface and on the content: a grid of labels and numbers
+        is a markdown table, and a picture needing color, layout or motion is
+        a widget. A table of sentences is never the picture. Elsewhere the
         table IS the picture -- an unconditional "emit a widget" would land raw
         ``<mcwidget>`` markup in a Slack or CLI reply.
         """
@@ -358,17 +357,21 @@ class TestAnswerOnlyBlock:
         assert "Does the answer have a shape" in block
         assert "steps, before/after, cases and verdicts, sizes" in block
         assert (
-            "When your instructions carry an Inline Widgets section, the picture "
-            "IS an inline widget (an HTML artifact when it is large)" in block
+            "With an Inline Widgets section, a picture needing color, layout or "
+            "motion IS an inline widget (an HTML artifact when large)" in block
         )
+        # A grid of words and numbers gains nothing from an iframe, so it stays
+        # a markdown table. The criterion (color, layout, motion) is a test,
+        # not a menu of forms.
+        assert "Plain labels and numbers: a markdown table" in block
         # The one form the observed failure took is named, so the mandate rules
         # out a table of prose without re-opening a menu of allowed forms.
-        assert "never a plain table of sentences" in block
+        assert "never a table of sentences" in block
         # The fallback names the surfaces that cannot render them and says
         # what the markup becomes there, so the model has a reason, not a rule.
         assert (
-            "On any other surface (a chat channel, a CLI) a plain table — widget "
-            "or HTML markup lands there as raw text" in block
+            "Elsewhere (a chat channel, a CLI) a plain table: widget markup "
+            "lands there as raw text" in block
         )
         # The Inline Widgets section already says to load the `widgets` skill;
         # repeating it here would be a second spelling of the same instruction.

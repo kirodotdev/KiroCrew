@@ -68,10 +68,12 @@ class TestWidgetBlockPlaceholder:
         # sections (Inline Widgets + Artifacts, ~640 chars for "more") when the
         # Artifacts pointer was added, and again by one theme-contract sentence
         # (~1000 / ~560) once answer-only widgets shipped unreadable in dark
-        # mode because the model never loaded the skill. Budgets sit just above
-        # today's sizes to keep catching accidental regrowth toward inlining
-        # full skill docs.
-        budgets = {"more": 1050, "less": 600}
+        # mode because the model never loaded the skill, and once more by the
+        # animation baseline (~1320 / ~630), which must reach agents whose
+        # skill:// mapping hides the skill. Budgets sit just above today's
+        # sizes to keep catching accidental regrowth toward inlining full
+        # skill docs.
+        budgets = {"more": 1340, "less": 660}
         for density, budget in budgets.items():
             result = _resolve("{{WIDGET_BLOCK}}", "dashboard:abc", density=density)
             assert len(result) < budget, f"{density} pointer too long: {len(result)} chars"
@@ -87,6 +89,17 @@ class TestWidgetBlockPlaceholder:
             assert "The frame is themed" in result, density
             assert "never a fixed palette" in result, density
             assert "background together with its text color" in result, density
+
+    def test_pointer_carries_the_animation_baseline(self):
+        # The widgets skill holds the full animation rules, but an agent whose
+        # skill:// mapping omits it never sees the skill. The floor -- move only
+        # when motion carries information, a pause control, the reduced-motion
+        # setting -- rides in the pointer so it holds without the skill.
+        for density in ("more", "less"):
+            result = _resolve("{{WIDGET_BLOCK}}", "dashboard:abc", density=density)
+            assert "Animate only when the" in result, density
+            assert "pause control" in result, density
+            assert "reduced-motion setting" in result, density
 
     def test_dashboard_underscore_key_also_matches(self):
         # Some dashboard sessions use `dashboard_<slot>` instead of `dashboard:<slot>`.
