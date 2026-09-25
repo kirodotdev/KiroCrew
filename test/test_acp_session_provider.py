@@ -1007,11 +1007,35 @@ class TestNewConversation:
 
         # Fresh session/new on the SAME runtime (cwd+agent from the runtime).
         runtime.create_session.assert_awaited_once_with(
-            cwd="/tmp/ws", agent="kirocrew", memory_mode="persistent"
+            cwd="/tmp/ws", agent="kirocrew", memory_mode="persistent", session_key=""
         )
         # Handle swapped to the fresh session → next prompt starts clean.
         assert provider._handle is new_handle
         assert provider.session_id == "fresh-session-2"
+
+    @pytest.mark.asyncio
+    async def test_owning_shutdown_stops_in_flight_hook_executions(self):
+        handle = _make_handle(session_id="owned")
+        handle._cancel_hook_tasks = MagicMock()
+        runtime = _make_runtime()
+        runtime.kill = AsyncMock()
+        provider = AcpSessionProvider(handle, runtime, owns_runtime=True)
+
+        await provider.shutdown()
+
+        handle._cancel_hook_tasks.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_the_fresh_session_keeps_the_providers_owner(self):
+        # The hooks execute path keys its record and its governance by the owning
+        # session, so a fresh conversation must not come back unowned.
+        old = _make_handle(session_id="old-session-1")
+        runtime, _new_handle = self._runtime_with_new_session()
+        provider = AcpSessionProvider(old, runtime, session_key="slot:owner")
+
+        await provider.new_conversation()
+
+        assert runtime.create_session.await_args.kwargs["session_key"] == "slot:owner"
 
     @pytest.mark.asyncio
     async def test_destroys_old_session_to_free_context(self):

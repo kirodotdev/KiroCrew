@@ -157,9 +157,8 @@ with no row here.
      - driver-internal (whether the metadata refusal parser is consulted)
    * - ``ACP_BACKENDS_HOOKS_LIST``
      - driver-internal (whether this harness's agent asks its client for the hooks
-       matching a trigger, read by the session dispatch loop that answers the two
-       read-only hook methods; no consumer above the boundary asks it, and the
-       capability that would make an agent use the channel is not announced)
+       matching a trigger and to run one, read by the session dispatch loop that
+       answers the three hook methods; no consumer above the boundary asks it)
    * - ``ACP_BACKENDS_HOST_AUTH_CALLBACK``
      - driver-internal (whether the reader loop may answer the engine's
        ``_kiro/auth/getAccessToken`` from Crew's own vault)
@@ -2044,17 +2043,17 @@ ACP_BACKENDS_STRUCTURED_REFUSAL = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # provider key it needs is resolved inside the harness from its own credential store.
 ACP_BACKENDS_HOST_AUTH_CALLBACK = frozenset({ACP_BACKEND_KAS})
 
-#: Backends whose agent asks its CLIENT for the hooks matching a trigger, over
-#: ``_kiro/hooks/list`` and ``_kiro/hooks/sessionStart``. Only KAS defines that
-#: channel, and the answers carry operator-authored hook commands, so the route
+#: Backends whose agent asks its CLIENT for the hooks matching a trigger, and to
+#: run one, over ``_kiro/hooks/list``, ``_kiro/hooks/sessionStart`` and
+#: ``_kiro/hooks/executeHook``. Only KAS defines that channel, and the answers
+#: carry -- and the last one runs -- operator-authored hook commands, so the route
 #: that serves them is gated on membership rather than on the method name alone:
 #: the dispatch loop it lives in is shared by every backend served by the shared
-#: runtime, and a non-member sending either method is answered ``-32601`` like any
+#: runtime, and a non-member sending any of them is answered ``-32601`` like any
 #: other method it does not serve.
 #:
-#: Membership does NOT mean the channel is live for that backend. Crew serves the
-#: two read-only methods and does not announce the capability that makes the agent
-#: use them, so a member asks nothing until that flag is set.
+#: Membership authorizes the ROUTE only. The handshake does not announce the
+#: channel (``KAS_CLIENT_CAPABILITIES``), so a member asks nothing yet.
 ACP_BACKENDS_HOOKS_LIST = frozenset({ACP_BACKEND_KAS})
 
 # Backends that keep their OWN session records and resolve a resume from the

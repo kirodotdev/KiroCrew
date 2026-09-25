@@ -896,6 +896,9 @@ def test_the_shared_runtime_rekey_claims_its_own_session_not_the_runtime(
         def rebind_watchdog(self, *_a: Any, **_k: Any) -> None:
             pass
 
+        def bind_session_key(self, _key: str) -> None:
+            pass
+
         class last_prompt_stats:  # noqa: N801 - mirrors the real attribute name
             @staticmethod
             def reset_context_state() -> None:

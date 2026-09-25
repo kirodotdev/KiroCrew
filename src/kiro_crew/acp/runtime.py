@@ -6177,6 +6177,7 @@ class AcpRuntime:
                 payload_snapshot=payload_snapshot,
                 late_adopter=late_adopter,
                 memory_mode=memory_mode,
+                session_key=session_key,
             )
             if collector is None:
                 permit.release()
@@ -6206,6 +6207,7 @@ class AcpRuntime:
             session_work_dir=session_work_dir,
             projected_sources=projected_sources,
             payload_snapshot=payload_snapshot,
+            session_key=session_key,
         )
 
     def _collect_late_start(
@@ -6228,6 +6230,7 @@ class AcpRuntime:
         payload_snapshot: Any,
         late_adopter: "Callable[[AcpSessionHandle], Awaitable[bool]] | None",
         memory_mode: str = "persistent",
+        session_key: str = "",
     ) -> StartCollector | None:
         """Hand a timed-out ``session/new`` to a :class:`StartCollector`.
 
@@ -6309,6 +6312,7 @@ class AcpRuntime:
                     session_work_dir=session_work_dir,
                     projected_sources=projected_sources,
                     payload_snapshot=payload_snapshot,
+                    session_key=session_key,
                 )
                 # A declining (or raising) adopter answers False and the
                 # collector performs the one teardown.
@@ -6403,6 +6407,7 @@ class AcpRuntime:
         projected_sources: dict[str, str],
         payload_snapshot: Any,
         memory_mode: str = "persistent",
+        session_key: str = "",
     ) -> AcpSessionHandle:
         """Everything after a successful ``session/new``: queue, handle, mode, drain.
 
@@ -6430,6 +6435,7 @@ class AcpRuntime:
             runtime=self,
             watchdog=_wd,
             crew_agent=_crew,
+            session_key=session_key,
         )
         handle.memory_mode = memory_mode
         # The token this session's stubs carry, so a later claim (warm-pool
@@ -6943,6 +6949,7 @@ class AcpRuntime:
             runtime=self,
             watchdog=_wd,
             crew_agent=_crew,
+            session_key=session_key,
         )
         # Mirrors create_session: the resumed session's own stub token.
         handle.stub_session_token = stub_token

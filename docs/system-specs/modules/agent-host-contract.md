@@ -548,52 +548,75 @@ kirocrew config set agent.acp_backend kas   # then: kirocrew restart
 kirocrew config set agent.acp_backend ""     # back to kiro-cli; restart
 ```
 
-Three KAS parity items are deferred: hook EXECUTION is not wired for it, `/clear`
-maps to a `kiro-cli`-only notification and so is a no-op there (a local reset is
-the intended fix), and an alternative transport mode is out of scope pending its
-own design and review.
+Two KAS parity items are deferred: `/clear` maps to a `kiro-cli`-only notification
+and so is a no-op there (a local reset is the intended fix), and an alternative
+transport mode is out of scope pending its own design and review.
 
-Hook LISTING is served, and unannounced. `acp/kas_wire.py` builds the answers to
-`_kiro/hooks/list` and `_kiro/hooks/sessionStart` from Kiro Crew's own script-hook
-store, and `AcpSessionHandle` routes both. Three properties hold the surface shut:
+Hooks are served over the ACP hooks channel, and NOT announced. `acp/kas_wire.py`
+builds the answers to `_kiro/hooks/list`, `_kiro/hooks/sessionStart` and
+`_kiro/hooks/executeHook` from Kiro Crew's own script-hook store, and
+`AcpSessionHandle` routes all three. `KAS_CLIENT_CAPABILITIES` does not carry
+`hooks: {enabled: true}`, so the agent asks none of them.
 
-- the handshake does not carry `hooks: {enabled: true}` in `KAS_CLIENT_CAPABILITIES`,
-  which is the capability that makes the agent route hook extraction to its client
-  at all, so the agent asks neither method and keeps loading its own hooks;
-- `_kiro/hooks/executeHook` — the method that spawns a command — has no handler, so
-  it is classified as an unknown server request and answered `-32601`. No command
-  runs from this path;
-- the ids are Kiro Crew's own, and **an execute path may only run a hook id Kiro
-  Crew listed for that session; the record lives with the execute path**. It is not
-  kept here: nothing in this build reads it, and the change that adds execution is
-  the one that can key it by the owning Kiro Crew session — which an
-  `AcpSessionHandle` does not hold, and which is threaded from
-  `AcpRuntime.create_session(session_key=…)`. A hit in such a record is a NECESSARY
-  condition and never a sufficient one: the hook's current command and `enabled`
-  state belong to the live store.
+The flag stays off because the surface would duplicate a stronger one. Kiro Crew's
+own turn loop (`dashboard/chat_runner.py` `_fire`) already fires all five events
+this surface can serve for a KAS session, and its PreToolUse can block a tool on
+exit 2; `executeHook` output only reaches the agent as a context note. Announcing
+would run each hook twice and add a weaker block path. The two request triggers with
+no Kiro Crew event, `preTaskExecution` and `postTaskExecution`, are where this
+channel could add something the turn loop cannot, and today no stored hook maps to
+either, so both answer an empty list. `AcpSessionHandle` routes `executeHook` only
+while the handshake announces `hooks`, so a backend that sends it unasked is
+answered `-32601`.
 
-The security argument for this channel — Kiro Crew spawns the hook's command, so the
-deny floor and the ceiling are on the path — rests on one property of the agent, and
-it is verified rather than assumed: a listed `runCommand` action travels back to the
+If the flag is ever set, send the covenant's shape and no `v2` sub-flag: `v2` selects
+the agent's own disk loader, which spawns the command itself. Without `v2` the agent
+wires its ACP hook providers, so Kiro Crew becomes the only hook provider for that
+session and the user's `.kiro/hooks/*.json` files and agent-profile hooks stop being
+loaded by the agent.
+
+The security argument for this channel is that Kiro Crew spawns the hook's command,
+so the deny floor and the ceiling are on the path. It rests on one property of the
+agent, verified rather than assumed: a listed `runCommand` action travels back to the
 client and is never spawned agent-side. Read out of the shipped `@kiro/agent` bundle
-at version 2.23.1 (its ACP server entry point, as extracted by `kiro-cli` under its
-own data directory — not a path in this repository): all three ACP-branch hook
-providers, the hooks provider and the pre/post-tool-use pair, read
+(its ACP server entry point, as extracted by `kiro-cli` under its own data directory
+— not a path in this repository) at 2.23.1 and again at 2.24.0: all three ACP-branch
+hook providers, the hooks provider and the pre/post-tool-use pair, read
 `hook.action.command` only to hand it to one shared helper, and that helper's single
-outbound call is `_kiro/hooks/executeHook`. No call site in that bundle passes a
-listed action's command to a local spawn. Re-confirm
-this on the version in use when the capability is announced: it is an announce
-precondition beside the `hooks.v2` branch and the infrastructure-safety-monitor note.
+outbound call is `_kiro/hooks/executeHook`. That helper first asks the client for
+permission with `session/request_permission`, titled with the command, unless the
+listed action carries `approved`, which Kiro Crew never sends; the permission answer
+and the execute gates below are independent, so neither relies on the other.
 
-Listing does NOT consult the `capabilities.script_hooks` governance gate, and the
-placement is deliberate. That gate is a decision about RUNNING a hook and it is
-keyed by the owning Kiro Crew session; an `AcpSessionHandle` holds no such key, so
-asked from the list answer it would resolve the policy ceiling alone and never the
-surface-bound profile that denies the capability — a gate keyed wrongly claims a
-protection it does not provide. The spawn is already gated where the key exists:
-`run_script_hook` consults it before starting the process. An execute path added
-over this surface owes the same check on a REAL owning session key, threaded from
-`AcpRuntime.create_session(session_key=…)` through to the handle.
+`executeHook` runs a hook only when all four hold, in order:
+
+- an owning Kiro Crew session is known. `AcpSessionHandle` carries it, threaded from
+  `AcpRuntime.create_session(session_key=…)` / `load_session(session_key=…)` and
+  rebound on a warm-pool claim (`bind_session_key`); a pooled session nobody has
+  claimed is refused;
+- the id was listed for THAT session. `ListedHookStore` records each enabled hook a
+  list answer produced, keyed by the owning session key and never by the request's
+  host-supplied `sessionId`. A hit is necessary and never sufficient: the id is
+  resolved back to the live store, and a hook since removed, disabled or rewritten
+  past a wire bound is refused;
+- the stored command clears `HookManager.on_tool_call` as a shell tool's command —
+  the deny floor, the sensitive-path check and the credential/exfiltration audits;
+  only `deny` refuses, since the command is the operator's own stored text;
+- `capabilities.script_hooks` permits it on the owning session's key, audited as
+  `run_script_hook` audits it.
+
+What runs is a snapshot of the stored hook — the same value the gates judged —
+under its stored timeout, through `run_script_hook`: the same sandbox, environment
+allowlist, output cap, redaction and timeout a dashboard-run hook gets. The request's
+`userPrompt` becomes the hook's context, sanitized and capped; on the two tool
+triggers it must be the tool call as a JSON object, which fills `tool_input` on
+stdin. The request's own `command` and `timeout` are host-supplied and not read.
+Every outcome is recorded in the SEL, and the record of an allowed run is written
+before it spawns. A session runs at most four hook executions at once, and a
+cancelled turn or a torn-down session kills the ones in flight. A refusal is answered as a JSON-RPC error
+(`HOOK_EXECUTE_REFUSED_CODE`) carrying its reason, never as a result, because a
+result carries an exit code and a command that never started has none.
+`sessionStart` still answers an empty buffer: no command runs from that path.
 
 ## Seam status today
 

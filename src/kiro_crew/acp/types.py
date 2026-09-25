@@ -287,9 +287,14 @@ PROVIDER_LABEL_BY_BACKEND: dict = {
 # KAS reads only fs.readTextFile / fs.writeTextFile / terminal from the top
 # level of clientCapabilities; every other capability it honours lives under
 # _meta.kiro. The ones there are CALLBACK capabilities — KAS calls back into the
-# client to service them — and Kiro Crew implements none, so leaving them
-# undeclared (= false) is correct rather than a gap. Only the settings channel
-# is opened, because that is how a client selects KAS feature flags.
+# client to service them. Only the settings channel is opened, because that is
+# how a client selects KAS feature flags.
+#
+# ``hooks`` stays undeclared although ``acp/kas_wire.py`` serves all three of its
+# methods. Kiro Crew's own turn loop already fires every hook event this surface
+# can serve for a KAS session, and its PreToolUse can BLOCK a tool on exit 2;
+# announcing would run each hook twice and hand the agent a path whose output is
+# only a context note. Every other callback stays undeclared (= false) too.
 KAS_CLIENT_CAPABILITIES: dict = {
     **ACP_CLIENT_CAPABILITIES,
     "_meta": {"kiro": {"settings": {}}},

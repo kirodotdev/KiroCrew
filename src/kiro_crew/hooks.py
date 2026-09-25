@@ -4665,6 +4665,7 @@ async def run_script_hook(
         hook_event = {"hook_event_name": hook.event, "cwd": os.getcwd()}
     stdin_data = json.dumps(hook_event).encode()
 
+    proc: Any = None
     try:
         # circular import: sandbox → registry → apps → hooks, so import at call time
         from kiro_crew.sandbox import (
@@ -4799,6 +4800,15 @@ async def run_script_hook(
             exit_code=exit_code,
             duration_ms=elapsed,
         )
+    except asyncio.CancelledError:
+        # A cancelled caller (a torn-down session, a cancelled turn) must not leave
+        # the hook running: kill its tree, then let the cancellation propagate.
+        if proc is not None and proc.returncode is None:
+            try:
+                await platform_compat.kill_process_tree_async(proc.pid, platform_compat.SIGKILL)
+            except Exception:
+                logger.debug("hook tree kill on cancel failed", exc_info=True)
+        raise
     except asyncio.TimeoutError:
         # Kill the whole process tree (shell + grandchildren) to prevent orphans.
         # platform_compat: killpg on POSIX, taskkill /T on Windows (os.killpg /
