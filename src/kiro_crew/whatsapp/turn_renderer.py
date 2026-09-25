@@ -48,8 +48,14 @@ from kiro_crew.messaging.approval import (
     build_approval_prompt,
     open_approval,
 )
+from kiro_crew.messaging.display_safety import joins_to_a_credential
 from kiro_crew.messaging.outbound_files import Rejection, hide_local_refs
-from kiro_crew.messaging.renderer import Renderer, count_redaction_tags, redaction_notice
+from kiro_crew.messaging.renderer import (
+    Renderer,
+    count_redaction_tags,
+    redaction_notice,
+    repaired_after_a_sent_tail,
+)
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.whatsapp import client as wa_client
 from kiro_crew.whatsapp.files import (
@@ -58,7 +64,11 @@ from kiro_crew.whatsapp.files import (
     rejection_note,
 )
 from kiro_crew.whatsapp.group_gate import SILENCE_SENTINEL
-from kiro_crew.whatsapp.renderer import display_safe_text, render_chunks_off_loop
+from kiro_crew.whatsapp.renderer import (
+    _redact_all,
+    display_safe_text,
+    render_chunks_off_loop,
+)
 
 if TYPE_CHECKING:
     from kiro_crew.whatsapp.client import WhatsAppClient
@@ -171,6 +181,12 @@ class WhatsAppRenderer(Renderer):
         #: prefix-stable on the converted text, so chunk *i* never changes once
         #: chunk *i+1* exists, which is what makes a count sufficient.
         self._sealed_count = 0
+        #: The last chunk SHOWN, stripped as the reader sees it. A boundary graded
+        #: when a chunk sealed says nothing about text that arrives afterwards, and
+        #: a sent message cannot be recalled, so the next thing shown is graded
+        #: against this. Bounded by one message: only the message a new one sits
+        #: under can rejoin anything with it.
+        self._sent_tail = ""
         self._flush_task: asyncio.Task[None] | None = None
         self._last_edit_at = 0.0
         #: The approval prompt's own message id, kept so a timeout can resolve the
@@ -231,16 +247,48 @@ class WhatsAppRenderer(Renderer):
         if not chunks or self._sealed_count >= len(chunks):
             return
         # Every chunk before the last is final: the splitter is prefix-stable, so
-        # later text can never revise one.
+        # later text can never revise one. What it cannot promise is that the
+        # BOUNDARY is safe, so each one is graded against everything that follows
+        # before the chunk is counted final -- a key whose halves land either side
+        # reads whole down the screen, and a sealed message cannot be taken back.
+        # A chunk that does not pass stays in the live bubble, where a later frame
+        # may still revise it.
+        #
+        # Graded on the RENDERED text, every chunk's edges stripped, for the reason
+        # the splitter's own predicate strips them: a platform drops the whitespace
+        # at a message's edges, so a tail beginning with a tab separates nothing
+        # once the two messages sit on screen. Asking about the characters as
+        # stored approves exactly that pair. Leading whitespace is never stripped by
+        # the splitter and a hard cut can leave a remainder starting with one, so
+        # the case is reachable rather than theoretical.
+        rendered = [chunk.strip() for chunk in chunks]
         while self._sealed_count < len(chunks) - 1:
-            await self._seal_chunk(chunks[self._sealed_count])
+            index = self._sealed_count
+            forward = "".join(rendered[index + 1 :])
+            # Off the loop: the grade redacts and rescans the whole reply, and one
+            # loop carries every channel and the liveness heartbeat.
+            if await asyncio.to_thread(
+                joins_to_a_credential, rendered[index], forward, _redact_all
+            ):
+                return
+            await self._seal_chunk(chunks[index])
+            self._sent_tail = rendered[index]
         tail = chunks[-1]
         if not self._live_id and len(tail) < _MIN_FIRST_FLUSH_CHARS and not self._sealed_count:
             return  # too early to be worth a bubble
         # The tail is NOT final -- the splitter can still revise it -- so this is
         # the one placement that does not advance the count. ``_show`` owns every
         # question about which bubble it lands in.
-        await self._show(tail)
+        #
+        # It still sits under the message sealed before it, and that message's own
+        # grade saw only the text present when it sealed: a chunk ending in a
+        # credential PREFIX matches nothing, so it sealed, and the characters
+        # completing the key arrived afterwards. The sealed half cannot be recalled,
+        # so this half gives up exactly the span that completes it.
+        repaired = await asyncio.to_thread(
+            repaired_after_a_sent_tail, self._sent_tail, tail, _redact_all
+        )
+        await self._show(repaired if repaired is not None else tail)
 
     async def _rendered_chunks(self) -> list[str]:
         """The turn's text as the chunks that would actually be delivered.
@@ -271,7 +319,7 @@ class WhatsAppRenderer(Renderer):
         body = await asyncio.to_thread(hide_local_refs, visible)
         if not body:
             return []
-        return await render_chunks_off_loop(body, self.capabilities.max_message_chars)
+        return await render_chunks_off_loop(body, self.capabilities.max_message_chars, stable=True)
 
     def _edit_window_closed(self) -> bool:
         if not self._live_sent_at:
@@ -511,8 +559,20 @@ class WhatsAppRenderer(Renderer):
         if self._undelivered_from is not None:
             start = min(start, self._undelivered_from)
         pending = chunks[start:]
+        # The seal loop refuses a chunk whose boundary is not clean, so a reply can
+        # arrive here with that boundary still pending. This is the last pass and
+        # every chunk must go, so each one is graded against the text ALREADY SENT
+        # and gives up only the span that completes a key across that seam. The
+        # chunks are never reassembled: sealing trims the whitespace that ended a
+        # chunk and a fence spanning a seam contributes a synthetic closer and
+        # reopener, so their concatenation is not the reply.
+        shipped: list[str] = []
         for index, chunk in enumerate(pending):
             is_last = index == len(pending) - 1
+            repaired = await asyncio.to_thread(
+                repaired_after_a_sent_tail, self._sent_tail, chunk, _redact_all
+            )
+            chunk = repaired if repaired is not None else chunk
             # This is the last pass over the text, so there is no later flush to
             # recover a chunk that did not land -- which is exactly what ``_show``
             # is responsible for, and why the count advances only after it.
@@ -520,6 +580,12 @@ class WhatsAppRenderer(Renderer):
             if not is_last:
                 await self._close_live()
             self._sealed_count += 1
+            self._sent_tail = chunk.strip()
+            shipped.append(chunk)
+        # The notice counts the text that SHIPPED, repair included: a repair
+        # introduces a placeholder of its own, and a reply whose only redaction came
+        # from one would otherwise announce none.
+        chunks = chunks[:start] + shipped
         if not self.delivered and body.strip():
             # Nothing reached the chat at all: the whole reply still has to.
             await self._send(body)

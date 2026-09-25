@@ -60,7 +60,7 @@ from kiro_crew.messaging.renderer import (
     new_approval_nonce,
     redaction_notice,
 )
-from kiro_crew.messaging.split import split_markdown_safe
+from kiro_crew.messaging.split import repaired_for_delivery, split_markdown_safe
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -1108,17 +1108,33 @@ class SlackRenderer(Renderer):
         drops the synthetic closer with the content and leaves an unterminated
         code block. Blind slicing costs a boundary Markdown may render badly and
         keeps every authored character.
+
+        That slice lands AFTER the splitter graded its own boundaries, and each
+        piece is posted as its own message, so each chunk's own slices are graded
+        once more: a credential the scaffolding pushed across a slice would
+        otherwise be whole on screen. A chunk that repairs is the repair's subject,
+        because the concatenation of the slices is not the reply -- the seam
+        whitespace is trimmed out of it -- while the chunk is text this function
+        holds. The repair is safe to bound again, which is why one grade per chunk
+        is enough.
         """
         limit = self._limit()
         if len(text) + reserve <= limit:
             return [text]
-        chunks = await asyncio.to_thread(
-            split_markdown_safe, text, limit, reserve=reserve, redactor=_redact_all
-        )
-        bounded: list[str] = []
-        for chunk in chunks:
-            bounded.extend(chunk_text(chunk, SLACK_MSG_LIMIT - reserve) or [chunk])
-        return bounded or [text]
+
+        def _bounded() -> list[str]:
+            chunks = split_markdown_safe(text, limit, reserve=reserve, redactor=_redact_all)
+            out: list[str] = []
+            for chunk in chunks:
+                cap = SLACK_MSG_LIMIT - reserve
+                pieces = chunk_text(chunk, cap) or [chunk]
+                repaired = repaired_for_delivery(chunk, pieces, _redact_all)
+                if repaired is not None:
+                    pieces = chunk_text(repaired, cap) or [repaired]
+                out.extend(pieces)
+            return out
+
+        return await asyncio.to_thread(_bounded) or [text]
 
     async def _render_fallback(self, text: str) -> None:
         """Final no-stream render: the whole answer, not a truncated prefix.

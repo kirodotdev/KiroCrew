@@ -1702,6 +1702,13 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # no output of its own -- the registered sinks are the modules that call
         # it (slack/format.py, messaging/renderer.py).
         "messaging/display_safety.py",
+        # Also a caller-injected redactor, applied to DECIDE rather than to emit:
+        # the splitter grades the boundaries a length budget chose, so a key the
+        # cut would sever is not handed to a reader across two messages, and it
+        # redacts the text it hands back only when no budget cuts it safely. The
+        # chunks go to the module that asked for them, which is the registered
+        # sink (slack/format.py, messaging/renderer.py and the channel renderers).
+        "messaging/split.py",
         # ``autonudge.py``'s ``_load`` credential-scrubs a persisted ``banner`` in
         # memory and attempts to persist the masked value back, so a banner
         # written to the store out-of-band (a hand-edited file, or a direct

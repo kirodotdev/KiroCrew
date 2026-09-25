@@ -59,10 +59,15 @@ from kiro_crew.messaging.renderer import (
     count_redaction_tags,
     new_approval_nonce,
     redaction_notice,
+    repaired_after_a_sent_tail,
     session_provenance_tag,
     split_options_trailer,
 )
-from kiro_crew.messaging.split import split_markdown_safe
+from kiro_crew.messaging.split import (
+    bounded_for_delivery,
+    repaired_for_delivery,
+    split_markdown_safe,
+)
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.sel import sel
 from kiro_crew.telegram.client import (
@@ -396,8 +401,17 @@ def _split_markdown(text: str, limit: int) -> list[str]:
     cut-preference ladder (paragraph break past half the budget, else line break
     past a quarter, else a hard cut) is the same one this channel used, so chunk
     boundaries are unchanged for text with no fence in it.
+
+    The cut is credential-aware, because this channel rotates: each chunk but the
+    last is sealed as its OWN message and the redaction runs per segment, so a key
+    severed by a boundary is a key neither message holds and neither redacts,
+    while the reader scrolling the two reads it whole. Passing the redactor grades
+    the boundaries as the reader sees them and moves the cut instead, which keeps
+    every character. Nothing here asks for the prefix-stable mode: a rotation
+    replaces the buffer with the retained tail, so text already sealed is never
+    part of a later cut.
     """
-    return split_markdown_safe(text, limit)
+    return split_markdown_safe(text, limit, redactor=_default_redactor)
 
 
 # Telegram renders a small HTML subset (<b>/<i>/<code>/<pre>/<a>) far more
@@ -733,15 +747,24 @@ def _split_markdown_bounded(text: str, rendered_limit: int) -> list[str]:
     the client backstop then truncates them, silently dropping content. Only at
     the floor -- where the content is genuinely indivisible -- may oversize chunks
     be returned.
+
+    Each candidate answer also goes through
+    :func:`~kiro_crew.messaging.split.bounded_for_delivery`, because a
+    credential-aware cut may DECLINE to cut: when no budget has clean boundaries
+    the splitter answers with the text whole, which is fail-closed but is one
+    chunk over the budget, and this channel's client truncates a larger payload
+    after every scan has run. The bound cuts that answer back and grades the
+    sequence it actually produced.
     """
     src_limit = max(_MIN_SPLIT_LIMIT, rendered_limit)
-    chunks = _split_markdown(text, src_limit)
     while True:
+        chunks = bounded_for_delivery(
+            _split_markdown(text, src_limit), src_limit, _default_redactor
+        )
         worst = max((_rendered_len(c) for c in chunks), default=0)
         if worst <= rendered_limit or src_limit <= _MIN_SPLIT_LIMIT:
             return chunks
         src_limit = _shrunk_limit(src_limit, rendered_limit, worst)
-        chunks = _split_markdown(text, src_limit)
 
 
 def _split_table_rows(rows: list[str], limit: int) -> list[str]:
@@ -788,6 +811,20 @@ def _split_markdown_table_aware(text: str, rendered_limit: int, rich_limit: int)
     where a fence begins and ends means reimplementing CommonMark's fence rules
     as a second parser (the same invariant ``_seal_table_fallback`` documents),
     and a pipe pattern inside a fence is not a table anyway.
+
+    The assembled sequence is graded once at the end. Each block is cut on its own
+    here, so a boundary BETWEEN two blocks -- a table run and the prose after it,
+    or two row-split pieces -- belongs to no single cut and is graded by none of
+    them, while the reader still reads those messages in order. The repair's
+    subject is ``text``, the body this function holds, never the concatenation of
+    the blocks, which is not the reply.
+
+    Every block is redacted BEFORE it enters the list, which the grade requires:
+    :func:`~kiro_crew.messaging.split._rejoins_a_key` reads the sequence as one
+    text and is sound only on chunks that are already a fixed point of that scan,
+    so an unredacted table cell holding a whole credential would fire the seam
+    repair for something no seam severed. The prose branch gets that redaction from
+    the splitter; a table run bypasses the splitter and needs it here.
     """
     if _FENCE_LINE_RE.search(text):
         return _split_markdown_bounded(text, rendered_limit)
@@ -795,13 +832,18 @@ def _split_markdown_table_aware(text: str, rendered_limit: int, rich_limit: int)
     for is_table, lines in _table_blocks(text):
         block = "\n".join(lines)
         if is_table:
-            if len(block) <= rich_limit:
-                out.append(block)
+            safe_block = _display_safe(block)
+            if len(safe_block) <= rich_limit:
+                out.append(safe_block)
             else:
-                out.extend(_split_table_rows(lines, rich_limit))
+                out.extend(_split_table_rows(safe_block.split("\n"), rich_limit))
         elif block.strip():
             out.extend(_split_markdown_bounded(block, rendered_limit))
-    return [c for c in out if c.strip()]
+    kept = [c for c in out if c.strip()]
+    repaired = repaired_for_delivery(text, kept, _default_redactor)
+    if repaired is None:
+        return kept
+    return _split_markdown_bounded(repaired, rendered_limit)
 
 
 def _strip_md(text: str) -> str:
@@ -1167,6 +1209,15 @@ class TelegramRenderer(Renderer):
         # One-slot memo for the live frame's safe body, keyed on its exact source.
         self._safe_src = "\x00"  # a value no segment can equal
         self._safe_out = ""
+        self._safe_sent = "\x00"  # the memo also depends on the sealed predecessor
+        #: The last segment SEALED as its own message, whole. A rotation replaces
+        #: the buffer with the retained tail, so text already sent leaves the
+        #: buffer and no later cut can see it -- and a boundary graded at seal time
+        #: says nothing about text that arrives afterwards. Keeping the sealed
+        #: predecessor is what lets the next thing shown be graded against what the
+        #: reader is already looking at. Bounded by one message, not by the turn:
+        #: only the message a new one sits under can rejoin anything with it.
+        self._sent_tail = ""
         # True between posting an approval prompt and the turn resuming. A turn
         # waiting on a button is blocked on the user, not stalled.
         self._awaiting_approval = False
@@ -1380,7 +1431,9 @@ class TelegramRenderer(Renderer):
                 if spans[0][0] == 0:
                     return  # the whole buffer is protected — do not rotate at all
                 held = raw[spans[0][0] :]
-                for chunk in _split_markdown_bounded(raw[: spans[0][0]], rendered_cap):
+                for chunk in await asyncio.to_thread(
+                    _split_markdown_bounded, raw[: spans[0][0]], rendered_cap
+                ):
                     self._buf = [chunk]
                     await self._seal_current(extract_uploads=False)
                     self._open_new_message()
@@ -1406,7 +1459,9 @@ class TelegramRenderer(Renderer):
             # _has_table guarantees at least two lines, so a newline exists.
             head, nl, partial = raw.rpartition("\n")
             head += nl
-            chunks = _split_markdown_table_aware(head, rendered_cap, rich_cap)
+            chunks = await asyncio.to_thread(
+                _split_markdown_table_aware, head, rendered_cap, rich_cap
+            )
             if chunks:
                 # Reattach what the line-joining splitter drops: the complete
                 # prefix's trailing newlines, then the unterminated line. The
@@ -1416,7 +1471,7 @@ class TelegramRenderer(Renderer):
             else:
                 chunks = [partial]
         else:
-            chunks = _split_markdown_bounded(raw, rendered_cap)
+            chunks = await asyncio.to_thread(_split_markdown_bounded, raw, rendered_cap)
         # Mid-stream the source fence is often still OPEN (the model has not
         # emitted its closing ``` yet). _split_markdown balances each chunk by
         # appending a synthetic closer, which is right for the chunks we seal but
@@ -1491,15 +1546,22 @@ class TelegramRenderer(Renderer):
         equality, not a heuristic — a segment that has not changed cannot have a
         different safe form.
         """
-        if seg == self._safe_src:
+        if seg == self._safe_src and self._sent_tail == self._safe_sent:
             return self._safe_out
         hide = hide_local_refs if self._uploads_enabled() else None
+        sent = self._sent_tail
 
         def _render() -> str:
-            return _display_safe(_strip_md(hide(seg) if hide else seg))
+            safe = _display_safe(_strip_md(hide(seg) if hide else seg))
+            # The frame sits directly under the message sealed before it, so the
+            # same seam applies: a key begun at the end of that message and
+            # completed here reads whole down the screen. The sealed half cannot be
+            # changed, so this half gives up the span that completes it.
+            repaired = repaired_after_a_sent_tail(sent, safe, _default_redactor)
+            return repaired if repaired is not None else safe
 
         out = await asyncio.to_thread(_render)
-        self._safe_src, self._safe_out = seg, out
+        self._safe_src, self._safe_out, self._safe_sent = seg, out, sent
         return out
 
     async def _stream_live_locked(self, *, force: bool) -> None:
@@ -1568,7 +1630,7 @@ class TelegramRenderer(Renderer):
         if len(html_text) > self._rendered_limit():
             html_text = _md_to_telegram_html(text)
             if len(html_text) > self._rendered_limit():
-                chunks = self._degraded_table_chunks(text)
+                chunks = await asyncio.to_thread(self._degraded_table_chunks, text)
                 for ch in chunks[:-1]:
                     await self._seal_chunk_html(ch)
                 if chunks:
@@ -1728,6 +1790,22 @@ class TelegramRenderer(Renderer):
                 disable_notification=True,
             )
 
+    def _seam_safe(self, text: str) -> str:
+        """*text* display-safe, its seam with the message above repaired, recorded.
+
+        The one place a sealed segment's text is decided, so it is the one place
+        that has to know about the message above it. Callers only seal; none of them
+        carries a seam rule of its own, which is what keeps a new sealing path from
+        shipping an open seam.
+
+        Runs on a worker thread: both the redaction and the grade scan.
+        """
+        safe = _display_safe(text)
+        repaired = repaired_after_a_sent_tail(self._sent_tail, safe, _default_redactor)
+        sealed = repaired if repaired is not None else safe
+        self._sent_tail = sealed
+        return sealed
+
     async def _seal_current(
         self,
         *,
@@ -1806,7 +1884,16 @@ class TelegramRenderer(Renderer):
         # budgeted against the rich cap, where this measures in the tens of
         # milliseconds — holding the frame lock across it would block the typing
         # task too, and holding the loop would block every other conversation.
-        text = await asyncio.to_thread(_display_safe, text)
+        #
+        # The seam repair and the predecessor record live HERE, in the sink, for the
+        # same reason the redaction does: five paths seal a segment as its own
+        # message, and a guard at one of them is not a guard on the channel. A
+        # segment whose tail is a credential PREFIX matches nothing, so it seals, and
+        # the characters completing the key arrive in the segment below it -- which
+        # this is. The message above cannot be recalled, so this one gives up the
+        # span that completes the key, and then becomes the predecessor the next seal
+        # is graded against.
+        text = await asyncio.to_thread(self._seam_safe, text)
         if footer:
             # A quoted line under the answer rather than a separate message: the
             # footer is metadata about the turn, and a second bubble for it would
@@ -2279,7 +2366,12 @@ class TelegramRenderer(Renderer):
         so it must carry the earliest content or the reply reads out of order);
         later chunks are fresh sends. Mirrors the tail seal's degradation
         ladder: HTML edit -> plaintext edit, or HTML send -> plaintext send.
+
+        Its text goes through ``_seam_safe`` like every other sealed segment: this
+        is a separate sink from ``_seal_text``, so it carries the seam repair and
+        the predecessor record itself rather than relying on the other one.
         """
+        chunk = await asyncio.to_thread(self._seam_safe, chunk)
         html_text = _seal_table_fallback(chunk)
         if len(html_text) > self._rendered_limit():
             html_text = _md_to_telegram_html(chunk)
