@@ -7110,7 +7110,11 @@
       "copy_chip_name": "{{text}} কপি করো",
       "open_path_chip_name": "{{path}} খোলো",
       "browse_path_chip_name": "{{path}} ব্রাউজ করো",
-      "switch_to_session_chip_name": "{{label}} সেশনে যাও"
+      "switch_to_session_chip_name": "{{label}} সেশনে যাও",
+      "couldnt_copy_select_the_text_to_copy_it_manually": "কপি করা যায়নি — টেক্সট নির্বাচন করে ম্যানুয়ালি কপি করো",
+      "couldnt_copy_the_full_session_id_for_label": "{{label}}-এর পূর্ণ সেশন আইডি কপি করা যায়নি (Ctrl+ক্লিক)",
+      "couldnt_copy_the_image_path": "ছবির পাথ কপি করা যায়নি",
+      "couldnt_copy_the_path_label": "পাথ {{label}} কপি করা যায়নি (Ctrl+ক্লিক)"
     },
     "markdownToc": {
       "contents": "বিষয়সূচি",

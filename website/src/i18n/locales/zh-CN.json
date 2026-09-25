@@ -7003,7 +7003,11 @@
       "copy_chip_name": "复制 {{text}}",
       "open_path_chip_name": "打开 {{path}}",
       "browse_path_chip_name": "浏览 {{path}}",
-      "switch_to_session_chip_name": "切换到会话 {{label}}"
+      "switch_to_session_chip_name": "切换到会话 {{label}}",
+      "couldnt_copy_select_the_text_to_copy_it_manually": "无法复制 — 请选中文本手动复制",
+      "couldnt_copy_the_full_session_id_for_label": "无法复制 {{label}} 的完整会话 ID（Ctrl+点击）",
+      "couldnt_copy_the_image_path": "无法复制图片路径",
+      "couldnt_copy_the_path_label": "无法复制路径 {{label}}（Ctrl+点击）"
     },
     "markdownToc": {
       "contents": "目录",

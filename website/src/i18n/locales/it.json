@@ -7217,7 +7217,11 @@
       "copy_chip_name": "Copia {{text}}",
       "open_path_chip_name": "Apri {{path}}",
       "browse_path_chip_name": "Esplora {{path}}",
-      "switch_to_session_chip_name": "Passa alla sessione {{label}}"
+      "switch_to_session_chip_name": "Passa alla sessione {{label}}",
+      "couldnt_copy_select_the_text_to_copy_it_manually": "Impossibile copiare — seleziona il testo per copiarlo manualmente",
+      "couldnt_copy_the_full_session_id_for_label": "Impossibile copiare l’ID di sessione completo di {{label}} (Ctrl+clic)",
+      "couldnt_copy_the_image_path": "Impossibile copiare il percorso dell’immagine",
+      "couldnt_copy_the_path_label": "Impossibile copiare il percorso {{label}} (Ctrl+clic)"
     },
     "markdownToc": {
       "contents": "Contenuto",

@@ -2527,7 +2527,11 @@
       "copy_chip_name": "Copy {{text}}",
       "open_path_chip_name": "Open {{path}}",
       "browse_path_chip_name": "Browse {{path}}",
-      "switch_to_session_chip_name": "Switch to session {{label}}"
+      "switch_to_session_chip_name": "Switch to session {{label}}",
+      "couldnt_copy_select_the_text_to_copy_it_manually": "Couldn’t copy — select the text to copy it manually",
+      "couldnt_copy_the_full_session_id_for_label": "Couldn’t copy the full session ID for {{label}} (Ctrl+click)",
+      "couldnt_copy_the_image_path": "Couldn’t copy the image path",
+      "couldnt_copy_the_path_label": "Couldn’t copy the path {{label}} (Ctrl+click)"
     },
     "mcpAppFrame": {
       "collapse": "Collapse",

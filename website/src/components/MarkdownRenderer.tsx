@@ -1786,11 +1786,14 @@ function useCopiedFlash(text: string): {
  *
  * One component so the chips cannot drift on the surface (`ErrorNotice`, the
  * rule `errors-use-error-notice` requires), the wording, or the hand-off
- * decision. Its `role="alert"` is the accessible error surface and the ONLY
- * announcement of the refusal: nothing else carries the string, so it is heard
- * once. Its `message` is the report key `ErrorNotice` looks up; a refused
- * clipboard write is a browser-side outcome with no entry in the error journal,
- * so the lookup finds nothing and the notice stands on the message alone.
+ * decision. The wording names the next step, not only the outcome: the text
+ * the user wanted is still on screen, so selecting it IS the recovery, and a
+ * bare "Copy failed" left them asking what to do about it. Its `role="alert"`
+ * is the accessible error surface and the ONLY announcement of the refusal:
+ * nothing else carries the string, so it is heard once. Its `message` is the
+ * report key `ErrorNotice` looks up; a refused clipboard write is a
+ * browser-side outcome with no entry in the error journal, so the lookup finds
+ * nothing and the notice stands on the message alone.
  *
  * One placement: inside an `InstantTip` bubble, held for `COPY_FAILED_FLASH_MS`
  * and closed by the flash's own timer. The copy chip's bubble also carries its
@@ -1801,8 +1804,22 @@ function useCopiedFlash(text: string): {
  * as long as it showed and read as a second, different feature beside the
  * bubble. The bubble is `pointer-events-none`, so there is no dismiss control:
  * the flash clears itself.
+ *
+ * The wording is the caller's, chosen by what the chip copies, and all four
+ * share one family, "Couldn’t copy …". The copy chip, whose clipboard text IS
+ * the span the reader sees, names the recovery: "Couldn’t copy — select the
+ * text to copy it manually". The title-cued chips (`useTitleCuedCopy`) copy
+ * something their label need not show — the session chip the normalised key
+ * behind the author's spelling or nickname, the broken-image chip the path
+ * behind its alt — so that sentence would have the reader copy the wrong
+ * thing; each names what failed to copy instead, in the reader's own terms:
+ * the session chip names the full session ID for its visible label ("Couldn’t
+ * copy the full session ID for chat-42…"), the path chip the path's tail
+ * ("Couldn’t copy the path vitest.config.mts" — a bubble the viewport clamp has
+ * pulled left still says which chip it answers), the broken-image chip its
+ * object ("… the image path").
  */
-function CopyFailedNotice() {
+function CopyFailedNotice({ message }: { message: string }) {
   return (
     <>
       {/* No hand-off: this renderer is embedded in hosts that hold unsaved
@@ -1812,7 +1829,7 @@ function CopyFailedNotice() {
           pointer-events-none bubble that closes itself would be dead anyway.) */}
       <ErrorNotice
         variant="inline"
-        message={i18nT('components.markdownRenderer.copy_failed')}
+        message={message}
         testId="md-chip-copy-error"
       />
     </>
@@ -1825,14 +1842,16 @@ function CopyFailedNotice() {
  *
  * The same gated write as the copy chip (`useCopiedFlash`), and the SAME
  * failure surface: `CopyFailedNotice` in an `InstantTip` bubble opened at the
- * pressed element. `press(el)` names the anchor (`arm`) and writes; a refusal
+ * pressed element — worded by the caller as the object that failed to copy,
+ * because what these chips copy is not always the text they show (see
+ * `CopyFailedNotice`). `press(el)` names the anchor (`arm`) and writes; a refusal
  * then holds the bubble open for the failure's flash, a later outcome or the
  * flash's end closes it. The bubble carries no hover or focus handlers — the
  * native `title` is still this chip's hint, and its `Copied!` swap still its
  * confirmation (moving those into the bubble too is #13608) — so it exists for
  * the refusal alone and is held only while one shows.
  */
-function useTitleCuedCopy(text: string): {
+function useTitleCuedCopy(text: string, failureMessage: string): {
   copied: boolean
   /** Write `text`, naming `el` as where the outcome's bubble opens. */
   press: (el: HTMLElement) => void
@@ -1840,14 +1859,14 @@ function useTitleCuedCopy(text: string): {
   failureBubble: React.ReactNode
 } {
   const { copied, failed, flashSeq, copy } = useCopiedFlash(text)
-  const { tip, tipId, arm } = useInstantTip({ hold: failed ? flashSeq : 0 })
+  const { tip, tipId, arm } = useInstantTip({ hold: failed ? flashSeq : 0, placement: 'flow' })
   const press = (el: HTMLElement) => {
     arm(el)
     copy(text)
   }
   const failureBubble = (
     <InstantTip tip={tip} tipId={tipId} className="w-max max-w-[calc(100vw-1rem)]">
-      <CopyFailedNotice />
+      <CopyFailedNotice message={failureMessage} />
     </InstantTip>
   )
   return { copied, press, failureBubble }
@@ -1926,7 +1945,9 @@ function CopyableCode({ className, safeProps, text, children }: {
   // new outcome that must reopen a bubble a scroll or Escape closed, and a
   // boolean that stays true has no edge for it. `arm` names the pressed chip
   // for that reopen — after an Escape no enter or focus fires for the retry.
-  const { tip, tipHandlers, tipId, arm } = useInstantTip({ hold: flashSeq })
+  // `flow`: above from the message's first line, below from any lower one, so
+  // the bubble never covers the words that lead up to the chip.
+  const { tip, tipHandlers, tipId, arm } = useInstantTip({ hold: flashSeq, placement: 'flow' })
   const handleCopy = (e: React.MouseEvent | React.KeyboardEvent) => {
     e.preventDefault()
     e.stopPropagation()
@@ -1934,7 +1955,7 @@ function CopyableCode({ className, safeProps, text, children }: {
     copy(value)
   }
   const cue = failed
-    ? <CopyFailedNotice />
+    ? <CopyFailedNotice message={i18nT('components.markdownRenderer.couldnt_copy_select_the_text_to_copy_it_manually')} />
     : copied
       ? i18nT('components.markdownRenderer.copied')
       : i18nT('components.markdownRenderer.click_to_copy')
@@ -1993,7 +2014,7 @@ function SessionChip({ sessionKey, sessionTitle, label, safeProps, onOpen, child
   onOpen: (key: string) => void
   children: React.ReactNode
 }) {
-  const { copied, press, failureBubble } = useTitleCuedCopy(sessionKey)
+  const { copied, press, failureBubble } = useTitleCuedCopy(sessionKey, i18nT('components.markdownRenderer.couldnt_copy_the_full_session_id_for_label', { label }))
   const act = (e: React.MouseEvent<HTMLElement> | React.KeyboardEvent<HTMLElement>) => {
     e.preventDefault()
     e.stopPropagation()
@@ -2074,7 +2095,7 @@ function InlineCode({ children, ...props }: { children?: React.ReactNode } & Rec
   // The confirmed path chip's Ctrl/Cmd+click copy — the same gated write every
   // other copy affordance in this file uses, and the same failure surface (the
   // bubble). Declared before the early returns below (rules of hooks).
-  const pathCopy = useTitleCuedCopy(raw)
+  const pathCopy = useTitleCuedCopy(raw, i18nT('components.markdownRenderer.couldnt_copy_the_path_label', { label: basenameOf(raw.replace(/[\\/]+$/, '')) || raw }))
 
   // `data-path*` / `data-session-key` / `data-chip-action` describe a chip THIS
   // component rendered, so only it may set them. rehypeSanitize allowlists every
@@ -2559,7 +2580,7 @@ const MD_COMPONENTS: Components = {
  * is already honest there.
  */
 function BrokenImage({ path, alt, probeUrl }: { path: string; alt?: string; probeUrl?: string }) {
-  const { copied, press, failureBubble } = useTitleCuedCopy(path)
+  const { copied, press, failureBubble } = useTitleCuedCopy(path, i18nT('components.markdownRenderer.couldnt_copy_the_image_path'))
   const [confirmedGone, setConfirmedGone] = useState(false)
   useEffect(() => {
     // The verdict belongs to THIS probeUrl. A reused instance handed a different
@@ -5016,9 +5037,17 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
     // Presentational content wrapper for rendered markdown blocks. The onClick is
     // pure event delegation for `/artifacts/<slug>` links only — path chips bind
     // their own handlers (see InlineCode), so this wrapper is not an interactive
-    // control and carries no role.
+    // control and carries no role. `data-image-scope` is the lightbox's grouping
+    // root; `data-tip-flow` is the InstantTip flow container (one rendered
+    // message, so a chip's bubble opens off the words it reports on) — two
+    // attributes on the one per-message root, each owned by its feature.
     // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions
-    <div className={`group${animClass}${streamClass}`} onClick={handleClick} data-image-scope="">
+    <div
+      className={`group${animClass}${streamClass}`}
+      onClick={handleClick}
+      data-image-scope=""
+      data-tip-flow=""
+    >
       {/* PathProbeCtx: suppress path stat probes while the message is still
           streaming, so partial paths ('/Users' en route to '/Users/me/x.ts')
           neither burn requests nor flash the wrong affordance.

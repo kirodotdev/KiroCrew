@@ -7324,7 +7324,11 @@
       "copy_chip_name": "Скопировать {{text}}",
       "open_path_chip_name": "Открыть {{path}}",
       "browse_path_chip_name": "Просмотреть {{path}}",
-      "switch_to_session_chip_name": "Переключиться на сессию {{label}}"
+      "switch_to_session_chip_name": "Переключиться на сессию {{label}}",
+      "couldnt_copy_select_the_text_to_copy_it_manually": "Не удалось скопировать — выдели текст, чтобы скопировать его вручную",
+      "couldnt_copy_the_full_session_id_for_label": "Не удалось скопировать полный ID сессии для {{label}} (Ctrl+клик)",
+      "couldnt_copy_the_image_path": "Не удалось скопировать путь к изображению",
+      "couldnt_copy_the_path_label": "Не удалось скопировать путь {{label}} (Ctrl+клик)"
     },
     "markdownToc": {
       "contents": "Содержание",

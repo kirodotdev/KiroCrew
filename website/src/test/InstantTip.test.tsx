@@ -51,6 +51,72 @@ function PlacementHarness({ placement }: { placement: 'above' | 'below' }) {
   )
 }
 
+/** Two inline anchors in running text (`placement: 'flow'`) inside a flow
+ *  container — a [data-tip-flow] element, the attribute the markdown renderer
+ *  sets on its per-message root: one on the container's first line, one lower
+ *  down. The first opens above (off its own message), the second below. */
+function FlowHarness() {
+  const a = useInstantTip({ placement: 'flow' })
+  const b = useInstantTip({ placement: 'flow' })
+  return (
+    <div data-tip-flow="" data-testid="flow">
+      <p>first line <button type="button" {...a.tipHandlers}>anchor A</button></p>
+      <p>a later line <button type="button" {...b.tipHandlers}>anchor B</button></p>
+      <InstantTip tip={a.tip} tipId={a.tipId}>bubble A</InstantTip>
+      <InstantTip tip={b.tip} tipId={b.tipId}>bubble B</InstantTip>
+    </div>
+  )
+}
+
+/** Three anchors on three lines of one flow container: the first line, a line
+ *  between, and the LAST line. Above, below, above. */
+function ThreeLineHarness() {
+  const a = useInstantTip({ placement: 'flow' })
+  const b = useInstantTip({ placement: 'flow' })
+  const c = useInstantTip({ placement: 'flow' })
+  return (
+    <div data-tip-flow="" data-testid="flow">
+      <p>first line <button type="button" {...a.tipHandlers}>anchor A</button></p>
+      <p>a line between <button type="button" {...b.tipHandlers}>anchor B</button></p>
+      <p>the last line <button type="button" {...c.tipHandlers}>anchor C</button> ends it</p>
+      <InstantTip tip={a.tip} tipId={a.tipId}>bubble A</InstantTip>
+      <InstantTip tip={b.tip} tipId={b.tipId}>bubble B</InstantTip>
+      <InstantTip tip={c.tip} tipId={c.tipId}>bubble C</InstantTip>
+    </div>
+  )
+}
+
+/** A flow container inside a host that clips it (a card capped with `max-h`
+ *  and `overflow-hidden`): the reader sees the clip's box, not the container's. */
+function ClippedHarness() {
+  const a = useInstantTip({ placement: 'flow' })
+  const b = useInstantTip({ placement: 'flow' })
+  return (
+    <div style={{ overflowY: 'hidden' }} data-testid="clip">
+      <div data-tip-flow="" data-testid="flow">
+        <p>first line</p>
+        <p>a visible line <button type="button" {...a.tipHandlers}>anchor A</button></p>
+        <p>the last visible line <button type="button" {...b.tipHandlers}>anchor B</button></p>
+        <p>clipped away</p>
+        <InstantTip tip={a.tip} tipId={a.tipId}>bubble A</InstantTip>
+        <InstantTip tip={b.tip} tipId={b.tipId}>bubble B</InstantTip>
+      </div>
+    </div>
+  )
+}
+
+/** A `flow` anchor with no [data-tip-flow] ancestor: nothing to measure the
+ *  first line against, so it opens above like the default. */
+function FlowOrphanHarness() {
+  const { tip, tipHandlers, tipId } = useInstantTip({ placement: 'flow' })
+  return (
+    <>
+      <button type="button" {...tipHandlers}>anchor</button>
+      <InstantTip tip={tip} tipId={tipId}>bubble content</InstantTip>
+    </>
+  )
+}
+
 /** A consumer that can HOLD the bubble — the shape a copy chip has while its
  *  "Copied!" flash runs. `hold` is a counter: 0 is no hold, and every press's
  *  outcome is a new value, the way a copy chip hands over its attempt number.
@@ -479,6 +545,68 @@ describe('InstantTip', () => {
     }
   })
 
+  it('re-clamps when a held outcome replaces the hint with wider content', () => {
+    // The clamp is measured against the bubble's width at show time. A copy
+    // chip near the right edge shows a narrow "Click to copy", then its click
+    // swaps in the wider "Copy failed" notice: with the bubble already open the
+    // hold's edge must re-anchor it so the clamp runs again, or the notice is
+    // clipped off-screen exactly when it matters.
+    const saved = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetWidth')
+    Object.defineProperty(HTMLElement.prototype, 'offsetWidth', {
+      configurable: true,
+      get() { return (this as HTMLElement).textContent?.startsWith('held') ? 300 : 100 },
+    })
+    Object.defineProperty(window, 'innerWidth', { value: 1024, configurable: true })
+    try {
+      render(<HoldHarness />)
+      const anchor = screen.getByRole('button', { name: 'anchor' })
+      // Anchor at 900: the 100px hint fits (900 + 100 <= 1016), the 300px outcome does not.
+      anchor.getBoundingClientRect = () => ({ top: 200, left: 900, right: 910, bottom: 210, width: 10, height: 10, x: 900, y: 200, toJSON: () => ({}) }) as DOMRect
+      fireEvent.focus(anchor)
+      expect(parseFloat(screen.getByRole('tooltip').style.left)).toBe(900)
+      fireEvent.click(screen.getByRole('button', { name: 'outcome' }))
+      const tip = screen.getByRole('tooltip')
+      expect(tip).toHaveTextContent('held content')
+      const left = parseFloat(tip.style.left)
+      expect(left + 300).toBeLessThanOrEqual(1024 - 8)
+      expect(left).toBe(1024 - 8 - 300)
+      // ...and back: the hold ends with focus still on the anchor, so the hint
+      // shows again — narrower content, measured afresh. The outcome's clamp
+      // must not survive into it (a hint stranded 200px left of its chip).
+      fireEvent.click(screen.getByRole('button', { name: 'idle' }))
+      const hint = screen.getByRole('tooltip')
+      expect(hint).toHaveTextContent('bubble content')
+      expect(parseFloat(hint.style.left)).toBe(900)
+    } finally {
+      if (saved) Object.defineProperty(HTMLElement.prototype, 'offsetWidth', saved)
+      else delete (HTMLElement.prototype as unknown as Record<string, unknown>).offsetWidth
+    }
+  })
+
+  it('a below bubble that does not fit under the anchor is clamped to the bottom edge (explicit below)', () => {
+    // The top-bar pill's `below` has no above to go to; a bubble taller than
+    // the room left under its anchor ends 8px inside the bottom edge instead
+    // of off-screen.
+    const saved = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight')
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, value: 30 })
+    const savedHeight = window.innerHeight
+    Object.defineProperty(window, 'innerHeight', { value: 400, configurable: true })
+    try {
+      render(<BelowHarness />)
+      const anchor = screen.getByRole('button', { name: 'anchor' })
+      // Anchor bottom at 380: below wants 388, and 388 + 30 > 392.
+      anchor.getBoundingClientRect = () => ({ top: 360, left: 60, right: 160, bottom: 380, width: 100, height: 20, x: 60, y: 360, toJSON: () => ({}) }) as DOMRect
+      fireEvent.focus(anchor)
+      const tip = screen.getByRole('tooltip')
+      expect(tip).toHaveAttribute('data-placement', 'below')
+      expect(parseFloat(tip.style.top)).toBe(400 - 8 - 30)
+    } finally {
+      Object.defineProperty(window, 'innerHeight', { value: savedHeight, configurable: true })
+      if (saved) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', saved)
+      else delete (HTMLElement.prototype as unknown as Record<string, unknown>).offsetHeight
+    }
+  })
+
   it('lifts above a [data-tip-boundary] ancestor so wrapped rows are never covered', () => {
     render(<BoundaryHarness />)
     const anchor = screen.getByRole('button', { name: 'anchor' })
@@ -558,5 +686,173 @@ describe('InstantTip', () => {
     expect([parseFloat(tip.style.top), parseFloat(tip.style.left)]).toEqual([328, 20])
     expect(tip).toHaveAttribute('data-placement', 'below')
     expect(tip.className).not.toMatch(/-translate-y-full/)
+  })
+
+  describe('placement: flow — an inline anchor in running text', () => {
+    const rect = (top: number, left: number, right: number, height = 20): DOMRect =>
+      ({ top, left, right, bottom: top + height, width: right - left, height, x: left, y: top, toJSON: () => ({}) }) as DOMRect
+    // jsdom lays nothing out, and has no Range.getClientRects at all: the
+    // container's first line is read through a Range over its first text node,
+    // so give that Range one rect — the first line runs 100..118.
+    const savedRange = Object.getOwnPropertyDescriptor(Range.prototype, 'getClientRects')
+    beforeEach(() => {
+      Object.defineProperty(Range.prototype, 'getClientRects', { configurable: true, value: () => [rect(100, 20, 90, 18)] })
+    })
+    afterEach(() => {
+      if (savedRange) Object.defineProperty(Range.prototype, 'getClientRects', savedRange)
+      else delete (Range.prototype as unknown as Record<string, unknown>).getClientRects
+    })
+
+    it('opens above from an anchor on the container\'s first line, below from any lower one', () => {
+      // A bubble above a chip on line 3 covers line 2 — the words that lead up
+      // to the chip, which the reader is reading. Off the first line, the bubble
+      // opens under the chip instead; on the first line "above" is off the
+      // message altogether, so it stays.
+      render(<FlowHarness />)
+      const a = screen.getByRole('button', { name: 'anchor A' })
+      const b = screen.getByRole('button', { name: 'anchor B' })
+      // A starts inside the first line (top 102 < 118).
+      a.getBoundingClientRect = () => rect(102, 100, 180)
+      // B is a wrapped chip three lines down: fragment one ends line 4 at the
+      // right, fragment two starts line 5 at the margin; the box spans both.
+      b.getBoundingClientRect = () => ({ top: 170, left: 20, right: 700, bottom: 214, width: 680, height: 44, x: 20, y: 170, toJSON: () => ({}) }) as DOMRect
+      b.getClientRects = () => [rect(170, 600, 700), rect(194, 20, 120)] as unknown as DOMRectList
+      fireEvent.focus(a)
+      let tip = screen.getByRole('tooltip')
+      expect(tip).toHaveAttribute('data-placement', 'above')
+      expect([parseFloat(tip.style.top), parseFloat(tip.style.left)]).toEqual([94, 100])
+      expect(tip.className).toMatch(/-translate-y-full/)
+      fireEvent.blur(a)
+      expect(screen.queryByRole('tooltip')).toBeNull()
+      fireEvent.focus(b)
+      tip = screen.getByRole('tooltip')
+      expect(tip).toHaveAttribute('data-placement', 'below')
+      // Under the chip's BOX (bottom 214 + 8) at the box's left (20): the tail of
+      // a wrapped chip, the same shape #13516's `below` reads.
+      expect([parseFloat(tip.style.top), parseFloat(tip.style.left)]).toEqual([222, 20])
+      expect(tip.className).not.toMatch(/-translate-y-full/)
+    })
+
+    it('keeps a below bubble inside its flow container, and flips above one that would cross the container\'s bottom (the last line, or one near it)', () => {
+      // Below the message's box the bubble would sit on whatever follows the
+      // message (in a transcript: the timestamp and action row). The container's
+      // box is 100..240; the bubble is 30px tall.
+      const savedHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight')
+      Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, value: 30 })
+      try {
+        render(<ThreeLineHarness />)
+        screen.getByTestId('flow').getBoundingClientRect = () => rect(100, 0, 600, 140)
+        const a = screen.getByRole('button', { name: 'anchor A' })
+        const b = screen.getByRole('button', { name: 'anchor B' })
+        const c = screen.getByRole('button', { name: 'anchor C' })
+        a.getBoundingClientRect = () => rect(102, 100, 180)
+        // B: below at 172..202 stays inside the box (bottom 240).
+        b.getBoundingClientRect = () => rect(144, 120, 200)
+        // C wraps to the last line: its box ends at 240, so below (248..278)
+        // would cross the floor; the bubble takes its flip — above the FIRST
+        // fragment, where a bubble above a wrapped anchor belongs.
+        c.getBoundingClientRect = () => ({ top: 196, left: 20, right: 300, bottom: 240, width: 280, height: 44, x: 20, y: 196, toJSON: () => ({}) }) as DOMRect
+        c.getClientRects = () => [rect(196, 240, 300), rect(220, 20, 90)] as unknown as DOMRectList
+        fireEvent.focus(a)
+        expect(screen.getByRole('tooltip')).toHaveAttribute('data-placement', 'above')
+        fireEvent.blur(a)
+        fireEvent.focus(b)
+        let tip = screen.getByRole('tooltip')
+        expect(tip).toHaveAttribute('data-placement', 'below')
+        expect([parseFloat(tip.style.top), parseFloat(tip.style.left)]).toEqual([172, 120])
+        fireEvent.blur(b)
+        fireEvent.focus(c)
+        tip = screen.getByRole('tooltip')
+        expect(tip).toHaveAttribute('data-placement', 'above')
+        expect([parseFloat(tip.style.top), parseFloat(tip.style.left)]).toEqual([188, 240])
+        expect(tip.className).toMatch(/-translate-y-full/)
+      } finally {
+        if (savedHeight) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', savedHeight)
+        else delete (HTMLElement.prototype as unknown as Record<string, unknown>).offsetHeight
+      }
+    })
+
+    it('in a host that clips the container, the floor is the clip edge: a bubble that would cross it flips above', () => {
+      // The bubble is a portal the clip cannot cut, so past the clip's bottom it
+      // would open outside the box the reader sees — over a card's meta row or
+      // the next item. The container runs 100..400 but the clip ends at 200; the
+      // bubble is 30px tall.
+      const savedHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight')
+      Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, value: 30 })
+      try {
+        render(<ClippedHarness />)
+        screen.getByTestId('clip').getBoundingClientRect = () => rect(100, 0, 600, 100)
+        screen.getByTestId('flow').getBoundingClientRect = () => rect(100, 0, 600, 300)
+        const a = screen.getByRole('button', { name: 'anchor A' })
+        const b = screen.getByRole('button', { name: 'anchor B' })
+        // A: below at 158..188 stays inside the clip (bottom 200).
+        a.getBoundingClientRect = () => rect(130, 120, 200)
+        // B: below at 198..228 would cross the clip edge — above instead, even
+        // though the container itself runs on to 400.
+        b.getBoundingClientRect = () => rect(170, 140, 220)
+        fireEvent.focus(a)
+        let tip = screen.getByRole('tooltip')
+        expect(tip).toHaveAttribute('data-placement', 'below')
+        expect([parseFloat(tip.style.top), parseFloat(tip.style.left)]).toEqual([158, 120])
+        fireEvent.blur(a)
+        fireEvent.focus(b)
+        tip = screen.getByRole('tooltip')
+        expect(tip).toHaveAttribute('data-placement', 'above')
+        expect([parseFloat(tip.style.top), parseFloat(tip.style.left)]).toEqual([162, 140])
+      } finally {
+        if (savedHeight) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', savedHeight)
+        else delete (HTMLElement.prototype as unknown as Record<string, unknown>).offsetHeight
+      }
+    })
+
+    it('goes above after all when below does not fit under a lower-line anchor (the last line of a full-height pane)', () => {
+      // Below would open the bubble off the bottom of the viewport; a flow
+      // anchor carries its above position and takes it, at its first fragment.
+      const saved = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight')
+      Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, value: 30 })
+      const savedHeight = window.innerHeight
+    Object.defineProperty(window, 'innerHeight', { value: 400, configurable: true })
+      try {
+        render(<FlowHarness />)
+        const b = screen.getByRole('button', { name: 'anchor B' })
+        // A wrapped chip on the pane's last lines: box bottom 380, so below
+        // wants 388 and 388 + 30 > 392; its first fragment starts at (346, 600).
+        b.getBoundingClientRect = () => ({ top: 346, left: 20, right: 700, bottom: 380, width: 680, height: 34, x: 20, y: 346, toJSON: () => ({}) }) as DOMRect
+        b.getClientRects = () => [rect(346, 600, 700), rect(370, 20, 120)] as unknown as DOMRectList
+        fireEvent.focus(b)
+        const tip = screen.getByRole('tooltip')
+        expect(tip).toHaveAttribute('data-placement', 'above')
+        expect([parseFloat(tip.style.top), parseFloat(tip.style.left)]).toEqual([338, 600])
+        expect(tip.className).toMatch(/-translate-y-full/)
+      } finally {
+        Object.defineProperty(window, 'innerHeight', { value: savedHeight, configurable: true })
+      if (saved) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', saved)
+        else delete (HTMLElement.prototype as unknown as Record<string, unknown>).offsetHeight
+      }
+    })
+
+    it('opens above when the anchor has no [data-tip-flow] ancestor', () => {
+      render(<FlowOrphanHarness />)
+      const anchor = screen.getByRole('button', { name: 'anchor' })
+      anchor.getBoundingClientRect = () => rect(300, 60, 160)
+      fireEvent.focus(anchor)
+      const tip = screen.getByRole('tooltip')
+      expect(tip).toHaveAttribute('data-placement', 'above')
+      expect(parseFloat(tip.style.top)).toBe(292)
+    })
+
+    it('opens above when the container\'s first line cannot be measured', () => {
+      // No layout information (jsdom's own state): the old position, never a
+      // guess. Same for a container with no text at all.
+      delete (Range.prototype as unknown as Record<string, unknown>).getClientRects
+      render(<FlowHarness />)
+      const b = screen.getByRole('button', { name: 'anchor B' })
+      b.getBoundingClientRect = () => rect(170, 20, 700)
+      b.getClientRects = () => [rect(170, 600, 700), rect(194, 20, 120)] as unknown as DOMRectList
+      fireEvent.focus(b)
+      const tip = screen.getByRole('tooltip')
+      expect(tip).toHaveAttribute('data-placement', 'above')
+      expect([parseFloat(tip.style.top), parseFloat(tip.style.left)]).toEqual([162, 600])
+    })
   })
 })
