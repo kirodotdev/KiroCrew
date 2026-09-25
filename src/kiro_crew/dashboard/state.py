@@ -97,6 +97,7 @@ from kiro_crew.messaging.link import (
     is_channel_session_key,
 )
 from kiro_crew.messaging.renderer import display_safe
+from kiro_crew.notifications.bridge import BridgeDispatcher
 from kiro_crew.notifications.bus import (
     NotificationBus,
     NotificationValidationError,
@@ -116,6 +117,7 @@ from kiro_crew.session_compaction import (
     COMPACT_OUTCOME_RECYCLED,
     COMPACT_OUTCOME_RESTARTED_UNCOMPACTABLE,
 )
+from kiro_crew.slack.notification_sink import slack_sink_for
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard._types import (  # noqa: F401
@@ -213,6 +215,40 @@ def _record_crew_log_class(state: Any, slot: Any) -> None:
         logger.debug(
             "crew-log class record skipped for %r", getattr(slot, "key", ""), exc_info=True
         )
+
+
+# Transports with a bridge sink. Phase B1 ships slack only; B2 adds the rest
+# over the shared MessagingTransport registry. Declared once so the settings
+# payload and the resolver below cannot disagree about which ids can deliver --
+# a picker told a transport is usable when it is not would offer a row whose
+# every delivery is an audited skip.
+_BRIDGE_SINK_TRANSPORTS = frozenset({"slack"})
+
+
+def bridge_sink_implemented(transport: str) -> bool:
+    """Whether a bridge sink exists for *transport* in this build."""
+    return transport in _BRIDGE_SINK_TRANSPORTS
+
+
+def _bridge_sink_for(state: Any, transport: str) -> Any:
+    """Resolve one transport's bridge sink for this delivery, or ``None``.
+
+    The bridge's only door to a transport, and the reason the dispatcher stays
+    transport-generic: it asks for a transport id and gets back either
+    something that can send or nothing at all. ``None`` means "configured but
+    not able to receive right now", which the bridge audits as a skip rather
+    than an error.
+
+    Slack resolves through its dedicated client (it is deliberately absent from
+    ``channel_transports`` -- see that attribute's comment); phase B2 adds the
+    remaining transports over the shared registry, which is why the registry
+    branch is written against the neutral contract rather than per channel.
+    """
+    if not bridge_sink_implemented(transport):
+        return None
+    if transport == "slack":
+        return slack_sink_for(state)
+    return None
 
 
 def _new_notification_coordinator() -> NotificationCoordinator:
@@ -4954,6 +4990,17 @@ class DashboardState:
         # Per-channel user settings (RFC Phase 3): mute + priority override,
         # applied at the delivery sink so the bus stays pure.
         self.notification_channel_settings = ChannelSettings()
+        # Second bus sink (notification-bridge RFC phase B1): fans routed notes
+        # out to chat transports as owner DMs. Constructed with a sink RESOLVER
+        # rather than sinks, because "is this transport able to receive right
+        # now" is a per-delivery question -- a sink captured at boot would keep
+        # answering for a connection that has since dropped. Scheduling happens
+        # in _deliver_note, after the local sink.
+        self.notification_bridge = BridgeDispatcher(
+            sink_resolver=lambda transport: _bridge_sink_for(self, transport),
+            settings_reader=self.notification_channel_settings.get,
+            loop_provider=lambda: self.serving_loop,
+        )
         # Resource-pressure producer: samples host posture (driven from the
         # event-loop heartbeat) and pushes episode-deduped notes to
         # system.resources. State-owned like the bus/limiter/settings so its
@@ -6287,8 +6334,104 @@ class DashboardState:
         )
 
     def _deliver_note(self, note: dict[str, Any]) -> None:
-        """Deliver one bus-validated note to memory, clients, and disk."""
-        _notifications_for(self).deliver(self, note)
+        """Deliver one bus-validated note: local sink first, then the bridge.
+
+        The composite egress the notification-bridge RFC specifies. The local
+        sink runs first and synchronously, with byte-identical semantics to
+        before; the bridge leg is SCHEDULED after it and never awaited, so a
+        chat transport's latency or failure cannot delay, break, or reorder
+        dashboard delivery.
+
+        Ordering carries the meaning here. ``deliver`` redacts the note and
+        applies the channel's settings in place, so the bridge reads the
+        EFFECTIVE priority (after a user override, and ``passive`` for a muted
+        channel) rather than what the producer asked for -- routing a note the
+        user muted everywhere else is exactly the surprise this avoids.
+
+        The bridge also waits on DURABILITY, not just on the local sink. The
+        persist is fire-and-forget, and the app push handler turns its failure
+        into a 500 that the producer retries -- so egressing before the write
+        lands would let a failed-then-retried push deliver the same chat message
+        twice. Publishing to a dashboard the user still has open is recoverable;
+        a duplicate DM is not.
+        """
+        durability = _notifications_for(self).deliver(self, note)
+        self._schedule_bridge_after_persist(note, durability)
+
+    def _schedule_bridge_after_persist(
+        self, note: dict[str, Any], durability: "asyncio.Future[bool] | bool"
+    ) -> None:
+        """Hand *note* to the bridge once ITS durable write has succeeded.
+
+        ``durability`` is this delivery's own answer, passed in rather than read
+        off the state: two off-loop producers run concurrently, so a shared
+        field could hand one note the other's verdict -- bridging a failed write
+        or withholding a good one.
+        """
+        bridge = getattr(self, "notification_bridge", None)
+        if bridge is None:
+            return
+        # Snapshot at delivery time: acknowledgement and the sweep mutate the
+        # stored row, and the bridge now reads it after an await boundary.
+        snapshot = dict(note)
+        try:
+            if not isinstance(durability, bool):
+                # Reserved BEFORE the callback is armed. Between arming and the callback
+                # firing, ``schedule`` has not run, so this delivery is in no task and no
+                # handoff -- a shutdown drain saw nothing owed, returned, and the
+                # transports closed on a note whose write was still in flight. After
+                # arming there is no instant in this method's control left to reserve in,
+                # and the callback cannot reserve for itself: by the time it runs the
+                # window it had to cover is over.
+                bridge.reserve()
+                try:
+                    durability.add_done_callback(
+                        lambda fut: self._bridge_after_persist(bridge, snapshot, fut)
+                    )
+                except BaseException:
+                    # Nothing will ever settle a reservation whose callback was never
+                    # armed, and an unsettled one makes every later drain wait out its
+                    # whole timeout.
+                    bridge.release()
+                    raise
+                return
+            # Persisted INLINE (an off-loop producer), so its boolean is the
+            # only durability answer that exists: nothing to await, and no 500
+            # to make the producer retry. A falsy write withholds the leg rather
+            # than being read as success.
+            if not durability:
+                logger.warning("Notification persist failed inline; bridge leg withheld")
+                return
+            bridge.schedule(snapshot)
+        except Exception:
+            # The one thing the bridge must never do is take dashboard delivery
+            # down with it; local delivery has already completed above.
+            logger.warning("Notification bridge scheduling failed", exc_info=True)
+
+    @staticmethod
+    def _bridge_after_persist(bridge: Any, note: dict[str, Any], fut: Any) -> None:
+        """Bridge *note* only if its persist future reports a durable write.
+
+        Settles the reservation its caller took, in a ``finally`` so a withheld leg
+        retires it too: the obligation ends when this delivery is decided, and deciding
+        not to send is a decision. Released AFTER ``schedule``, which enters the task,
+        so a drain reading between the two sees the task rather than nothing.
+        """
+        try:
+            if fut.cancelled() or fut.exception() is not None or not fut.result():
+                # Durability failed. The producer is told so (a 500 on the app
+                # and agent push paths) and will retry, which re-delivers this
+                # note; bridging now would make that retry a duplicate DM.
+                logger.warning("Notification persist failed; bridge leg withheld")
+                return
+            bridge.schedule(note)
+        except Exception:
+            logger.warning("Notification bridge scheduling failed", exc_info=True)
+        finally:
+            try:
+                bridge.release()
+            except Exception:
+                logger.warning("Notification bridge reservation leaked", exc_info=True)
 
     def register_sse(self) -> asyncio.Queue[dict[str, Any]]:
         """Register a new SSE client and return its dedicated queue."""

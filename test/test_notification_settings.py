@@ -15,6 +15,7 @@ from kiro_crew.dashboard.handlers.messaging import (
 )
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.notifications.settings import (
+    DISPLAY_PROVENANCE_KEY,
     PROTECTED_CHANNELS,
     ChannelSettings,
     ChannelSettingsError,
@@ -30,12 +31,14 @@ def settings(monkeypatch, tmp_path) -> ChannelSettings:
 def _make_state(monkeypatch, tmp_path) -> DashboardState:
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
     monkeypatch.setattr("kiro_crew.notifications.settings.config_dir", lambda: tmp_path)
-    return DashboardState(
+    state = DashboardState(
         sessions=MagicMock(count=0),
         crons=MagicMock(),
         lessons=MagicMock(),
         start_time=0.0,
     )
+    state.owner_id = "U1"
+    return state
 
 
 class TestChannelSettingsStore:
@@ -146,8 +149,19 @@ class TestSinkIntegration:
 
 
 def _make_app(state) -> web.Application:
+    # The owner gate on the two routing fields reads both token claims, so the
+    # double sets both: ``app == ""`` plus the state's owner as the subject is
+    # what the middleware puts on a dashboard-owner request.
     app = web.Application()
     app["state"] = state
+
+    @web.middleware
+    async def _as_owner(request, handler):
+        request["app"] = ""
+        request["user"] = str(getattr(state, "owner_id", "") or "")
+        return await handler(request)
+
+    app.middlewares.append(_as_owner)
     app.router.add_get("/api/notifications/channels", api_notification_channels)
     app.router.add_put(
         "/api/notifications/channels/settings", api_notification_channel_settings
@@ -256,7 +270,13 @@ class TestChannelSettingsApi:
                 json={"channel": "a.b", "muted": True},
             )
         data = json.loads((tmp_path / "notification_settings.json").read_text(encoding="utf-8"))
-        assert data == {"channel_settings": {"a.b": {"muted": True}}}
+        # Exact at both levels, because this is the persistence ratchet: naming the whole
+        # document is what makes an unintended field a failure here. The stamp belongs in
+        # it rather than beside it -- it is what holds an app-written display field back
+        # from an armed route, so a row that reaches disk without one is the defect this
+        # assertion exists to catch.
+        stamped = {"muted": True, DISPLAY_PROVENANCE_KEY: True}
+        assert data == {"channel_settings": {"a.b": stamped}}
 
 
 class TestProtectedConstant:
@@ -283,13 +303,19 @@ class TestReviewRegressions:
 
     def test_persist_failure_leaves_memory_unchanged(self, settings, monkeypatch):
         """A failed write must not leave the rejected setting active in
-        memory: persist the candidate first, commit only on success."""
+        memory: persist the candidate first, commit only on success.
+
+        The seam is ``_write_settings_staged``, which is this module's whole writer: the
+        settings write stages inside a masked directory instead of beside the target.
+        Patching any other name leaves the real write intact, and the test then passes
+        without exercising the ordering it exists for.
+        """
         settings.update("a.b", muted=True)
 
         def boom(*args, **kwargs):
             raise OSError("disk full")
 
-        monkeypatch.setattr("kiro_crew.notifications.settings.atomic_write", boom)
+        monkeypatch.setattr("kiro_crew.notifications.settings._write_settings_staged", boom)
         with pytest.raises(OSError):
             settings.update("a.b", muted=False)
         # Memory still reflects the last successfully persisted state

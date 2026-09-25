@@ -518,6 +518,12 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
     # False and ``_send_ws_all`` keeps its deny-by-default behaviour.
     ws["_app"] = ws_app
     ws["_is_dashboard_user"] = request.get("is_dashboard_user", False)
+    # Ownership as well, from the SAME predicate this handler already resolved for
+    # `register_ws` rather than a second derivation. A dashboard user is not an
+    # owner: token auth sets `is_dashboard_user` from the absence of an app claim,
+    # which an allow-listed messaging user's session satisfies too, so a chokepoint
+    # carrying owner-only content needs this narrower answer.
+    ws["_is_owner"] = owner_request
     ws["_allowed_events"] = allowed_events
 
     # Push current slots immediately so sidebar populates without waiting.

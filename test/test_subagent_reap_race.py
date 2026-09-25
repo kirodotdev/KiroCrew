@@ -1161,6 +1161,399 @@ async def test_cancel_all_readmits_an_undelivered_report_to_orphan_recovery(monk
 
 
 @pytest.mark.asyncio
+async def test_a_callers_drain_budget_bounds_the_wait_and_still_compensates(monkeypatch):
+    """A caller on a deadline passes its budget IN, and that budget bounds the drain.
+
+    The module default stays long on purpose: a terminal report is worth waiting for when
+    nothing is waiting on the caller. The gateway IS on a deadline, so it hands its
+    remaining slice down instead of wrapping this coroutine -- a wrapper would cancel at
+    whichever await was live and could skip the compensation below entirely.
+
+    The default is pinned to an hour here, so a bound that came from the module rather
+    than from the argument could never fire. Both halves are asserted: the drain honours
+    the argument, and the re-admission still runs after it.
+    """
+    import kiro_crew.subagent as mod
+
+    monkeypatch.setattr(mod, "_REPORT_DRAIN_TIMEOUT", 3600.0)
+    mgr = _make_manager()
+    info = _info()
+    cleared: list[str] = []
+    monkeypatch.setattr(mod, "clear_tombstone", lambda aid: (cleared.append(aid), True)[1])
+
+    started = asyncio.Event()
+
+    async def _wedged_delivery(_info):
+        started.set()
+        await asyncio.sleep(3600)
+
+    mgr._on_done = AsyncMock(side_effect=_wedged_delivery)
+    assert mgr._claim_finalize(info) is True
+    task = mgr._spawn_terminal_report(
+        info,
+        source="test",
+        injection_timeout_reason="r",
+        mark_delivered_on_success=True,
+    )
+    await started.wait()
+
+    await mgr.cancel_all(cancellation_budget=0.05)
+
+    assert task.cancelled(), "the caller's budget did not bound the report drain"
+    assert cleared == [info.id], "compensation was skipped when the caller's budget expired"
+
+
+@pytest.mark.asyncio
+async def test_the_budget_also_bounds_the_run_teardown_wait(monkeypatch, caplog):
+    """The teardown wait is a phase of its own, and the budget bounds it too.
+
+    Bounding only the report drain left THIS wait able to spend the whole budget, at which
+    point the caller's later steps starve exactly as they did when nothing was bounded. A
+    spent budget therefore has to make this wait give up promptly and say so.
+
+    The report drain default is pinned to an hour so nothing here can be attributed to it,
+    and the assertion is on the teardown warning specifically rather than on elapsed time,
+    which would be a timing test.
+
+    The run has to RESIST its cancel for the assertion to mean anything. A run that comes
+    down on the first cancel has finished its teardown, so reporting it as unfinished is a
+    false alarm, and a fixture built from one measures only whether the site denied it the
+    loop turn it needed -- which is not what a bound is for.
+    """
+    import kiro_crew.subagent as mod
+
+    monkeypatch.setattr(mod, "_REPORT_DRAIN_TIMEOUT", 3600.0)
+    mgr = _make_manager()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _long_run():
+        started.set()
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            await release.wait()
+
+    task = asyncio.create_task(_long_run())
+    mgr._tasks["stuck"] = task
+    await started.wait()
+
+    with caplog.at_level(30):
+        await mgr.cancel_all(cancellation_budget=0.0)
+
+    assert "did not finish teardown" in caplog.text, (
+        "the run teardown wait is not bounded by the cancellation budget"
+    )
+
+    release.set()
+    await task
+
+
+@pytest.mark.asyncio
+async def test_the_budget_bounds_the_followup_watcher_gather(monkeypatch, caplog):
+    """The watcher gather runs BEFORE the budgeted phases, so the budget has to reach it.
+
+    A watcher that does not come down on cancel can otherwise spend the whole shutdown
+    here, and nothing below it starts: not the announcements, not the run teardown, not the
+    report drain, and not the tombstone re-admission that keeps an undelivered completion
+    visible to the next start. Giving up on this wait is safe because a late-waking watcher
+    is stopped by the `_shutting_down` marker, which is set before this point and checked on
+    the dispatch path -- this wait is not what protects the shutting-down gateway.
+
+    The drain default is pinned to an hour so nothing here can be attributed to it, and the
+    assertion names the gather's own warning rather than elapsed time.
+    """
+    import kiro_crew.subagent as mod
+
+    monkeypatch.setattr(mod, "_REPORT_DRAIN_TIMEOUT", 3600.0)
+    mgr = _make_manager()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _watcher_that_does_not_honour_its_cancel():
+        # Ignores cancellation, which is the condition being pinned: the phase has to stop
+        # WAITING on it. `release` is the test's own way out, so nothing here can hang.
+        started.set()
+        while not release.is_set():
+            try:
+                await asyncio.wait_for(release.wait(), timeout=0.05)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                continue
+
+    task = asyncio.create_task(_watcher_that_does_not_honour_its_cancel())
+    mgr._followup_watchers["stuck"] = task
+    await started.wait()
+
+    with caplog.at_level(30):
+        await mgr.cancel_all(cancellation_budget=0.0)
+
+    assert "did not finish cancelling" in caplog.text, (
+        "the follow-up watcher gather is not bounded by the cancellation budget"
+    )
+
+    release.set()
+    try:
+        await asyncio.wait_for(task, timeout=5)
+    except (asyncio.TimeoutError, asyncio.CancelledError):  # test cleanup only
+        task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_the_budget_bounds_the_followup_failure_announcement(monkeypatch, caplog):
+    """The announcement awaits `_on_done` injection, once per watcher, and is budgeted.
+
+    This is the phase most able to spend a whole shutdown, because a single slow parent is
+    enough and the loop runs it for every watcher with a queued message. Unbounded it takes
+    the outer shutdown wait with it, which drops the report drain and the tombstone
+    re-admission -- and the drop is unrecoverable, since the queue is emptied before the
+    announcement and the audit is explicitly not a delivery.
+
+    The gather is isolated out by giving the watcher an already-finished task, so only the
+    announcement can produce the warning asserted here.
+    """
+    import kiro_crew.subagent as mod
+
+    monkeypatch.setattr(mod, "_REPORT_DRAIN_TIMEOUT", 3600.0)
+    mgr = _make_manager()
+    info = _info()
+    info.pending_followups = ["a queued follow_up that will never be dispatched"]
+
+    finished = asyncio.create_task(asyncio.sleep(0))
+    await finished
+    mgr._followup_watchers[info.id] = finished
+    mgr._followup_watcher_infos[info.id] = info
+    mgr._audit_followup = lambda *a, **k: None
+
+    async def _wedged_announce(*_a, **_k):
+        await asyncio.sleep(3600)
+
+    mgr._announce_followup_failure = AsyncMock(side_effect=_wedged_announce)
+
+    with caplog.at_level(30):
+        await mgr.cancel_all(cancellation_budget=0.0)
+
+    assert "exceeded the cancellation budget" in caplog.text, (
+        "the follow-up failure announcement is not bounded by the cancellation budget"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_spent_budget_leaves_the_queued_followups_in_place(monkeypatch, caplog):
+    """A bounded announce that gives up must not have destroyed the queue first.
+
+    The parent was promised a completion event by its spawn_steer reply, and orphan recovery
+    covers terminal reports rather than queued follow-ups, so clearing before announcing
+    turns a late shutdown into a silent permanent loss. The queue is the only surviving
+    record of what was never dispatched, so it has to outlive a failed announcement.
+    """
+    import kiro_crew.subagent as mod
+
+    monkeypatch.setattr(mod, "_REPORT_DRAIN_TIMEOUT", 3600.0)
+    mgr = _make_manager()
+    info = _info()
+    queued = ["a queued follow_up that will never be dispatched"]
+    info.pending_followups = list(queued)
+
+    finished = asyncio.create_task(asyncio.sleep(0))
+    await finished
+    mgr._followup_watchers[info.id] = finished
+    mgr._followup_watcher_infos[info.id] = info
+    mgr._audit_followup = lambda *a, **k: None
+
+    async def _wedged_announce(*_a, **_k):
+        await asyncio.sleep(3600)
+
+    mgr._announce_followup_failure = AsyncMock(side_effect=_wedged_announce)
+
+    with caplog.at_level(30):
+        await mgr.cancel_all(cancellation_budget=0.0)
+
+    assert info.pending_followups == queued, (
+        "the queued follow_ups were destroyed by an announcement that never delivered"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_spent_budget_persists_the_undelivered_followups_to_disk(monkeypatch):
+    """In-memory retention dies with the gateway, so the obligation has to reach DISK.
+
+    The parent was promised a completion event. Once the announcement gives up, the only
+    thing that can still honour that promise is a record the NEXT start reads -- leaving the
+    queue in memory preserves it just until the process holding it exits, which under a
+    graceful shutdown is immediately.
+    """
+    import kiro_crew.subagent as mod
+
+    monkeypatch.setattr(mod, "_REPORT_DRAIN_TIMEOUT", 3600.0)
+    mgr = _make_manager()
+    info = _info()
+    queued = ["a queued follow_up that will never be dispatched"]
+    info.pending_followups = list(queued)
+
+    finished = asyncio.create_task(asyncio.sleep(0))
+    await finished
+    mgr._followup_watchers[info.id] = finished
+    mgr._followup_watcher_infos[info.id] = info
+    mgr._audit_followup = lambda *a, **k: None
+
+    persisted: list[dict] = []
+    readmitted: list[str] = []
+    monkeypatch.setattr(
+        mod, "update_state", lambda aid, **kw: (persisted.append({"id": aid, **kw}), True)[1]
+    )
+    monkeypatch.setattr(
+        mod, "clear_tombstone", lambda aid: (readmitted.append(aid), True)[1]
+    )
+
+    async def _wedged_announce(*_a, **_k):
+        await asyncio.sleep(3600)
+
+    mgr._announce_followup_failure = AsyncMock(side_effect=_wedged_announce)
+
+    await mgr.cancel_all(cancellation_budget=0.0)
+
+    assert persisted, (
+        "the undelivered follow_ups were never persisted, so they die with the process"
+    )
+    assert persisted[0]["pending_followups"] == queued, (
+        f"the persisted state did not carry the undelivered messages: {persisted[0]}"
+    )
+    # Persisting is not enough on its own: `list_orphans` SKIPS any folder holding a
+    # tombstone, so a run left tombstoned is hidden from the next start no matter what its
+    # state says. Re-admission is what makes the obligation actually recoverable.
+    assert readmitted == [info.id], (
+        "the run was not re-admitted, so orphan recovery cannot see the obligation"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_undelivered_followups_are_readable_by_the_next_start(monkeypatch, tmp_path):
+    """End to end, with the REAL writers: a later start must READ the queue back.
+
+    The mocked pin above proves the writers are called. It cannot prove the call accomplishes
+    recovery -- a tombstone write is also "a durable write", and it would HIDE this run,
+    because `list_orphans` skips any folder holding one. So this drives the real
+    `update_state` / `clear_tombstone` against a temp registry and asks the question orphan
+    recovery actually asks.
+    """
+    import kiro_crew.subagent as mod
+    from kiro_crew.subagent_persistence import create_agent_folder, list_orphans
+
+    root = tmp_path / "subagents"
+    root.mkdir()
+    monkeypatch.setattr("kiro_crew.subagent_persistence._SUBAGENTS_DIR", root)
+    monkeypatch.setattr(mod, "_REPORT_DRAIN_TIMEOUT", 3600.0)
+
+    mgr = _make_manager()
+    info = _info()
+    queued = ["a queued follow_up that will never be dispatched"]
+    info.pending_followups = list(queued)
+    create_agent_folder(info.id, task="t")
+
+    finished = asyncio.create_task(asyncio.sleep(0))
+    await finished
+    mgr._followup_watchers[info.id] = finished
+    mgr._followup_watcher_infos[info.id] = info
+    mgr._audit_followup = lambda *a, **k: None
+
+    async def _wedged_announce(*_a, **_k):
+        await asyncio.sleep(3600)
+
+    mgr._announce_followup_failure = AsyncMock(side_effect=_wedged_announce)
+
+    await mgr.cancel_all(cancellation_budget=0.0)
+
+    recovered = {o["id"]: o for o in list_orphans()}
+    assert info.id in recovered, (
+        "orphan recovery cannot see the run at all, so the promised completion is lost"
+    )
+    assert recovered[info.id].get("pending_followups") == queued, (
+        f"the next start cannot read the undelivered messages back: {recovered[info.id]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_announce_that_raises_is_recovered_like_one_that_times_out(monkeypatch, tmp_path):
+    """A raise loses the queue exactly as a timeout does, so it gets the same remedy.
+
+    Handling only the timeout would leave the other failure of the same call silently
+    lossy -- the asymmetry is invisible in testing precisely because each path is reached
+    by a different trigger.
+    """
+    import kiro_crew.subagent as mod
+    from kiro_crew.subagent_persistence import create_agent_folder, list_orphans
+
+    root = tmp_path / "subagents"
+    root.mkdir()
+    monkeypatch.setattr("kiro_crew.subagent_persistence._SUBAGENTS_DIR", root)
+    monkeypatch.setattr(mod, "_REPORT_DRAIN_TIMEOUT", 3600.0)
+
+    mgr = _make_manager()
+    info = _info()
+    queued = ["a queued follow_up lost to a raising announce"]
+    info.pending_followups = list(queued)
+    create_agent_folder(info.id, task="t")
+
+    finished = asyncio.create_task(asyncio.sleep(0))
+    await finished
+    mgr._followup_watchers[info.id] = finished
+    mgr._followup_watcher_infos[info.id] = info
+    mgr._audit_followup = lambda *a, **k: None
+
+    async def _raising_announce(*_a, **_k):
+        raise RuntimeError("the parent's slot is gone")
+
+    mgr._announce_followup_failure = AsyncMock(side_effect=_raising_announce)
+
+    # A budget generous enough that no timeout can be the reason this is recovered.
+    await mgr.cancel_all(cancellation_budget=30.0)
+
+    recovered = {o["id"]: o for o in list_orphans()}
+    assert recovered.get(info.id, {}).get("pending_followups") == queued, (
+        "an announce that RAISED left the queue unrecoverable: "
+        f"{recovered.get(info.id)}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_zero_drain_budget_still_runs_the_tombstone_compensation(monkeypatch):
+    """Out of budget is a reason not to WAIT, never a reason not to compensate.
+
+    The gateway floors its slice at zero and still calls through, rather than skipping
+    the call: skipping would leave the runs going AND drop the re-admission that keeps
+    their completions recoverable. Zero has to mean "do not wait" alone.
+    """
+    import kiro_crew.subagent as mod
+
+    monkeypatch.setattr(mod, "_REPORT_DRAIN_TIMEOUT", 3600.0)
+    mgr = _make_manager()
+    info = _info()
+    cleared: list[str] = []
+    monkeypatch.setattr(mod, "clear_tombstone", lambda aid: (cleared.append(aid), True)[1])
+
+    started = asyncio.Event()
+
+    async def _wedged_delivery(_info):
+        started.set()
+        await asyncio.sleep(3600)
+
+    mgr._on_done = AsyncMock(side_effect=_wedged_delivery)
+    assert mgr._claim_finalize(info) is True
+    task = mgr._spawn_terminal_report(
+        info,
+        source="test",
+        injection_timeout_reason="r",
+        mark_delivered_on_success=True,
+    )
+    await started.wait()
+
+    await mgr.cancel_all(cancellation_budget=0.0)
+
+    assert task.cancelled()
+    assert cleared == [info.id], "a zero budget skipped the re-admission"
+
+
+@pytest.mark.asyncio
 async def test_cancel_all_keeps_the_tombstone_when_delivery_already_happened(monkeypatch):
     """The converse: a report cancelled AFTER `_on_done` returned is delivered.
 

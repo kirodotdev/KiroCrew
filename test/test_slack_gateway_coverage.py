@@ -1568,6 +1568,67 @@ class TestTaskNotify:
         assert ds.notify.call_args.kwargs["meta"] is None
 
     @pytest.mark.asyncio
+    async def test_the_note_names_the_originating_session(self):
+        """The note must carry the session that produced it, for governance.
+
+        ``task_id`` identifies a task and not a session, and ``taskrunner`` is
+        not an ``app:`` source, so without this key the note names no producer
+        at all and the notification bridge vets the host surface alone. A
+        session whose profile denies ``channels/slack`` is refused on that
+        transport elsewhere and then egresses to the same Slack DM through a
+        routed notification channel.
+        """
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        notify = self._capture(orch)
+
+        await notify("Step 2 complete", "all good", "task-7", session_key="slack:T1:C1:1712793600")
+
+        assert ds.notify.call_args.kwargs["meta"] == {
+            "task_id": "task-7",
+            "session_key": "slack:T1:C1:1712793600",
+        }
+
+    @pytest.mark.asyncio
+    async def test_the_session_is_named_even_without_a_task_id(self):
+        # The two fields are independent: a run started from a conversation with
+        # no task id still has a producing session, and the old
+        # ``{"task_id": ...} if task_id else None`` shape dropped it whenever the
+        # id happened to be absent.
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        notify = self._capture(orch)
+
+        await notify("Step 2 complete", "all good", session_key="telegram:42")
+        assert ds.notify.call_args.kwargs["meta"] == {"session_key": "telegram:42"}
+
+    @pytest.mark.asyncio
+    async def test_the_emitted_key_is_one_the_bridge_reads_unchanged(self):
+        """Producer and consumer must agree on the key's FORM, not just its name.
+
+        ``_claimed_session`` QUALIFIES a bare fragment to ``dashboard:<slot>``
+        and passes an already-prefixed key through untouched, so a producer that
+        emitted a fragment would have some other surface's profile answer for
+        its note. This drives the real consumer with the real producer's output
+        rather than asserting the argument shape, because an argument-shape
+        assertion cannot see what the consumer does with the argument.
+        """
+        from kiro_crew.notifications.bridge import BridgeDispatcher
+
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        notify = self._capture(orch)
+
+        await notify("t", "b", "task-7", session_key="slack:T1:C1:1712793600")
+        meta = ds.notify.call_args.kwargs["meta"]
+
+        # ``meta`` merges flat onto the note, which is the shape the bridge reads.
+        assert BridgeDispatcher._claimed_session(meta) == "slack:T1:C1:1712793600"
+
+    @pytest.mark.asyncio
     async def test_approval_title_also_dms_the_owner(self):
         orch = _make_orchestrator()
         orch.dashboard_state = None
@@ -2538,3 +2599,113 @@ class TestDmFireSpineIsReusable:
         assert result is monitor_models.MonitorDispatchResult.UNAVAILABLE
         transport.dispatcher.handle_message.assert_not_awaited()
         orch.autonudge_svc.remove.assert_not_called()
+
+
+class TestShutdownDrainsTheNotificationBridge:
+    """A note whose Slack leg was scheduled must not be dropped by shutdown.
+
+    The bridge hands each leg to a task, so at the moment the gateway stops
+    there can be fanout in flight. Closing the transports first would abandon it
+    silently -- the note is on the dashboard either way, but the DM the owner
+    armed a route for never arrives. The drain therefore has to be awaited while
+    the transports are still open, which is what these tests pin.
+    """
+
+    def _orch(self, drain, closed):
+        orch = _make_orchestrator()
+        bridge = MagicMock()
+        bridge.drain = drain
+        ds = _mock_dashboard_state()
+        ds.notification_bridge = bridge
+        orch.dashboard_state = ds
+        socket_client = MagicMock()
+        socket_client.close = closed
+        orch._socket_client = socket_client
+        orch._stop_memory_startup = MagicMock()
+        return orch
+
+    @pytest.mark.asyncio
+    async def test_the_bridge_is_drained_before_the_transport_closes(self):
+        order: list[str] = []
+
+        async def _drain(timeout=None):
+            order.append(f"drain:{timeout}")
+
+        async def _close():
+            order.append("close")
+
+        orch = self._orch(AsyncMock(side_effect=_drain), AsyncMock(side_effect=_close))
+        await orch._shutdown()
+        # Both ran, and in this order. Asserting the ORDER rather than just the
+        # call is the whole point: a drain that runs after the close is the bug.
+        assert order == ["drain:2.0", "close"]
+
+    @pytest.mark.asyncio
+    async def test_the_producers_are_cancelled_before_the_drain(self):
+        """A drain cannot flush a note that has not been produced yet.
+
+        ``cancel_all()`` emits terminal announcements for the runs it stops, and
+        their bridge legs schedule when they are emitted. Gathered with the closes
+        instead, those announcements land after the drain has already returned and
+        then race the transport close. Asserting all three positions, because a
+        drain that sits before its own producer is as broken as one that sits after
+        the close.
+        """
+        order: list[str] = []
+
+        async def _drain(timeout=None):
+            order.append("drain")
+
+        async def _close():
+            order.append("close")
+
+        orch = self._orch(AsyncMock(side_effect=_drain), AsyncMock(side_effect=_close))
+        orch.subagent_mgr = MagicMock()
+        orch.subagent_mgr.cancel_all = AsyncMock(
+            side_effect=lambda **_kw: order.append("cancel_all")
+        )
+        orch.subagent_mgr.close = MagicMock()
+        await orch._shutdown()
+        assert order == ["cancel_all", "drain", "close"]
+
+    @pytest.mark.asyncio
+    async def test_a_failing_producer_cancel_does_not_stop_the_shutdown(self):
+        # The drain is still worth attempting for whatever did get emitted, and a
+        # producer that will not stop cleanly must not keep the gateway alive.
+        order: list[str] = []
+
+        async def _drain(timeout=None):
+            order.append("drain")
+
+        async def _close():
+            order.append("close")
+
+        orch = self._orch(AsyncMock(side_effect=_drain), AsyncMock(side_effect=_close))
+        orch.subagent_mgr = MagicMock()
+        orch.subagent_mgr.cancel_all = AsyncMock(side_effect=RuntimeError("stuck run"))
+        orch.subagent_mgr.close = MagicMock()
+        await orch._shutdown()
+        assert order == ["drain", "close"]
+
+    @pytest.mark.asyncio
+    async def test_a_failing_drain_does_not_stop_the_shutdown(self):
+        # This drain exists to save a chat DM. A gateway that refused to stop
+        # because of it would trade a far worse failure for a better one.
+        closed = AsyncMock()
+        orch = self._orch(AsyncMock(side_effect=RuntimeError("loop gone")), closed)
+        await orch._shutdown()
+        closed.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_shutdown_survives_a_state_with_no_bridge(self):
+        # A dashboard-less run has no bridge to drain, and reading the attribute
+        # off a state that does not carry it must not raise into shutdown.
+        closed = AsyncMock()
+        orch = _make_orchestrator()
+        orch.dashboard_state = None
+        socket_client = MagicMock()
+        socket_client.close = closed
+        orch._socket_client = socket_client
+        orch._stop_memory_startup = MagicMock()
+        await orch._shutdown()
+        closed.assert_awaited()

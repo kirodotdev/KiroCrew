@@ -99,6 +99,13 @@ from typing import TYPE_CHECKING, Any
 # the top-level-imports guideline.
 from kiro_crew.apps.manager import get_app_manifest, is_app_enabled
 
+# The one definition of the EGRESS keys. Imported rather than copied: its own
+# comment in notifications/settings.py warns that a set spelled twice is how a
+# routing key added later reaches an app token through whichever carrier was not
+# updated -- and this WS frame is one of those carriers. The notifications layer
+# imports nothing from the dashboard, so this is acyclic at module scope.
+from kiro_crew.notifications.settings import DELIVERY_SETTING_KEYS
+
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
@@ -291,9 +298,11 @@ _OWNER_ONLY_EVENTS = frozenset({
 # ---------------------------------------------------------------------------
 
 # Notification events whose delivery depends on WHO sent them, not just on the
-# declaration. ``notification_channel_settings`` is deliberately absent: it is
-# channel config ({muted, priority}) with no source_app, so source filtering
-# would deny it outright rather than scope it.
+# declaration. ``notification_channel_settings`` is deliberately absent: it
+# carries no source_app, so source filtering would deny it outright rather than
+# scope it. Its own owner-only half (the bridge route) is withheld by the
+# per-client strip in ``_serialize_for_client`` instead, which shapes a frame
+# the app is entitled to receive rather than refusing it.
 # Only events whose payload actually CARRIES a source. `notification_ack` /
 # `notification_unack` broadcast a bare `{"ts": ...}` (see state.py), so they are
 # absent here: filtering by a field the payload never has is not a filter, and a
@@ -344,6 +353,35 @@ def notification_channel_owner(channel: str) -> str:
     return channel.split(".", 1)[0] if "." in channel else ""
 
 
+def channel_settings_for_app(data: object) -> dict[str, Any]:
+    """Return a ``notification_channel_settings`` payload with EGRESS keys removed.
+
+    The stored row carries the owner's bridge route (``deliver_to``,
+    ``deliver_min_priority``) alongside the dashboard-local ``muted``/``priority``.
+    Those two say which chat surfaces the owner's notifications reach, so a caller
+    without routing authority may neither set them (the settings PUT refuses) nor
+    read them (the channels GET withholds them) -- and this frame is the third
+    carrier of the same row, reached whenever the OWNER changes a setting on a
+    channel that client can see.
+
+    Only the OWNER's own sockets skip this: the per-client chokepoint returns the
+    unfiltered message for a socket carrying ``_is_owner``. A dashboard user is not
+    enough, because that flag is set from the absence of an app claim and an
+    allow-listed messaging user's session satisfies it.
+    """
+    if not isinstance(data, dict):
+        # The gate must not widen on a shape it cannot read. An unexpected
+        # payload yields an empty settings row, not the original object.
+        return {"channel": "", "settings": {}}
+    settings = data.get("settings")
+    if not isinstance(settings, dict):
+        settings = {}
+    return {
+        **{k: v for k, v in data.items() if k != "settings"},
+        "settings": {k: v for k, v in settings.items() if k not in DELIVERY_SETTING_KEYS},
+    }
+
+
 def notification_source_app(source: str) -> str:
     """The app that produced a notification, or "" if it was not an app push.
 
@@ -362,8 +400,12 @@ _GLOBAL_EVENT_DECLARATIONS: dict[str, str] = {
     "notification_ack": "notification",
     "notification_unack": "notification",
     "notifications_clear": "notification",
-    # Channel mute/priority metadata only ({muted, priority}) -- same domain as
-    # the notification events themselves, so it rides the same declaration.
+    # Channel settings metadata -- same domain as the notification events
+    # themselves, so it rides the same declaration. The row is NOT mute/priority
+    # only: since the bridge it also carries the owner's egress route, which no
+    # app may read, so ``_serialize_for_client`` strips those keys for an
+    # app-scoped client. The declaration decides WHETHER the frame is delivered;
+    # that strip decides WHAT it contains.
     "notification_channel_settings": "notification",
     "sessions_restarting": "sessions",
     # A bare {"ts": ...} refresh signal -- no slot, no session key, no counts.

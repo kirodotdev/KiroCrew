@@ -187,7 +187,11 @@ from kiro_crew.executors import (
 )
 from kiro_crew.frontend import build_frontend_async
 from kiro_crew.gateway_restart import resolve_restart_launcher
-from kiro_crew.gateway_shutdown_budget import GRACEFUL_SHUTDOWN_SECS
+from kiro_crew.gateway_shutdown_budget import (
+    BRIDGE_DRAIN_RESERVE_SECS,
+    CLOSES_RESERVE_SECS,
+    GRACEFUL_SHUTDOWN_SECS,
+)
 from kiro_crew.heartbeat import (
     HEARTBEAT_TASK_TIMEOUT_SECS,
     HeartbeatService,
@@ -11120,8 +11124,31 @@ class GatewayOrchestrator:
                 body, _ = redact_credentials(body)
                 title, _ = redact_exfiltration_urls(title)
                 title, _ = redact_credentials(title)
-                meta = {"task_id": task_id} if task_id else None
-                self.dashboard_state.notify("taskrunner", title, body, meta=meta)
+                # ``session_key`` is the ORIGINATING conversation, threaded down
+                # from ``start_background`` (see the ladder comment below), and
+                # the notification bridge reads it to vet the PRODUCING
+                # session's governance profile rather than only the host's.
+                # Without it this note names no producer at all: ``task_id``
+                # identifies a task and not a session, and the ``taskrunner``
+                # kind is not an ``app:`` source, so the bridge's subject list
+                # is host-only and a session whose profile denies
+                # ``channels/slack`` is refused on that transport elsewhere and
+                # then egresses to the same Slack DM through a routed
+                # notification channel. One producer, one transport, one policy,
+                # two answers -- the same gap, and the same fix, as the
+                # ``send_notification`` route.
+                #
+                # The bridge only ever ADDS this as a subject and never
+                # substitutes it for the host's, so it can at worst narrow: a
+                # wrong value denies this note rather than widening anything.
+                # Empty for a dashboard- or CLI-started run, and a note carrying
+                # no claim is vetted host-only exactly as before.
+                meta: dict[str, str] = {}
+                if task_id:
+                    meta["task_id"] = task_id
+                if session_key:
+                    meta["session_key"] = session_key
+                self.dashboard_state.notify("taskrunner", title, body, meta=meta or None)
                 self.dashboard_state.push_refresh("taskrunner")
             # Send approval-related notifications to Slack DM so user knows even when away.
             # Match on specific title patterns from task_executor, not broad keywords
@@ -12030,6 +12057,33 @@ class GatewayOrchestrator:
 
     async def _shutdown(self) -> None:
         """Graceful cleanup of all services."""
+        # Every step below shares ONE budget: the caller runs this method inside
+        # `wait_for(..., timeout=GRACEFUL_SHUTDOWN_SECS)`. A step that can block for
+        # longer than that budget therefore has to size itself against what is LEFT
+        # of it, which is what this reading is for -- a step choosing its own
+        # constant is how one slow step silently consumes the whole shutdown and
+        # the steps after it never run at all.
+        shutdown_started = time.monotonic()
+
+        def budget_left() -> float:
+            """Seconds left of GRACEFUL_SHUTDOWN_SECS, measured at the call, never below zero.
+
+            One spelling of the reading, because two drift apart: a step that computes
+            the remainder itself is a step that can be given a stale one.
+            """
+            return max(GRACEFUL_SHUTDOWN_SECS - (time.monotonic() - shutdown_started), 0.0)
+
+        def spendable_before_closes() -> float:
+            """Seconds the steps ahead of the closes may spend: the remainder less their reserve.
+
+            The closes run last and are the steps whose work is LOST rather than
+            deferred when the caller's ``wait_for`` expires, so what is left of the
+            budget is not what the steps before them may take. Every such step sizes
+            itself from this reading instead of from ``budget_left()``, because a
+            reserve only one of them honours is a reserve the next one spends.
+            """
+            return max(budget_left() - CLOSES_RESERVE_SECS, 0.0)
+
         self._memory_repair_stop.set()
         if self._memory_repair_task is not None:
             self._memory_repair_task.cancel()
@@ -12132,6 +12186,106 @@ class GatewayOrchestrator:
         # otherwise leak orphaned until the next start's flock adoption.
         await self._stop_mcp_broker()
 
+        # Session closing STARTS here and is awaited with the other cleanups in the
+        # gather below. The step it carries -- reconciling every live session's
+        # provider SID into the session map and flushing it to disk -- is one whose
+        # work is LOST rather than deferred when the caller's `wait_for` expires,
+        # because nothing replays it on the next start.
+        #
+        # It cannot be left until the gather, because `cancel_all()` is awaited
+        # INLINE before it and its compensation tail is deliberately unbounded: the
+        # straggler gather carries no timeout and the per-watcher state write is
+        # documented as unbounded with a synchronous fsync. The reserve held back for
+        # the closes therefore bounds only the phases that honour it, and an overrun
+        # in that tail cancels this method at that await -- where the flush has not
+        # been merely cut short but never CREATED.
+        #
+        # Started as a task, so the overlap lasts exactly as long as `cancel_all()`
+        # does and the gather below still decides when everything after it runs. The
+        # subagent STORE close stays after that gather, where the connection it holds
+        # outlives the runs still writing to it.
+        sessions_closing: asyncio.Future | None = None
+        if self.sessions:
+            sessions_closing = asyncio.ensure_future(self.sessions.close_all())
+
+        # Let scheduled notification bridge fanout finish while its transports
+        # are STILL OPEN. Every close below is only queued into `cleanup_tasks`
+        # and does not run until the gather at the end of this method, so an
+        # inline await here is strictly ordered before the socket client closes
+        # and before `registry.shutdown_tasks` tears the channel handles down.
+        #
+        # Bounded, and a timeout is not an error: the note is already durable on
+        # the dashboard before the bridge is ever scheduled (state.py gates
+        # `bridge.schedule` on the persist future), so the worst outcome of a
+        # slow leg is one chat DM the user reads on the dashboard instead. A
+        # shutdown that waited longer than this for a secondary surface would be
+        # the worse trade.
+        # The producers this drain has to see are cancelled FIRST, inline. A drain
+        # cannot flush work that has not been produced yet: `cancel_all()` emits
+        # terminal announcements for runs it stops, and their bridge legs schedule
+        # onto the bridge when they are emitted. Awaited here rather than gathered
+        # with the closes below, because in the gather those announcements land
+        # after this drain has already returned and then race the transport close,
+        # losing the DM the drain exists to save.
+        #
+        # The cost is that it runs on its own rather than concurrently with the
+        # other cleanups. That is the point: it is the one cleanup whose OUTPUT the
+        # next step consumes. It also satisfies the constraint the store close below
+        # documents, since that must follow `cancel_all()` too.
+        if self.subagent_mgr:
+            # `cancel_all()` waits up to `_REPORT_DRAIN_TIMEOUT` (30s) for shielded
+            # terminal reports, three times the whole GRACEFUL_SHUTDOWN_SECS this method
+            # runs under, so the producer step needs a bound or one wedged report spends
+            # the entire budget and the drain below -- the reason the producers are
+            # stopped here in the first place -- never runs.
+            #
+            # The bound is PASSED IN rather than wrapped around the call, and that is not
+            # a style choice. `wait_for` cancels at whichever await is live, which
+            # includes the window between `cancel_all`'s report drain and the
+            # `clear_tombstone` re-admission that follows it; that re-admission is the
+            # only thing keeping an undelivered completion visible to the next start's
+            # orphan recovery, so bounding from out here would trade a bounded shutdown
+            # for a silent, permanent loss. Given the budget instead, `cancel_all` bounds
+            # EVERY phase of its own that can block and still always runs its compensation.
+            #
+            # The subtracted reserve is what the drain may spend, so the producers get
+            # the rest and the drain keeps a slice when they overrun. Taken out of what
+            # is spendable BEFORE the closes, not out of the whole remainder: the
+            # closes are last and their work is lost rather than deferred, so they need
+            # their own slice held back from this step too. Floored at zero: out of
+            # budget, the producers are still stopped and their stragglers still
+            # compensated, they just get no waiting time.
+            cancel_budget = max(spendable_before_closes() - BRIDGE_DRAIN_RESERVE_SECS, 0.0)
+            try:
+                await self.subagent_mgr.cancel_all(cancellation_budget=cancel_budget)
+            except Exception:
+                # Shutdown continues: a producer that failed to stop cleanly must
+                # not keep the gateway alive, and the drain below is still worth
+                # attempting for whatever did get emitted.
+                logger.warning("Subagent cancel_all failed during shutdown", exc_info=True)
+
+        bridge = getattr(self.dashboard_state, "notification_bridge", None)
+        if bridge is not None:
+            try:
+                # The reserve is what is HELD BACK for this drain, not what is left to
+                # spend on it: the steps above are bounded individually and can still
+                # consume the whole budget between them, and a reservation cannot be
+                # honoured out of a budget that is already gone. So the drain spends the
+                # smaller of the two -- its reserve, or what remains spendable before the
+                # closes -- and the timeout that saves a DM can never be the one that
+                # pushes this method past the caller's `wait_for`, cancelling it before
+                # `close_all()` flushes the session map. Measured against the same
+                # pre-closes reading the producers used, so this step cannot spend the
+                # slice they left for the closes. At zero the drain returns as soon as it
+                # sees nothing owed, so an exhausted budget costs the flush nothing.
+                await bridge.drain(
+                    timeout=min(BRIDGE_DRAIN_RESERVE_SECS, spendable_before_closes())
+                )
+            except Exception:
+                # Shutdown continues regardless -- this drain exists to save a
+                # DM, and it must never be the reason a gateway fails to stop.
+                logger.warning("Notification bridge drain failed", exc_info=True)
+
         # Kill all ACP processes and close connections
         cleanup_tasks: list = []
         if self._adaptive_controller is not None:
@@ -12143,10 +12297,10 @@ class GatewayOrchestrator:
             adaptive_controller.register(None)
             self._unwire_overload_health()
             cleanup_tasks.append(self._adaptive_controller.stop())
-        if self.subagent_mgr:
-            cleanup_tasks.append(self.subagent_mgr.cancel_all())
-        if self.sessions:
-            cleanup_tasks.append(self.sessions.close_all())
+        if sessions_closing is not None:
+            # Already running since before `cancel_all()`; gathered here so the
+            # ordering of everything that follows is unchanged.
+            cleanup_tasks.append(sessions_closing)
         if self._dashboard_runner:
             # Close WS connections first so handlers exit promptly
             if self.dashboard_state:
@@ -12179,11 +12333,12 @@ class GatewayOrchestrator:
         if cleanup_tasks:
             await asyncio.gather(*cleanup_tasks, return_exceptions=True)
 
-        # AFTER the gather, not beside cancel_all() above: cancel_all() is what stops
-        # the runs that still write to the durable task queue, so closing the store
-        # before it finishes would pull the connection out from under them. Off-loop,
-        # because ``close()`` is synchronous and waits for the store's writer lock --
-        # on the loop that stalls shutdown behind an in-flight executor write.
+        # AFTER the gather: `cancel_all()` is awaited inline further up, and it is
+        # what stops the runs that still write to the durable task queue, so closing
+        # the store before those runs finish would pull the connection out from
+        # under them. Off-loop, because ``close()`` is synchronous and waits for the
+        # store's writer lock -- on the loop that stalls shutdown behind an
+        # in-flight executor write.
         if self.subagent_mgr:
             await asyncio.to_thread(self.subagent_mgr.close)
 

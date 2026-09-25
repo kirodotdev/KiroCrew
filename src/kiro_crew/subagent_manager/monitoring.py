@@ -431,6 +431,11 @@ class OrphanStallMonitor(ManagerComponent):
             # injection path batches naturally via the parent slot's pending-
             # failures drain.)
             dm_pending: list[str] = []
+            # Orphans whose notice went to that digest AND that still owe follow-up
+            # messages. Their tombstone waits for the digest's own answer: the folder is
+            # the only place those messages survive, so the record that hides it from the
+            # next scan cannot be written on a notice that has not been delivered yet.
+            digest_deferred: list[tuple[str, str, object, dict]] = []
             for state in orphans:
                 agent_id = state.get("id", "")
                 if not agent_id or agent_id in self._manager._agents:
@@ -456,17 +461,65 @@ class OrphanStallMonitor(ManagerComponent):
                             except Exception:
                                 logger.debug("SEL audit failed for orphan %s", agent_id)
 
+                    # Notify BEFORE the tombstone. The tombstone is what excludes the
+                    # folder from the next start's scan, so a run carrying the follow-up
+                    # queue its own shutdown could not announce has to have that queue
+                    # reported first -- tombstoning on an undelivered notice discharges the
+                    # obligation against nothing. Injection happens per-orphan (it rides the
+                    # parent slot's batched pending-failures queue); DM fallback is deferred
+                    # to the digest.
+                    notified = False
+                    deferred_to_digest = False
                     try:
-                        write_tombstone(
-                            agent_id,
-                            cause="gateway_restart",
-                            recovery_action=recovery,
-                            pid=pid,
-                            turns=state.get("turns", 0),
-                            last_tool=state.get("last_tool", ""),
+                        undelivered = await self._manager._notify_orphan(
+                            agent_id, state, recovery, has_result
                         )
+                        if undelivered:
+                            # A returned message means injection did NOT happen: this notice
+                            # is only QUEUED for the end-of-scan digest. Treating that as
+                            # delivery is what tombstoned a run whose queue nobody had been
+                            # told about yet -- and the digest can still fail.
+                            dm_pending.append(undelivered)
+                            deferred_to_digest = True
+                        else:
+                            notified = True
                     except Exception:
-                        logger.debug("Failed to tombstone orphan %s", agent_id, exc_info=True)
+                        logger.debug("Notification failed for orphan %s", agent_id, exc_info=True)
+
+                    queued_followups = state.get("pending_followups") or []
+                    if queued_followups and deferred_to_digest:
+                        # Owed messages AND an undelivered notice: hold the discharge until
+                        # the digest below says whether the owner was reached. Settled after
+                        # the loop, either way.
+                        digest_deferred.append((agent_id, recovery, pid, state))
+                    elif notified or not queued_followups:
+                        try:
+                            # A successful injection records the delivery itself, and
+                            # write_tombstone replaces the whole record rather than merging
+                            # into it, so asserting the pending action here would erase that
+                            # mark and send the next start looking for an owner to tell.
+                            write_tombstone(
+                                agent_id,
+                                cause="gateway_restart",
+                                recovery_action="delivered" if notified else recovery,
+                                pid=pid,
+                                turns=state.get("turns", 0),
+                                last_tool=state.get("last_tool", ""),
+                            )
+                        except Exception:
+                            logger.debug("Failed to tombstone orphan %s", agent_id, exc_info=True)
+                    else:
+                        # Only a run with messages still owed keeps its folder: they are
+                        # recoverable exactly while the scan can still see it. A run with
+                        # nothing queued is tombstoned either way, because leaving it
+                        # visible would re-report it on every start for a courtesy notice.
+                        logger.warning(
+                            "orphan %s carries %d undispatched follow_up(s) and its notice "
+                            "could not be delivered; leaving the folder visible to the next "
+                            "start rather than tombstoning the messages away",
+                            agent_id,
+                            len(queued_followups),
+                        )
 
                     # Retain-by-default: session files are deliberately NOT
                     # deleted here — an orphaned run's transcript is still
@@ -481,17 +534,6 @@ class OrphanStallMonitor(ManagerComponent):
                         pid,
                         has_result,
                     )
-                    # Notify user about the orphaned agent. Injection happens
-                    # per-orphan (it rides the parent slot's batched pending-
-                    # failures queue); DM fallback is deferred to the digest.
-                    try:
-                        undelivered = await self._manager._notify_orphan(
-                            agent_id, state, recovery, has_result
-                        )
-                        if undelivered:
-                            dm_pending.append(undelivered)
-                    except Exception:
-                        logger.debug("Notification failed for orphan %s", agent_id, exc_info=True)
                 except Exception:
                     logger.warning("Failed to reconcile orphan %s", agent_id, exc_info=True)
 
@@ -501,6 +543,7 @@ class OrphanStallMonitor(ManagerComponent):
                     await asyncio.sleep(0)
 
             # Single digest for everything the injection path couldn't deliver.
+            digest_delivered = False
             if dm_pending:
                 if len(dm_pending) == 1:
                     digest = dm_pending[0]
@@ -510,9 +553,36 @@ class OrphanStallMonitor(ManagerComponent):
                         f"orphaned by a gateway restart:\n\n" + "\n\n".join(dm_pending)
                     )
                 try:
-                    await self._manager._send_orphan_slack_dm(digest)
+                    digest_delivered = bool(await self._manager._send_orphan_slack_dm(digest))
                 except Exception:
                     logger.debug("Orphan digest DM failed", exc_info=True)
+            # Now the held discharges, against what the digest actually did.
+            for held_id, held_recovery, held_pid, held_state in digest_deferred:
+                held_queue = held_state.get("pending_followups") or []
+                if digest_delivered:
+                    try:
+                        write_tombstone(
+                            held_id,
+                            cause="gateway_restart",
+                            recovery_action=held_recovery,
+                            pid=held_pid,
+                            turns=held_state.get("turns", 0),
+                            last_tool=held_state.get("last_tool", ""),
+                        )
+                    except Exception:
+                        logger.debug("Failed to tombstone orphan %s", held_id, exc_info=True)
+                else:
+                    # Neither injection nor the digest reached anyone, so the queue is still
+                    # unreported. Keeping the folder is what keeps it recoverable: the next
+                    # start scans it again.
+                    logger.warning(
+                        "orphan %s carries %d undispatched follow_up(s) and neither the "
+                        "injection nor the digest DM delivered its notice; leaving the "
+                        "folder visible to the next start rather than tombstoning the "
+                        "messages away",
+                        held_id,
+                        len(held_queue),
+                    )
         except Exception:
             logger.warning("Orphan reconciliation failed", exc_info=True)
 
@@ -529,6 +599,12 @@ class OrphanStallMonitor(ManagerComponent):
         task_preview = (state.get("task", "") or "")[:100]
         parent_session = state.get("parent_session", "")
         result_path = str(agent_dir_for_display(agent_id) / "result.txt")
+        # A run whose own shutdown could not announce its follow-up queue persisted it
+        # here, and this notice is what reads it back. The parent was promised a completion
+        # event for each queued message by its spawn_steer reply, and no other path
+        # downstream carries them: a terminal report covers the run's own outcome, not the
+        # messages that were never dispatched.
+        queued_followups = [m for m in (state.get("pending_followups") or []) if m]
 
         if has_result and recovery == "partial_result":
             msg = (
@@ -592,6 +668,31 @@ class OrphanStallMonitor(ManagerComponent):
                 requested_model=str(state.get("requested_model") or ""),
                 resolved_model=str(state.get("resolved_model") or ""),
             )
+
+        if queued_followups:
+            # Redact the JOIN before bounding it, for the reason the announcement's own
+            # label records: cutting first can split a credential into fragments no pattern
+            # matches, and redacting per message cannot see a key whose header and footer
+            # sit in different messages. The budget scales with the message count.
+            queued_label = _redact("; ".join(str(m) for m in queued_followups))[
+                : 120 * len(queued_followups)
+            ]
+            msg += (
+                f"\n{len(queued_followups)} queued follow_up message(s) were never "
+                f"dispatched: {queued_label}"
+            )
+            # The handover writes at most a capped number of messages and records the rest
+            # as a count. Saying that count here is what keeps the overflow from being a
+            # silent loss: the parent learns some messages exist that cannot be named.
+            try:
+                overflow = int(state.get("pending_followups_overflow") or 0)
+            except (TypeError, ValueError):
+                overflow = 0
+            if overflow > 0:
+                msg += (
+                    f"\n{overflow} further queued follow_up message(s) exceeded the "
+                    f"retention cap and were not recorded individually."
+                )
 
         # Redact before any delivery path (injection or Slack DM)
         msg = _redact(msg)
@@ -657,21 +758,28 @@ class OrphanStallMonitor(ManagerComponent):
                 logger.debug("SEL audit for orphan injection failed", exc_info=True)
         return delivered
 
-    async def _send_orphan_slack_dm_impl(self, msg: str) -> None:
+    async def _send_orphan_slack_dm_impl(self, msg: str) -> bool:
         """Deliver an orphan notification via the owner DM / notification path.
 
         Delegates to the gateway-wired ``on_orphan_dm`` callback (Slack DM +
         dashboard notification). Falls back to a log line when no callback is
         wired (e.g. slack-only setups constructed without the gateway hooks).
+
+        Returns whether the owner was actually REACHED. The caller decides what to
+        discharge on the strength of it, and a log line is not a delivery: an
+        unwired or failing DM is the ordinary shape of "nobody was told", so
+        answering ``None`` for every outcome alike let a notice that reached no one
+        read as one that had.
         """
         if self._manager._on_orphan_dm is not None:
             try:
                 delivered = bool(await self._manager._on_orphan_dm(msg))
                 if delivered:
-                    return
+                    return True
             except Exception:
                 logger.debug("on_orphan_dm raised", exc_info=True)
         logger.warning("Orphan notification (no delivery channel wired): %s", msg[:200])
+        return False
 
     def _live_shared_count_impl(self, pid: int | None, agents: "list[SubagentInfo]") -> int:
         """Count live session-shared subagents sharing runtime *pid* (>= 1).

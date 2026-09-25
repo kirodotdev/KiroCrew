@@ -258,6 +258,39 @@ _CREW_SECRET_LEAVES: list[str] = [
     # HMAC-gated ``PUT /api/settings``; the app's own backend opens the file
     # directly rather than through this gate, so it keeps working.
     "workspace/md-notebook/settings.json",
+    # The notification channel settings. ``deliver_to`` here is the bit that
+    # AUTHORIZES the notification bridge to send a note out of the dashboard as an
+    # owner DM on a chat transport, and ``deliver_min_priority`` sets how much of
+    # the stream goes. It is the same escalation shape as the md-notebook
+    # ``autoSync`` bit above -- a stored preference that turns on unattended
+    # egress -- so it sits on the same floor rather than on the write-only tier:
+    # that tier is enforced at the agent file-edit tool gate alone, and a spawned
+    # shell's ``open()`` never passes through it, which for THIS leaf is the whole
+    # attack (write the route, wait for the next gateway start, notes leave the
+    # host). The owner arms a route through the HMAC-gated
+    # ``PUT /api/notifications/settings``; ``notifications.settings.ChannelSettings``
+    # loads and atomically writes the file in the GATEWAY process, which opens it
+    # directly rather than through this gate, so arming, muting and every delivery
+    # keep working. The read half costs nothing: the file is constructed only by
+    # ``DashboardState``, so no agent-facing path reads it.
+    "notification_settings.json",
+    # The staging directory that leaf publishes through
+    # (``notifications.settings._STAGING_LEAF``). Every write mkstemps its temp in
+    # here and renames it onto the target, so during a write -- and after a crash
+    # between the write and the rename -- a file in this directory holds the same
+    # ``deliver_to`` route as the leaf above. Classified as the whole DIRECTORY, like
+    # the two staging siblings below, so every temp name present and future is
+    # covered without a new entry.
+    #
+    # This entry is NOT redundant with the sandbox mask. ``sandbox.py`` hides the same
+    # leaf, but that is the bind-mount plane and exists only on Linux; on macOS and
+    # Windows ``is_sensitive_path`` is the sole backstop, which is exactly the gap the
+    # sibling ``md-notebook-staging`` and ``aws-control-staging`` entries close. A
+    # top-level leaf rather than a child of anything the agent can rename, because a
+    # mask covers the leaf and not its ancestors. Only the gateway writes here, and it
+    # opens the path directly rather than through this gate, so arming a route keeps
+    # working.
+    "notification-settings-staging",
     # The Notes builtin's write-staging directory. Every state writer above stages
     # its temp file in here before renaming onto its target, so during a write —
     # and after a crash between write and rename — a file in this directory holds

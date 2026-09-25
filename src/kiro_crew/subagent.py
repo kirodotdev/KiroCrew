@@ -160,6 +160,7 @@ from kiro_crew.subagent_persistence import (
     create_agent_folder,
     list_orphans,
     mark_delivered,
+    orphan_recovery_can_see,
     prune_stale_tombstones,
     read_state,
     record_slow_command,
@@ -512,6 +513,21 @@ _MAX_DONE_RESULT_LEN = 50_000  # cap subagent_done payload to avoid bloating WS 
 # mechanism that would have to remember which ids are taken, and a durable row
 # outlives the process that wrote it, so remembering means reading the store.
 _RUN_ID_HEX_CHARS = 16
+
+# Bounds on a run's queued follow-ups, as a COUNT and a per-message size. One pair owns
+# the queue's whole life: admission refuses past them (``follow_up_run``) and the
+# shutdown handover writes under them (``cancel_all``), so the store is bounded where it
+# GROWS. Bounding only the rendered label is what leaves it unbounded -- those slices
+# scale with the message count, so N messages buy N times the budget while the list and
+# the ``state.json`` it is written into keep growing without limit.
+#
+# Refusal is the admission remedy rather than truncation: an accepted follow-up promises
+# the parent a completion event, so a silently shortened queue would owe events it can no
+# longer name. At the persistence end the queue already exists and cannot be refused, so
+# the overflow is written as a COUNT beside the messages that fit -- a bare slice there
+# would drop the evidence that anything was dropped.
+_MAX_PENDING_FOLLOWUPS = 32
+_MAX_FOLLOWUP_MESSAGE_CHARS = 8_000
 
 
 def _done_result(text: str) -> str:
@@ -1663,6 +1679,12 @@ class SubagentInfo:
     pending_followups: list = field(default_factory=list)
     # True once a followup watcher task is armed for this run (one per run).
     _followup_watcher: bool = False
+    # Set by ``cancel_all`` when the shutdown budget expired before this run finished
+    # tearing down. At that moment the run has not reached the ``finally`` that SPAWNS its
+    # terminal report, so no report task exists for the drain to find and the run's own
+    # cancel arm must not write a terminal tombstone: doing so would hide an outcome that
+    # never reached the parent from the only path left to deliver it.
+    _shutdown_outcome_abandoned: bool = False
     _stall_suspect_at: float = (
         0.0  # first reaper sweep that saw the idle threshold exceeded; 2-sweep confirmation (scale dampening)
     )
@@ -2311,6 +2333,11 @@ DELIVERY_ROUTING_FIELDS: "dict[str, str]" = {
     # outcome reached the parent -- which is why it reads the other way round, and why
     # reading it ALONE was wrong: two routes above return having merely parked the work.
     "_reported_to_parent": PARKS_WHEN_UNSET,
+    # ``cancel_all`` gave up waiting for this run's teardown, so it never reached the
+    # ``finally`` that spawns its terminal report and no report task exists to drain.
+    # Truthy therefore means the outcome did not reach the parent, and the next start's
+    # orphan recovery is the only path that can still deliver it.
+    "_shutdown_outcome_abandoned": PARKS_WHEN_SET,
     # A synthetic record ``force_digest_flush`` builds to release an expired hold. It is a
     # CARRIER of a future injection rather than a member with a parked outcome, and it
     # carries a fresh id, so an id-keyed gate can never recognise it -- which is why the
@@ -3145,7 +3172,7 @@ class SubagentManager:
     ) -> bool:
         return await self._monitor._try_inject_orphan_notification_impl(parent_session, msg, meta)
 
-    async def _send_orphan_slack_dm(self, msg: str) -> None:
+    async def _send_orphan_slack_dm(self, msg: str) -> bool:
         return await self._monitor._send_orphan_slack_dm_impl(msg)
 
     def _live_shared_count(self, pid: int | None, agents: "list[SubagentInfo]") -> int:
@@ -4341,7 +4368,7 @@ class SubagentManager:
         reason: str,
         failure_info: SubagentInfo | None = None,
         messages: list | None = None,
-    ) -> None:
+    ) -> bool:
         return await self._continuation._announce_followup_failure_impl(
             info, reason, failure_info, messages
         )
@@ -4840,8 +4867,8 @@ class SubagentManager:
             verb=verb,
         )
 
-    async def cancel_all(self) -> None:
-        return await self._cancellation.cancel_all_impl()
+    async def cancel_all(self, cancellation_budget: float | None = None) -> None:
+        return await self._cancellation.cancel_all_impl(cancellation_budget=cancellation_budget)
 
 
 # Component implementations deliberately resolve globals through this module:
@@ -4915,6 +4942,7 @@ _COMPONENT_GLOBAL_BINDINGS = (
     mark_delivered,
     name_grant,
     os,
+    orphan_recovery_can_see,
     platform_compat,
     provider_fallback_active,
     prune_stale_tombstones,

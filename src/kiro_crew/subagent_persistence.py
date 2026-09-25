@@ -964,6 +964,29 @@ def clear_tombstone(agent_id: str) -> bool:
         return False
 
 
+def orphan_recovery_can_see(agent_id: str) -> bool:
+    """True when :func:`list_orphans` will visit *agent_id*'s folder.
+
+    This asks the question ``list_orphans`` asks -- whether a tombstone is PRESENT
+    -- which is what a caller needs when it has to establish that an obligation it
+    persisted is reachable at the next start.
+
+    :func:`clear_tombstone` answers something else: whether the unlink removed a
+    file. That is False for two opposite states, a folder that never carried a
+    tombstone (visible, so recoverable) and a folder whose tombstone survived the
+    attempt (skipped, so lost), which makes it unusable as a recoverability test in
+    either direction.
+
+    Fails closed: an errored stat is reported as not visible, because a caller that
+    cannot confirm reachability must not claim it.
+    """
+    try:
+        return not (_agent_dir(agent_id) / "tombstone.json").exists()
+    except OSError:
+        logger.warning("orphan visibility check failed for %s", agent_id, exc_info=True)
+        return False
+
+
 # ── slow-command record (stalled but STILL RUNNING) ──────────────────
 
 

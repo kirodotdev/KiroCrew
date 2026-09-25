@@ -282,6 +282,29 @@ _MD_NOTEBOOK_STATE_LEAVES: tuple[str, ...] = (
 #: publish rename is still atomic.
 _MD_NOTEBOOK_STAGING_LEAF: str = f"{MD_NOTEBOOK_APP_NAME}-staging"
 
+#: The notification channel-settings file's name under the crew data home.
+#:
+#: Spelled here rather than imported from ``notifications.settings`` for the reason
+#: ``_LIVE_TARGET_LEAF`` is: this module stays out of the config-loader import chain.
+#: ``test_sandbox_notification_settings_mask.py`` pins the two spellings equal, so a
+#: rename on either side reddens instead of silently unmasking the leaf.
+_NOTIFICATION_SETTINGS_LEAF: str = "notification_settings.json"
+
+#: The settings writer's staging directory, a TOP-LEVEL leaf in the crew data home.
+#:
+#: The leaf mask above covers the settings file's NAME, never a sibling temp, and
+#: ``atomic_write`` stages its ``mkstemp`` temp in the target's parent -- the data-home
+#: root, which is writable and visible in every sandbox. So the owner's own PUT wrote the
+#: REAL routing bytes to an unmasked name, where a same-UID sandbox could hold the temp's
+#: descriptor across the rename and a crash between write and rename left the bytes
+#: readable indefinitely. The writer stages HERE instead, exactly as md-notebook's state
+#: writers do for the same reason (see ``_MD_NOTEBOOK_STAGING_LEAF``).
+#:
+#: A TOP-LEVEL directory rather than one beside the settings file, for the reason
+#: ``aws-control-staging`` records: a mask covers the leaf, not its ancestors. It stays on
+#: the same filesystem as the target, which is the only property the publish rename needs.
+_NOTIFICATION_SETTINGS_STAGING_LEAF: str = "notification-settings-staging"
+
 #: Crew-home leaves with no legitimate in-sandbox reader — bind-masked in every mode.
 _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # Gateway diagnostics: recorded host and gateway state, plus loop-stall dumps.
@@ -321,6 +344,27 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     "quarantined-clones",
     "apps/meetings/data/edits",
     "whatsapp",
+    # The notification channel settings. Fenced from agent FILE TOOLS by
+    # ``security._CREW_SECRET_LEAVES``; masked here because that gate is the only
+    # thing standing between a spawned shell and this file, and ``deliver_to`` in
+    # it AUTHORIZES the bridge to send notes off the host as owner DMs -- write the
+    # route, wait for the next gateway start, and egress is armed without the owner
+    # ever being asked. HIDDEN rather than READONLY: the document is constructed
+    # only by ``DashboardState`` in the gateway process, so nothing inside the
+    # sandbox reads it, and the empty mask is its reader's absent-equivalent
+    # anyway (``ChannelSettings._load`` treats absent and ``{}`` alike as "no
+    # channel has settings", which is the no-bridging default an install ships
+    # with). A DIRECT child of the data home, and materialised before every spawn
+    # by :func:`_materialize_notification_settings_mask_target` -- without that an
+    # install that has never saved a setting offers the mask loop no name, and the
+    # data-home root is writable in every sandbox, so the leaf a child creates
+    # there would be the real one.
+    _NOTIFICATION_SETTINGS_LEAF,
+    # The settings writer's staging directory. Whole DIRECTORY, so every temp name it
+    # ever holds is masked, present and future, and a crash between write and rename
+    # leaves the orphan inside the mask rather than beside the target. Nothing
+    # in-sandbox reads or writes it: the write happens in the GATEWAY process.
+    _NOTIFICATION_SETTINGS_STAGING_LEAF,
     # The refused-inbound spool. Fenced from agent FILE TOOLS by
     # ``security._CREW_SECRET_LEAVES``; masked here so a spawned command cannot
     # reach it either -- an entry an agent could write is posted on the next
@@ -1629,6 +1673,13 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # the spool's own ``restrict_to_owner=True`` writes already require of it; its
     # readers open the leaf inside, so an empty root reads exactly as an absent one.
     "inbound-spool",
+    # The notification settings writer's staging directory, by the same rule and with
+    # the same lazily-created shape: it is created on the first settings PUT, so a
+    # sandbox spawned before any owner has ever saved a channel setting finds the name
+    # absent, the mask loop skips it, and the directory the gateway creates later --
+    # carrying the real routing bytes mid-publish -- appears inside that running
+    # namespace's view.
+    _NOTIFICATION_SETTINGS_STAGING_LEAF,
 )
 
 #: The masked md-notebook leaves materialised before a namespace spawn, and what each
@@ -1688,6 +1739,24 @@ _LIVE_TARGET_PRECREATE_CONTENT: bytes = b'{\n  "checkout": null\n}\n'
 #: already treats as its absent default. NOT a zero-byte file, which is not valid
 #: JSON and would read as CORRUPT rather than as absent.
 _EMPTY_CEILING_DOCUMENT: bytes = b"{}\n"
+
+#: The masked notification channel-settings document materialised before a namespace
+#: spawn. Same gap as the two live-target/md-notebook constants close, and the payload is
+#: an EGRESS authorization: ``deliver_to`` is what lets the bridge send a note off the host
+#: as an owner DM, so an absent leaf -- the state of every install that has never saved a
+#: setting -- means the ``SENSITIVE_FILES`` loop's ``isfile`` guard skips the name, the
+#: data-home root is writable in every sandbox, and a child simply CREATES the real file
+#: with a route already armed. The gateway loads it at its next start and notes begin
+#: leaving.
+#:
+#: The document is the reader's absent-equivalent by construction, not by coincidence:
+#: ``ChannelSettings._load`` keeps its empty ``{}`` default both when the file is absent
+#: and when ``data.get("channel_settings", {})`` yields nothing, so an agent's masked view
+#: and a fresh install agree on "no channel has settings" -- the no-bridging default.
+#: :data:`_EMPTY_CEILING_DOCUMENT` is exactly that document, so it is reused rather than
+#: respelled. It is also why this is not a zero-byte file: zero length is not valid JSON
+#: and ``_load`` would log it as corrupt rather than read it as absent.
+_NOTIFICATION_SETTINGS_PRECREATE_CONTENT: bytes = _EMPTY_CEILING_DOCUMENT
 
 #: Prefix of the in-flight temp ``_publish_empty_ceiling`` stages in its target's
 #: parent. Named so a sweep of that directory can tell a gateway-owned temp mid-publish
@@ -2666,6 +2735,78 @@ def _refuse_aliased_masked_leaves() -> None:
                 target,
                 info.st_nlink,
             )
+
+
+def _materialize_notification_settings_mask_target() -> str | None:
+    """Publish the notification settings' absent-equivalent document so its mask can mount.
+
+    Why at all: the launcher's ``SENSITIVE_FILES`` loop guards on ``isfile``, so an absent
+    leaf is an UNMASKED leaf for every namespace, and the crew data home is writable at OS
+    level. That is not a narrow window here -- absent is the state of every install that
+    has never saved a channel setting -- so without this the mask added in
+    :data:`_CREW_HIDDEN_LEAVES` would be vacuous exactly when it matters: an in-sandbox
+    shell creates the file with ``deliver_to`` already armed, and the gateway routes notes
+    off the host at its next start.
+
+    A DIRECT child of the data home, so there is no agent-writable intermediate component
+    for a planted link to redirect and no per-component descent is needed -- the hazard
+    :func:`_materialize_md_notebook_mask_targets` walks chains to avoid has no path here.
+
+    The temp is staged in the target's own parent rather than in a masked directory, which
+    is where this differs from :func:`_materialize_live_target_mask_target`, and the reason
+    is the payload: that function publishes a code-execution input, while this document is
+    :data:`_EMPTY_CEILING_DOCUMENT` and carries no secret and no authority. What the
+    masked-staging treatment buys there is that a concurrent namespace cannot ``link(2)``
+    the temp and keep a second, unmasked write channel to the inode. That race is not
+    admitted here either: it is DETECTED, by the same
+    :func:`_refuse_unless_sole_regular_link` check the live-target path runs after its own
+    publish, and a spawn that finds an extra link is refused rather than launched. That one
+    check is also what refuses a symlink at the name, on both the resolving and the
+    dangling path, so it is the single guard here rather than one of several. The refusal
+    persists on later spawns too, which is the fail-closed direction -- an operator
+    removing the file is the recovery, and this module refuses rather than unlinking
+    because ``lstat`` then ``unlink`` is not atomic.
+
+    Linux spawn path only, at the same site as the other materialisers: a Seatbelt deny is
+    a path rule that already holds for a name which does not exist yet, so macOS needs
+    nothing here. The LIVE data home only (``config_dir()``) -- a stub under the deprecated
+    spelling would be a file nothing reads. Resolving that home CREATES it when it is
+    absent, which is ``config_dir()``'s own contract rather than a choice this materialiser
+    makes, so the stub is published under the home that call establishes.
+
+    Never truncates and never removes: an existing regular file is left byte-for-byte
+    alone, whether it holds the owner's real settings or this stub. Returns the path if it
+    published one.
+    """
+    try:
+        root = str(config_dir())
+    except Exception:  # pragma: no cover - defensive; a spawn must not fail on this
+        logger.debug("could not resolve the crew data home for notification-settings masking")
+        return None
+    if not os.path.isdir(root):
+        return None
+    target = os.path.join(root, _NOTIFICATION_SETTINGS_LEAF)
+    # A SYMLINK at the name is the attack entry rather than just a nuisance: a mount
+    # follows its target, so the mask would bind over the referent while the lexical name
+    # stayed an agent-replaceable link in a writable directory. It needs no refusal of its
+    # own here, and that is measured rather than assumed --
+    # :func:`_refuse_unless_sole_regular_link` already refuses it on BOTH paths, so adding
+    # the two generic helpers beside it was dead code (a mutation removing them reddened
+    # nothing, which is what sent them back out). A RESOLVING link reaches the check
+    # through the ``exists`` branch below; a DANGLING one reads as absent, ``os.link``
+    # then fails EEXIST against the link name, and the lost-race check at the bottom
+    # refuses it.
+    if os.path.exists(target):
+        _refuse_unless_sole_regular_link(target)
+        return None
+    if _publish_empty_ceiling(target, root, content=_NOTIFICATION_SETTINGS_PRECREATE_CONTENT):
+        _refuse_unless_sole_regular_link(target)
+        return target
+    # A lost publish race is benign only if the winner cleared the same bar. Publishing is
+    # ``os.link``, which fails EEXIST rather than clobbering, so the ordinary loser finds a
+    # regular, singly-linked file here; anything else means the name is not maskable.
+    _refuse_unless_sole_regular_link(target)
+    return None
 
 
 def _materialize_live_target_mask_target() -> str | None:
@@ -7123,6 +7264,13 @@ def namespace_argv(
     # creatable from any sandbox simply because the data-home ROOT is writable there and
     # an absent name has no mask. Publishing the stub first makes the mask non-vacuous.
     _materialize_live_target_mask_target()
+    # The notification settings need one for the same reason as the pointer, and the
+    # absent case is not an edge here but the default: an install that has never saved a
+    # channel setting has no file at all, so the mask would be vacuous on exactly the
+    # hosts nobody has configured. The payload is an egress authorization (``deliver_to``
+    # arms the bridge), so a child that creates the leaf chooses where the owner's notes
+    # go.
+    _materialize_notification_settings_mask_target()
     # LAST of the pre-spawn checks, and last on purpose: every masked leaf's NAME must be
     # the name the mask binds, and the leaves above have already answered for themselves
     # with sentences tailored to what they hold. This pass covers the rest -- the masked

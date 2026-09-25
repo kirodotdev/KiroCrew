@@ -936,7 +936,9 @@ class TestShutdown:
         orch.heartbeat_svc = None
         orch.secretary_svc = None
         orch.subagent_mgr = MagicMock()
-        orch.subagent_mgr.cancel_all = AsyncMock(side_effect=lambda: order.append("cancel_all"))
+        orch.subagent_mgr.cancel_all = AsyncMock(
+            side_effect=lambda **_kw: order.append("cancel_all")
+        )
         orch.subagent_mgr.close = MagicMock(side_effect=lambda: order.append("close"))
         orch.sessions = None
         orch.dashboard_state = None
@@ -944,6 +946,305 @@ class TestShutdown:
         await orch._shutdown()
         orch.subagent_mgr.close.assert_called_once_with()
         assert order == ["cancel_all", "close"]
+
+    @staticmethod
+    def _orch_with_bridge(order: list[str]):
+        """An orchestrator whose only live parts are the producer and the drain."""
+        orch = _make_orchestrator()
+        orch.cron_svc = None
+        orch.heartbeat_svc = None
+        orch.secretary_svc = None
+        orch.sessions = None
+        orch._dashboard_runner = None
+        orch.subagent_mgr = MagicMock()
+        orch.subagent_mgr.close = MagicMock(side_effect=lambda: order.append("close"))
+        bridge = MagicMock()
+        # The marker carries no timeout: what the drain is GIVEN is read from the await
+        # args, so an ordering assertion cannot be broken by the number and a number
+        # assertion cannot pass on the strength of the ordering.
+        bridge.drain = AsyncMock(side_effect=lambda timeout: order.append("drain"))
+        orch.dashboard_state = _mock_dashboard_state()
+        orch.dashboard_state.notification_bridge = bridge
+        return orch, bridge
+
+    @pytest.mark.asyncio
+    async def test_the_producer_gets_its_budget_as_an_argument_not_a_wrapper(self, monkeypatch):
+        """The bound is handed to `cancel_all`; it is never wrapped around the call.
+
+        A wrapper cancels at whichever await is live, and that includes the window
+        between `cancel_all`'s report drain and the `clear_tombstone` re-admission that
+        follows it. That re-admission is the only thing keeping an undelivered completion
+        visible to the next start's orphan recovery, so cancelling there turns a bounded
+        shutdown into a silent, permanent loss.
+
+        So a producer that runs LONGER than the slice it was given must still finish:
+        only it can run its own compensation. A wrapper would cancel it here instead,
+        which is what this test detects.
+        """
+        monkeypatch.setattr(gw, "GRACEFUL_SHUTDOWN_SECS", 2.05)
+        monkeypatch.setattr(gw, "BRIDGE_DRAIN_RESERVE_SECS", 2.0)
+        order: list[str] = []
+        orch, bridge = self._orch_with_bridge(order)
+        budgets: list[float] = []
+
+        async def _outlasts_its_slice(*, cancellation_budget):
+            budgets.append(cancellation_budget)
+            await asyncio.sleep(0.2)
+            order.append("cancel_all:finished")
+
+        orch.subagent_mgr.cancel_all = AsyncMock(side_effect=_outlasts_its_slice)
+        await orch._shutdown()
+        # It was given a budget, and that budget was smaller than the time it took.
+        assert budgets and budgets[0] <= 0.05
+        # It still ran to completion, and the drain still followed it.
+        assert order.index("cancel_all:finished") < order.index("drain")
+        bridge.drain.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_prompt_cancel_all_precedes_the_drain_that_gets_the_reserve(self, monkeypatch):
+        """The ordinary path keeps producer-before-drain and hands the drain its slice.
+
+        The drain's timeout and the slice reserved out of the budget for it are one
+        symbol, so this also pins that the drain spends exactly what was held back.
+        The reserve is moved to a value the drain does not otherwise carry, which is
+        what makes a hardcoded timeout at the drain fail here instead of passing on a
+        coincidence.
+        """
+        monkeypatch.setattr(gw, "BRIDGE_DRAIN_RESERVE_SECS", 3.5)
+        order: list[str] = []
+        orch, bridge = self._orch_with_bridge(order)
+        orch.subagent_mgr.cancel_all = AsyncMock(
+            side_effect=lambda **_kw: order.append("cancel_all")
+        )
+        await orch._shutdown()
+        assert order == ["cancel_all", "drain", "close"]
+        bridge.drain.assert_awaited_once_with(timeout=3.5)
+
+    @pytest.mark.asyncio
+    async def test_an_exhausted_budget_still_stops_producers_with_a_zero_slice(self, monkeypatch):
+        """Out of budget, the producers are still stopped -- they just get no waiting time.
+
+        Skipping `cancel_all` entirely would leave the runs going AND skip the straggler
+        compensation that keeps their completions recoverable, which is strictly worse
+        than calling it with nothing to spend: a zero drain budget still cancels the runs
+        and still runs the compensation.
+
+        The drain is still called, and on this budget it is called with nothing, because
+        the closes are reserved AHEAD of it: a budget this small is owed entirely to the
+        session-map flush, and the drain's note is the thing that yields. Pinned at
+        exactly zero so a drain reading its own constant fails here.
+        """
+        monkeypatch.setattr(gw, "GRACEFUL_SHUTDOWN_SECS", gw.BRIDGE_DRAIN_RESERVE_SECS)
+        monkeypatch.setattr(gw, "CLOSES_RESERVE_SECS", gw.BRIDGE_DRAIN_RESERVE_SECS)
+        order: list[str] = []
+        orch, bridge = self._orch_with_bridge(order)
+        budgets: list[float] = []
+
+        async def _record(*, cancellation_budget):
+            budgets.append(cancellation_budget)
+            order.append("cancel_all")
+
+        orch.subagent_mgr.cancel_all = AsyncMock(side_effect=_record)
+        await orch._shutdown()
+        assert budgets == [0.0]
+        assert order == ["cancel_all", "drain", "close"]
+        assert bridge.drain.await_args.kwargs["timeout"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_the_drain_never_spends_past_what_is_left_of_the_budget(self, monkeypatch):
+        """The reserve is a ceiling on the drain's timeout, not an entitlement to it.
+
+        The steps ahead of the drain are each bounded, and between them they can still
+        consume the whole shutdown. A drain that then spends its full reserve anyway runs
+        the caller's `wait_for` out, and the cancellation lands on the steps AFTER the
+        drain -- `close_all()`, whose session-map flush is the durability point, and the
+        end-of-session records. So the note the drain exists to save would be bought with
+        the session state, which is the trade this pins shut: the drain takes the smaller
+        of its reserve and the measured remainder.
+
+        The reserve here is larger than what is left, so a drain reading the constant
+        fails on the timeout it asks for rather than on a coincidence of timing. The
+        budget is sized so that a positive remainder survives the closes reserve: a
+        remainder of zero would pass this whether the drain clamps or not.
+        """
+        monkeypatch.setattr(gw, "GRACEFUL_SHUTDOWN_SECS", 2.6)
+        monkeypatch.setattr(gw, "CLOSES_RESERVE_SECS", 2.0)
+        monkeypatch.setattr(gw, "BRIDGE_DRAIN_RESERVE_SECS", 2.0)
+        order: list[str] = []
+        orch, bridge = self._orch_with_bridge(order)
+        seen: list[tuple[float, float]] = []
+
+        async def _record_drain(*, timeout):
+            order.append("drain")
+            seen.append((time.monotonic(), timeout))
+
+        bridge.drain = AsyncMock(side_effect=_record_drain)
+
+        async def _eats_most_of_the_budget(*, cancellation_budget):
+            await asyncio.sleep(0.3)
+            order.append("cancel_all")
+
+        orch.subagent_mgr.cancel_all = AsyncMock(side_effect=_eats_most_of_the_budget)
+        started = time.monotonic()
+        await orch._shutdown()
+
+        assert order == ["cancel_all", "drain", "close"]
+        at_drain, spent = seen[0]
+        # It asked for the remainder, not the reserve -- and still for something, because
+        # a drain given nothing cannot save the note it is here for.
+        assert 0.0 < spent <= 0.35
+        # The whole point: what was already gone plus what the drain may add leaves the
+        # closes reserve untouched, so the steps after the drain still get to run.
+        assert (at_drain - started) + spent + gw.CLOSES_RESERVE_SECS <= (
+            gw.GRACEFUL_SHUTDOWN_SECS + 0.05
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_closes_keep_their_reserve_when_every_earlier_step_spends_its_slice(
+        self, monkeypatch
+    ):
+        """The steps before the closes cannot spend the closes' own slice between them.
+
+        Each step ahead of the closes is bounded on its own, which says nothing about
+        their SUM: a producer taking all it was granted and a drain then taking all of
+        its reserve is two steps inside their bounds and a budget spent to zero. The
+        closes run last, and they are the steps whose work is lost rather than deferred
+        when the caller's `wait_for` expires -- the session-map flush is where slot state
+        becomes durable -- so what is left when they start decides whether they run at
+        all.
+
+        Measured at the close rather than from the arguments handed out, because the
+        arithmetic that matters is the one the closes actually inherit.
+        """
+        monkeypatch.setattr(gw, "GRACEFUL_SHUTDOWN_SECS", 3.0)
+        monkeypatch.setattr(gw, "CLOSES_RESERVE_SECS", 1.0)
+        monkeypatch.setattr(gw, "BRIDGE_DRAIN_RESERVE_SECS", 0.5)
+        order: list[str] = []
+        orch, bridge = self._orch_with_bridge(order)
+        at_close: list[float] = []
+        orch.subagent_mgr.close = MagicMock(
+            side_effect=lambda: (order.append("close"), at_close.append(time.monotonic()))
+        )
+
+        async def _spends_its_whole_slice(*, cancellation_budget):
+            await asyncio.sleep(cancellation_budget)
+            order.append("cancel_all")
+
+        async def _spends_its_whole_timeout(*, timeout):
+            order.append("drain")
+            await asyncio.sleep(timeout)
+
+        orch.subagent_mgr.cancel_all = AsyncMock(side_effect=_spends_its_whole_slice)
+        bridge.drain = AsyncMock(side_effect=_spends_its_whole_timeout)
+        started = time.monotonic()
+        await orch._shutdown()
+
+        assert order == ["cancel_all", "drain", "close"]
+        # Both earlier steps ran to the end of what they were given, and the closes still
+        # began with their whole reserve intact. Without a reserve held back from those
+        # steps this is the budget spent to zero.
+        spent_before_closes = at_close[0] - started
+        assert spent_before_closes + gw.CLOSES_RESERVE_SECS <= gw.GRACEFUL_SHUTDOWN_SECS + 0.1
+
+    @staticmethod
+    def _orch_with_sessions(order: list[str], running: asyncio.Event | None = None):
+        """An orchestrator whose session closing and producer are both observable."""
+        orch = _make_orchestrator()
+        orch.cron_svc = None
+        orch.heartbeat_svc = None
+        orch.secretary_svc = None
+        orch._dashboard_runner = None
+        orch.dashboard_state = None
+        orch.subagent_mgr = MagicMock()
+        orch.subagent_mgr.close = MagicMock(side_effect=lambda: order.append("close"))
+
+        async def _close_all():
+            order.append("close_all:started")
+            if running is not None:
+                running.set()
+            order.append("close_all:finished")
+
+        orch.sessions = MagicMock()
+        orch.sessions.close_all = _close_all
+        return orch
+
+    @pytest.mark.asyncio
+    async def test_session_closing_runs_alongside_the_producer_it_cannot_be_bounded_behind(self):
+        """Session closing runs WHILE `cancel_all` does, not after it returns.
+
+        `cancel_all`'s compensation tail is deliberately unbounded -- the straggler
+        gather carries no timeout and the per-watcher state write is documented as
+        unbounded with a synchronous fsync -- so the reserve held back for the closes
+        bounds only the phases that honour it. Leaving the session-map flush until the
+        gather puts it behind an await that can outlast the caller's deadline, and
+        cancellation there does not shorten the flush: it means the flush was never
+        created.
+
+        Pinned as a dependency rather than as two indices, because an index ordering can
+        be satisfied by whichever step the loop happened to schedule first. Here the
+        producer cannot finish until the flush has run, so a flush that only starts after
+        the producer returns deadlocks instead of passing on a scheduling accident.
+
+        The store close is the other half and must NOT move: `cancel_all` stops the runs
+        still writing to it, so it stays after the cancellation.
+        """
+        order: list[str] = []
+        running = asyncio.Event()
+        orch = self._orch_with_sessions(order, running)
+
+        async def _waits_for_the_flush(**_kw):
+            order.append("cancel_all:entered")
+            await running.wait()
+            order.append("cancel_all:finished")
+
+        orch.subagent_mgr.cancel_all = AsyncMock(side_effect=_waits_for_the_flush)
+
+        try:
+            await asyncio.wait_for(orch._shutdown(), timeout=5.0)
+        except asyncio.TimeoutError:
+            pytest.fail(
+                "the producer never saw the flush run, so session closing is still "
+                f"sequenced behind it: {order}"
+            )
+
+        assert order.index("close_all:started") < order.index(
+            "cancel_all:finished"
+        ), f"the flush did not run while the producer was still going: {order}"
+        assert "close_all:finished" in order, f"the gather stopped awaiting it: {order}"
+        assert order.index("cancel_all:finished") < order.index(
+            "close"
+        ), f"the subagent store closed before cancellation: {order}"
+
+    @pytest.mark.asyncio
+    async def test_a_producer_that_outlasts_the_deadline_still_leaves_the_flush_started(self):
+        """The loss this ordering prevents, driven end to end.
+
+        The producer never returns, the caller's deadline expires on it, and the only
+        question is whether the session-map flush had been created by then. It is the
+        step whose work is lost rather than deferred, because nothing replays it on the
+        next start.
+        """
+        order: list[str] = []
+        orch = self._orch_with_sessions(order)
+
+        async def _never_returns(**_kw):
+            order.append("cancel_all:entered")
+            await asyncio.sleep(30)
+
+        orch.subagent_mgr.cancel_all = AsyncMock(side_effect=_never_returns)
+
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(orch._shutdown(), timeout=0.2)
+
+        assert "cancel_all:entered" in order, f"the producer never ran: {order}"
+        # Its own task, so the cancellation at the producer did not take it down with
+        # the shutdown: it both started and finished while the producer was stuck.
+        assert (
+            "close_all:started" in order
+        ), f"the deadline expired with the flush never created: {order}"
+        assert (
+            "close_all:finished" in order
+        ), f"the flush was created but abandoned unfinished: {order}"
 
     @pytest.mark.asyncio
     async def test_shutdown_cancels_handler_tasks(self):
@@ -1018,7 +1319,7 @@ class TestShutdown:
         orch.heartbeat_svc = None
         orch.secretary_svc = None
         orch.subagent_mgr = MagicMock()
-        orch.subagent_mgr.cancel_all = AsyncMock(side_effect=lambda: order.append("reap"))
+        orch.subagent_mgr.cancel_all = AsyncMock(side_effect=lambda **_kw: order.append("reap"))
         orch.sessions = _mock_sessions()
         orch.sessions.close_all = AsyncMock(side_effect=lambda: order.append("reap"))
         ds = _mock_dashboard_state()

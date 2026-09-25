@@ -488,7 +488,22 @@ class RunEventCoordinator(ManagerComponent):
                     if not info.result and info.streaming_text:
                         info.result = info.streaming_text
                     Stats().inc_subagent_failed()
-                    self._manager._write_tombstone(info, "cancelled")
+                    if info._shutdown_outcome_abandoned:
+                        # ``cancel_all`` gave up on this run's teardown, so its terminal
+                        # report was never spawned and nothing drained one. A tombstone here
+                        # is a discharge against nothing: it is what excludes the folder from
+                        # the next start's ``list_orphans`` scan, and that scan is now the
+                        # only path that can still deliver the outcome. Leave the folder
+                        # visible and let orphan recovery write the terminal record once it
+                        # has actually reported.
+                        logger.warning(
+                            "Subagent %s cancelled by shutdown before its terminal report "
+                            "was registered; leaving the folder visible to the next start "
+                            "instead of tombstoning the outcome away",
+                            info.id,
+                        )
+                    else:
+                        self._manager._write_tombstone(info, "cancelled")
             logger.info("Subagent %s cancelled", info.id)
         except Exception as exc:
             if info._reap_started and is_runtime_death(exc):

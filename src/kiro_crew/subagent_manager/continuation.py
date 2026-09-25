@@ -10,6 +10,8 @@ from ._component import ManagerComponent
 if TYPE_CHECKING:
     from ..subagent import (
         _CONVERSATION_TTL_SECS,
+        _MAX_FOLLOWUP_MESSAGE_CHARS,
+        _MAX_PENDING_FOLLOWUPS,
         _STEER_STARTUP_POLL_SECS,
         _STEER_STARTUP_WAIT_SECS,
         CONTEXT_GROUP_LESSONS,
@@ -897,6 +899,22 @@ class ContinuationCoordinator(ManagerComponent):
             # promises a completion event, and a shutting-down gateway can
             # keep neither the watcher nor the continuation alive.
             return False, "shutting_down: the gateway is stopping — re-send after restart"
+        # Bound the QUEUE here, where it grows, under the same two limits the shutdown
+        # handover writes with. Refusing for the same reason the shutdown check above
+        # refuses: an accepted message promises a completion event, so admitting one and
+        # shortening it later owes an event for text the queue does not hold. The caller
+        # learns which limit it met, so a legitimately long correction can be split.
+        if len(message) > _MAX_FOLLOWUP_MESSAGE_CHARS:
+            return False, (
+                f"too_long: a follow_up message is capped at {_MAX_FOLLOWUP_MESSAGE_CHARS} "
+                f"characters (got {len(message)}) — send it in smaller pieces"
+            )
+        if len(info.pending_followups) >= _MAX_PENDING_FOLLOWUPS:
+            return False, (
+                f"queue_full: this run already holds {len(info.pending_followups)} queued "
+                f"follow_up message(s), the cap is {_MAX_PENDING_FOLLOWUPS} — they drain as "
+                f"one continuation when the run ends"
+            )
         info.pending_followups.append(message)
         if not info._followup_watcher:
             self._manager._arm_followup_watcher(info)
@@ -1096,7 +1114,7 @@ class ContinuationCoordinator(ManagerComponent):
         reason: str,
         failure_info: SubagentInfo | None = None,
         messages: list | None = None,
-    ) -> None:
+    ) -> bool:
         """Deliver a SYNTHETIC failure completion event for an undeliverable
         follow-up, through the same ``_on_done`` path as real completions.
 
@@ -1107,9 +1125,15 @@ class ContinuationCoordinator(ManagerComponent):
         ``messages`` labels the synthetic event when the queue was already
         drained by the caller (the expiry path clears before announcing so a
         later watcher cannot resurrect messages reported dead).
+
+        Returns whether the parent was actually told. Both ways of not telling it
+        are contained here -- there is no ``_on_done`` to reach, and ``_on_done``
+        raised -- so a caller that must not discard the queue until it has been
+        reported cannot learn that from an exception it will never see. A caller
+        free to ignore the answer still may.
         """
         if self._manager._on_done is None:
-            return
+            return False
         label_msgs = messages if messages is not None else info.pending_followups
         # The label joins the RAW messages and redacts the JOIN before any
         # bound: bounding first can split a credential at a cut into fragments
@@ -1130,6 +1154,8 @@ class ContinuationCoordinator(ManagerComponent):
             await self._manager._on_done(synthetic)
         except Exception:
             logger.warning("follow_up failure announce for %s failed", info.id, exc_info=True)
+            return False
+        return True
 
     def _audit_followup_impl(self, info: SubagentInfo, outcome: str) -> None:
         try:

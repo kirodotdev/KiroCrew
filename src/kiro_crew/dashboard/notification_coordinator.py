@@ -64,8 +64,17 @@ class NotificationCoordinator:
                 "Dropped invalid notification (kind=%s)", kind, exc_info=True
             )
 
-    def deliver(self, state: Any, note: dict[str, Any]) -> None:
-        """Apply settings, fan out, and queue durable notification storage."""
+    def deliver(self, state: Any, note: dict[str, Any]) -> "asyncio.Future[bool] | bool":
+        """Apply settings, fan out, and queue durable notification storage.
+
+        Returns this delivery's DURABILITY HANDLE: the persist future on a
+        running loop, or the inline write's boolean off it. Returned rather than
+        left on ``state`` because a caller that gates an egress on durability
+        needs THIS note's answer -- two off-loop deliveries run concurrently, so
+        a shared field can hand one note the other's verdict, bridging a failed
+        write or withholding a good one. ``state.last_notification_persist`` is
+        still set for the push handlers that read it.
+        """
         for key, value in note.items():
             if key != "ts":
                 note[key] = self._redact_value(value)
@@ -83,12 +92,12 @@ class NotificationCoordinator:
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            self._persist_one(note)
+            persisted = self._persist_one(note)
             state.last_notification_persist = None
-        else:
-            state.last_notification_persist = loop.run_in_executor(
-                self._executor_provider(), self._persist_one, dict(note)
-            )
+            return persisted
+        future = loop.run_in_executor(self._executor_provider(), self._persist_one, dict(note))
+        state.last_notification_persist = future
+        return future
 
     @staticmethod
     def register_sse(state: Any) -> asyncio.Queue[dict[str, Any]]:

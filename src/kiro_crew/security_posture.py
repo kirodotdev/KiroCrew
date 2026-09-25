@@ -198,6 +198,19 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "pass missed.",
     ),
     (
+        "Bridged notification egress",
+        "notifications/bridge.py",
+        "The rendered notification the bridge hands to a chat transport -- title, "
+        "body, deep link and channel -- on its way to the owner's DM. Redacted in "
+        "the dispatcher rather than only at the sink, so the guarantee holds for "
+        "the bridge standing alone rather than for the pair of it and the "
+        "dashboard sink that redacts the stored note. A note body carries "
+        "producer and model text, and this boundary leaves the host entirely, so "
+        "a redactor that cannot run withholds the content instead of passing it "
+        "through: the note is already on the dashboard, where the user can read "
+        "the full text.",
+    ),
+    (
         "Member capability editor responses",
         "agent_capabilities.py",
         "Owner-facing capability rows, Parent-change previews and impact summaries. "
