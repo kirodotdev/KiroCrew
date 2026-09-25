@@ -1,6 +1,6 @@
 """A lazily re-exported name has one storage location, in every package that has one.
 
-Five packages re-export their public surface through a module-level
+Six packages re-export their public surface through a module-level
 ``__getattr__``. That hook runs only for a name the package does not already
 hold, so any binding of the name in the package's own namespace wins every later
 read and the owning submodule's value becomes unreachable through the package.
@@ -23,14 +23,23 @@ orderings are separate cases rather than one.
 from __future__ import annotations
 
 import importlib
+import inspect
+import os
 import pkgutil
+import subprocess
+import sys
+from pathlib import Path
 from types import ModuleType
+from unittest import mock
 
 import pytest
+
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 #: Every package whose public surface resolves through a module-level ``__getattr__``.
 PACKAGES = (
     "kiro_crew.config",
+    "kiro_crew.crew_log",
     "kiro_crew.dashboard",
     "kiro_crew.diag",
     "kiro_crew.mcp_gateway",
@@ -45,7 +54,7 @@ def owners(package: str) -> dict[str, tuple[str, str]]:
     without editing this file.
     """
     module = importlib.import_module(package)
-    if package == "kiro_crew.stt":
+    if package in ("kiro_crew.crew_log", "kiro_crew.stt"):
         return {n: (f"{package}.{owner}", n) for n, owner in module._EXPORTS.items()}
     if package == "kiro_crew.config":
         return {n: ("kiro_crew.config.loader", n) for n in module.__all__}
@@ -178,7 +187,7 @@ def test_an_unknown_attribute_still_raises_attribute_error(package: str) -> None
 
 @pytest.mark.parametrize("package", PACKAGES)
 def test_no_re_exported_name_also_names_a_submodule(package: str) -> None:
-    """The precondition ``lazy_exports.bind`` documents.
+    """The precondition each package's forwarding ``__setattr__`` rests on.
 
     The import system binds a submodule onto its parent with ``setattr``, which a
     forwarding package would send to the owner instead of binding the submodule.
@@ -204,90 +213,102 @@ def test_a_submodule_still_imports_through_the_package(package: str) -> None:
     assert importlib.import_module(f"{package}.{leaf}") is getattr(module, leaf)
 
 
-# ── the helper's own contract, on a synthetic package ──────────────────────────
+# ── one rule, spelled once per package ─────────────────────────────────────────
+#
+# The mechanism cannot live in a shared ``kiro_crew`` module: importing
+# ``kiro_crew.config.paths`` must pull in no other ``kiro_crew`` submodule
+# (``test_config_paths.TestLeafPurity``), and a shared helper would be one. So each
+# package spells the rule itself, and these tests are the single place that holds
+# the six spellings to one shape -- a package that reimplements it differently, or
+# a seventh that copies half of it, fails here rather than in another file's
+# unrelated test months later.
 
 
-@pytest.fixture()
-def synthetic(monkeypatch: pytest.MonkeyPatch) -> tuple[ModuleType, ModuleType]:
-    """A package and an owner module wired through ``lazy_exports.bind``."""
-    import sys
-
-    from kiro_crew import lazy_exports
-
-    owner = ModuleType("synthetic_owner")
-    owner.real_name = "owned"  # type: ignore[attr-defined]
-    package = ModuleType("synthetic_package")
-    monkeypatch.setitem(sys.modules, "synthetic_owner", owner)
-    monkeypatch.setitem(sys.modules, "synthetic_package", package)
-
-    table = {"exported": ("synthetic_owner", "real_name")}
-    package.__getattr__ = lazy_exports.bind("synthetic_package", table)  # type: ignore[attr-defined]
-    return package, owner
-
-
-def test_bind_reads_the_owner_symbol_under_its_package_name(synthetic) -> None:
-    """The attribute and the owner's symbol are allowed to differ."""
-    package, owner = synthetic
-    assert package.exported == "owned"
-    owner.real_name = "changed"
-    assert package.exported == "changed"
+@pytest.mark.parametrize("package", PACKAGES)
+def test_every_package_spells_the_rule_the_same_way(package: str) -> None:
+    """Both halves of the rule are present, under the same names, in every package."""
+    module = importlib.import_module(package)
+    source = inspect.getsource(module)
+    for fragment in (
+        "_OWNERS: dict[str, ModuleType] = {}",
+        "def _owner(name: str) -> ModuleType:",
+        "importlib.import_module(",
+        "class _ReExportModule(ModuleType):",
+        "def __setattr__(self, name: str, value: Any) -> None:",
+        "def __delattr__(self, name: str) -> None:",
+        "sys.modules[__name__].__class__ = _ReExportModule",
+    ):
+        assert fragment in source, f"{package} is missing {fragment!r}"
 
 
-def test_bind_sends_a_write_to_the_owner_symbol(synthetic) -> None:
-    package, owner = synthetic
-    package.exported = "written"
-    assert owner.real_name == "written"
-    assert "exported" not in vars(package)
+@pytest.mark.parametrize("package", PACKAGES)
+def test_no_package_caches_a_resolved_value_in_its_own_namespace(package: str) -> None:
+    """The memoising half: nothing writes a resolved value back into ``globals()``."""
+    source = inspect.getsource(importlib.import_module(package))
+    assert "globals()[name]" not in source, f"{package} memoises a resolved value"
 
 
-def test_bind_sends_a_delete_to_the_owner_symbol(synthetic) -> None:
-    package, owner = synthetic
-    del package.exported
-    assert not hasattr(owner, "real_name")
+@pytest.mark.parametrize("package", PACKAGES)
+def test_a_name_outside_the_table_stays_on_the_package(package: str) -> None:
+    """Only re-exported names are forwarded; an ordinary attribute is unaffected."""
+    module = importlib.import_module(package)
+    sentinel = "_lazy_reexport_storage_probe"
+    assert sentinel not in owners(package)
+    setattr(module, sentinel, "local")
+    try:
+        assert vars(module)[sentinel] == "local"
+    finally:
+        delattr(module, sentinel)
+    assert sentinel not in vars(module)
 
 
-def test_bind_leaves_a_name_outside_the_table_on_the_package(synthetic) -> None:
-    package, owner = synthetic
-    package.unrelated = "local"
-    assert vars(package)["unrelated"] == "local"
-    assert not hasattr(owner, "unrelated")
-    del package.unrelated
-    assert "unrelated" not in vars(package)
+@pytest.mark.parametrize("package", PACKAGES)
+def test_the_rule_imports_no_extra_kiro_crew_module(package: str) -> None:
+    """Installing the rule costs no module import, which is why it is spelled inline.
 
-
-def test_bind_raises_attribute_error_for_a_name_outside_the_table(synthetic) -> None:
-    package, _owner = synthetic
-    with pytest.raises(AttributeError, match="synthetic_package"):
-        package.absent  # noqa: B018 - the access IS the assertion
-
-
-def test_bind_imports_an_owner_only_when_a_name_is_touched(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """``bind`` itself imports nothing, which is what keeps a cold path cold."""
-    import sys
-
-    from kiro_crew import lazy_exports
-
-    package = ModuleType("synthetic_lazy_package")
-    monkeypatch.setitem(sys.modules, "synthetic_lazy_package", package)
-    imported: list[str] = []
-
-    def record(name: str) -> ModuleType:
-        imported.append(name)
-        owner = ModuleType(name)
-        owner.value = 7  # type: ignore[attr-defined]
-        sys.modules[name] = owner
-        return owner
-
-    monkeypatch.setattr(lazy_exports.importlib, "import_module", record)
-    package.__getattr__ = lazy_exports.bind(  # type: ignore[attr-defined]
-        "synthetic_lazy_package", {"value": ("synthetic_never_imported", "value")}
+    A shared helper module would appear in ``sys.modules`` here, and for
+    ``kiro_crew.config`` that is exactly the leaf-purity regression
+    ``test_config_paths.TestLeafPurity`` catches. Measured in a subprocess so the
+    warm modules in this process cannot mask it.
+    """
+    code = (
+        "import sys\n"
+        f"import {package}\n"
+        "print(','.join(sorted(m for m in sys.modules if m.startswith('kiro_crew'))))\n"
     )
-    assert imported == []
+    env = dict(os.environ)
+    env["PYTHONPATH"] = (
+        str(Path(__file__).resolve().parents[1] / "src") + os.pathsep + env.get("PYTHONPATH", "")
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, check=True, env=env, **UTF8_TEXT
+    )
+    loaded = {m for m in out.stdout.strip().split(",") if m}
+    owner_modules = {owner for owner, _symbol in owners(package).values()}
+    assert (
+        loaded & owner_modules == set()
+    ), f"importing {package} eagerly loaded its owners: {sorted(loaded & owner_modules)}"
 
-    assert package.value == 7
-    assert imported == ["synthetic_never_imported"]
 
-    assert package.value == 7
-    assert imported == ["synthetic_never_imported"], "the import is cached, not repeated"
+@pytest.mark.parametrize("package", PACKAGES)
+def test_an_owner_is_imported_once_and_the_import_is_cached(package: str) -> None:
+    """``_OWNERS`` caches the IMPORT -- the value is still read fresh every time."""
+    module = importlib.import_module(package)
+    name = sorted(owners(package))[0]
+    owner_name, symbol = owners(package)[name]
+
+    getattr(module, name)  # warm the import cache
+    calls: list[str] = []
+    real_import = importlib.import_module
+
+    def counting(target: str, *args: object, **kwargs: object) -> ModuleType:
+        calls.append(target)
+        return real_import(target, *args, **kwargs)  # type: ignore[arg-type]
+
+    with mock.patch.object(module.importlib, "import_module", counting):
+        first = getattr(module, name)
+        second = getattr(module, name)
+    assert calls == [], "a cached owner was re-imported"
+
+    owner = importlib.import_module(owner_name)
+    assert first is second is getattr(owner, symbol)

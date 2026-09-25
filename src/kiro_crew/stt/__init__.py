@@ -35,9 +35,10 @@ voice input is unavailable.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-from kiro_crew import lazy_exports as _lazy_exports
+import importlib
+import sys
+from types import ModuleType
+from typing import TYPE_CHECKING, Any
 
 #: Which submodule owns each public name, and the table :func:`__getattr__`
 #: resolves through, so a name absent here is genuinely not part of the surface.
@@ -179,11 +180,57 @@ def model_store() -> ModelStore:
     return _store()
 
 
-#: Each owning submodule is imported on first access, not here: a top-level import
-#: would defeat this seam entirely and put numpy back on the CLI's import path.
-__getattr__ = _lazy_exports.bind(
-    __name__, {name: (f"{__name__}.{module}", name) for name, module in _EXPORTS.items()}
-)
+#: Package attribute -> ``(owning module, symbol on that module)``. Each owning
+#: submodule is imported on first access, not here: a top-level import would defeat
+#: this seam entirely and put numpy back on the CLI's import path.
+_OWNED: dict[str, tuple[str, str]] = {
+    name: (f"{__name__}.{module}", name) for name, module in _EXPORTS.items()
+}
+
+_OWNERS: dict[str, ModuleType] = {}
+
+
+def _owner(name: str) -> ModuleType:
+    """Return the module that defines ``name``, importing it on first use."""
+    module_name = _OWNED[name][0]
+    owner = _OWNERS.get(module_name)
+    if owner is None:
+        owner = _OWNERS[module_name] = importlib.import_module(module_name)
+    return owner
+
+
+def __getattr__(name: str) -> Any:
+    """Read a re-exported name from the module that owns it (:pep:`562`)."""
+    if name not in _OWNED:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return getattr(_owner(name), _OWNED[name][1])
+
+
+class _ReExportModule(ModuleType):
+    """Send a write to a re-exported name to the module that owns it.
+
+    Binding the name in this package's own namespace instead would shadow the
+    owner permanently, because ``__getattr__`` runs only for a name the package
+    does not already hold: the shadow would win every later read, and the owner's
+    value would become unreachable through this package. Forwarding the write
+    leaves one value for a test harness to remember and one to put back, which is
+    what lets a caller and its test name either spelling.
+    """
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in _OWNED:
+            setattr(_owner(name), _OWNED[name][1], value)
+        else:
+            super().__setattr__(name, value)
+
+    def __delattr__(self, name: str) -> None:
+        if name in _OWNED:
+            delattr(_owner(name), _OWNED[name][1])
+        else:
+            super().__delattr__(name)
+
+
+sys.modules[__name__].__class__ = _ReExportModule
 
 
 def __dir__() -> list[str]:
