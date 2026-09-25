@@ -493,6 +493,17 @@ def _workspace_dir_file() -> Path:
     return config_dir() / "workspace_dir"
 
 
+def normalize_workspace_path(raw: str) -> Path:
+    """Drop ONE symmetric outer quote pair (keeping its inside verbatim), expand ``~``."""
+    text = raw.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        raw = text[1:-1]
+    try:
+        return Path(raw).expanduser()
+    except RuntimeError:  # ``~unknown-user``: stays relative, so callers fall back
+        return Path(raw)
+
+
 def _resolve_workspace_root(root: Path) -> Path:
     """Realpath-normalize a workspace root after ensuring it exists.
 
@@ -508,6 +519,10 @@ def _resolve_workspace_root(root: Path) -> Path:
     spawn cwd and the persisted session_map cwd so write and resume always agree.
     This mirrors the existing ``os.path.realpath`` in ``default_project_dir``.
     """
+    if not root.is_absolute():
+        # A relative root would be created under whatever CWD this process has.
+        logger.warning("workspace root %r is not absolute; using the default", str(root))
+        root = _default_workspace_base() / _WORKSPACE_DIR_NAME
     root.mkdir(parents=True, exist_ok=True)
     return Path(os.path.realpath(str(root)))
 
@@ -516,21 +531,22 @@ def workspace_root() -> Path:
     """Return the top-level workspace root for LLM sessions and tasks.
 
     Resolution order:
-    1. ``KIROCREW_WORKSPACE`` env var (used as-is, no subdirectory appended)
+    1. ``KIROCREW_WORKSPACE`` env var (no subdirectory appended)
     2. Saved path in ``config_dir()/workspace_dir`` (written by ``kirocrew setup``)
     3. Platform default with ``kirocrew-workspace`` subdirectory
 
+    Values are unquoted and ``~``-expanded; a non-absolute root is replaced by (3).
     The chosen root is realpath-normalized (see ``_resolve_workspace_root``) so
     sessions resume correctly on hosts with a symlinked home/workspace path.
     """
     override = os.environ.get("KIROCREW_WORKSPACE")
     if override:
-        return _resolve_workspace_root(Path(override))
+        return _resolve_workspace_root(normalize_workspace_path(override))
     if _workspace_dir_file().is_file():
         try:
             saved = _workspace_dir_file().read_text(encoding="utf-8").strip()
             if saved:
-                return _resolve_workspace_root(Path(saved))
+                return _resolve_workspace_root(normalize_workspace_path(saved))
         except OSError:
             pass
     base = _default_workspace_base()
