@@ -311,6 +311,133 @@ class TestStateBounds:
         assert len(screened) == point.MAX_EVIDENCE_ITEMS
         assert dropped == 5
 
+    def test_a_pinned_summary_outlives_a_comment_body(self) -> None:
+        """The order the char budget gives items up in, and why it is not age.
+
+        A check tally is observed on the tick that sends it, so by age it is always the
+        newest item present; a comment body is as old as the comment. Shedding by age
+        alone would keep the tally and drop the reviewer's words. The two summaries are
+        also what the built-in criteria are asked against -- a failing check, a reading
+        that is not whole -- so they are pinned and the prose is what goes.
+        """
+        items = [
+            {
+                "source": "pr:o/r#1",
+                "kind": point.KIND_PR_CHECKS,
+                "age_s": 1.0,
+                "text": "failed 0, pending 0, passed 92",
+            },
+            {
+                "source": "pr:o/r#1",
+                "kind": point.KIND_PR_STATE,
+                "age_s": 2.0,
+                "text": "state=open mergeability=mergeable",
+            },
+            {
+                "source": "pr:o/r#1 by a-reviewer",
+                "kind": point.KIND_PR_COMMENT,
+                "age_s": 3_600.0,
+                "text": "please add a guard " + "p" * 900,
+            },
+        ]
+        original = point.MAX_STATE_CHARS
+        try:
+            point.MAX_STATE_CHARS = 600
+            state = point.build_state("watch o/r#1", evidence=items)
+        finally:
+            point.MAX_STATE_CHARS = original
+        kinds = sorted(row["kind"] for row in state["since_last_tick"])
+        assert kinds == sorted(
+            [point.KIND_PR_CHECKS, point.KIND_PR_STATE]
+        ), "the evidence the criteria are asked against is pinned; the prose is shed"
+
+    def test_a_pinned_summary_is_shed_last_rather_than_never(self) -> None:
+        """The char ceiling still holds when the pinned rows alone exceed it.
+
+        A state past the bound is refused whole rather than trimmed, so a pin that
+        never yields would lose the entire reading instead of one row of it. Within
+        the pinned tier the oldest goes first, so the freshest summary survives.
+        """
+        items = [
+            {
+                "source": "pr:o/r#1",
+                "kind": point.KIND_PR_CHECKS,
+                "age_s": 1.0,
+                "text": "c" * 700,
+            },
+            {
+                "source": "pr:o/r#1",
+                "kind": point.KIND_PR_STATE,
+                "age_s": 2.0,
+                "text": "s" * 700,
+            },
+        ]
+        original = point.MAX_STATE_CHARS
+        try:
+            point.MAX_STATE_CHARS = 900
+            state = point.build_state("watch o/r#1", evidence=items)
+            rendered = point._rendered_len(state)
+        finally:
+            point.MAX_STATE_CHARS = original
+        kinds = [row["kind"] for row in state["since_last_tick"]]
+        assert kinds == [point.KIND_PR_CHECKS], "the oldest pinned row is the one given up"
+        assert rendered <= 900, "the ceiling holds even when only pinned rows are left"
+
+    def test_the_oldest_item_goes_once_only_bodies_are_left(self) -> None:
+        """With no summaries to shed, age decides again -- oldest first."""
+        items = [
+            {
+                "source": "pr:o/r#1 by one",
+                "kind": point.KIND_PR_COMMENT,
+                "age_s": 10.0,
+                "text": "newest " + "n" * 700,
+            },
+            {
+                "source": "pr:o/r#1 by two",
+                "kind": point.KIND_PR_COMMENT,
+                "age_s": 9_000.0,
+                "text": "oldest " + "o" * 700,
+            },
+        ]
+        original = point.MAX_STATE_CHARS
+        try:
+            point.MAX_STATE_CHARS = 900
+            state = point.build_state("watch o/r#1", evidence=items)
+        finally:
+            point.MAX_STATE_CHARS = original
+        texts = [row["text"] for row in state["since_last_tick"]]
+        assert any(text.startswith("newest") for text in texts)
+        assert not any(text.startswith("oldest") for text in texts)
+
+    def test_a_body_the_scrub_refuses_is_dropped_rather_than_redacted(self) -> None:
+        """A remark body is third-party prose, so it goes through the same screen.
+
+        A redaction that left part of a credential in place would be worse than losing
+        one observation on a path whose failure direction is to spend the turn anyway.
+        """
+        assert (
+            point.evidence_item(
+                "pr:o/r#1 by a-reviewer",
+                point.KIND_PR_COMMENT,
+                10.0,
+                "use ghp_" + "A" * 36 + " to reproduce",
+            )
+            is None
+        )
+        assert (
+            point.evidence_item(
+                "pr:o/r#1 by a-reviewer", point.KIND_PR_COMMENT, 10.0, "please add a guard"
+            )
+            is not None
+        )
+
+    def test_a_body_longer_than_the_item_bound_is_clipped(self) -> None:
+        item = point.evidence_item(
+            "pr:o/r#1 by a-reviewer", point.KIND_PR_COMMENT, 10.0, "x" * 5_000
+        )
+        assert item is not None
+        assert len(item["text"]) == point.MAX_ITEM_CHARS
+
 
 class TestEmptyDelta:
     """An empty delta is QUIET only when every target was READ and had nothing new.
@@ -461,8 +588,13 @@ class TestCollectors:
         items = judge.session_evidence(rows, "chat-2-2", now_ts=110.0)
         assert [i["text"] for i in items] == ["RULING: need a call"]
 
-    def test_a_pr_observation_renders_one_row_from_its_typed_keys(self) -> None:
-        """The canonical keys ARE the producer: no separate summary field exists."""
+    def test_a_pr_reading_renders_a_state_row_and_a_checks_row(self) -> None:
+        """Two rows, because the char budget gives them up in a different order.
+
+        A state row and a check tally are summaries of facts the watch's own record
+        still holds; a remark body is prose nothing else has a copy of. Rendering the
+        board into ONE row is what makes a real board affordable beside the bodies.
+        """
         items = judge.pr_evidence(
             {
                 "state": "open",
@@ -485,36 +617,48 @@ class TestCollectors:
             "owner/name#1",
             now_ts=110.0,
         )
-        assert len(items) == 1
-        row = items[0]
-        assert row["kind"] == point.KIND_PR_CHECKS
-        assert row["source"] == "pr:owner/name#1"
-        assert row["age_s"] == 10.0, "the observation's own time ages the row"
-        text = row["text"]
+        assert [row["kind"] for row in items] == [point.KIND_PR_STATE, point.KIND_PR_CHECKS]
+        assert {row["source"] for row in items} == {"pr:owner/name#1"}
+        assert {row["age_s"] for row in items} == {10.0}, "the reading's own time ages the rows"
+        state_text, checks_text = items[0]["text"], items[1]["text"]
         for fragment in (
             "state=open",
             "mergeability=conflicting",
             "review_decision=changes_requested",
             "unresolved_review_threads=3",
             "draft=no",
+            "head=2c0adbc00da0",
         ):
-            assert fragment in text
-        assert "checks failed 2 (lint, tests-2)" in text, "a red bucket is named, not just counted"
-        assert "checks pending 1 (e2e)" in text
-        assert "checks passed 3" in text, "a green bucket is counted only"
-        assert "head=2c0adbc00da0" in text
+            assert fragment in state_text
+        assert "failed 2 (lint, tests-2)" in checks_text, "a red bucket is named, not counted"
+        assert "pending 1 (e2e)" in checks_text
+        assert "passed 3" in checks_text and "passed 3 (" not in checks_text
+        assert "lint" not in state_text, "check names belong to the check row, not the state row"
 
     def test_an_incomplete_reading_says_so(self) -> None:
         """A criterion about red checks means something else on a partial list."""
         items = judge.pr_evidence(
-            {"state": "open", "checks_complete": False, "review_threads_complete": False},
+            {
+                "state": "open",
+                "checks": {"failed": ["lint"]},
+                "checks_complete": False,
+                "checks_declared": 90,
+                "checks_read": 41,
+                "review_threads_complete": False,
+                "observation_status": "partial",
+                "incomplete": ["check runs read 41 of 90"],
+            },
             "owner/name#1",
             now_ts=110.0,
         )
-        assert "checks_complete=no" in items[0]["text"]
-        assert "review_threads_complete=no" in items[0]["text"]
+        texts = {row["kind"]: row["text"] for row in items}
+        assert "review_threads_complete=no" in texts[point.KIND_PR_STATE]
+        assert "reading=partial" in texts[point.KIND_PR_STATE]
+        assert "not read: check runs read 41 of 90" in texts[point.KIND_PR_STATE]
+        assert "board INCOMPLETE, read 41 of 90" in texts[point.KIND_PR_CHECKS]
 
     def test_the_comment_fingerprint_is_carried_and_no_body_is(self) -> None:
+        """The structured reader produces a fingerprint rather than bodies."""
         items = judge.pr_evidence(
             {"state": "open", "pr_comment_body_digest": "a" * 64},
             "owner/name#1",
@@ -525,14 +669,14 @@ class TestCollectors:
         assert len(text) < 200, "a fingerprint is 12 chars of hex, never a body"
 
     def test_a_long_red_bucket_reports_a_remainder_instead_of_every_name(self) -> None:
-        """The canonical object holds up to 100 identities; the item budget is 1000."""
+        """A board of forty reds names a handful and counts the rest."""
         items = judge.pr_evidence(
             {"state": "open", "checks": {"failed": [f"lane-{n}" for n in range(40)]}},
             "owner/name#1",
             now_ts=110.0,
         )
-        text = items[0]["text"]
-        assert "checks failed 40 (" in text
+        text = [row["text"] for row in items if row["kind"] == point.KIND_PR_CHECKS][0]
+        assert "failed 40 (" in text
         assert "+32 more" in text
         assert "lane-39" not in text
         assert len(text) <= point.MAX_ITEM_CHARS
@@ -541,6 +685,61 @@ class TestCollectors:
         """Rather than an empty row: a blank item would read as a calm reading."""
         assert judge.pr_evidence({}, "owner/name#1", now_ts=110.0) == []
         assert judge.pr_evidence(None, "owner/name#1", now_ts=110.0) == []
+
+    def test_whether_a_remark_is_new_to_the_watch_reaches_the_judge_as_words(self) -> None:
+        """The default quiet criterion is "nothing new", so the judge must be able to tell.
+
+        The core records the fact on the reading; it is useless there unless the
+        rendered row says it, because a judge handed the same sentence every tick has
+        no way to answer a criterion about novelty.
+        """
+        observation = {
+            "state": "open",
+            "remarks": [
+                {
+                    "kind": "comment",
+                    "author": "ana",
+                    "body": "please rename it",
+                    "at": 100.0,
+                    "first_seen_this_tick": True,
+                },
+                {
+                    "kind": "comment",
+                    "author": "bo",
+                    "body": "looks good",
+                    "at": 90.0,
+                    "first_seen_this_tick": False,
+                },
+            ],
+        }
+        items = judge.pr_evidence(observation, "owner/name#1", now_ts=110.0)
+        rendered = [row["text"] for row in items if row["kind"] == point.KIND_PR_COMMENT]
+        assert any("new since the last tick" in text for text in rendered)
+        assert any("already seen on an earlier tick" in text for text in rendered)
+
+    def test_a_remark_carrying_no_novelty_flag_claims_neither(self) -> None:
+        """An earlier build's reading has no flag, and inventing one asserts a fact."""
+        items = judge.pr_evidence(
+            {"state": "open", "remarks": [{"kind": "comment", "author": "ana", "at": 100.0}]},
+            "owner/name#1",
+            now_ts=110.0,
+        )
+        text = [row["text"] for row in items if row["kind"] == point.KIND_PR_COMMENT][0]
+        assert "since the last tick" not in text
+        assert "already seen" not in text
+
+    def test_the_default_brief_names_a_failing_check(self) -> None:
+        """An owner who arms no criteria expects a red board to reach them.
+
+        Leaving it to the generic "a blocker" rests that on the judge reading one word
+        the way the owner meant it, and a red check is the signal a plain watch is for.
+
+        "failing" and not "newly failing": the state carries the current board and no
+        prior one, so a brief asking for newness asks what the state cannot answer.
+        """
+        assert "a failing check" in judge.DEFAULT_WAKE_WHEN
+        assert "newly failing" not in judge.DEFAULT_WAKE_WHEN
+        assert "not whole" in judge.DEFAULT_WAKE_WHEN
 
     def test_a_mistyped_key_is_skipped_rather_than_coerced(self) -> None:
         items = judge.pr_evidence(
@@ -586,11 +785,11 @@ class TestCollectors:
         )
         items = judge.pr_evidence(canonical, "owner/name#1", now_ts=110.0)
         assert items, "the canonical projection must yield evidence, not an empty list"
-        text = items[0]["text"]
-        assert "state=open" in text
-        assert "checks failed 1 (lint)" in text
-        assert "review_decision=changes_requested" in text
-        assert "pr_comments_fingerprint=bbbbbbbbbbbb" in text
+        texts = {row["kind"]: row["text"] for row in items}
+        assert "state=open" in texts[point.KIND_PR_STATE]
+        assert "review_decision=changes_requested" in texts[point.KIND_PR_STATE]
+        assert "pr_comments_fingerprint=bbbbbbbbbbbb" in texts[point.KIND_PR_STATE]
+        assert "failed 1 (lint)" in texts[point.KIND_PR_CHECKS]
 
     def test_a_pr_target_reaches_a_verdict_instead_of_falling_back(self) -> None:
         """Evidence with no producer made every pull-request tick FALLBACK, which fires.
@@ -724,27 +923,21 @@ class TestCollectors:
         )
         assert items == [] and dropped == 0
 
-    def test_a_reading_is_unread_only_when_no_probe_covers_the_subject(self) -> None:
-        """The rule the reader applies, both directions.
+    def test_a_reading_is_unread_unless_it_is_whole(self) -> None:
+        """The rule the reader applies, in all three directions.
 
-        A drop means "nobody looked", not "the judge got no facts". So the same
-        factless observation is unread with no probe behind it and READ when the tick's
-        own typed probe observed that subject.
+        A drop means "nobody looked at all of it". Facts settle it whichever reader
+        produced them; a reading whose own status is not ``ok`` is short, so a quiet
+        drawn from it would be a quiet about the half that was read; and a factless
+        observation is the shape a record holds before anything writes one.
         """
-        assert judge.pr_target_is_unread({}, probe_covers_subject=False)
-        assert not judge.pr_target_is_unread({}, probe_covers_subject=True)
-        assert judge.pr_target_is_unread(
-            {"observed_at": 1.0},
-            probe_covers_subject=False,
-        )
-        assert not judge.pr_target_is_unread(
-            {"observed_at": 1.0},
-            probe_covers_subject=True,
-        )
-        # Facts settle it whichever reader produced them, and a non-mapping is never
-        # a reading.
-        assert not judge.pr_target_is_unread({"state": "open"}, probe_covers_subject=False)
-        assert judge.pr_target_is_unread(None, probe_covers_subject=True)
+        assert judge.pr_target_is_unread({})
+        assert judge.pr_target_is_unread({"observed_at": 1.0})
+        assert judge.pr_target_is_unread(None)
+        assert not judge.pr_target_is_unread({"state": "open"})
+        assert not judge.pr_target_is_unread({"state": "open", "observation_status": "ok"})
+        assert judge.pr_target_is_unread({"state": "open", "observation_status": "partial"})
+        assert judge.pr_target_is_unread({"state": "open", "observation_status": "unavailable"})
 
     def test_one_canonical_fact_is_enough_to_count_as_read(self) -> None:
         """The fact test's own boundary, discounting the age the reader stamps on."""
@@ -2609,19 +2802,18 @@ class TestTheLoopPayloadPublishesNoEvidence:
                 ), f"{key} carries a nested sequence, which is how evidence would travel"
 
 
-class TestTheTypedProbeObservesBeforeTheJudge:
-    """On a monitor-backed loop the typed probe observes FIRST and a typed verdict wins.
+class TestTheReadingHappensBeforeTheJudge:
+    """The subject is READ first, the core maps a terminal, and the judge gets the rest.
 
-    The order matters because the judge emits no terminal of its own. If it answered
-    ahead of the monitor guard, a judged pull-request loop would return before
-    ``irq.poll`` runs, nothing would be left to notice a merged or closed subject, and
-    the watch would outlive the thing it watches, bounded only by its cycle cap.
+    The order matters because the judge emits no terminal of its own, by design: it
+    reads prose a third party wrote, and ending a watch is the one verdict an owner
+    cannot recover by waiting. So the merged-or-closed mapping is taken from a typed
+    fact by the core, before the judge is consulted -- otherwise a judged pull-request
+    loop would answer first, nothing would notice a finished subject, and the watch
+    would outlive the thing it watches, bounded only by its cycle cap.
 
-    The judge therefore screens exactly one tick: the one the probe looked at and found
-    nothing in. No typed signal can be suppressed there, because every outcome that
-    means something -- terminal, wake, fallback, an interrupted poll, a drifted
-    target -- has already returned by that line. What the judge adds is the evidence
-    the probe cannot read, such as a review left in prose.
+    Everything that is not terminal reaches the judge, including a failing check: what
+    a red lane means for THIS loop is the owner's criterion, not the reader's.
     """
 
     @staticmethod
@@ -2659,18 +2851,75 @@ class TestTheTypedProbeObservesBeforeTheJudge:
         service._judge_tick_is_quiet = _judge  # type: ignore[method-assign]
         return calls
 
-    def _drive(self, tmp_path: Any, monkeypatch: Any, outcome: Outcome, answer: bool | None):
-        """Run one tick with the probe pinned to *outcome* and the judge to *answer*."""
+    def _two_ticks(self, tmp_path: Any, monkeypatch: Any, first: Any, second: Any) -> bool:
+        """Drive two ticks on ONE service and return the second tick's answer.
+
+        One service, because the comparison under test is between a reading and the
+        one stored by the tick before it -- a fresh service per tick has no previous
+        reading and could only ever answer "changed".
+        """
         import kiro_crew.autonudge as _an
 
         async def on_fire(loop: NudgeLoop) -> bool:
             return True
 
-        monkeypatch.setattr(
-            _an.irq,
-            "poll",
-            lambda identity, message, probe: _an.irq.Verdict(outcome, "pinned"),
-        )
+        readings = [first, second]
+
+        def _poll(identity, message, probe):
+            probe.observation = readings.pop(0) if readings else second
+            return _an.irq.Verdict(Outcome.QUIET, "pinned")
+
+        monkeypatch.setattr(_an.irq, "poll", _poll)
+        service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+        loop = self._judged_pr_loop()
+        service._loops[loop.id] = loop
+        self._spy(service, None)
+        try:
+            asyncio.run(service._monitor_tick_is_quiet(loop))
+            return asyncio.run(service._monitor_tick_is_quiet(loop))
+        finally:
+            service.stop()
+
+    @staticmethod
+    def _observation(**fields: Any):
+        from kiro_crew.probes import gh_pr
+
+        base: dict[str, Any] = {
+            "repo": "acme/widgets",
+            "pr": 42,
+            "host": "github.com",
+            "status": gh_pr.STATUS_OK,
+            "observed_at": 1_000.0,
+            "state": "OPEN",
+            "head": "a" * 40,
+        }
+        base.update(fields)
+        return gh_pr.PrObservation(**base)
+
+    def _drive(
+        self,
+        tmp_path: Any,
+        monkeypatch: Any,
+        outcome: Outcome,
+        answer: bool | None,
+        observation: Any = None,
+    ):
+        """Run one tick with the reading and the kernel verdict both pinned.
+
+        The fake stands in for what the real call does: ``poll`` runs ``observe``,
+        which publishes the reading on the probe, and then returns the kernel's own
+        verdict. Pinning only one of the two would test a state the code cannot reach.
+        """
+        import kiro_crew.autonudge as _an
+
+        async def on_fire(loop: NudgeLoop) -> bool:
+            return True
+
+        def _poll(identity, message, probe):
+            probe.observation = observation
+            return _an.irq.Verdict(outcome, "pinned")
+
+        monkeypatch.setattr(_an.irq, "poll", _poll)
         service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
         loop = self._judged_pr_loop()
         service._loops[loop.id] = loop
@@ -2682,33 +2931,252 @@ class TestTheTypedProbeObservesBeforeTheJudge:
         return quiet, loop, calls
 
     def test_a_merged_pull_request_deactivates_a_judged_loop(self, tmp_path, monkeypatch) -> None:
-        """The defect, stated as a test: the terminal must still land on a JUDGED loop."""
-        _quiet, loop, calls = self._drive(tmp_path, monkeypatch, Outcome.TERMINAL, True)
+        """The core's own mapping, and it must still land on a JUDGED loop."""
+        _quiet, loop, calls = self._drive(
+            tmp_path,
+            monkeypatch,
+            Outcome.QUIET,
+            True,
+            self._observation(state="MERGED", merged_at="2026-09-25T00:00:00Z"),
+        )
         assert loop.monitor is not None
         assert loop.monitor.outcome is not None, "a merged subject must be recorded terminal"
-        assert calls == [], "a typed terminal wins outright -- the judge is not asked"
+        assert calls == [], "the terminal mapping wins outright -- the judge is not asked"
 
-    def test_a_probe_actionable_tick_fires_without_asking_the_judge(
+    def test_a_closed_pull_request_is_not_recorded_as_a_success(
         self, tmp_path, monkeypatch
     ) -> None:
-        """A wake is a typed signal, so it is not something a judge may screen away."""
-        quiet, _loop, calls = self._drive(tmp_path, monkeypatch, Outcome.WAKE, True)
-        assert quiet is False, "an actionable observation spends the turn"
-        assert calls == [], "the judge must not be able to suppress a typed wake"
+        """A close without a merge ends on a question, so it must not read as done."""
+        from kiro_crew.monitoring.models import MonitorOutcome
 
-    def test_a_probe_quiet_tick_is_the_one_the_judge_screens(self, tmp_path, monkeypatch) -> None:
-        """The probe found nothing, so the judge gets its say -- and here it fires."""
-        quiet, loop, calls = self._drive(tmp_path, monkeypatch, Outcome.QUIET, False)
-        assert calls == [loop.id], "a quiet observation is the tick the judge screens"
-        assert quiet is False, "the judge may wake on evidence the probe cannot read"
+        _quiet, loop, _calls = self._drive(
+            tmp_path, monkeypatch, Outcome.QUIET, True, self._observation(state="CLOSED")
+        )
+        assert loop.monitor is not None
+        assert loop.monitor.outcome is MonitorOutcome.BLOCKED
 
-    def test_a_quiet_tick_keeps_its_own_verdict_when_no_judge_answers(
+    def test_a_blind_streak_report_fires_without_asking_the_judge(
         self, tmp_path, monkeypatch
     ) -> None:
-        """``None`` is 'no judge here', which must leave the probe's verdict standing."""
-        quiet, loop, calls = self._drive(tmp_path, monkeypatch, Outcome.QUIET, None)
+        """The kernel's own report that the watch cannot see its subject is typed."""
+        quiet, _loop, calls = self._drive(tmp_path, monkeypatch, Outcome.WAKE, True, None)
+        assert quiet is False, "a watch that cannot observe its subject spends the turn"
+        assert calls == [], "the judge must not be able to suppress a typed report"
+
+    def test_a_live_reading_is_the_tick_the_judge_screens(self, tmp_path, monkeypatch) -> None:
+        """A failing check is not a wake any more -- the owner's criterion decides."""
+        quiet, loop, calls = self._drive(
+            tmp_path, monkeypatch, Outcome.QUIET, False, self._observation()
+        )
+        assert calls == [loop.id], "a live reading is the tick the judge screens"
+        assert quiet is False, "the judge may wake on evidence no typed reading produces"
+
+    def test_the_reading_is_published_for_the_judge_to_collect(self, tmp_path, monkeypatch) -> None:
+        """The channel: the record carries the facts, the stash carries the bodies.
+
+        Without this the judge has no pull-request evidence at all on a gated loop --
+        the record's observation field has no other writer on this path -- so an
+        owner's criterion about their pull request would be read against nothing.
+        """
+        from kiro_crew import autonudge_judge as _judge
+        from kiro_crew.probes import gh_pr
+
+        remark = gh_pr.Remark(
+            kind="review",
+            ident="review:R1",
+            author="a-reviewer",
+            at="2026-09-25T06:00:00Z",
+            age_s=120.0,
+            verdict="CHANGES_REQUESTED",
+            body="please guard the windows branch",
+        )
+        _quiet, loop, _calls = self._drive(
+            tmp_path,
+            monkeypatch,
+            Outcome.QUIET,
+            False,
+            self._observation(remarks=(remark,), remarks_total=1),
+        )
+        assert loop.monitor is not None
+        facts = loop.monitor.last_observation
+        assert facts["state"] == "OPEN"
+        assert facts["remarks"][0]["author"] == "a-reviewer"
+        assert facts["remarks"][0]["first_seen_this_tick"] is True
+        assert "body" not in facts["remarks"][0], "a durable record carries no prose"
+        assert _judge.take_pr_bodies(loop.id) == {"review:R1": "please guard the windows branch"}
+
+    def test_an_unjudged_fetcher_tick_delivers_rather_than_counting_quiet(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A quiet nobody owns must not suppress a turn.
+
+        The fetcher raises no observations, so the kernel's QUIET says only that
+        nothing was DECIDED. ``None`` from the judge means no judge ran -- an explicit
+        bypass, a build with no collector, or this point's fail-closed egress scope,
+        which a stock install has not granted. Counting that as quiet withholds a
+        failing check or a reviewer's request until the streak floor with nothing on
+        screen, so the tick delivers instead.
+        """
+        quiet, loop, calls = self._drive(
+            tmp_path, monkeypatch, Outcome.QUIET, None, self._observation()
+        )
         assert calls == [loop.id]
-        assert quiet is True, "without a judge answer the probe's own quiet still holds"
+        assert quiet is False, "an unowned quiet delivers rather than being charged as quiet"
+
+    def test_a_failed_persist_publishes_nothing_and_fires(self, tmp_path, monkeypatch) -> None:
+        """The durable record owns this state, so the write is a precondition.
+
+        A restart restores the record and the dashboard reads it, so publishing in
+        memory beside a fire-and-forget write would let a kill inside that window leave
+        the record on the previous tick's facts while readers had already seen the new
+        ones. The write is awaited on a staged copy; a write that will not land
+        publishes nothing and fires, because a reading the record could not keep is not
+        ground for staying quiet.
+        """
+        import kiro_crew.autonudge as _an
+
+        async def on_fire(loop: NudgeLoop) -> bool:
+            return True
+
+        reading = self._observation()
+
+        def _poll(identity, message, probe):
+            probe.observation = reading
+            return _an.irq.Verdict(Outcome.QUIET, "pinned")
+
+        monkeypatch.setattr(_an.irq, "poll", _poll)
+        service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+        loop = self._judged_pr_loop()
+        service._loops[loop.id] = loop
+        self._spy(service, True)
+
+        async def _refuse(*_a, **_k):
+            raise OSError("disk went away")
+
+        monkeypatch.setattr(service, "_persist_staged_monitor_locked", _refuse)
+        try:
+            assert (
+                asyncio.run(service._monitor_tick_is_quiet(loop)) is False
+            ), "a reading the record could not keep must not hold the loop quiet"
+            state = loop.monitor
+            assert state is not None
+            assert not state.last_observation, "nothing is published when the write fails"
+            assert loop.judge_pr_seen == {}, "and no baseline is consumed either"
+        finally:
+            service.stop()
+
+    def test_a_cancelled_judge_await_consumes_nothing(self, tmp_path, monkeypatch) -> None:
+        """The reading is published before the judge is asked, and that ask is awaited.
+
+        Ordinary user input cancels the tick at exactly that await, because it runs
+        before the loop enters ``_firing``. If the baseline advanced with the PUBLISH, a
+        new comment would be marked seen on a tick that reached no verdict -- and the
+        next tick would read it as old while the digest matched too, so both the delta
+        and the unchanged check would suppress a wake nobody ever judged. So the
+        baseline advances with the VERDICT, and a cancelled tick leaves it untouched.
+        """
+        import kiro_crew.autonudge as _an
+
+        async def on_fire(loop: NudgeLoop) -> bool:
+            return True
+
+        reading = self._observation()
+
+        def _poll(identity, message, probe):
+            probe.observation = reading
+            return _an.irq.Verdict(Outcome.QUIET, "pinned")
+
+        monkeypatch.setattr(_an.irq, "poll", _poll)
+        service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+        loop = self._judged_pr_loop()
+        service._loops[loop.id] = loop
+
+        async def _cancelled(_loop: NudgeLoop) -> bool | None:
+            raise asyncio.CancelledError()
+
+        service._judge_tick_is_quiet = _cancelled  # type: ignore[method-assign]
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                asyncio.run(service._monitor_tick_is_quiet(loop))
+            assert (
+                loop.judge_pr_seen == {}
+            ), "a tick that reached no verdict must consume no remark and no digest"
+            self._spy(service, None)
+            assert (
+                asyncio.run(service._monitor_tick_is_quiet(loop)) is False
+            ), "the same reading must still deliver, since nothing judged it yet"
+            assert loop.judge_pr_seen, "the verdict this time commits the baseline"
+        finally:
+            service.stop()
+
+    def test_an_unchanged_reading_is_quiet_even_with_no_judge(self, tmp_path, monkeypatch) -> None:
+        """The one judge-less quiet that is earned rather than assumed.
+
+        No criterion ABOUT the subject can have become true while the subject did not
+        change, so an identical reading withholds nothing -- which is what keeps an
+        unchanged board free on a machine where no judge runs. The streak floor still
+        covers a criterion about elapsed time, the one kind a digest cannot see.
+        """
+        first = self._observation()
+        quiet_one, _loop, _calls = self._drive(tmp_path, monkeypatch, Outcome.QUIET, None, first)
+        assert quiet_one is False, "the first reading has nothing to compare against"
+        assert (
+            self._two_ticks(tmp_path, monkeypatch, first, self._observation()) is True
+        ), "a reading identical to the one before it is quiet without a judge"
+
+    def test_a_changed_reading_still_delivers_with_no_judge(self, tmp_path, monkeypatch) -> None:
+        """A digest that moved is a subject that moved, so the turn is spent."""
+        from kiro_crew.probes import gh_pr
+
+        first = self._observation()
+        changed = self._observation(
+            checks=(gh_pr.CheckRow("CI / Lint", "Lint", "failing", "2026-09-25T01:00:00Z"),)
+        )
+        assert (
+            self._two_ticks(tmp_path, monkeypatch, first, changed) is False
+        ), "a reading whose board moved must not be charged as quiet"
+
+    def test_the_digest_ignores_when_the_reading_was_taken(self) -> None:
+        """Otherwise the comparison never holds once.
+
+        ``observed_at`` is the clock and a remark's ``age_s`` grows every tick, so a
+        digest carrying either would call every reading a change.
+        """
+        import kiro_crew.autonudge as _an
+
+        base = {
+            "target": "o/r#1",
+            "observation_status": "ok",
+            "observed_at": 100.0,
+            "remarks": [{"id": "c1", "age_s": 10.0, "author": "someone"}],
+        }
+        later = {
+            "target": "o/r#1",
+            "observation_status": "ok",
+            "observed_at": 999.0,
+            "remarks": [
+                {"id": "c1", "age_s": 900.0, "author": "someone", "first_seen_this_tick": False}
+            ],
+        }
+        assert _an._pr_facts_digest(base) == _an._pr_facts_digest(later)
+        moved = {**base, "observation_status": "partial"}
+        assert _an._pr_facts_digest(base) != _an._pr_facts_digest(
+            moved
+        ), "a reading that went short of whole is a change"
+
+    def test_a_probe_that_published_no_reading_keeps_its_own_quiet(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The other direction, and why the discriminator is the published reading.
+
+        A probe that classifies reaches the same line having already found nothing,
+        and that quiet is a finding of its own. Keying on the loop's shape instead
+        would turn every judge-less watch into a plain timer, including the ones whose
+        probe still does the judging.
+        """
+        quiet, loop, calls = self._drive(tmp_path, monkeypatch, Outcome.QUIET, None, None)
+        assert calls == [loop.id]
+        assert quiet is True, "a classifying probe's own quiet still stands"
 
 
 class TestEachBriefBoundHasOneSpelling:

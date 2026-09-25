@@ -8220,31 +8220,21 @@ class GatewayOrchestrator:
                 return list(rows), int(cursor) if isinstance(cursor, int) else since
 
             async def _read_pr(target: str) -> dict | None:
-                # The observation the typed probe ALREADY made this tick, never a fresh
-                # fetch: re-asking the forge would spend a subprocess to learn what the
+                # The reading the fetcher ALREADY made this tick, never a fresh fetch:
+                # re-asking the forge would spend a subprocess to learn what the
                 # monitor record already holds, and the judge's job is the owner's own
                 # prose criterion read against those facts.
                 monitor = loop.monitor
                 observed = getattr(monitor, "last_observation", None) if monitor else None
                 if monitor is None or not isinstance(observed, dict):
                     return None
-                # A factless observation is an UNREAD target only when nothing read the
-                # subject this tick. The canonical field has one writer, the structured
-                # controller's provider, and a judged loop is a GATED one observing
-                # through the raise-based kernel, whose verdict carries no facts -- so
-                # this reader sees an empty canonical for every loop the judge screens.
-                # On that path the probe HAS read this subject and returned quiet, which
-                # is the only reason the judge is being asked, so the subject is read and
-                # this target is not a drop: it contributes nothing and the probe's own
-                # quiet stands. Calling it unread would fire a turn the probe already
-                # settled, every interval, for the life of the watch.
-                probe_covers_subject = monitor.outcome is None and bool(
-                    getattr(loop, "gate", False)
-                )
-                if _judge.pr_target_is_unread(observed, probe_covers_subject=probe_covers_subject):
+                if _judge.pr_target_is_unread(observed):
+                    # No reading, or one whose own status says it is short. A partial
+                    # reading counts as unread: a quiet drawn from the half that was
+                    # read would be a quiet about the wrong half.
                     logger.debug(
-                        "AutoNudge: no pull-request reading for loop %s -- counting the "
-                        "target as unread",
+                        "AutoNudge: no whole pull-request reading for loop %s -- counting "
+                        "the target as unread",
                         loop.id,
                     )
                     return None
@@ -8262,12 +8252,14 @@ class GatewayOrchestrator:
                         "AutoNudge: a judge brief named a pull request this loop does not watch"
                     )
                     return None
-                # ``last_observed_at`` is a SIBLING field of the canonical object, not a
-                # key inside it, so the collector cannot age the reading without being
-                # handed it. Added to the copy, which leaves the monitor's own canonical
-                # dict -- whose exact shape is pinned by equality tests and hashed into
-                # the wake fingerprint -- untouched.
-                payload = dict(observed)
+                # Bodies are merged into a COPY. They live in memory for this tick
+                # only, and the record the copy is taken from carries who said
+                # something and when, never what -- so filling them in place is
+                # exactly how review prose would reach the disk.
+                payload = _judge.with_remark_bodies(observed, _judge.take_pr_bodies(loop.id))
+                # ``last_observed_at`` is a SIBLING field of the fact object, not a key
+                # inside it, so the collector cannot age the reading without being
+                # handed it.
                 at = getattr(monitor, "last_observed_at", 0.0)
                 if isinstance(at, (int, float)) and not isinstance(at, bool) and at > 0:
                     payload["observed_at"] = float(at)

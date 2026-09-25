@@ -198,7 +198,8 @@ def test_babysit_separates_provider_facts_from_comment_and_reporting_work():
     assert "Terminal records are read-only" in text
     assert "Changing `target` or `objective` starts a new baseline" in text
     assert "retained user stop cannot be replaced by rearming" in text
-    assert "do not copy or register it for new babysit work" in text
+    assert "hands its whole pull-request reading" in text
+    assert "`wake_when` may name prose" in text
     assert "Use `0` only" not in text
 
 

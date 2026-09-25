@@ -28,14 +28,27 @@ ask for the gate; the chokepoint defaults every other caller UNGATED, the generi
 REST route included. Gating is the state that can silently stop work, so a caller
 that names no value resolves toward spending a turn per interval rather than toward
 a watch that deactivates itself. A loop whose instruction names exactly one public
-GitHub pull request may still attach `PrWatchProbe` as a compatibility gate, but
-that path is the bounded legacy fallback rather than the babysit recipe.
+GitHub pull request attaches `PrWatchProbe`, which FETCHES that pull request every
+tick and hands the reading to the wake judge.
 
-The bundled `pr_watch.py:watch` cron adapter remains a compatibility asset for
-existing registered jobs. New babysit requests do not copy or register it; they
-use `monitor_watch` or a finite `monitor_start` loop owned by the session that can
-inspect and act on a wake. `probes.gh_pr.PrWatchProbe` stays in the package because
-the legacy AutoNudge gate and existing script jobs share its classifier.
+There is no script-cron driver. A babysit request uses `monitor_watch` or a finite
+`monitor_start` loop owned by the session that can inspect and act on a wake, both
+of which run in the gateway -- which is what lets the gated path reach the judge at
+all. A cron script runs as a sandboxed subprocess with no gateway credential and no
+decisions provider, so a reading made there has nothing to decide with.
+
+A registered script job holding its own copy of the removed driver can still reach
+the probe through the installed package, and the probe refuses that context: the
+watch identity raises, and because the raise is not a `ValueError` the kernel does
+not convert it to `Done`. It propagates instead, so the scheduler counts a failed
+run: the message naming `monitor_start` lands in `last_error` and the job is
+AUTO-PAUSED once the consecutive-failure threshold is reached. It stays listed,
+paused, saying what to arm instead -- the job record is the only durable trace that
+the watch was ever armed, so deleting it would take the evidence with the watch.
+The alternative to refusing at all is a job that polls on schedule, decides
+nothing, and reports nothing, which reads to its owner as a watch still running.
+The in-gateway driver marks its own context, so the refusal reaches only the
+subprocess path.
 
 ### What a gated loop changes about the numbers
 
@@ -160,50 +173,97 @@ ordinary monitor loop on the calling binding and reports an idempotent local
 miss. It never exposes a cross-session target; `test_autonudge_stop_auth.py`
 pins both the request wording and the local-binding behavior.
 
-## PR watch probe
+## PR fetcher
 
-`PrWatchProbe.identity` accepts a JSON cron message describing one GitHub
-repository and pull request, optional inherited-red check names, green-wake
-preference, coalescing override, and contextual note. Invalid permanent
-configuration raises `ValueError`; `irq.run` converts that to `Done`, so a
-malformed job removes itself instead of retrying indefinitely. The malformed
-message tests in `test_babysit_pr_watch.py` pin this behavior.
+`probes.gh_pr` reads one pull request and makes no wake decision. Whether a tick
+is worth the owning session's turn is the wake judge's answer, read against the
+loop's own criteria; the one deterministic mapping -- a merged or closed pull
+request ends the watch -- belongs to the auto-nudge core, which is the layer that
+can act on it. `PrWatchProbe.observe` therefore returns NO observations. The
+reading is published on the probe instance and the driver reads it there.
 
-`PrWatchProbe._fetch` runs one bounded `gh pr view` through
-`github_runner.resolve_gh` and `github_runner.run_gh`. The shared runner
-validates the executable, supplies the restricted GitHub environment, and
-audits the spawn. A failed or malformed fetch becomes `Tick(fetch_ok=False)`;
-it does not make the script crash.
+`_parse_config` accepts a JSON message naming one repository, one pull request,
+and optionally the one pinnable host. A message that can never be valid raises
+`ValueError`, which the driver converts to a removed watch rather than a retried
+tick. Keys this build does not read are ignored, so a watch armed by an earlier
+build keeps working. `test_gh_pr_fetch.py` pins both rules.
 
-`PrWatchProbe.observe` produces these observations:
+Every call goes through `_Transport`, one object per tick, which owns:
 
-* A merged PR or a closed unmerged PR is `Severity.TERMINAL`, so `irq.run`
-  reports it and removes the cron job. `test_merged_pr_completes_the_watch` and
-  `test_closed_unmerged_completes_the_watch` pin both terminal paths.
-* A conflicting or dirty PR is `Severity.IMMEDIATE`. `irq.run` bypasses coalescing
-  delay but still deduplicates it, because waiting cannot produce checks on a
-  dirty PR and unmasked repetition would wake every tick. The conflict and
-  re-alert tests pin this behavior.
-* `_collapse` buckets check-rollup rows, retains the current row for a check
-  identity, treats unknown conclusion vocabulary conservatively, and treats
-  cancelled or stale rows as noise. A failure that is not listed in
-  `known_reds` produces a `red:` wake; matching accepts the qualified alert
-  identity or a bare UI check name. Tests cover inherited-red filtering,
-  same-name workflow separation, rerun handling, unknown conclusions, and
-  cancelled rows.
-* With a non-empty rollup, no pending rows, and no unexpected failures,
-  `wake_on_green` permits a `ready` wake. An empty rollup is not evidence that
-  checks passed; `test_empty_rollup_never_reports_ready` pins that guard.
-* `_conversation` emits epoch-independent wakes for recent comments not
-  authored by the viewer and for recent submitted reviews. It identifies the
-  author and timestamp but does not quote comment text. `reviewDecision` is
-  not observed because it has no timestamp suitable for age filtering. The
-  comment-horizon and conversation tests in `test_babysit_pr_watch.py` pin
-  these rules.
+* `github_runner.resolve_gh` and `github_runner.run_gh` -- the repo's single gh
+  spawn chokepoint: the validated absolute path, the restricted GitHub
+  environment, an SEL audit record per spawn, and the pinned host that stops an
+  ambient `GH_HOST` re-pointing a bare `owner/name` slug at another server.
+* A per-call timeout under a whole-tick budget, so a paginated read cannot spend
+  the product of the two.
+* Bounded retry with exponential backoff and full jitter. Jitter matters because
+  several loops on one host tick on the same cadence. A refusal that names itself
+  and is not transient is answered once rather than retried.
+* Rate limits read off the response headers (`gh api --include`), so a call backs
+  off on a nearly-spent window instead of discovering the floor by being refused.
+  `retry-after` wins over the reset epoch, and every wait is capped.
 
-The probe returns observations, not cron-control exceptions. `irq.Probe` and
-`irq.run` own the verdict so every probe receives the same terminal handling,
-deduplication, coalescing, state persistence, and failure backstop.
+The reading itself:
+
+* Check runs are paginated against the API's own `total_count`. That count is why
+  this reads the check-runs endpoint rather than the rollup served beside the pull
+  request: the rollup is a bare array, so a truncated read of it is undetectable.
+  Commit statuses are a separate sequence read the same way and by the same code,
+  because a required gate can be published as one and appears on no check-runs page
+  -- and a first-page-only read of them omits exactly the rows most likely to be
+  gating, with nothing else on the reading saying so. The two share one function on
+  purpose: two copies of a counted read is how one of them ends up without the count
+  check, and that one is a failing gate missing from a board reporting itself whole.
+* `_collapse` folds duplicate rows to one per identity, newest by start time, and
+  reports how many raw rows it folded. An unknown conclusion is reported as
+  `unknown`; a cancelled or stale row as `superseded`.
+* The identity a row folds under is its WORKFLOW, not the app that posted it. Every
+  GitHub Actions row carries one app slug, so the slug cannot separate two workflow
+  files that each define a job of the same name, and folding those lets one
+  workflow's green stand in for the other's failure on a board still reporting
+  itself whole. So an Actions row is qualified by its workflow and by nothing when
+  that is unknown: the slug would be a false qualifier, reading as "one lane" on
+  exactly the rows it cannot tell apart.
+* The workflow is resolved only where a check name is SHARED between two runs, which
+  is the only case that needs it -- either two workflow files that must stay two
+  rows, or two runs of one workflow that must fold, and nothing else on the row says
+  which. An unshared name needs no qualifier, so the ordinary board resolves nothing
+  and spends no call: measured at 40 rows across 19 runs with no name shared, where
+  resolving every run would cost 19 calls a tick to separate nothing. Where a shared
+  name cannot be resolved, recency stops meaning supersession for that identity: the
+  conservative bucket is kept and the reading reports itself `partial` with a note
+  naming the unresolved identity. A redundant look costs a turn, a dropped gate
+  costs the merge.
+* A duplicate that cannot be ordered by time keeps the more conservative bucket.
+  Saying so is the READING's job rather than the row's: `partial` and its note are
+  what a consumer reads, and a per-row flag none of them opens would be a field
+  the reading cannot back.
+* Comments and reviews are carried WITH their bodies, clipped per item and in
+  total, newest first, inside a fetch horizon. The bot's own comments are skipped,
+  because otherwise the watch is a feedback loop. A remark whose timestamp cannot
+  be read is left out: an age of unknown freshness would be carried every tick.
+* One `status` per reading: `ok` when every page was read, `partial` when something
+  was read and something was not, `unavailable` when the subject was not reached.
+  A refusal becomes a status, never an exception. A consumer treats `partial` as a
+  target nobody read whole, which fires.
+* `as_facts` is the durable half -- typed facts plus who said something and when.
+  `bodies` is a separate call, so keeping the first cannot accidentally keep the
+  second: remark prose stays in the process that fetched it. Each remark does carry a
+  short digest of its body, because the prose is gone after the tick and a record
+  saying only that a remark existed leaves a WRONG quiet unexaminable -- the digest
+  identifies what was screened without storing it. Every key in the durable half has
+  a reader; the transport's own counters are not there, since they describe the fetch
+  rather than the subject and this record is written every tick into the budget the
+  judge's evidence must fit inside.
+* A check run and a commit status are separate sequences in the forge's own model, so
+  the fold identity carries which family a row came from and the two never merge. The
+  pair that would otherwise merge is ordinary output: a status with no target URL
+  carries no qualifier, and neither does a check run whose name needed no resolution.
+
+The kernel is still in the path for what a stateless reading cannot hold: the
+epoch, so its dedupe memory resets on a new head, and the consecutive-failure
+backstop, which turns a run of unreadable ticks into one report that the watch is
+blind.
 
 ## Watch kernel invariants
 
@@ -233,17 +293,16 @@ coalescing and sticky-observation tests in `test_irq.py` pin these cases.
 Dedupe is time-bounded. The kernel re-alerts a persistent condition after its
 window because a script cannot observe whether gateway delivery succeeded;
 permanent acknowledgement could turn one lost delivery into permanent silence.
-The comment horizon in `pr_watch.py` is asserted below the kernel's re-alert
-window, so stale conversation entries age out before a sticky dedupe key is
-removed. `test_alert_rearms_after_the_dedupe_window` and the horizon tests pin
-both sides.
+The fetcher emits no observations, so nothing of its own is deduped here; the
+kernel's dedupe serves the reports it raises itself. `test_irq.py` pins those.
 
 `Tick(fetch_ok=False)` increments the kernel-owned error streak. A persistent
 failure reports that the watch is blind; a successful fetch clears the streak
 and its blind marker. If state cannot be written, the kernel reports on the
 first failed tick because a counted threshold would otherwise be unreachable.
-The watch-health tests in `test_babysit_pr_watch.py` pin recovery, re-alerting,
-and the unwritable-state path.
+The watch-health tests in `test_irq.py` pin recovery, re-alerting, and the
+unwritable-state path; `test_gh_pr_fetch.py` pins that an unreadable reading is
+what reaches the kernel as a failed tick.
 
 ## Delivery and lifecycle
 

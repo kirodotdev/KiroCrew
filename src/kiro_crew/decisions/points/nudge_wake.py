@@ -1,23 +1,26 @@
 """``nudge.wake`` -- does the owning session need to act on this tick?
 
 An auto-nudge loop fires a full model turn on its owning session every interval.
-``PrWatchProbe`` already turns an unchanged pull request into a free re-arm
-(``irq.poll``), but it can only read TYPED facts against ITS OWN notion of
-actionable: a check conclusion, a merge state. A conductor patrolling worker
-transcripts, a loop watching a log, or an owner whose bar for a pull request is a
-sentence of their own rather than the probe's default, all still pay a turn per
-tick, because what would justify staying quiet is prose.
+A watched subject is fetched each tick -- a pull request's state, its check board,
+what people have said on it -- but a reading is not a decision, and what would
+justify staying quiet is prose: a conductor patrolling worker transcripts, a loop
+watching a log, an owner whose bar for a pull request is a sentence of their own.
 
 This point asks a cheap typed judge to read that prose and answer one question:
 does the owner need to act now? Only a yes spends the turn.
 
-Composes with the probe, never replaces it
-------------------------------------------
+The fetcher reads, this point decides
+-------------------------------------
 The verdict produced here is an :class:`irq.Verdict` -- the same value the
 kernel's own tick returns -- so the driver consumes one type from two producers
-rather than growing a second vocabulary. The probe's observation is an INPUT to
-this decision (``kind=probe`` evidence), which is why the two do not duplicate
-each other: the probe types what it can, and the judge reads what it cannot.
+rather than growing a second vocabulary. What the fetcher hands over is EVIDENCE
+(``pr_state``, ``pr_checks``, ``pr_comment``, ``pr_review``), never a wake: the
+two do not duplicate each other because only one of them judges.
+
+One deterministic mapping stays outside this point, in the auto-nudge core: a
+merged or closed pull request ends the watch. That is a typed fact with an
+irreversible consequence, and :func:`map_answers` never returns ``TERMINAL`` --
+a judge reading third-party prose must not be able to buy permanent silence.
 
 Everything is a refusal toward SPENDING the turn
 ------------------------------------------------
@@ -194,18 +197,36 @@ OUTCOME_MIN_P = 0.4
 
 KIND_TRANSCRIPT_TAIL = "transcript_tail"
 KIND_PR_CHECKS = "pr_checks"
+KIND_PR_STATE = "pr_state"
+KIND_PR_COMMENT = "pr_comment"
+KIND_PR_REVIEW = "pr_review"
 #: Closed, like the point-name tuple: an item naming anything else is dropped
 #: rather than sent, so a collector cannot invent a category nobody reviewed.
-#: There is deliberately no kind for a pull-request comment BODY: the reader that
-#: sees PR-level comments reduces each to a fixed-width fingerprint and retains no
-#: body, so no producer could fill such a kind and a declared one would promise a
-#: reading the collectors cannot make.
+#:
+#: A pull-request comment and a review carry their BODY, because the reader that
+#: observes a pull request fetches those bodies and hands them over. That is the
+#: evidence no typed reading produces: a reviewer's ask sits in prose while the
+#: lane that carried it reports success, so a criterion about "a reviewer asked for
+#: a change" is answerable only from the text. Each body is clipped by
+#: :func:`evidence_item` and screened by the seam's scrub like any other egress.
 EVIDENCE_KINDS = frozenset(
     {
         KIND_TRANSCRIPT_TAIL,
         KIND_PR_CHECKS,
+        KIND_PR_STATE,
+        KIND_PR_COMMENT,
+        KIND_PR_REVIEW,
     }
 )
+
+#: Kinds the char budget never sheds. The built-in criteria are answered from these
+#: two summaries -- a failing check, a reading that is not whole -- so dropping one
+#: deletes the evidence the question is asked against. They are also bounded and
+#: small: one ``pr_checks`` item renders a 90-lane board in 42 characters, so they
+#: are never the pressure on the budget. What the budget gives up instead is the
+#: oldest PROSE item, which is the right order because a comment body is as old as
+#: its comment while a summary is observed on the tick that sends it.
+PINNED_KINDS = frozenset({KIND_PR_CHECKS, KIND_PR_STATE})
 
 
 def build_questions(wake_when: str = "", quiet_when: str = "") -> list[Question]:
@@ -459,13 +480,12 @@ def build_state(
 
     rows = list(screened)
     state = assemble(rows)
-    # Drop from the TAIL, which ``screen_evidence`` ordered as the oldest. The
-    # loop instruction, ``last_verdict`` and ``recent_verdicts`` are never
-    # dropped: all three are already bounded, and a judge without the owner's
-    # instruction cannot answer the one question that asks about the owner's
-    # intent.
+    # Which item goes is :func:`_shed_index`. The loop instruction,
+    # ``last_verdict`` and ``recent_verdicts`` are never dropped: all three are
+    # already bounded, and a judge without the owner's instruction cannot answer
+    # the one question that asks about the owner's intent.
     while rows and _rendered_len(state) > MAX_STATE_CHARS:
-        rows.pop()
+        del rows[_shed_index(rows)]
         dropped += 1
         state = assemble(rows)
     if trace is not None:
@@ -475,6 +495,29 @@ def build_state(
         trace["state_chars"] = _rendered_len(state)
         trace["recent_verdicts"] = len(history)
     return state
+
+
+def _shed_index(rows: Sequence[Mapping[str, Any]]) -> int:
+    """Which item the char budget gives up next.
+
+    The oldest item that is NOT one of :data:`PINNED_KINDS`, and only once none of
+    those are left, the oldest item overall. *rows* is newest first, so "oldest" is
+    the last match.
+
+    Two tiers rather than one age order, because age answers the wrong question
+    here. A check tally is observed on the tick that sends it, so by age it is
+    always the newest thing present and always survives; a comment body is as old
+    as the comment. Shedding by age alone therefore drops the reviewer's words to
+    keep a tally the criteria are asked against.
+
+    A pinned item is shed LAST rather than never, so the char ceiling still holds
+    for a state whose pinned rows alone exceed it. An over-budget send is refused
+    downstream, which would lose the whole reading rather than one row of it.
+    """
+    for index in range(len(rows) - 1, -1, -1):
+        if str(rows[index].get("kind", "")) not in PINNED_KINDS:
+            return index
+    return len(rows) - 1
 
 
 def map_answers(answers: Answers | None) -> irq.Verdict:

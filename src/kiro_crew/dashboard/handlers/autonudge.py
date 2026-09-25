@@ -127,6 +127,11 @@ def _serialize(loop: Any) -> dict[str, Any]:
     # structured-monitor filter, which a plain loop never reaches.
     payload.pop("judge_cursors", None)
     payload.pop("judge_recent_verdicts", None)
+    # Same class as a cursor, and dropped everywhere for the same reason: the
+    # baseline names the identifiers of the remarks the loop has already been shown,
+    # which is the watched subject's discussion by another name. No surface renders
+    # it, so no reader is worse off without it.
+    payload.pop("judge_pr_seen", None)
     if loop.monitor is None:
         # Legacy clients predate structured monitors and require their exact shape.
         payload.pop("monitor", None)
@@ -215,6 +220,9 @@ _MONITOR_WITHHELD_LEGACY_FIELDS = frozenset(
         #   subject is exactly what this route may not disclose.
         # * ``judge_cursors`` is bookkeeping with no surface, and it names every
         #   watched target: withheld on every projection, not just this one.
+        # * ``judge_pr_seen`` is the same: a digest plus the ids of the remarks the
+        #   loop was already shown, which names the subject's discussion. Also
+        #   withheld on every projection.
         # * ``judge_quiet_streak`` and ``judge_last_verdict`` are the automation's
         #   own accounting, the same class as ``cycle_count``. The verdict is
         #   text-free by construction -- an outcome, an item COUNT and a timestamp --
@@ -227,6 +235,7 @@ _MONITOR_WITHHELD_LEGACY_FIELDS = frozenset(
         #   like ``judge_quiet_streak``, and no surface renders it.
         "judge",
         "judge_cursors",
+        "judge_pr_seen",
         "judge_quiet_streak",
         "judge_last_verdict",
         "judge_wake_pending",

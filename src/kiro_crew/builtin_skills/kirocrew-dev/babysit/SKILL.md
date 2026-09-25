@@ -36,8 +36,10 @@ On Webex, use the finite legacy path even for a supported pull request.
 Never use an agent cron or `HEARTBEAT.md` to fix and push review findings. Cron
 has no owning chat slot's trust and can time out at tool approval while still
 recording `last_status: ok`; heartbeat's allowlist has no shell or push.
-The bundled `pr_watch.py` script remains for existing jobs only; do not copy or
-register it for new babysit work. Use one session-owned driver, not two watchers.
+Use one session-owned driver, not two watchers.
+
+A gated `monitor_start` hands its whole pull-request reading, comment and review
+bodies included, to the wake judge, so `wake_when` may name prose.
 
 An installation can set how firmly this table's facts-decided row points at the
 structured path. With `monitoring.prefer_structured_arming` on, `monitor_watch` is

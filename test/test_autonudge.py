@@ -46,6 +46,49 @@ def _owner_dashboard_identity():
     return middleware
 
 
+def _reading(state: str = "MERGED", *, status: str = "ok", head: str = "a" * 40):
+    """One published reading, in the shape the fetcher puts on the probe.
+
+    The terminal decision is the core's, taken from a typed fact, so a test that
+    wants a terminal tick has to supply the FACT rather than a verdict. Pinning only
+    the kernel verdict would test a state the code cannot reach: the fetcher emits no
+    terminal observation, so no kernel verdict is ever TERMINAL.
+    """
+    from kiro_crew.probes import gh_pr
+
+    return gh_pr.PrObservation(
+        repo="acme/widgets",
+        pr=42,
+        host="github.com",
+        status=status,
+        observed_at=1_000.0,
+        state=state,
+        merged_at="2026-09-25T00:00:00Z" if state == "MERGED" else "",
+        head=head,
+    )
+
+
+def _terminal_poll(state: str = "MERGED", body: str = "read"):
+    """A poll fake that publishes a terminal reading, the way ``observe`` does."""
+
+    def _poll(identity, message, probe):
+        probe.observation = _reading(state)
+        return _an.irq.Verdict(_an.irq.Outcome.QUIET, body)
+
+    return _poll
+
+
+def _live_poll(outcome=None, body: str = "read", status: str = "ok"):
+    """A poll fake that publishes a LIVE reading: open, nothing ended."""
+    resolved = _an.irq.Outcome.QUIET if outcome is None else outcome
+
+    def _poll(identity, message, probe):
+        probe.observation = _reading("OPEN", status=status)
+        return _an.irq.Verdict(resolved, body)
+
+    return _poll
+
+
 @pytest.fixture(autouse=True)
 def _enable(monkeypatch):
     monkeypatch.setenv("KIROCREW_AUTONUDGE", "1")
@@ -566,35 +609,28 @@ async def test_a_drifted_instruction_fires_instead_of_observing(tmp_path, monkey
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "keys, expected",
+    "state, expected",
     [
-        (("merged",), "success"),
-        (("closed",), "blocked"),
-        ((), "blocked"),
+        ("MERGED", "success"),
+        ("CLOSED", "blocked"),
     ],
 )
 async def test_only_a_merged_subject_is_recorded_as_a_success(
-    tmp_path, monkeypatch, keys, expected
+    tmp_path, monkeypatch, state, expected
 ):
     """Reaching the end is not the same as ending well.
 
     A subject CLOSED WITHOUT MERGING is a watch that stopped on a question --
     reopen or abandon -- and recording it as a success tells the user "no action
-    needed" about the one case that needs them most. No key at all means the
-    kernel could not attribute the end to an observation, which is also not a
-    success. The probe already distinguishes the two, so the gate reads its keys
-    rather than its prose.
+    needed" about the one case that needs them most. The reading distinguishes the
+    two, so the core reads its typed facts rather than delivered prose.
     """
     import kiro_crew.autonudge as _an
 
     async def on_fire(loop):
         return True
 
-    monkeypatch.setattr(
-        _an.irq,
-        "poll",
-        lambda *a, **k: _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "ended", keys),
-    )
+    monkeypatch.setattr(_an.irq, "poll", _terminal_poll(state))
     service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
     loop = NudgeLoop(
         id="monitor17",
@@ -709,7 +745,7 @@ async def test_the_marker_writes_do_not_release_the_lock_mid_write(tmp_path, mon
     monkeypatch.setattr(
         _an.irq,
         "poll",
-        lambda *a, **k: _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "merged", ("merged",)),
+        _terminal_poll(),
     )
     service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
     loop = NudgeLoop(
@@ -887,29 +923,30 @@ async def test_a_changed_terminal_classification_does_not_settle(tmp_path, monke
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("outcome,stays_alive", [("WAKE", True), ("TERMINAL", False)])
+@pytest.mark.parametrize("state,stays_alive", [("OPEN", True), ("MERGED", False)])
 async def test_a_settlement_revalidates_before_it_deactivates(
-    tmp_path, monkeypatch, outcome, stays_alive
+    tmp_path, monkeypatch, state, stays_alive
 ):
-    """The window between the terminal observation and the turn landing had no evidence.
+    """The window between the terminal reading and the turn landing had no evidence.
 
     Every earlier guard for a reopened subject runs on the NEXT TICK -- the debt
     clearing and the forced re-observation -- and this settlement happens
     before any tick can. A channel turn runs inline and can take minutes, which is long
     enough for a pull request to be reopened, so the settlement re-asks.
 
-    Only a fresh TERMINAL settles. Anything else keeps the watch alive, because settling
-    is the one action here that stops work silently.
+    Only a fresh terminal reading settles. Anything else keeps the watch alive, because
+    settling is the one action here that stops work silently.
     """
     import kiro_crew.autonudge as _an
 
     async def on_fire(loop):
         return True
 
-    def _verdict(*_a, **_k):
-        return _an.irq.Verdict(getattr(_an.irq.Outcome, outcome), "state", ("merged",))
+    def _poll(identity, message, probe):
+        probe.observation = _reading(state)
+        return _an.irq.Verdict(_an.irq.Outcome.QUIET, "state")
 
-    monkeypatch.setattr(_an.irq, "poll", _verdict)
+    monkeypatch.setattr(_an.irq, "poll", _poll)
     service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
     monitor = _structured_monitor(kind="gh-pr", target="acme/widgets#42")
     monitor.terminal_pending = "success"
@@ -1190,6 +1227,46 @@ async def test_a_refused_wake_is_charged_once_when_its_retry_delivers(tmp_path, 
 
 
 @pytest.mark.asyncio
+async def test_an_oversized_stored_pr_baseline_is_bounded_by_the_loader(tmp_path):
+    """The write path's clip constrains only what THIS build wrote.
+
+    This store is writable by an auto-approved agent shell, so an oversized value would
+    otherwise be retained and re-serialized on every persist for the life of the loop.
+    The bound has to be applied where the row is read, beside the four sibling judge maps
+    that are already rebuilt there.
+    """
+    from kiro_crew import autonudge as _an
+
+    async def on_fire(loop):
+        return True
+
+    record = {
+        "id": "monitor90",
+        "slot_key": "chat-1-123",
+        "message": "watch https://github.com/acme/widgets/pull/42",
+        "idle_secs": 300,
+        "active": True,
+        "judge_pr_seen": {
+            "digest": "d" * 9_000,
+            "remarks": [f"comment:{i}" for i in range(5_000)],
+            "prose": "x" * 9_000,
+        },
+    }
+    (tmp_path / "autonudge.json").write_text(json.dumps({"loops": [record]}), encoding="utf-8")
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    try:
+        await service.start()
+        loop = service._loops.get("monitor90")
+        assert loop is not None, "the loop must still load"
+        seen = loop.judge_pr_seen
+        assert len(seen["remarks"]) == _an._JUDGE_PR_SEEN_REMARKS, "the id list is capped"
+        assert len(seen["digest"]) == _an._JUDGE_PR_SEEN_DIGEST_CHARS, "the digest is clipped"
+        assert set(seen) == {"digest", "remarks"}, "an unknown key is not retained"
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
 async def test_a_failed_clear_write_leaves_the_debt_cleared(tmp_path, monkeypatch):
     """A rollback here would restore a debt a live observation just disproved.
 
@@ -1208,7 +1285,8 @@ async def test_a_failed_clear_write_leaves_the_debt_cleared(tmp_path, monkeypatc
     async def on_fire(loop):
         return True
 
-    def _verdict(*_a, **_k):
+    def _verdict(identity, message, probe):
+        probe.observation = _reading("OPEN")
         return _an.irq.Verdict(_an.irq.Outcome.WAKE, "open again with news", ())
 
     monkeypatch.setattr(_an.irq, "poll", _verdict)
@@ -1267,11 +1345,12 @@ async def test_a_cancelled_settlement_still_counts_the_delivered_turn(tmp_path, 
     async def on_fire(loop):
         return True
 
-    def _still_terminal(*_a, **_k):
+    def _still_terminal(identity, message, probe):
         # The settlement now revalidates before deactivating, so this test has to let
         # that check CONFIRM the terminal -- otherwise the settlement is skipped and the
         # cancellation this test is about never happens.
-        return _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "merged", ("merged",))
+        probe.observation = _reading("MERGED")
+        return _an.irq.Verdict(_an.irq.Outcome.QUIET, "merged")
 
     monkeypatch.setattr(_an.irq, "poll", _still_terminal)
     service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
@@ -1319,8 +1398,9 @@ async def test_terminal_debt_is_re_observed_rather_than_spending_a_free_tick(tmp
     async def on_fire(loop):
         return True
 
-    def _verdict(*_a, **_k):
+    def _verdict(identity, message, probe):
         polls.append("polled")
+        probe.observation = _reading("OPEN")
         return _an.irq.Verdict(_an.irq.Outcome.QUIET, "open again", ())
 
     monkeypatch.setattr(_an.irq, "poll", _verdict)
@@ -1440,7 +1520,8 @@ async def test_a_reopened_subject_clears_the_owed_terminal_turn(
     async def on_fire(loop):
         return True
 
-    def _verdict(*_a, **_k):
+    def _verdict(identity, message, probe):
+        probe.observation = _reading("OPEN")
         return _an.irq.Verdict(getattr(_an.irq.Outcome, outcome), "still open", ())
 
     monkeypatch.setattr(_an.irq, "poll", _verdict)
@@ -1576,7 +1657,7 @@ async def test_a_retarget_during_lock_acquisition_does_not_crash_the_settlement(
     monkeypatch.setattr(
         _an.irq,
         "poll",
-        lambda *a, **k: _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "merged", ("merged",)),
+        _terminal_poll(),
     )
     service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
     loop = NudgeLoop(
@@ -1628,7 +1709,7 @@ async def test_a_failed_settlement_write_leaves_the_terminal_turn_owed(tmp_path,
     monkeypatch.setattr(
         _an.irq,
         "poll",
-        lambda *a, **k: _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "merged", ("merged",)),
+        _terminal_poll(),
     )
     service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
     loop = NudgeLoop(
@@ -1684,7 +1765,7 @@ async def test_the_owed_terminal_turn_settles_only_once_it_lands(tmp_path, monke
     monkeypatch.setattr(
         _an.irq,
         "poll",
-        lambda *a, **k: _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "merged", ("merged",)),
+        _terminal_poll(),
     )
     service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
     loop = NudgeLoop(
@@ -1794,7 +1875,7 @@ async def test_a_channel_loop_gets_a_final_turn_but_a_dashboard_loop_does_not(
     monkeypatch.setattr(
         _an.irq,
         "poll",
-        lambda *a, **k: _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "merged", ("merged",)),
+        _terminal_poll(),
     )
     service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
     loop = NudgeLoop(
@@ -1847,7 +1928,7 @@ async def test_the_terminal_settlement_is_serialized_against_update(tmp_path, mo
     monkeypatch.setattr(
         _an.irq,
         "poll",
-        lambda *a, **k: _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "merged", ("merged",)),
+        _terminal_poll(),
     )
     service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
     loop = NudgeLoop(
@@ -1898,7 +1979,7 @@ async def test_the_terminal_transition_is_on_disk_before_the_user_is_told(tmp_pa
     monkeypatch.setattr(
         _an.irq,
         "poll",
-        lambda *a, **k: _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "merged", ("merged",)),
+        _terminal_poll(),
     )
     service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
     real_persist = service._write_monitor_snapshot_locked
@@ -1984,7 +2065,7 @@ async def test_a_failed_terminal_write_keeps_the_watch_alive(tmp_path, monkeypat
     monkeypatch.setattr(
         _an.irq,
         "poll",
-        lambda *a, **k: _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "merged", ("merged",)),
+        _terminal_poll(),
     )
     service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
 
@@ -2079,7 +2160,7 @@ async def test_a_terminal_watch_notifies_even_though_it_cancels_its_own_timer(
     monkeypatch.setattr(
         _an.irq,
         "poll",
-        lambda *a, **k: _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "merged", ("merged",)),
+        _terminal_poll(),
     )
     service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
 
@@ -2401,7 +2482,7 @@ async def test_a_terminal_verdict_leaves_no_timer_armed(tmp_path, monkeypatch):
     monkeypatch.setattr(
         _an.irq,
         "poll",
-        lambda *a, **k: _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "the PR merged"),
+        _terminal_poll(body="the PR merged"),
     )
     service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
     loop = NudgeLoop(
@@ -2757,7 +2838,7 @@ async def test_a_terminal_subject_stops_the_loop_without_a_turn(tmp_path, monkey
     monkeypatch.setattr(
         _an.irq,
         "poll",
-        lambda *a, **k: _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "the PR merged"),
+        _terminal_poll(body="the PR merged"),
     )
     service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
     loop = NudgeLoop(

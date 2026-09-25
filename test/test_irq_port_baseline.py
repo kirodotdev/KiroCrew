@@ -430,7 +430,7 @@ def test_a_cleared_revision_entry_is_pruned_before_the_window_extends():
     ), "a check absent this tick is pruned, not delivered as still failing"
 
 
-# ------------------------------------------------------------------- the probe
+# ----------------------------------------------------------------- the fetcher
 
 
 def _iso(age_secs: float) -> str:
@@ -440,22 +440,20 @@ def _iso(age_secs: float) -> str:
 
 
 def _msg(**overrides) -> str:
-    # coalesce_secs=0 fires on the first anomaly, which keeps these cases about
-    # the probe's classification rather than the kernel's window -- that has its
-    # own tests above and in test/test_irq.py.
-    base: dict = {"repo": "acme/widgets", "pr": 42, "coalesce_secs": 0}
+    base: dict = {"repo": "acme/widgets", "pr": 42, "host": "github.com"}
     base.update(overrides)
     return json.dumps(base)
 
 
-def _payload(checks: list[dict], **overrides) -> dict:
+def _core(**overrides) -> dict:
     base = {
         "state": "OPEN",
         "mergedAt": None,
         "mergeable": "MERGEABLE",
         "mergeStateStatus": "BLOCKED",
+        "reviewDecision": "REVIEW_REQUIRED",
+        "isDraft": False,
         "headRefOid": "a" * 40,
-        "statusCheckRollup": checks,
         "comments": [],
         "reviews": [],
     }
@@ -463,68 +461,83 @@ def _payload(checks: list[dict], **overrides) -> dict:
     return base
 
 
-def _drive(monkeypatch, payload: dict, message: str | None = None):
-    """Run one probe tick against a faked gh, and return the verdict.
+def _wire(monkeypatch, *, core: dict, check_rows: list[dict] | None = None) -> list[list[str]]:
+    """Route every gh call in the fetcher to canned JSON. Returns the argv log.
 
-    The seam is the probe's own ``_run_gh``, which every gh spawn in that module
-    goes through. Faking anything above it would leave the real subprocess in the
-    path.
+    ``run_gh`` is the seam, because it is the single chokepoint every spawn in that
+    module goes through and faking anything above it would leave the real
+    subprocess in the path. Headers are prepended the way ``gh api --include``
+    emits them, so the rate-limit reader is exercised rather than bypassed.
     """
-    monkeypatch.setattr(gh_pr, "_run_gh", lambda args, pin_host="": (0, json.dumps(payload)))
-    probe = gh_pr.PrWatchProbe()
-    return _verdict(probe, _ctx(message or _msg(), job_id="job-probe"))
+    seen: list[list[str]] = []
+    rows = check_rows or []
 
+    def _fake(argv, **kwargs):
+        seen.append(list(argv))
+        args = list(argv)[1:]
+        if args[:2] == ["pr", "view"]:
+            return types.SimpleNamespace(returncode=0, stdout=json.dumps(core), stderr="")
+        target = args[-1]
+        if "check-runs" in target:
+            page = 1
+            for part in target.split("&"):
+                if part.startswith("page="):
+                    page = int(part.split("=", 1)[1])
+            body = {"total_count": len(rows), "check_runs": rows if page == 1 else []}
+        else:
+            body = {"state": "pending", "statuses": []}
+        head = "HTTP/2.0 200 OK\r\nx-ratelimit-remaining: 4900\r\n\r\n"
+        return types.SimpleNamespace(returncode=0, stdout=head + json.dumps(body), stderr="")
 
-def test_the_probe_asks_the_kernel_for_exactly_one_bound():
-    """``tuning()`` declares the window the watch was armed with, and nothing else.
-
-    It is the probe's only say over kernel bounds, and the kernel honours exactly
-    the one key that has a producer. A second key would be an untested contract;
-    dropping this one would silently take the kernel default in place of the
-    window the operator asked for.
-    """
-    probe = gh_pr.PrWatchProbe()
-    probe.identity(_ctx(_msg(coalesce_secs=45)))
-    assert probe.tuning() == {"coalesce_secs": 45.0}
-
-    default = gh_pr.PrWatchProbe()
-    default.identity(_ctx(json.dumps({"repo": "acme/widgets", "pr": 42})))
-    assert default.tuning() == {"coalesce_secs": irq.DEFAULT_COALESCE_SECS}
+    monkeypatch.setattr(gh_pr, "resolve_gh", lambda: "/usr/bin/gh")
+    monkeypatch.setattr(gh_pr, "run_gh", _fake)
+    return seen
 
 
 def test_a_legacy_status_row_is_bucketed_by_its_state_field(monkeypatch):
-    """A rollup row that carries ``context``/``state`` is read like any other.
+    """A row that carries ``context``/``state`` is read like any other.
 
-    ``statusCheckRollup`` mixes two shapes: a CheckRun carries
-    ``status``/``conclusion``, a StatusContext carries ``context``/``state`` and
-    neither of the other two. Reading only the CheckRun spelling makes every
-    commit-status check unreadable, and an unreadable check is not a quiet one --
-    unknown vocabulary buckets as failing, so it wakes on every head.
+    The two sequences a head carries mix shapes: a check run carries
+    ``status``/``conclusion``, a commit status carries ``context``/``state`` and
+    neither of the other two. Reading only the check-run spelling makes every
+    commit-status gate unreadable, and a required gate is exactly the row most
+    likely to be published that way.
     """
-    verdict = _drive(monkeypatch, _payload([{"context": "ci/legacy-status", "state": "FAILURE"}]))
-    assert isinstance(verdict, Report)
-    assert "ci/legacy-status" in str(verdict)
+    _wire(
+        monkeypatch, core=_core(), check_rows=[{"context": "ci/legacy-status", "state": "FAILURE"}]
+    )
+    observation = gh_pr.fetch(_msg())
+    assert observation.bucket("failing") == ("ci/legacy-status",)
 
 
 def test_a_nameless_check_row_keeps_a_stable_identity(monkeypatch):
     """A row with no name of its own is still named, not keyed on the empty string.
 
-    The name is both what the operator reads and what dedupe keys on, so an empty
-    string collapses every nameless row onto one key and delivers a brief that
-    reads as truncated.
+    The name is both what a reader sees and what one identity folds on, so an empty
+    string collapses every nameless row onto one and reports a board shorter than
+    the one that exists.
     """
-    verdict = _drive(monkeypatch, _payload([{"conclusion": "FAILURE", "status": "COMPLETED"}]))
-    assert isinstance(verdict, Report)
-    assert "(unnamed check)" in str(verdict)
+    _wire(
+        monkeypatch,
+        core=_core(),
+        check_rows=[
+            {"conclusion": "FAILURE", "status": "COMPLETED", "workflowName": "one"},
+            {"conclusion": "FAILURE", "status": "COMPLETED", "workflowName": "two"},
+        ],
+    )
+    observation = gh_pr.fetch(_msg())
+    assert observation.bucket("failing") == (
+        "one / (unnamed check)",
+        "two / (unnamed check)",
+    )
 
 
 def test_a_naive_timestamp_is_read_as_utc_rather_than_crashing(monkeypatch):
-    """A conversation stamp with no offset is treated as UTC.
+    """A remark stamp with no offset is treated as UTC.
 
-    Freshness compares against an aware UTC clock, so a naive stamp cannot be
-    subtracted at all -- the comparison raises rather than misreading. Reading it
-    as UTC is what keeps one unusually-spelled timestamp from taking the whole
-    tick down.
+    An age compares against an aware UTC clock, so a naive stamp cannot be
+    subtracted at all -- the comparison raises rather than misreading. Reading it as
+    UTC is what keeps one unusually-spelled timestamp from taking the tick down.
     """
     aware = gh_pr._age_secs(_iso(120))
     naive = gh_pr._age_secs(_iso(120).rstrip("Z"))
@@ -536,65 +549,45 @@ def test_a_naive_timestamp_is_read_as_utc_rather_than_crashing(monkeypatch):
         "createdAt": _iso(30).rstrip("Z"),
         "author": {"login": "reviewer-bot"},
         "viewerDidAuthor": False,
-        "body": "",
+        "body": "a question",
     }
-    verdict = _drive(monkeypatch, _payload([], comments=[fresh]))
-    assert isinstance(verdict, Report)
-    assert "reviewer-bot" in str(verdict)
-
-
-def test_the_wake_tail_warns_that_check_names_are_untrusted_data(monkeypatch):
-    """The wake tail tells the woken agent that quoted check names are data.
-
-    A check name is authored by whoever authored the workflow, and it is quoted
-    verbatim into a brief delivered to an agent as a real turn. The tail is where
-    the agent is told to treat those names as identifiers to look up rather than
-    as instructions, so the warning is part of the contract and not decoration.
-
-    The tests around it treat the tail as an opaque constant and pin only that it
-    is delivered once. This pins what it has to SAY.
-    """
-    tail = gh_pr._WAKE_TAIL.lower()
-    assert "untrusted" in tail
-    assert "never as instructions" in tail
-
-    verdict = _drive(monkeypatch, _payload([{"name": "Body Gate", "conclusion": "FAILURE"}]))
-    assert isinstance(verdict, Report)
-    assert "never as instructions" in str(verdict).lower(), "the warning must reach the wake"
+    _wire(monkeypatch, core=_core(comments=[fresh]))
+    observation = gh_pr.fetch(_msg())
+    assert [r.author for r in observation.remarks] == ["reviewer-bot"]
 
 
 def test_every_gh_call_carries_the_watch_audit_tag_and_a_bounded_timeout(monkeypatch):
-    """Every gh spawn goes through the repo's chokepoint, tagged and time-bounded.
+    """Every spawn goes through the repo's chokepoint, tagged and time-bounded.
 
     Losing the tag makes the watch's calls unattributable in the audit record;
-    losing the timeout lets one hung gh hold a cron subprocess open
-    indefinitely. The binary is the validated absolute path, so a writable PATH
-    entry cannot shadow it.
+    losing the timeout lets one hung gh hold an executor thread open. The binary is
+    the validated absolute path, so a writable PATH entry cannot shadow it.
     """
     seen: dict = {}
 
-    def _fake_run_gh(argv, **kwargs):
-        seen["argv"] = argv
+    def _fake(argv, **kwargs):
+        seen["argv"] = list(argv)
         seen.update(kwargs)
-        return types.SimpleNamespace(returncode=0, stdout="{}")
+        return types.SimpleNamespace(returncode=0, stdout="{}", stderr="")
 
     monkeypatch.setattr(gh_pr, "resolve_gh", lambda: "/usr/bin/gh")
-    monkeypatch.setattr(gh_pr, "run_gh", _fake_run_gh)
+    monkeypatch.setattr(gh_pr, "run_gh", _fake)
 
-    assert gh_pr._run_gh(["pr", "view", "42"], pin_host="github.com") == (0, "{}")
+    transport = gh_pr._Transport("github.com")
+    assert transport.call(["pr", "view", "42"]).ok
     assert seen["audit_caller"] == "core:babysit-pr-watch"
-    assert seen["timeout"] == gh_pr._GH_TIMEOUT_SECS
+    assert 0 < seen["timeout"] <= gh_pr._GH_TIMEOUT_SECS
     assert seen["pin_host"] == "github.com"
     assert seen["argv"][0] == "/usr/bin/gh", "the validated absolute path, not a PATH lookup"
 
 
-def test_a_runner_failure_reads_as_one_failed_tick_not_a_crash(monkeypatch):
-    """Any failure reaching the gh seam becomes one unobservable tick.
+def test_a_runner_failure_reads_as_one_unavailable_reading_not_a_crash(monkeypatch):
+    """Any failure reaching the gh seam becomes one unreadable tick.
 
-    A missing gh, an unavailable audit sink and a timeout all arrive as
-    exceptions, and all three mean the same thing to the watch: this tick could
-    not observe. Letting one escape kills the cron, and a dead cron is a watch
-    that is silent for the reason an operator would least expect.
+    A missing gh, an unavailable audit sink and a timeout all arrive as exceptions,
+    and all three mean the same thing: this tick could not observe. Letting one
+    escape kills the watch, and a dead watch is silent for the reason an owner would
+    least expect.
     """
 
     def _boom(argv, **kwargs):
@@ -602,21 +595,23 @@ def test_a_runner_failure_reads_as_one_failed_tick_not_a_crash(monkeypatch):
 
     monkeypatch.setattr(gh_pr, "resolve_gh", lambda: "/usr/bin/gh")
     monkeypatch.setattr(gh_pr, "run_gh", _boom)
-    assert gh_pr._run_gh(["pr", "view", "42"]) == (1, "")
+    monkeypatch.setattr(gh_pr._Transport, "_sleep", lambda self, seconds: None)
+    observation = gh_pr.fetch(_msg())
+    assert observation.status == gh_pr.STATUS_UNAVAILABLE
+    assert not observation.reached and not observation.is_terminal
 
 
 def test_build_hands_out_a_fresh_probe_and_none_for_an_unknown_kind():
     """``build`` returns a fresh probe per call, and ``None`` is a real answer.
 
-    A fresh instance matters because a probe holds one watch's parsed
-    configuration -- repo, pull request, known reds, window -- so a shared one
-    would serve another watch's subject. ``None`` for an unknown kind is
-    supported rather than an error: a monitor whose subject nothing observes
-    degrades to its driver's own schedule, never to silence.
+    A fresh instance matters because a probe holds one watch's parsed configuration
+    and one tick's reading, so a shared one would serve another watch's subject.
+    ``None`` for an unknown kind is supported rather than an error: a monitor whose
+    subject nothing observes degrades to its driver's own schedule, never to silence.
     """
     first = probes.build(probes.GH_PR)
     second = probes.build(probes.GH_PR)
     assert isinstance(first, gh_pr.PrWatchProbe)
     assert isinstance(second, gh_pr.PrWatchProbe)
-    assert first is not second, "one probe holds one watch's config; sharing leaks it"
+    assert first is not second, "one probe holds one watch's config and reading"
     assert probes.build("no-such-kind") is None

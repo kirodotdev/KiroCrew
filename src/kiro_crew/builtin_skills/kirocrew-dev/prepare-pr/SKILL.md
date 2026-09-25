@@ -804,8 +804,8 @@ grants publication permission.
 
 **Never hand the fix-and-push loop to a cron job or a HEARTBEAT.md task.** Neither
 can push a revision, and both report success while doing nothing (why:
-`references/rationale.md`). `monitor_watch` and the compatibility `pr_watch` cron
-see provider facts only, never reviewer posts, so this loop stays on `monitor_start`.
+`references/rationale.md`). `monitor_watch` sees provider facts only, never reviewer
+posts, so this loop stays on `monitor_start`.
 
 Cron *is* correct for post-merge cleanup, as a `script` cron at roughly a 5-minute
 interval — an hourly one loses the merge-to-teardown race.

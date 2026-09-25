@@ -360,9 +360,11 @@ runs over 25 hours with 23 approval blocks, zero pushes, and a healthy-looking
 registry. Heartbeat runs under a strict name allowlist (`HEARTBEAT_SAFE_TOOLS`) with
 no shell and no `git push`, so it cannot amend a commit at all.
 
-`pr_watch` is exempted only for a pure-watch stretch because it reads no comment
+`monitor_watch` is exempted only for a pure-watch stretch because it reads no comment
 bodies. A round is complete when every check finished **and** every bot posted, and
-`pr_watch` cannot see the second half of that condition.
+a provider-typed watch cannot see the second half of that condition. There is no
+script-cron watcher to exempt: a cron holding a copy of the retired driver is
+refused on every tick and auto-paused.
 
 ## Why arming cannot be confirmed from the reply
 

@@ -66,10 +66,26 @@ class PullRequestProviderError(Exception):
 
 
 def classify_provider_error_text(raw: str) -> ProviderErrorKind:
-    """Classify CLI diagnostics without retaining or returning their text."""
+    """Classify CLI diagnostics without retaining or returning their text.
+
+    One marker set per category, for every reader of every provider CLI. Two sets
+    for one binary is two answers to the same question: they drift in both
+    directions, and the reader holding the shorter list waits where the other
+    retries. ``secondary rate`` and ``abuse detection`` are GitHub's own wording for
+    a budget refusal and live here rather than beside one caller; a provider that
+    never emits them is unaffected, and one that starts to is classified correctly.
+    """
     lowered = raw.lower()
     if any(
-        marker in lowered for marker in ("http 429", "rate limit", "too many requests", "throttled")
+        marker in lowered
+        for marker in (
+            "http 429",
+            "rate limit",
+            "secondary rate",
+            "abuse detection",
+            "too many requests",
+            "throttled",
+        )
     ):
         return ProviderErrorKind.RATE_LIMITED
     if any(

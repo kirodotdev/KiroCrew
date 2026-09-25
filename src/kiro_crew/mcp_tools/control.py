@@ -28,6 +28,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from kiro_crew import autonudge, mcp_core, platform_compat, session_directive
+from kiro_crew.autonudge_judge import ending_phrase, screen_phrase
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.mcp_shared import ToolCancelled, is_tool_cancelled
 from kiro_crew.mcp_tools._limits import (
@@ -56,7 +57,6 @@ from kiro_crew.monitoring.registry import (
     publicly_armable_objectives,
 )
 from kiro_crew.monitoring.targets import normalize_pull_request_target
-from kiro_crew.probes.gh_pr import terminal_set_phrase, wake_set_phrase
 from kiro_crew.security import (
     redact_and_truncate,
     redact_credentials,
@@ -170,9 +170,8 @@ def _prefers_structured_arming() -> bool:
 
 
 def _ending_clause() -> str:
-    """The watch-ending set, capitalised to open a sentence."""
-    phrase = terminal_set_phrase()
-    return phrase[:1].upper() + phrase[1:]
+    """The one thing that ENDS a watch, capitalised to open a sentence."""
+    return ending_phrase()
 
 
 def schemas() -> list[dict[str, Any]]:
@@ -509,11 +508,12 @@ def schemas() -> list[dict[str, Any]]:
                 "only real signals. "
                 "COST: naming exactly ONE GitHub pull request BY ITS FULL URL "
                 "(https://github.com/<owner>/<repo>/pull/<N>) makes the loop "
-                "observe it each interval and re-inject your message only on a "
-                f"wake from it: {wake_set_phrase()}. Progress outside that set "
-                "raises no wake and costs no model turn -- one lane of many "
-                "finishing, a pending count shrinking, a check going green "
-                "while others still run -- and a raised wake is held briefly, "
+                "observe it each interval and re-inject your message only when "
+                f"the tick needs you: {screen_phrase()}. Where the screen is "
+                "available, progress that asks nothing of you raises no wake and "
+                "costs no model turn -- one "
+                "lane of many finishing, a pending count shrinking, a bot "
+                "posting its own status -- and a raised wake is held briefly, "
                 "so it lands up to about one interval after the tick that "
                 f"observed it. {_ending_clause()} ends the watch rather than "
                 "waking you. "
@@ -553,15 +553,16 @@ def schemas() -> list[dict[str, Any]]:
                         "description": (
                             "Default true. Pass false to opt this loop OUT of "
                             "observation-gating, so it is re-injected every "
-                            "interval even when the pull request it names raises "
-                            "no wake. Use it for a loop whose duty is to act "
+                            "interval even when the tick needs nothing from you. "
+                            "Use it for a loop whose duty is to act "
                             "WHILE the subject is quiet -- refresh a heartbeat "
                             "file, chase a reviewer who still has not replied, "
                             "keep a branch rebased on a moving base -- since the "
-                            "observation watches the pull request and continued "
+                            "screen reads the pull request and continued "
                             "silence is invisible to it. Pass it too for a loop "
                             "that must see lanes land one at a time, since "
-                            "per-lane progress raises no wake. A gated loop is "
+                            "per-lane progress raises no wake unless your own "
+                            "wake criteria ask for it. A gated loop is "
                             "never starved (it is delivered anyway after enough "
                             "quiet intervals) so reach for this only when every "
                             "interval genuinely has work"
@@ -1538,9 +1539,8 @@ def monitor_start(name: str, args: dict[str, Any]) -> str:
             "Monitor loop requested on this session: "
             + (
                 f"observing {gated.target} every {interval_secs}s and "
-                "re-injecting the message only on a wake from it -- "
-                f"{wake_set_phrase()} -- so a lane finishing while others "
-                "still run costs no turn, and a raised wake lands up to about "
+                "re-injecting the message only when the tick needs you -- "
+                f"{screen_phrase()}, and a raised wake lands up to about "
                 "one interval after the tick that saw it"
                 + (f" and the {max_cycles} cap counts delivered turns" if max_cycles else "")
                 if gated is not None

@@ -28,14 +28,16 @@ delivered:
   kernel's bounds are deliberately not forwarded through `poll`: a probe already
   declares what it needs through `Probe.tuning`.
 
-The in-tree consumer is `PrWatchProbe`. It reads a pull request through `gh`,
-classifies pull-request state and checks, and hands its result to the kernel.
-The probe lives in the package rather than beside a driver because it outlives
-its drivers -- it is now driven by both the script cron adapter
-(`builtin_skills/kirocrew-dev/babysit/scripts/pr_watch.py:watch`, via `irq.run`)
-and the scheduler (via `irq.poll`), and a hyphenated skill directory is not
-importable, so a copy per driver would have meant two copies of one classifier.
-See `probes.gh_pr.PrWatchProbe.observe`.
+The in-tree consumer is `PrWatchProbe`. It FETCHES a pull request through `gh` and
+classifies nothing: it publishes the reading on itself and returns a tick carrying
+only what the kernel needs of its own -- an epoch, a pending count, and whether the
+subject was reachable. The driver (`irq.poll`, from `autonudge.py`) reads the
+published reading and the wake judge decides on it.
+
+So the kernel serves this consumer for two things a stateless reading cannot hold:
+the epoch, so dedupe memory resets on a new head, and the consecutive-failure
+backstop, which turns a run of unreadable ticks into one report that the watch is
+blind. See `probes.gh_pr.fetch` and `probes.gh_pr.PrWatchProbe.observe`.
 
 ## Authoring contract
 
@@ -181,39 +183,39 @@ horizon means "not currently inspected," not "cleared." See
 A zero coalescing floor uses immediate `WAKE` delivery. The behavior is pinned
 by `test_coalesce_secs_zero_restores_fire_on_first_anomaly`.
 
-## GitHub pull-request probe
+## GitHub pull-request fetcher
 
-`PrWatchProbe.identity` validates the message's repository, pull-request
-identifier, inherited-failure list, and coalescing value before returning the
-watch identity. `PrWatchProbe.tuning` supplies the message-derived coalescing
-override. `watch` constructs the probe and calls `irq.run`.
+`PrWatchProbe.identity` validates the message's repository, pull request, and
+optional pinnable host before returning the watch identity. `PrWatchProbe.observe`
+calls `probes.gh_pr.fetch`, stores the result on `PrWatchProbe.observation`, and
+returns `Tick(observations=[])` -- the fetcher raises no wake, so nothing here is
+deduped or coalesced.
 
-`PrWatchProbe.observe`:
+`fetch` reads, in one bounded tick budget: the pull request's state, mergeability,
+merge state, review decision, draft flag and head; its check runs, paginated
+against the API's own `total_count`; its commit statuses, which are a separate
+sequence a required gate can be published in; and its comments and reviews WITH
+bodies, clipped per item and in total, inside a fetch horizon, skipping the bot's
+own comments.
 
-* returns terminal observations for merged and closed pull requests;
-* emits an `IMMEDIATE` observation for conflicting or dirty pull requests;
-* collapses duplicate check rows, filters known inherited failures, and emits
-  `WAKE` observations for unexpected failures;
-* emits a review-ready observation only when checks are present, no checks are
-  pending, and no unexpected failures remain; and
-* emits epoch-independent observations for recent comments and submitted
-  reviews, without including their bodies in a wake brief.
+Every call goes through `_Transport`: `github_runner.run_gh` with the validated
+absolute path, the restricted environment, an SEL audit record and the pinned
+host; a per-call timeout under the tick budget; bounded retry with jittered
+exponential backoff; and rate limits read off the response headers so a call backs
+off on a nearly-spent window rather than being refused by it.
 
-`_collapse`, `_conversation`, and `observe` implement those classifications.
-The comment horizon has an import-time assertion that it expires before the
-controller's re-alert interval, so expired sticky dedupe state cannot replay an
-old comment. See `pr_watch.DEFAULT_COMMENT_HORIZON_SECS` and
-`PrWatchProbe._conversation`.
-
-`PrWatchProbe._fetch` returns `None` for an unavailable or malformed `gh`
-response. `PrWatchProbe.observe` converts that result to an unreadable tick,
-feeding the controller's error backstop rather than raising from the cron entry
-point. `pr_watch._run_gh` routes the command through `github_runner.run_gh`.
+One `status` per reading says how complete it is: `ok`, `partial`, or
+`unavailable`. A forge refusal becomes a status, never an exception; only
+`unavailable` reaches the kernel as `Tick(fetch_ok=False)` and feeds the error
+backstop. `PrObservation.as_facts` is the durable half and carries no prose;
+`PrObservation.bodies` is a separate call, and what it returns stays in the process
+that fetched it.
 
 ## Non-goals
 
-The controller runs a single tick; cron cadence, retries, and job registration
-belong to the cron service. The pull-request probe detects comment and review
-metadata, not their prose. The woken agent reads and judges discussion after a
-wake; `PrWatchProbe._conversation` deliberately keeps body text out of the
-probe's observations.
+The controller runs a single tick; cadence, retries and job registration belong to
+its driver. The pull-request fetcher makes no wake decision at all: it reports what
+it read, including comment and review bodies, and the wake judge decides against
+the loop's own criteria. The one deterministic mapping -- a merged or closed pull
+request ends the watch -- belongs to the auto-nudge core, not to this controller
+and not to the fetcher.
