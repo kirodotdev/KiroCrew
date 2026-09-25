@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor, fireEvent, within } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 /* ── Mock api/client BEFORE the component imports ── */
@@ -90,16 +90,14 @@ describe('AgentSkillsEditor', () => {
     expect(screen.queryByRole('option', { name: /babysit/i })).not.toBeInTheDocument()
   })
 
-  it('removing a chip PATCHes only the removal', async () => {
-    // Every mapping the write does not name is the writer's to preserve, so it names one thing.
-    renderEditor({ skills: ['babysit', 'widgets'] })
+  it('removing a chip PATCHes the remaining keys', async () => {
+    const { onChange } = renderEditor({ skills: ['babysit', 'widgets'] })
     fireEvent.click(await screen.findByRole('button', { name: /remove skill babysit/i }))
 
     await waitFor(() =>
-      expect(mockApi.agentPatch).toHaveBeenCalledWith('specialist', {
-        removed_skill: 'babysit',
-      }),
+      expect(mockApi.agentPatch).toHaveBeenCalledWith('specialist', { skills: ['widgets'] }),
     )
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith('specialist', ['widgets']))
   })
 
   it('prefers the server-returned key list over the optimistic one', async () => {
@@ -137,39 +135,19 @@ describe('AgentSkillsEditor', () => {
     expect(mockApi.agentPatch).toHaveBeenCalledWith('agent-a', { skills: ['widgets'] })
   })
 
-  it('asks before removing an unmanaged URI, since the picker cannot put one back', async () => {
-    const uri = 'skill://~/.kiro/skills/*/SKILL.md'
-    renderEditor({ skills: [], unmanaged: [uri] })
-    await waitFor(() => expect(screen.getByText(uri)).toBeInTheDocument())
-
-    fireEvent.click(screen.getByRole('button', { name: /Remove skill/i }))
-    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
-    expect(mockApi.agentPatch).not.toHaveBeenCalled()
-    expect(screen.getByRole('dialog')).toHaveTextContent(uri)
-  })
-
-  it('removes an unmanaged skill:// URI by NAMING it, never by omitting it', async () => {
+  it('lists unmanaged skill:// URIs read-only with no remove control', async () => {
+    // The catalog cannot express these, so there is no picker row to put one back.
+    // They are shown so an agent that loads more than the chips suggest is explained,
+    // but the backend on base owns their removal — the editor does not offer it.
     renderEditor({ skills: [], unmanaged: ['skill://~/.kiro/skills/*/SKILL.md'] })
     await waitFor(() =>
       expect(screen.getByText('skill://~/.kiro/skills/*/SKILL.md')).toBeInTheDocument(),
     )
-    const x = screen.getByRole('button', { name: /Remove skill/i })
-    // The action group is capped at two controls, so this one lives in its own region.
-    expect(screen.getByTestId('agent-skills-unmanaged-region')).toContainElement(x)
-    fireEvent.click(x)
-    const dialog = await screen.findByRole('dialog')
-    fireEvent.click(within(dialog).getByRole('button', { name: /^remove/i }))
-    await waitFor(() =>
-      expect(mockApi.agentPatch).toHaveBeenCalledWith('specialist', {
-        // No `skills`: resubmitting this client's managed keys would overwrite whatever a
-        // concurrent session mapped since they were read.
-        removed_unmanaged_skill: 'skill://~/.kiro/skills/*/SKILL.md',
-        unmanaged_skills: ['skill://~/.kiro/skills/*/SKILL.md'],
-      }),
-    )
     // A wildcard mapping is still a mapping — the empty state must not claim
     // the agent has none.
     expect(screen.queryByText(/No skills mapped/i)).not.toBeInTheDocument()
+    // No remove control on an unmanaged URI: only the picker-managed chips carry one.
+    expect(screen.queryByRole('button', { name: /remove skill/i })).not.toBeInTheDocument()
   })
 
   it('disables Add when every catalog skill is already mapped', async () => {
@@ -226,7 +204,7 @@ describe('shared instant-save chain (GPT round-26)', () => {
     // Remove the mapped chip -> a save starts and is held open.
     fireEvent.click(await screen.findByRole('button', { name: /Remove/ }))
     await waitFor(() =>
-      expect(mockApi.agentPatch).toHaveBeenCalledWith('atlas', { removed_skill: 'grill' }),
+      expect(mockApi.agentPatch).toHaveBeenCalledWith('atlas', { skills: [] }),
     )
     await waitFor(() => expect(onSavePending).toHaveBeenCalledWith(true))
 
@@ -256,15 +234,6 @@ function colliding(pathA: string, pathB: string) {
     { key: KEY_A, name: 'code-review', description: 'Review a change', source: 'package', path: pathA },
     { key: KEY_B, name: 'code-review', description: 'Review a change', source: 'package', path: pathB },
   ]
-}
-
-/** An ApiError carries the structured refusal on `body`; the prose message is separate. */
-class RefusalError extends Error {
-  body: string
-  constructor(message: string, body: string) {
-    super(message)
-    this.body = body
-  }
 }
 
 describe('disambiguating colliding package copies', () => {
@@ -401,86 +370,46 @@ describe('disambiguating colliding package copies', () => {
   })
 })
 
-describe('reading the backend refusal from its structured body', () => {
-  const CATALOG_WITH_TWINS = colliding(
-    '/home/u/.kiro/skills/papyrus-writer/code-review/SKILL.md',
-    '/home/u/.kiro/skills/atlas-tools/code-review/SKILL.md',
-  )
+describe('an unresolved mapping', () => {
+  it('marks a NON-package mapping with no installed copy as unresolved and counts it', async () => {
+    // A non-package key the catalog no longer lists is a genuine dead mapping (its source
+    // does not silently degrade to empty), so it gets the warn style plus a count line.
+    mockApi.skills.mockResolvedValue(CATALOG)
+    renderEditor({ skills: ['babysit', 'kiro-workspace/gone/SKILL.md'] })
 
-  it('names the refused key the way the picker labels it, not as a bare digest', async () => {
-    // The refusal is whole-PATCH, so the offender need not be the key this call added.
-    mockApi.skills.mockResolvedValue(CATALOG_WITH_TWINS)
-    mockApi.agentPatch.mockRejectedValue(
-      new RefusalError('unknown skills', JSON.stringify({ code: 'skills_unknown', skills: [KEY_A] })),
-    )
-    renderEditor({ skills: [] })
-    await openAddMenu()
-    const rows = await screen.findAllByRole('option', { name: /code-review/i })
-    fireEvent.click(rows[1])
-
-    const msg = await screen.findByText(/Couldn't save/)
-    expect(msg).toHaveTextContent('code-review (skills/papyrus-writer)')
-    expect(msg.textContent).not.toContain(DIGEST_A)
-  })
-
-  it('tells the user to re-pick when the refused key is the one just chosen', async () => {
-    mockApi.skills.mockResolvedValue(CATALOG_WITH_TWINS)
-    renderEditor({ skills: [] })
-    await openAddMenu()
-    const rows = await screen.findAllByRole('option', { name: /code-review/i })
-    mockApi.agentPatch.mockRejectedValue(
-      new RefusalError('unknown skills', JSON.stringify({ code: 'skills_unknown', skills: [KEY_A] })),
-    )
-    fireEvent.click(rows[0])
-
-    expect(await screen.findByText(/pick it again from the refreshed list/)).toBeInTheDocument()
-  })
-
-  it('falls back to a generic refusal when the body names no usable key', async () => {
-    // A removal names no key of its own, so with an empty list there is nothing to name.
-    mockApi.skills.mockResolvedValue(CATALOG_WITH_TWINS)
-    mockApi.agentPatch.mockRejectedValue(
-      new RefusalError('unknown skills', JSON.stringify({ code: 'skills_unknown', skills: [] })),
-    )
-    renderEditor({ skills: [KEY_A] })
-    fireEvent.click(await screen.findByRole('button', { name: /remove skill/i }))
-
+    await waitFor(() => expect(screen.getByText('babysit')).toBeInTheDocument())
+    // The count line at the bottom names the number of dead mappings.
     expect(
-      await screen.findByText(/a mapped skill no longer matches an installed copy/),
+      await screen.findByText(/1 mapped skill no longer matches an installed copy/i),
     ).toBeInTheDocument()
   })
 
-  it('marks the refused mapping as unresolved even while the cached catalog still lists it', async () => {
-    mockApi.skills.mockResolvedValue(CATALOG_WITH_TWINS)
-    mockApi.agentPatch.mockRejectedValue(
-      new RefusalError('unknown skills', JSON.stringify({ code: 'skills_unknown', skills: [KEY_A] })),
-    )
-    renderEditor({ skills: [KEY_A] })
-    fireEvent.click(await screen.findByRole('button', { name: /remove skill/i }))
+  it('does NOT mark an absent package mapping as dead, since /api/skills can degrade to an empty package set', async () => {
+    // `GET /api/skills` sources package rows from a timeout-bounded `list_skills()` that
+    // degrades to [] with a 200 on timeout, with no completeness signal to the client. A
+    // package key missing from that partial response is not evidence the copy is gone, so it
+    // must not be flagged — flagging it would tell the user to delete a live mapping.
+    mockApi.skills.mockResolvedValue(CATALOG)
+    renderEditor({ skills: ['babysit', 'package/deadbeef:code-review/SKILL.md'] })
 
-    await waitFor(() => expect(screen.getByText(/Couldn't save/)).toBeInTheDocument())
-    const chip = screen.getByText('code-review').closest('span')!
-    expect(chip).toHaveAttribute('title', expect.stringContaining('no longer matches'))
+    await waitFor(() => expect(screen.getByText('babysit')).toBeInTheDocument())
+    // No warn count line, and no removal instruction, for the absent package key.
+    expect(
+      screen.queryByText(/no longer matches an installed copy/i),
+    ).not.toBeInTheDocument()
   })
 
-  it('reports a structured body whose code is a different refusal as its own message', async () => {
-    mockApi.skills.mockResolvedValue(CATALOG_WITH_TWINS)
-    mockApi.agentPatch.mockRejectedValue(
-      new RefusalError('agent is read-only', JSON.stringify({ code: 'agent_readonly' })),
+  it('states the reason when the catalog fails to load and disables Add', async () => {
+    // A failed load must not look like "you have no skills": it states its reason, and it
+    // must not leave the picker enabled offering stale cached options.
+    mockApi.skills.mockRejectedValue(new Error('boom'))
+    renderEditor({ skills: [] })
+
+    expect(
+      await screen.findByText(/Could not load the skill catalog/i),
+    ).toBeInTheDocument()
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /add skill/i })).toBeDisabled(),
     )
-    renderEditor({ skills: [KEY_A] })
-    fireEvent.click(await screen.findByRole('button', { name: /remove skill/i }))
-
-    expect(await screen.findByText('agent is read-only')).toBeInTheDocument()
-    expect(screen.queryByText(/Couldn't save/)).not.toBeInTheDocument()
-  })
-
-  it('reports a body that only looks like JSON as its own message', async () => {
-    mockApi.skills.mockResolvedValue(CATALOG_WITH_TWINS)
-    mockApi.agentPatch.mockRejectedValue(new RefusalError('gateway timeout', '{"code": trunc'))
-    renderEditor({ skills: [KEY_A] })
-    fireEvent.click(await screen.findByRole('button', { name: /remove skill/i }))
-
-    expect(await screen.findByText('gateway timeout')).toBeInTheDocument()
   })
 })

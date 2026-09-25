@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, Brain, ChevronDown, FileCog, Plus, X } from 'lucide-react'
+import { useMutation, useQuery } from '@tanstack/react-query'
+import { AlertTriangle, Brain, ChevronDown, Lock, Plus, X } from 'lucide-react'
 import { api } from '../api/client'
-import { useConfirm } from './ConfirmDialog'
 import { Btn, Input } from './ui'
 import { Popover, PopoverTrigger, PopoverContent } from './ui/popover'
 import InfoTip from './InfoTip'
@@ -11,6 +10,7 @@ import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { isTouchDevice } from '../utils/isTouchDevice'
 
 import { i18nT } from '../i18n/t'
+import { compareText } from '../i18n/format'
 import ErrorNotice from './ErrorNotice'
 /** A row from `GET /api/skills` — only the fields this editor needs. */
 export interface CatalogSkill {
@@ -20,76 +20,6 @@ export interface CatalogSkill {
   source?: string
   /** Absolute path to the row's SKILL.md. */
   path?: string
-}
-
-/**
- * `package/<digest>:<rel>` — the qualifier is what makes one of several colliding copies
- * addressable. It is read here to recover the READABLE half of a mapped key: a key whose
- * copy is no longer enumerated has no catalog row, so the raw key would render as a bare
- * 32-hex digest.
- *
- * No bundle NAME is rendered beside it, deliberately. `GET /api/skills` re-keys a colliding
- * package row onto its qualified spelling, so such a copy DOES reach the picker under its own
- * key -- but the qualifier is a digest, not a name, and the readable disambiguator is the
- * package field the row already carries, which is also what an origin span would have shown.
- */
-const QUALIFIED_PACKAGE_KEY = /^package\/([0-9a-f]{8,}):(.+)$/
-
-function splitQualifiedKey(key: string): { digest: string; rel: string } | null {
-  const m = QUALIFIED_PACKAGE_KEY.exec(key)
-  return m ? { digest: m[1], rel: m[2] } : null
-}
-
-/**
- * The save mutation's variables, declared ONCE.
- *
- * Annotating only one handler's parameter narrows react-query's inferred `TVariables` to
- * that shape, which then contradicts the others -- the compile error this alias prevents.
- */
-interface SaveVars {
-  agent: string
-  /**
-   * The managed keys to write. ABSENT on a removal, which states no managed set at all: the
-   * spec the backend re-reads under lock stays authoritative for every mapping this write
-   * does not name, so a concurrent session's mapping cannot be overwritten away.
-   */
-  next?: string[]
-  /** Readable label of the pick, so a refusal can name WHICH one failed. */
-  attempted?: string
-  /** The key this write added, or undefined for a removal. A refusal naming a DIFFERENT
-   * key means a mapped chip is blocking the write, which changes the advice. */
-  attemptedKey?: string
-  /** URIs this write asks to delete. Naming is the ONLY way to remove one: a write that
-   * omits a URI leaves it alone, so stale client state cannot destroy a co-owner's. */
-  removeUnmanaged?: string
-  /** The managed key this write asks to unmap, named ALONE so no other mapping becomes a
-   * precondition of the removal and no unnamed mapping is replaced. */
-  removedSkill?: string
-}
-
-/**
- * The refusal the backend reported, read from its STRUCTURED body.
- *
- * `friendlyErrText` collapses the payload to its `error` string before it reaches a
- * mutation handler, so the `skills` array never survives into the message -- which is why
- * this reads `ApiError.body`, kept for exactly this, and matches on the machine-readable
- * `code` rather than the prose. The refusal is whole-PATCH, so the offender is not
- * necessarily the key this call added, and a removal adds none at all.
- */
-function unknownSkillsFrom(e: unknown): { unlisted: boolean; refused: string | null } {
-  const body = typeof (e as { body?: unknown })?.body === 'string'
-    ? (e as { body: string }).body
-    : ''
-  if (!body.trim().startsWith('{')) return { unlisted: false, refused: null }
-  try {
-    const parsed = JSON.parse(body) as { code?: unknown; skills?: unknown }
-    if (parsed.code === 'skills_unknown') {
-      const list = Array.isArray(parsed.skills) ? parsed.skills : []
-      const first = list.find((s): s is string => typeof s === 'string' && s.length > 0)
-      return { unlisted: true, refused: first ?? null }
-    }
-  } catch { /* a body that is not JSON is not this refusal */ }
-  return { unlisted: false, refused: null }
 }
 
 /**
@@ -168,11 +98,8 @@ interface Props {
    * after the user has selected a different agent — the caller must ignore a
    * response that no longer matches what is on screen, or agent A's skills land
    * on agent B and the next edit writes them to B's spec.
-   *
-   * `unmanaged` carries the URIs the write PRESERVED. A removal the backend could not
-   * honour comes back here, so the caller re-renders it rather than reporting a bare success.
    */
-  onChange: (agentName: string, skills: string[], unmanaged?: string[]) => void
+  onChange: (agentName: string, skills: string[]) => void
   /**
    * Resolves the template the edit should actually be written to, called just
    * before each save. The Agent Template pane uses it for blueprint semantics:
@@ -217,16 +144,12 @@ function middleElide(text: string, max: number): string {
 }
 
 export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], onChange, beforeSave, pendingChain, onSavePending }: Props) {
-  const { confirm, confirmDialog } = useConfirm()
   const [error, setError] = useState('')
-  // The catalog is cached, so a refusal can arrive while the stale copy still lists the key.
-  const [refusedKey, setRefusedKey] = useState<string | null>(null)
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState('')
   const btnRef = useRef<HTMLButtonElement>(null)
   const dropdownRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
-  const queryClient = useQueryClient()
 
   const {
     data: catalog = [],
@@ -269,6 +192,8 @@ export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], o
 
   // A tail is widened only until it differs from its twin, so eliding the middle can
   // collapse the two back to one string and defeat the disambiguator on the case it is for.
+  // This is the SINGLE source both the chip and the picker read for an ambiguous qualifier,
+  // so a twin can never be handed a qualifier that some other code path derived differently.
   const whereByKey = useMemo(() => {
     const tailsByName = new Map<string, string[]>()
     const pkg = catalog.filter(s => s.source === 'package')
@@ -279,7 +204,14 @@ export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], o
     const out = new Map<string, string>()
     for (const s of pkg) {
       const tail = tailByKey.get(s.key)
-      if (!tail) continue
+      if (!tail) {
+        // The path could not separate this group, so there is no widened tail. Both copies
+        // fall back to the SAME shared location -- an honest shared location, never a made-up
+        // distinction. Omit it entirely when even that is empty.
+        const shared = pathTail(s.path, s.name)
+        if (shared) out.set(s.key, shared)
+        continue
+      }
       const elided = middleElide(tail, CHIP_WHERE_MAX)
       const group = tailsByName.get(s.name) ?? []
       const collapsed = group.filter(t => middleElide(t, CHIP_WHERE_MAX) === elided).length > 1
@@ -290,17 +222,33 @@ export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], o
 
   // Empty until the catalog loads: with no rows every key looks unresolved, so a count
   // taken before then would report the whole mapping as missing.
+  //
+  // A `package/` key is EXEMPT: `GET /api/skills` sources package rows from the
+  // capability manager, whose `list_skills()` is timeout-bounded and degrades to an
+  // EMPTY package set with a normal 200 on timeout (no completeness signal reaches the
+  // client). Marking a package mapping dead on that partial response is a false positive,
+  // and the count line below then instructs the user to remove a live mapping. The other
+  // sources (kirocrew, kiro-workspace) do not silently drop to empty, so a NON-package key
+  // absent from a loaded catalog is a genuine dead mapping and is still flagged.
+  const isPackageKey = (k: string) => k.startsWith('package/')
   const unresolvedKeys = useMemo(
-    () => (catalogLoaded ? skills.filter(k => !byKey.get(k)) : []),
+    () => (catalogLoaded ? skills.filter(k => !isPackageKey(k) && !byKey.get(k)) : []),
     [catalogLoaded, skills, byKey]
   )
   const unresolvedCount = unresolvedKeys.length
 
   // Candidates = catalog minus what's already mapped, name-sorted for a stable
   // list regardless of the catalog's source-grouped order.
+  //
+  // Empty while the catalog is in an ERROR state: a failed background refetch keeps the
+  // last-successful `data` cached, so without this the picker would stay enabled and offer
+  // stale options while the notice claims the catalog could not load. Suppressing them here
+  // also disables Add (length 0) and makes the listbox render the failure text.
   const candidates = useMemo(
-    () => catalog.filter(s => !skills.includes(s.key)).sort((a, b) => a.name.localeCompare(b.name)),
-    [catalog, skills],
+    () => catalogFailed
+      ? []
+      : catalog.filter(s => !skills.includes(s.key)).sort((a, b) => compareText(a.name, b.name)),
+    [catalog, skills, catalogFailed],
   )
 
   const filtered = useMemo(
@@ -319,7 +267,7 @@ export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], o
     // the agent it was issued for, not to whatever is selected when it lands.
     // `beforeSave` may redirect the write to a just-forked private copy; the
     // resolved target is what onChange reports, so the caller tracks the copy.
-    mutationFn: async ({ agent, next, removeUnmanaged, removedSkill }: SaveVars) => {
+    mutationFn: async ({ agent, next }: { agent: string; next: string[] }) => {
       // Chained onto the caller's shared instant-save chain when one is
       // provided: an action that snapshots the file (publish) can then drain
       // ONE promise and know every queued edit — model pick or skill toggle —
@@ -328,83 +276,15 @@ export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], o
         .catch(() => undefined)
         .then(async () => {
           const target = beforeSave ? await beforeSave() : agent
-          const res = await api.agentPatch(target, {
-            // Omitted entirely for a removal: resubmitting this client's managed keys would
-            // overwrite whatever a concurrent session mapped since they were read.
-            ...(next !== undefined ? { skills: next } : {}),
-            ...(removeUnmanaged ? { removed_unmanaged_skill: removeUnmanaged } : {}),
-            ...(removedSkill ? { removed_skill: removedSkill } : {}),
-            // What this client SAW as unmanaged. Never a keep-list: it only lets the write
-            // tell a mid-flight reclassification from a mapping that was managed all along.
-            ...(unmanaged.length ? { unmanaged_skills: unmanaged } : {}),
-          })
-          return { res: res as { skills?: string[]; unmanaged_skills?: string[] }, target }
+          const res = await api.agentPatch(target, { skills: next })
+          return { res: res as { skills?: string[] }, target }
         })
       if (pendingChain) pendingChain.current = run
       return run
     },
-    onMutate: () => {
-      setError('')
-      setRefusedKey(null)
-    },
-    onSuccess: (
-      { res, target }: { res: { skills?: string[]; unmanaged_skills?: string[] }; target: string },
-      { next, removeUnmanaged }: SaveVars
-    ) => {
-      // The chip that opened the confirm unmounts with this save, so the dialog's own restore
-      // target is a detached node by now and focusing it is a no-op that lands on <body>.
-      if (removeUnmanaged) btnRef.current?.focus()
-      // A removal states no managed set, so this client's own is what still holds when the
-      // response does not carry one. Never undefined: callers assert the arity.
-      const applied = res?.skills ?? next ?? skills
-      // Two-arg when there is nothing unmanaged to report: the third argument is optional
-      // and callers assert the arity, so passing an explicit undefined breaks them.
-      if (res?.unmanaged_skills === undefined) onChange(target, applied)
-      else onChange(target, applied, res.unmanaged_skills)
-    },
-    onError: (e: unknown, vars: SaveVars) => {
-      const { unlisted, refused } = unknownSkillsFrom(e)
-      setRefusedKey(refused)
-      const offender = refused
-        ? // Still the key the BACKEND refused, but labelled the way the picker labels it:
-          // both copies of a collision share a name, so a bare one names neither.
-          (candidates.some(c => c.key === refused) ? pickLabel(refused) : null) ||
-          catalog.find(c => c.key === refused)?.name ||
-          splitQualifiedKey(refused)?.rel ||
-          refused
-        : // The backend named no key, so the pick just made is the best name available --
-          // and for an add it is also the one a re-pick would fix.
-          vars.attempted
-      // Re-picking only helps when the refused key IS the one just chosen; otherwise a
-      // mapped chip blocks every write and removing it is the only move that can succeed.
-      const blocker = refused && refused !== vars.attemptedKey
-      const named = offender ?? ''
-      setError(
-        unlisted
-          ? // No name means no sentence can name one: every named string starts with the
-            // label, so interpolating '' renders a dangling colon on either branch.
-            !named
-            ? i18nT('components.agentSkillsEditor.key_changed_remove_blocked_generic')
-            : blocker || vars.attemptedKey === undefined
-                ? i18nT('components.agentSkillsEditor.key_changed_remove_blocked', {
-                    name: named,
-                  })
-                : i18nT('components.agentSkillsEditor.key_changed_repick', { name: named })
-          : e instanceof Error
-            ? e.message
-            : String(e)
-      )
-      // The catalog in hand is the stale one that minted the refused key, and it is
-      // cached, so without this a retry re-sends exactly the key that was just rejected.
-      if (unlisted) {
-        void queryClient.invalidateQueries({ queryKey: ['skills-catalog'] })
-        // The agent detail too: the whole PATCH is refused, so `skills` still holds EVERY
-        // stale key and each removal names the other, with no exit but a page reload.
-        // Prefix-keyed, as the two sibling call sites are: the detail is registered as
-        // ['agentDetail', <template>], and a fork may have retargeted the write.
-        void queryClient.invalidateQueries({ queryKey: ['agentDetail'] })
-      }
-    },
+    onMutate: () => setError(''),
+    onSuccess: ({ res, target }, { next }) => onChange(target, res?.skills ?? next),
+    onError: (e: unknown) => setError(e instanceof Error ? e.message : String(e)),
   })
 
   // Reported as an effect, not inline in render: the parent uses it to fence
@@ -418,30 +298,13 @@ export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], o
   const close = useCallback(() => setOpen(false), [])
 
   // Both copies of a collision carry the same name, so a bare one names neither: the
-  // notice would read "remove shared-skill first; shared-skill will then be added".
-  const pickLabel = (key: string): string => {
-    const row = candidates.find(c => c.key === key)
-    if (!row) return key
-    const twin = row.source === 'package' && (nameCounts.get(row.name) ?? 0) > 1
-    const tail = twin ? (tailByKey.get(row.key) ?? pathTail(row.path, row.name)) : null
-    return tail ? `${row.name} (${tail})` : row.name
-  }
+  // picker row's disambiguator is rendered so the user can tell which copy they picked.
   const add = (key: string) => {
     close()
-    save.mutate({
-      agent: agentName,
-      next: [...skills, key],
-      attempted: pickLabel(key),
-      attemptedKey: key,
-    })
+    save.mutate({ agent: agentName, next: [...skills, key] })
   }
-  const remove = (key: string) => {
-    // An unqualified `package/<rel>` key is unique only while its bundle is the sole vendor,
-    // so one held across the refusal's catalog invalidation can bind another root's copy.
-    // Naming ONLY the removal: submitting the remaining set replaces the managed set, so a
-    // stale tab deletes mappings a concurrent session added and any stale key refuses it.
-    save.mutate({ agent: agentName, removedSkill: key })
-  }
+  const remove = (key: string) =>
+    save.mutate({ agent: agentName, next: skills.filter(k => k !== key) })
 
   // On WebKit a composition-cancel Escape arrives after compositionend with
   // isComposing already false, so the raw flags cannot identify it.
@@ -497,34 +360,38 @@ export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], o
       <div className="flex flex-wrap items-center gap-1.5">
         {skills.map(key => {
           const skill = byKey.get(key)
-          const qualified = splitQualifiedKey(key)
-          // An unresolved key has no catalog row to name it, so the raw key would render
-          // as a 32-hex digest; its rel half is the readable part.
-          const label = skill?.name || qualified?.rel || key
+          const label = skill?.name || key
           // No catalog row means the mapped copy is not installed NOW, and the ordinary
           // style made that dead mapping look healthy. Gated on the query having SUCCEEDED:
           // an empty catalog while loading or after a failure is not evidence of absence.
-          const unresolved = (catalogLoaded && !skill) || key === refusedKey
+          // A `package/` key is exempt (see unresolvedKeys): the capability-manager source
+          // degrades to an empty set with a 200 on timeout, so an absent package row is not
+          // reliable evidence the copy is gone.
+          const unresolved = catalogLoaded && !skill && !isPackageKey(key)
           const unresolvedNote = i18nT('components.agentSkillsEditor.mapping_unresolved')
           const ambiguous = skill
             ? skill.source === 'package' && (nameCounts.get(skill.name) ?? 0) > 1
-            : Boolean(qualified)
+            : false
           // The user picked by PATH, so the chip says the same thing the picker row did.
           // No digest fallback: it is unique but cannot be correlated back to that choice,
           // so "shared-skill deadbeef" names nothing the user could act on.
+          // An AMBIGUOUS chip reads its qualifier EXCLUSIVELY from whereByKey, the single
+          // collision-safe source (it keeps the full tail when eliding would collapse twins,
+          // and carries the honest shared location when the path cannot separate them at all),
+          // so two twins can never be handed qualifiers derived by differing code paths.
           const disambiguator = skill
-            ? (tailByKey.get(skill.key) ?? pathTail(skill.path, skill.name))
+            ? (ambiguous
+                ? (whereByKey.get(skill.key) ?? null)
+                : (tailByKey.get(skill.key) ?? pathTail(skill.path, skill.name)))
             : null
           return (
             <span
               key={key}
-              className={`group inline-flex items-center gap-1 pl-2 pr-1 py-1 rounded-full text-[12px] font-mono ${
+              className={`group inline-flex min-w-0 max-w-full items-center gap-1 pl-2 pr-1 py-1 rounded-full text-[12px] font-mono ${
                 unresolved
                   ? 'bg-warn-subtle border border-warn text-warn-fg'
                   : 'bg-accent-subtle border border-accent/30 text-text'
               }`}
-              // A qualified key leads with a 32-hex digest, so the readable label comes
-              // first on every chip and the key follows it as the precise form.
               title={
                 unresolved
                   ? `${unresolvedNote}\n${key}`
@@ -532,8 +399,8 @@ export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], o
                     ? `${skill.description}\n${key}`
                     : `${label}\n${key}`
               }
-              // A screen reader would otherwise spell the whole 32-hex qualifier, so the
-              // name carries the readable label plus the short id the chip already shows.
+              // A screen reader would otherwise spell the whole key, so the name carries
+              // the readable label plus the short disambiguator the chip already shows.
               aria-label={
                 [label, disambiguator, unresolved ? unresolvedNote : skill?.description]
                   .filter(Boolean)
@@ -548,23 +415,21 @@ export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], o
               {/* The warn state is otherwise colour plus an icon carrying no text, and
                   ARIA cannot name a role-less span, so the note ships as real text. */}
               {unresolved && <span className="sr-only">{unresolvedNote}</span>}
-              {label}
+              <span className="min-w-0 truncate">{label}</span>
               {ambiguous && disambiguator && (
                 <span
                   // Same weight as the picker row's line: with two otherwise-identical chips
                   // this is the ONLY text saying which copy is bound.
-                  className="inline-block align-bottom text-text text-[11px]"
+                  className="inline-block max-w-full align-bottom break-all text-text text-[11px]"
                   title={skill?.path || i18nT('components.agentSkillsEditor.copy_identifier_hint')}
                 >
                   {i18nT('components.agentSkillsEditor.copy_identifier_label', {
-                    where:
-                      (skill && whereByKey.get(skill.key)) ??
-                      middleElide(disambiguator, CHIP_WHERE_MAX),
+                    where: disambiguator,
                   })}
                 </span>
               )}
               <button
-                className="text-muted hover:text-danger-fg hover:bg-danger rounded-full px-0.5 transition-colors disabled:opacity-40"
+                className="shrink-0 text-muted hover:text-danger-fg hover:bg-danger rounded-full px-0.5 transition-colors disabled:opacity-40"
                 title={i18nT('components.agentSkillsEditor.remove', { name: label })}
                 aria-label={i18nT('components.agentSkillsEditor.remove_skill', { name: label })}
                 disabled={save.isPending}
@@ -575,6 +440,16 @@ export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], o
             </span>
           )
         })}
+        {unmanaged.map(uri => (
+          <span
+            key={uri}
+            className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-[12px] font-mono bg-bg-elevated border border-border text-muted"
+            title={i18nT('components.agentSkillsEditor.edit_agent_config_to_change_mapping', { path: uri })}
+          >
+            <Lock className="lucide-inline" />
+            {uri}
+          </span>
+        ))}
         {/* `modal`: the host crew editor is a modal dialog, and only a modal popover
             takes over its scroll lock — without that the host cancels wheel events
             over the list. */}
@@ -633,10 +508,11 @@ export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], o
             </div>
             <div role="listbox" aria-label={i18nT('components.agentSkillsEditor.available_skills')} className="overflow-y-auto flex-1 min-h-0 p-1">
               {filtered.length === 0 ? (
+                // No error string here: the catalog-load failure is already surfaced by the
+                // ErrorNotice above (errors-use-error-notice), so the popover only ever shows
+                // the neutral empty state and never becomes a second error box.
                 <div className="px-2 py-3 text-[12px] text-muted text-center">{
-                  catalogFailed
-                    ? i18nT('components.agentSkillsEditor.could_not_load_the_skill_catalog')
-                    : i18nT('components.agentSkillsEditor.no_matching_skills')
+                  i18nT('components.agentSkillsEditor.no_matching_skills')
                 }</div>
               ) : filtered.map(s => {
                 // A repeated PACKAGE name makes two rows visual twins, so the
@@ -644,7 +520,10 @@ export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], o
                 const twin = s.source === 'package' && (nameCounts.get(s.name) ?? 0) > 1
                 // No raw-key fallback: the chip refuses one too, because a 32-hex digest
                 // is not something a user can act on. Better no line than an opaque one.
-                const tail = twin ? (tailByKey.get(s.key) ?? pathTail(s.path, s.name)) : null
+                // Read the SAME collision-safe map the chip uses (whereByKey keeps the full
+                // tail when elision would collapse twins), so two colliding rows never render
+                // an identical qualifier; omit the line when the map has no entry.
+                const tail = twin ? (whereByKey.get(s.key) ?? null) : null
                 return (
                   // Not `Btn`: its inline-flex base would put the name and
                   // description side by side instead of stacked.
@@ -666,7 +545,7 @@ export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], o
                     {tail && (
                       <span className="block text-[11px] font-mono text-text truncate">
                         {i18nT('components.agentSkillsEditor.copy_identifier_label', {
-                          where: middleElide(tail, 44),
+                          where: tail,
                         })}
                       </span>
                     )}
@@ -677,53 +556,6 @@ export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], o
           </PopoverContent>
         </Popover>
       </div>
-      {confirmDialog}
-      {unmanaged.length > 0 && (
-        <div
-          className="flex flex-wrap items-center gap-1.5 mt-1.5"
-          data-testid="agent-skills-unmanaged-region"
-        >
-          {unmanaged.map(uri => (
-            <span
-              key={uri}
-              className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-[12px] font-mono bg-bg-elevated border border-border text-muted"
-              title={i18nT('components.agentSkillsEditor.edit_agent_config_to_change_mapping', { path: uri })}
-            >
-              <FileCog className="lucide-inline shrink-0" aria-hidden="true" />
-              {uri}
-              <button
-                className="text-muted hover:text-danger-fg hover:bg-danger rounded-full px-0.5 transition-colors disabled:opacity-40"
-                aria-label={i18nT('components.agentSkillsEditor.remove_skill', { name: uri })}
-                disabled={save.isPending}
-                onClick={async () => {
-                  // Hand-authored URIs are not catalog rows, so the picker cannot put one
-                  // back: unasked, a mis-click is recoverable only by editing config.
-                  // The URI's TAIL, not the whole thing: a hand-authored path renders an
-                  // unreadable title and an unreadable button when interpolated whole.
-                  const tail = uri.split('/').filter(Boolean).slice(-2).join('/') || uri
-                  const ok = await confirm({
-                    title: i18nT('components.agentSkillsEditor.remove_skill', { name: tail }),
-                    // The consequence, which is the whole reason to ask: restoring one is a
-                    // config-file edit, since a hand-authored URI is not a catalog row.
-                    // The URI alone: the title names the skill and the button names the
-                    // action, so a sentence here can only argue with them.
-                    body: i18nT(
-                      'components.agentSkillsEditor.edit_agent_config_to_change_mapping',
-                      { path: uri },
-                    ),
-                    confirmLabel: i18nT('components.agentSkillsEditor.remove', { name: tail }),
-                  })
-                  if (ok) {
-                    save.mutate({ agent: agentName, removeUnmanaged: uri })
-                  }
-                }}
-              >
-                <X className="lucide-inline" />
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
       {skills.length === 0 && unmanaged.length === 0 && (
         <div className="text-[11px] text-muted mt-1.5">
           {i18nT('components.agentSkillsEditor.no_skills_mapped_this_agent_uses_the_default_beh')}

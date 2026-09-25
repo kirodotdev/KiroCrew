@@ -5,9 +5,13 @@
  * tailwind drops it, and the unresolved state loses its only visual signal while every
  * render test still passes.
  *
- * The allow-list is READ OUT of the tailwind theme config rather than scanned out of the
- * stylesheet, matching the sibling token tests -- one spelling of "where tokens are
- * declared", so a rename cannot leave two scanners disagreeing.
+ * The allow-list is READ OUT of the tailwind theme bridge rather than scanned out of the
+ * stylesheet, matching the sibling token tests (`tailwindAlphaTokens.test.ts`) -- one
+ * spelling of "where tokens are declared", so a rename cannot leave two scanners
+ * disagreeing. Under Tailwind v4 the bridge is the `@theme` block in
+ * `src/tailwind-theme.css`, where every colour utility is declared as a
+ * `--color-<token>: var(--<token>)` key (the CSS-first replacement for the v3
+ * `tailwind.config.js` `theme.extend.colors` map this test used to read).
  */
 
 import { readFileSync } from 'node:fs'
@@ -16,25 +20,22 @@ import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
 
-import tailwindConfig from '../../tailwind.config.js'
-
 const here = dirname(fileURLToPath(import.meta.url))
 
-/** Colour token names declared in the tailwind theme's `extend.colors`. */
+/** The v4 theme bridge that carries the `--color-*` utility ↔ token keys. */
+function themeSource(): string {
+  return readFileSync(join(here, '..', 'tailwind-theme.css'), 'utf8')
+}
+
+/**
+ * Colour token names declared in the v4 `@theme` block, from its `--color-<token>`
+ * keys. Tailwind spells `--color-warn-subtle` as the utility stem `warn-subtle`, so the
+ * key name with its `--color-` prefix stripped IS the class stem, and no shade-flattening
+ * is needed -- every shade is already its own `--color-warn-subtle` key.
+ */
 function declaredTokens(): Set<string> {
-  const colors = (tailwindConfig as { theme: { extend: { colors: Record<string, unknown> } } })
-    .theme.extend.colors
   const names = new Set<string>()
-  for (const [family, value] of Object.entries(colors)) {
-    names.add(family)
-    // A family can be an object of shades (`warn: { subtle, fg }`), which tailwind spells
-    // as `warn-subtle`; flattening here is what lets a shade be checked by its class name.
-    if (value && typeof value === 'object') {
-      for (const shade of Object.keys(value as Record<string, unknown>)) {
-        names.add(shade === 'DEFAULT' ? family : `${family}-${shade}`)
-      }
-    }
-  }
+  for (const m of themeSource().matchAll(/^\s*--color-([a-z0-9-]+):/gm)) names.add(m[1])
   return names
 }
 
@@ -56,7 +57,7 @@ const NON_COLOUR = new Set([
 ])
 
 describe('AgentSkillsEditor — theme tokens exist', () => {
-  it('names no colour token tailwind.config.js leaves undeclared', () => {
+  it('names no colour token the tailwind theme leaves undeclared', () => {
     const declared = declaredTokens()
     const missing = usedTokens(component()).filter(
       t => !declared.has(t) && !NON_COLOUR.has(t) && !/^\[/.test(t) && !/^\d/.test(t)

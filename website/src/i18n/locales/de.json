@@ -5697,13 +5697,10 @@
       "skills": "Skills",
       "skills_this_agent_template_loads_written_as_skil": "Skills, die diese Agentenvorlage lädt. In der Agenten-Konfiguration als skill://-Ressourcen hinterlegt, damit kiro-cli sie beim Start des Agenten nativ lädt. Ein Agent ohne zugeordnete Skills fällt auf das Standardverhalten zurück: der kirocrew-Agent sieht den gesamten Katalog, andere Agenten sehen keine.",
       "type_to_filter": "Zum Filtern tippen…",
-      "key_changed_repick": "{{name}} hat sich geändert – wählen Sie den Skill in der aktualisierten Liste erneut aus.",
       "copy_identifier_hint": "Gibt an, welche installierte Kopie dieses Skills zugeordnet ist",
       "mapping_unresolved": "Entspricht keiner installierten Kopie mehr",
-      "key_changed_remove_blocked": "Speichern nicht möglich – entfernen Sie zuerst {{name}} (mit einem Warnzeichen markiert); es entspricht keiner installierten Kopie mehr.",
-      "key_changed_remove_blocked_generic": "Speichern nicht möglich – ein zugeordneter Skill entspricht keiner installierten Kopie mehr. Entfernen Sie den mit einem Warnzeichen markierten Skill und wählen Sie ihn in der aktualisierten Liste erneut aus.",
-      "mapping_unresolved_count_one": "{{count}} zugeordneter Skill entspricht keiner installierten Kopie mehr – entfernen Sie ihn und wählen Sie einen Ersatz aus der Liste, falls einer installiert ist.",
-      "mapping_unresolved_count_other": "{{count}} zugeordnete Skills entsprechen keiner installierten Kopie mehr – entfernen Sie sie und wählen Sie Ersatz aus der Liste, falls installiert.",
+      "mapping_unresolved_count_one": "{{count}} zugeordneter Skill entspricht keiner installierten Kopie mehr – entfern ihn und wähl einen Ersatz aus der Liste, falls einer installiert ist.",
+      "mapping_unresolved_count_other": "{{count}} zugeordnete Skills entsprechen keiner installierten Kopie mehr – entfern sie und wähl Ersatz aus der Liste, falls installiert.",
       "copy_identifier_label": "Liegt in {{where}}"
     },
     "appHost": {

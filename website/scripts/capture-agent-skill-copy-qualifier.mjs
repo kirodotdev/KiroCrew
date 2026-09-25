@@ -36,8 +36,11 @@ const INSTALLED = [
 const PAPYRUS_COPY = 'package/3f2a91c4e7b05d68:code-review'
 const OSPRO_COPY = 'package/9d17b8402fc6ea35:code-review'
 /* Mapped in scene 3 and deliberately absent from the catalog: the copy it named
-   is no longer installed. */
-const RETIRED_COPY = 'package/aa11bb22cc33dd44:code-review'
+   is no longer installed. NOT a `package/` key: those are exempt from the unresolved
+   marking (the capability-manager source degrades to an empty set with a 200 on
+   timeout, so an absent package row is not reliable evidence). A non-package key
+   absent from a fully-loaded catalog is a genuine dead mapping, so it warns. */
+const RETIRED_COPY = 'kirocrew/retired-review'
 
 const CATALOG = [
   {
