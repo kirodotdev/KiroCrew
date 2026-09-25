@@ -982,6 +982,48 @@ class TestVoiceVoices:
             assert resp.status == 502
 
     @pytest.mark.asyncio
+    async def test_voices_cli_does_not_inherit_python_env(self, tmp_path, monkeypatch):
+        """A Python-based ``aws`` (aws-cli v1) breaks when it imports the
+        gateway's own packages, so the child env carries no PYTHONPATH or
+        PYTHONHOME while the rest of the environment still reaches it."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        mock_vc = MagicMock(provider="polly", aws_profile="", region="")
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._voices_cache", None)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._voices_cache_ts", 0)
+        monkeypatch.setenv("PYTHONPATH", "/bundle/site-packages")
+        monkeypatch.setenv("PYTHONHOME", "/bundle")
+        monkeypatch.setenv("MESH2535_KEEP", "kept")
+        seen: dict = {}
+
+        async def mock_exec(*args, **kwargs):
+            seen.update(kwargs)
+            proc = MagicMock()
+            proc.returncode = 0
+            proc.communicate = AsyncMock(return_value=(b'{"Voices": []}', b""))
+            return proc
+
+        monkeypatch.setattr("asyncio.create_subprocess_exec", mock_exec)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_voice.resolve_polly_cli", lambda: "/usr/bin/aws"
+        )
+
+        from kiro_crew.dashboard.chat_voice import api_voice_voices
+
+        app = web.Application()
+        app["state"] = _make_state(tmp_path)
+        app.router.add_get("/api/voice/voices", api_voice_voices)
+
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/api/voice/voices")
+            assert resp.status == 200
+
+        env = seen["env"]
+        assert "PYTHONPATH" not in env
+        assert "PYTHONHOME" not in env
+        assert env["MESH2535_KEEP"] == "kept"
+
+    @pytest.mark.asyncio
     async def test_voices_timeout(self, tmp_path, monkeypatch):
         """Test timeout handling."""
         import asyncio
