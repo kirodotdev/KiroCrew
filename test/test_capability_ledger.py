@@ -219,28 +219,78 @@ class TestCorrectedDeclarations:
 
         assert WECOM_CAPABILITIES.max_message_chars * 4 <= WECOM_MAX_REPLY_BYTES
 
-    def test_a_byte_capped_transport_declares_the_real_budget_too(self) -> None:
-        # The char floor alone is 4x pessimistic, which fragmented an ASCII reply
-        # into quarters on the mirror leg. The byte value is the real capacity and
-        # is what chunk_for_transport uses.
-        from kiro_crew.webex.client import WEBEX_MAX_TEXT
-        from kiro_crew.webex.transport import WEBEX_CAPABILITIES
+    def test_every_transport_is_classified_by_the_unit_ITS_WIRE_MEASURES(self) -> None:
+        """``max_message_bytes`` is RAW UTF-8 bytes, so only a platform whose cap
+        is raw bytes can state one; the rest must stay at ``0``.
 
-        assert WEBEX_CAPABILITIES.max_message_bytes == WEBEX_MAX_TEXT
-
-    def test_only_byte_capped_transports_declare_a_byte_budget(self) -> None:
-        """0 is the honest default, and it keeps every other channel on chars.
-
-        A transport declaring a byte cap it does not have would route its replies
-        through the byte splitter and chunk them against the wrong unit.
+        Three groups covering all TEN ``TransportCapabilities`` declarations,
+        enumerated rather than sampled -- a sampled list is why WeCom sat at
+        ``0`` while its own pin asserted a byte cap.
+        The split is by what the WIRE counts, not by whether a byte number
+        exists: ``chunk_for_transport`` sizes chunks in raw bytes
+        (``split_markdown_bytes``), so a platform that measures a TRANSFORM of
+        the text cannot be sized this way at all.
         """
         from kiro_crew.discord.transport import DISCORD_CAPABILITIES
+        from kiro_crew.feishu.transport import FEISHU_CAPABILITIES
+        from kiro_crew.imessage.transport import IMESSAGE_CAPABILITIES
         from kiro_crew.slack.transport import SLACK_CAPABILITIES
+        from kiro_crew.teams.transport import TEAMS_CAPABILITIES
         from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES
+        from kiro_crew.webex.client import WEBEX_MAX_TEXT
+        from kiro_crew.webex.transport import WEBEX_CAPABILITIES
+        from kiro_crew.wecom.client import WECOM_MAX_REPLY_BYTES
+        from kiro_crew.wecom.transport import WECOM_CAPABILITIES
+        from kiro_crew.weixin.transport import WEIXIN_CAPABILITIES
+        from kiro_crew.whatsapp.transport import WHATSAPP_CAPABILITIES
 
+        # (1) Cap is RAW bytes of the text field: declare it. The char floor
+        # alone is 4x pessimistic, which fragmented an ASCII reply into quarters
+        # on the mirror leg.
+        assert WEBEX_CAPABILITIES.max_message_bytes == WEBEX_MAX_TEXT
+        assert WECOM_CAPABILITIES.max_message_bytes == WECOM_MAX_REPLY_BYTES
+
+        # (2) Cap is measured on a SERIALIZED transform, so no raw-byte value is
+        # a true claim: both of these JSON-encode the text with
+        # ``ensure_ascii=False``, where a quote costs two bytes and a C0 control
+        # six, and both measure the encoded form against the platform limit.
+        # They stay on the character floor until a transport can declare a cost
+        # function instead of a number.
+        assert TEAMS_CAPABILITIES.max_message_bytes == 0  # teams/client.py _fit_activity
+        assert FEISHU_CAPABILITIES.max_message_bytes == 0  # feishu/client.py send_reply
+
+        # (3) Genuinely char-capped: no byte constant exists to declare.
         assert TransportCapabilities().max_message_bytes == 0
-        for caps in (SLACK_CAPABILITIES, DISCORD_CAPABILITIES, TELEGRAM_CAPABILITIES):
+        for caps in (
+            SLACK_CAPABILITIES,
+            DISCORD_CAPABILITIES,
+            TELEGRAM_CAPABILITIES,
+            WEIXIN_CAPABILITIES,
+            IMESSAGE_CAPABILITIES,
+            WHATSAPP_CAPABILITIES,
+        ):
             assert caps.max_message_bytes == 0
+
+    def test_a_serialized_cap_cannot_be_expressed_in_raw_bytes(self) -> None:
+        # The premise group (2) rests on, executed rather than asserted in a
+        # comment: for a Teams activity the wire counts MORE than the text's raw
+        # bytes, and how much more depends on the text's own characters. So one
+        # raw-byte number cannot bound the encoded size, which is why declaring
+        # any value here would be a claim the wire does not honour.
+        import json
+
+        def encoded(text: str) -> int:
+            return len(
+                json.dumps(
+                    {"type": "message", "text": text, "textFormat": "markdown"},
+                    ensure_ascii=False,
+                ).encode("utf-8")
+            )
+
+        plain, quotes, controls = "x" * 1000, '"' * 1000, "\x01" * 1000
+        assert encoded(plain) < encoded(quotes) < encoded(controls)
+        assert encoded(quotes) - encoded(plain) == 1000  # 2 bytes per quote
+        assert encoded(controls) - encoded(plain) == 5000  # 6 bytes per control
 
     def test_webex_declares_the_capabilities_it_now_performs(self) -> None:
         """Files, cards and threading all ship, so all three are declared.
