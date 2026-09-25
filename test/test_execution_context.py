@@ -170,6 +170,27 @@ def test_restricted_session_record_stays_live_and_monotonic(members, tmp_path):
     assert not ConversationLog()._path("dashboard_private").exists()
 
 
+@pytest.mark.parametrize("line_mode", ["incognito", "Incognito"])
+def test_persistent_bind_honors_restricted_record_without_execution_context(members, line_mode):
+    from kiro_crew.history import ConversationLog
+
+    key = "dashboard_restricted_recreate"
+    log = ConversationLog()
+    log.update_metadata(key, {"memory_mode": line_mode})
+    persistent = execution.resolve_member_execution(members, "alice")
+
+    execution.bind_session_execution(key, persistent)
+
+    metadata = log.get_metadata(key)
+    assert metadata["memory_mode"] == "incognito"
+    assert "memory_store" not in metadata
+    assert execution.EXECUTION_CONTEXT_KEY not in metadata
+    live = execution.read_live_session_execution(key)
+    assert live is not None
+    assert live.memory_mode == "incognito"
+    assert execution.read_session_execution(key) == live
+
+
 def test_session_publication_compares_captured_record(members):
     alice = execution.resolve_member_execution(members, "alice")
     bob = execution.resolve_member_execution(members, "bob")

@@ -52,7 +52,7 @@ async def _fork(state, parent):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("memory_mode", ["persistent", "incognito", "temporary"])
-async def test_member_fork_inherits_identity_before_copy_and_never_persists_restricted_bodies(
+async def test_member_fork_inherits_identity_before_copy_and_keeps_bodies_under_their_mode(
     fork_source, monkeypatch, memory_mode
 ):
     _cfg, state, parent, store, _peer_store = fork_source
@@ -102,10 +102,32 @@ async def test_member_fork_inherits_identity_before_copy_and_never_persists_rest
         assert restored.memory_store == store
         assert restored.memory_mode == memory_mode
     else:
-        assert not state.conversation_log.has_log(key)
-        assert b"Keep the release checklist" not in parent_bytes
+        # Both transcripts are kept -- the user reopens either from History --
+        # under a line that records the restricted mode and names no memory
+        # store, so nothing learns from them and a restart reads them as unbound
+        # rather than as a legacy member record it must refuse.
+        assert b"Keep the release checklist" in parent_bytes
+        assert state.conversation_log.get_metadata(parent_key).get("memory_mode") == memory_mode
+        assert "memory_store" not in state.conversation_log.get_metadata(parent_key)
+        child_meta = state.conversation_log.get_metadata(key)
+        assert child_meta.get("memory_mode") == memory_mode
+        assert "memory_store" not in child_meta
+        assert "execution_context" not in child_meta
+        assert [row["content"] for row in state.conversation_log.read_messages(key)] == [
+            "Keep the release checklist.",
+            "Use the blue checklist.",
+        ]
         state._slots.pop(child.key)
-        assert chat_persistence._rehydrate_slot_from_history(state, child.key) is None
+        execution.clear_session_execution(key)
+        assert execution.read_session_execution(key) is None
+        # The probe above checks the fork's identity-before-copy window; the
+        # restart rehydrate below runs with no live carrier by construction.
+        monkeypatch.setattr(_ChatSlot, "append", original_append)
+        restored = chat_persistence._rehydrate_slot_from_history(state, child.key)
+        assert restored is not None
+        assert restored.memory_mode == memory_mode
+        assert restored.agent == "writer"
+        assert key in state._restricted_keys
 
 
 @pytest.mark.asyncio

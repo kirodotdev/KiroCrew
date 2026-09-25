@@ -619,9 +619,9 @@ class TestOnLoopPersistDiscipline:
         in the fast unit CI, independent of e2e coverage.
         """
         import ast
-        from pathlib import Path as _P
+        from pathlib import Path
 
-        repo_root = _P(__file__).resolve().parents[1]
+        repo_root = Path(__file__).resolve().parents[1]
         setup_src = (repo_root / "setup.py").read_text(encoding="utf-8")
         tree = ast.parse(setup_src)
 
@@ -1207,7 +1207,7 @@ class TestUpdateMetadataOffLoop:
 class TestOnLoopCallersOffload:
     """The audited async-path callers (``_persist_title`` behind auto-title /
     manual-title handlers, ``api_session_delete``) enter ``_locked`` via
-    ``update_metadata`` / ``delete_session``. Running that on the event-loop
+    ``update_metadata_if`` / ``delete_session``. Running that on the event-loop
     thread lets a wedged cross-process peer freeze chat/WS/heartbeat. These
     wiring tests lock in that the ``_locked`` work is dispatched off the loop."""
 
@@ -1225,13 +1225,13 @@ class TestOnLoopCallersOffload:
 
         loop_thread = threading.get_ident()
         seen: dict[str, int] = {}
-        real_update_metadata = log.update_metadata
+        real_update_metadata = log.update_metadata_if
 
-        def _spy(*args: object, **kwargs: object) -> None:
+        def _spy(*args: object, **kwargs: object) -> bool:
             seen["thread"] = threading.get_ident()
-            real_update_metadata(*args, **kwargs)  # type: ignore[arg-type]
+            return real_update_metadata(*args, **kwargs)  # type: ignore[arg-type]
 
-        log.update_metadata = _spy  # type: ignore[method-assign]
+        log.update_metadata_if = _spy  # type: ignore[method-assign]
         monkeypatch.setattr(
             chat_title, "slot_history_key", lambda _slot: "dashboard:t"
         )

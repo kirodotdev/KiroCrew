@@ -135,12 +135,22 @@ async def test_legacy_v2_record_without_an_owning_agent_closes_and_does_not_rest
 
 
 @pytest.mark.asyncio
-async def test_legacy_v2_record_in_a_restricted_slot_still_writes_nothing(tmp_path, legacy_store):
+async def test_legacy_v2_record_in_a_restricted_slot_saves_under_its_mode(tmp_path, legacy_store):
+    """The slot's restricted mode wins over the record's persistent-era carrier.
+
+    The transcript is kept (the user reopens it from History), the line records
+    the stricter mode, and it names no memory store: a restricted line carries
+    no owner claim for the restart to refuse.
+    """
     state, slot = _state_with_legacy_slot(tmp_path, legacy_store, memory_mode="temporary")
 
     assert await handlers.save_slot_off_loop(state, slot, best_effort=False)
 
-    assert state.conversation_log.read_messages(KEY) == []
+    contents = [m.get("content") for m in state.conversation_log.read_messages(KEY)]
+    assert contents == ["written on the old code", "before execution_context existed"]
+    meta = state.conversation_log.get_metadata(KEY)
+    assert meta.get("memory_mode") == "temporary"
+    assert "memory_store" not in meta
 
 
 @pytest.mark.asyncio

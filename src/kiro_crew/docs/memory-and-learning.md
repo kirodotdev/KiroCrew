@@ -105,12 +105,21 @@ the modes, the guarantees and the durability are the same on both channels, and
 both accept a question after the modifier to mark the conversation and answer in
 one message.
 
-Persistent sessions retain history for resume. Incognito and Temporary keep new
-conversation bodies in memory and do not write transcript, workflow or task
-snapshots containing them. Incognito blocks learned-memory writes, including
-lesson deletion and consolidation. Temporary additionally blocks memory reads,
-including learned lessons and memory preference/history injection. Manual member
-persona, rules and project context remain available without opening memory.
+Every dashboard mode keeps its chat history. An Incognito or Temporary dashboard
+chat is saved to History exactly like a Persistent one, so you can reopen it --
+before or after a gateway restart -- to look up a question you asked or a command
+you ran. Channel-origin Incognito and Temporary chats are still not written to
+History. What the two restricted modes withhold is learning FROM the chat: nothing
+in it is consolidated
+into memory, no lesson is written (including lesson deletion), no session summary
+is generated, and it is never written into a workflow or task snapshot. Incognito
+still reads your existing memory into the chat; Temporary additionally blocks
+memory reads, including learned lessons and memory preference/history injection,
+so it starts from a blank slate. Manual member persona, rules and project context
+remain available without opening memory. The agent's own chat-history tools
+(`search_chat_history`, `get_chat_session`, `list_sessions`) never return an
+Incognito or Temporary chat, so what you said there does not reach another
+session.
 
 ## Teaching Kiro Crew
 
