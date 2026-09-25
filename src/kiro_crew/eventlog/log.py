@@ -318,8 +318,46 @@ class MemberLog:
         self._ensure_loaded()
         return event
 
+    def append_if(
+        self, type: str, data: dict, *, max_tail_seq: int, deadline: float | None = None
+    ) -> Event | None:
+        """:meth:`append`, written only while the file's tail is still *max_tail_seq*.
+
+        The tail is read while this process owns the log and holds the per-append
+        lock, so the comparison is made against the state the event will actually
+        land on rather than a state that was current when the caller decided.
+        ``None`` means it declined and nothing was written.
+
+        The reload still happens on a decline, because a decline means the tail is
+        newer than the cached list -- another writer got there first, which is
+        exactly the case a decline reports.
+
+        *deadline* is a ``time.monotonic()`` instant shared with the caller's other
+        attempts. A caller that retries a declined append must pass it, or each
+        attempt starts its own contention budget and the total wait multiplies by the
+        number of attempts -- while any lock the caller holds across them is held for
+        all of it. Omitted, this append takes a budget of its own, which is right for
+        a caller that makes exactly one.
+        """
+        if not is_known_event_type(type):
+            raise ValueError(f"unknown event type {type!r}")
+        self._ensure_loaded()
+        if self._crew_log is None:
+            raise LogCorrupt(self.path, 0, "cannot append to a log with no header")
+        stored = _stored_type(type)
+        entry = self._append_through_contention(stored, data, max_tail_seq, deadline)
+        self._loaded = False
+        self._ensure_loaded()
+        return None if entry is None else _as_event(entry)
+
     # ---- read -------------------------------------------------------------
-    def _append_through_contention(self, stored: str, data: dict):
+    def _append_through_contention(
+        self,
+        stored: str,
+        data: dict,
+        max_tail_seq: int | None = None,
+        deadline: float | None = None,
+    ):
         """Append, waiting out a CONTENTION refusal instead of losing the event.
 
         ``crew_log.lease`` takes write ownership non-blocking, so two processes
@@ -348,11 +386,15 @@ class MemberLog:
         reporting in place rather than swallowing the loss quietly.
         """
         assert self._crew_log is not None
-        deadline = time.monotonic() + APPEND_CONTENTION_SECONDS
+        deadline = time.monotonic() + APPEND_CONTENTION_SECONDS if deadline is None else deadline
         delay = APPEND_CONTENTION_FIRST_DELAY
         while True:
             try:
-                return self._crew_log.append(stored, data, src=_src_for(stored))
+                if max_tail_seq is None:
+                    return self._crew_log.append(stored, data, src=_src_for(stored))
+                return self._crew_log.append_if(
+                    stored, data, src=_src_for(stored), max_tail_seq=max_tail_seq
+                )
             except CrewLogError as exc:
                 code = getattr(exc, "code", "")
                 # A refused PAYLOAD keeps this surface's ValueError, the same type

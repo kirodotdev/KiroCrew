@@ -891,6 +891,135 @@ class TestStartupReconcile:
         assert eventlog_hooks.reconcile_members_at_startup(cfg, state, autonudge) == 0
         assert svc.last_seq(slug) == seq_after
 
+    def test_a_contended_member_is_recovered_by_the_retry_pass(self, monkeypatch):
+        """The sweep runs once per boot, so a lost closer must not be lost for good.
+
+        Another process bursts appends into one member's log across the whole first
+        attempt, so every closer for it exhausts its tail retries. The burst then
+        stops, and the sweep's own second pass places the closers -- without which the
+        interrupted slot reads open and the patrol reads armed until the next restart.
+        """
+        from kiro_crew.eventlog import log as log_mod
+        from kiro_crew.eventlog import service as svc_mod
+
+        cfg = _fake_config({CREW: _agent()})
+        slug = members.slug_for_name(CREW)
+        svc = get_service()
+        svc.ensure(slug, CREW)
+        eventlog_hooks.reconcile_member_config(
+            slug, CREW, cfg.agents[CREW], svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {})
+        )
+        svc.append(slug, types.PATROL_STARTED, {"slot_key": "member-code-reviewer"})
+        svc.append(slug, types.SLOT_OPENED, {"slot_key": "worker-1"})
+
+        autonudge = SimpleNamespace(get_by_slot=lambda key: None)
+        state = SimpleNamespace(_slots={})
+
+        # Enough foreign commits to exhaust the first pass's attempts, then silence,
+        # so the retry pass runs unobstructed.
+        budget = [svc_mod._CLOSER_TAIL_ATTEMPTS]
+        real_fold = svc._fold_gap_locked
+        bursts = []
+
+        def _fold_then_a_foreign_commit(target, log, *, below=None):
+            real_fold(target, log, below=below)
+            if target == slug and below is None and budget[0] > 0:
+                budget[0] -= 1
+                bursts.append(True)
+                log_mod.MemberLog(slug).append(
+                    types.SLOT_OPENED, {"slot_key": f"foreign-{len(bursts)}"}
+                )
+
+        monkeypatch.setattr(svc, "_fold_gap_locked", _fold_then_a_foreign_commit)
+
+        wrote = eventlog_hooks.reconcile_members_at_startup(cfg, state, autonudge)
+
+        monkeypatch.setattr(svc, "_fold_gap_locked", real_fold)
+        assert bursts, "the foreign burst never landed; this test proved nothing"
+        assert budget[0] == 0, f"the burst was not consumed ({budget[0]} left), so no exhaustion"
+        events = svc.history(slug, before=None, limit=None)
+        closer_kinds = {(e["type"], e["data"].get("reason")) for e in events}
+        assert (
+            types.PATROL_STOPPED,
+            "interrupted",
+        ) in closer_kinds, "the patrol closer was abandoned by the first pass and never retried"
+        assert (
+            types.SLOT_CLOSED,
+            "interrupted",
+        ) in closer_kinds, "the slot closer was abandoned by the first pass and never retried"
+        # The report must match what is on disk. A closer that landed before a later
+        # one lost the tail is still a closer this sweep wrote, and the retry pass
+        # cannot recount it -- the landed event changed the projection its predicate
+        # reads, so the retry declines it correctly.
+        on_disk = len(
+            [
+                e
+                for e in events
+                if e["type"] in (types.PATROL_STOPPED, types.SLOT_CLOSED)
+                and e["data"].get("reason") == "interrupted"
+            ]
+        )
+        assert wrote == on_disk, (
+            f"the sweep reported {wrote} closer(s) but {on_disk} are on disk: a closer "
+            "that landed before a later one lost the tail was not counted"
+        )
+
+    def test_a_closer_that_landed_before_a_later_one_lost_the_tail_is_counted(self, monkeypatch):
+        """The reported count must match the closers on disk.
+
+        A later closer can exhaust its tail retries after an earlier one has already
+        landed. A total RETURNED from the per-member step is discarded along with that
+        exception, and the retry pass cannot recount it: the landed closer changed the
+        very projection its predicate reads, so the retry declines it correctly. The
+        events are on disk either way; only the report would be wrong.
+        """
+        from kiro_crew.eventlog import service as svc_mod
+
+        cfg = _fake_config({CREW: _agent()})
+        slug = members.slug_for_name(CREW)
+        svc = get_service()
+        svc.ensure(slug, CREW)
+        eventlog_hooks.reconcile_member_config(
+            slug, CREW, cfg.agents[CREW], svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {})
+        )
+        svc.append(slug, types.PATROL_STARTED, {"slot_key": "member-code-reviewer"})
+        svc.append(slug, types.SLOT_OPENED, {"slot_key": "worker-1"})
+
+        autonudge = SimpleNamespace(get_by_slot=lambda key: None)
+        state = SimpleNamespace(_slots={})
+
+        # First closer lands; every later one reports exhaustion. No sleeping, no
+        # foreign writer: the point is purely what the count does when the step
+        # raises after a write.
+        real_closer = svc.append_closer_if_still_applies
+        calls = []
+
+        def _first_lands_then_contention(target, type, data, **kw):
+            calls.append(type)
+            if len(calls) == 1:
+                return real_closer(target, type, data, **kw)
+            raise svc_mod.CloserTailContention(target, type)
+
+        monkeypatch.setattr(svc, "append_closer_if_still_applies", _first_lands_then_contention)
+
+        wrote = eventlog_hooks.reconcile_members_at_startup(cfg, state, autonudge)
+
+        monkeypatch.setattr(svc, "append_closer_if_still_applies", real_closer)
+        assert len(calls) >= 2, f"only {len(calls)} closer call(s); the fixture proved nothing"
+        on_disk = len(
+            [
+                e
+                for e in svc.history(slug, before=None, limit=None)
+                if e["type"] in (types.PATROL_STOPPED, types.SLOT_CLOSED)
+                and e["data"].get("reason") == "interrupted"
+            ]
+        )
+        assert on_disk >= 1, "the fixture must land at least one closer to have one to lose"
+        assert wrote == on_disk, (
+            f"the sweep reported {wrote} closer(s) but {on_disk} are on disk: a closer "
+            "that landed before a later one lost the tail was not counted"
+        )
+
     def test_an_explicit_member_id_decides_which_log_is_reconciled(self):
         """Reconcile by persisted identity, not by folding the display name.
 

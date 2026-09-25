@@ -2306,6 +2306,77 @@ class CrewLog:
         the one that knows whether the entry is a sample or a fact -- which is
         why it lives on the append and not on the read.
         """
+        entry = self._append(
+            type,
+            data,
+            src=src,
+            thread=thread,
+            ref=ref,
+            ignorable=ignorable,
+            max_tail_seq=None,
+        )
+        assert entry is not None  # no seq bound, so nothing can decline
+        return entry
+
+    def append_if(
+        self,
+        type: str,
+        data: dict[str, Any],
+        *,
+        src: str,
+        max_tail_seq: int,
+        thread: int | None = None,
+        ref: Ref | dict[str, Any] | None = None,
+        ignorable: bool = False,
+    ) -> Entry | None:
+        """:meth:`append`, written only while the file's tail is still *max_tail_seq*.
+
+        The tail is read AFTER write ownership and the per-append lock are both held,
+        and the entry is written only when that tail is at or below *max_tail_seq*.
+        Returning ``None`` means it declined: no entry was appended. The file is not
+        guaranteed byte-identical across a decline, because the tail read happens
+        first and a torn trailing record is repaired as soon as it is seen -- that
+        repair is the store's, owed to the file rather than to this append, and it is
+        the one change a decline can leave behind.
+
+        This exists because a decision made BEFORE the append is not ordered against
+        another PROCESS. The log has more than one writer, so an entry committed
+        between a caller's decision and its own write lands FIRST and the caller's
+        entry lands after it -- and for a last-wins projection that ordering is the
+        whole outcome, so a decision that was true when it was made is applied to a
+        state that has since moved. The caller cannot close that window from outside:
+        every check it makes is still outside the ownership that decides the order.
+        *max_tail_seq* is the seq the caller's decision was made against, and
+        comparing it here is what proves nothing was committed in between.
+
+        A seq rather than a callback, deliberately: an int cannot parse the file or
+        write to it, so a caller cannot turn this hold -- which refuses every other
+        process's append to the unit while it lasts -- into a long one. A caller that
+        needs to read the log to decide does so BEFORE calling, and passes the tail
+        that read reached.
+        """
+        return self._append(
+            type,
+            data,
+            src=src,
+            thread=thread,
+            ref=ref,
+            ignorable=ignorable,
+            max_tail_seq=max_tail_seq,
+        )
+
+    def _append(
+        self,
+        type: str,
+        data: dict[str, Any],
+        *,
+        src: str,
+        thread: int | None,
+        ref: Ref | dict[str, Any] | None,
+        ignorable: bool,
+        max_tail_seq: int | None,
+    ) -> Entry | None:
+        """The one append body, shared so the two entry points cannot drift apart."""
         require_data(data)
         check_ownership(self._kind, type, src)
         validate_data(self._kind, type, data)
@@ -2341,6 +2412,13 @@ class CrewLog:
                     code=CODE_BAD_THREAD,
                     field="thread",
                 )
+            # Compared against the tail just read, under the ownership that decides
+            # this entry's order, and before any byte is written -- so a decline
+            # appends nothing. It is not the same as a format refusal above: those
+            # happen before the tail is read, while the torn-tail repair just above
+            # is unconditional, so a decline can still leave that repair behind.
+            if max_tail_seq is not None and tail.last_seq > max_tail_seq:
+                return None
             entry = Entry(
                 type=type,
                 seq=tail.last_seq + 1,
