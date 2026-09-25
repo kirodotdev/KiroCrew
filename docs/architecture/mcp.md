@@ -1190,6 +1190,41 @@ there is no timeout to debounce, and both negative
 clocks are process-global, so caching one session's malformed spec there would
 refuse calls for every sibling session in a pooled backend.
 
+The `409` body's `reason` names the file. Every `policy_unreadable` refusal the
+gateway writes -- the directory-wide guard (`_refuse_if_any_spec_is_unreadable`),
+the direct `<agent>.json`/`.md` read, the two shape checks on a direct read and the
+duplicate-name arm (`_ambiguous_spec_reason`, built from
+`AmbiguousAgentSpecError.paths`) -- carries the offending spec's filename (`repr`'d: it is untrusted input from a
+user-writable directory and the text reaches a terminal), the failure kind in
+words (`not valid JSON`, `not UTF-8 text`, `markdown frontmatter the spec parser
+refuses`, `an AppleDouble sidecar`, `larger than the spec size cap`, `resolves to a
+path the spec reader refuses`, `not a plain readable file` for the pinned open's
+refusal, `unreadable (...)` for any other `OSError`) and one remedy
+sentence: move, fix, remove or rename that file in the agents directory, no
+restart needed. Never `str(exc)` verbatim, and never the directory's path: the
+strict reader's own messages and the duplicate-name exception's message quote
+the full path, and this text crosses the wire into the model-visible refusal.
+Two arms have no file to name: the directory walk itself raised (class-name-only
+text, as before), and a wrong-shape `managedToolPolicy` in a spec the declared-name
+scan resolved -- the scan returns a parse, not a path, so that refusal names the
+agent (`managedToolPolicy for '<agent>' is <type>, not an object`), which identifies
+the spec since exactly one declares the name, and carries the same remedy. The SEL `denied` row carries the same `reason` (the
+duplicate-name arm's row keeps the exception's full-path message: the audit
+trail is local); the gateway log carries the FULL path at `WARNING`, once per
+`(path, mtime)` -- the client re-asks on every `tools/call`, so a line per
+refusal would repeat for as long as the file stays broken. The MCP side reads
+`reason` off the body into `ToolPolicy.detail` (text only; the decision is the
+status and `code`, unchanged); the one client-side `policy_unreadable` -- a 200 whose
+`exclude` is malformed -- fills `detail` with its own shape diagnosis. The refusal
+appends `detail` to the `policy_unreadable` refusal
+as `Gateway reason: ...` after `neutralize_markers`, `redact_via_context` and
+`redact_local_paths` (the credential redactor has no path rule, and an older
+gateway's duplicate-name `reason` quotes full paths) -- then bounds the scrubbed
+result at `_POLICY_DETAIL_MAX_CHARS`. The bound comes AFTER the scrubbers: a cut
+made first can land inside a token, and the fragment left behind fails the
+length-floored credential patterns and would be echoed. With no `reason` in the
+body -- an older gateway -- the refusal is byte-identical to what it was.
+
 ## The MCP-first rule
 
 **A new LLM-facing capability MUST ship as an MCP tool, not only as a CLI

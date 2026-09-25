@@ -325,6 +325,11 @@ _STARTUP_RACE_CACHE_TTL: float = 5.0  # seconds
 # (still emit a structured audit event).  The warnings are noise once the
 # 404 root cause is established for the session.
 _MAX_WARNING_FAILURES: int = 2
+# The most of the gateway's 409 ``reason`` a refusal repeats to the caller. A
+# reason names one file and one remedy -- a few hundred characters -- so the cap
+# is generous for a real one and small enough that a pathological filename in
+# the agents directory cannot turn one refused call into a kilobyte of echo.
+_POLICY_DETAIL_MAX_CHARS: int = 600
 
 
 class ToolPolicy(NamedTuple):
@@ -344,10 +349,18 @@ class ToolPolicy(NamedTuple):
     failure path must name its own reason rather than borrow one: borrowing
     inherits a decision that was made about a different condition, and every
     reason here that was ever collapsed into another one hid a different bug.
+
+    ``detail`` is the gateway's own account of an unresolved reason, when it
+    gave one -- the ``reason`` field of a ``409 policy_unreadable`` body, which
+    names the spec file it could not read and what to do about it. Text only,
+    never a decision: nothing reads it but the refusal message, so a caller
+    that ignores it behaves exactly as before it existed. Empty whenever the
+    gateway sent none, which every path other than that 409 does.
     """
 
     excluded: frozenset[str]
     unresolved: str
+    detail: str = ""
 
 
 def _ambient_audit_session() -> str:
@@ -586,28 +599,36 @@ def _policy_session_key() -> str | None:
         return None
 
 
-def _http_error_code(exc: urllib.error.HTTPError) -> str:
-    """The ``code`` field of a JSON error body, or ``""`` when there is none.
+def _http_error_body(exc: urllib.error.HTTPError) -> tuple[str, str]:
+    """The ``code`` and ``reason`` fields of a JSON error body, ``""`` for each absent one.
 
-    The gateway's refusals carry ``{"error": ..., "code": "<reason>"}``; the
-    status alone is not enough to tell two of its 409s apart. Never raises: an
-    unreadable or non-JSON body is ``""``, and the caller treats that as the
-    status's historical meaning rather than guessing a narrower one.
+    The gateway's refusals carry ``{"error": ..., "code": "<reason>", "reason":
+    "<what it could not read>"}``; the status alone is not enough to tell two
+    of its 409s apart, and ``reason`` is the one line that names the spec file
+    an operator has to fix. Never raises: an unreadable or non-JSON body is
+    ``("", "")``, and the caller treats that as the status's historical
+    meaning rather than guessing a narrower one. Only string fields are
+    returned -- the body is wire data, and a ``reason`` of any other type is
+    dropped, not coerced.
     """
     try:
         raw = exc.read()
     except Exception:
-        return ""
+        return "", ""
     if not raw:
-        return ""
+        return "", ""
     try:
         payload = json.loads(raw.decode("utf-8", "replace"))
     except Exception:
-        return ""
+        return "", ""
     if not isinstance(payload, dict):
-        return ""
+        return "", ""
     code = payload.get("code")
-    return code if isinstance(code, str) else ""
+    reason = payload.get("reason")
+    return (
+        code if isinstance(code, str) else "",
+        reason if isinstance(reason, str) else "",
+    )
 
 
 def _resolve_tool_policy(
@@ -803,7 +824,7 @@ def _resolve_tool_policy(
                 # Two different refusals share this status, told apart by the
                 # body's ``code`` -- the status alone stopped meaning one thing
                 # when the endpoint grew its attestation gate.
-                _code = _http_error_code(http_exc)
+                _code, _reason = _http_error_body(http_exc)
                 if _code == "member_identity_unavailable":
                     # ``internal_memory_scope`` declined to answer THIS caller:
                     # the declared ``X-Session-Key`` reached the gateway without
@@ -836,7 +857,10 @@ def _resolve_tool_policy(
                 # would refuse tool calls for every sibling session in a pooled
                 # backend over one agent's malformed file. Re-asking each call
                 # costs one loopback round-trip and recovers the moment the
-                # operator fixes the spec.
+                # operator fixes the spec. The body's ``reason`` -- the file the
+                # gateway could not read, and what to do -- rides along as
+                # ``detail`` so the refusal can say it; the decision is the
+                # status and code alone, exactly as before.
                 sel().log_api_access(
                     caller=session_key,
                     operation="tool_policy.unreadable",
@@ -844,7 +868,7 @@ def _resolve_tool_policy(
                     source="mcp_shared",
                     resources=f"session_key={session_key}",
                 )
-                return ToolPolicy(frozenset(), "policy_unreadable")
+                return ToolPolicy(frozenset(), "policy_unreadable", _reason)
             if http_exc.code in (400, 403):
                 # The gateway ANSWERED and declined to tell this caller. 403 is
                 # ``member_session_unverified`` from ``internal_memory_scope``:
@@ -928,7 +952,16 @@ def _resolve_tool_policy(
                 source="mcp_shared",
                 resources=f"session_key={session_key},exclude={_shape}",
             )
-            return ToolPolicy(frozenset(), "policy_unreadable")
+            # The one ``policy_unreadable`` this process diagnoses itself, so
+            # its ``detail`` is its own: the refusal then says what is wrong
+            # with the policy the gateway answered, the way the gateway's
+            # ``reason`` says which file it could not read.
+            return ToolPolicy(
+                frozenset(),
+                "policy_unreadable",
+                f"the policy the gateway answered has a managedToolPolicy.exclude that is "
+                f"{_shape}; fix the exclude list in this agent's spec, no restart needed",
+            )
         resolved = set(exclude)
         # FIFO bound: dicts preserve insertion order; drop the oldest
         # session's entry when full (pooled backends serve churning sessions).
@@ -1826,6 +1859,33 @@ def _run_stdio_dispatch_loop(
                         f"operator's exclusion list; fix or remove the unreadable "
                         f"spec in the agents directory."
                     )
+                    # The gateway's 409 body names the file and what to do with
+                    # it; without that line the operator has to validate every
+                    # file in the directory by hand to find the one this refusal
+                    # means. Same scrubbers as the ``identity_unattested`` arm
+                    # above, for the same reason -- the reason interpolates a
+                    # filename from a user-writable directory and this early
+                    # refusal does not pass through the tool path's scrubbers --
+                    # plus the local-path pass, because one arm of the endpoint
+                    # (two specs declaring one name) quotes full spec paths and
+                    # the credential redactor has no path rule; the same chain
+                    # ``mcp_core._crew_memory_unavailable_reason`` applies to
+                    # its own gateway text. Bounded so a pathological filename
+                    # cannot inflate the response -- AFTER the scrubbers, never
+                    # before: a cut made first can land inside a token, and the
+                    # fragment left behind fails to match the pattern the
+                    # redactor knows, so the head of a secret would be echoed.
+                    # The scrubbers see the whole text; the bound trims what
+                    # they return. Absent (an older gateway), the text above
+                    # stands alone, byte-identical to what it always was.
+                    if _policy.detail:
+                        from kiro_crew.platform import redact_via_context
+                        from kiro_crew.security import redact_local_paths
+
+                        _safe_detail = redact_local_paths(
+                            redact_via_context(neutralize_markers(_policy.detail))
+                        )[0][:_POLICY_DETAIL_MAX_CHARS]
+                        _refusal += f" Gateway reason: {_safe_detail}"
                 respond(req_id, _tool_response(_refusal))
             elif tool_name in _policy.excluded:
                 sel().log_tool_invocation(
