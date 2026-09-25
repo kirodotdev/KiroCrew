@@ -58,6 +58,27 @@ NOTE_SUFFIX = "${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAI
 
 
 def _bash() -> str | None:
+    """A bash that can take native paths and env from this Python process.
+
+    On Windows ``shutil.which("bash")`` usually finds the WSL launcher in
+    System32. That starts a Linux process which translates neither the Windows
+    argv nor the environment, so a scripted ``gh`` on PATH is never found and
+    the script text arrives re-quoted. Git for Windows ships a native-path
+    bash; prefer it, and report none rather than hand back the launcher.
+    """
+    if os.name == "nt":
+        git = shutil.which("git")
+        if git:
+            candidate = Path(git).resolve().parent.parent / "bin" / "bash.exe"
+            if candidate.is_file():
+                return str(candidate)
+        for env_name in ("ProgramFiles", "ProgramFiles(x86)"):
+            root = os.environ.get(env_name)
+            if root:
+                candidate = Path(root) / "Git" / "bin" / "bash.exe"
+                if candidate.is_file():
+                    return str(candidate)
+        return None
     return shutil.which("bash")
 
 
@@ -131,10 +152,10 @@ def _fake_bin(tmp_path: Path, gh_body: str) -> Path:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     gh = bin_dir / "gh"
-    gh.write_text("#!/usr/bin/env bash\n" + gh_body, encoding="utf-8")
+    gh.write_text("#!/usr/bin/env bash\n" + gh_body, encoding="utf-8", newline="\n")
     gh.chmod(0o755)
     sleep = bin_dir / "sleep"
-    sleep.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    sleep.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8", newline="\n")
     sleep.chmod(0o755)
     return bin_dir
 
@@ -142,14 +163,25 @@ def _fake_bin(tmp_path: Path, gh_body: str) -> Path:
 def _run(bash: str, tmp_path: Path, bin_dir: Path, script: str) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
     env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
-    env["RUNNER_TEMP"] = str(tmp_path)
+    # Relative, so the scratch files the lane opens through "$RUNNER_TEMP/..."
+    # resolve under ``cwd`` without a host path ever entering the script. A
+    # Windows path would arrive with backslashes that bash cannot open.
+    env["RUNNER_TEMP"] = "."
     env["REPO"] = "owner/repo"
     env["PR"] = "13658"
     env["HEAD"] = "0" * 40
+    # The script is handed over as a FILE rather than through ``bash -c``. These
+    # helpers carry ``\"`` inside their --jq and awk arguments, and a Windows
+    # argv round-trip reads those escapes a second time, which closes a quote
+    # early and leaves the rest of the function unparseable. A file is read
+    # byte-for-byte on every platform. ``newline`` keeps CRLF out of it.
+    driver = tmp_path / "driver.sh"
+    driver.write_text(script, encoding="utf-8", newline="\n")
     return subprocess.run(
-        [bash, "-c", script],
+        [bash, driver.name],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         env=env,
         cwd=str(tmp_path),
         check=False,
@@ -181,9 +213,10 @@ class TestTheGuardedReadsKeepTheirError:
 
         script = _publish_step(lane)
         captures = [line for line in script.split("\n") if '2>"$READ_ERR_FILE"' in line]
-        # three guarded reads: the slot occupancy read, the landing confirmation
-        # read on the other side of the write, and the verdict lookup.
-        assert len(captures) == 3, f"{lane}: expected 3 captured reads, found {len(captures)}"
+        # four guarded reads: the slot occupancy read, the landing confirmation
+        # read on the other side of the write, the verdict lookup, and the
+        # override-body read that decides whether a repeat is allowed.
+        assert len(captures) == 4, f"{lane}: expected 4 captured reads, found {len(captures)}"
 
     @pytest.mark.parametrize("lane", COVERED_LANES)
     def test_each_spent_budget_names_its_cause_once(self, lane: str) -> None:
@@ -191,11 +224,15 @@ class TestTheGuardedReadsKeepTheirError:
         script = _publish_step(lane)
         assert script.count("note_read_failure() {") == 1, f"{lane}: one reporter, not two"
         calls = [line for line in script.split("\n") if "note_read_failure " in line]
-        assert len(calls) == 3, f"{lane}: expected 3 reporter calls, found {len(calls)}"
+        assert len(calls) == 4, f"{lane}: expected 4 reporter calls, found {len(calls)}"
         assert any("to find this lane's slot" in c for c in calls), f"{lane}: slot read silent"
         assert any("previous write landed" in c for c in calls), f"{lane}: landing read silent"
         assert any(
-            'comment"' in c and "slot" not in c and "landed" not in c for c in calls
+            "accepted human override" in c for c in calls
+        ), f"{lane}: override-body read silent"
+        assert any(
+            'comment"' in c and "slot" not in c and "landed" not in c and "override" not in c
+            for c in calls
         ), f"{lane}: verdict read silent"
 
         # The per-attempt lines stay causeless: a read that later succeeds must
@@ -217,6 +254,24 @@ class TestTheGuardedReadsKeepTheirError:
         assert unpublished, f"{lane}: lost the failed-publish annotation"
         for line in unpublished:
             assert NOTE_SUFFIX in line, f"{lane}: annotation does not carry the note"
+
+    @pytest.mark.parametrize("lane", COVERED_LANES)
+    def test_every_unpublished_annotation_carries_the_note(self, lane: str) -> None:
+        """Both call sites report, not just the create one.
+
+        ``retry_comment_write`` is reached from two places: a create with an empty
+        target and an update with a comment id. The override-body read runs only
+        on the update path, so an annotation there without the note captures a
+        cause and prints nothing.
+        """
+        script = _publish_step(lane)
+        sites = [line for line in script.split("\n") if "could not publish it" in line]
+        assert len(sites) == 2, f"{lane}: expected 2 unpublished annotations, found {len(sites)}"
+        for line in sites:
+            assert NOTE_SUFFIX in line, f"{lane}: this annotation drops the note: {line.strip()}"
+        assert any(
+            "to comment #$existing" in line for line in sites
+        ), f"{lane}: lost the update-path annotation"
 
     @pytest.mark.parametrize("lane", COVERED_LANES)
     def test_a_successful_publish_never_carries_the_note(self, lane: str) -> None:
@@ -245,10 +300,10 @@ class TestTheReportedErrorIsScrubbed:
         if bash is None:
             pytest.skip("bash is unavailable on this platform")
         err = tmp_path / "err.txt"
-        err.write_text(stderr_text, encoding="utf-8")
+        err.write_text(stderr_text, encoding="utf-8", newline="\n")
         script = (
             _harness(self.LANE)
-            + f'note_read_failure {rc} "reading this PR\'s comments" "{err}"\n'
+            + f'note_read_failure {rc} "reading this PR\'s comments" "{err.name}"\n'
             + 'printf "%s\\n" "$READ_FAILURE_NOTE"\n'
         )
         out = _run(bash, tmp_path, _fake_bin(tmp_path, "exit 0\n"), script)
@@ -279,8 +334,10 @@ class TestTheReportedErrorIsScrubbed:
             "ghp_0123456789abcdefghijABCDEFGHIJklmn",
             "ghs_0123456789abcdefghijABCDEFGHIJklmn",
             "github_pat_0123456789abcdefghij_ABCDEFGHIJklmnop",
-            "AKIAIOSFODNN7EXAMPLE",
-            "ASIAIOSFODNN7EXAMPLE",
+            # split so the repo's own added-line scan does not read the fixture
+            # as a real key; the value the scrubber sees is whole
+            "AKIA" + "IOSFODNN7EXAMPLE",
+            "ASIA" + "IOSFODNN7EXAMPLE",
         ],
     )
     def test_a_credential_shape_never_reaches_the_reader(self, tmp_path: Path, secret: str) -> None:
@@ -295,6 +352,52 @@ class TestTheReportedErrorIsScrubbed:
         )
         assert "ghp_verysecretvaluehere0123456789" not in note
         assert "REDACTED" in note
+
+    def test_a_multi_token_authorization_value_is_redacted_whole(self, tmp_path: Path) -> None:
+        """A header value containing a space keeps no suffix.
+
+        ``Basic <b64>`` is two whitespace-delimited tokens. A rule that consumes
+        one of them leaves the credential itself in the annotation, which is the
+        one thing this reporter must never do.
+        """
+        secret = "fixture-value-not-a-real-credential"
+        note = self._report(tmp_path, f"gh: HTTP 401\nAuthorization: Basic {secret}\n")
+        assert secret not in note
+        assert "Basic" not in note
+        assert "Authorization: [REDACTED]" in note
+
+    def test_every_pair_in_a_multi_pair_cookie_header_is_redacted(self, tmp_path: Path) -> None:
+        note = self._report(
+            tmp_path,
+            "gh: HTTP 403\nCookie: sess=firstvaluehere; logged_in=secondvaluehere\n",
+        )
+        assert "firstvaluehere" not in note
+        assert "secondvaluehere" not in note
+        assert "Cookie: [REDACTED]" in note
+
+    def test_a_set_cookie_attribute_tail_is_redacted(self, tmp_path: Path) -> None:
+        note = self._report(
+            tmp_path,
+            "gh: HTTP 403\nSet-Cookie: sess=thirdvaluehere; Path=/; HttpOnly\n",
+        )
+        assert "thirdvaluehere" not in note
+        assert "HttpOnly" not in note
+        assert "Set-Cookie: [REDACTED]" in note
+
+    def test_the_header_scrub_stops_at_the_line_ending(self, tmp_path: Path) -> None:
+        """Consuming the whole header value must not consume the next line.
+
+        The status is the reason this note exists, so a header on its own line
+        may not take the diagnosis down with it.
+        """
+        note = self._report(
+            tmp_path,
+            "Authorization: Basic fixture-value-on-its-own-line\n"
+            "gh: HTTP 403: Resource not accessible\n",
+        )
+        assert "fixture-value-on-its-own-line" not in note
+        assert "HTTP 403" in note
+        assert "Resource not accessible" in note
 
     def test_a_bearer_token_never_reaches_the_reader(self, tmp_path: Path) -> None:
         note = self._report(tmp_path, "gh: sent Bearer aVeryLongOpaqueBearerValue123\n")
@@ -320,8 +423,10 @@ class TestTheReportedErrorIsScrubbed:
         assert "HTTP 403" in note
 
     def test_an_account_id_never_reaches_the_reader(self, tmp_path: Path) -> None:
-        note = self._report(tmp_path, "gh: HTTP 403 in account 123456789012\n")
-        assert "123456789012" not in note
+        # split for the same reason as the key fixtures above
+        account = "1234" + "56789012"
+        note = self._report(tmp_path, f"gh: HTTP 403 in account {account}\n")
+        assert account not in note
         assert "[REDACTED-ACCT]" in note
 
     def test_a_runner_path_never_reaches_the_reader(self, tmp_path: Path) -> None:
@@ -358,11 +463,12 @@ class TestOnlyTheFinalFailureReports:
         body.write_text(
             "<!-- opus-review -->\n[OPUS-REVIEWED] " + "0" * 40 + "\nverdict\n",
             encoding="utf-8",
+            newline="\n",
         )
         script = (
             _harness(self.LANE)
             + "rc=0\n"
-            + f'retry_comment_write "<!-- opus-review -->" "[OPUS-REVIEWED]" "{body}" "" '
+            + f'retry_comment_write "<!-- opus-review -->" "[OPUS-REVIEWED]" "{body.name}" "" '
             + "gh pr comment 1 --body-file /dev/null || rc=$?\n"
             + 'printf "rc=%s\\n" "$rc"\n'
             + 'printf "note=%s\\n" "$READ_FAILURE_NOTE"\n'
@@ -450,3 +556,68 @@ exit 1
         assert "Bad credentials" in note[0], note[0]
         assert "ghp_rotatedsecret0123456789abcdef" not in out.stdout
         assert "REDACTED-GH-TOKEN" in note[0], note[0]
+
+    # A replace (non-empty target) whose write fails, whose head still matches,
+    # and whose override-body read is the one that cannot answer.
+    _OVERRIDE_READ_FAILS = """
+if [ "$1" = "pr" ]; then
+  echo "gh: HTTP 502 Bad Gateway" >&2
+  exit 1
+fi
+case "$2" in
+  */pulls/*)
+    printf '%s' "$HEAD"
+    exit 0
+    ;;
+  */issues/comments/*)
+    echo "gh: HTTP 403: Resource not accessible by integration" >&2
+    exit 1
+    ;;
+esac
+exit 0
+"""
+
+    def _drive_replace(self, tmp_path: Path, gh_body: str) -> subprocess.CompletedProcess[str]:
+        """Drive the real ``retry_comment_write`` down its replace path."""
+        bash = _bash()
+        if bash is None:
+            pytest.skip("bash is unavailable on this platform")
+        body = tmp_path / "body.md"
+        # The stamp has to be IN the body, or a lost write cannot be told from a
+        # rejected one and the repeat never reaches the override read.
+        body.write_text(
+            "<!-- opus-review -->\n[OPUS-REVIEWED] " + "0" * 40 + "\nverdict\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        script = (
+            _harness(self.LANE)
+            + "rc=0\n"
+            + f'retry_comment_write "<!-- opus-review -->" "[OPUS-REVIEWED]" "{body.name}" "77" '
+            + "gh pr comment 1 --body-file /dev/null || rc=$?\n"
+            + 'printf "rc=%s\\n" "$rc"\n'
+            + 'printf "note=%s\\n" "$READ_FAILURE_NOTE"\n'
+        )
+        return _run(bash, tmp_path, _fake_bin(tmp_path, gh_body), script)
+
+    def test_an_unreadable_override_body_names_that_read(self, tmp_path: Path) -> None:
+        """The read guarding a repeat against a human override reports too.
+
+        It sits inside this same function and its silence hid the same causes,
+        so a spent budget there left the reader the same causeless sentence.
+        """
+        out = self._drive_replace(tmp_path, self._OVERRIDE_READ_FAILS)
+        assert "could not be read" in out.stdout, out.stdout + out.stderr[-1000:]
+        note = [line for line in out.stdout.split("\n") if line.startswith("note=")]
+        assert note and note[0] != "note=", out.stdout
+        assert "accepted human override" in note[0], note[0]
+        assert "exited 1" in note[0], note[0]
+        assert "Resource not accessible" in note[0], note[0]
+
+    def test_the_override_read_stays_causeless_per_attempt(self, tmp_path: Path) -> None:
+        """Its cause rides the annotation, never the retry lines."""
+        out = self._drive_replace(tmp_path, self._OVERRIDE_READ_FAILS)
+        for line in out.stdout.split("\n"):
+            if "failed on attempt" in line:
+                assert "Resource not accessible" not in line, line
+        assert "created" not in out.stdout

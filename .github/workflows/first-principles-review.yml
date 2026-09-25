@@ -742,7 +742,7 @@ jobs:
                 s/\b(?:AKIA|ASIA)[A-Z2-7]{16}\b/[REDACTED-AWS-KEY-ID]/g;
                 s{arn:aws\S*}{[REDACTED-ARN]}g;
                 s/(?i)\bbearer\s+\S+/Bearer [REDACTED]/g;
-                s/(?i)\b(authorization|cookie|set-cookie|x-api-key|private-token)\b\s*:\s*\S+/$1: [REDACTED]/g;
+                s/(?i)\b(authorization|cookie|set-cookie|x-api-key|private-token)\b\s*:[^\r\n]*/$1: [REDACTED]/g;
                 s/(?i)\b(token|secret|password|passwd|api_key|apikey)\b\s*[:=]\s*\S+/$1=[REDACTED]/g;
                 s/(?i)(aws_secret_access_key|aws_session_token|x-amz-security-token)\s*[:=]\s*\S+/$1=[REDACTED]/g;
                 s/\b[0-9]{12}\b/[REDACTED-ACCT]/g;
@@ -758,7 +758,7 @@ jobs:
           retry_comment_write() {
             local slot="$1" needle="$2" body_file="$3" target="$4"
             local attempt landed head_now ov_body
-            local occupied slot_ok slot_id mine_id slot_rc
+            local occupied slot_ok slot_id mine_id slot_rc ov_rc
             shift 4
             # Two reads here answer two DIFFERENT questions, which is why they
             # match on two different needles.
@@ -935,7 +935,10 @@ jobs:
                 # terms as an unreadable head, because repeating is the
                 # destructive half.
                 if [ -n "$target" ]; then
-                  if ! ov_body="$(gh api "repos/$REPO/issues/comments/$target" --jq '.body' 2>/dev/null)"; then
+                  ov_rc=0
+                  ov_body="$(gh api "repos/$REPO/issues/comments/$target" --jq '.body' 2>"$READ_ERR_FILE")" || ov_rc=$?
+                  if [ "$ov_rc" -ne 0 ]; then
+                    note_read_failure "$ov_rc" "reading the comment this repeat would overwrite, to check for an accepted human override" "$READ_ERR_FILE"
                     echo "Comment #$target could not be read, so this write was not repeated: a repeat can restore a body over a human decision. Re-run this lane to publish this verdict."
                     return 1
                   fi
@@ -1089,7 +1092,7 @@ jobs:
               elif [ "$write_rc" -eq 5 ]; then
                 echo "$lane left comment #$existing alone because it carries an accepted human override for this lane; the override stands and this run's verdict is not published."
               else
-                echo "::error::$lane produced a verdict for $HEAD but could not publish it to comment #$existing. That comment still carries an older head, so every marker-freshness check reads this PR as unreviewed for $HEAD."
+                echo "::error::$lane produced a verdict for $HEAD but could not publish it to comment #$existing. That comment still carries an older head, so every marker-freshness check reads this PR as unreviewed for $HEAD.${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
               fi
             else
               # No existing comment -- or a lookup that could not confirm one
