@@ -39,6 +39,7 @@ class _FakeSvc:
     def __init__(self, loops: list[NudgeLoop] | None = None) -> None:
         self.loops = loops or []
         self.removed: list[str] = []
+        self.notes: list[tuple[str, str]] = []
 
     def list_all(self) -> list[NudgeLoop]:
         return list(self.loops)
@@ -49,8 +50,9 @@ class _FakeSvc:
     def get_by_id(self, loop_id: str) -> NudgeLoop | None:
         return next((lp for lp in self.loops if lp.id == loop_id), None)
 
-    async def remove(self, loop_id: str) -> None:
+    async def remove(self, loop_id: str, *, stop_reason: str = "", stop_detail: str = "") -> None:
         self.removed.append(loop_id)
+        self.notes.append((loop_id, stop_reason))
 
 
 def _loop(loop_id: str = "lp-1", slot_key: str = "chat-1-111") -> NudgeLoop:
@@ -1317,6 +1319,7 @@ async def test_delete_removes_and_audits_the_owning_slot(
     request = _mk("DELETE", "/api/autonudge/lp-1", match={"loop_id": "lp-1"})
     assert _body(await h.api_autonudge_delete(request)) == {"ok": True}
     assert svc.removed == ["lp-1"]
+    assert svc.notes == [("lp-1", "dashboard_delete")]
     kwargs = sel_mock.log_tool_invocation.call_args.kwargs
     assert kwargs["session_key"] == "chat-5-555"
     assert kwargs["tool_name"] == "autonudge_delete"

@@ -34,6 +34,7 @@ import math
 import os
 import secrets
 import tempfile
+import threading
 import time
 import uuid
 from contextlib import asynccontextmanager, contextmanager
@@ -42,7 +43,7 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
 
-from kiro_crew import irq, platform_compat, probes, shutdown_event, validation
+from kiro_crew import autonudge_stop_log, irq, platform_compat, probes, shutdown_event, validation
 from kiro_crew.atomic_write import fsync_dir, replace_with_retry
 from kiro_crew.config.loader import config_dir, data_home
 from kiro_crew.config.paths import legacy_home
@@ -411,8 +412,9 @@ def _resolve_beat(beat: "asyncio.Future[None]") -> None:
 
 
 # Persisted source category for a deliberate ``autonudge_stop`` directive.
-# The caller's free-form explanation is intentionally not stored: it is
-# model-authored text and the watchdog only needs the deterministic source.
+# The caller's free-form explanation is intentionally not stored on the row: it
+# is model-authored text and the watchdog only needs the deterministic source.
+# It goes to the append-only stop record instead (``autonudge_stop_log``).
 AUTONUDGE_STOP_REASON = "autonudge_stop"
 
 # Persisted reason for a loop stopped because one of its cycles could not obtain
@@ -1266,6 +1268,16 @@ class AutoNudgeService:
         self._base_dir = base_dir or config_dir()
         self._path = self._base_dir / _NUDGES_FILE
         self._quarantine_path = self._base_dir / _QUARANTINE_FILE
+        # Stop record (see autonudge_stop_log): the loops ACTIVE in the last store this
+        # instance committed or loaded, and the reason a REMOVAL in flight gives for
+        # the row it is deleting. ``_commit_lock`` spans the rename and the diff so
+        # commit order and diff order are one order; only worker threads take it.
+        # ``_stop_notes`` holds an entry only while its removal's write is in flight
+        # and is touched with single dict operations, so the event loop never waits.
+        self._stop_log_path = autonudge_stop_log.stop_log_path(self._base_dir)
+        self._committed_active: dict[str, dict[str, Any]] = {}
+        self._stop_notes: dict[str, tuple[str, str]] = {}
+        self._commit_lock = threading.Lock()
         self._on_fire = on_fire
         self._on_monitor_tick = on_monitor_tick
         #: Reads the wake judge's evidence for one loop. Injected rather than called
@@ -1953,6 +1965,16 @@ class AutoNudgeService:
                     if loop.monitor is not None:
                         loop.monitor.next_probe_at = 0.0
                 self._store_dirty = True
+        # Stop-record baseline: rows ACTIVE on disk, taken before repair so a loop this
+        # load deactivates (a cycle interrupted by the restart) is recorded when the
+        # repair persists -- but only rows this load ACCEPTED. A held-aside or unparsed
+        # row is not served, so it must not be reported as removed either.
+        with self._commit_lock:
+            self._committed_active = {
+                loop_id: summary
+                for loop_id, summary in autonudge_stop_log.active_summaries(store_rows).items()
+                if loop_id in self._loops
+            }
         logger.info("AutoNudge: loaded %d loops", len(self._loops))
 
     @classmethod
@@ -2110,7 +2132,9 @@ class AutoNudgeService:
             # BEFORE the main store lands: if this raises, the file on disk is still the
             # old consistent one rather than a new one whose rows have no durable copy.
             self._write_quarantine_sidecar()
-            replace_with_retry(tmp_path, self._path)
+            with self._commit_lock:
+                replace_with_retry(tmp_path, self._path)
+                self._record_stops_committed(payload)
         except BaseException:
             with contextlib.suppress(OSError):
                 os.unlink(tmp_path)
@@ -2138,6 +2162,31 @@ class AutoNudgeService:
                 "store write; the durable copy is kept and the next write retries",
                 exc_info=True,
             )
+
+    def _record_stops_committed(self, payload: dict) -> None:
+        """Log and record every loop this just-committed store stopped.
+
+        Runs under ``_commit_lock`` right after the rename. The commit already
+        stands, so nothing here may raise: a failed record costs the record, never
+        the write.
+        """
+        rows = payload.get("loops") or []
+        try:
+            records = autonudge_stop_log.stop_records(
+                self._committed_active, rows, self._stop_notes
+            )
+            for record in records:
+                autonudge_stop_log.log_record(record)
+            autonudge_stop_log.append_records(self._stop_log_path, records)
+        except Exception:  # noqa: BLE001 - the store write already committed
+            logger.warning("AutoNudge: could not record a loop stop", exc_info=True)
+        finally:
+            # Reseeded even when recording failed: a baseline left stale would make
+            # every later commit fail the same way and report nothing again.
+            try:
+                self._committed_active = autonudge_stop_log.active_summaries(rows)
+            except Exception:  # noqa: BLE001 - see above
+                self._committed_active = {}
 
     def _save(self) -> None:
         self._write_state(self._serialize_state())
@@ -3437,12 +3486,15 @@ class AutoNudgeService:
 
         fut.add_done_callback(_log)
 
-    async def remove(self, loop_id: str) -> None:
+    async def remove(self, loop_id: str, *, stop_reason: str = "", stop_detail: str = "") -> None:
+        """Remove a loop. ``stop_reason``/``stop_detail`` name why, for the stop record."""
         lock = await self._acquire_mutation_lock(loop_id)
         if lock is None:
             return
         try:
-            await self._remove_unserialized(loop_id)
+            await self._remove_unserialized(
+                loop_id, stop_reason=stop_reason, stop_detail=stop_detail
+            )
         finally:
             lock.release()
 
@@ -3455,7 +3507,7 @@ class AutoNudgeService:
             if is_structured_monitor_loop(loop):
                 await self.retire_monitor_for_session_close(loop.id)
             else:
-                await self._remove_unserialized(loop.id)
+                await self._remove_unserialized(loop.id, stop_reason="session_closed")
             return loop
 
     async def clear_terminal_monitor(self, monitor_id: str) -> bool:
@@ -3495,8 +3547,14 @@ class AutoNudgeService:
         loop_id: str,
         *,
         precondition: Callable[[NudgeLoop], bool] | None = None,
+        stop_reason: str = "",
+        stop_detail: str = "",
     ) -> bool:
         """Remove one loop. Returns whether the removal happened.
+
+        ``stop_reason``/``stop_detail`` travel with THIS removal's write only: they
+        are staged for the stop record just before it and dropped once it settles,
+        so a failed removal cannot leave a reason for a later, unrelated stop.
 
         ``precondition`` is evaluated on the LIVE row inside the same ``_lock``
         hold that removes it, so a caller whose decision was taken before an
@@ -3538,6 +3596,13 @@ class AutoNudgeService:
             if existed:
                 removed_loop = self.remove_sync(loop_id, persist=False, emit=False)
                 self._pending_removals.add(loop_id)
+                if stop_reason:
+                    self._stop_notes[loop_id] = (
+                        autonudge_stop_log.safe_text(stop_reason),
+                        autonudge_stop_log.safe_text(
+                            stop_detail, autonudge_stop_log.DETAIL_MAX_CHARS
+                        ),
+                    )
             payload = self._serialize_state()
             fut = asyncio.get_running_loop().run_in_executor(None, self._write_state, payload)
 
@@ -3591,6 +3656,10 @@ class AutoNudgeService:
                     self._revoke_self_arm_for(removed_loop)
                     self._emit("removed", removed_loop)
                 return True
+            finally:
+                # The write settled (committed or rolled back): its note has done its
+                # job or must not outlive it, either way.
+                self._stop_notes.pop(loop_id, None)
 
     @staticmethod
     async def _revoke_provider_credentials_before_removal(loop_id: str) -> None:
@@ -6529,7 +6598,7 @@ class AutoNudgeService:
         # Kill switch: sentinel file present?
         if loop.stop_sentinel_path and Path(loop.stop_sentinel_path).exists():
             logger.info("AutoNudge: stop sentinel found for %s — removing loop", loop.id)
-            await self.remove(loop.id)
+            await self.remove(loop.id, stop_reason="stop_sentinel")
             return
         # Reached before either dispatch: a fire settles through the same refused writer,
         # so an unattended turn would go out with no restart able to tell that it had.

@@ -1741,6 +1741,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # read, not an egress pass.
         "autonudge.py",
         "autonudge_authz.py",
+        # The loop stop record: store-sourced ids and caller reasons are scrubbed
+        # before they are held in memory or written to the owner-only local
+        # ``autonudge-stops.jsonl`` and the gateway log. Local diagnostics, not an
+        # egress pass.
+        "autonudge_stop_log.py",
         # Inbound structured-monitor target validation. A canonical provider URL
         # is rejected when its path contains credential-shaped text, before the
         # target reaches persistence, inspection, or a wake envelope.

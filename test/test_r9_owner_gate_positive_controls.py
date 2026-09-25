@@ -88,7 +88,7 @@ async def test_autonudge_delete_legacy_allows_owner(monkeypatch) -> None:
     async with TestClient(TestServer(app)) as client:
         response = await client.delete("/api/autonudge/l1")
         assert response.status == 200, await response.text()
-    svc.remove.assert_awaited_once_with("l1")
+    svc.remove.assert_awaited_once_with("l1", stop_reason="dashboard_delete")
 
 
 async def test_autonudge_delete_structured_branch_still_gates_once_and_stops(monkeypatch) -> None:

@@ -316,6 +316,7 @@ class _FakeSvc:
         self.get_by_slot_keys: list[str] = []
         self.removed: list[str] = []
         self.updated: list[tuple[str, dict]] = []
+        self.notes: list[tuple[str, str, str]] = []
 
     def get_by_slot(self, key):
         self.get_by_slot_keys.append(key)
@@ -324,8 +325,9 @@ class _FakeSvc:
     def list_all(self):
         return list(self._all)
 
-    async def remove(self, loop_id):
+    async def remove(self, loop_id, *, stop_reason="", stop_detail=""):
         self.removed.append(loop_id)
+        self.notes.append((loop_id, stop_reason, stop_detail))
 
     async def update(self, loop_id, **patch):
         self.updated.append((loop_id, patch))
@@ -947,6 +949,8 @@ def test_applier_autonudge_stop_removes_ordinary_monitor_loop(monkeypatch):
     assert svc.get_by_slot_keys == [binding_key_for(_SESSION)]
     assert svc.removed == ["loop-ordinary"]
     assert svc.updated == []
+    # The removal leaves no row, so the agent's reason must reach the stop record.
+    assert svc.notes == [("loop-ordinary", "autonudge_stop", "done")]
     assert "stopped" in result.lower()
 
 
