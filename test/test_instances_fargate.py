@@ -141,8 +141,8 @@ class TestRegistry:
 
         An EC2 id stored under ``fargate`` would open a forward to a box and then
         show its dashboard port as a turn URL. The arm validates with the same
-        splitter connect_fargate reads with, so the stored target is one that
-        lane can open.
+        splitter the ``fargate`` transport reads with, so the stored target is
+        one that lane can open.
         """
         from kiro_crew.instances.registry import InstancesRegistry, InvalidInstanceError
 

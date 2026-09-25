@@ -1,7 +1,8 @@
-import React from 'react'
+import React, { useId, useLayoutEffect } from 'react'
 import {
   closestCenter,
   pointerWithin,
+  useDndContext,
   useDraggable,
   useDroppable,
   type Collision,
@@ -153,4 +154,30 @@ export function DndDroppable({ id, data, disabled, children }: {
 }) {
   const { setNodeRef, isOver } = useDroppable({ id, data, disabled })
   return <>{children({ setNodeRef, isOver })}</>
+}
+
+/**
+ * Reports whether the enclosing DndContext has an active drag, so a surface
+ * mirroring dnd-kit's drag lifecycle into its own state can reconcile that
+ * mirror against the store dnd-kit actually holds.
+ *
+ * A mirror set from `onDragStart` and cleared from `onDragEnd` /
+ * `onDragCancel` can strand: dnd-kit fires the end callbacks only once a
+ * layout effect has populated `sensorContext.active`, on the commit AFTER the
+ * start, so a press-move-release finishing before that commit leaves dnd-kit
+ * idle while the mirror still says a drag is live.
+ *
+ * One probe per DndContext, keyed by a stable id: only a context that hosted
+ * the gesture reports active, so an idle neighbour must not be read as "no
+ * drag anywhere".
+ */
+export function DndActiveProbe({ report }: { report: (id: string, active: boolean) => void }) {
+  const id = useId()
+  const { active } = useDndContext()
+  const isActive = active != null
+  useLayoutEffect(() => {
+    report(id, isActive)
+    return () => report(id, false)
+  }, [id, isActive, report])
+  return null
 }

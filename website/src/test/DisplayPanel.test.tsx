@@ -33,6 +33,8 @@ const { mockUseTheme, DEFAULT_THEME } = vi.hoisted(() => {
     colorTheme: 'default',
     setColorTheme: vi.fn(),
     allThemes: [{ value: 'default', label: 'Default', custom: false }],
+    customThemes: [],
+    customThemesUpdatedAt: 0,
     theme: 'dark',
     themeVersion: 0,
     themeSwitching: false,
@@ -291,6 +293,76 @@ describe('DisplayPanel – theme install', () => {
     await waitFor(() => {
       expect(spy).toHaveBeenCalledWith({ type: 'local', path: '/srv/themes/lcars' })
     })
+    spy.mockRestore()
+  })
+
+  it('an install whose list refresh failed never selects the pack on its own', async () => {
+    // Install lands, the list refresh fails: the notice under the picker says
+    // so at once. When a catalog fetch later LANDS (Retry, a background refetch,
+    // another tab) the notice is withdrawn -- keyed on `customThemesUpdatedAt`,
+    // because a reinstall of an already-listed pack yields a deep-equal listing
+    // whose array reference React Query keeps -- and NOTHING is selected: a
+    // theme swap made by a refetch minutes later is not the user's choice.
+    const setColorTheme = vi.fn()
+    const customThemes = [{ value: 'custom-lcars', label: 'LCARS', custom: true }]
+    let customThemesUpdatedAt = 1000
+    mockUseTheme.mockImplementation(() => ({
+      ...DEFAULT_THEME,
+      setColorTheme,
+      // Rebuilt every render, as the provider does; must not withdraw the notice.
+      allThemes: [{ value: 'default', label: 'Default', custom: false }, ...customThemes],
+      customThemes, // same reference throughout: the reinstall case
+      customThemesUpdatedAt,
+      loadCustomThemes: vi.fn().mockResolvedValue(false),
+    }))
+    const spy = vi.spyOn(api, 'installTheme').mockResolvedValue({ ok: true, slug: 'lcars' })
+    const { rerender } = renderWithProviders(<DisplayPanel />)
+
+    fireEvent.change(screen.getByLabelText('Theme source location'), {
+      target: { value: 'https://github.com/u/lcars' },
+    })
+    fireEvent.click(screen.getByText('Install'))
+    await screen.findByText(/Press Retry to refresh the list and apply it/)
+    rerender(<DisplayPanel />)
+    expect(screen.getByText(/Press Retry to refresh the list and apply it/)).toBeInTheDocument()
+    expect(setColorTheme).not.toHaveBeenCalled()
+
+    // A catalog fetch lands (deep-equal listing, same array): the notice goes,
+    // nothing is selected.
+    customThemesUpdatedAt = 2000
+    rerender(<DisplayPanel />)
+    await waitFor(() => {
+      expect(screen.queryByText(/Press Retry to refresh the list and apply it/)).not.toBeInTheDocument()
+    })
+    expect(setColorTheme).not.toHaveBeenCalled()
+    spy.mockRestore()
+  })
+
+  it('a user-initiated Retry that succeeds finishes the install by selecting the pack', async () => {
+    // The Retry click is the user's action, so its success may complete what
+    // the failed refresh left undone: the just-installed pack is selected. Only
+    // this path selects; a background refetch never does (previous test).
+    const setColorTheme = vi.fn()
+    const loadCustomThemes = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+    mockUseTheme.mockImplementation(() => ({
+      ...DEFAULT_THEME,
+      setColorTheme,
+      customThemesLoaded: true,
+      loadCustomThemes,
+    }))
+    const spy = vi.spyOn(api, 'installTheme').mockResolvedValue({ ok: true, slug: 'lcars' })
+    renderWithProviders(<DisplayPanel />)
+
+    fireEvent.change(screen.getByLabelText('Theme source location'), {
+      target: { value: 'https://github.com/u/lcars' },
+    })
+    fireEvent.click(screen.getByText('Install'))
+    await screen.findByText(/Press Retry to refresh the list and apply it/)
+    expect(setColorTheme).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(setColorTheme).toHaveBeenCalledWith('custom-lcars'))
+    expect(loadCustomThemes).toHaveBeenCalledTimes(2)
     spy.mockRestore()
   })
 

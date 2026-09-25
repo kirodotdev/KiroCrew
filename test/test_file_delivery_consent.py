@@ -381,6 +381,64 @@ class TestConsentedDownloadRequiresOwnerIdentity:
                     "asyncio.to_thread" in preceding
                 ), f"{fn.__name__}: consent read not offloaded -- {line.strip()}"
 
+    def test_identity_discriminates_the_caller_class_the_grant_cannot(self):
+        """Behaviour behind the structural pin: the predicate separates the callers.
+
+        The gate admits any authenticated dashboard user, so the caller the entry
+        must attribute is a Slack allow-listed non-owner: ``app == ""`` with a
+        subject that is not the owner id. The grant cannot tell that caller from the
+        owner, because a refusal in the default no-grant state never reaches the
+        owner check. This asserts the predicate the fix uses does tell them apart,
+        and that it needs no store read to do it.
+        """
+        from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+        assert is_owner_dashboard_request(_consent_request(user="owner-1", owner="owner-1"))
+        # The Slack !dashboard caller: authenticated, app-less, not the owner.
+        assert not is_owner_dashboard_request(
+            _consent_request(user="slack-user-7", owner="owner-1")
+        )
+        # And an app token is not the owner either, grant or no grant.
+        assert not is_owner_dashboard_request(
+            _consent_request(app="an-app", user="owner-1", owner="owner-1")
+        )
+
+    def test_the_refused_entry_says_which_conjunct_refused(self):
+        """One row for both conjuncts would misreport a cross-principal attempt.
+
+        The entry has to separate "the scanner held this back" from "another
+        principal reached for a file your grant covers" -- the second read as the
+        first leaves the cross-principal attempt attributed to nobody. Structural for
+        the same reason as the conjunct tests above: an aiohttp fixture carrying a
+        forged non-owner identity would pin the harness rather than the route, and
+        the entry's own text is asserted behaviourally against the helper.
+
+        The discriminator must be IDENTITY, not the grant. The gate's conjunction
+        short-circuits, so in the default no-grant state a non-owner is refused
+        before the owner check runs; keyed off the grant, that caller would be
+        recorded as an ordinary scanner hold-back in the configuration almost every
+        install runs. Both flagged branches of the leg are checked, since each can
+        be reached by a non-owner.
+        """
+        import inspect
+
+        from kiro_crew.dashboard.handlers import files as files_handlers
+
+        src = inspect.getsource(files_handlers.api_outbox_download)
+        assert '"flagged content, non-owner caller"' in src
+        assert '"flagged content, no grant"' in src
+        assert '"flagged binary content, non-owner caller"' in src
+        assert '"flagged binary content, no grant"' in src
+        assert src.count("cross_principal = _requester_is_not_the_owner()") == 2
+        # The grant must NOT be the discriminator: it cannot answer which conjunct
+        # refused, because the conjunction never evaluates the second one when the
+        # first is false.
+        assert "cross_principal = granted" not in src
+        assert (
+            src.count('caller=str(request.get("user") or "unknown") if cross_principal else ""')
+            == 2
+        )
+
 
 def _consent_request(*, app: str = "", user: str = "owner-1", owner: str = "owner-1", query=None):
     """A request shaped like a real DASHBOARD OWNER call.
@@ -1420,3 +1478,230 @@ class TestAuditDecisionRedactsBeforeTruncate:
 
         assert len(calls) == 1
         assert calls[0]["resources"] == file_delivery_consent.CLASS_OWNER_DASHBOARD
+
+
+class TestARefusalNamesTheFileItHeldBack:
+    """A held-back file has to be NAMED somewhere the owner can read.
+
+    The error string a refused caller receives is returned to the AGENT, so it
+    cannot serve an owner who is being asked to allow delivery: they would be
+    deciding without knowing which of their files the scanner stopped. The
+    consent audit trail already names a flagged file that went OUT under a grant,
+    and it is served over the security event log, so the refusal belongs in the
+    same place under the same name.
+    """
+
+    @staticmethod
+    def _capture(monkeypatch):
+        import kiro_crew.sel as sel_mod
+
+        calls: list[dict] = []
+
+        class _Recorder:
+            def log_api_access(self, **kwargs) -> None:
+                calls.append(kwargs)
+
+            def log_tool_invocation(self, **kwargs) -> None:
+                """Absorbed: the tool-invocation lane is not what this asserts."""
+
+        monkeypatch.setattr(sel_mod, "sel", lambda: _Recorder())
+        return calls
+
+    @staticmethod
+    def _refusals(calls: list[dict]) -> list[str]:
+        return [
+            c["resources"] for c in calls if c.get("operation") == "file_delivery_consent.refused"
+        ]
+
+    def test_the_helper_records_the_outcome_the_leg_the_name_and_the_reason(self, monkeypatch):
+        calls = self._capture(monkeypatch)
+
+        file_delivery_consent.audit_refusal(
+            file_delivery_consent.CLASS_OWNER_DASHBOARD,
+            leg="file_send",
+            name="device.conf",
+            reason="flagged content",
+        )
+
+        assert len(calls) == 1
+        assert calls[0]["operation"] == "file_delivery_consent.refused"
+        assert calls[0]["outcome"] == "refused"
+        assert calls[0]["resources"] == (
+            f"{file_delivery_consent.CLASS_OWNER_DASHBOARD}: "
+            "file_send (flagged content): device.conf"
+        )
+
+    def test_the_helper_names_the_caller_when_a_leg_admits_more_than_one(self, monkeypatch):
+        """``audit_decision`` stamps every refusal ``gateway``, the process not the requester.
+
+        So a leg an authenticated non-owner can reach has to carry the requester in
+        the entry itself, or the row cannot say WHICH identity reached for the file.
+        """
+        calls = self._capture(monkeypatch)
+
+        file_delivery_consent.audit_refusal(
+            file_delivery_consent.CLASS_OWNER_DASHBOARD,
+            leg="download",
+            name="device.conf",
+            reason="flagged content, non-owner caller",
+            caller="slack-user-7",
+        )
+
+        assert calls[0]["resources"] == (
+            f"{file_delivery_consent.CLASS_OWNER_DASHBOARD}: "
+            "download (flagged content, non-owner caller) caller=slack-user-7: device.conf"
+        )
+
+    def test_the_helper_omits_the_caller_clause_on_a_single_principal_leg(self, monkeypatch):
+        """The negative: the clause must be absent, not present-and-empty.
+
+        Four of the six call sites serve one principal, and an entry trailing a
+        bare ``caller=`` would read as an identity the log failed to capture.
+        """
+        calls = self._capture(monkeypatch)
+
+        file_delivery_consent.audit_refusal(
+            file_delivery_consent.CLASS_OWNER_DASHBOARD,
+            leg="file_send",
+            name="device.conf",
+            reason="flagged content",
+        )
+
+        assert "caller=" not in calls[0]["resources"]
+
+    def test_a_long_name_cannot_clip_the_reason_or_the_caller(self, monkeypatch):
+        """The name is the only unbounded field, so it is the one truncation may eat.
+
+        ``audit_decision`` clips the detail at 200 characters and an outbox name has
+        no length bound -- it comes from the request path and is only resolved inside
+        the outbox. Composed name-first, a long enough name pushes the reason and the
+        caller off the end and what survives reads exactly like a plain scanner
+        hold-back, which is the reading this entry exists to prevent. So the assertion
+        is on the surviving fields, not on the name.
+        """
+        calls = self._capture(monkeypatch)
+
+        file_delivery_consent.audit_refusal(
+            file_delivery_consent.CLASS_OWNER_DASHBOARD,
+            leg="download",
+            name="a" * 4000,
+            reason="flagged content, non-owner caller",
+            caller="slack-user-7",
+        )
+
+        row = calls[0]["resources"]
+        assert "(flagged content, non-owner caller)" in row
+        assert "caller=slack-user-7" in row
+        # And the row is still clipped, so this is not passing by the clip being gone.
+        assert len(row) < 4000
+
+    def test_the_primary_tool_refusal_names_the_file(self, tmp_path, monkeypatch):
+        """The leg the owner actually meets: an agent sends a flagged file, unigranted."""
+        from kiro_crew.mcp_tools.messaging import file_send
+
+        calls = self._capture(monkeypatch)
+        src = tmp_path / "device.conf"
+        src.write_text(_synth_pem())
+
+        out = file_send("file_send", {"path": str(src)})
+
+        assert "sensitive data" in out and "aborted" in out
+        refusals = self._refusals(calls)
+        assert len(refusals) == 1, calls
+        assert refusals[0] == (
+            f"{file_delivery_consent.CLASS_OWNER_DASHBOARD}: "
+            "file_send (flagged content): device.conf"
+        )
+
+    def test_a_granted_delivery_records_no_refusal(self, tmp_path, monkeypatch):
+        """The negative direction: the entry must mean refused, not merely flagged."""
+        from kiro_crew import mcp_core
+        from kiro_crew.mcp_tools.messaging import file_send
+
+        src = tmp_path / "device.conf"
+        src.write_text(_synth_pem())
+        _grant()
+        calls = self._capture(monkeypatch)
+
+        with patch.object(mcp_core, "_post", side_effect=lambda path, *a, **kw: {"ok": True}):
+            out = file_send("file_send", {"path": str(src)})
+
+        assert "File sent" in out
+        assert self._refusals(calls) == []
+
+    def test_a_flagged_name_is_recorded_without_reproducing_it(self, tmp_path, monkeypatch):
+        """A name that IS the credential must not be copied verbatim into the log."""
+        from kiro_crew.mcp_tools.messaging import file_send
+
+        key = _synth_aws_key()
+        calls = self._capture(monkeypatch)
+        src = tmp_path / f"notes-{key}.txt"
+        src.write_text("no credential in the body")
+
+        out = file_send("file_send", {"path": str(src)})
+
+        assert "filename contains sensitive content" in out
+        refusals = self._refusals(calls)
+        assert len(refusals) == 1, calls
+        assert "flagged name" in refusals[0]
+        assert key not in refusals[0]
+        assert key[:8] not in refusals[0]
+
+
+class TestEveryScannerRefusalRecordsTheName:
+    """The claim is about the SET of refusal sites, so it is one test, not many.
+
+    A refusal leg added later without an entry has to redden something, and a
+    per-leg test would simply not exist for it. Asserted on the source because
+    three of these legs are reached through aiohttp handlers whose fixtures would
+    cost more than they prove: what is at stake is whether the call is THERE.
+    """
+
+    @staticmethod
+    def _sources():
+        from kiro_crew.dashboard.handlers import files as files_mod
+        from kiro_crew.mcp_tools import messaging as messaging_mod
+
+        return {
+            "file_send": inspect.getsource(messaging_mod.file_send),
+            "notify": inspect.getsource(files_mod.api_outbox_notify),
+            "download": inspect.getsource(files_mod.api_outbox_download),
+            "upload gate": inspect.getsource(files_mod._gate_upload_file),
+        }
+
+    def test_each_leg_records_every_scan_it_can_refuse_on(self):
+        # file_send scans the NAME and the text CONTENT. notify and download each
+        # scan name or text content AND binary content, and every one of those scans
+        # honours the grant, so each refuses separately and each needs its own entry
+        # -- a leg that scans three ways and records twice leaves a refusal the owner
+        # cannot see. The shared upload gate scans the name, binary content, text
+        # content and wide-encoded content, and records through its OWN audit helper
+        # rather than the consent module, so its entries are counted by the name they
+        # carry.
+        sources = self._sources()
+        counted = {
+            leg: (
+                src.count("{filename}") + src.count("{redact(filename)}")
+                if leg == "upload gate"
+                else src.count("audit_refusal(")
+            )
+            for leg, src in sources.items()
+        }
+        assert counted == {"file_send": 2, "notify": 3, "download": 2, "upload gate": 4}
+
+    def test_only_the_gate_scanner_refusals_name_the_file(self):
+        # A shape refusal flags no file, so naming one would claim the scanner
+        # stopped something it never looked at. Pinning WHICH entries carry the
+        # name is what makes a new shape refusal that copies the wrong neighbour
+        # redden.
+        naming = {
+            line.strip()
+            for line in self._sources()["upload gate"].splitlines()
+            if "_audit_denial(" in line and "filename" in line
+        }
+        assert naming == {
+            '_audit_denial(f"sensitive_filename_rejected: {redact(filename)}")',
+            '_audit_denial(f"binary_credential_detected: {filename}")',
+            '_audit_denial(f"content_redacted: {filename}")',
+            '_audit_denial(f"wide_credential_detected: {filename}")',
+        }

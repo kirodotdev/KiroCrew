@@ -5,6 +5,7 @@ import { useReducedMotion } from '../hooks/useReducedMotion'
 import type { AudioSample } from '../hooks/mic'
 import MicSourceMenu from './MicSourceMenu'
 import { downloadLabel } from '../lib/sttProviders'
+import type { SttModelProgress } from '../lib/sttProviders'
 import { i18nT } from '../i18n/t'
 
 /** One tracked token of the in-flight partial hypothesis. */
@@ -169,8 +170,8 @@ interface Props {
    * same time as the button saying it is noise.
    */
   gestureDriven?: boolean
-  /** Byte progress of the one-time speech-model download this session waits on. */
-  download?: { done: number; total: number } | null
+  /** What the speech model this session waits on is doing: fetching, or loading. */
+  download?: SttModelProgress | null
 }
 
 /**

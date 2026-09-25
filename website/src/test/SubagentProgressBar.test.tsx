@@ -360,3 +360,24 @@ describe('SubagentProgressBar — collapse toggle', () => {
     expect(api.spawnStopAll).toHaveBeenCalledWith(SLOT)
   })
 })
+
+describe('SubagentProgressBar — why the queued agents wait', () => {
+  it('renders the deferral sentence as visible text, not only in the tooltip', () => {
+    const store = makeStore(['a1'])
+    store.dispatch(sseSubagentQueued({ slot: SLOT, queued: 1, reason: 'low_memory', available_gb: 3.2, required_gb: 4.5 }))
+    renderBar(store)
+    const line = screen.getByTestId('subagent-wait-reason')
+    expect(line.textContent).toContain('free up memory to continue')
+    expect(line.className).toContain('text-warn')
+    expect(screen.getByTestId('subagent-queued-count').getAttribute('title')).toBe(line.textContent)
+  })
+
+  it('renders no extra line for a bare count (older gateway) or the capacity wait', () => {
+    const store = makeStore(['a1'])
+    store.dispatch(sseSubagentQueued({ slot: SLOT, queued: 2 }))
+    renderBar(store)
+    expect(screen.queryByTestId('subagent-wait-reason')).toBeNull()
+    expect(screen.getByTestId('subagent-queued-count').getAttribute('title'))
+      .toBe('Waiting to start — queued behind the concurrency limit')
+  })
+})

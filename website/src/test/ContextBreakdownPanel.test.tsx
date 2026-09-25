@@ -85,6 +85,7 @@ describe('categoryOf / categorise — five plain-language buckets', () => {
     expect(categoryOf('response_preferences')).toBe('rules')
     expect(categoryOf('loaded_skill')).toBe('skills')
     expect(categoryOf('semantic_memory')).toBe('memory')
+    expect(categoryOf('task_facts')).toBe('memory')
   })
 
   it('sends the every-turn members, unclassified and unknown labels to "other"', () => {
@@ -245,6 +246,19 @@ describe('ContextBreakdownPanel rendering', () => {
     fireEvent.click(within(other).getByRole('button'))
     expect(within(other).getByText('Every-turn instructions')).toBeInTheDocument()
     expect(within(other).queryByText(/request header/i)).toBeNull()
+  })
+
+  it('labels the task-facts block from the catalog, distinct from the facts-you-told-it block', () => {
+    // `task_facts` rides along on every session under the default inject_activity,
+    // so it earns a catalog entry: the humanised id ("Task facts") would render in
+    // English beside translated siblings and read as a twin of "Facts you told it".
+    render(<ContextBreakdownPanel trace={trace({ turns: [turnOf({ your_message: 80, semantic_memory: 300, task_facts: 200 })] })} />)
+    const detail = screen.getByTestId('selected-turn-detail')
+    const memory = detail.querySelector('[data-category-row="memory"]') as HTMLElement
+    fireEvent.click(within(memory).getByRole('button'))
+    expect(within(memory).getByText('Facts recalled for this task')).toBeInTheDocument()
+    expect(within(memory).getByText('Facts you told it')).toBeInTheDocument()
+    expect(within(memory).queryByText('Task facts')).toBeNull()
   })
 
   it('draws only the newest 30 turns and counts the rest', () => {

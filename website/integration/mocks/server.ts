@@ -105,6 +105,13 @@ export const mockMcpServers = [
     disabledTools: ['post_message'],
     command: 'node /path/to/slack-mcp',
     presence: { kirocrew: false, kiroGlobal: false, ccGlobal: false },
+    // Switched off in Kiro Crew's OWN store (presence.kirocrew false is that
+    // state), so the row keeps its controls. The backend says which config
+    // switched a row off in `disabledIn`; the table renders `shared` inert and
+    // `kirocrew` as this consent row.
+    kirocrewManaged: true,
+    disabledIn: 'kirocrew',
+    disabledInFile: null,
   },
 ]
 

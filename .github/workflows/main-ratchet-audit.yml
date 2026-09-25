@@ -19,6 +19,12 @@ name: Main Ratchet Audit
 #      frontend-lint `if: only_backend != 'true'`). On a single-surface push to
 #      main -- e.g. a backend-only merge -- the eslint ceiling is SKIPPED, not
 #      cancelled, so it is never measured against the integrated tree at all.
+#      ci.yml's `bundle-size` job carries the same `only_backend != 'true'`
+#      guard, so the per-chunk bundle ceilings skip on that merge too. That skip
+#      is correct on its own terms -- a backend diff cannot move the bundle --
+#      but it means the two ways a ceiling goes unmeasured on main, "skipped
+#      because not applicable" and "never ran because the run was evicted", read
+#      the same to anyone scanning main: as the absence of a red X.
 #
 # The consequence is that drift on main surfaces later on an UNRELATED pull
 # request (a PR's CI runs against merge(branch, main), inheriting main's state),
@@ -35,11 +41,11 @@ name: Main Ratchet Audit
 # main; only the verdict was missing). The added runner minutes here are only
 # the individually-cheap ratchet lanes.
 #
-# The gate commands below are the same commands ci.yml's backend-lint and
-# frontend-lint jobs run, so the audit and the PR gates cannot disagree about
-# what a gate IS. If ci.yml adds or renames a gate script, mirror it here. The
-# eslint ceiling is deliberately NOT transcribed: it is read out of ci.yml at
-# run time, so ci.yml stays the one numeric source
+# The gate commands below are the same commands ci.yml's backend-lint,
+# frontend-lint and bundle-size jobs run, so the audit and the PR gates cannot
+# disagree about what a gate IS. If ci.yml adds or renames a gate script, mirror
+# it here. The eslint ceiling is deliberately NOT transcribed: it is read out of
+# ci.yml at run time, so ci.yml stays the one numeric source
 # (test/test_eslint_warning_ceiling.py pins that) and a burn-down cannot leave a
 # stale copy here that grants slack the PR gate does not.
 #
@@ -232,9 +238,91 @@ jobs:
           cd website
           npx eslint src/ --max-warnings "$MW"
 
+  # The per-chunk bundle ceilings, for the same two reasons the eslint ceiling is
+  # here (see the header): on main they are either superseded before they report
+  # or skipped outright. ci.yml's `bundle-size` job is gated
+  # `if: only_backend != 'true'`, so a backend-only merge skips it -- correctly,
+  # since a backend diff cannot move the bundle -- while a FRONTEND merge, the one
+  # that can, usually loses its verdict to supersession instead. MEASURED over the
+  # last 60 pushes to main: of the 13 whose diff touched `website/**`, 11 produced
+  # ZERO jobs (the run was evicted while pending), 1 reported success and 1
+  # reported failure. So the gate that guards the ceiling runs on about one in
+  # seven of the merges that can breach it, and the breach then surfaces on the
+  # next contributor's PR, where the cheapest way out is to raise the ceiling --
+  # exactly what a ceiling exists to prevent.
+  #
+  # A SEPARATE job from `frontend-ceiling`, not two more steps in it, because the
+  # reporter renders one bullet per non-success lane: sharing a job would put
+  # "a ceiling drifted" in the tracking issue without saying WHICH, and a reader
+  # who cannot tell an eslint breach from a bundle breach has to open the run to
+  # learn what the record was supposed to tell them. The extra cost is one
+  # checkout + `npm ci` (MEASURED: the whole job runs in ~50s on main today).
+  #
+  # Nothing is transcribed here. `CHUNK_BUDGETS` in
+  # website/scripts/check-bundle-size.mjs is the one numeric source and BOTH lanes
+  # run that same script, so -- unlike the eslint ceiling, which has to be read
+  # out of ci.yml to avoid a second copy -- there is no number here that can go
+  # stale and grant slack the PR gate does not. The gate is also whole-tree by
+  # construction: it reads `dist/bundle-report.json` from its own build and
+  # consults no base ref, so it needs no RATCHET_SCOPE_WHOLE_TREE and cannot pass
+  # by measuring an empty diff.
+  bundle-ceiling:
+    name: Frontend bundle ceiling
+    # The shared dispatch routing expression, byte-identical to this workflow's
+    # other jobs (test_ci_fleet_routing_expression_parity.py pins that). ci.yml's
+    # `bundle-size` reads `linux_runner_large` instead, but that is a resolver
+    # consumer reading its `changes` job's output, and this workflow has no such
+    # job -- so the sanctioned spelling here is the canonical one, and the heap
+    # flag below is left exactly as ci.yml sets it rather than compensated for
+    # with an off-convention label.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Install dependencies
+        working-directory: website
+        run: npm ci --no-audit --no-fund
+
+      # Same command as ci.yml's `bundle-size` job, so the audit and the PR gate
+      # cannot disagree about what the measurement IS. `--mode analyze` is what
+      # activates the kirocrew-bundle-report plugin; a plain build deliberately
+      # writes no report, so the gates below would have nothing to read.
+      - name: Build in analyze mode
+        working-directory: website
+        run: node --max-old-space-size=6144 ./node_modules/vite/bin/vite.js build --mode analyze
+
+      # `!cancelled()` on both gates, for the reason the backend lane states: on a
+      # default success() condition the first drifting gate skips the second, so
+      # the run would name one breach and leave the other unmeasured for as long
+      # as the first stayed unfixed. ci.yml shows exactly that -- on the one main
+      # push where the size gate failed, the cycle gate read `skipped` -- and a
+      # partial verdict is the class this workflow exists to close.
+      - name: Per-chunk size gate
+        if: ${{ !cancelled() }}
+        working-directory: website
+        run: node scripts/check-bundle-size.mjs
+
+      # Mirrored because it shares this build and is a ceiling on the same
+      # artifact: two chunks that statically import each other have no valid
+      # initialization order, so the page blanks before React mounts while bytes,
+      # tsc and the unit suite all stay green.
+      - name: Chunk cycle gate
+        if: ${{ !cancelled() }}
+        working-directory: website
+        run: node scripts/check-chunk-cycles.mjs
+
   report:
     name: Render ratchet verdict
-    needs: [ratchet-gates, frontend-ceiling]
+    needs: [ratchet-gates, frontend-ceiling, bundle-ceiling]
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
     timeout-minutes: 10
     # always() so the verdict is rendered even when a gate job failed; the push
@@ -250,6 +338,7 @@ jobs:
           COMMIT_SHA: ${{ github.sha }}
           RATCHET_RESULT: ${{ needs.ratchet-gates.result }}
           FRONTEND_RESULT: ${{ needs.frontend-ceiling.result }}
+          BUNDLE_RESULT: ${{ needs.bundle-ceiling.result }}
         run: |
           set -euo pipefail
 
@@ -277,6 +366,12 @@ jobs:
           fi
           if [ "$FRONTEND_RESULT" != "success" ]; then
             FAILED="$(printf '%s\n- `frontend-ceiling` (eslint warning ceiling): **%s**' "$FAILED" "$FRONTEND_RESULT")"
+          fi
+          # Its own bullet, naming the artifact it measures: "a ceiling drifted"
+          # without saying which one sends the reader back to the run log for the
+          # one fact the record exists to carry.
+          if [ "$BUNDLE_RESULT" != "success" ]; then
+            FAILED="$(printf '%s\n- `bundle-ceiling` (per-chunk bundle size ceilings + chunk import cycles): **%s**' "$FAILED" "$BUNDLE_RESULT")"
           fi
 
           # The tracking issue is scoped by a dedicated label so the QUERY is

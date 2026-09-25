@@ -1078,14 +1078,30 @@ class AgentConfig:
         metadata=_meta(
             "Sandbox",
             "Sandbox mode for ACP provider. Default 'auto' engages OS-level "
-            "isolation (namespace on Linux, sandbox-exec on macOS) and "
-            "automatically defers to kiro-cli's internal sandbox on macOS when "
-            "it is enabled (kiro-cli >= 2.13; nested seatbelt causes EPERM). "
-            "Set to 'off' to skip Kiro Crew's own OS-level sandbox — delegation "
-            "to kiro-cli's internal sandbox still fires on macOS if it is "
-            "enabled, and a SECURITY warning is logged when neither layer is "
-            "active.",
-            enum=["auto", "off"],
+            "isolation (namespace on Linux, sandbox-exec on macOS) at the "
+            "standard tier and automatically defers to kiro-cli's internal "
+            "sandbox on macOS when it is enabled (kiro-cli >= 2.13; nested "
+            "seatbelt causes EPERM). The standard tier deliberately leaves "
+            "~/.aws, ~/.ssh and ~/.kube visible to the agent's shell so the aws "
+            "CLI, boto3 credential_process, git-over-SSH and kubectl keep "
+            "working; the file tools still refuse those paths. Set to 'strict' "
+            "to also hide ~/.aws (including ~/.aws/sso/cache, kiro-cli's grant "
+            "store for OAuth-connected remote MCP servers), ~/.ssh (except "
+            "known_hosts), ~/.kube and ~/.config/gh, plus the credential files "
+            "~/.npmrc, ~/.pypirc, ~/.netrc and ~/.git-credentials, from every "
+            "agent subprocess -- opt-in, and inside the agent it breaks the aws "
+            "CLI, boto3, git-over-SSH, gh, kubectl, npm/pip registry auth, "
+            ".netrc HTTPS auth, the git credential store and remote-MCP OAuth "
+            "for the same reason. Like every value of this key, a change applies "
+            "to sessions started after it; a session already running keeps the "
+            "tier it was spawned with until it ends. 'strict' changes "
+            "nothing where Kiro Crew applies no sandbox of its own: Windows has "
+            "no OS backend, and a macOS spawn delegated to kiro-cli's internal "
+            "sandbox is confined by that profile instead. Set to 'off' to skip "
+            "Kiro Crew's own OS-level sandbox -- delegation to kiro-cli's "
+            "internal sandbox still fires on macOS if it is enabled, and a "
+            "SECURITY warning is logged when neither layer is active.",
+            enum=["auto", "strict", "off"],
         ),
     )
     sandbox_allow_no_isolation: bool = field(
@@ -2336,6 +2352,18 @@ class MemoryConfig:
         metadata=_meta(
             "Inject Lessons Context",
             "Inject the learned-corrections and user-profile blocks into " "new-session context.",
+        ),
+    )
+    inject_activity: bool = field(
+        default=True,
+        metadata=_meta(
+            "Inject Memory Activity",
+            "Inject the recent activity block (active projects, daily history (14 full "
+            "days, then decayed summaries and counts to day 180), task facts and "
+            "relevant past episodes) into new-session context as a "
+            "budgeted background block. Off: only preferences and the activity index "
+            "ship at session start and older material is read through memory_recall. "
+            "Requires inject_memory.",
         ),
     )
     migrated: bool = field(
@@ -3855,6 +3883,17 @@ class KiroCrewAgentConfig:
             "its role effort). A per-session pick still overrides this. Only "
             "reasoning-capable models accept a level; on any other model the pin "
             "is ignored, exactly as the global default is.",
+        ),
+    )
+    display_name: str = field(
+        default="",
+        metadata=_meta(
+            "Display Name",
+            "Optional label the dashboard shows instead of the agent's name. "
+            "Purely presentational: the name stays the immutable identity — it "
+            "keys this record, addresses /api/agents/{name}, and is what "
+            "dispatch, crons and spawn resolve — so renaming the label never "
+            "breaks a binding. Empty means the dashboard shows the name itself.",
         ),
     )
     description: str = field(

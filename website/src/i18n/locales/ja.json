@@ -213,6 +213,7 @@
     "resource_tight": "Tight",
     "subagent_cap": "cap: {{cap}}",
     "notifications": "通知",
+    "notifications_ask_agent_help": "このページを離れて新しいチャットを開き、このエラーのレポートを入力済みにしておくので、あとは送信するだけです",
     "notifications_failed_to_load": "通知の読み込みに失敗しました",
     "open_inbox": "受信トレイを開く",
     "open_menu": "メニューを開く",
@@ -3695,7 +3696,7 @@
         "trust_normal": "通常",
         "trust_normal_desc": "各ツール使用時に承認を求める",
         "trust_reads": "読取",
-        "trust_reads_desc": "読み取り専用操作（ls、cat、grep）を自動承認。書き込み操作は引き続き確認します。",
+        "trust_reads_desc": "読み取り専用のシェルコマンド（ls、cat、grep）を自動承認。それ以外はすべて引き続き確認します。",
         "trust_trust": "すべてのツールを信頼",
         "trust_trust_desc": "Mochiが使用するすべてのツールを自動承認し、確認しません",
         "trust_yolo_active": "YOLO（すべてを自動承認）がアクティブです。{{productName}}全体に適用され、ここではなくダッシュボードから変更されます。",
@@ -5545,6 +5546,7 @@
       "your_selected_setup_is_ready_in_kiro_crew": "選択されたセットアップは {{productName}} で準備ができています。"
     },
     "agentSelector": {
+      "agent_id_tooltip": "{{name}} — エージェントID。cron、spawnパラメータ、CLIはラベルではなくこのIDを使用します。",
       "agent_list": "エージェントリスト",
       "default": "デフォルト",
       "filter_agents": "エージェントをフィルター",
@@ -5611,9 +5613,9 @@
       "normal_desc": "{{productName}} は何かをする前にあなたに確認します",
       "normal_label": "標準",
       "normal_tooltip": "{{productName}} は何かをする前にあなたに確認します",
-      "reads_desc": "{{productName}} は独力で検索しますが、変更する前に確認します",
+      "reads_desc": "{{productName}} は読み取り専用のシェルコマンドを独力で実行しますが、それ以外はすべて確認します",
       "reads_label": "読み取り",
-      "reads_tooltip": "{{productName}} は独力で検索しますが、変更する前に確認します",
+      "reads_tooltip": "{{productName}} は読み取り専用のシェルコマンドを独力で実行しますが、それ以外はすべて確認します",
       "trust_desc": "このチャットでは、{{productName}} は最初に確認せずに機能します",
       "trust_label": "信頼",
       "chat_mode_hint": "チャットモード",
@@ -6318,7 +6320,7 @@
       "nightly": "Nightly ビルド",
       "report_problem": "問題を報告",
       "report_problem_on_build": "この {{channel}} の問題を報告",
-      "request_feature_starts_agent": "エージェントとの会話を開始し、リクエストの作成と送信を手伝ってもらいます。通常のチャットのターンと同じように推論を消費します。"
+      "request_feature_starts_agent": "リクエストの下書きを作成し、あなたの承認後に GitHub に送信するチャットを開始します。プランの今月の利用量を消費します。"
     },
     "fileCard": {
       "audio": "音声：{{name}}",
@@ -7094,7 +7096,8 @@
       "close_editor": "エディターを閉じる",
       "copied": "コピーしました！",
       "copy": "コピー",
-      "edit_code_block": "コードブロックを編集"
+      "edit_code_block": "コードブロックを編集",
+      "not_saved_hint": "チャットには保存されません。閉じると編集内容は破棄されます。"
     },
     "notifications": {
       "notifMeta": {
@@ -8134,6 +8137,7 @@
     },
     "voiceStatusBar": {
       "default_microphone": "デフォルトマイク",
+      "dictation_kept_for_model": "録音した音声は保持され、文字起こしされます。",
       "recording": "録音中"
     },
     "webAppArtifactCard": {
@@ -8852,6 +8856,7 @@
       "audio_worklet_unavailable": "オーディオワークレットが利用できません",
       "stt_connection_error": "stt接続エラー",
       "stt_connection_lost": "stt接続が失われました",
+      "stt_model_still_loading": "音声モデルの読み込みが終わらなかったため、録音した音声を文字起こしできず、保存もされていません。モデルの読み込みが終わってからもう一度お話しください。",
       "stt_error": "sttエラー"
     },
     "useVoiceInput": {
@@ -8880,6 +8885,7 @@
     "sttProviders": {
       "downloading_decoder": "オーディオデコーダーをダウンロード中: {{pct}}（{{total}} 中 {{done}}）",
       "downloading_speech_model": "音声モデルをダウンロード中: {{pct}}（{{total}} 中 {{done}}）",
+      "loading_speech_model": "音声モデルを読み込み中…",
       "stream_error_decode_failed": "音声認識はこの書き起こしを完了できませんでした。もう一度口述してください。",
       "stream_error_max_duration": "口述が長さの上限に達しました。続けるには新しい録音を開始してください。",
       "stream_error_model_missing": "音声モデルの準備がまだできていません。音声入力の設定でダウンロードしてから、もう一度お試しください。",
@@ -9798,7 +9804,8 @@
         "sign_in": "Kiro にサインイン",
         "sign_in_hint": "「設定 → 概要 → Kiro サインイン」を開いて再度サインインし、メッセージをもう一度送信してください。",
         "feature_request_form": "機能リクエストフォームを開く",
-        "feature_request_form_hint": "現在、推論の容量がありません。代わりに機能リクエストフォームから送信できます。"
+        "feature_request_form_hint": "今月の利用量を使い切りました — 代わりにこのフォームから GitHub にリクエストを送信できます。このフォームはエージェントを介しません。GitHub の Issue フォームが開き、自分で入力するため、今月の利用量は消費されません。",
+        "session_start_repeat_hint": "エージェントセッションの起動が連続して複数回失敗しました。再開しても同じ起動を繰り返すだけです。ターミナルで {{command}} を実行して gateway を再起動し、メッセージをもう一度送信してください。"
       },
       "folderPanel": {
         "clear_search": "検索をクリア",
@@ -10046,6 +10053,13 @@
         "stop_failed": "サブエージェント {{name}} を停止できませんでした",
         "stop_all_failed": "サブエージェントを停止できませんでした",
         "retry_failed_error": "失敗したサブエージェントの一部を再試行できませんでした"
+      },
+      "subagentQueued": {
+        "adaptive_cap_zero": "開始待ち — このコンピューターのメモリ不足または高負荷のため新しい開始を一時停止中です。回復すると自動的に再開します",
+        "low_memory": "開始待ち — {{required}} の空きメモリが必要です（現在の空き {{available}}）。続行するにはメモリを空けてください",
+        "low_memory_no_figures": "開始待ち — 空きメモリが不足しています。続行するにはメモリを空けてください",
+        "posture_critical": "開始待ち — このコンピューターのメモリが著しく不足しています（空き {{available}}）。続行するにはメモリを空けてください",
+        "posture_critical_no_figures": "開始待ち — このコンピューターのメモリが著しく不足しています。続行するにはメモリを空けてください"
       },
       "subagentRunCard": {
         "agent_finished_other": "{{count}} 個のエージェントが完了",
@@ -10975,6 +10989,7 @@
       "block_semantic_memory": "教えたファクト",
       "block_skill_hint": "関連スキル",
       "block_skill_index": "スキルインデックス",
+      "block_task_facts": "このタスクのために思い出したファクト",
       "block_unclassified": "分類されていません",
       "block_your_message": "あなたのメッセージ",
       "cat_memory": "あなたについての記憶",
@@ -11520,12 +11535,13 @@
       "error": "エラー",
       "errors": "エラー",
       "event": "イベント",
+      "awaiting_agent": "まだ実行されない",
       "failed_to_load": "{{section}} の読み込みに失敗しました",
       "failed_to_load_hooks": "フックの読み込みに失敗しました：{{error}}",
       "filter_hooks": "フックをフィルタ…",
       "hook_name": "フック名",
       "hooks": "フック",
-      "hooks_run_shell_commands_on_chat_events_agentspa": "フックはチャットイベント（AgentSpawn、UserPromptSubmit、PreToolUse、PostToolUse、Stop）でシェルコマンドを実行します。ツールフックはマッチャーパターンでツール名でフィルタリングできます。",
+      "hooks_run_shell_commands_on_chat_events_agentspa": "フックはチャットイベントでシェルコマンドを実行します: AgentSpawn、UserPromptSubmit、PreToolUse、PostToolUse、Stop。ツールフックはツール名で絞り込むパターンに対応します。まだ実行されない と表示された行はエージェントが対応していますが、ここではまだ何も実行しません。自動実行されない と表示された行はまったく対応していません。テストはどちらも今すぐ実行します。",
       "last_run": "最後の実行",
       "loading": "読み込み中…",
       "matcher": "マッチャー",
@@ -11545,8 +11561,11 @@
       "runs": "実行",
       "s": "秒",
       "save": "保存",
-      "script_hooks_fire_shell_commands_on_chat_lifecyc": "スクリプトフックはチャットライフサイクルイベントでシェルコマンドを実行します。PreToolUse/PostToolUseフックはツール名パターンでフィルタできます。",
+      "script_hooks_fire_shell_commands_on_chat_lifecyc": "スクリプトフックはチャットのライフサイクルイベントでシェルコマンドを実行します。PreToolUse／PostToolUse フックはツール名のパターンで絞り込めます。印の付いたトリガーを選ぶとその印の意味が表示され、どちらの場合もテストでフックを実行できます。",
       "shell_commands_that_run_automatically_on_agent_e": "エージェントイベントで自動的に実行されるシェルコマンド",
+      "stored_only": "自動実行されない",
+      "runs_on_no_event_yet": "エージェントはこのトリガーに対応していますが、ここではまだ何も実行しません。テストは今すぐ実行します。",
+      "runs_only_via_test": "このトリガーは自動では実行されません。テストだけが実行します。",
       "source": "ソース",
       "status": "ステータス",
       "test": "テスト",
@@ -11561,7 +11580,14 @@
       "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills.",
       "retry": "再試行",
       "show_last_error": "{{name}} の最新のエラーを表示",
-      "test_failed_for": "{{name}} のテストに失敗しました"
+      "test_failed_for": "{{name}} のテストに失敗しました",
+      "saved_switched_off": "このフックはオフの状態で保存されます。このトリガーはまだ何も実行しません。",
+      "no_matcher_for_trigger": "フィルターなし: このトリガーには絞り込めるイベントデータがありません。",
+      "saved_switched_off_never": "このフックはオフの状態で保存されます。このトリガーは自動では実行されません。",
+      "on_but_nothing_fires": "オンですが、このトリガーはまだ何も実行しません。",
+      "via_test": "テストから実行",
+      "skills_only_for_prompt_hooks": "スキルは、コマンドを実行しない UserPromptSubmit または AgentSpawn のフックでのみ読み込まれます。",
+      "on_but_never_fires": "オンですが、このトリガーは自動では実行されません。"
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "このワークスペースの一意な識別子。エージェントは名前でワークスペースを参照します。",
@@ -11593,6 +11619,7 @@
       "discard_new_schedule": "新しいスケジュールを破棄しますか？",
       "discard_new_schedule_body": "入力したスケジュールは保存されておらず、失われます。",
       "discard_schedule_confirm": "スケジュールを破棄",
+      "display_name": "表示名",
       "e_g_oncall": "例: oncall",
       "edit_crew_named": "エージェント{{name}}を編集",
       "edit_model": "デフォルトモデルを編集",
@@ -11640,6 +11667,7 @@
       "select_an_agent_template": "エージェントテンプレートを選択…",
       "session_color_hint_member": "このメンバーが開始するセッションは、セッション自体に色がない限りこの色を使います。空欄にするとメンバーの色はなしになります。",
       "shared_lower": "共有",
+      "shown_across_the_dashboard_instead_of_the_name_l": "名前（{{name}}）の代わりにダッシュボード全体で表示されます。空にすると名前そのものが表示されます。",
       "subdirectory_inside_kiro_crew_where_this_workspa": "~/.kiro/crew内のサブディレクトリで、このワークスペースがそのデータ（チャット履歴、レッスン、プロジェクト）を保存します。各ワークスペースには独自の分離されたディレクトリがあります。",
       "template_hint_member": "このメンバーが使う初期セットアップ — ツール、接続、指示。",
       "the_agent_definition_it_boots_from_tools_mcp_ser": "このエージェントが使用する開始設定 — ツール、接続、指示。",
@@ -12214,6 +12242,8 @@
         "confirm_reapply_body": "設定済みのモデルを再読み込みし、保存されているメモリベクトルを消去して再構築します。"
       },
       "kiroCrewCfgTab": {
+        "agent_for_pool_processes_empty_uses_default_agent": "プール処理用のエージェント。空の場合はデフォルトエージェントを使用します。",
+        "applies_to_sessions_started_after_the_change": "変更後に開始したセッションに適用されます。「auto」はエージェントをサンドボックスに入れつつ、認証情報ツールはそのまま使えます。「strict」はクラウド・SSH・kube・レジストリの認証情報も隠すため、エージェント内でそれらのツールは使えなくなります。ただし {{productName}} 自身のサンドボックスがプロセスを閉じ込める場合のみで、Windows や、kiro-cli の内部サンドボックスに委ねられた macOS のプロセスには効きません。「off」は {{productName}} のサンドボックスを使いません（macOS では kiro-cli 自身のサンドボックスが有効なら引き続き適用されます）。",
         "approval_mode": "承認モード",
         "auto": "自動",
         "auto_size_max": "自動サイズ最大値",
@@ -12229,9 +12259,9 @@
         "embedding_provider": "埋め込みプロバイダー",
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "kiro-cli 経由の動的 MCP ツール検出を有効にします。次のセッションで有効になります。",
         "immediate_auto_approves_all_tools_interactive_as": "即座に実行。「auto」がすべてのツールを承認、「interactive」は各ツール前に確認。",
-        "immediate_auto_enables_sandbox_for_untrusted_too": "即座に実行。「auto」は信頼できないツールのサンドボックスを有効化。",
         "inherited_provider": "継承（{{provider}}）",
         "kirocrew_agents": "{{productName}} エージェント",
+        "max_age_for_pooled_processes_0_disables_expiry": "プール済みプロセスの最大有効期間。0 は有効期限を無効化します。",
         "max_channel_agents": "最大チャネルエージェント",
         "max_channels": "最大チャネル数",
         "max_concurrent_subagents": "最大並行サブエージェント数",
@@ -12247,6 +12277,7 @@
         "next_update_check_cycle": "次の更新確認サイクル。",
         "no_agents_defined": "定義されたエージェントがありません",
         "no_memory_stores": "メモリストアなし",
+        "number_of_pre_spawned_processes_0_disables": "事前スポーンされたプロセス数。0 で無効化します。",
         "pool_agent": "プールエージェント",
         "pool_size": "プールサイズ",
         "pool_ttl": "プール TTL",
@@ -12263,12 +12294,9 @@
         "using_global_memory_settings": "グローバルメモリ設定を使用中",
         "using_legacy_mode_agent_default_agent_as_agent_t": "レガシーモード使用中 — エージェントテンプレートとして agent.default_agent を使用",
         "warm_pool": "ウォームプール",
-        "workspace": "ワークスペース",
-        "workspaces": "ワークスペース",
-        "number_of_pre_spawned_processes_0_disables": "事前スポーンされたプロセス数。0 で無効化します。",
-        "agent_for_pool_processes_empty_uses_default_agent": "プール処理用のエージェント。空の場合はデフォルトエージェントを使用します。",
         "warm_pool_description": "ACP CLI プロセスを事前起動し、セッションを即時に開始します。",
-        "max_age_for_pooled_processes_0_disables_expiry": "プール済みプロセスの最大有効期間。0 は有効期限を無効化します。"
+        "workspace": "ワークスペース",
+        "workspaces": "ワークスペース"
       },
       "mcpTab": {
         "actions": "アクション",
@@ -12324,6 +12352,21 @@
         "probe_failing_help": "{{failures}} 回連続でプローブに失敗しました。サーバーはマウントされたままで、これは状態の表示であり変更ではありません。",
         "reset_failures": "カウントをリセット",
         "reset_failures_help": "このサーバーの連続失敗回数をクリアします。",
+        "disabled_in_config": "設定で無効",
+        "disabled_in_config_invalid": "設定エラー",
+        "status_invalid_value": "無効な値",
+        "copy_path": "パスをコピー",
+        "copy_path_named": "パス {{file}} をコピー",
+        "path_copied": "コピーしました",
+        "copy_path_failed": "コピーに失敗しました",
+        "disabled_in_config_help": "Kiro IDE も読み込む共有の Kiro MCP 設定で無効になっています。起動されることはなく、このパネルから再度有効にすることもできません。その設定でフラグを変更してください。",
+        "disabled_in_config_where": "<file>{{file}}</file> で無効になっています。このファイルを編集するとこの無効化は解除されますが、別の設定がサーバーを無効のままにしている場合があります。スイッチは今後追加予定です。",
+        "disabled_in_config_where_unknown": "共有の MCP 設定で無効になっています。その設定を編集するとこの無効化は解除されますが、別の設定がサーバーを無効のままにしている場合があります。スイッチは今後追加予定です。",
+        "disabled_in_config_invalid_where": "無効: <file>{{file}}</file> の \"disabled\" の値が不正です。そのファイルで true または false に設定してください。",
+        "disabled_in_config_invalid_where_unknown": "無効: 共有の MCP 設定の \"disabled\" の値が不正です。その設定で true または false に設定してください。",
+        "uninstall_disabled_in_config_help": "無効になっている共有設定を含め、すべての MCP 設定からこのサーバーを削除します。",
+        "scope_disabled_in_config": "{{label}}: オフ（共有 MCP 設定で無効。そこで変更してください）",
+        "disabled_count_other": "{{count}} 件が無効",
         "sign_in": "サインイン",
         "sign_in_authorize": "{{name}} を承認",
         "sign_in_mint_failed": "サインインを開始できませんでした。もう一度お試しください。",
@@ -14191,6 +14234,11 @@
         "zoom_level": "ズームレベル",
         "font_family_option_opendyslexic": "OpenDyslexic",
         "config_load_failed": "保存された表示設定を読み込めませんでした。読み込まれるまで、シェル、最近のセッション、コマンド補完の設定は使用できません。",
+        "installed_themes_load_failed": "テーマ一覧を読み込めませんでした。自動的に再試行しています。読み込まれるまで、インストール済みテーマは選択も適用もできません。",
+        "installed_themes_refresh_failed": "テーマ一覧を更新できませんでした。一覧が最新ではありません。",
+        "installed_themes_refresh_failed_after_install": "テーマはインストールされましたが、テーマ一覧を更新できませんでした。「再試行」を押して一覧を更新して適用するか、テーマ一覧が更新されたら一覧から選んでください。",
+        "retry_theme_list": "再試行",
+        "retrying_theme_list": "再試行中…",
         "recent_tint_save_failed": "最近のセッションのハイライト数を保存できませんでした。"
       },
       "importPanel": {

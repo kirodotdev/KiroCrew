@@ -135,6 +135,7 @@ def _run(
     head_sha: str,
     ratchet: str,
     frontend: str = "success",
+    bundle: str = "success",
     open_json: str = _OPEN_ONE,
     shell: list[str] | None = None,
 ) -> tuple[int, str, list[str]]:
@@ -165,6 +166,10 @@ def _run(
             "COMMIT_SHA": _CURRENT,
             "RATCHET_RESULT": ratchet,
             "FRONTEND_RESULT": frontend,
+            # Every lane the reporter reads must be supplied: the step runs under
+            # `set -u`, so one missing lane aborts it before its first call and
+            # the empty call log reads as a reporter that chose to do nothing.
+            "BUNDLE_RESULT": bundle,
         }
     )
     if shell is None:
@@ -456,27 +461,191 @@ class TestGateParityWithCi:
         )
 
 
+class TestFrontendCeilingParityWithCi:
+    """The frontend ceilings are ``.mjs``, and a ``check_*.py`` scan cannot see them.
+
+    Every pin above matches ``scripts/check_<name>.py``: a Python filename, with
+    an underscore. The frontend ceilings are ``website/scripts/check-<name>.mjs``
+    -- a different extension and a hyphen -- so they fall outside that pattern
+    entirely. A ceiling can therefore be blocking on every pull request, share the
+    evicted-verdict cause this workflow exists to close, and still be absent here
+    while the Python parity pins stay green, because nothing they scan for is
+    spelled that way.
+
+    That is the gap this class closes, for the same reason the Python pins exist:
+    a gate CI blocks on that this lane does not mirror is never measured on main's
+    integrated tree, and its drift surfaces on an unrelated pull request instead,
+    where the cheapest way out is to raise the ceiling.
+
+    Scoped to ci.yml's ``bundle-size`` job against this lane's ``bundle-ceiling``
+    job, which is the pair the workflow says it mirrors outright -- the same shape
+    as the ``backend-lint`` -> ``ratchet-gates`` pin. The wider frontend gate
+    surface (the ``npm run lint:*`` lanes) is deliberately NOT claimed here: those
+    run through package.json script aliases rather than a direct ``node
+    scripts/...`` invocation, so pinning them needs a different scan and a
+    reviewed per-gate decision, not this regex.
+    """
+
+    @staticmethod
+    def _mjs_gate_scripts(job: dict) -> set[str]:
+        found = set()
+        for step in job.get("steps") or []:
+            found.update(re.findall(r"scripts/(check-[A-Za-z0-9-]+\.mjs)", step.get("run") or ""))
+        return found
+
+    def test_the_audit_mirrors_ci_bundle_size_gates(self) -> None:
+        ci = yaml.safe_load((_REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text("utf-8"))
+        audit = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
+
+        expected = self._mjs_gate_scripts(ci["jobs"]["bundle-size"])
+        # A scan that matches nothing would pass the subset assertion by
+        # measuring nothing, which is the failure this class is about.
+        assert expected, (
+            "found no check-*.mjs gate in ci.yml's bundle-size job; the scan no longer "
+            "sees the gates it is meant to pin, so the assertion below proves nothing"
+        )
+
+        actual = self._mjs_gate_scripts(audit["jobs"]["bundle-ceiling"])
+
+        assert expected <= actual, (
+            "ci.yml's bundle-size job runs frontend ceiling gate(s) the Main Ratchet Audit "
+            f"does not: {sorted(expected - actual)}. Mirror the step into bundle-ceiling; "
+            "an unmirrored ceiling is measured on pull requests only, so main drifts past "
+            "it and the breach lands on the next contributor."
+        )
+
+    def test_the_bundle_lane_builds_the_report_the_gates_read(self) -> None:
+        # The gates read dist/bundle-report.json, which only an analyze-mode build
+        # writes. Mirroring the gate steps without that build gives a lane that
+        # cannot measure anything, and a gate with no input is the false green
+        # this workflow exists to close.
+        audit = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
+        runs = " ".join(s.get("run") or "" for s in audit["jobs"]["bundle-ceiling"]["steps"])
+
+        assert "--mode analyze" in runs, (
+            "bundle-ceiling runs the size gates without an analyze-mode build, so "
+            "dist/bundle-report.json is never written and the gates have no input"
+        )
+
+    def test_the_bundle_lane_is_wired_into_the_reporter(self) -> None:
+        # Structural half, readable on every platform: the reporter can only
+        # report on a lane it depends on and can read. The behavioural half --
+        # that a bundle-only drift actually reaches the issue under its own name
+        # -- runs the step itself, below.
+        audit = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
+        report = audit["jobs"]["report"]
+
+        assert "bundle-ceiling" in report["needs"], (
+            "the reporter does not depend on bundle-ceiling, so a bundle ceiling breach "
+            "never reaches the tracking issue"
+        )
+
+        env = next(step["env"] for step in report["steps"] if "env" in step)
+        assert "BUNDLE_RESULT" in env, "the reporter cannot read the bundle lane's result"
+
+
+@_needs_posix_shell
+class TestBundleDriftReachesTheRecord:
+    """A bundle-only drift fails the run and names itself in the tracking issue.
+
+    The measurement is only half the fix. If the ceiling is breached on main and
+    the durable record does not say so -- or says only that "a ceiling" drifted --
+    the reader is back to opening run logs, which is the state this workflow
+    exists to replace. Driven through the step itself rather than by matching the
+    script's text, because a script can mention a lane and still never render it.
+    """
+
+    def test_a_bundle_only_drift_is_recorded_and_fails_the_run(self, tmp_path: Path) -> None:
+        rc, out, calls = _run(
+            tmp_path, head_sha=_CURRENT, ratchet="success", frontend="success", bundle="failure"
+        )
+
+        assert rc == 1, out
+        commented = _commented_issues(calls)
+        assert len(commented) == 1, out
+        # Its own name, and the other two lanes absent: a reader must be able to
+        # tell WHICH ceiling drifted straight from the record.
+        assert "bundle-ceiling" in commented[0], commented[0]
+        assert "frontend-ceiling" not in commented[0], commented[0]
+        assert "ratchet-gates" not in commented[0], commented[0]
+
+    def test_a_bundle_only_drift_opens_an_issue_when_none_is_open(self, tmp_path: Path) -> None:
+        rc, out, calls = _run(
+            tmp_path,
+            head_sha=_CURRENT,
+            ratchet="success",
+            bundle="failure",
+            open_json="[]",
+        )
+
+        assert rc == 1, out
+        created = [c for c in calls if c.startswith("issue create")]
+        assert len(created) == 1, out
+        assert "bundle-ceiling" in created[0], created[0]
+
+    def test_all_three_lanes_green_still_closes_the_issue(self, tmp_path: Path) -> None:
+        # The new lane must not make the all-green branch unreachable: a third
+        # `needs` that never reads `success` would leave the record open forever
+        # and the self-heal would be dead.
+        rc, out, calls = _run(
+            tmp_path, head_sha=_CURRENT, ratchet="success", frontend="success", bundle="success"
+        )
+
+        assert rc == 0, out
+        assert _closed_issues(calls) == ["issue close 4242 --repo o/r --reason completed"], out
+
+    def test_a_skipped_bundle_lane_counts_as_drift(self, tmp_path: Path) -> None:
+        # `skipped` and `cancelled` are unknown verdicts, not green ones. The
+        # reporter treats anything other than an explicit success as drift, and
+        # that has to hold for this lane too, or an evicted bundle measurement
+        # closes the record it should have kept open.
+        rc, out, calls = _run(tmp_path, head_sha=_CURRENT, ratchet="success", bundle="skipped")
+
+        assert rc == 1, out
+        assert _closed_issues(calls) == [], out
+        assert len(_commented_issues(calls)) == 1, out
+
+
 class TestEveryGateReports:
     """One drifting gate must not skip the gates after it."""
+
+    # Every job that holds more than one gate step. A lane with a single gate has
+    # nothing after it to skip, so the condition buys it nothing; a lane with two
+    # or more is where the default silently costs a verdict, and ci.yml's own
+    # bundle lane shows it -- on the one push to main where its size gate failed,
+    # its cycle gate read `skipped`.
+    _JOBS_WITH_GATES = ("ratchet-gates", "bundle-ceiling")
+
+    @staticmethod
+    def _gate_steps(job: dict) -> list[dict]:
+        steps = job.get("steps") or []
+        return [
+            s
+            for s in steps
+            if any(
+                token in (s.get("run") or "")
+                for token in ("scripts/check_", "scripts/check-", "pytest")
+            )
+        ]
 
     def test_gate_steps_do_not_stop_at_the_first_failure(self) -> None:
         # A step defaults to `if: success()`, so the first drifting gate would
         # skip the rest and the run would name only the gate that happens to be
         # listed first -- a partial verdict that looks like a full one, for as
-        # long as that one drift stayed unfixed. The PR that adds this lane
-        # already expects black to be the first drift on main, so the default
-        # would leave the other gates unmeasured indefinitely.
+        # long as that one drift stayed unfixed.
         audit = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
-        steps = audit["jobs"]["ratchet-gates"]["steps"]
 
-        gate_steps = [s for s in steps if "scripts/check_" in (s.get("run") or "")]
-        gate_steps += [s for s in steps if "pytest" in (s.get("run") or "")]
-        assert gate_steps, "found no gate steps to check"
-
-        for step in gate_steps:
-            condition = str(step.get("if", "")).replace(" ", "")
-            assert "!cancelled()" in condition, (
-                f"gate step {step.get('name')!r} runs on the default success() "
-                "condition, so an earlier drifting gate skips it and its own drift "
-                "goes unmeasured"
+        for job_name in self._JOBS_WITH_GATES:
+            gate_steps = self._gate_steps(audit["jobs"][job_name])
+            assert len(gate_steps) > 1, (
+                f"expected {job_name!r} to hold several gate steps; found "
+                f"{len(gate_steps)}, so this pin no longer measures what it describes"
             )
+
+            for step in gate_steps:
+                condition = str(step.get("if", "")).replace(" ", "")
+                assert "!cancelled()" in condition, (
+                    f"gate step {step.get('name')!r} in {job_name!r} runs on the default "
+                    "success() condition, so an earlier drifting gate skips it and its own "
+                    "drift goes unmeasured"
+                )

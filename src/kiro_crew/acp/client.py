@@ -140,6 +140,7 @@ from kiro_crew.acp.types import (
     EVENT_TOOL_RESULT,
     JSONRPC_METHOD_NOT_FOUND,
     KNOWN_SESSION_UPDATES,
+    MCP_ROSTER_COMPLETE_NOTE,
     METHOD_AGENT_SWITCHED,
     METHOD_CANCEL,
     METHOD_CLEAR_STATUS,
@@ -10958,14 +10959,21 @@ class AcpClient:
             return ", ".join(head) + suffix
 
         reported = ready | set(failed)
+        # "session-injected", and a note once the roster is complete: the same
+        # wording as AcpRuntime._mcp_init_progress, for the same reason -- a bare
+        # ``N/N MCP server(s) reported`` read as an MCP verdict it never was.
         parts = (
-            [f"{len(reported & set(roster))}/{len(roster)} MCP server(s) reported"]
+            [f"{len(reported & set(roster))}/{len(roster)} session-injected MCP server(s) reported"]
             if roster
             else []
         )
         missing = [name for name in roster if name not in reported]
         if missing:
             parts.append(f"no report from {names(missing)}")
+        elif roster and not set(failed) & set(roster):
+            # Same rule as the runtime: the verdict is withheld when a roster
+            # member reported an init failure, which the ``failed:`` bucket names.
+            parts.append(MCP_ROSTER_COMPLETE_NOTE)
         if failed:
             parts.append(
                 "failed: "
@@ -13449,6 +13457,7 @@ class AcpClient:
                 )
             # For edit tools with diff content blocks, generate unified diff
             found_diff = False
+            _diff_path = ""
             content_blocks = update.get("content", [])
             if isinstance(content_blocks, list):
                 for cb in content_blocks:
@@ -13458,6 +13467,7 @@ class AcpClient:
                         path = cb.get("path", "")
                         if tool_call_id and path:
                             self._tool_call_diff_path[tool_call_id] = path
+                            _diff_path = path
                         diff_str = _make_unified_diff(old, new, path)
                         if diff_str:
                             input_str = diff_str
@@ -13568,6 +13578,7 @@ class AcpClient:
                 mcp_server_name=identity.mcp_server_name,
                 tool_identity_trusted=identity.tool_identity_trusted,
                 mcp_identity_trusted=identity.identity_trusted,
+                diff_path=_diff_path,
             )
         return None
 
@@ -13730,6 +13741,7 @@ class AcpClient:
             input_str = raw_input
         # Edit-style diff content blocks: prefer the rendered unified diff over
         # the raw input dict (mirrors `_extract_tool_event`).
+        _diff_path = ""
         content_blocks = update.get("content", [])
         if isinstance(content_blocks, list):
             for cb in content_blocks:
@@ -13739,6 +13751,7 @@ class AcpClient:
                     path = cb.get("path", "")
                     if path:
                         self._tool_call_diff_path[tool_use_id] = path
+                        _diff_path = path
                     diff_str = _make_unified_diff(old, new, path)
                     if diff_str:
                         input_str = diff_str
@@ -13801,6 +13814,7 @@ class AcpClient:
             tool_call_id=tool_use_id,
             raw_tool_params=raw_input if isinstance(raw_input, dict) else None,
             is_shell=is_shell,
+            diff_path=_diff_path,
         )
 
     def _read_new_tool_results_sync(self) -> list[AcpEvent]:

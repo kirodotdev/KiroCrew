@@ -444,8 +444,6 @@ class WebSocketHub:
         pending: set[str] = set()
         ws["_members_baseline_pending"] = pending
         try:
-            import asyncio
-
             from kiro_crew.eventlog.service import get_service
 
             # last_seqs() iterates and parses every uncached member log on first
@@ -488,8 +486,6 @@ class WebSocketHub:
         if not slugs:
             return
         try:
-            import asyncio
-
             from kiro_crew.eventlog import types as eventlog_types
             from kiro_crew.eventlog.service import get_service
 

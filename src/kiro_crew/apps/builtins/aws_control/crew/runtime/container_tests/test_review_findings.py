@@ -65,7 +65,7 @@ def test_the_ecs_credential_endpoint_is_withheld_from_the_backend(tmp_path):
         "the credential path survives under another key: "
         f"{sorted(k for k, v in env.items() if v == RELATIVE_URI)}"
     )
-    assert env["KIRO_API_KEY"].startswith("aws-kiro-"), "the model credential is what stays"
+    assert "KIRO_API_KEY" not in env, "the model credential is withheld too"
     assert env["PATH"] == "/usr/bin", "unrelated variables must still be inherited"
 
 

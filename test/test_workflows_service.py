@@ -1592,8 +1592,8 @@ async def test_cancelled_allocator_worker_burns_id_across_service_restart(monkey
     done = threading.Event()
     real_write = wm._write_run_high_water
 
-    def blocked_write(path, value):
-        real_write(path, value)
+    def blocked_write(path, value, anchor):
+        real_write(path, value, anchor)
         if value == 1:
             written.set()
             try:

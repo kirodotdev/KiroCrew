@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import codecs
 import functools
+import hashlib
+import json
 import logging
 import os
 import re
@@ -31,6 +33,8 @@ from kiro_crew.acp.client import _resolve_kiro_bin_for_spawn
 from kiro_crew.agent_discovery import (
     AgentsDirMemo,
     AmbiguousAgentSpecError,
+    SensitiveAgentSpecPathError,
+    _SpecReadRefused,
     read_agent_spec_strict,
     spec_by_declared_name,
 )
@@ -74,6 +78,7 @@ from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.mcp_discovery import sync_discovered_servers
 from kiro_crew.messaging.link import _in_namespace, canonical_key
 from kiro_crew.pinned_fs import open_fenced_for_read
+from kiro_crew.platform import redact_log_via_context
 from kiro_crew.sandbox import (
     cgroup_scope_argv,
     configured_sandbox_mode,
@@ -3947,6 +3952,132 @@ def _plain_markdown_document(path: Path) -> bool:
     return not text.startswith(("---\n", "---\r\n"))
 
 
+def _spec_failure_kind(path: Path, exc: BaseException) -> str:
+    """WHY *path* failed the strict read, in plain words and with NO path in it.
+
+    Every answer is a PREDICATE phrase -- it reads after "``<file>`` is" and
+    after "could not be read (" alike -- because two templates splice it in.
+
+    The reason this feeds crosses the wire to the MCP client and lands in the
+    model-visible refusal text, so it names the failure class rather than
+    quoting ``str(exc)``: the strict reader's own messages carry the full
+    path (``f"{path}: {exc}"``, the AppleDouble and size-cap arms) and an
+    ``OSError`` carries ``filename``. The classes are the ones
+    :func:`kiro_crew.agent_discovery.read_agent_spec_strict` documents; an
+    unfamiliar one still gets a usable name from its class.
+    """
+    if path.name.startswith("._"):
+        return "an AppleDouble sidecar, not a spec"
+    if isinstance(exc, json.JSONDecodeError):
+        return "not valid JSON"
+    if isinstance(exc, UnicodeDecodeError):
+        return "not UTF-8 text"
+    if isinstance(exc, SensitiveAgentSpecPathError):
+        return "a path the spec reader refuses"
+    if isinstance(exc, OSError) and isinstance(exc.__cause__, _SpecReadRefused):
+        # The strict reader maps the pinned open's refusal to a generic
+        # ``EACCES``; its ``strerror`` is the reader's own placeholder, which
+        # would only restate "could not be read". The cause says why.
+        return (
+            "not a plain readable file: a link at its name, a hardlinked or "
+            "non-regular inode, or a target the spec reader fences"
+        )
+    if isinstance(exc, OSError):
+        # ``strerror`` is the C library's text ("Permission denied"); the path
+        # lives in ``filename`` and is deliberately left out.
+        return f"unreadable ({exc.strerror or exc.__class__.__name__})"
+    if isinstance(exc.__cause__, hooks.FileTooLargeError):
+        return "larger than the spec size cap"
+    if is_markdown_spec(path):
+        # No causal clause: the parser refuses a closed fence too (frontmatter
+        # that is a list, nested too deeply, a bare ``on:`` key YAML reads as a
+        # bool), so naming one cause would send the operator to check a fence
+        # that is closed. The strict reader's own messages for this family are
+        # path-free, but not every ValueError reaching here is, so the class is
+        # named rather than the text quoted.
+        return "markdown frontmatter the spec parser refuses"
+    return f"not a spec ({exc.__class__.__name__})"
+
+
+def _ambiguous_spec_reason(agent_name: str, exc: AmbiguousAgentSpecError) -> str:
+    """The wire ``reason`` for two specs declaring *agent_name*: names, not paths.
+
+    The exception's own message quotes each file's full path for the terminal
+    it was written for; this text reaches the MCP client's model-visible
+    refusal, so it carries the same files by name only (``repr``'d, as
+    untrusted input from a user-writable directory) and the remedy. Falls back
+    to the message when the raiser supplied no paths -- the one other raiser,
+    ``agent.agent_spec_path``, is never reached from here.
+    """
+    if not exc.paths:
+        return str(exc)
+    names = ", ".join(repr(path.name) for path in exc.paths)
+    return (
+        f"{len(exc.paths)} specs in the agents directory declare the name {agent_name!r}: "
+        f"{names}. Which one is live is undefined, so the policy for {agent_name!r} is "
+        f"unknown. Remove or rename one of them in the agents directory (~/.kiro/agents "
+        f"unless relocated); no restart needed."
+    )
+
+
+def _unreadable_spec_remedy(path: Path) -> str:
+    """The one sentence an operator can act on, appended to every refusal.
+
+    The filename is ``repr``'d: it is untrusted input from a user-writable,
+    tool-shared directory and this text reaches a terminal and the model. The
+    directory is named by role, not by path -- the reason is client-visible.
+    """
+    return (
+        f"Move or fix {path.name!r} in the agents directory (~/.kiro/agents unless "
+        f"relocated); no restart needed."
+    )
+
+
+# ``(path digest, mtime_ns)`` pairs already warned about. The client re-asks
+# for its policy on every ``tools/call`` and a refusal is never memoized, so
+# without this the gateway log would carry one WARNING per refused tool call
+# for as long as the file stays broken. A fix or a re-break changes the mtime
+# and is logged again. Bounded in BOTH dimensions: the entry count is capped
+# (clearing costs one repeated line, nothing else), and each entry retains a
+# fixed-size SHA-256 digest of the path rather than the path itself, so the
+# cap bounds the bytes held and not only the number of items -- the path is
+# needed once, for the log line, and never read back out of here.
+_UNREADABLE_SPEC_WARNED: set[tuple[bytes, int]] = set()
+_UNREADABLE_SPEC_WARNED_MAX = 1024
+
+
+def _warn_unreadable_spec_once(path: Path, kind: str) -> None:
+    """Name *path* in the gateway log, once per on-disk revision of it.
+
+    The FULL path goes here, ``%r``'d: the gateway log is local to the
+    operator, and it is the one place the reason on the wire (name only) can be
+    joined back to a location. The SEL row the caller writes per request
+    carries the wire reason, so the audit trail is complete without this line;
+    this is for the operator tailing the log.
+    """
+    try:
+        revision = path.stat().st_mtime_ns
+    except OSError:
+        revision = -1
+    key = (hashlib.sha256(str(path).encode("utf-8", "surrogateescape")).digest(), revision)
+    if key in _UNREADABLE_SPEC_WARNED:
+        return
+    if len(_UNREADABLE_SPEC_WARNED) >= _UNREADABLE_SPEC_WARNED_MAX:
+        _UNREADABLE_SPEC_WARNED.clear()
+    _UNREADABLE_SPEC_WARNED.add(key)
+    # The filename is untrusted input from a user-writable directory and this
+    # line persists in gateway.log: the same log-egress redaction every other
+    # operational line carrying foreign text applies (``redact_log_via_context``,
+    # the non-raising spelling for a log site), so a credential-shaped name is
+    # scrubbed before it is written. ``%r`` still escapes control bytes.
+    logger.warning(
+        "agent spec %r could not be read (%s); every session whose agent has no "
+        "spec of its own is refused its managed tools until it is moved or fixed",
+        redact_log_via_context(str(path)),
+        kind,
+    )
+
+
 def _refuse_if_any_spec_is_unreadable(agents_dir: Path, agent_name: str) -> None:
     """Raise when a spec in *agents_dir* cannot be read, so "no match" is honest.
 
@@ -3970,7 +4101,12 @@ def _refuse_if_any_spec_is_unreadable(agents_dir: Path, agent_name: str) -> None
     stays unknown.
 
     Uses :func:`read_agent_spec_strict`, the reader that keeps the failure class,
-    for exactly the reason its docstring gives: this caller needs to know WHY.
+    for exactly the reason its docstring gives: this caller needs to know WHY --
+    and the refusal says WHICH: the message names the file (name only, the
+    directory is the caller's) and the failure kind in words, then what to do.
+    The verdict is unchanged by that; only its text is. Without the name, the
+    operator told to "fix or remove the unreadable spec" had to validate every
+    file in the directory by hand to find it.
     """
     for path in iter_agent_spec_files(agents_dir):
         try:
@@ -3980,10 +4116,12 @@ def _refuse_if_any_spec_is_unreadable(agents_dir: Path, agent_name: str) -> None
                 # Not a spec (no opening fence): it cannot declare a policy,
                 # so it must not turn into a denial of every other agent.
                 continue
+            kind = _spec_failure_kind(path, exc)
+            _warn_unreadable_spec_once(path, kind)
             raise ManagedToolPolicyUnreadable(
-                f"a spec in the agents directory could not be read "
-                f"({exc.__class__.__name__}), so the policy for {agent_name!r} is "
-                f"unknown: it may be the file that declares it"
+                f"agent spec {path.name!r} in the agents directory could not be read "
+                f"({kind}), so the policy for {agent_name!r} is unknown: it may be "
+                f"the file that declares it. {_unreadable_spec_remedy(path)}"
             ) from exc
 
 
@@ -4053,6 +4191,12 @@ def _read_managed_tool_policy_uncached(agents_dir: Path, agent_name: str) -> dic
     two specs declare *agent_name*: that is not "no policy" either, and the
     caller records it as a denial rather than answering it silently.
     """
+    # The file the policy was read from, when it was a direct-filename read.
+    # The declared-name scan returns a parse and not a path (see
+    # ``spec_by_declared_name``: a path to reopen would put a second read
+    # outside the guards), so a shape refusal on ITS result names the agent
+    # only -- which identifies the spec, since exactly one declares that name.
+    spec_path: Path | None = None
     try:
         config: Any = spec_by_declared_name(
             agents_dir, agent_name, operation="session_tool_policy", source="dashboard"
@@ -4074,14 +4218,15 @@ def _read_managed_tool_policy_uncached(agents_dir: Path, agent_name: str) -> dic
                 # its policy -- and a file this cannot read may be exactly it.
                 _refuse_if_any_spec_is_unreadable(agents_dir, agent_name)
                 return None
+            spec_path = present[0]
             # The hardened reader: the agents directory is user-writable, so
             # a symlink here is not followed to a sensitive target.
             try:
                 config = read_agent_spec_strict(
-                    present[0], operation="session_tool_policy", source="dashboard"
+                    spec_path, operation="session_tool_policy", source="dashboard"
                 )
             except (OSError, ValueError):
-                if not (is_markdown_spec(present[0]) and _plain_markdown_document(present[0])):
+                if not (is_markdown_spec(spec_path) and _plain_markdown_document(spec_path)):
                     raise
                 # ``<agent_name>.md`` with no opening fence and no JSON twin is
                 # not this agent's spec: it is a prose document sharing the
@@ -4100,24 +4245,50 @@ def _read_managed_tool_policy_uncached(agents_dir: Path, agent_name: str) -> dic
         raise
     except (OSError, ValueError) as exc:
         # The file is there and could not be read or parsed. Whatever exclusions
-        # it declares are unknown, so this is reported as unknown.
+        # it declares are unknown, so this is reported as unknown. The prefix is
+        # the one an earlier reader of this arm matches on; the name and kind
+        # follow it. ``spec_path`` is unset only when the directory WALK itself
+        # raised (``spec_by_declared_name`` and ``iter_agent_spec_files`` both
+        # propagate the glob's ``OSError``): there is no file to name, so that
+        # arm keeps its class-name-only text.
+        if spec_path is None:
+            raise ManagedToolPolicyUnreadable(
+                f"agent spec for {agent_name!r} could not be read: {exc.__class__.__name__}"
+            ) from exc
+        kind = _spec_failure_kind(spec_path, exc)
+        _warn_unreadable_spec_once(spec_path, kind)
         raise ManagedToolPolicyUnreadable(
-            f"agent spec for {agent_name!r} could not be read: {exc.__class__.__name__}"
+            f"agent spec for {agent_name!r} could not be read: {spec_path.name!r} is "
+            f"{kind}. {_unreadable_spec_remedy(spec_path)}"
         ) from exc
     if not isinstance(config, dict):
         # Valid JSON that is not an object (a list, a scalar, null) parses
         # fine, but `.get` on it would raise. It is a malformed spec, so it
-        # takes the same disposition as the unparseable case above.
+        # takes the same disposition as the unparseable case above. Only the
+        # direct read lands here -- the scan matches ``dict`` specs only -- so
+        # ``spec_path`` is set; the bare form is kept for the type checker.
+        if spec_path is None:
+            raise ManagedToolPolicyUnreadable(
+                f"agent spec for {agent_name!r} is valid JSON but not an object"
+            )
         raise ManagedToolPolicyUnreadable(
-            f"agent spec for {agent_name!r} is valid JSON but not an object"
+            f"agent spec for {agent_name!r} could not be read: {spec_path.name!r} is "
+            f"valid JSON but not an object. {_unreadable_spec_remedy(spec_path)}"
         )
     policy = config.get("managedToolPolicy", {})
     if isinstance(policy, dict):
         return policy
     # A policy of the wrong shape is a policy this cannot read, not an absent
     # one: the operator wrote something here and its meaning is unknown.
+    if spec_path is None:
+        raise ManagedToolPolicyUnreadable(
+            f"managedToolPolicy for {agent_name!r} is {type(policy).__name__}, not an "
+            f"object. Fix the spec declaring name {agent_name!r} in the agents "
+            f"directory (~/.kiro/agents unless relocated); no restart needed."
+        )
     raise ManagedToolPolicyUnreadable(
-        f"managedToolPolicy for {agent_name!r} is {type(policy).__name__}, not an object"
+        f"managedToolPolicy for {agent_name!r} in {spec_path.name!r} is "
+        f"{type(policy).__name__}, not an object. {_unreadable_spec_remedy(spec_path)}"
     )
 
 
@@ -4204,7 +4375,12 @@ async def api_session_tool_policy(request: web.Request) -> web.Response:
     except AmbiguousAgentSpecError as exc:
         # Two specs declare this agent's name. The policy is undefined, not
         # empty, so it is answered with a status the caller cannot mistake for
-        # a policy-free agent, and recorded as a denial naming both files.
+        # a policy-free agent, and recorded as a denial naming both files. The
+        # SEL row keeps the exception's own message, full paths included --
+        # the audit trail is local. The wire ``reason`` names the files
+        # WITHOUT their directory, in the shape every other refusal here takes:
+        # it reaches the MCP client's model-visible error text, and a full
+        # path there discloses the account name and on-disk layout.
         _sel().log_api_access(
             caller=session_key,
             operation="session_tool_policy",
@@ -4217,7 +4393,7 @@ async def api_session_tool_policy(request: web.Request) -> web.Response:
             {
                 "error": f"The policy for agent {agent_name!r} could not be determined.",
                 "code": "policy_unreadable",
-                "reason": str(exc),
+                "reason": _ambiguous_spec_reason(agent_name, exc),
             },
             status=409,
         )

@@ -58,6 +58,39 @@ from kiro_crew.validation import (
 logger = logging.getLogger(__name__)
 
 
+def _live_session_key(state: DashboardState, sk: str) -> str:
+    """The key the SESSION REGISTRY holds this caller under, or ``""``.
+
+    Two keyspaces one prefix apart, and only this function is allowed to know
+    it. Dashboard SLOTS are keyed by the bare name -- what
+    :func:`_normalize_slot_key` produces, since it strips the transport prefix --
+    while the session REGISTRY is keyed by the full session key the thread runs
+    under, ``dashboard:<slot key>`` (:func:`members.member_thread_session_alias`,
+    the one derivation every out-of-turn touch of a member session goes
+    through). A member DM is the only session the panel tool is ever mounted on,
+    so handing the slot key to the registry misses for EVERY member, without
+    exception: ``get_agent_selection`` then answers from its own ``session is
+    None`` arm with ``("template", "")``, and the publish is refused for a reason
+    that is not about crew binding at all.
+
+    ``X-Session-Key`` is used unchanged, because it already IS that full key:
+    every identity source ``mcp_core._resolve_session_key_strict`` accepts -- the
+    gateway-injected caller context, the signed per-session token,
+    ``KIROCREW_SESSION_KEY``, the HMAC host-pid sidecar -- yields one, and that
+    gate requires its caller to send back the key it returned. Passing it through
+    is also what every other reader of an allocation's selection does
+    (``messaging``, ``solo_spawn``, ``subagent`` and the admission gate all hand
+    over the session key as they received it).
+
+    A bare slot name therefore resolves to nothing and the publish is refused
+    ``session_not_resolved``. That refusal is the point rather than a gap to
+    paper over: a bare key here would mean the strict identity gate returned
+    something this route does not expect, and rescuing it by re-adding the prefix
+    would hide exactly the anomaly the separated refusal exists to surface.
+    """
+    return sk if state.sessions.has_session(sk) else ""
+
+
 async def _resolve_publishing_crew(
     request: web.Request, operation: str
 ) -> tuple[tuple[str, str], None] | tuple[None, web.Response]:
@@ -170,23 +203,97 @@ async def _resolve_publishing_crew(
     # ``get_agent_selection`` reports the namespace the allocation actually chose
     # and is the only caller-side way to tell a member from a template, so a
     # binding is accepted only when it says ``member``.
+    #
+    # Asked with the key the REGISTRY holds the session under, which is not the
+    # slot key -- see ``_live_session_key`` for the two keyspaces.
+    #
+    # Three distinct refusals, because they have three distinct causes and one
+    # message for several of them is the defect this whole change removes. The
+    # slot is checked FIRST and answers for itself: its absence is what confines
+    # publishing to a dashboard thread, so a live non-slot session (a subagent
+    # inheriting its parent's member selection) cannot publish as the crew it
+    # descends from. Such a caller's allocation resolves perfectly well, so
+    # telling it the allocation could not be resolved would be false.
+    if slot is None:
+        sel().log_api_access(
+            caller=sk,
+            operation=operation,
+            outcome="denied",
+            source="dashboard",
+            resources=request.path,
+            error="caller has no dashboard slot",
+        )
+        return None, web.json_response(
+            {
+                "error": (
+                    "a crew webview is published from the crew's own dashboard thread, "
+                    "and this session is not one"
+                ),
+                "code": "no_dashboard_slot",
+            },
+            status=400,
+        )
     crew_name = ""
-    if slot is not None:
+    unresolved = True
+    session_key = _live_session_key(state, sk)
+    if session_key:
         try:
-            namespace, selected = state.sessions.get_agent_selection(_normalize_slot_key(sk))
+            namespace, selected = state.sessions.get_agent_selection(session_key)
         except ValueError:
             # The allocation's own refusal when a parent selection is
-            # unavailable. Narrow on purpose: a bare ``except Exception`` here
-            # turned a WRONG ATTRIBUTE into a routine "not bound to a crew" and
-            # would have refused every publish in production while the tests
-            # passed against a stub that happened to define the method.
+            # unavailable -- a resolution failure, so it is reported as one.
+            # Narrow on purpose: a bare ``except Exception`` here turned a WRONG
+            # ATTRIBUTE into a routine "not bound to a crew" and would have
+            # refused every publish in production while the tests passed against
+            # a stub that happened to define the method.
             namespace, selected = "", ""
-        if namespace == "member":
-            crew_name = str(selected or "")
+        else:
+            unresolved = False
+            if namespace == "member":
+                crew_name = str(selected or "")
+    if unresolved:
+        # NOT ``no_crew``: the caller may well be a crew, and its allocation is
+        # what could not be reached to find out. Reported apart because the two
+        # need opposite responses -- a crew binding is the OPERATOR's to add,
+        # while an unreachable allocation is a gateway-side fault -- and one
+        # message for both is what let a gate closed against every member read
+        # as a routine "you have no crew".
+        #
+        # Audited, like every other refusal here. ``_recognize_session`` has
+        # already written an ``outcome="allowed"`` event for this call, so a
+        # denial that returns without its own event leaves the SEL trail ending
+        # on the ALLOW: the record would say the caller was let through and the
+        # HTTP response would be the only trace that it was not.
+        sel().log_api_access(
+            caller=sk,
+            operation=operation,
+            outcome="denied",
+            source="dashboard",
+            resources=request.path,
+            error="caller's allocation could not be resolved",
+        )
+        return None, web.json_response(
+            {
+                "error": (
+                    "this session could not be resolved to a live allocation, "
+                    "so its crew binding is unknown"
+                ),
+                "code": "session_not_resolved",
+            },
+            status=400,
+        )
     if not crew_name:
         # No agent binding means no crew, and a panel has nowhere to go. Said
         # plainly rather than silently dropped: a conductor publishing every
         # cycle into a void would look like the feature is broken.
+        sel().log_api_access(
+            caller=sk,
+            operation=operation,
+            outcome="denied",
+            source="dashboard",
+            resources=request.path,
+            error="caller is not bound to a crew",
+        )
         return None, web.json_response(
             {
                 "error": (
@@ -210,6 +317,14 @@ async def _resolve_publishing_crew(
         slug = members_mod.member_slug(crew_name, cfg)
         members_mod.validate_slug(slug)
     except MemberSlugError:
+        sel().log_api_access(
+            caller=sk,
+            operation=operation,
+            outcome="denied",
+            source="dashboard",
+            resources=request.path,
+            error="crew name has no addressable slug",
+        )
         return None, web.json_response(
             {"error": "this crew's name has no addressable slug", "code": "bad_crew_slug"},
             status=400,

@@ -215,7 +215,8 @@
     "focus_mode_title_mac": "Focus mode · ⌥⇧M",
     "connect_your_phone": "Connect your phone",
     "kiro_credit_usage_no_reading": "Kiro credit usage — no balance reading yet; open to refresh",
-    "kiro_credit_usage_config_unreadable": "Kiro credit usage — could not read the backend setting; open to retry"
+    "kiro_credit_usage_config_unreadable": "Kiro credit usage — could not read the backend setting; open to retry",
+    "notifications_ask_agent_help": "Leaves this page and opens a new chat with this error's report already filled in, ready for you to send"
   },
   "appSdk": {
     "chatEmbed": {
@@ -1712,8 +1713,8 @@
       "normal_tooltip": "{{productName}} asks you before doing anything",
       "normal_desc": "{{productName}} checks with you before doing anything",
       "reads_label": "Reads",
-      "reads_tooltip": "{{productName}} looks things up on its own, but asks before making changes",
-      "reads_desc": "{{productName}} looks things up on its own, but asks before making any changes",
+      "reads_tooltip": "{{productName}} runs read-only shell commands on its own, but asks for everything else",
+      "reads_desc": "{{productName}} runs read-only shell commands on its own, but asks for everything else",
       "trust_label": "Trust",
       "chat_mode_hint": "chat mode",
       "trust_tooltip": "In this chat, {{productName}} works without asking you first",
@@ -2085,7 +2086,7 @@
       "insider": "Insider",
       "report_problem": "Report problem",
       "report_problem_on_build": "Report a problem on this {{channel}} build",
-      "request_feature_starts_agent": "Starts an agent conversation that helps you write and file the request. It uses inference like any chat turn."
+      "request_feature_starts_agent": "Starts a chat that drafts your request and files it on GitHub once you approve. Uses your plan's monthly usage."
     },
     "fileCard": {
       "audio": "Audio: {{name}}",
@@ -2543,7 +2544,8 @@
     },
     "monacoCodeBlock": {
       "copied": "Copied!",
-      "copy": "Copy"
+      "copy": "Copy",
+      "not_saved_hint": "Not saved back to the chat. Closing discards edits."
     },
     "notifications": {
       "notifMeta": {
@@ -2916,7 +2918,8 @@
       "restarting": "Restarting..."
     },
     "voiceStatusBar": {
-      "default_microphone": "Default microphone"
+      "default_microphone": "Default microphone",
+      "dictation_kept_for_model": "Your dictation is kept and will be transcribed."
     },
     "webAppArtifactCard": {
       "api_app": "API app",
@@ -3495,6 +3498,7 @@
       "audio_worklet_unavailable": "audio worklet unavailable",
       "stt_connection_error": "stt connection error",
       "stt_connection_lost": "stt connection lost",
+      "stt_model_still_loading": "The speech model is still loading, so your dictation could not be transcribed and was not kept. Dictate it again once the model has finished loading.",
       "stt_error": "stt error"
     },
     "useVoiceInput": {
@@ -4271,9 +4275,10 @@
       },
       "errorCard": {
         "feature_request_form": "Open the feature request form",
-        "feature_request_form_hint": "No inference capacity right now — open the feature request form instead.",
+        "feature_request_form_hint": "Your monthly usage is used up — file your request on GitHub with this form instead. This form skips the agent: it opens the GitHub issue form for you to fill in yourself and uses none of your monthly usage.",
         "sign_in": "Sign in to Kiro",
-        "sign_in_hint": "Open Settings → Overview → Kiro sign-in and sign in again, then send your message again."
+        "sign_in_hint": "Open Settings → Overview → Kiro sign-in and sign in again, then send your message again.",
+        "session_start_repeat_hint": "The agent session has failed to start more than once in a row, so resuming would only run the same start again. Restart the gateway from a terminal with {{command}}, then send your message again."
       },
       "crewLog": {
         "section_status": "Status",
@@ -4956,9 +4961,10 @@
       "edit_hook": "Edit Hook",
       "enable_hook": "Enable hook",
       "errors": "Errors",
+      "awaiting_agent": "not fired yet",
       "failed_to_load": "Failed to load {{section}}",
       "failed_to_load_hooks": "Failed to load hooks: {{error}}",
-      "hooks_run_shell_commands_on_chat_events_agentspa": "Hooks run shell commands on chat events: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop. Tool hooks support matcher patterns to filter by tool name.",
+      "hooks_run_shell_commands_on_chat_events_agentspa": "Hooks run shell commands on chat events: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop. Tool hooks support matcher patterns to filter by tool name. A row marked not fired yet is supported by the agent but nothing here fires it yet; one marked never fires is not supported at all. Test runs either one now.",
       "matcher_mode": "Matcher mode",
       "matcher_optional_e_g_deploy": "Matcher (optional, e.g. *deploy*)",
       "matcher_tool_filter_e_g_fs_write_git": "Matcher (tool filter, e.g. fs_write, @git/*)",
@@ -4966,8 +4972,11 @@
       "new_hook_2": "New Hook",
       "none_configured": "No {{section}} configured",
       "read_only_view_of_provider_hooks": "Read-only view of provider hooks from {{path}}. These fire on tool calls including auto-approved ones.",
-      "script_hooks_fire_shell_commands_on_chat_lifecyc": "Script hooks fire shell commands on chat lifecycle events. PreToolUse/PostToolUse hooks can filter by tool name pattern.",
+      "script_hooks_fire_shell_commands_on_chat_lifecyc": "Script hooks fire shell commands on chat lifecycle events. PreToolUse/PostToolUse hooks can filter by tool name pattern. Choosing a marked trigger shows what its mark means, and Test runs the hook either way.",
+      "runs_on_no_event_yet": "The agent supports this trigger, but nothing here fires it yet. Test runs it now.",
+      "runs_only_via_test": "This trigger never fires on its own. Only Test runs it.",
       "source": "Source",
+      "stored_only": "never fires",
       "total": "Total",
       "total_runs": "Total Runs",
       "matcher_placeholder_regex": "Matcher (regex, e.g. \\b(auth|login)\\b)",
@@ -4976,7 +4985,14 @@
       "test_failed": "Test failed",
       "retry": "Retry",
       "show_last_error": "Show last error for {{name}}",
-      "test_failed_for": "Test failed for {{name}}"
+      "test_failed_for": "Test failed for {{name}}",
+      "saved_switched_off": "This hook will be saved turned off — nothing fires this trigger yet.",
+      "no_matcher_for_trigger": "No matcher: this trigger has no event data to filter.",
+      "saved_switched_off_never": "This hook will be saved turned off — this trigger never fires on its own.",
+      "on_but_nothing_fires": "On, but nothing fires this trigger yet.",
+      "via_test": "ran via Test",
+      "skills_only_for_prompt_hooks": "Skills load only on UserPromptSubmit or AgentSpawn hooks that run no command.",
+      "on_but_never_fires": "On, but this trigger never fires on its own."
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "A unique identifier for this workspace. Agents reference workspaces by name.",
@@ -5344,7 +5360,23 @@
         "probe_failing": "Failing",
         "probe_failing_help": "{{failures}} consecutive probes failed. The server is still mounted; this is a health reading, not a change.",
         "reset_failures": "Reset count",
-        "reset_failures_help": "Clear the consecutive-failure count for this server."
+        "reset_failures_help": "Clear the consecutive-failure count for this server.",
+        "disabled_in_config": "Disabled in config",
+        "disabled_in_config_invalid": "Config error",
+        "status_invalid_value": "Invalid value",
+        "copy_path": "Copy path",
+        "copy_path_named": "Copy the path {{file}}",
+        "path_copied": "Copied",
+        "copy_path_failed": "Copy failed",
+        "disabled_in_config_help": "Disabled in the shared Kiro MCP config, which the Kiro IDE also reads. It is never started, and this panel cannot re-enable it: change the flag in that config.",
+        "disabled_in_config_where": "Disabled in <file>{{file}}</file>. Editing this file lifts its disable; another config may still keep the server off. A switch is planned.",
+        "disabled_in_config_where_unknown": "Disabled in the shared MCP config. Editing that config lifts its disable; another config may still keep the server off. A switch is planned.",
+        "disabled_in_config_invalid_where": "Disabled: invalid \"disabled\" value in <file>{{file}}</file>. Set it to true or false there.",
+        "disabled_in_config_invalid_where_unknown": "Disabled: invalid \"disabled\" value in the shared MCP config. Set it to true or false there.",
+        "uninstall_disabled_in_config_help": "Removes this server from every MCP config, including the shared one it is disabled in.",
+        "scope_disabled_in_config": "{{label}}: off (disabled in the shared MCP config; change it there)",
+        "disabled_count_one": "{{count}} disabled",
+        "disabled_count_other": "{{count}} disabled"
       },
       "memoryGraphTab": {
         "all_count": "All ({{count}})",
@@ -6224,6 +6256,11 @@
         "terminal_completion_desc": "Show the completion popup while typing in the Terminal. Enter runs the line you typed; to take a suggestion, press ↑/↓ then Enter, or Tab. Off hides the popup; your shell's own Tab completion still works.",
         "terminal_completion_save_failed": "Could not save the command completion setting",
         "config_load_failed": "Could not load the saved display settings. The shell, recent-session and command completion settings are unavailable until it loads.",
+        "installed_themes_load_failed": "Could not load the theme list; retrying automatically. Until it loads, an installed theme cannot be selected or applied.",
+        "installed_themes_refresh_failed": "Could not refresh the theme list. It is out of date.",
+        "installed_themes_refresh_failed_after_install": "The theme was installed, but the theme list could not be refreshed. Press Retry to refresh the list and apply it, or pick it from the theme list once it refreshes.",
+        "retry_theme_list": "Retry",
+        "retrying_theme_list": "Retrying…",
         "recent_tint_save_failed": "Could not save the recent-session highlight count."
       },
       "instancesPanel": {
@@ -7386,6 +7423,7 @@
     "sttProviders": {
       "downloading_decoder": "Downloading the audio decoder: {{pct}} ({{done}} of {{total}})",
       "downloading_speech_model": "Downloading the speech model: {{pct}} ({{done}} of {{total}})",
+      "loading_speech_model": "Loading the speech model…",
       "stream_error_decode_failed": "Speech recognition could not finish this transcript. Dictate it again.",
       "stream_error_max_duration": "Dictation reached its length limit. Start a new recording to continue.",
       "stream_error_model_missing": "The speech model is not ready yet. Download it in the speech-to-text settings, then try again.",

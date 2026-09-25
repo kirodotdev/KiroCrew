@@ -1112,6 +1112,25 @@ the caller block and the policy read sends it, so its calls do not land there. T
 for admitting a reason here is that it means ONE thing, because a refusal derived from an
 ambiguous reason is wrong for half the callers it hits.
 
+One missing identity reaches a reader through three refusals -- this
+`identity_unattested` text when a key is declared, the strict-identity diagnosis behind
+`memory_recall` and every other reflexive tool when none is, and the lesson writers'
+(`learn_add`, `learn_remove`) answer to the gateway's `400 missing_session_key` (mapped
+onto the same established-session refusal instead of echoing the header name). When the
+process carries neither the session token nor a launcher host pid
+(`mcp_shared.spawned_without_gateway_identity`), nothing the gateway does at spawn
+happened to it, and all three append the same `mcp_shared.external_client_identity_note`:
+a server started outside a Kiro Crew session (an editor's own MCP config) has no identity
+channel and its identity-bearing tools are not supported; `KIROCREW_SESSION_KEY` is a
+gateway-injected fallback, not a credential, and set by hand it turns the partial
+refusals into `identity_unattested` on every call; the read-only tools work without it;
+the supported editor direction is connecting into a Kiro Crew session rather than
+spawning the server, and that server's entry in `~/.kiro/settings/mcp.json` is the
+leftover state the design invariant at the top of this document names. The note
+decorates a denial and never grants: which calls are refused is unchanged, and a server
+the gateway did spawn keeps its existing wording (token present, or the quoted spawn
+denial below).
+
 `resolution_failed` -- no usable answer, meaning nothing came back, a `5xx` said the
 gateway is broken, or the resolve itself raised -- passes that test and refuses. Every
 `4xx` returns before that arm, decided by status class, so the reason means the policy
@@ -1170,6 +1189,41 @@ negative-cache it, nor its `identity_unattested` sibling: the answer is immediat
 there is no timeout to debounce, and both negative
 clocks are process-global, so caching one session's malformed spec there would
 refuse calls for every sibling session in a pooled backend.
+
+The `409` body's `reason` names the file. Every `policy_unreadable` refusal the
+gateway writes -- the directory-wide guard (`_refuse_if_any_spec_is_unreadable`),
+the direct `<agent>.json`/`.md` read, the two shape checks on a direct read and the
+duplicate-name arm (`_ambiguous_spec_reason`, built from
+`AmbiguousAgentSpecError.paths`) -- carries the offending spec's filename (`repr`'d: it is untrusted input from a
+user-writable directory and the text reaches a terminal), the failure kind in
+words (`not valid JSON`, `not UTF-8 text`, `markdown frontmatter the spec parser
+refuses`, `an AppleDouble sidecar`, `larger than the spec size cap`, `resolves to a
+path the spec reader refuses`, `not a plain readable file` for the pinned open's
+refusal, `unreadable (...)` for any other `OSError`) and one remedy
+sentence: move, fix, remove or rename that file in the agents directory, no
+restart needed. Never `str(exc)` verbatim, and never the directory's path: the
+strict reader's own messages and the duplicate-name exception's message quote
+the full path, and this text crosses the wire into the model-visible refusal.
+Two arms have no file to name: the directory walk itself raised (class-name-only
+text, as before), and a wrong-shape `managedToolPolicy` in a spec the declared-name
+scan resolved -- the scan returns a parse, not a path, so that refusal names the
+agent (`managedToolPolicy for '<agent>' is <type>, not an object`), which identifies
+the spec since exactly one declares the name, and carries the same remedy. The SEL `denied` row carries the same `reason` (the
+duplicate-name arm's row keeps the exception's full-path message: the audit
+trail is local); the gateway log carries the FULL path at `WARNING`, once per
+`(path, mtime)` -- the client re-asks on every `tools/call`, so a line per
+refusal would repeat for as long as the file stays broken. The MCP side reads
+`reason` off the body into `ToolPolicy.detail` (text only; the decision is the
+status and `code`, unchanged); the one client-side `policy_unreadable` -- a 200 whose
+`exclude` is malformed -- fills `detail` with its own shape diagnosis. The refusal
+appends `detail` to the `policy_unreadable` refusal
+as `Gateway reason: ...` after `neutralize_markers`, `redact_via_context` and
+`redact_local_paths` (the credential redactor has no path rule, and an older
+gateway's duplicate-name `reason` quotes full paths) -- then bounds the scrubbed
+result at `_POLICY_DETAIL_MAX_CHARS`. The bound comes AFTER the scrubbers: a cut
+made first can land inside a token, and the fragment left behind fails the
+length-floored credential patterns and would be echoed. With no `reason` in the
+body -- an older gateway -- the refusal is byte-identical to what it was.
 
 ## The MCP-first rule
 

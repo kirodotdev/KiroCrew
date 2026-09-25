@@ -210,6 +210,37 @@ When the visible label can be made shorter than the URL (e.g. a long doc
 title), use a meaningful label (`<a href="…">Migration design doc</a>`)
 rather than dumping the raw URL.
 
+## Animation
+
+Move only when the motion itself carries information. The test: freeze one
+frame. If the meaning survives, keep it still.
+
+| Content | Animate? | Example |
+|---|---|---|
+| Change over time | Yes | a CI queue growing |
+| Steps in order | Yes | one request walking the stack |
+| Things flowing | Yes | messages entering a queue |
+| Before / after | Yes | old vs new layout |
+| Space, 3D | Yes | an architecture diagram turning |
+| The user asked for animation | Yes | a playful scene |
+| Lookups, tables | No | a PR list |
+| Code, prose | No | a diff, a report |
+| Something watched all day | No | a status panel |
+
+Every animation:
+
+- Has a play / pause control, unless it runs under ~5 seconds and stops.
+- Honours `matchMedia('(prefers-reduced-motion: reduce)')`: show an
+  equal still version instead, such as every step labelled side by side.
+- Stops when it is done. Only small decorative loops may run forever.
+- On Canvas, uses `requestAnimationFrame` and sizes the canvas to
+  `devicePixelRatio`, so it stays sharp and pauses in a hidden tab.
+- Carries every value it needs in the HTML: the frame blocks runtime
+  fetches (see Rules).
+
+If the user wants to take it elsewhere (a slide, Slack, an email), a widget is
+the wrong container: render a video or GIF file instead.
+
 ## Interactive widgets
 
 Widgets can send events back to the agent. Add `data-action` and an

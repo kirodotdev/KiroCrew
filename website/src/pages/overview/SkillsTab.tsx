@@ -720,10 +720,17 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
     rowRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' })
   }, [autoOpen])
   const isUpdate = p.kind === 'update'
-  const { data: detail } = useQuery<PendingDetail>({
+  const {
+    data: detail,
+    fetchStatus: detailFetchStatus,
+    error: detailReadError,
+  } = useQuery<PendingDetail>({
     queryKey: ['skills-pending-detail', p.slug],
     queryFn: () => api.skillPendingDetail(p.slug),
     enabled: open,
+    // The candidate is a file an agent can rewrite, and no push follows, so the
+    // global staleTime: Infinity served the first-open body until a reload.
+    staleTime: 0,
   })
   return (
     <div ref={rowRef} className={`p-2 rounded-md border ${autoOpen ? 'border-accent ring-1 ring-accent' : 'border-border'}`}>
@@ -763,7 +770,11 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
             replace the newer approved content — the backend refuses both, so keep
             the button disabled and let the expanded panel explain. */}
         {(() => {
-          const approveDisabled = !open || !detail || (isUpdate && (!detail.diff || !!detail.stale_base))
+          // The re-read is a background one, so the old body is still on screen
+          // while it flies -- and stays there when it fails. Either way what is
+          // shown is not known to be the file Approve would promote.
+          const detailUnconfirmed = detailFetchStatus !== 'idle' || !!detailReadError
+          const approveDisabled = !open || !detail || detailUnconfirmed || (isUpdate && (!detail.diff || !!detail.stale_base))
           return (
             <Btn
               /* Non-primary while the candidate is flagged AND the button is
@@ -832,6 +843,17 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
                 ? <ValidationFindings report={approveRefusal.report} />
                 : undefined
             }
+          />
+        </div>
+      )}
+      {open && detailReadError && (
+        /* The read that would confirm this candidate failed, so Approve is held
+           and the panel below is the last good read rather than the file. */
+        <div className="mt-2">
+          <ErrorNotice
+            message={detailReadError.message}
+            askAgent
+            askAgentLabel={i18nT('pages.overview.skillsTab.ask_agent_about_failure')}
           />
         </div>
       )}

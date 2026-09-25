@@ -60,7 +60,6 @@ from __future__ import annotations
 import argparse
 import importlib.metadata
 import importlib.util
-import os
 import re
 import subprocess
 import sys
@@ -92,13 +91,13 @@ def _unformatted(targets: tuple[str, ...]) -> set[str]:
     existing = [name for name in targets if (ROOT / name).exists()]
     if not existing:
         raise SystemExit(f"none of the targets {targets} exist under {ROOT}")
-    # Hosted CI retains its native command and worker selection. Fleet and local
-    # checks use recycling for the measured compiled-Black retention failure.
-    launcher = (
-        ["-m", "black"]
-        if os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted"
-        else [str(Path(__file__).with_name("bounded_black.py"))]
-    )
+    # Every environment runs black through the recycling wrapper, GitHub-hosted
+    # CI included. The compiled Black wheel that x86_64 runners install retains
+    # memory per worker across files (docs/ci/ci-and-reviews.md), and a hosted
+    # `ubuntu-latest` VM has no cgroup cap, so a native pool exhausts the whole
+    # 16 GB host and the runner is torn down mid-step (exit 143) rather than one
+    # worker being OOM-killed. One file per worker bounds that retention.
+    launcher = [str(Path(__file__).with_name("bounded_black.py"))]
     proc = subprocess.run(
         [
             sys.executable,

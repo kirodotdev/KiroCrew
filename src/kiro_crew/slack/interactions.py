@@ -88,6 +88,7 @@ from kiro_crew.slack.renderer import (
     TOOL_DENY_ACTION_PREFIX,
     TOOL_TRUST_ACTION_PREFIX,
     SlackApprovalDecider,
+    split_approval_token,
 )
 from kiro_crew.slack.scope_probe import warn_unreadable_tracked_channels
 
@@ -976,8 +977,13 @@ async def dispatch(payload: dict) -> None:
         approved = is_trust or action_id.startswith(TOOL_APPROVE_ACTION_PREFIX)
         # value / action_id suffix carry the session-namespaced approval token
         # (session_key:request_id) so a click resolves ONLY its own session's
-        # pending tool — kiro-cli request ids restart at 1 per session.
-        approval_key = action.get("value", "") or action_id.rsplit("_", 1)[-1]
+        # pending tool — kiro-cli request ids restart at 1 per session — plus the
+        # prompt's own nonce, which is what distinguishes these buttons from an
+        # earlier prompt's still clickable at the same key. Split rather than
+        # forwarded whole so the audit line records the request, not the secret.
+        approval_key, press_nonce = split_approval_token(
+            action.get("value", "") or action_id.rsplit("_", 1)[-1]
+        )
         # Inbound channels-governance gate: a button press resolves a tool approval
         # (executes the governed tool) or a Trust escalation, so a channels policy
         # that denies ``slack`` must stop it — same gate as an inbound message.
@@ -990,7 +996,7 @@ async def dispatch(payload: dict) -> None:
             logger.info("slack tool-approval dropped: denied by channels governance policy")
             # Resolve the pending future as DENIED so the tool is refused promptly
             # instead of left pending until timeout.
-            SlackApprovalDecider.resolve_global(approval_key, False)
+            SlackApprovalDecider.resolve_global(approval_key, False, nonce=press_nonce)
             sel().log_api_access(
                 caller=user_id,
                 operation="slack.transport_tool_approval",
@@ -1002,9 +1008,12 @@ async def dispatch(payload: dict) -> None:
         # Trust grants per-session auto-approve BEFORE resolving, so subsequent
         # tools in this session are auto-approved (mirrors native trust_tool).
         if is_trust:
-            sess_key = SlackApprovalDecider.session_for(approval_key)
-            add_trusted_session(sess_key, _orch.sessions if _orch else None)
-        resolved = SlackApprovalDecider.resolve_global(approval_key, approved)
+            sess_key = SlackApprovalDecider.session_for(approval_key, nonce=press_nonce)
+            # No live prompt answers to this press, so there is no session to widen.
+            # Granting on the empty key would escalate whatever later reads it.
+            if sess_key:
+                add_trusted_session(sess_key, _orch.sessions if _orch else None)
+        resolved = SlackApprovalDecider.resolve_global(approval_key, approved, nonce=press_nonce)
         if not resolved:
             label = "⏱ This approval already expired."
             outcome = "expired"
@@ -1480,7 +1489,11 @@ def _options_block_id(payload: dict, action: dict | None = None) -> str | None:
             return bid
     values = (payload.get("state") or {}).get("values") or {}
     for block_id, vals in values.items():
-        if isinstance(vals, dict) and OPTIONS_CHECKBOXES_ACTION in vals and isinstance(block_id, str):
+        if (
+            isinstance(vals, dict)
+            and OPTIONS_CHECKBOXES_ACTION in vals
+            and isinstance(block_id, str)
+        ):
             return block_id
     return None
 
@@ -1938,8 +1951,7 @@ async def _handle_options(payload: dict, action: dict, channel: str, msg_ts: str
     async with options_edit_lock(channel, msg_ts):
         if not claim_options_answer(channel, msg_ts):
             logger.debug(
-                "options click: control %s/%s was already answered; dropping the "
-                "duplicate",
+                "options click: control %s/%s was already answered; dropping the " "duplicate",
                 channel,
                 msg_ts,
             )
@@ -2120,9 +2132,7 @@ async def _handle_allowlist(
             return
         _orch._allowed_users.add(new_user_id)
         set_allowed_users(_orch._allowed_users)
-        await run_config_write(
-            persist_allowed_user, new_user_id, name=display_name
-        )
+        await run_config_write(persist_allowed_user, new_user_id, name=display_name)
         sel().log_api_access(
             caller=approver_id,
             operation="slack.allowlist.approve",
@@ -2200,9 +2210,7 @@ async def _handle_track_channel(
         _orch._tracking_channels.add(target_channel_id)
         set_tracking_channels(_orch._tracking_channels)
         _probe_tracked_channel_scope({target_channel_id})
-        await run_config_write(
-            persist_tracking_channel, target_channel_id, name=channel_name
-        )
+        await run_config_write(persist_tracking_channel, target_channel_id, name=channel_name)
         sel().log_api_access(
             caller=approver_id,
             operation="slack.track_channel.approve",
@@ -2219,9 +2227,7 @@ async def _handle_track_channel(
         # Remove from in-memory set and persisted config
         _orch._tracking_channels.discard(target_channel_id)
         set_tracking_channels(_orch._tracking_channels)
-        await run_config_write(
-            persist_tracking_channel, target_channel_id, remove=True
-        )
+        await run_config_write(persist_tracking_channel, target_channel_id, remove=True)
         sel().log_api_access(
             caller=approver_id,
             operation="slack.track_channel.deny",
@@ -3022,9 +3028,7 @@ async def _clear_session_dismissed(session_key: str) -> None:
     try:
         await asyncio.to_thread(_orch.conv_log.clear_closed, session_key)
     except Exception:
-        logger.warning(
-            "session resume: dismissal not cleared for %s", session_key, exc_info=True
-        )
+        logger.warning("session resume: dismissal not cleared for %s", session_key, exc_info=True)
 
 
 async def _handle_session_end(
@@ -3269,7 +3273,9 @@ async def _handle_tool_approval(
 # ---------------------------------------------------------------------------
 
 # Shown when a non-authorized user clicks a review-mode button.
-_REVIEW_AUTH_DENIED_MSG = "⚠️ Only the bot owner or the user who requested this draft can act on it."
+_REVIEW_AUTH_DENIED_MSG = (
+    "⚠️ Only the bot owner or the user who requested this draft can act on it."
+)
 
 
 async def _delete_review_placeholder(channel: str, thread_ts: str) -> None:

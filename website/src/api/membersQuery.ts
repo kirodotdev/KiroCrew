@@ -1,6 +1,7 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { api, type MemberRosterRow } from './client'
 import { memberProjectionStore } from '../state/memberProjectionStore'
+import type { ProjectionsBlock } from '../state/memberProjectionTypes'
 import type { ErrorReport } from '../utils/errorReport'
 
 /**
@@ -54,6 +55,73 @@ export const membersRosterQuery = {
  *  histories. */
 export const memberActivityQueryKey = (slug: string, member: string) =>
   ['member-activity', slug, member] as const
+
+/** The open member's folded projection views. Keyed by slug and exact name for
+ *  the same reason the activity read is: the server answers 409 rather than
+ *  guessing which of two colliding names a slug-keyed log belongs to.
+ *
+ *  Nested under `['kirocrew-agents']` like the roster, so the same `refresh`
+ *  frame and the same post-save invalidation that revalidate the roster also
+ *  revalidate the open member's views -- a crew edited in another tab must not
+ *  leave the drawer showing what the log held before the save. */
+/** Prefix every per-member projections query is keyed under. Exported because the
+ *  `members_subscribed` repair has to invalidate these queries as well as the
+ *  roster: a torn-tail truncation drops EVERY held key for a slug, and a roster row
+ *  restores only the view it carries, so the drawer's other views come back from
+ *  their own read or not at all. One prefix, so the two sides cannot drift. */
+export const MEMBER_PROJECTIONS_QUERY_PREFIX = ['kirocrew-agents', 'member-projections'] as const
+
+export const memberProjectionsQueryKey = (slug: string, member: string) =>
+  [...MEMBER_PROJECTIONS_QUERY_PREFIX, slug, member] as const
+
+/**
+ * The query for one member's projection block, seeding the same store the roster
+ * baseline seeds.
+ *
+ * The list response carries the `roster` view alone, because that is the only one
+ * a list ROW paints. The drawer paints the activity timeline, the patrol state and
+ * the driven-slot list, so without this read those blocks would have no baseline
+ * until a live frame happened to arrive -- a member that has not moved since the
+ * gateway started would show an empty drawer indefinitely.
+ *
+ * Seeding rather than returning the views to a caller keeps ONE source of truth on
+ * the client: `useMemberProjection` already reads the store and already prefers a
+ * live frame over a baseline through the store's higher-seq-wins rule, so a frame
+ * that arrives while this request is in flight is not overwritten by it. The
+ * consumers read the store; which request filled it is not theirs to know.
+ *
+ * A negative `asOfSeq` is NOT seeded from here. In the store that value is the
+ * roster's refusal to attribute a slug, and it clears the slug's whole cache and
+ * mutes the live frames that follow. This route never means that by it: a member
+ * with no log yet answers an empty baseline at a real sequence, and every case the
+ * roster refuses answers 409, so a negative here is only a read this route could
+ * not stand behind. Muting a row that is displaying correctly is the wrong answer
+ * to that, and attribution stays the roster list's to decide.
+ *
+ * Which is why the values go in through `apply` per key rather than `seed`. `seed`
+ * LIFTS a refusal the roster has made -- that is how the mark is meant to clear,
+ * on a roster baseline carrying a real sequence -- and this route has no standing
+ * to do that. React Query re-runs a select over whatever block is cached, so a
+ * block held from before a refusal would otherwise restore the pre-failure values
+ * and re-admit live frames, with `data` still defined so no error state shows.
+ * `apply` drops its input for a refused slug and never clears the mark, and it is
+ * higher-seq-wins, so re-running it over the same block changes nothing. The empty
+ * blocks this route can answer need none of `seed`'s truncation either: a logless
+ * member's baseline is one the roster has already applied at the same sequence.
+ */
+export const memberProjectionsQuery = (slug: string, member: string) => ({
+  queryKey: memberProjectionsQueryKey(slug, member),
+  queryFn: async (): Promise<ProjectionsBlock> => await api.memberProjections(slug, member),
+  staleTime: MEMBERS_ROSTER_STALE_MS,
+  select: (block: ProjectionsBlock): ProjectionsBlock => {
+    if (block.asOfSeq >= 0) {
+      for (const [key, value] of Object.entries(block.values)) {
+        memberProjectionStore.apply(slug, key, value, block.asOfSeq)
+      }
+    }
+    return block
+  },
+})
 
 /** Query key for a member's briefing markdown (Notes tab). Keyed by slug and
  *  exact name: slugs are lossy, so two names sharing a slug have distinct

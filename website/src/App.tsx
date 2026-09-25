@@ -10,7 +10,8 @@ import { performAgentSlotSwitch } from './lib/agentSwitch'
 // before `getBuiltinSurfaces()` is invoked below to compute `NAV_ITEMS`.
 import './surfaces/builtins'
 import { getBuiltinSurfaces, getBuiltinSurface, selectSurfaceBadgeCount, selectSurfaceActivityCount, selectAllSurfacesAttention, surfaceLabel, surfacePreviewEnabled } from './surfaces/registry'
-import { createSlot, appendSlotMessage, markFeatureRequestSlot, setAgentSwitchNotice, setSlotRunning, switchSlot, selectActiveSlotProject } from './store/chatSlice'
+import { createSlot, appendSlotMessage, setAgentSwitchNotice, setSlotRunning, switchSlot, selectActiveSlotProject } from './store/chatSlice'
+import { mintSendId } from './utils/sendDelivery'
 import { queryComposerOrExpand } from './pages/chat/composerFocus'
 import { setNavIntentHandler as setArtifactNavIntentHandler } from './utils/artifactPopout'
 import { applyNavIntentInMain, chatDeepLinkSlot } from './utils/navIntent'
@@ -145,7 +146,7 @@ import { getBuiltinIcon } from './apps/builtinIcons'
 import { getThemeBranding } from './themeBranding'
 import { getTopBarWidgets } from './apps/topBarWidgets'
 import { getCapsuleSegments } from './apps/capsuleSegments'
-import { FEATURE_REQUEST_PROMPT_FALLBACK } from './prompts/featureRequest'
+import { FEATURE_REQUEST_PROMPT_FALLBACK, FEATURE_REQUEST_ROW_META_KEY } from './prompts/featureRequest'
 import { useKeyboardShortcuts, IS_MAC } from './hooks/useKeyboardShortcuts'
 import { useNavShortcutHint } from './hooks/useNavShortcutHint'
 import { useInstanceShortcuts } from './hooks/useInstanceShortcuts'
@@ -593,7 +594,7 @@ function ActivityIndicator({ count, collapsed, label }: { count: number; collaps
         glyph depicts is a question about the rail's iconography rather than about
         the overlap, so it is left to the follow-up rather than guessed at here.
         The `title` carries the naming for a user who hovers. */}
-    <Bot size={11} className="animate-pulse" aria-hidden />
+    <Bot size={11} aria-hidden />
     {count}
   </span>
 }
@@ -1062,6 +1063,53 @@ const NC_SHEET_CLEARANCE = 20
 const NC_CLOSE_BACKSTOP_MS = 1000
 
 /**
+ * True when the press landed on `el`'s own classic scrollbar.
+ *
+ * The one thing a material selector cannot express: a scrollbar hit-tests to
+ * the element it scrolls, so a press on the list's 6px thumb has the SAME
+ * target as a press on the empty strip below the last card. Only the pointer
+ * position tells them apart — the client box excludes the bar, so a pointer
+ * outside it (past the right edge, or the left edge under RTL where
+ * `clientLeft` already counts the bar) is on the bar. Overlay scrollbars take
+ * no layout space and cannot be told apart this way, but this dashboard styles
+ * `::-webkit-scrollbar`, which makes every Chromium and WebKit bar a classic
+ * one. Nothing to detect while the content does not overflow — which also
+ * covers a DOM with no layout at all, where every box measures zero.
+ */
+function onOwnScrollbar(el: Element, e: MouseEvent): boolean {
+  const r = el.getBoundingClientRect()
+  const x0 = r.left + el.clientLeft
+  const y0 = r.top + el.clientTop
+  const onVerticalBar = el.scrollHeight > el.clientHeight && (e.clientX < x0 || e.clientX >= x0 + el.clientWidth)
+  const onHorizontalBar = el.scrollWidth > el.clientWidth && (e.clientY < y0 || e.clientY >= y0 + el.clientHeight)
+  return onVerticalBar || onHorizontalBar
+}
+
+/**
+ * A press inside the popover that hit the sheet's own background rather than
+ * something on it.
+ *
+ * The sheet is transparent by design: the panel paints nothing and every
+ * readable element is a floating card, so the popover's box says nothing about
+ * what the user pressed. On a phone that box is the whole viewport under the
+ * top bar, on desktop it is the 400px column — so judging a press by the box
+ * left the strip below the last card inert while the identical-looking strip
+ * left of the column dismissed, and on a phone left nothing but the bell to
+ * dismiss with. A press is judged by what it landed on instead. "On it" means
+ * a card (`notif-material`, the index.css hook every card already carries), a
+ * row, the detail panel (`data-nc-material`) or any control — those keep the
+ * sheet; anything else inside the popover is its background and dismisses
+ * exactly like a press outside would. Labels that float directly on the
+ * background (group headings, the empty inbox) are background too — they are
+ * not cards and hold nothing to press. Judged for the pointerdown and again
+ * for the click that completes it.
+ */
+function isSheetBackgroundPress(target: Element, e: MouseEvent): boolean {
+  if (target.closest('.notif-material, [data-notif-row], [data-nc-material], button, a, input, textarea, select, [role="button"]')) return false
+  return !onOwnScrollbar(target, e)
+}
+
+/**
  * Topbar Notifications bell. The Notifications surface is `hiddenFromNav`, so
  * this is its entry point. Click opens an Activity Feed popover
  * (portaled to <body> to escape the topbar's backdrop-filter containing
@@ -1074,10 +1122,12 @@ function NotificationsBellButton() {
   // is the control Alt+N operates. Resolved through the same route-keyed helper
   // the rail uses, so the chord has exactly one derivation in the dashboard.
   const shortcut = useNavShortcutHint('/notifications')
-  // Both jumps out of this popover run inside the gate: the bell is reachable
-  // from every page, including one holding an unsaved draft, and each handler
-  // also CLOSES the popover — so asking around the `navigate` alone would leave
-  // the user's "keep my draft" answer with the panel shut behind it.
+  // Every in-app jump out of this popover runs inside the gate — the inbox
+  // link, and the crash fallback's agent hand-off (through the button's own
+  // `gate`): the bell is reachable from every page, including one holding an
+  // unsaved draft, and each handler also CLOSES the popover — so asking around
+  // the `navigate` alone would leave the user's "keep my draft" answer with
+  // the panel shut behind it.
   const leave = useGuardedLeave()
   const location = useLocation()
   const dispatch = useAppDispatch()
@@ -1234,14 +1284,58 @@ function NotificationsBellButton() {
 
   useEffect(() => {
     if (!open) return
+    // Where the pointer gesture in flight began and ended: on the sheet's own
+    // background (inside the popover, on no material — see
+    // isSheetBackgroundPress) or not. Set by every pointerdown and pointerup,
+    // consumed by the click that completes the same gesture.
+    let pressedBackground = false
+    let releasedBackground = false
+    const onBackground = (target: Node, e: MouseEvent) =>
+      // A pointer never targets a text node, so a node inside the popover is
+      // an Element.
+      (popoverRef.current?.contains(target) ?? false) && isSheetBackgroundPress(target as Element, e)
     const onPointerDown = (e: PointerEvent) => {
       const target = e.target as Node | null
       if (!target) return
       const inButton = containerRef.current?.contains(target) ?? false
       const inPopover = popoverRef.current?.contains(target) ?? false
+      pressedBackground = onBackground(target, e)
+      releasedBackground = false
       if (!inButton && !inPopover) {
         closePanel()
       }
+    }
+    const onPointerUp = (e: PointerEvent) => {
+      const target = e.target as Node | null
+      releasedBackground = !!target && onBackground(target, e)
+    }
+    // A press on the sheet's background dismisses too, because on a phone the
+    // popover's box is the whole viewport under the top bar and nothing else
+    // could. It is dismissed at CLICK, not at pointerdown, and only when the
+    // gesture both began AND ended there with nothing selected on the way:
+    // - at click the sheet is still hit-testable, so the gesture ends on the
+    //   sheet and never reaches the page under the transparent strip.
+    //   Dismissing at pointerdown made the leaving sheet pointer-transparent
+    //   and the same tap's click landed on whatever sat beneath — a
+    //   suggestion chip, a link;
+    // - a touch drag that starts in the gap between two cards to scroll the
+    //   list produces no click, so scrolling still works;
+    // - a drag that crosses a card's edge in EITHER direction (selecting its
+    //   text) clicks the common ancestor of its two ends, which is background
+    //   — requiring both ends to be background is what keeps that from
+    //   dismissing, whichever end was the card;
+    // - a drag between two background points sweeps the cards between them
+    //   into a selection; the selection is the intent, so a click that left
+    //   one is not a dismissal either.
+    const onClick = (e: MouseEvent) => {
+      const backgroundGesture = pressedBackground && releasedBackground
+      pressedBackground = false
+      releasedBackground = false
+      if (!backgroundGesture) return
+      const target = e.target as Node | null
+      if (!target || !popoverRef.current?.contains(target)) return
+      if (!(window.getSelection()?.isCollapsed ?? true)) return
+      if (isSheetBackgroundPress(target as Element, e)) closePanel()
     }
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -1254,8 +1348,15 @@ function NotificationsBellButton() {
       }
     }
     document.addEventListener('pointerdown', onPointerDown)
+    document.addEventListener('pointerup', onPointerUp)
+    document.addEventListener('click', onClick)
     document.addEventListener('keydown', onKey)
-    return () => { document.removeEventListener('pointerdown', onPointerDown); document.removeEventListener('keydown', onKey) }
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown)
+      document.removeEventListener('pointerup', onPointerUp)
+      document.removeEventListener('click', onClick)
+      document.removeEventListener('keydown', onKey)
+    }
   }, [open, selectedTs, closePanel])
 
   // Auto-mark-read when opening a notification's detail -- ONCE per
@@ -1314,19 +1415,47 @@ function NotificationsBellButton() {
         >
           <ErrorBoundary
             scope="notifications-bell"
-            fallback={
-              <div {...leavingProps} className={`absolute top-0 right-0 ${closing ? 'pointer-events-none' : 'pointer-events-auto'} ${isMobile ? 'w-full' : 'w-[400px]'} glass-surface glass-static rounded-xl shadow-xl flex flex-col items-center justify-center gap-2 p-6 text-center`} style={{ maxHeight: 240 }}>
+            fallback={error => (
+              <div {...leavingProps} data-nc-material className={`absolute top-0 right-0 ${closing ? 'pointer-events-none' : 'pointer-events-auto'} ${isMobile ? 'w-full' : 'w-[400px]'} glass-surface glass-static rounded-xl shadow-xl flex flex-col items-center justify-center gap-2 p-6 text-center`} style={{ maxHeight: 240 }}>
                 <AlertTriangle size={20} className="text-warn" />
                 <div className="text-[13px] font-semibold text-text-strong">{i18nT('app.notifications_failed_to_load')}</div>
+                {/* The same hand-off as the boundary's default card this panel
+                    replaces. The crash's own message is what lets the button
+                    recover the journaled report at click time — `|| name` is
+                    the value the boundary journals for a message-less throw,
+                    and the button renders nothing for an empty string. SOFT,
+                    through the same gate as the inbox link below: the crash is
+                    contained to the sheet, so the router and store under it
+                    are sound, and a full load would rebuild the store and drop
+                    every draft it holds — a Remote Crew form under edit lives
+                    in `instances.crewForms` precisely so an in-app navigation
+                    keeps it, and `beforeunload` never sees a store-held draft.
+                    The gate is the button's own, so a veto stages nothing.
+                    `onHandoff` dismisses the sheet: a jump to another page
+                    closes it through the route change, but a hand-off raised
+                    ON the chat changes no route and would leave this panel
+                    sitting over the composer it just filled. */}
+                <AskAgentButton
+                  message={error.message || error.name}
+                  variant="solid"
+                  gate={proceed => leave(proceed, '/chat')}
+                  onHandoff={closePanel}
+                />
+                <div className="text-[12px] text-muted">{i18nT('app.notifications_ask_agent_help')}</div>
                 <button className="text-[12px] text-accent hover:text-accent-hover bg-transparent border-none cursor-pointer" onClick={() => leave(() => { closePanel(); navigate('/notifications') }, '/notifications')}>{i18nT('app.open_the_full_inbox')}</button>
               </div>
-            }
+            )}
           >
           {/* Sheet — macOS Notification Center style: the panel itself is fully
               transparent (a tinted/blurred panel paints a hard edge at its left
               boundary — exactly what NC doesn't have). Every readable element
               (header, controls, notification rows) is its own floating
-              material card instead. */}
+              material card instead.
+              Invariant: everything composed into the sheet is material (a
+              `notif-material` card, a `data-notif-row`, `data-nc-material`, a
+              control) or background BY DECISION — an unmarked child dismisses
+              the sheet on press (`isSheetBackgroundPress`); the structural test
+              in App.notificationSheetBackgroundDismiss.test.tsx enforces it. */}
           <div
             ref={sheetRef}
             {...leavingProps}
@@ -1376,9 +1505,12 @@ function NotificationsBellButton() {
           </div>
           {/* Detail panel — overlays feed on mobile, sits beside it on desktop.
               Rendered plainly (no AnimatePresence): an exit animation here races
-              the portal teardown when the popover closes and throws removeChild. */}
+              the portal teardown when the popover closes and throws removeChild.
+              Material, not background: it is an opaque card, so a press on it
+              keeps the sheet like a press on a row does. */}
           {selected && (
             <div
+              data-nc-material
               className={`absolute top-0 bottom-0 pointer-events-auto ${isMobile ? 'left-0 right-0' : 'left-0 right-[408px]'} bg-card border border-border rounded-xl shadow-xl overflow-hidden`}
             >
               <NotificationDetailPanel
@@ -3204,10 +3336,17 @@ export default function App() {
     // This flow is an agent turn by design (the skill drafts and files the
     // request), so it consumes metered inference and a spent plan allowance
     // refuses it. The transcript can offer the non-inference route -- the
-    // repo's feature-request form -- on that refusal ONLY if it knows the slot
-    // belongs to this flow, which nothing else records (#13342). Marked before
-    // the send: the refusal arrives over the WebSocket once the turn starts.
-    dispatch(markFeatureRequestSlot(slot))
+    // repo's feature-request form -- on that refusal ONLY if it knows the
+    // refused turn was this one, which nothing else records (#13342). The
+    // record is the ROW: the send's `meta` carries the flow's stamp beside its
+    // `sendId` (`FEATURE_REQUEST_ROW_META_KEY`), and the gateway persists a
+    // send's `meta` verbatim on the user row and echoes it back, so the same
+    // stamp is on the optimistic bubble below, on the echo that reconciles it,
+    // on the row a reload rebuilds and in every other tab of the slot --
+    // nothing is kept on this client. A message the user types later in the
+    // same slot is an unstamped row, so its limit hit keeps today's card.
+    const sendId = mintSendId()
+    const meta = { sendId, [FEATURE_REQUEST_ROW_META_KEY]: true }
     const visibleMessage = i18nT('app.i_d_like_to_request_a_feature')
     navigate('/chat')
     // Both optimistic writes are addressed to the slot this flow CREATED, not
@@ -3217,7 +3356,7 @@ export default function App() {
     // put the bubble in an unrelated session's transcript, and an
     // unconditional running flag would mark that session busy for a turn it
     // never started (review finding on #4198).
-    dispatch(appendSlotMessage({ slot, message: { role: 'user', content: visibleMessage, cls: '', ts: new Date().toISOString() } }))
+    dispatch(appendSlotMessage({ slot, message: { role: 'user', content: visibleMessage, cls: '', ts: new Date().toISOString(), meta } }))
     if (appStore.getState().chat.activeSlot === slot) dispatch(setSlotRunning(true))
     // A send the server never accepted has to say so where the request landed
     // (#4198): an HTTP 4xx/5xx RESOLVES rather than rejecting, so the catch
@@ -3256,7 +3395,11 @@ export default function App() {
     } catch { /* Send the visible request even if hidden context is unavailable. */ }
     // The chat-core transport owns the receipt contract (`?ws=1` JSON receipt,
     // HTTP 4xx/5xx RESOLVE rather than reject, deadline) and never rejects.
-    const receipt = await sendTurn({ message: visibleMessage, slot, colorTheme })
+    // `meta` rides the wire exactly as a composer send's does: the gateway
+    // persists it on the user row and echoes it, so the echo reconciles the
+    // optimistic bubble by `sendId` and the persisted row keeps the stamp the
+    // transcript reads the refusal by.
+    const receipt = await sendTurn({ message: visibleMessage, slot, colorTheme, meta })
     // Resolution is not success: `refused` means the server accepted neither
     // `ok` nor `queued`, so no turn started and no WS response is coming, and
     // `transport-error` means the request never left. Both get the error row.
@@ -3810,7 +3953,7 @@ export default function App() {
                 aria-label={capsuleActionMsg}
                 aria-expanded={!capsuleCollapsed}
               >
-                <span aria-hidden="true" className={`w-1.5 h-1.5 rounded-full transition-colors duration-300 ${offline ? 'bg-danger animate-pulse motion-reduce:animate-none' : 'bg-ok shadow-[0_0_8px_rgba(34,197,94,.4)]'}`} />
+                <span aria-hidden="true" className={`w-1.5 h-1.5 rounded-full transition-colors duration-300 ${offline ? 'bg-danger animate-pulse [animation-iteration-count:3]! motion-reduce:animate-none' : 'bg-ok shadow-[0_0_8px_rgba(34,197,94,.4)]'}`} />
                 {/* Live-region announcement lives in its own hidden span:
                     role="status" on the button itself would override its
                     implicit button role for screen readers. */}
@@ -3827,7 +3970,7 @@ export default function App() {
                     ? i18nT('app.resource_posture_tooltip_critical', { gb: sysMetrics.availableGb?.toFixed(1) ?? '?' })
                     : i18nT('app.resource_posture_tooltip_tight', { gb: sysMetrics.availableGb?.toFixed(1) ?? '?' })}
                 >
-                  <span aria-hidden="true" className={`inline-block w-2 h-2 rounded-full animate-pulse motion-reduce:animate-none ${sysMetrics.posture === 'critical' ? 'bg-danger' : 'bg-warn'}`} />
+                  <span aria-hidden="true" className={`inline-block w-2 h-2 rounded-full ${sysMetrics.posture === 'critical' ? 'bg-danger animate-pulse [animation-iteration-count:3]! motion-reduce:animate-none' : 'bg-warn'}`} />
                   {!isMobile && <span className="font-medium">{sysMetrics.posture === 'critical' ? i18nT('app.resource_critical') : i18nT('app.resource_tight')}</span>}
                   {!isMobile && sysMetrics.subagentCap != null && <span className="text-muted text-[10px]">· {i18nT('app.subagent_cap', { cap: String(sysMetrics.subagentCap) })}</span>}
                 </span>
@@ -4556,7 +4699,7 @@ export default function App() {
                   active={activePath === devPath}
                   collapsed={effectiveCollapsed}
                   onClick={closeMobileNav}
-                  badge={!devPageSeen && activePath !== devPath ? <span className={dotClass} /> : undefined}
+                  badge={!devPageSeen && activePath !== devPath ? <span className={`${dotClass} [animation-iteration-count:3]!`} /> : undefined}
                 />
                 )
               })()}

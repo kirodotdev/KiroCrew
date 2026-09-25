@@ -189,7 +189,7 @@ export function Badge({ variant, children, className, ...rest }: { variant: 'ok'
  *  `tone="neutral"` forces the grey style for every source — used where several
  *  of these sit together (the template list) and one coloured chip among grey
  *  peers reads as "why is this one different?" rather than as a category. */
-export function SourceBadge({ source, children, tone = 'auto' }: { source: string; children?: React.ReactNode; tone?: 'auto' | 'neutral' }) {
+export function SourceBadge({ source, children, tone = 'auto', title }: { source: string; children?: React.ReactNode; tone?: 'auto' | 'neutral'; title?: string }) {
   const neutral = 'bg-bg-elevated text-muted border-border'
   const cls =
     tone === 'neutral' ? neutral
@@ -197,7 +197,7 @@ export function SourceBadge({ source, children, tone = 'auto' }: { source: strin
     : source === 'kirocrew' ? neutral
     : source === 'project' ? 'text-ok border-ok/30'
     : neutral
-  return <span className={`px-1.5 py-[2px] rounded-full text-[11px] font-bold border shrink-0 ${cls}`}>{children ?? source}</span>
+  return <span title={title} className={`px-1.5 py-[2px] rounded-full text-[11px] font-bold border shrink-0 ${cls}`}>{children ?? source}</span>
 }
 
 export function StatCard({ label, value, accent, colorClass, delay, onClick, active, title, className, ...rest }: { label: string; value?: string | number | null; accent?: boolean; colorClass?: string; delay?: number; onClick?: () => void; active?: boolean; title?: string } & Omit<React.ComponentPropsWithoutRef<'div'>, 'title' | 'onClick' | 'dangerouslySetInnerHTML'>) {

@@ -88,7 +88,8 @@ class TestMemoryGroup:
         ctx = _builder(tmp_path).build_session_context()
         assert "## User Preferences" in ctx
         assert "Prefers tabs over spaces" in ctx
-        assert "## Active Projects" not in ctx
+        # The activity half rides along as budgeted background.
+        assert "## Active Projects" in ctx
         assert "memory_recall" in ctx
 
     def test_absent_when_withheld(self, tmp_path):
@@ -169,25 +170,25 @@ class TestProjectGroup:
 
 
 class TestEpisodicMemoryGate:
-    """Activity is on demand; stable preference delivery still follows inheritance."""
+    """Episodes ride in the budgeted activity block; both halves follow inheritance."""
 
     def _builder_with_episodic(self, tmp_path):
         builder = _builder(tmp_path)
         store = builder.get_memory_for(None)
         store._vector_store = SimpleNamespace(
             get_episodic_context=lambda query_text, cap: "[EPISODIC-SENTINEL]",
-            get_semantic_context=lambda query_text, cap: "",
-            get_preferences_context=lambda: "[PREFERENCE-SENTINEL]",
+            get_semantic_context=lambda query_text, cap, facts_only=False: "",
+            get_preferences_context=lambda query_text="", cap=0: "[PREFERENCE-SENTINEL]",
             get_lessons_context=lambda query_text, cap, project_dir=None, background=False, hard_cap=0, directive_budget=0, experience_budget=0: "",
             has_any_lesson=lambda: True,
         )
         return builder
 
-    def test_activity_requires_explicit_reader(self, tmp_path):
+    def test_activity_rides_the_memory_group_once(self, tmp_path):
         builder = self._builder_with_episodic(tmp_path)
         msg, _ = builder.build_message("q", True, "s1")
-        assert "[EPISODIC-SENTINEL]" not in msg
-        assert "[PREFERENCE-SENTINEL]" in msg
+        assert msg.count("[EPISODIC-SENTINEL]") == 1
+        assert msg.count("[PREFERENCE-SENTINEL]") == 1
         assert "[EPISODIC-SENTINEL]" in builder.memory.get_context(query="q")
 
     def test_withheld_with_the_memory_group(self, tmp_path):
@@ -202,7 +203,7 @@ class TestEpisodicMemoryGate:
         msg, _ = self._builder_with_episodic(tmp_path).build_message(
             "q", True, "s1", context_groups=ALL_GROUPS - {CONTEXT_GROUP_PROJECT}
         )
-        assert "[EPISODIC-SENTINEL]" not in msg
+        assert "[EPISODIC-SENTINEL]" in msg
         assert "[PREFERENCE-SENTINEL]" in msg
 
 

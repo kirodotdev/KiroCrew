@@ -115,7 +115,7 @@ logger = logging.getLogger("kiro_crew.config.loader")
 _ENUM_FIELDS: list[tuple[str, str, list[str]]] = [
     ("agent", "approval_mode", ["auto", "interactive"]),
     ("agent", "provider", ["acp"]),
-    ("agent", "sandbox", ["auto", "off"]),
+    ("agent", "sandbox", ["auto", "strict", "off"]),
     ("agent", "log_level", ["DEBUG", "INFO", "WARNING", "ERROR"]),
     ("memory", "embedding_provider", ["llama_cpp"]),
 ]

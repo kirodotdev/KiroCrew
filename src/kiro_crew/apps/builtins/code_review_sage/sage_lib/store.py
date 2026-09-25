@@ -24,6 +24,7 @@ Run ``python3 sage_lib/store.py --ensure`` to create/repair the layout and seed
 from __future__ import annotations
 
 import argparse
+import contextlib
 import errno
 import json
 import os
@@ -31,6 +32,7 @@ import re
 import shutil
 import stat
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 
 # Canonical KiroCrew data-root accessor. Imported at module top but kept guarded
@@ -48,6 +50,17 @@ try:
     from kiro_crew.platform_compat import restrict_to_owner as _runtime_restrict
 except ImportError:  # pragma: no cover - standalone fallback
     _runtime_restrict = None  # type: ignore[assignment]
+
+# Cross-process exclusion for the self-heal, same guard shape as the two above.
+# The runtime's helper is what carries the platform split -- ``fcntl.flock`` on
+# POSIX, ``msvcrt.locking`` on Windows -- and both fail CLOSED past their
+# ceiling, which is the property :func:`layout_lock` needs: seeding without the
+# lock is the exact fail-open it exists to prevent. Standalone then has no
+# exclusion, exactly as it has no owner-only lockdown and no confinement.
+try:
+    from kiro_crew.platform_compat import file_lock as _runtime_file_lock
+except ImportError:  # pragma: no cover - standalone fallback
+    _runtime_file_lock = None  # type: ignore[assignment]
 
 # The ancestor chain, in the two halves that need different mechanisms, both
 # taken from the runtime rather than reimplemented here. Same guard shape as
@@ -434,6 +447,18 @@ def atomic_write_locked(path: str | os.PathLike, data: bytes) -> None:
     delete reports success while a stale record survives under a namespace that
     is supposed to be gone. Dropping it also removes the last by-name `mkdir`
     from this path, leaving the pin as the only place the parent is resolved.
+
+    Callers ALSO own mutual exclusion, which the ``locked`` in the name does not
+    supply: it names the owner-only lockdown of the bytes, not a lock against
+    another writer. One publish is all-or-nothing, and two publishes aimed at one
+    name are two renames the primitive knows nothing about. On POSIX they are
+    harmless, so the gap is invisible there; on Windows ``os.replace`` raises
+    ``PermissionError`` when a handle is open on the destination or another
+    rename is landing on it, and the loser's whole action fails. So a caller that
+    can publish one target from several processes serializes itself:
+    :func:`layout_lock` covers the self-heal's seeds and
+    ``learning._candidate_lock`` covers the candidate catalog, both through the
+    runtime's advisory file lock.
     """
     target = Path(path)
     parent = target.parent
@@ -537,15 +562,19 @@ def _refuse_unsafe_leaf(target: Path) -> None:
     inode is itself a regular file and is not a link, so it satisfies both tests
     here and ``O_NOFOLLOW`` as well. :func:`_refuse_unsafe_fd` is the leg that
     catches that one, on the descriptor rather than the name.
+
+    The message names no verb, because both callers open a leaf for a different
+    purpose -- an append and a lock -- and the refusal is about the name, not
+    about what was going to be done with it.
     """
     try:
         existing = os.stat(str(target), follow_symlinks=False)
     except FileNotFoundError:
         return
     if stat.S_ISLNK(existing.st_mode):
-        raise LinkedAncestorRefusal(f"refusing to append to {target}: it is a symbolic link")
+        raise LinkedAncestorRefusal(f"refusing to open {target}: it is a symbolic link")
     if not stat.S_ISREG(existing.st_mode):
-        raise LinkedAncestorRefusal(f"refusing to append to {target}: it is not a regular file")
+        raise LinkedAncestorRefusal(f"refusing to open {target}: it is not a regular file")
 
 
 def _refuse_unsafe_fd(fd: int, target: Path) -> None:
@@ -560,14 +589,15 @@ def _refuse_unsafe_fd(fd: int, target: Path) -> None:
     On the descriptor, so it cannot be raced: the bytes checked are the bytes
     written to, whatever the name was made to mean in between. It runs on every
     platform for the same reason -- it is the check that does not depend on a
-    flag the platform may not have. The app's staging lock makes the same two
-    tests on its own descriptor, so this is that rule applied to the one other
-    path that opens a leaf by name.
+    flag the platform may not have. Both paths in this module that open a leaf by
+    name go through it, :func:`open_append_nolink` and :func:`layout_lock`, and
+    the message names no verb because the two want the descriptor for different
+    things.
     """
     st = os.fstat(fd)
     if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
         raise LinkedAncestorRefusal(
-            f"refusing to append to {target}: not a lone regular file"
+            f"refusing to open {target}: not a lone regular file"
         )
 
 
@@ -815,6 +845,88 @@ def list_run_ids(root: Path | None = None) -> list[str]:
     return sorted(p.name for p in rr.iterdir() if p.is_dir())
 
 
+#: Dedicated lock file for the self-heal, never one of the files it seeds:
+#: locking a file that is about to be REPLACED holds a lock on an inode the
+#: rename discards. Hidden so it does not read as app data in the dir listing.
+_LAYOUT_LOCK_NAME = ".layout.lock"
+
+
+@contextlib.contextmanager
+def layout_lock(root: Path | None = None) -> Iterator[None]:
+    """Serialize the data-layout self-heal against threads AND processes.
+
+    :func:`ensure_layout` is a read-modify-write: it tests whether a seeded file
+    is present and publishes it when it is not. Every entry point runs it, and
+    reviews run as separate PROCESSES, so several of them can each observe one
+    absent seed and each publish it. On POSIX the duplicate publishes are
+    harmless -- ``rename`` is atomic and the content is identical -- but on
+    Windows ``os.replace`` fails with ``PermissionError`` when another process
+    holds a handle on the destination or is renaming onto it at that moment, so
+    the loser of the race raises out of :func:`atomic_write_locked` and its whole
+    action fails. Measured on one fresh root with six concurrent entrants: all
+    six published ``learned-patterns.md``, five published ``reports/index.json``.
+
+    An advisory file lock is the exclusion the publish itself cannot supply: the
+    rename is atomic, which makes a single publish all-or-nothing, and says
+    nothing about two of them meeting on one name. Holding it across the test AND
+    the publish is what collapses the six publishes into one, and holding it
+    across ``_seed_config``'s read too is what keeps a reader's handle off a
+    destination another entrant is replacing.
+
+    The lock file is opened the way every other leaf this module opens by name
+    is, through the same four legs and the same helpers rather than a second
+    spelling of them. :func:`refuse_linked_parents` refuses a link ALREADY sitting
+    on the chain above it. :func:`pin_record_dir` then walks that chain one
+    ``O_NOFOLLOW`` ``openat`` per component and the leaf is opened relative to the
+    resulting descriptor, so a component swapped AFTER the refusal fails its own
+    open rather than redirecting this one: ``O_NOFOLLOW`` on a by-name open guards
+    the FINAL component only, so without the pin a ``data`` directory swapped for
+    a link would place this file wherever the link points, and the review worker
+    that can plant the link is exactly who the sandbox is meant to confine.
+    :func:`_refuse_unsafe_leaf` refuses a link or a non-regular file already at
+    the name, on every platform, since that needs no race at all; and
+    :func:`_refuse_unsafe_fd` rejects a hardlink to another inode on the open
+    descriptor -- which cannot be raced -- since that passes ``O_NOFOLLOW`` and
+    the name checks alike. No ``O_TRUNC``, because a lock's contents are
+    irrelevant. Mode ``0o600`` keeps it owner-only from creation, matching the
+    data it guards.
+
+    RESIDUAL, Windows only, and it is the same one :func:`open_append_nolink`
+    carries: the dir_fd verbs do not exist there, so the leaf is opened by name
+    and the chain above it rests on the ``lstat`` refusal alone, which an
+    attacker can outrun by planting a link after it. ``getattr(os, "O_NOFOLLOW",
+    0)`` is also 0 there, so the leaf refusal becomes a check-to-open window and
+    a reparse point planted inside it sends this open to whatever it names; the
+    ``fstat`` cannot carry that one, because a followed reparse point yields a
+    descriptor on a target that is itself a lone regular file. What the platform
+    does get is the whole of the exclusion this function exists for -- the
+    advisory lock is ``msvcrt.locking`` there and serializes the seeding exactly
+    as ``flock`` does -- so the concurrency gap closes on Windows while the chain
+    story stays at the module's existing Windows floor rather than improving.
+    """
+    if _runtime_file_lock is None:  # pragma: no cover - standalone fallback
+        yield
+        return
+    lock_path = data_dir(root) / _LAYOUT_LOCK_NAME
+    refuse_linked_parents(lock_path)
+    _refuse_unsafe_leaf(lock_path)
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    if not _CAN_PIN_WALK:  # pragma: no cover - exercised on Windows
+        fd = os.open(str(lock_path), flags, 0o600)
+    else:
+        dir_fd = pin_record_dir(lock_path.parent)
+        try:
+            fd = os.open(lock_path.name, flags, 0o600, dir_fd=dir_fd)
+        finally:
+            os.close(dir_fd)
+    try:
+        _refuse_unsafe_fd(fd, lock_path)
+        with _runtime_file_lock(fd, exclusive=True):
+            yield
+    finally:
+        os.close(fd)
+
+
 def ensure_layout(root: Path | None = None) -> dict[str, str]:
     """Create the full data layout if missing. Idempotent — never clobbers.
 
@@ -842,23 +954,30 @@ def ensure_layout(root: Path | None = None) -> dict[str, str]:
 
     # Warm-start common layer (empty but present so brand-new repos inherit it).
     common_patterns = common / "learned-patterns.md"
-    if not common_patterns.exists():
-        atomic_write_text(
-            common_patterns,
-            "# Common learned patterns (cross-repo, warm start)\n\n"
-            "<!-- Promoted from per-repo layers via human-approved generalization. -->\n",
-        )
-
     # Reports pointer the UI polls.
     index = reports / "index.json"
-    if not index.exists():
-        atomic_write_text(
-            index,
-            json.dumps({"report_slug": None, "bands": {"red": 0, "yellow": 0, "green": 0},
-                        "generated_at": None}, indent=2),
-        )
 
-    _seed_config(data)
+    # Every test below is re-read INSIDE the lock, not outside it: a test whose
+    # answer was read before the lock is a decision made when another entrant was
+    # free to publish, and acting on it is the duplicate publish the lock exists
+    # to remove. The directories above stay outside -- ``mkdir(exist_ok=True)``
+    # already tolerates a concurrent creator, so it needs no exclusion.
+    with layout_lock(root):
+        if not common_patterns.exists():
+            atomic_write_text(
+                common_patterns,
+                "# Common learned patterns (cross-repo, warm start)\n\n"
+                "<!-- Promoted from per-repo layers via human-approved generalization. -->\n",
+            )
+
+        if not index.exists():
+            atomic_write_text(
+                index,
+                json.dumps({"report_slug": None, "bands": {"red": 0, "yellow": 0, "green": 0},
+                            "generated_at": None}, indent=2),
+            )
+
+        _seed_config(data)
 
     return {
         "dataDir": str(data),
@@ -872,7 +991,15 @@ def ensure_layout(root: Path | None = None) -> dict[str, str]:
 
 
 def _seed_config(data: Path) -> None:
-    """Write config.json once, merging in any missing top-level keys on upgrade."""
+    """Write config.json once, merging in any missing top-level keys on upgrade.
+
+    Runs under :func:`layout_lock`, held by the only caller. Both halves need it:
+    the read below opens ``config.json``, and on Windows a reader's open handle is
+    enough to make another entrant's ``os.replace`` onto that name raise, so the
+    read has to sit in the same critical section as the publish rather than beside
+    it. The merge is itself a read-modify-write, so two unserialized entrants
+    would also each publish the same merged document.
+    """
     cfg_path = data / "config.json"
     if not cfg_path.exists():
         cfg = dict(DEFAULT_CONFIG)

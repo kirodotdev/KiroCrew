@@ -2265,6 +2265,108 @@ class TestSessionsArchiveLayerBGate:
         assert set(backup.uploaded_objects(ACCOUNT)) == {"key-low", "key-high"}
         assert backup.uploaded_versions(ACCOUNT)["key-low"] == "v-low"
 
+    def test_a_superseded_run_keeps_the_nightly_backoff(self, tmp_path, monkeypatch):
+        """A run that loses the slot must not end the retry backoff.
+
+        ``_record_run_locked``'s mutate writes the run record into the ``runs`` slot
+        under the supersession guard and clears the failure count under that same
+        guard, because the two answer one question: a record this document has already
+        superseded is not evidence of anything, so it must not retire a count a later
+        failure legitimately accumulated. :func:`_merge_pending` states that reason at
+        the other place a run record and this clear travel together.
+
+        Gating the clear or leaving it ungated produces identical state everywhere but
+        one window, which is why no other case in the suite tells the two apart: the
+        winner clears the backoff in its own mutate, so a failure has to land BETWEEN
+        the winner's commit and the loser's for the loser to be the one that meets it.
+
+        Reaching that window takes the witness as well. ``record_nightly_failure``
+        compares the run slot against the witness read before its attempt, so a failure
+        whose witness predates the winner's commit is refused and writes nothing. The
+        witness here is therefore read AFTER the winner commits, and the row is asserted
+        PRESENT before the loser is released -- without that the assertion below would
+        hold for the trivial reason that no row ever existed.
+
+        The inversion is produced rather than simulated, the same way the clobber test
+        above builds it: the low-sequence writer bumps first, parks in ``file_lock``, and
+        is released only once the high-sequence writer has committed. That is what shows
+        the window is reachable by two real runs rather than by an edited document.
+
+        MUTATION: move the ``_clear_nightly_failure`` call in ``_record_run_locked`` back
+        out of the ``if not superseded:`` branch and this reddens on the final assertion.
+        """
+        monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
+        real_file_lock = backup.file_lock
+        bumped = threading.Event()
+        release_low = threading.Event()
+        low: dict[str, Any] = {}
+
+        @contextlib.contextmanager
+        def spy_file_lock(fd, **kwargs):
+            if threading.current_thread().name == "low-seq-writer":
+                # Its sequence is already taken; hold it out of the file lock until the
+                # higher-sequenced run has committed AND a failure has been recorded.
+                bumped.set()
+                assert release_low.wait(timeout=10), "the high-seq writer never released"
+            with real_file_lock(fd, **kwargs):
+                yield
+
+        def write_low() -> None:
+            try:
+                backup._record_run(
+                    ACCOUNT, backup.KIND_SESSIONS, "key-low", 1, "fp-low", "v-low", tree="tree-low"
+                )
+            except Exception as exc:  # noqa: BLE001 - reported, never swallowed
+                low["error"] = repr(exc)
+
+        thread = threading.Thread(target=write_low, name="low-seq-writer", daemon=True)
+        try:
+            with mock.patch.object(backup, "file_lock", spy_file_lock):
+                thread.start()
+                assert bumped.wait(timeout=10), "the low-seq writer never took a sequence"
+                # Bumps to a HIGHER sequence and commits first, clearing the backoff in
+                # its own mutate -- so the row the loser meets has to be written after.
+                backup._record_run(
+                    ACCOUNT,
+                    backup.KIND_SESSIONS,
+                    "key-high",
+                    2,
+                    "fp-high",
+                    "v-high",
+                    tree="tree-high",
+                )
+                witness = backup.nightly_run_witness(ACCOUNT, backup.KIND_SESSIONS)
+                assert witness is not None, "the winner left no identifiable run record"
+                recorded = backup.record_nightly_failure(
+                    ACCOUNT, backup.KIND_SESSIONS, "eio", run_witness=witness
+                )
+                assert recorded, "the compare-and-set refused a witness read after the commit"
+                assert backup.nightly_failures(ACCOUNT).get(backup.KIND_SESSIONS), (
+                    "the window was never entered: with no failure row on the account"
+                    " there is nothing for the loser to preserve, and this case cannot"
+                    " tell the two placements apart"
+                )
+                release_low.set()
+                thread.join(timeout=15)
+        finally:
+            release_low.set()
+            thread.join(timeout=15)
+            assert not thread.is_alive(), "the low-seq writer never completed"
+
+        assert "error" not in low, low
+        # The supersession really happened, so the run under test is the LOSER's: the
+        # slot still holds the winner's record and the loser's write was refused.
+        assert backup.last_runs(ACCOUNT)[backup.KIND_SESSIONS]["key"] == "key-high"
+        surviving = backup.nightly_failures(ACCOUNT).get(backup.KIND_SESSIONS)
+        assert surviving, (
+            "a run whose own record was refused as stale retired the failure count"
+            " anyway. That count was accumulated by a failure recorded AFTER the"
+            " winning run committed, so nothing about it is over -- and the next"
+            " nightly wake reads the account as due on the strength of a run that was"
+            " too stale to write a key"
+        )
+        assert surviving["consecutive"] == 1, surviving
+
     def test_the_authorization_runs_inside_the_lock_it_will_upload_under(
         self, tmp_path, monkeypatch
     ):
@@ -4348,6 +4450,21 @@ class TestNightlyRetryBackoff:
 
         backup._locked_state_update(mutate)
 
+    def _raise_stored_sequence(self, kind: str = backup.KIND_SNAPSHOT, by: int = 50) -> None:
+        """Raise the stored run's sequence so this process's next run loses the slot.
+
+        ``superseded`` in :func:`_record_run_locked` compares the stored record's
+        ``process`` and ``sequence`` against the incoming run's, so raising the stored
+        sequence is the whole precondition -- no second writer is needed, and the
+        document stays one the writer itself produced apart from that field.
+        """
+
+        def mutate(state):
+            stored = backup._account_state(state, ACCOUNT)["runs"][kind]
+            stored["sequence"] = stored["sequence"] + by
+
+        backup._locked_state_update(mutate)
+
     # -- the schedule itself ------------------------------------------------
 
     def test_the_schedule_backs_off_and_then_holds_at_its_ceiling(self):
@@ -4425,6 +4542,93 @@ class TestNightlyRetryBackoff:
         # The key itself is gone, not left as an empty map or a stored zero, so
         # "nothing is failing" has exactly one spelling in the document.
         assert backup.NIGHTLY_FAILURE_STATE_KEY not in backup._account_view(ACCOUNT)
+
+    @pytest.mark.parametrize("backoff_set", [True, False], ids=["backoff-set", "no-backoff"])
+    @pytest.mark.parametrize("superseded", [True, False], ids=["superseded", "current"])
+    def test_only_a_current_run_retires_the_backoff(self, superseded, backoff_set):
+        """The four combinations of losing the slot and carrying a standing backoff.
+
+        A success clears the count, and a run whose own record is refused as stale is
+        not a success this document can act on: too stale to write a key is too stale
+        to retire a count a later failure accumulated. So the clear shares the run
+        write's condition, which is what :func:`_merge_pending` says at the other place
+        the two travel together.
+
+        Supersession is produced by raising the stored run's ``sequence``, because
+        ``superseded`` is the same-process half of ``_run_is_newer`` -- it compares the
+        stored record's ``process`` and ``sequence`` against the incoming run's, so a
+        raised sequence makes this process's next run the loser.
+        ``test_a_superseded_run_keeps_the_nightly_backoff`` is what shows two real runs
+        reach that state; this one is what enumerates every combination cheaply.
+
+        MUTATION: move the ``_clear_nightly_failure`` call in ``_record_run_locked`` out
+        of the ``if not superseded:`` branch and the superseded/backoff-set case reddens.
+        """
+        backup._unpersisted_runs.clear()
+        try:
+            backup.set_nightly(ACCOUNT, True)
+            backup._record_run(ACCOUNT, backup.KIND_SNAPSHOT, "snapshots/i/first.tar.gz", 7)
+            if superseded:
+                self._raise_stored_sequence()
+            if backoff_set:
+                assert _fail(ACCOUNT, backup.KIND_SNAPSHOT, "eio"), "the CAS refused the setup"
+                assert backup.nightly_failures(ACCOUNT).get(backup.KIND_SNAPSHOT)
+            else:
+                assert backup.nightly_failures(ACCOUNT) == {}, "the case starts with no row"
+
+            backup._record_run(ACCOUNT, backup.KIND_SNAPSHOT, "snapshots/i/second.tar.gz", 7)
+
+            stored = backup._account_view(ACCOUNT).get("runs", {}).get(backup.KIND_SNAPSHOT)
+            assert stored, "no run record survived at all"
+            # Whether the second run won the slot is the case's own precondition, so it
+            # is asserted rather than assumed: a bump that stopped working would
+            # otherwise turn the superseded rows into duplicates of the current ones.
+            if superseded:
+                assert stored["key"] == "snapshots/i/first.tar.gz", "the run was not superseded"
+            else:
+                assert stored["key"] == "snapshots/i/second.tar.gz", "the run lost the slot"
+
+            after = backup.nightly_failures(ACCOUNT).get(backup.KIND_SNAPSHOT)
+            if superseded and backoff_set:
+                assert (
+                    after and after["consecutive"] == 1
+                ), "a run refused as stale retired a count a later failure accumulated"
+            else:
+                assert after is None, (
+                    "a current run left the backoff standing"
+                    if backoff_set
+                    else "a row appeared where the case wrote none"
+                )
+            if not backoff_set:
+                # The absence has ONE spelling: the map goes with its last kind, so an
+                # empty map left behind would be a second way to say nothing is failing.
+                assert backup.NIGHTLY_FAILURE_STATE_KEY not in backup._account_view(ACCOUNT)
+        finally:
+            backup._unpersisted_runs.clear()
+
+    def test_a_failure_before_the_winning_run_commits_is_retired_by_that_run(self):
+        """The ordering half: WHEN the failure is written decides who meets it.
+
+        A failure recorded before the winning run commits is retired by that run's own
+        mutate, so it is gone whichever condition the clear carries -- the two
+        placements agree here, and this is the ordering that a reader assumes is the
+        only one. The divergent ordering is a failure recorded AFTER the winner commits,
+        which ``test_a_superseded_run_keeps_the_nightly_backoff`` builds with two real
+        writers: there the only run left to meet the row is one whose record was
+        refused.
+
+        Kept separate from the matrix above because the matrix varies WHO the run is
+        while holding the order fixed; this varies the order.
+        """
+        backup.set_nightly(ACCOUNT, True)
+        for _ in range(3):
+            _fail(ACCOUNT, backup.KIND_SNAPSHOT, "eio")
+        assert backup.nightly_failures(ACCOUNT)[backup.KIND_SNAPSHOT]["consecutive"] == 3
+        # The winner commits after the row exists, and clears it in its own mutate.
+        backup._record_run(ACCOUNT, backup.KIND_SNAPSHOT, "snapshots/i/winner.tar.gz", 7)
+        assert (
+            backup.nightly_failures(ACCOUNT) == {}
+        ), "the run that WON the slot did not retire a count written before it"
 
     def test_an_unchanged_skip_also_clears_the_count(self):
         # `uploaded=False` is a successful comparison against an archive that is

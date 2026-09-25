@@ -417,6 +417,279 @@ describe('final decoding has its own negotiated deadline', () => {
 })
 
 /**
+ * A cold model load gets its own budget, and the silent socket does not.
+ *
+ * Releasing the key before `ready` parks the retained audio on a timer. One timer
+ * for both waits has to be either short enough for a socket that says nothing or
+ * long enough for a first run, and it cannot be both: the local recogniser's
+ * weight fetch and GPU-pipeline compile are minutes of work, so a sixty-second
+ * timer expires mid-load, discards the utterance, and reports "stt connection
+ * lost" about a backend that is working normally. A `status` frame is what tells
+ * the two waits apart, so these cases assert the budget that frame selects — in
+ * both directions.
+ */
+describe('the wait for a model that is still being prepared', () => {
+  // The wire's own spellings, written out rather than imported: they are the
+  // backend's contract, and a test that reads them from the hook could not notice
+  // the hook renaming the stage it listens for.
+  const STAGE_PREPARING = 'preparing'
+  const STAGE_DOWNLOADING = 'downloading'
+
+  async function startPrepared (stage: string | null, prepareTimeoutMs?: unknown) {
+    vi.useFakeTimers()
+    const { useStreamingStt } = await import('../hooks/useStreamingStt')
+    const onDownload = vi.fn()
+    const onError = vi.fn()
+    const hook = renderHook(() => useStreamingStt({
+      onPartial: vi.fn(),
+      onFinal: vi.fn(),
+      onError,
+      onDownload,
+    }))
+    await act(async () => { hook.result.current.start() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    const ws = lastSocket()
+    expect(lastNode()).toBeTruthy()
+    if (stage !== null) {
+      const frame: Record<string, unknown> = { type: 'status', stage, downloaded_bytes: 0, total_bytes: 0 }
+      // Absent by default: the older backends, whose wait the local fallback
+      // covers. A test that wants the negotiated figure passes it explicitly.
+      if (prepareTimeoutMs !== undefined) frame.prepare_timeout_ms = prepareTimeoutMs
+      await act(async () => {
+        ws.onmessage?.({ data: JSON.stringify(frame) })
+      })
+    }
+    await act(async () => { lastNode().speak() })
+    await act(async () => { hook.result.current.stop() })
+    return { hook, ws, onDownload, onError }
+  }
+
+  it('shows the load on the same line the download uses', async () => {
+    const { onDownload } = await startPrepared(STAGE_PREPARING)
+    // No bytes to report, so the stage is what the label has to key off.
+    expect(onDownload).toHaveBeenLastCalledWith({ done: 0, total: 0, stage: 'preparing' })
+  })
+
+  it('keeps the released utterance for the whole load and still ships it', async () => {
+    const { ws, onDownload, onError } = await startPrepared(STAGE_PREPARING)
+
+    // The point a single sixty-second budget would end the session at, losing
+    // the words the user already said.
+    await act(async () => { await vi.advanceTimersByTimeAsync(60000) })
+    expect(ws.readyState).toBe(MockSocket.OPEN)
+    expect(ws.kinds()).toEqual([])
+    expect(onError).not.toHaveBeenCalled()
+
+    // Four minutes in, the model comes up: the retained audio goes out ahead of
+    // the stop frame exactly as it does on a fast start.
+    await act(async () => { await vi.advanceTimersByTimeAsync(180000) })
+    await act(async () => { ws.becomeReady() })
+    expect(ws.kinds()).toEqual(['audio', 'stop'])
+    expect(onError).not.toHaveBeenCalled()
+    // `ready` retires the line; a progress figure outliving its session reads as
+    // work still running.
+    expect(onDownload).toHaveBeenLastCalledWith(null)
+  })
+
+  it('bounds the load wait rather than holding the socket open forever', async () => {
+    const { hook, ws, onError } = await startPrepared(STAGE_PREPARING)
+    await act(async () => { await vi.advanceTimersByTimeAsync(299999) })
+    expect(ws.readyState).toBe(MockSocket.OPEN)
+    expect(onError).not.toHaveBeenCalled()
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+    expect(ws.readyState).toBe(MockSocket.CLOSED)
+    expect(hook.result.current.draining).toBe(false)
+    expect(onError).toHaveBeenCalledOnce()
+  })
+
+  it('gives the weight download the same allowance', async () => {
+    // The fetch is the slower half of the same wait, so a release during it must
+    // not be judged as a socket nobody has heard from.
+    const { ws, onDownload, onError } = await startPrepared(STAGE_DOWNLOADING)
+    expect(onDownload).toHaveBeenLastCalledWith({ done: 0, total: 0, stage: 'downloading' })
+    await act(async () => { await vi.advanceTimersByTimeAsync(60000) })
+    expect(ws.readyState).toBe(MockSocket.OPEN)
+    expect(onError).not.toHaveBeenCalled()
+  })
+
+  it('waits as long as the announcing backend says it needs', async () => {
+    // The backend owns this ceiling: it knows which model, which device and which
+    // decode is queued ahead. Ten minutes, well past the local fallback, so a
+    // hook still using its own figure closes the socket at five and fails here.
+    const { ws, onError } = await startPrepared(STAGE_PREPARING, 600000)
+    await act(async () => { await vi.advanceTimersByTimeAsync(599999) })
+    expect(ws.readyState).toBe(MockSocket.OPEN)
+    expect(onError).not.toHaveBeenCalled()
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+    expect(ws.readyState).toBe(MockSocket.CLOSED)
+    expect(onError).toHaveBeenCalledOnce()
+  })
+
+  it('keeps its own fallback when the announced figure is unusable', async () => {
+    // Zero would arm a timer that fires at once and discard the utterance the
+    // whole budget exists to keep, so an out-of-range figure is not adopted.
+    const { ws, onError } = await startPrepared(STAGE_PREPARING, 0)
+    await act(async () => { await vi.advanceTimersByTimeAsync(299999) })
+    expect(ws.readyState).toBe(MockSocket.OPEN)
+    expect(onError).not.toHaveBeenCalled()
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+    expect(ws.readyState).toBe(MockSocket.CLOSED)
+  })
+
+  it('ignores a figure that is not a number at all', async () => {
+    const { ws, onError } = await startPrepared(STAGE_PREPARING, '600000')
+    await act(async () => { await vi.advanceTimersByTimeAsync(299999) })
+    expect(ws.readyState).toBe(MockSocket.OPEN)
+    expect(onError).not.toHaveBeenCalled()
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+    expect(ws.readyState).toBe(MockSocket.CLOSED)
+  })
+
+  it('gives the wait another full budget on every frame that says work continues', async () => {
+    // The figure cannot be right for everyone: a 1.6 GB fetch on a slow link
+    // outlasts any ceiling, and expiring mid-fetch discards the recording this
+    // whole budget exists to keep. What the client CAN judge is silence, so a
+    // frame reporting progress buys the wait another budget from itself.
+    const { ws, onError } = await startPrepared(STAGE_DOWNLOADING)
+    await act(async () => { await vi.advanceTimersByTimeAsync(290000) })
+    expect(onError).not.toHaveBeenCalled()
+
+    await act(async () => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: 'status',
+          stage: STAGE_DOWNLOADING,
+          downloaded_bytes: 900_000_000,
+          total_bytes: 1_600_000_000,
+        }),
+      })
+    })
+
+    // Past the deadline the release alone would have set, and still waiting.
+    await act(async () => { await vi.advanceTimersByTimeAsync(290000) })
+    expect(ws.readyState).toBe(MockSocket.OPEN)
+    expect(onError).not.toHaveBeenCalled()
+
+    // A budget of real silence after that last frame does end it, so the socket
+    // is bounded rather than held open by the re-arm.
+    await act(async () => { await vi.advanceTimersByTimeAsync(10001) })
+    expect(ws.readyState).toBe(MockSocket.CLOSED)
+    expect(onError).toHaveBeenCalledOnce()
+  })
+
+  it('names the stage when the wait expires instead of blaming the connection', async () => {
+    const { onError: silentError } = await startPrepared(null)
+    await act(async () => { await vi.advanceTimersByTimeAsync(60000) })
+    const silentText = silentError.mock.calls[0][0]
+
+    const { onError: loadError, onDownload } = await startPrepared(STAGE_PREPARING)
+    await act(async () => { await vi.advanceTimersByTimeAsync(300000) })
+    const loadText = loadError.mock.calls[0][0]
+
+    // A socket that announced a load and then went quiet did not lose the
+    // connection, and reporting it as one sends the user to their network for a
+    // model that is still loading -- the mislabelling this whole change is about.
+    expect(loadText).not.toBe(silentText)
+    expect(loadText.length).toBeGreaterThan(0)
+    expect(silentText.length).toBeGreaterThan(0)
+    // The strip promises the released dictation is kept, and expiry is where that
+    // stops being true: the retained audio is discarded here. So the line has to
+    // be retired in the same breath, or the promise outlives the recording and
+    // the user waits on a transcript that is never coming.
+    expect(onDownload).toHaveBeenLastCalledWith(null)
+  })
+
+  it('does not lend one session\'s announced figure to the next', async () => {
+    // Same hook both times, so the refs survive between them. A ten-minute
+    // figure left in place would hand the second session a wait its own backend
+    // never asked for.
+    vi.useFakeTimers()
+    const { useStreamingStt } = await import('../hooks/useStreamingStt')
+    const onError = vi.fn()
+    const hook = renderHook(() => useStreamingStt({
+      onPartial: vi.fn(),
+      onFinal: vi.fn(),
+      onError,
+    }))
+
+    await act(async () => { hook.result.current.start() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    const first = lastSocket()
+    await act(async () => {
+      first.onmessage?.({
+        data: JSON.stringify({ type: 'status', stage: STAGE_PREPARING, downloaded_bytes: 0, total_bytes: 0, prepare_timeout_ms: 600000 }),
+      })
+    })
+    await act(async () => { lastNode().speak(); hook.result.current.stop() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(600000) })
+    expect(first.readyState).toBe(MockSocket.CLOSED)
+    expect(onError).toHaveBeenCalledOnce()
+
+    // A second recording that announces preparation but states no figure: the
+    // local fallback applies, not the previous session's ten minutes.
+    await act(async () => { hook.result.current.start() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    const second = lastSocket()
+    expect(second).not.toBe(first)
+    await act(async () => {
+      second.onmessage?.({
+        data: JSON.stringify({ type: 'status', stage: STAGE_PREPARING, downloaded_bytes: 0, total_bytes: 0 }),
+      })
+    })
+    await act(async () => { lastNode().speak(); hook.result.current.stop() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(300000) })
+    expect(second.readyState).toBe(MockSocket.CLOSED)
+    expect(onError).toHaveBeenCalledTimes(2)
+  })
+
+  it('still ends a silent socket at sixty seconds', async () => {
+    // The control. Nothing announced preparation, so nothing justifies the longer
+    // wait: a backend that accepts the socket and says nothing may be dead.
+    const { ws, onError } = await startPrepared(null)
+    await act(async () => { await vi.advanceTimersByTimeAsync(60000) })
+    expect(ws.readyState).toBe(MockSocket.CLOSED)
+    expect(onError).toHaveBeenCalledOnce()
+  })
+
+  it('does not carry one session\'s announcement into the next', async () => {
+    // The flag survives a teardown unless cleanup clears it, and a stale one would
+    // hand a genuinely dead socket the five-minute budget. Same hook both times --
+    // a second hook gets fresh refs and could not tell the two cases apart.
+    vi.useFakeTimers()
+    const { useStreamingStt } = await import('../hooks/useStreamingStt')
+    const onError = vi.fn()
+    const hook = renderHook(() => useStreamingStt({
+      onPartial: vi.fn(),
+      onFinal: vi.fn(),
+      onError,
+    }))
+
+    await act(async () => { hook.result.current.start() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    const first = lastSocket()
+    await act(async () => {
+      first.onmessage?.({
+        data: JSON.stringify({ type: 'status', stage: STAGE_PREPARING, downloaded_bytes: 0, total_bytes: 0 }),
+      })
+    })
+    await act(async () => { lastNode().speak(); hook.result.current.stop() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(300000) })
+    expect(first.readyState).toBe(MockSocket.CLOSED)
+    expect(onError).toHaveBeenCalledOnce()
+
+    // A second recording on the same hook, with no announcement of its own.
+    await act(async () => { hook.result.current.start() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    const second = lastSocket()
+    expect(second).not.toBe(first)
+    await act(async () => { lastNode().speak(); hook.result.current.stop() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(60000) })
+    expect(second.readyState).toBe(MockSocket.CLOSED)
+    expect(onError).toHaveBeenCalledTimes(2)
+  })
+})
+
+/**
  * A failed decode after the user presses stop must SAY so.
  *
  * The backend answers a failed whole-buffer decode with an `error` frame carrying

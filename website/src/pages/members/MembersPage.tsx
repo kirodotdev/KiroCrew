@@ -8,7 +8,9 @@
  * The page realizes the B+C merged design: a member list on the left, the
  * selected member's pinned DM thread in the center (the real chat stack,
  * hosted the way split-view panes host it), and on the right the SAME tabbed
- * side panel the chat page docks — permanent, no close control — whose first
+ * side panel the chat page docks — shown by default, hidden and shown again by
+ * the header opener, the panel's own close control or the dashboard's
+ * side-panel chord, with the choice remembered — whose first
  * three tabs are the crewmate's own: Notes (what it learned — its standing
  * notes, read-only here), Work log (what it did) and Dashboard (how things
  * stand — the page it publishes itself), and whose + menu offers the chat
@@ -48,9 +50,11 @@ import { CrewMemberMark } from '../../components/CrewMemberMark'
 import DeployMyCrewDialog from './DeployMyCrew'
 import { useTranslation } from 'react-i18next'
 import { api, type MemberActivityEntry, type MemberRosterRow } from '../../api/client'
+import { crewDisplayName } from '../../components/AgentSelector'
 import {
   MEMBERS_ROSTER_QUERY_KEY,
   memberActivityQueryKey,
+  memberProjectionsQuery,
   memberThreadQueryKey,
   membersRosterQuery,
   type MemberThreadOutcome,
@@ -245,6 +249,27 @@ export function panelSitsBeside({ winW, rosterW, isMobile }: { winW: number; ros
   if (isMobile) return false
   return winW - rosterW - PANEL_GAPS_W >= SIDE_PANEL_RESERVED_W + SIDE_PANEL_MIN_W
 }
+/** Whether the panel is on screen, and whether the header shows its opener —
+ *  the two answers the placement and the two visibility flags decide together.
+ *
+ *  Each placement reads its OWN flag: the docked column reads the persisted
+ *  `dockedOpen`, the overlay reads the per-visit `overlayOpen`. The opener
+ *  disappears while the docked column is open, because the open panel's own
+ *  strip carries the close control there — the chat page's split of the gesture
+ *  across the two halves. As an overlay the opener always stays, since a
+ *  dismissed drawer has no strip left to reopen it from.
+ *
+ *  Pure, so both placements and all four flag combinations are tested directly. */
+export function panelChrome({ beside, dockedOpen, overlayOpen }: {
+  beside: boolean
+  dockedOpen: boolean
+  overlayOpen: boolean
+}): { panelVisible: boolean; showOpener: boolean } {
+  return {
+    panelVisible: beside ? dockedOpen : overlayOpen,
+    showOpener: !beside || !dockedOpen,
+  }
+}
 /** Punctuation, not prose: joins an activity label to its project name, and a
  *  driving row's title to its status word in the hover title. */
 const PROJECT_SEPARATOR = ' \u00b7 '
@@ -260,6 +285,11 @@ const STARRED_ONLY_KEY = 'mc-members-starred-only'
 const SOURCE_FILTER_KEY = 'mc-members-source'
 const STATUS_FILTER_KEY = 'mc-members-status'
 const SORT_KEY = 'mc-members-sort'
+/** Whether the DOCKED side panel is shown. Same `mc-` family and the same one
+ *  key per origin as the filters above: the panel is the page's furniture, not
+ *  a per-member state, so the choice follows the user across members and
+ *  reloads exactly as the chat page's own panel flag does. */
+const PANEL_OPEN_KEY = 'mc-members-panel-open'
 /** Static key per menu row — a map, not a template, so `check-i18n-keys` can
  *  resolve every reference (assembled keys are a counted blind spot there). */
 const SOURCE_LABEL_KEY: Record<Exclude<MemberSourceFilter, 'all'>, string> = {
@@ -515,7 +545,7 @@ function MemberRow({
             </AnimatePresence>
           </span>
           <span className="min-w-0 flex-1">
-            <span className={`block ${ROW_TITLE_CLS} font-semibold text-text truncate`}>{view.name}</span>
+            <span className={`block ${ROW_TITLE_CLS} font-semibold text-text truncate`}>{crewDisplayName(view)}</span>
             {/* Last-message preview, like a session row — presence
                 already rides the avatar dot, so a textual Idle/Working
                 label says nothing the dot does not. A "Stopped" chip
@@ -749,11 +779,11 @@ export default function MembersPage() {
   // useColumnResize hook — the same primitive every resizable column uses.
   const roster = useColumnResize(ROSTER_WIDTH_KEY, loadRosterWidth, ROSTER_MIN, ROSTER_MAX)
   // Where the side panel lives. Wide enough (see panelSitsBeside) it is a
-  // permanent column beside the thread with no close control — the chat page's
-  // panel, docked. Narrower, it is an overlay the header button opens and the
-  // panel's own close control dismisses, because a column that cannot be
-  // dismissed would otherwise fold the thread to nothing. The window width is
-  // tracked live (not sampled at mount) so crossing the boundary re-docks.
+  // column beside the thread, hidden and shown by the header toggle and by the
+  // panel's own close control — the chat page's panel, docked. Narrower, it is
+  // an overlay the same toggle opens, because a column that narrow would fold
+  // the thread to nothing. The window width is tracked live (not sampled at
+  // mount) so crossing the boundary re-docks.
   const isMobile = useIsMobile()
   const [winW, setWinW] = useState(() => (typeof window !== 'undefined' ? window.innerWidth : 0))
   useEffect(() => {
@@ -777,7 +807,38 @@ export default function MembersPage() {
   // (a widening window, a narrower roster), so an open overlay does not lie in
   // wait and pop back over the thread the moment the window narrows again.
   useEffect(() => { if (beside) setOverlayOpen(false) }, [beside])
-  const panelVisible = beside || overlayOpen
+  // Docked visibility, persisted and cross-window synced, shown by default so
+  // the page opens the way it always has. Kept SEPARATE from `overlayOpen`
+  // because the two placements answer different questions — whether the
+  // permanent column is wanted at all, and whether the drawer is up right now
+  // — so dismissing the drawer must not also hide the column the next time the
+  // window widens.
+  const [dockedOpen, setDockedOpen] = usePersistedBool(PANEL_OPEN_KEY, true)
+  const { panelVisible, showOpener } = panelChrome({ beside, dockedOpen, overlayOpen })
+  const closeDocked = useCallback(() => setDockedOpen(false), [setDockedOpen])
+  // One gesture drives whichever placement is live, so the header button and
+  // the dashboard's side-panel chord share it. The chord reaches this page the
+  // way it reaches the chat page: App dispatches `toggle-activity-panel` on the
+  // window and the page that owns a panel listens, which keeps one binding
+  // across both surfaces instead of each inventing its own.
+  //
+  // Both the panel and its opener live behind an open member, so the gesture
+  // is gated on one too: the roster with no member open draws no panel, and a
+  // toggle there would move the persisted choice with nothing on screen
+  // changing, so the next member opened would come up hidden for no reason the
+  // user can see. `openMemberRef` is read rather than closed over so the
+  // listener binds once instead of re-binding per selection.
+  const openMemberRef = useRef(false)
+  const togglePanel = useCallback(() => {
+    if (!openMemberRef.current) return
+    if (beside) setDockedOpen((v) => !v)
+    else setOverlayOpen((v) => !v)
+  }, [beside, setDockedOpen])
+  useEffect(() => {
+    const onToggle = () => togglePanel()
+    window.addEventListener('toggle-activity-panel', onToggle)
+    return () => window.removeEventListener('toggle-activity-panel', onToggle)
+  }, [togglePanel])
   // Live presence rides the already-subscribed WS `slots` frames — the roster
   // endpoint only fills the cold-start gap (its `running` is a snapshot).
   const liveSlots = useAppSelector((s) => s.dashboard.slots)
@@ -817,6 +878,9 @@ export default function MembersPage() {
     () => members.find((m) => m.name === activeName),
     [members, activeName],
   )
+  // What the panel gesture reads: the panel and its opener are both drawn only
+  // while a member is open, so the toggle is inert otherwise.
+  useEffect(() => { openMemberRef.current = !!active }, [active])
   // The active member's projected roster view over its server row: the drawer
   // Configuration and header read config fields (kiro_agent/model/workspace/
   // memory_store) and last_active_ts from the projection when present, the row
@@ -834,6 +898,7 @@ export default function MembersPage() {
       source: activeRoster.source ?? active.source,
       starred: activeRoster.starred ?? active.starred,
       avatar: activeRoster.avatar ?? active.avatar,
+      display_name: activeRoster.display_name ?? active.display_name,
       slot_key: activeRoster.slot_key ?? active.slot_key,
       // Transcript-first, for the reason the row above states: the projection's
       // message copy is a second copy and a refused append leaves it behind.
@@ -845,9 +910,10 @@ export default function MembersPage() {
   // the two fields so the pane's renderer memo does not rebuild per render.
   const crewmateName = activeView?.name
   const crewmateAvatar = activeView?.avatar
+  const crewmateLabel = activeView ? crewDisplayName(activeView) : undefined
   const crewmateIdentity = useMemo<CrewmateIdentity | undefined>(
-    () => (crewmateName ? { name: crewmateName, avatar: crewmateAvatar } : undefined),
-    [crewmateName, crewmateAvatar],
+    () => (crewmateName ? { name: crewmateName, avatar: crewmateAvatar, label: crewmateLabel } : undefined),
+    [crewmateName, crewmateAvatar, crewmateLabel],
   )
   // Most-recently-active first (like any IM member list); never-talked
   // members fall to the bottom alphabetically. Sorted from the cached roster,
@@ -1220,24 +1286,28 @@ export default function MembersPage() {
   )
   // The selection toolbar's "Ask about this" on the thread: the Side Chat for
   // this member lives in the panel's Side tab (the chat page's home for it),
-  // so opening it means focusing that tab — and, in overlay mode, revealing
-  // the panel, since a hidden tab is not "on screen". Only the endpoint-
-  // confirmed slot may host it (the pane is keyed on that same slot, so the
-  // two agree); `false` tells the selection seam the Ask did NOT happen, so
-  // it never seeds a quote into a Side Chat that never opened.
+  // so opening it means focusing that tab — and revealing the panel if it is
+  // hidden, in either placement, since a tab behind a hidden panel is not "on
+  // screen". Only the endpoint-confirmed slot may host it (the pane is keyed on
+  // that same slot, so the two agree); `false` tells the selection seam the Ask
+  // did NOT happen, so it never seeds a quote into a Side Chat that never
+  // opened.
   const openMemberSideChat = useCallback((slot: string): boolean => {
     if (!confirmedSlot || slot !== confirmedSlot) return false
     tabsCtl.openView('side')
-    if (!beside) setOverlayOpen(true)
+    if (beside) setDockedOpen(true)
+    else setOverlayOpen(true)
     return true
-  }, [confirmedSlot, tabsCtl, beside])
+  }, [confirmedSlot, tabsCtl, beside, setDockedOpen])
   // The quiet crewmate chat's "where the work went" line focuses the Work log
-  // tab — the same select the strip's own chip performs — and, in overlay
-  // mode, reveals the panel, for the same reason as the Side Chat above.
+  // tab — the same select the strip's own chip performs — and reveals the panel
+  // if it is hidden, in either placement, for the same reason as the Side Chat
+  // above.
   const openCrewWorkLog = useCallback(() => {
     tabsCtl.setActive(CREW_WORK_LOG_TAB_ID)
-    if (!beside) setOverlayOpen(true)
-  }, [tabsCtl, beside])
+    if (beside) setDockedOpen(true)
+    else setOverlayOpen(true)
+  }, [tabsCtl, beside, setDockedOpen])
   // Reply threads (screen 07). The footer data per message is one small read
   // beside the transcript; the open thread takes over the side panel while it
   // is on screen, and closing it hands the panel's tabs back. Keyed on the
@@ -1266,8 +1336,9 @@ export default function MembersPage() {
   const threadSummaries = threadsQuery.data?.threads
   const openReplyThread = useCallback((mid: string) => {
     setOpenThreadMid(mid)
-    if (!beside) setOverlayOpen(true)
-  }, [beside])
+    if (beside) setDockedOpen(true)
+    else setOverlayOpen(true)
+  }, [beside, setDockedOpen])
   const closeReplyThread = useCallback(() => setOpenThreadMid(null), [])
   const threadHooks = useMemo<ThreadHooks | undefined>(
     () => (threadsOn && confirmedSlot
@@ -1300,10 +1371,10 @@ export default function MembersPage() {
   const panelHidden = isSidePanelHidden(mountInput)
   // File / artifact / save for the panel's Files, Artifacts and document tabs —
   // the chat page's own implementation, not a copy. A failed read is reported
-  // above the thread; an open while the panel is an OVERLAY reveals it, since
-  // the tab it focused is otherwise hidden behind a closed panel. Docked, the
-  // open needs nothing — and must not arm `overlayOpen`, or a later narrowing
-  // of the window would find the overlay already open over the thread.
+  // above the thread; an open reveals whichever placement is live, since the
+  // tab it focused is otherwise behind a hidden panel. Each placement arms its
+  // OWN flag: arming `overlayOpen` from the docked column would leave the
+  // overlay already open over the thread the next time the window narrows.
   const activeSlotRef = useRef<string | null>(confirmedSlot || null)
   activeSlotRef.current = confirmedSlot || null
   const besideRef = useRef(beside)
@@ -1317,7 +1388,10 @@ export default function MembersPage() {
     setActionError(message)
     if (!besideRef.current) setOverlayOpen(false)
   }, [])
-  const revealPanelAfterOpen = useCallback(() => { if (!besideRef.current) setOverlayOpen(true) }, [])
+  const revealPanelAfterOpen = useCallback(() => {
+    if (besideRef.current) setDockedOpen(true)
+    else setOverlayOpen(true)
+  }, [setDockedOpen])
   const { openFile, openArtifact, saveFile } = usePanelDocumentActions({
     tabsCtl,
     slotRef: activeSlotRef,
@@ -1347,6 +1421,25 @@ export default function MembersPage() {
   const drivingExpanded = drivingExpandedFor === activeMemberKey
   const visibleDriving = drivingExpanded ? drivingSessions : drivingSessions.slice(0, DRIVING_VISIBLE)
 
+  const activeSlug = active?.slug ?? ''
+  const activeMemberName = active?.name ?? ''
+  // The open member's folded views, seeded into the projection store this page
+  // already reads through `useMemberProjection`. The roster list carries the
+  // `roster` view alone because that is the only one a list ROW paints, so the
+  // blocks below — the activity timeline and the patrol state — have no baseline
+  // until this read lands or a live frame arrives. Without it a member who has
+  // not moved since the gateway started opens to an empty drawer.
+  //
+  // Enabled for ONE member at a time, which is the whole shape of the change: the
+  // views are read for whoever is open rather than for all of them on every list
+  // request. Withheld for a colliding slug on the same ground `projectionSlug`
+  // withholds there — a slug two rows share cannot say which member the views
+  // describe, and the route answers 409 rather than guessing.
+  const projectionsEnabled = !!projectionSlug(activeSlug) && !!activeMemberName
+  const projectionsQuery = useQuery({
+    ...memberProjectionsQuery(activeSlug, activeMemberName),
+    enabled: projectionsEnabled,
+  })
   // Recent-activity pointers for the Work log tab, read when it is on
   // screen for a member and cached per exact member NAME, not slug — slugs are
   // lossy, and the whole point of the backend's member filter is that two
@@ -1357,8 +1450,6 @@ export default function MembersPage() {
   // render the affirmative "no activity"; a refetch error after a good read
   // keeps the last entries. The finite staleTime is the roster's: a return to
   // the summary shows the cached pointers and refreshes them behind.
-  const activeSlug = active?.slug ?? ''
-  const activeMemberName = active?.name ?? ''
   const activityQuery = useQuery({
     queryKey: memberActivityQueryKey(activeSlug, activeMemberName),
     queryFn: () => api.memberActivity(activeSlug, activeMemberName),
@@ -1649,6 +1740,24 @@ export default function MembersPage() {
   // stop, else the loop record's own field.
   const patrolStoppedReason =
     (activeWake?.patrol === 'stopped' ? activeWake.stopped_reason : undefined) ?? activePatrol?.stopped_reason
+  // The verdict reads TWO sources, so the readout is ready only when both have
+  // answered: the live loop registry for presence, and the durable `wake`
+  // projection for a stop that outlives the registry. The projection arrives with
+  // the open member's own read, and a verdict formed before it lands would show
+  // `none` — "nothing scheduled" — for a member the log records as stopped, which
+  // is the exact reading the durable record exists to prevent. The same three
+  // states the activity read keeps, for the same reason: no answer yet is pending,
+  // failed with no answer is an error, and only an answer is ready. Not-fetching
+  // cannot stand in for answered — a failed read is also not in flight, and
+  // treating it as ready renders the affirmative "nothing scheduled" off a
+  // baseline that never arrived. A withheld read (colliding slug, no member) is
+  // never pending, so it waits for nothing; a refetch error after a good answer
+  // keeps that answer.
+  const projectionsPending =
+    projectionsEnabled && projectionsQuery.data === undefined && !projectionsQuery.isError
+  const projectionsFailed =
+    projectionsEnabled && projectionsQuery.data === undefined && projectionsQuery.isError
+  const patrolReadoutReady = patrol.loaded && !projectionsPending
   // Clock for the "next wake" countdown, ticking only while the summary shows
   // an active loop — the same deadline-preserving reading the composer's goal
   // chip renders (see nextCycleText), on a coarser tick.
@@ -2244,7 +2353,12 @@ export default function MembersPage() {
                   writer (issue #9103). `group/title` is scoped to this row so
                   the drawer toggle to the right does not reveal it. */}
               <div className="group/title min-w-0 flex-1 flex items-center gap-1.5" data-testid="member-title-row">
-                <div className="text-[13.5px] font-semibold truncate">{active.name}</div>
+                <div className="text-[13.5px] font-semibold truncate">{crewDisplayName(active)}</div>
+                {/* The ID stays visible when a label covers it — routes, crons
+                    and spawn params address the ID, never the label. */}
+                {crewDisplayName(active) !== active.name && (
+                  <div className="text-[11px] font-mono text-muted truncate max-w-[11rem]" title={t('components.agentSelector.agent_id_tooltip', { name: active.name })}>{active.name}</div>
+                )}
                 <button
                   type="button"
                   onClick={() => navigate(crewEditPath(active.name))}
@@ -2256,23 +2370,24 @@ export default function MembersPage() {
                   <Pencil size={13} className="lucide-inline" />
                 </button>
               </div>
-              {/* The header carries NO panel control while the panel sits
-                  beside the thread: that panel is permanent, so a toggle would
-                  promise a close the strip does not offer. Only when the window
-                  is too narrow for a column (see panelSitsBeside) does the
-                  panel become an overlay, and then this is its opener — same
-                  icon and hit-target as the chat page's side-panel toggle, so
-                  the two surfaces teach one gesture. The pin chip was removed:
-                  every member thread is pinned by construction (a server
-                  invariant, not a per-thread state), so announcing it taught
-                  the user a term for a thing that can never be otherwise.
-                  The member's edit entry is not a peer of this toggle: it is
-                  the pencil inside the title row, revealed on hover. */}
-              {!beside && (
+              {/* The panel's opener. Same icon and hit-target as the chat
+                  page's side-panel toggle, so the two surfaces teach one
+                  gesture, and the dashboard's side-panel chord fires it too.
+                  Docked, it appears only while the panel is hidden — the open
+                  panel's own strip carries the close control, which is exactly
+                  how the chat page splits the two halves of the gesture. As an
+                  overlay it stays put and reads pressed while the drawer is up.
+                  The pin chip was removed: every member thread is pinned by
+                  construction (a server invariant, not a per-thread state), so
+                  announcing it taught the user a term for a thing that can
+                  never be otherwise. The member's edit entry is not a peer of
+                  this toggle: it is the pencil inside the title row, revealed
+                  on hover. */}
+              {showOpener && (
                 <button
-                  onClick={() => setOverlayOpen((v) => !v)}
+                  onClick={togglePanel}
                   className="flex items-center justify-center w-7 h-7 rounded-md transition-colors bg-transparent border-none shrink-0 text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
-                  aria-pressed={overlayOpen}
+                  aria-pressed={panelVisible}
                   aria-controls="member-side-panel"
                   aria-label={t('pages.membersPage.details')}
                   title={t('pages.membersPage.details')}
@@ -2456,9 +2571,10 @@ export default function MembersPage() {
           panel's own (Files / Artifacts / Terminal / Browser / Side chat …),
           all against the member's DM slot, and the strip is bucketed per
           member so it follows the roster selection. Wide windows dock it as a
-          column with NO close control (it is part of the page, like the roster);
-          narrow ones make it an overlay the header button opens, with the
-          panel's own close control, on the chat page's dock motion. */}
+          column the strip's own close control hides, with the header opener
+          taking the gesture back while it is hidden; narrow ones make it an
+          overlay the header button opens, with the same close control, on the
+          chat page's dock motion. */}
       {active && (() => {
           const activeLiveSlot = liveSlots.find((slot) => slot.key === slotKeyOf(active))
           const delegatedOnly = activeLiveSlot?.subagents_running && !activeLiveSlot.running
@@ -2469,7 +2585,7 @@ export default function MembersPage() {
           const identityRow = (
             <div className="flex items-center gap-2 mb-3 min-w-0" data-testid="member-identity-row">
               <CrewAvatar seed={active.name} avatar={active.avatar} size={22} />
-              <span className="text-[13px] font-semibold truncate">{active.name}</span>
+              <span className="text-[13px] font-semibold truncate">{crewDisplayName(activeView ?? active)}</span>
               <span className="text-[11px] truncate ml-auto shrink-0" data-testid="member-summary-status">
                 {isRunning(active) ? (
                   <span className="text-ok">{t(delegatedOnly
@@ -2597,12 +2713,12 @@ export default function MembersPage() {
             />
             <span className="flex-1">{t('pages.membersPage.patrol_title')}</span>
           </div>
-          {!patrol.loaded ? (
+          {!patrolReadoutReady ? (
             <div className="mb-4 space-y-1.5" data-testid="member-patrol-loading" aria-hidden>
               <div className="h-3 rounded bg-bg-hover animate-pulse" />
               <div className="h-3 w-3/4 rounded bg-bg-hover animate-pulse" />
             </div>
-          ) : patrol.failed ? (
+          ) : patrol.failed || projectionsFailed ? (
             /* The shared notice, not a hand-rolled alert: it keeps the
                structured error context and the agent hand-off. askAgent is
                safe here — a read failure on a drawer that holds no draft. */
@@ -2987,7 +3103,7 @@ export default function MembersPage() {
             onArtifactOpen: openArtifact,
             onFileSave: saveFile,
             leadingTabs,
-            slotTitle: active.name,
+            slotTitle: crewDisplayName(activeView ?? active),
             canDockBottom: false,
           }
           // ONE SidePanel instance for both placements. Docked and overlay differ
@@ -3033,9 +3149,9 @@ export default function MembersPage() {
                   transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
                   className={beside
                     ? 'h-full overflow-visible flex justify-end shrink-0'
-                    /* The overlay MUST be dismissable, so it is the one placement
-                       that hands the panel an onClose — and the scrim is a second
-                       dismiss, the drawer convention. On a phone the panel is
+                    /* Both placements are dismissable, and the overlay carries a
+                       second dismiss on top of the strip's close: the scrim,
+                       the drawer convention. On a phone the panel is
                        handed the window width (`fillWidth`) so it fills the
                        scrim; on a tablet-width window the panel keeps its own
                        (resizable, persisted) width against the dimmed chat. */
@@ -3072,6 +3188,7 @@ export default function MembersPage() {
                             slot={confirmedSlot}
                             mid={openThreadMid}
                             crewmateName={activeName}
+                            crewmateLabel={crewmateLabel}
                             onClose={closeReplyThread}
                           />
                         </motion.div>
@@ -3080,14 +3197,18 @@ export default function MembersPage() {
                     <SidePanel
                       {...panelProps}
                       panelHidden={panelHidden}
-                      /* Docked: permanent — no onClose, so the strip renders no
-                         close control and Escape inside a view does nothing.
-                         `extraReserveW` keeps the live roster width plus the
-                         page's gaps clear on top of the shell reserve, so a drag
-                         can never fold the thread to nothing (the contract the
-                         old drawer's reserveWidth carried). Overlay: the panel
-                         covers the thread, so nothing to reserve. */
-                      onClose={beside ? undefined : closeOverlay}
+                      /* Both placements are dismissable, so both hand the panel
+                         an onClose: the strip renders its close control and
+                         Escape inside a view answers. Docked it hides the
+                         column and the thread takes the full width; as an
+                         overlay the scrim is a second dismiss, the drawer
+                         convention. `extraReserveW` keeps the live roster width
+                         plus the page's gaps clear on top of the shell reserve,
+                         so a drag can never fold the thread to nothing (the
+                         contract the old drawer's reserveWidth carried).
+                         Overlay: the panel covers the thread, so nothing to
+                         reserve. */
+                      onClose={beside ? closeDocked : closeOverlay}
                       extraReserveW={beside ? roster.width + PANEL_GAPS_W : 0}
                       /* Phone only (see panelFillWidth): the overlay fills the
                          window. Off the phone this is undefined and the panel

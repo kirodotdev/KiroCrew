@@ -21,6 +21,9 @@ import { fmtMessageTime, fmtMessageTimeFull } from './messageTime'
 export interface CrewmateIdentity {
   name: string
   avatar?: unknown
+  /** Presentation label shown in place of `name` when set. `name` stays the
+   *  immutable identity — routes, API calls and avatar seeds key on it. */
+  label?: string
 }
 
 /** Avatar + gap: the text column every bubble aligns to. */
@@ -41,7 +44,7 @@ export default function CrewmateMessage({
       {opens && (
         <div className="flex items-center gap-2.5 mb-1.5 min-w-0" data-testid="crewmate-author">
           <CrewAvatar seed={crewmate.name} avatar={crewmate.avatar} size={CREWMATE_AVATAR_PX} />
-          <span className="text-[13px] leading-5 font-semibold text-text truncate">{crewmate.name}</span>
+          <span className="text-[13px] leading-5 font-semibold text-text truncate">{crewmate.label || crewmate.name}</span>
           {time && (
             <span className="text-[11px] leading-4 text-muted tabular-nums shrink-0" title={fmtMessageTimeFull(ts)}>{time}</span>
           )}

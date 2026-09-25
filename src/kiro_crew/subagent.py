@@ -167,6 +167,13 @@ from kiro_crew.subagent_persistence import (
     write_result_chunk,
     write_tombstone,
 )
+from kiro_crew.subagent_wait_reasons import (  # noqa: F401 - re-exported: the gate and handlers read them from this namespace
+    DEFERRED_QUEUED_REASONS,
+    QUEUED_REASON_ADAPTIVE_CAP_ZERO,
+    QUEUED_REASON_CONCURRENCY_LIMIT,
+    QUEUED_REASON_LOW_MEMORY,
+    QUEUED_REASON_POSTURE_CRITICAL,
+)
 from kiro_crew.validation import _AGENT_NAME_RE
 
 # Standalone ClaudeCodeProvider removed (KiroACP-only). Name kept as None so the
@@ -219,6 +226,15 @@ UNADVERTISED_AGENTS = frozenset(
 #: as the reserved pair above, because a respelled literal is exactly the drift a
 #: code exists to remove.
 AGENT_NOT_FOUND_CODE = "agent_not_found"
+
+# Why an accepted spawn is WAITING rather than running -- the label the admission
+# gate puts on the wait it decided on, carried on ``SubagentInfo.queued_reason``,
+# on the ``subagent_queued`` lifecycle event (``reason``) and, for the deferred
+# kinds, on ``POST /api/spawn``'s ``status: "queued"`` answer. Defined in the leaf
+# module :mod:`kiro_crew.subagent_wait_reasons` so a surface that must not import
+# this module at runtime (the channel command layer) can still read them; re-exported
+# here (see the import block above) because the gate and the handlers read them
+# from this namespace.
 
 
 def visible_agent_names(
@@ -1587,6 +1603,13 @@ class SubagentInfo:
     # settlement can observe it, and keeps this discriminator True so running
     # cancellation and live-resource monitoring do not treat it as executing.
     queued: bool = False
+    # Why a ``queued`` record waits: one of the ``QUEUED_REASON_*`` kinds, or ""
+    # for a wait the gate did not label (a claim retained across a store outage).
+    # ``queued_reason_detail`` is the gate's own sentence for it -- the same text
+    # the task store's ``deferred`` event records -- so ``POST /api/spawn`` can
+    # relay it verbatim. Both stay "" on a running or terminal record.
+    queued_reason: str = ""
+    queued_reason_detail: str = ""
     result: str = ""
     result_path: str = ""
     result_truncated: bool = False  # completion-event copy dropped content → summary+path
@@ -2662,6 +2685,14 @@ class SubagentManager:
         # dropping them made a queued headless/auto spawn hit the deny-by-default gate and
         # a queued silent spawn emit output. See _drain_queue.
         self._queue: list[dict[str, Any]] = []
+        # parent_session_key -> the last wait the gate labelled for that parent
+        # (``{"reason": <QUEUED_REASON_*>, "available_gb"?, "required_gb"?}``).
+        # ``_emit_queue_depth`` attaches it to every ``subagent_queued`` it sends
+        # while the parent still has rows waiting, and forgets it at depth 0: the
+        # drain and the cancel paths re-emit the depth without a verdict of their
+        # own, and without this memory each re-emit would flip a memory-deferred
+        # wave back to the default (concurrency) text.
+        self._queue_wait: dict[str, dict[str, Any]] = {}
         # Batch ids whose spawn_batch_started event has already fired.
         self._seen_batches: set[str] = set()
         # Submission accounting per wave: batch_id -> (submitted, expected).
@@ -4488,8 +4519,14 @@ class SubagentManager:
     async def has_pending_work_for_async(self, parent_session_key: str) -> bool:
         return await self._run_events.has_pending_work_for_async_impl(parent_session_key)
 
-    def _emit_queue_depth(self, parent_session_key: str, batch_id: str = "") -> None:
-        return self._run_events._emit_queue_depth_impl(parent_session_key, batch_id)
+    def _emit_queue_depth(
+        self,
+        parent_session_key: str,
+        batch_id: str = "",
+        *,
+        wait: dict[str, Any] | None = None,
+    ) -> None:
+        return self._run_events._emit_queue_depth_impl(parent_session_key, batch_id, wait=wait)
 
     @staticmethod
     def _write_tombstone(info: SubagentInfo, cause: str) -> None:

@@ -581,7 +581,9 @@ def session_mcp_disabled_servers(spec: Any, settings: Any) -> frozenset[str]:
         if not isinstance(raw, dict):
             continue
         for name, entry in raw.items():
-            if isinstance(entry, dict) and entry.get("disabled"):
+            # The shared launch predicate (fail-closed on a non-boolean), the same
+            # read the projections and the gateway rewriter make.
+            if mcp_entry_is_muted(entry):
                 names.add(str(name))
     return frozenset(names)
 

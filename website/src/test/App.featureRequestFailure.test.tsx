@@ -159,7 +159,10 @@ describe('Request a Feature — failed send is reported (#4198)', () => {
     expect(chat.messages.some(m => m.role === 'error')).toBe(false)
     expect(chat.slotRunning).toBe(true)
     // The send rides the transport: the wire is handed the deadline signal
-    // (message, slot, colorTheme, signal, meta, steer).
-    expect(sendChatMock).toHaveBeenCalledWith(expect.any(String), 'fr-slot', expect.anything(), expect.any(AbortSignal), undefined, undefined)
+    // (message, slot, colorTheme, signal, meta, steer). `meta` carries the
+    // send's `sendId` -- the same correlation id a composer send carries -- and
+    // the flow's stamp that marks this row as the feature request (#13342), and
+    // nothing else.
+    expect(sendChatMock).toHaveBeenCalledWith(expect.any(String), 'fr-slot', expect.anything(), expect.any(AbortSignal), { sendId: expect.stringMatching(/^s-/), featureRequest: true }, undefined)
   })
 })

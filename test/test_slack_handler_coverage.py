@@ -694,6 +694,38 @@ class TestKeywordCommands:
         saver.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_spawn_keyword_says_queued_for_a_deferred_row(
+        self, slack, sessions, owner, monkeypatch
+    ):
+        """The gate parked the row (memory floor): the channel reply relays the
+        gate's reason instead of announcing a start that did not happen."""
+        monkeypatch.setattr(h, "save_conversation_turn_off_loop", AsyncMock())
+        mgr = MagicMock(max_concurrent=4)
+        mgr.spawn.return_value = MagicMock(
+            id="a1",
+            queued=True,
+            queued_reason="low_memory",
+            queued_reason_detail="low memory: 3.2 GB available, need 4 GB",
+        )
+        handled = await h.maybe_handle_keyword_command(
+            "spawn audit the docs",
+            slack,
+            sessions,
+            "C1",
+            "t1",
+            "msg1",
+            "t1",
+            "U1",
+            MagicMock(),
+            subagent_manager=mgr,
+        )
+        assert handled is True
+        text = _texts(slack)
+        assert "Queued subagent" in text
+        assert "low memory: 3.2 GB available, need 4 GB" in text
+        assert "Spawned subagent" not in text
+
+    @pytest.mark.asyncio
     async def test_spawn_keyword_skips_log_when_incognito(
         self, slack, sessions, owner, monkeypatch
     ):

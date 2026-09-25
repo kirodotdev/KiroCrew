@@ -296,6 +296,304 @@ def test_kiro_cli_chat_exact_basename_anchors_scope(tmp_path):
     assert rec.stopped == ["run-chat.scope"]
 
 
+def _creds_helper_cmdline(version: str = "1.0.5917.0", port: int = 45257) -> bytes:
+    """The toolbox sandbox credential helper's real argv, NUL-separated."""
+    argv = [
+        f"/home/u/.toolbox/tools/aim/{version}/sandbox/creds_agent",
+        "--port",
+        str(port),
+        "--session-id",
+        "0d86abba-c249-4b97-8b2e-e28d11f8f345",
+        "--exit-on-orphan",
+    ]
+    return b"\x00".join(a.encode() for a in argv) + b"\x00"
+
+
+def test_marked_credential_helper_alone_anchors_abandoned_scope(tmp_path):
+    # A session that ended -- cleanly or by a crash -- leaves its scope holding
+    # only the credential helper: the runtime that was the group leader is gone,
+    # so the helper has no client and its threads are pure overhead.
+    slice_dir = tmp_path / "slice"
+    proc = tmp_path / "proc"
+    _make_proc(
+        proc,
+        401,
+        pgrp=400,  # the runtime that led the group has exited
+        comm="creds_agent",
+        cmdline=_creds_helper_cmdline(),
+    )
+    scope = _make_scope(slice_dir, "run-creds.scope", [401])
+    rec = _Recorder()
+    rec.register("run-creds.scope", scope)
+
+    summary = _reap(
+        slice_dir,
+        proc,
+        rec,
+        enter={"run-creds.scope": _enter_us_for_age(700)},
+    )
+
+    assert summary.reclaimed == 1
+    assert summary.skipped == 0
+    assert rec.stopped == ["run-creds.scope"]
+
+
+def test_helper_that_is_its_own_live_leader_waits_for_a_pre_boot_scope(tmp_path):
+    # A reparented helper can still be its own live group leader, so the
+    # leader-dead arm does not carry it. The scope is then reclaimed only on the
+    # OTHER arm -- it predates this gateway's boot, which is the restart case --
+    # and a scope younger than the boot stamp is left alone.
+    slice_dir = tmp_path / "slice"
+    proc = tmp_path / "proc"
+    _make_proc(
+        proc,
+        402,
+        pgrp=402,  # its own group leader, alive
+        comm="creds_agent",
+        cmdline=_creds_helper_cmdline(),
+    )
+    scope = _make_scope(slice_dir, "run-creds-boot.scope", [402])
+    rec = _Recorder()
+    rec.register("run-creds-boot.scope", scope)
+    enter_us = _enter_us_for_age(700)
+
+    postdates = _reap(
+        slice_dir,
+        proc,
+        rec,
+        gateway_boot_us=enter_us - 1,
+        enter={"run-creds-boot.scope": enter_us},
+    )
+    assert postdates.reclaimed == 0 and postdates.skipped == 1
+    assert rec.stopped == []
+
+    predates = _reap(
+        slice_dir,
+        proc,
+        rec,
+        gateway_boot_us=enter_us + 1,
+        enter={"run-creds-boot.scope": enter_us},
+    )
+    assert predates.reclaimed == 1
+    assert rec.stopped == ["run-creds-boot.scope"]
+
+
+def test_unmarked_credential_helper_scope_is_left_alone(tmp_path, caplog):
+    # The helper is the toolbox's binary, not one Kiro Crew spawns by name, so
+    # without the spawn marker it is not attributable to this install and the
+    # ownership condition refuses the scope before the anchor is even consulted.
+    slice_dir = tmp_path / "slice"
+    proc = tmp_path / "proc"
+    _make_proc(
+        proc,
+        403,
+        pgrp=400,
+        marker=False,
+        comm="creds_agent",
+        cmdline=_creds_helper_cmdline(),
+    )
+    _make_scope(slice_dir, "run-creds-bare.scope", [403])
+    rec = _Recorder()
+
+    with caplog.at_level("INFO", logger=r.__name__):
+        summary = _reap(
+            slice_dir,
+            proc,
+            rec,
+            enter={"run-creds-bare.scope": _enter_us_for_age(700)},
+        )
+
+    assert summary.reclaimed == 0
+    assert summary.skipped == 1
+    assert rec.stopped == []
+    assert "unowned=1" in caplog.text
+
+
+def test_unreadable_environ_credential_helper_scope_is_left_alone(tmp_path, caplog):
+    # An environ that cannot be read is not evidence of ownership, so a helper
+    # whose owner cannot be established is never signalled.
+    slice_dir = tmp_path / "slice"
+    proc = tmp_path / "proc"
+    _make_proc(
+        proc,
+        404,
+        pgrp=400,
+        comm="creds_agent",
+        cmdline=_creds_helper_cmdline(),
+    )
+    (proc / "404" / "environ").unlink()
+    _make_scope(slice_dir, "run-creds-opaque.scope", [404])
+    rec = _Recorder()
+
+    with caplog.at_level("INFO", logger=r.__name__):
+        summary = _reap(
+            slice_dir,
+            proc,
+            rec,
+            enter={"run-creds-opaque.scope": _enter_us_for_age(700)},
+        )
+
+    assert summary.reclaimed == 0
+    assert summary.skipped == 1
+    assert rec.stopped == []
+    assert "unowned=1" in caplog.text
+
+
+def test_live_session_scope_holding_a_credential_helper_is_untouched(tmp_path, caplog):
+    # The helper of a session that is still running shares its scope with that
+    # session's tracked runtime, and a tracked member refuses the whole scope.
+    slice_dir = tmp_path / "slice"
+    proc = tmp_path / "proc"
+    _make_proc(proc, 500, pgrp=500, comm="kiro-cli-chat")
+    _make_proc(
+        proc,
+        501,
+        pgrp=500,
+        comm="creds_agent",
+        ppid=500,
+        cmdline=_creds_helper_cmdline(),
+    )
+    _make_scope(slice_dir, "run-live.scope", [500, 501])
+    rec = _Recorder()
+
+    with caplog.at_level("INFO", logger=r.__name__):
+        summary = _reap(
+            slice_dir,
+            proc,
+            rec,
+            tracked={500},
+            enter={"run-live.scope": _enter_us_for_age(700)},
+        )
+
+    assert summary.reclaimed == 0
+    assert summary.skipped == 1
+    assert rec.stopped == []
+    assert rec.killed == []
+    assert "tracked=1" in caplog.text
+
+
+def test_a_detached_survivor_beside_the_helper_keeps_the_scope_alive(tmp_path, caplog):
+    # A scope can hold BOTH a leaked helper and work the user meant to keep: a
+    # preview server the agent detached inherits the marker and outlives the
+    # runtime. Authorizing on the helper alone would stop the whole scope and
+    # kill that server, so the helper authorizes only where nothing else is left.
+    slice_dir = tmp_path / "slice"
+    proc = tmp_path / "proc"
+    _make_proc(
+        proc,
+        405,
+        pgrp=400,
+        comm="creds_agent",
+        cmdline=_creds_helper_cmdline(),
+    )
+    _make_proc(
+        proc,
+        406,
+        pgrp=400,
+        comm="node",
+        cmdline=b"/usr/bin/node\x00/app/node_modules/.bin/vite\x00--port\x005173\x00",
+    )
+    _make_scope(slice_dir, "run-creds-plus-server.scope", [405, 406])
+    rec = _Recorder()
+
+    with caplog.at_level("INFO", logger=r.__name__):
+        summary = _reap(
+            slice_dir,
+            proc,
+            rec,
+            enter={"run-creds-plus-server.scope": _enter_us_for_age(700)},
+        )
+
+    assert summary.reclaimed == 0
+    assert summary.skipped == 1
+    assert rec.stopped == []
+    assert rec.killed == []
+    assert "no-runtime-anchor=1" in caplog.text
+
+
+def test_several_helpers_and_nothing_else_still_authorizes_the_stop(tmp_path):
+    # The rule is universal, not single-member: a scope left holding only helpers
+    # has no client for any of them.
+    slice_dir = tmp_path / "slice"
+    proc = tmp_path / "proc"
+    for pid, port in ((407, 45257), (408, 39743)):
+        _make_proc(
+            proc,
+            pid,
+            pgrp=400,
+            comm="creds_agent",
+            cmdline=_creds_helper_cmdline(port=port),
+        )
+    scope = _make_scope(slice_dir, "run-creds-pair.scope", [407, 408])
+    rec = _Recorder()
+    rec.register("run-creds-pair.scope", scope)
+
+    summary = _reap(
+        slice_dir,
+        proc,
+        rec,
+        enter={"run-creds-pair.scope": _enter_us_for_age(700)},
+    )
+
+    assert summary.reclaimed == 1
+    assert rec.stopped == ["run-creds-pair.scope"]
+
+
+class TestSandboxCredentialHelperRule:
+    """The argv shape and the universal rule that authorize a helper-only stop.
+
+    Exercised through :func:`_scope_is_only_credential_helpers` rather than the
+    existential anchor: the helper is deliberately not one of that anchor's
+    identities, because one member there authorizes stopping every sibling.
+    """
+
+    def _authorizes(self, cmdline: bytes, *, marker: bool = True) -> bool:
+        proc = self.tmp_path / "proc"
+        _make_proc(proc, 601, pgrp=600, marker=marker, comm="creds_agent", cmdline=cmdline)
+        return r._scope_is_only_credential_helpers([601], proc)
+
+    @pytest.fixture(autouse=True)
+    def _tmp(self, tmp_path):
+        self.tmp_path = tmp_path
+
+    @pytest.mark.parametrize("version", ["1.0.5431.0", "1.0.5989.0"])
+    def test_a_marked_helper_authorizes_at_any_toolbox_version(self, version):
+        # The version is a path component ABOVE ``sandbox/``, so one match holds
+        # across the several versions a long-lived host accumulates.
+        assert self._authorizes(_creds_helper_cmdline(version=version)) is True
+
+    def test_an_unmarked_helper_does_not_authorize(self):
+        assert self._authorizes(_creds_helper_cmdline(), marker=False) is False
+
+    def test_a_same_named_binary_outside_a_sandbox_dir_does_not_authorize(self):
+        # A user's own ``creds_agent`` on PATH must not grant stop authority over
+        # a scope, so the ``sandbox/`` parent component is part of the shape.
+        cmdline = b"/usr/local/bin/creds_agent\x00--port\x0045257\x00--session-id\x00x\x00"
+        assert self._authorizes(cmdline) is False
+
+    def test_a_helper_path_without_the_session_argument_does_not_authorize(self):
+        cmdline = (
+            b"/home/u/.toolbox/tools/aim/1.0.5917.0/sandbox/creds_agent\x00--port\x0045257\x00"
+        )
+        assert self._authorizes(cmdline) is False
+
+    def test_the_argument_must_be_an_argv_token_not_a_path_substring(self):
+        cmdline = b"/home/u/--session-id/sandbox/creds_agent\x00--port\x0045257\x00"
+        assert self._authorizes(cmdline) is False
+
+    def test_an_empty_scope_authorizes_nothing(self):
+        assert r._scope_is_only_credential_helpers([], self.tmp_path / "proc") is False
+
+    def test_the_helper_is_not_one_of_the_existential_anchor_identities(self):
+        # Pinned in the direction that matters: if the helper ever becomes an
+        # existential anchor, one of them authorizes killing every sibling.
+        from kiro_crew.session_pid import _is_agent_runtime_anchor
+
+        cmdline = _creds_helper_cmdline()
+        assert _is_agent_runtime_anchor(cmdline, has_kirocrew_marker=True) is False
+        assert _is_agent_runtime_anchor(cmdline, has_kirocrew_marker=False) is False
+
+
 def test_reclaims_env_clearing_descendants_by_tree(tmp_path):
     # Playwright shape: a marked kiro-cli runtime (dead leader 300) with
     # chrome-headless children that cleared their environ. Ownership is by

@@ -821,8 +821,20 @@ For remote hosts, see [remote-and-mobile.md](remote-and-mobile.md).
 ## Linux: the agent sandbox and unprivileged user namespaces
 
 On Linux, Kiro Crew isolates the agent by entering a **user namespace** and then
-a **mount namespace**, over-mounting credential paths such as `~/.aws` and
-`~/.ssh` so the agent cannot read them. If that sandbox cannot be built,
+a **mount namespace**, over-mounting credential paths with empty directories so
+the agent cannot read them. Which paths depends on the tier: the default
+`agent.sandbox: "auto"` runs the **standard** tier, which hides `~/.gnupg`,
+`~/.docker`, `~/.azure`, `~/.config/gcloud` and Kiro Crew's own secret vault but
+deliberately leaves `~/.aws`, `~/.ssh` and `~/.kube` visible so the `aws` CLI,
+`credential_process`, git-over-SSH and `kubectl` keep working inside the agent.
+`agent.sandbox: "strict"` additionally hides `~/.aws` (including the
+`sso/cache` grant store remote-MCP OAuth uses), `~/.ssh` (except
+`known_hosts`), `~/.kube`, `~/.config/gh` and the credential files `~/.npmrc`,
+`~/.pypirc`, `~/.netrc` and `~/.git-credentials`, and the tools that read them
+stop working inside the agent as a result; it applies to sessions started after
+the change. See the
+[Sandbox section of the configuration guide](../../src/kiro_crew/docs/configuration.md#sandbox).
+If the sandbox cannot be built,
 Kiro Crew **refuses to run the agent** rather than run it unisolated: spawns fail
 closed. This is deliberate and is not something to work around casually.
 

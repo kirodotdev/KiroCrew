@@ -2018,12 +2018,35 @@ def _pin_purge_clock(monkeypatch, directory, *, age):
 @pytest.mark.parametrize(
     "age,idle_for,removed",
     [
-        (timedelta(microseconds=-1), timedelta(0), False),
+        # NO WINDOW: age is not consulted, so nothing about the store's
+        # timestamps can refuse. The negative age is a ``latest`` reading AHEAD
+        # of the clock -- what a file mtime does where the filesystem's
+        # resolution is finer than the clock's advance -- and the elapsed time is
+        # then negative, which is less than a zero window.
+        (timedelta(microseconds=-1), timedelta(0), True),
+        (timedelta(seconds=1), timedelta(0), True),
+        # Less than no window is still no window, in both clock directions.
+        (timedelta(microseconds=-1), timedelta(days=-1), True),
+        (timedelta(seconds=1), timedelta(days=-1), True),
+        # A POSITIVE window does judge age, and there the same future reading
+        # REFUSES: the caller asked for a judgement, a store whose newest write
+        # reads ahead of the clock has just been written to, and refusing is the
+        # conservative half of an irreversible delete.
+        (timedelta(microseconds=-1), timedelta(days=30), False),
         (timedelta(days=30, microseconds=-1), timedelta(days=30), False),
         (timedelta(days=30), timedelta(days=30), True),
         (timedelta(days=30, microseconds=1), timedelta(days=30), True),
     ],
-    ids=["future-refused", "inside-window", "at-boundary", "past-boundary"],
+    ids=[
+        "zero-window-future",
+        "zero-window-past",
+        "negative-window-future",
+        "negative-window-past",
+        "positive-window-future-refused",
+        "inside-window",
+        "at-boundary",
+        "past-boundary",
+    ],
 )
 def test_purge_retention_uses_actual_latest_activity(monkeypatch, residue, age, idle_for, removed):
     if residue:
@@ -2051,6 +2074,45 @@ def test_purge_retention_uses_actual_latest_activity(monkeypatch, residue, age, 
         assert caught.value.code == wl.CODE_LEDGER_NOT_FINISHED
         assert directory.is_dir()
         assert {path: (directory / path).read_bytes() for path in before} == before
+
+
+def test_purge_retention_skips_the_age_gate_when_there_is_no_activity_to_read(monkeypatch):
+    """``latest is None`` reaches the same verdict as a non-positive window: no refusal.
+
+    A store whose newest activity cannot be read at all has no age to judge, so
+    the gate is skipped even under a wide window. Forced rather than staged: a
+    directory that exists can always be statted, so ``_newest_activity`` returns
+    ``None`` only if every candidate is unavailable.
+    """
+    item_id = _new_item()
+    wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
+    directory = wl.conductor_dir(CONDUCTOR)
+    monkeypatch.setattr(wl, "_newest_activity", lambda *a, **k: None)
+
+    assert (
+        wl.purge_conductor(CONDUCTOR, allow_unreadable=False, idle_for=timedelta(days=30)) is True
+    )
+    assert not directory.exists()
+
+
+@pytest.mark.parametrize(
+    "idle_for", [timedelta(0), timedelta(days=-1)], ids=["zero-window", "negative-window"]
+)
+def test_a_window_that_does_not_judge_age_still_refuses_an_open_item(monkeypatch, idle_for):
+    """Declining a retention window declines AGE, and nothing else.
+
+    The open-item, unreadable-record, lock and ownership refusals are independent
+    of the window, so a caller that passes no window still cannot delete a ledger
+    a worker is live on.
+    """
+    _new_item()
+    directory = wl.conductor_dir(CONDUCTOR)
+    _pin_purge_clock(monkeypatch, directory, age=timedelta(microseconds=-1))
+
+    with pytest.raises(wl.WorkLedgerError, match="open item") as caught:
+        wl.purge_conductor(CONDUCTOR, allow_unreadable=True, idle_for=idle_for)
+    assert caught.value.code == wl.CODE_LEDGER_NOT_FINISHED
+    assert directory.is_dir()
 
 
 def test_purge_conductor_removes_the_ledger_under_the_conductor_lock(monkeypatch):

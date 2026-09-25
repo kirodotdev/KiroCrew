@@ -4352,6 +4352,84 @@ def _windows_descendant_failure_details(
     )
 
 
+def _windows_process_query_creation(pid: int) -> int | None:
+    """Return *pid*'s creation FILETIME through a query-only handle, or ``None``.
+
+    Termination rights are not requested, so this answers for a process whose
+    termination handle is refused -- which is the only case that needs it.
+    ``None`` means the instant is unknown and nothing may be concluded from it.
+    """
+
+    handle = _open_process_query_handle(pid)
+    if handle is None:
+        return None
+    try:
+        identity = _windows_process_handle_identity(handle)
+    finally:
+        _close_process_handle(handle)
+    if identity is None or identity[0] != pid:
+        return None
+    return identity[1]
+
+
+def _windows_foreign_descendant_pids(
+    candidates: set[int],
+    observed: set[int],
+    parent_map: dict[int, int],
+    pinned: Mapping[int, int],
+    root_pid: int,
+    root_created: int,
+) -> set[int]:
+    """Return observed PIDs whose numeric ancestry creation order disproves them.
+
+    A descendant is created after the root it descends from, so a chain node that
+    already existed before the root holds a recycled PID naming an unrelated
+    process. Every observed PID reaching the root only through such a node is
+    foreign as well: its claimed parent's PID was taken over by a process older
+    than the root, so that parent died before the root started and cannot have
+    belonged to this tree.
+
+    Only *candidates* seed the reads, so a scan that opened every handle pays
+    nothing. A node in *pinned* is read from its own handle, whose object cannot
+    have been recycled; the rest are read once each by PID. An unreadable instant
+    disproves nothing and leaves its chain intact.
+    """
+
+    creations: dict[int, int | None] = {}
+
+    def created(process_pid: int) -> int | None:
+        if process_pid not in creations:
+            handle = pinned.get(process_pid)
+            if handle is None:
+                creations[process_pid] = _windows_process_query_creation(process_pid)
+            else:
+                identity = _windows_process_handle_identity(handle)
+                creations[process_pid] = (
+                    identity[1] if identity is not None and identity[0] == process_pid else None
+                )
+        return creations[process_pid]
+
+    disproven: set[int] = set()
+    for candidate_pid in sorted(candidates):
+        chain = _windows_chain_to_root(candidate_pid, root_pid, parent_map)
+        if not chain:
+            continue
+        for process_pid in chain:
+            if process_pid == root_pid:
+                continue
+            instant = created(process_pid)
+            if instant is not None and instant < root_created:
+                disproven.add(process_pid)
+    if not disproven:
+        return set()
+    foreign: set[int] = set()
+    for process_pid in observed:
+        chain = _windows_chain_to_root(process_pid, root_pid, parent_map)
+        if chain and not disproven.isdisjoint(chain):
+            foreign.add(process_pid)
+    return foreign
+
+
 def descendant_termination_handles(
     pid: int,
     retained_handles: Mapping[int, int] | None = None,
@@ -4364,8 +4442,9 @@ def descendant_termination_handles(
     from exact root, retained-parent, and newly-opened child handles in two
     snapshots. This admits a genuine child created before an immediate launcher
     exit while rejecting a tree attached to a recycled root or intermediate PID.
-    An unopenable candidate requires fresh full-snapshot absence; unreadable
-    identities or incomplete ancestry raise OSError, never certify a subset.
+    An unopenable candidate requires fresh full-snapshot absence, or a creation
+    instant proving it predates the root; unreadable identities or incomplete
+    ancestry raise OSError, never certify a subset.
     On failure only newly opened handles are closed; retained/root handles
     stay caller-owned.
     """
@@ -4413,6 +4492,28 @@ def descendant_termination_handles(
             # Enumeration errors propagate; pid_exists(False) is ambiguous.
             fresh_map = _windows_process_parent_map()
             remaining = unopened.intersection(fresh_map)
+            if remaining:
+                # A process that already existed before the root cannot descend
+                # from it, and that instant is readable through a query-only
+                # handle where a termination handle is refused. Drop such a
+                # stranger together with everything whose only route to the root
+                # runs through it, so a PID it inherited cannot turn the owned
+                # tree into a fatal incomplete one. A chain implicating a pinned
+                # retained identity stays fail-closed: dropping it would discard
+                # authority an earlier scan already proved.
+                foreign = _windows_foreign_descendant_pids(
+                    remaining,
+                    first,
+                    first_map,
+                    {**retained, **opened, pid: root_handle},
+                    pid,
+                    root_identity[1],
+                )
+                if foreign and foreign.isdisjoint(retained):
+                    unopened -= foreign
+                    for child_pid in sorted(foreign.intersection(opened)):
+                        close_process_handle(opened.pop(child_pid))
+                    remaining = unopened.intersection(fresh_map)
             if remaining:
                 errors = {child: opening_errors[child] for child in sorted(remaining)[:3]}
                 details = f"diagnostic_only=unknown; open_errors={errors}"

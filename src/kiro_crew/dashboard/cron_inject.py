@@ -11,6 +11,7 @@ import logging
 import math
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.dashboard.chat_utils import redact_display_content
 from kiro_crew.dashboard.state import (
     DashboardState,
     SlotOrigin,
@@ -835,8 +836,7 @@ def hydrate_slot_from_history(slot: Any, messages: list[dict[str, Any]]) -> None
         content = msg.get("content", "")
         if not content:
             continue
-        content, _ = redact_exfiltration_urls(content)
-        content, _ = redact_credentials(content)
+        content = redact_display_content(content)
         if any(m.get("content") == content for m in slot.messages):
             continue
         slot.append(

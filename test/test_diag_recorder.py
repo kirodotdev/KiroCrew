@@ -836,16 +836,16 @@ def test_the_diag_package_resolves_its_exports_lazily() -> None:
     The recorder starts on the gateway boot path, so importing the package must
     not drag in the thread module and its transitive imports; a route asking for
     ``diag.get_recorder`` is what pays for them.
+
+    Each name has one storage location, the recorder module, so a read resolves
+    that module's current value and binds nothing in the package: a binding here
+    would shadow ``__getattr__`` for every later read.
     """
     import kiro_crew.diag as diag
 
-    for name in ("Recorder", "get_recorder"):
-        diag.__dict__.pop(name, None)  # force the lazy path rather than a cache hit
-
     assert diag.Recorder is rec.Recorder
     assert diag.get_recorder is rec.get_recorder
-    # Resolved once, then cached into the module globals.
-    assert "Recorder" in diag.__dict__
+    assert "Recorder" not in diag.__dict__
     assert diag.Recorder is rec.Recorder
     assert diag.__dir__() == ["Recorder", "get_recorder"]
 

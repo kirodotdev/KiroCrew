@@ -8,6 +8,11 @@
  * a pending spawn approval through its own `toolLog` prop — the same seam the
  * chat page uses — so the card photographed is the shipped one.
  *
+ * Two query flags extend it without changing the default scene: `subagent=1`
+ * also mounts the sub-agent card (the panel's OTHER approval surface), and
+ * `refuse=404` makes every approval POST answer as the gateway does when
+ * `resolve_approval` finds no live future (#11180).
+ *
  * The defect this documents: spawn approvals resolve through the one-shot
  * `resolveApproval` endpoint, which has no trust verb, yet the card offered
  * trust tiers and reported "Trusted". The after-frame shows the honest set —
@@ -23,11 +28,13 @@ import { MemoryRouter } from 'react-router-dom'
 import { initI18n } from '../src/i18n/all'
 import { store } from '../src/store'
 import ActivityViewer from '../src/pages/chat/ActivityViewer'
-import type { ToolActivity } from '../src/types'
+import type { SubagentActivity, ToolActivity } from '../src/types'
 import '../src/index.css'
 
 const params = new URLSearchParams(location.search)
 const theme = params.get('theme') || 'dark'
+const refuse = params.get('refuse')
+const withSubagent = params.get('subagent') === '1'
 
 document.documentElement.setAttribute('data-theme', theme === 'light' ? 'kiro-light' : 'kiro-dark')
 
@@ -36,6 +43,13 @@ document.documentElement.setAttribute('data-theme', theme === 'light' ? 'kiro-li
 const realFetch = globalThis.fetch.bind(globalThis)
 globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
   const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+  // `?refuse=404`: the refusal a decision on a gone approval actually gets.
+  if (refuse === '404' && url.includes('/api/approvals/')) {
+    return Promise.resolve(new Response('{"error": "not found or expired"}', {
+      status: 404,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+  }
   if (url.includes('/api/')) {
     return Promise.resolve(new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }))
   }
@@ -56,6 +70,24 @@ const toolLog: ToolActivity[] = [
   },
 ]
 
+// `?subagent=1`: a sub-agent parked on its own approval, so one frame can hold
+// both of the panel's approval surfaces.
+const subagents: Record<string, SubagentActivity> = withSubagent
+  ? {
+    'sa-capture': {
+      id: 'sa-capture',
+      task: 'Audit the release notes for the insider build',
+      agent: 'kirocrew',
+      status: 'pending',
+      streaming: '',
+      lastTool: '',
+      startedAt: Date.now() - 42_000,
+      elapsed: 42,
+      approval_id: 'ap-subagent',
+    },
+  }
+  : {}
+
 initI18n('en')
 createRoot(document.getElementById('root')!).render(
   <Provider store={store}>
@@ -64,7 +96,7 @@ createRoot(document.getElementById('root')!).render(
         {/* The activity viewer's real habitat is the chat page's right dock. */}
         <div data-capture-root style={{ width: 420, height: '100vh', marginLeft: 'auto', display: 'flex', flexDirection: 'column', borderLeft: '1px solid var(--border)', background: 'var(--bg)' }}>
           <ActivityViewer
-            subagents={{}}
+            subagents={subagents}
             toolLog={toolLog}
             open
             onToggle={() => {}}

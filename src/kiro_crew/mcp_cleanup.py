@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Collection
+from collections.abc import Collection, Iterable, Sized
 from pathlib import Path
 from typing import Any
 
@@ -74,14 +74,162 @@ def mcp_entry_is_muted(entry: Any) -> bool:
     Not every reader of ``disabled`` belongs here. A roster row or a capability
     listing answers "does the user consider this on", where ordinary truthiness is
     right and a wrong answer costs a chip, not a process. This predicate is for
-    the launch decision.
+    the launch decision -- and for every surface that ANNOUNCES it: the dashboard's
+    server listing (``mcp_discovery.list_servers``, which also feeds the probe
+    fan-out and the sync offer) and the ``GET /api/mcp`` stamping read it too,
+    because a row shown enabled beside a launch gate that refuses it is the same
+    disagreement as above in the other direction. The listing reports a
+    non-boolean as a config error so the operator learns why the row is off; it
+    never reads one as "on".
     """
     if not isinstance(entry, dict):
         return False
     return entry.get("disabled", False) is not False
 
 
+def mcp_entries_muted(entries: Iterable[Any]) -> bool:
+    """Whether a server is muted given its entry in EVERY scope that holds it.
+
+    The multi-scope form of :func:`mcp_entry_is_muted`: one mute anywhere mutes
+    the server. Scope priority decides which spec launches -- command, args,
+    env -- but never un-mutes: a store entry saying ``false`` does not switch on
+    a server the shared file muted with ``null``, because that ``null`` is the
+    fail-closed read above, and the whole point of it is that a higher-priority
+    ``false`` cannot argue it away. The listing already answers this way (a row is
+    off when any scope mutes it); the agent rebuild renders the entry it emits
+    with ``disabled: true`` on the same answer, so the file kiro-cli parses and
+    the row the user sees never disagree -- and a selective ``@srv/tool`` ref the
+    rebuild keeps cannot launch a server every surface calls muted.
+    """
+    return any(mcp_entry_is_muted(entry) for entry in entries)
+
+
 logger = logging.getLogger(__name__)
+
+
+#: How many distinct ``(server, value shape)`` pairs the invalid-``disabled``
+#: ledger reports individually. Warn-once for a handful of config errors needs a
+#: handful of entries; past the cap the ledger says once that it stopped. Small
+#: on purpose: the ledger lives for the process and is fed by every read of the
+#: shared configs (``GET /api/mcp``, the agent rebuild), so its size is the
+#: memory a malformed shared config can pin through nothing but a page load.
+INVALID_DISABLED_LEDGER_CAP = 64
+
+#: Characters of a server name a WARNING line -- and the ledger -- carries. The
+#: line is retained (the dashboard log ring keeps the last 1000 FORMATTED lines
+#: and streams each to every log subscriber, with no bound on a line's size), so
+#: the config text a line quotes is what one page load can pin and push. The
+#: value is never quoted (:func:`describe_disabled_flag`); the name is
+#: operator-authored config as well, so it is cut here. Long enough that any
+#: real server name survives whole.
+LOG_NAME_MAX = 64
+
+#: ``(name as logged, value as described)`` pairs already reported. Both members
+#: are bounded strings -- the name cut to :data:`LOG_NAME_MAX`, the value reduced
+#: to its type and size -- and the set stops growing at the cap, so the ledger
+#: holds a fixed amount whatever the config holds. It is never pruned: a process
+#: says each pair once, and the row's own ``disabledReason`` is the durable
+#: signal the table shows for as long as the value is wrong. Shared by every
+#: reader of :func:`mcp_entry_is_muted` that also reports -- the listing and the
+#: agent rebuild -- so one config error is said once between them.
+_invalid_disabled_reported: set[tuple[str, str]] = set()
+
+#: Whether the ledger has said, once, that it is full.
+_invalid_disabled_cap_reached = False
+
+
+def invalid_disabled_flag(spec: Any) -> tuple[bool, Any]:
+    """Whether ``spec["disabled"]`` is present and not a boolean, and the value.
+
+    The one inspection of the raw value. Every decision -- list, offer for sync,
+    mount, spawn -- goes through :func:`mcp_entry_is_muted`, which is
+    FAIL-CLOSED: absent or a literal ``False`` is enabled, ``True`` and every
+    non-boolean (``"false"``, ``1``, ``"yes"``, ``null``) is disabled. This helper
+    only tells the operator WHY such an entry is off, through
+    :func:`warn_invalid_disabled` and the listing's ``disabled_reason``: the fix
+    is to repair the value, not to flip a switch. A reader that took the value as
+    "enabled" would launch a server the user tried to silence; one that read it as
+    "disabled" only where it lists and not where it launches would show a
+    Disabled row the sessions still start. Neither happens while there is one
+    predicate.
+    """
+    if not isinstance(spec, dict):
+        return False, None
+    flag = spec.get("disabled")
+    return ("disabled" in spec and not isinstance(flag, bool)), flag
+
+
+def describe_disabled_flag(value: Any) -> str:
+    """The TYPE and size of a non-boolean ``disabled`` -- ``str(len 5)`` -- never its text.
+
+    A log line is retained (the dashboard ring, every log subscriber's stream),
+    so quoting the value would carry an arbitrary amount of config into both for
+    one bad key. The type names what was written in the shape the operator
+    recognises (``str(len 5)`` is a quoted ``"false"``; ``NoneType`` is ``null``;
+    ``int`` is ``0`` or ``1``), and the row's own copy already points at the file
+    to fix, so nothing the operator needs is lost with the text.
+    """
+    kind = type(value).__name__
+    if isinstance(value, Sized):
+        return f"{kind}(len {len(value)})"
+    return kind
+
+
+def _log_name(name: str) -> str:
+    """*name* as a WARNING line carries it: whole when it fits, else a prefix.
+
+    The cut says how much is missing, so the operator knows the line is not the
+    whole name, and the suffix is a number -- bounded whatever was cut.
+    """
+    if len(name) <= LOG_NAME_MAX:
+        return name
+    return f"{name[:LOG_NAME_MAX]}...(+{len(name) - LOG_NAME_MAX} chars)"
+
+
+def warn_invalid_disabled(name: str, value: Any, where: str) -> None:
+    """WARNING once per (server, value shape) for a ``disabled`` that is not a boolean.
+
+    ``"disabled": "false"`` (a string) is not a boolean, so the launch predicate
+    (:func:`mcp_entry_is_muted`) reads it FAIL-CLOSED: the server is listed
+    Disabled, never offered for sync, never mounted by the agent rebuild and never
+    spawned, until the value is a real ``true`` or ``false``. The line says so out
+    loud because the operator may have written ``"false"`` and meant "on": a server
+    they believe is on is off until the value is a real boolean, and the row's own
+    copy points at the same file.
+
+    Called from every path that reads the shared configs and strips or withholds
+    on the predicate -- the dashboard listing and the agent rebuild -- so the
+    operator learns why from whichever path ran first, and once: the ledger is
+    the set of pairs already said, capped at :data:`INVALID_DISABLED_LEDGER_CAP`,
+    after which one line, in total, says the rest are read as disabled but not
+    named. Everything retained and everything logged is bounded: the name is cut
+    to :data:`LOG_NAME_MAX`, the value is its type and size
+    (:func:`describe_disabled_flag`), *where* is the caller's scope label.
+    """
+    global _invalid_disabled_cap_reached
+    key = (_log_name(name), describe_disabled_flag(value))
+    if key in _invalid_disabled_reported:
+        return
+    if len(_invalid_disabled_reported) >= INVALID_DISABLED_LEDGER_CAP:
+        if not _invalid_disabled_cap_reached:
+            _invalid_disabled_cap_reached = True
+            logger.warning(
+                "MCP config: more than %d servers carry a non-boolean 'disabled'; each is "
+                "read as DISABLED, but the rest are not reported individually. Fix the "
+                "reported ones and restart to see the others.",
+                INVALID_DISABLED_LEDGER_CAP,
+            )
+        return
+    _invalid_disabled_reported.add(key)
+    logger.warning(
+        "MCP server %r: 'disabled' in the %s config is %s, not a boolean; it is read "
+        "as DISABLED -- an invalid value never launches a server. Set it to true or "
+        "false.",
+        key[0],
+        where,
+        key[1],
+    )
+
 
 # Override hook + accessor, NOT a resolved constant. Binding `kiro_home()` at
 # import time freezes whichever home was active when this module was first

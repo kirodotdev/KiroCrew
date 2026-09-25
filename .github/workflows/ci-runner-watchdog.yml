@@ -226,14 +226,17 @@ permissions:
 
 env:
   # The arming flip. While "false", every SCHEDULED tick is a dry run: it
-  # classifies, writes its step summary, and touches nothing -- so the first
-  # live evidence for the detector is a run of summaries against real API
-  # shapes, not a cancellation of a real `main` run. Flip to "true" in a
-  # one-line commit once a few scheduled summaries have classified correctly
-  # (no healthy run called `orphaned`). A manual dispatch is governed by its
-  # own `dry_run` input regardless of this flip, so a maintainer can act on a
-  # stuck run before arming.
-  WATCHDOG_ARMED: "false"
+  # classifies, writes its step summary, and touches nothing. That was the
+  # posture for the detector's first weeks, so the first live evidence was a run
+  # of summaries against real API shapes rather than a cancellation of a real
+  # `main` run. It is now "true", because detection without action was measured
+  # to cost two six-hour `main` outages on 2026-09-23 and 2026-09-24: both times
+  # a stuck `fast-gate.yml` run held `main`'s single concurrency slot, every
+  # later push lost its gate to eviction, and clearing it was one
+  # `POST /actions/runs/<id>/cancel` a human issued by hand. A manual dispatch is
+  # governed by its own `dry_run` input regardless of this flip, so a maintainer
+  # can still inspect without acting.
+  WATCHDOG_ARMED: "true"
 
 concurrency:
   # One watchdog at a time, and never cancel the incumbent: a run that is queued

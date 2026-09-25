@@ -112,6 +112,8 @@ def _live_state(**overrides) -> SimpleNamespace:
         channel_manager=None,
         _slots={},
         push_slots_update=lambda: None,
+        push_refresh=MagicMock(),
+        notify=MagicMock(),
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -785,14 +787,42 @@ class TestDefaultModelPatch:
         _arm(app, state)
         sub = live.subscribe("agent.model", callback=seen.append, name="probe")
         try:
-            async with TestClient(TestServer(app)) as c:
-                assert (await _patch(c, "agent.model", "claude-sonnet-4.5")).status == 200
+            with patch(
+                "kiro_crew.agent.rebuild_agent_config_reporting",
+                return_value=(tmp_config, True),
+            ):
+                async with TestClient(TestServer(app)) as c:
+                    assert (await _patch(c, "agent.model", "claude-sonnet-4.5")).status == 200
         finally:
             sub.cancel()
         assert [c.new.agent.model for c in seen] == ["claude-sonnet-4.5"]
         # A default change must NEVER take the destructive path — that clears
         # _sessions and shuts live providers down, killing in-flight turns.
         state.sessions.reload_provider_factory.assert_not_awaited()
+        state.push_refresh.assert_called_once_with("agents")
+
+    @pytest.mark.asyncio
+    async def test_failed_spec_rebuild_surfaces_error_and_stays_pending(self, tmp_config) -> None:
+        """PATCH persists first, so a failed derived-spec rebuild must be visible
+        and remain queued for the watcher's automatic retry."""
+        from kiro_crew.config import live
+
+        state = _live_state()
+        app = _make_app()
+        _arm(app, state)
+        with patch(
+            "kiro_crew.agent.rebuild_agent_config_reporting",
+            side_effect=OSError("spec directory is read-only"),
+        ):
+            async with TestClient(TestServer(app)) as c:
+                resp = await _patch(c, "agent.model", "claude-sonnet-4.5")
+                assert resp.status == 200
+
+        state.push_refresh.assert_not_called()
+        state.notify.assert_called_once()
+        assert any(
+            "agent.model" in missed for _subscription, missed in live.watch()._stale.values()
+        )
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

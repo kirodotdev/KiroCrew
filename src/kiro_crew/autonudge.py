@@ -40,7 +40,7 @@ from contextlib import asynccontextmanager, contextmanager
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
-from typing import Any, AsyncIterator, Awaitable, Callable, Iterator
+from typing import Any, AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
 
 from kiro_crew import irq, platform_compat, probes, shutdown_event, validation
 from kiro_crew.atomic_write import fsync_dir, replace_with_retry
@@ -236,9 +236,93 @@ def _bounded_judge_verdict(raw: object) -> dict:
         value = raw.get(key)
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             continue
-        if not math.isfinite(float(value)):
+        if key == "evidence_items":
+            # Local to keep the decisions graph off the gateway boot path.
+            from kiro_crew.decisions.points import nudge_wake as point_nudge_wake
+
+            # Bounded at BOTH ends: the ceiling keeps the state inside its character
+            # budget, and the floor matters just as much, because this store is
+            # agent-writable and a 4,000-digit negative is as long on the wire as a
+            # positive one. A count below zero is not a count, so it reads as none.
+            if isinstance(value, int):
+                out[key] = max(0, min(value, point_nudge_wake.MAX_EVIDENCE_ITEMS))
+            elif math.isfinite(value):
+                out[key] = max(0, min(value, point_nudge_wake.MAX_EVIDENCE_ITEMS))
             continue
-        out[key] = value
+        try:
+            finite = math.isfinite(float(value))
+        except OverflowError:
+            finite = False
+        if finite:
+            out[key] = value
+    return out
+
+
+def _bounded_judge_recent(raw: object) -> list:
+    """The stored labelled verdict history, each row rebuilt from allowlisted keys.
+
+    Rebuilt rather than filtered, so a row an operator hand-edited into the store
+    cannot carry text into the next request: the point screens what it sends, and this
+    is the matching refusal on the way IN. A row naming no outcome is dropped -- it
+    labels nothing and would only dilute the hit rate the judge reads.
+
+    The newest rows are kept when the stored list is longer than the window, because a
+    file written by a build with a wider window must not push this one's window into
+    the past.
+
+    An UNLABELLED delivered row is marked ``forfeited`` here, which is the one field
+    this function adds rather than carrying across. Such a row belongs to a turn this
+    process never saw: the fire went out, then the gateway stopped before the turn
+    completed, so no ``owner_acted`` can ever be read for it, and the next turn on that
+    slot -- quite possibly the owner's own -- would be labelled in its place. The flag
+    refuses the label while KEEPING ``delivered``, so the row still closes its own label
+    cycle and the suppressions behind it are not credited to a later delivery. A
+    re-owed delivery gets a newer undecided row; the fire path stamps that row while
+    this boundary remains unchanged.
+    """
+    # The local import keeps the decisions graph off the gateway boot path.
+    from kiro_crew.autonudge_judge import MAX_STORED_VERDICTS, MAX_VERDICT_ID_CHARS
+
+    if not isinstance(raw, list):
+        return []
+    out: list = []
+    discarded = 0
+    for index, item in enumerate(reversed(raw)):
+        if len(out) >= MAX_STORED_VERDICTS:
+            discarded = len(raw) - index
+            break
+        if not isinstance(item, dict):
+            continue
+        row = _bounded_judge_verdict(item)
+        if "outcome" not in row:
+            continue
+        delivered = item.get("delivered") is True
+        suppressed = item.get("suppressed") is True
+        owner_acted = item.get("owner_acted")
+        if delivered and isinstance(owner_acted, bool):
+            row["owner_acted"] = owner_acted
+        missed = item.get("missed")
+        if suppressed and isinstance(missed, bool):
+            row["missed"] = missed
+        for key in ("suppressed", "answered"):
+            value = item.get(key)
+            if isinstance(value, bool):
+                row[key] = value
+        if delivered:
+            row["delivered"] = True
+            if "owner_acted" not in row:
+                row["forfeited"] = True
+        row_id = item.get("id")
+        if isinstance(row_id, str) and row_id.strip():
+            row["id"] = row_id.strip()[:MAX_VERDICT_ID_CHARS]
+        out.append(row)
+    if discarded:
+        logger.debug(
+            "AutoNudge: discarded %d older judge verdict history row(s) beyond the %d-row cap",
+            discarded,
+            MAX_STORED_VERDICTS,
+        )
+    out.reverse()
     return out
 
 
@@ -886,6 +970,17 @@ class NudgeLoop:
     #: The previous verdict, summarised and text-free, carried into the next tick's
     #: state so a judge can see it already passed on comparable evidence once.
     judge_last_verdict: dict = field(default_factory=dict)
+    #: The last few verdicts with the label their delivery earned, oldest first. This
+    #: is the judge's own hit rate ON THIS LOOP, which is the one calibration reading
+    #: no global curve can give it: a conductor patrolling workers and a loop watching
+    #: one pull request have different subjects, so what counts as a wake worth
+    #: spending differs per loop and only the loop's own history measures it.
+    #:
+    #: Bounded to :data:`~kiro_crew.autonudge_judge.MAX_STORED_VERDICTS`, which is
+    #: sized from the QUIET-STREAK FLOOR rather than from the window the judge reads:
+    #: the retroactive pass needs the delivery that closes a full streak still in the
+    #: store when it labels the suppressions that opened it.
+    judge_recent_verdicts: list = field(default_factory=list)
     # WHY the loop was last deactivated: "" (active / never stopped),
     # "manual" (user pause / any caller that didn't say otherwise),
     # "autonudge_stop" (deliberate directive), "cycle_cap",
@@ -1426,6 +1521,10 @@ class AutoNudgeService:
                     loop_values["judge_last_verdict"] = _bounded_judge_verdict(
                         loop_values["judge_last_verdict"]
                     )
+                if "judge_recent_verdicts" in loop_values:
+                    loop_values["judge_recent_verdicts"] = _bounded_judge_recent(
+                        loop_values["judge_recent_verdicts"]
+                    )
                 # Only an explicit boolean true owes a turn. This one resolves the other
                 # way from ``gate``: a corrupt value here costs at most one extra fire,
                 # while reading it as owed on every load would make a loop fire forever
@@ -1448,6 +1547,8 @@ class AutoNudgeService:
                             raw.get("id"),
                         )
                         loop_values["judge_quiet_streak"] = 0
+                    else:
+                        loop_values["judge_quiet_streak"] = min(_streak, _MAX_QUIET_STREAK)
                 # ``self_armed`` is the ONE bit that relaxes the crew/member
                 # fire-time guard, and this store is agent-writable. A persisted
                 # non-boolean (the string "false" is truthy) must therefore
@@ -2955,6 +3056,22 @@ class AutoNudgeService:
                     # no-op same-message save) so an unrelated settings save does
                     # not spend a generation.
                     loop.config_generation += 1
+                    # The labelled history goes with the generation, for the reason the
+                    # criteria path states below: every label in it was earned answering
+                    # a question this instruction has just replaced. The instruction IS
+                    # the target, so those rows may also be about a different subject
+                    # entirely -- but the reset does not turn on that, because a reworded
+                    # instruction about the SAME subject is still a changed question, and
+                    # that is the case this path is most often used for. Carrying the rows
+                    # forward would show the judge a hit rate for a different question
+                    # from the one it now faces, and they supersede the single last
+                    # verdict, so that reading is what the next tick sees. The rollback restores
+                    # every field from the snapshot above, so a retarget that never lands
+                    # returns the history untouched.
+                    loop.judge_quiet_streak = 0
+                    loop.judge_cursors = {}
+                    loop.judge_last_verdict = {}
+                    loop.judge_recent_verdicts = []
                     # The instruction IS the target, so a changed instruction can
                     # change the subject. Re-infer, or the loop keeps polling the
                     # pull request it was armed on: the new subject is never
@@ -3053,6 +3170,10 @@ class AutoNudgeService:
                 loop.judge_quiet_streak = 0
                 loop.judge_cursors = {}
                 loop.judge_last_verdict = {}
+                # The labelled history goes too: every label in it was earned against
+                # the criteria being replaced, so carrying it forward would show the
+                # judge a hit rate for a question nobody is asking any more.
+                loop.judge_recent_verdicts = []
             interval_changed = False
             if idle_secs is not None:
                 new_idle = max(_MIN_IDLE_SECS, min(_MAX_IDLE_SECS, int(idle_secs)))
@@ -4800,7 +4921,15 @@ class AutoNudgeService:
         self._start_failure_deferred.pop(loop.id, None)
         self._persist_soon()
 
-    def notify_turn_complete(self, slot_key: str) -> None:
+    def notify_turn_complete(
+        self,
+        slot_key: str,
+        *,
+        tool_calls: int | None = None,
+        reply_text: str | None = None,
+        reply_flushed: bool = False,
+        nudge_turn: bool | None = None,
+    ) -> None:
         """Called by gateway after HOOK_EVENT_STOP — resume the countdown for this slot.
 
         Re-arms toward the loop's persistent deadline (``_arm_from_deadline``),
@@ -4814,10 +4943,66 @@ class AutoNudgeService:
         cycle. Cancelling it there loses the ``cycle_count`` bump and lets the
         loop run extra cycles after a restart. The deferred re-arm is applied
         when the window closes.
+
+        *tool_calls* and *reply_text* are what the completed turn DID, and this is the
+        only hook where the service can see it: the runner holds both as locals of the
+        turn it is finishing. *nudge_turn* binds those facts to this loop's own delivered
+        turn. *reply_flushed* says the visible text is only the final segment of the
+        reply. An unknown *nudge_turn* reads as not this loop's turn: declining to
+        label costs one row of hit rate, while labelling an unrelated turn writes a
+        wrong row. None of the four is stored: the rule reduces them to one boolean
+        and that boolean is what the loop's record and the calibration log keep.
         """
         loop = self._find_by_slot(slot_key)
         if not loop or not loop.active:
             return
+        # Before the re-arm and before the mid-fire deferral, because this labels the
+        # turn that just ENDED. A deferred re-arm postpones the next tick; the verdict
+        # that woke this one is already decided and is waiting for exactly this answer.
+        if loop.judge_recent_verdicts and nudge_turn is True:
+            try:
+                # The local import keeps the decisions graph off the gateway boot path.
+                from kiro_crew import autonudge_judge as judge
+
+                asyncio.get_running_loop()
+                acted, tool_call_count, reply_chars = judge.owner_action_reading(
+                    tool_calls,
+                    reply_text,
+                    reply_flushed=reply_flushed,
+                )
+                task = asyncio.ensure_future(
+                    self._label_judge_delivery_locked(
+                        loop,
+                        acted,
+                        tool_calls=tool_call_count,
+                        reply_chars=reply_chars,
+                    )
+                )
+            except RuntimeError:
+                logger.debug(
+                    "AutoNudge: skipped judge delivery label for loop %s without "
+                    "a running event loop",
+                    loop.id,
+                )
+            except Exception:
+                logger.debug(
+                    "AutoNudge: could not schedule the judge delivery label for loop %s",
+                    loop.id,
+                    exc_info=True,
+                )
+            else:
+                self._inflight_adds.add(task)
+
+                def _finish(t: "asyncio.Task[None]") -> None:
+                    self._inflight_adds.discard(t)
+                    if not t.cancelled() and t.exception() is not None:
+                        logger.warning(
+                            "AutoNudge: detached judge delivery label failed for loop %s",
+                            loop.id,
+                            exc_info=t.exception(),
+                        )
+
+                task.add_done_callback(_finish)
         if loop.id in self._firing:
             self._rearm_pending.add(loop.id)
             return
@@ -5316,6 +5501,11 @@ class AutoNudgeService:
                 exc_info=True,
             )
             return False
+        # Minted before the call so the decision row and the label row that judges it
+        # later carry the same key. Random, because the tick and the turn-complete hook
+        # do not lock against each other and a restart between them must not reissue a
+        # key a verdict already used.
+        verdict_id = judge.new_verdict_id()
         verdict = await point_nudge_wake.judge_tick(
             loop.message,
             wake_when=wake_when,
@@ -5323,11 +5513,18 @@ class AutoNudgeService:
             evidence=evidence,
             dropped=dropped,
             last_verdict=loop.judge_last_verdict or None,
+            recent_verdicts=judge.recent_for_state(loop.judge_recent_verdicts),
+            since_last_wake_s=judge.since_last_wake_s(loop.last_fire_ts),
+            quiet_streak=loop.judge_quiet_streak,
             session_key=loop.slot_key,
             extra={
                 "loop": loop.id,
                 "targets": len(targets_wanted),
                 "dropped_targets": dropped,
+                # The join key for this verdict's later label row. On the decision row
+                # rather than only on the loop record, because the curve the thresholds
+                # are tuned from is read out of this file alone.
+                "verdict_id": verdict_id,
             },
             trace=verdict_trace,
         )
@@ -5362,6 +5559,15 @@ class AutoNudgeService:
         # notice or a verdict record built from it credits the judge with rows the
         # scrub rejected and reads as a calmer tick than the one that happened.
         screened_items = int(verdict_trace.get("evidence_items") or 0)
+        # Whether the judge was ASKED, which the point reports on every return path. It
+        # decides two things and both keep the calibration curve honest: an unasked
+        # verdict has no decision row for a label to join to, and it sat on no evidence,
+        # so it must not be scored as a suppression the judge got wrong.
+        answered = verdict_trace.get("answered") is True
+        # The join key is kept only for a verdict the judge answered. Minting one for an
+        # unasked tick would write a label row pointing at a decision row that was never
+        # written, which a reader tallying the curve cannot tell from a real one.
+        row_id = verdict_id if answered else ""
         # RENDERED here, PUBLISHED at the bottom. One line on the owning session for
         # every verdict including a quiet one, because a tick that spent no turn is
         # otherwise indistinguishable from a loop that died -- and that is exactly why
@@ -5421,20 +5627,39 @@ class AutoNudgeService:
                 # monitor record, and a judge-only loop -- a conductor watching sibling
                 # sessions -- has none, so this flag is the only thing covering it.
                 loop.judge_wake_pending = True
+                # A floor delivery SPENDS the turn, so it withholds nothing and is
+                # labelled by what the woken turn does. That is why the label keys off
+                # delivery rather than off the verdict's outcome: this row says quiet
+                # and fires, and a reader tallying quiet verdicts as suppressions would
+                # count it on the wrong side of the curve.
+                self._record_judge_verdict(
+                    loop, verdict, screened_items, row_id, suppressed=False, answered=answered
+                )
                 await self._persist_judge_state(loop)
                 logger.info(
                     "AutoNudge: loop %s hit the judge quiet-streak floor after %d quiet verdicts",
                     loop.id,
                     floor,
                 )
-            elif not await self._persist_judge_state(loop):
-                logger.warning(
-                    "AutoNudge: loop %s judged quiet but its state did not persist -- firing",
-                    loop.id,
-                )
             else:
-                logger.debug("AutoNudge: loop %s judge quiet (%s)", loop.id, verdict.body)
-                answer = True
+                self._record_judge_verdict(
+                    loop, verdict, screened_items, row_id, suppressed=True, answered=answered
+                )
+                if not await self._persist_judge_state(loop):
+                    logger.warning(
+                        "AutoNudge: loop %s judged quiet but its state did not persist -- firing",
+                        loop.id,
+                    )
+                    # The write did not land, so nothing on disk claims this verdict
+                    # suppressed anything -- and this tick now FIRES. The row's claim to
+                    # have withheld the turn is therefore wrong, and left standing it
+                    # would take a ``missed`` label from the next delivery for a tick
+                    # that spent its turn. Withdrawing the claim returns the row to the
+                    # undecided state, where the fire path's own stamp confirms it.
+                    self._withdraw_judge_suppression(loop)
+                else:
+                    logger.debug("AutoNudge: loop %s judge quiet (%s)", loop.id, verdict.body)
+                    answer = True
         else:
             loop.judge_quiet_streak = 0
             # Marked BEFORE the write that carries it, so the flag and the advanced
@@ -5443,6 +5668,9 @@ class AutoNudgeService:
             # fire leaves the next tick reading nothing new, answering quiet, and the
             # owed turn gone until the streak floor.
             loop.judge_wake_pending = True
+            self._record_judge_verdict(
+                loop, verdict, screened_items, row_id, suppressed=False, answered=answered
+            )
             await self._persist_judge_state(loop)
             logger.info("AutoNudge: loop %s judge verdict %s", loop.id, verdict.outcome.value)
         if self._emit_judge_notice is not None:
@@ -5455,6 +5683,233 @@ class AutoNudgeService:
                     exc_info=True,
                 )
         return answer
+
+    def _record_judge_verdict(
+        self,
+        loop: NudgeLoop,
+        verdict: Any,
+        evidence_items: int,
+        verdict_id: str,
+        *,
+        suppressed: bool,
+        answered: bool,
+    ) -> None:
+        """Append one verdict to this loop's labelled history, in memory.
+
+        Called before the durable write that carries it, so the row and the cursors
+        and streak it belongs with land together or not at all. It records only what
+        the tick knows: the outcome, how much evidence it read, whether it withheld
+        the turn, whether the judge was asked at all, and the key its label row will
+        join on. Whether a turn actually went out is stamped later, by the fire path.
+        """
+        # The local import keeps the decisions graph off the gateway boot path.
+        from kiro_crew import autonudge_judge as judge
+
+        try:
+            loop.judge_recent_verdicts = judge.append_verdict(
+                loop.judge_recent_verdicts,
+                judge.verdict_entry(
+                    verdict,
+                    evidence_items,
+                    suppressed=suppressed,
+                    answered=answered,
+                    verdict_id=verdict_id,
+                ),
+            )
+        except Exception:
+            # Calibration history is an observation: losing a row must not cost the
+            # tick its verdict, which is the decision the loop actually needs.
+            logger.debug(
+                "AutoNudge: could not record the judge verdict history for loop %s",
+                loop.id,
+                exc_info=True,
+            )
+
+    def _withdraw_judge_suppression(self, loop: NudgeLoop) -> None:
+        """Take back the newest row's claim that it withheld the turn."""
+        # The local import keeps the decisions graph off the gateway boot path.
+        from kiro_crew import autonudge_judge as judge
+
+        try:
+            loop.judge_recent_verdicts = judge.mark_fired(loop.judge_recent_verdicts)
+        except Exception:
+            logger.debug(
+                "AutoNudge: could not correct the judge verdict history for loop %s",
+                loop.id,
+                exc_info=True,
+            )
+
+    def _confirm_judge_delivery(self, loop: NudgeLoop) -> None:
+        """Stamp the verdict whose turn just went out, so its label can be read.
+
+        Called from the fire path at the point delivery is confirmed, which is the only
+        place that knows a turn really went out. A tick that decided to wake leaves an
+        undecided row behind; until this stamp lands, no label pass will touch it, so a
+        refused fire, a cancelled timer or a busy slot cannot hand that verdict the
+        actions of whatever turn happens to finish next.
+        """
+        # The local import keeps the decisions graph off the gateway boot path.
+        from kiro_crew import autonudge_judge as judge
+
+        try:
+            history, stamped = judge.confirm_delivery(loop.judge_recent_verdicts)
+        except Exception:
+            logger.debug(
+                "AutoNudge: could not confirm the judge delivery for loop %s",
+                loop.id,
+                exc_info=True,
+            )
+            return
+        if stamped:
+            loop.judge_recent_verdicts = history
+
+    async def _label_judge_delivery_locked(
+        self,
+        loop: NudgeLoop,
+        acted: bool,
+        *,
+        tool_calls: int | None,
+        reply_chars: int,
+    ) -> None:
+        """Label this loop's newest unlabelled delivery, and the quiets behind it.
+
+        The rule that decides *acted* lives in one place
+        (:func:`~kiro_crew.autonudge_judge.owner_acted`); this applies its answer to
+        the history and writes one calibration row per label it changed. The loop record
+        is written durably before any calibration row is published, so the log cannot
+        claim a label the loop state does not carry.
+
+        Every failure is swallowed. This runs on the gateway's turn-completion hook,
+        which re-arms the loop's timer immediately afterwards, and a calibration
+        label must never be able to stop that.
+        """
+        # The local import keeps the decisions graph off the gateway boot path.
+        from kiro_crew import autonudge_judge as judge
+
+        snapshot = deepcopy(loop.judge_recent_verdicts)
+
+        def _restore_unless_replaced() -> None:
+            """Put the snapshot back, unless this loop's history has moved on.
+
+            An update that lands while the write is in flight clears the history on
+            purpose, and the snapshot would resurrect rows belonging to an instruction
+            or a brief that is gone, with nothing downstream to purge them. The test is
+            the one the publication below makes, and it lives here once because two
+            restores with two hand-written conditions is how the third one comes to
+            disagree.
+            """
+            if self._loops.get(loop.id) is loop and loop.judge_recent_verdicts is history:
+                loop.judge_recent_verdicts = snapshot
+
+        history = snapshot
+        try:
+            history, changed = judge.label_latest_delivery(loop.judge_recent_verdicts, acted=acted)
+            if not changed:
+                # No delivery awaiting a label: this loop has no judge history, or this
+                # turn was not the one a verdict delivered. Nothing to write either way.
+                return
+            loop.judge_recent_verdicts = history
+            if not await self._persist_judge_state(loop):
+                _restore_unless_replaced()
+                logger.debug(
+                    "AutoNudge: left judge delivery unlabelled for loop %s after "
+                    "its state did not persist",
+                    loop.id,
+                )
+                return
+            if self._loops.get(loop.id) is not loop or loop.judge_recent_verdicts is not history:
+                logger.debug(
+                    "AutoNudge: skipped judge label publication for loop %s after "
+                    "its loop or history changed while state persisted",
+                    loop.id,
+                )
+                return
+            self._append_judge_labels(
+                loop,
+                changed,
+                tool_calls=tool_calls,
+                reply_chars=reply_chars,
+            )
+        except Exception:
+            _restore_unless_replaced()
+            logger.debug(
+                "AutoNudge: could not label the judge delivery for loop %s",
+                loop.id,
+                exc_info=True,
+            )
+
+    def _append_judge_labels(
+        self,
+        loop: NudgeLoop,
+        changed: Sequence[Mapping[str, Any]],
+        *,
+        tool_calls: int | None,
+        reply_chars: int,
+    ) -> None:
+        """Write one calibration row per label just earned. Never raises.
+
+        Rows go to the decisions log beside the verdict they judge, keyed by the same
+        id, so the thresholds this seam reads can be tuned from one file. A row with no
+        id is skipped: the judge was not asked for that verdict, so no decision row
+        exists for a label to join to. Offloaded to a thread because the append opens
+        and writes a file and this runs on the event loop; called only once the loop
+        record's own write has landed, so no row here claims a label the record lacks.
+        """
+        # The local imports keep the decisions graph off the gateway boot path.
+        from kiro_crew.decisions import log as decisions_log
+        from kiro_crew.decisions.points import nudge_wake as point_nudge_wake
+
+        rows: list[dict[str, Any]] = []
+        for row in changed:
+            verdict_id = row.get("id")
+            if not isinstance(verdict_id, str) or not verdict_id:
+                continue
+            label = "owner_acted" if isinstance(row.get("owner_acted"), bool) else "missed"
+            value = row.get(label)
+            if not isinstance(value, bool):
+                continue
+            rows.append(
+                decisions_log.build_wake_label_row(
+                    verdict_id=verdict_id,
+                    point=point_nudge_wake.POINT,
+                    session_key=loop.slot_key,
+                    label=label,
+                    value=value,
+                    tool_calls=tool_calls,
+                    reply_chars=reply_chars,
+                    position_back=row.get("position_back"),
+                    age_s=row.get("age_s"),
+                )
+            )
+        if not rows:
+            return
+
+        def _write() -> None:
+            for row in rows:
+                decisions_log.append(row)
+
+        coroutine = asyncio.to_thread(_write)
+        try:
+            task = asyncio.ensure_future(coroutine)
+        except RuntimeError:
+            coroutine.close()
+            # No running loop -- a synchronous test driving the hook directly. The
+            # write is an observation, so doing it inline is correct here and costs
+            # nothing a test cannot afford.
+            _write()
+            return
+        self._inflight_adds.add(task)
+
+        def _finish(t: "asyncio.Task[None]") -> None:
+            self._inflight_adds.discard(t)
+            if not t.cancelled() and t.exception() is not None:
+                logger.warning(
+                    "AutoNudge: detached judge-label append failed for loop %s",
+                    loop.id,
+                    exc_info=t.exception(),
+                )
+
+        task.add_done_callback(_finish)
 
     async def _persist_judge_state(self, loop: NudgeLoop) -> bool:
         """Write this tick's judge state durably. ``True`` when it landed.
@@ -6419,6 +6874,13 @@ class AutoNudgeService:
             self._rearm_fail_count.pop(loop.id, None)
             loop.cycle_count += 1
             loop.last_fire_ts = time.time()
+            # The turn really went out, so the verdict that asked for it can now be
+            # labelled by what that turn does. Stamped HERE and nowhere earlier, for the
+            # same reason the flag below is cleared here: a refused fire, a timer the
+            # owner's own input cancelled, and a busy slot all settle nothing, and a row
+            # marked delivered in any of those cases would be handed the actions of
+            # whatever turn finishes next.
+            self._confirm_judge_delivery(loop)
             if loop.judge_wake_pending:
                 # The owed judge wake landed, so the doubt it carried across the fire is
                 # discharged -- here and nowhere earlier, because a refused fire settles

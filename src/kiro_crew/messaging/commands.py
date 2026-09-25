@@ -66,6 +66,7 @@ from kiro_crew.messaging.queue_receipt import ReceiptQueue, ReceiptSurface
 from kiro_crew.safety_override import describe_grant_lifetime, safety_override
 from kiro_crew.security import redact
 from kiro_crew.sel import sel
+from kiro_crew.subagent_wait_reasons import DEFERRED_QUEUED_REASONS
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, no runtime import edge
     from kiro_crew.cron import CronService
@@ -709,6 +710,18 @@ async def spawn_task_reply(
         return f"⚠️ {_redact(str(exc))}"
     if not info:
         return f"⚠️ Subagent capacity reached ({manager.max_concurrent}). Try again later."
+    # A row the gate DEFERRED (memory floor, critical posture, paused cap) is
+    # accepted under its id but not running, and may not run for a long time;
+    # say so with the gate's own sentence instead of announcing a start. The
+    # kinds come from the leaf module, never from ``kiro_crew.subagent`` (see
+    # the module docstring: that import would reintroduce the slack edge).
+    queued_reason = str(getattr(info, "queued_reason", "") or "")
+    if queued_reason in DEFERRED_QUEUED_REASONS:
+        detail = _redact(str(getattr(info, "queued_reason_detail", "") or queued_reason))
+        return (
+            f"⏳ Queued subagent `{info.id}` — not started yet: {detail}\n"
+            f"_{_redact(task)[:_SPAWN_ECHO_CHARS]}_"
+        )
     return f"🚀 Spawned subagent `{info.id}`\n_{_redact(task)[:_SPAWN_ECHO_CHARS]}_"
 
 

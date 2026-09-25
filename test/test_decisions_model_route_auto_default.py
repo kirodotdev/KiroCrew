@@ -1,14 +1,19 @@
-"""The auto default: an unpinned slot routes while the Jev preview is on.
+"""The auto default: a slot the OWNER left on ``auto`` routes while the preview is on.
 
-A slot NAMING NO MODEL is one of the two ways into ``model.route``, beside the
-owner's explicit ``Auto (Jev)`` pick (``slot.jev_route``), and the two are one
-answer to one question: ``auto`` and ``""`` both mean "the owner pinned nothing
-here", which is exactly what the point is for. It is what makes the preview a
-feature rather than a per-session chore -- an owner who consented in Settings
-routes every unpinned session without arming each one -- and it is the only way a
-freshly dispatched worker slot routes at all, since its ``model`` is ``""`` and
-nobody is sitting at its picker. A slot that DOES name a model is never routed: a
-pin is the owner answering this point by hand.
+There are two ways into ``model.route`` and both are the owner's own choice: the
+explicit ``Auto (Jev)`` pick (``slot.jev_route``), and a slot model of ``auto`` --
+the picker's inherit row, which the sentinel pick resolves to. A slot that DOES
+name a model is never routed: a pin is the owner answering this point by hand.
+
+A slot that names NO model (``""``) is not armed either, and that is the third
+corner rather than an oversight. ``""`` is the absence of a choice, and routing is
+an owner action, so it is dropped on purpose. Admitting it was also uneven: on a
+seam that backfills a resolved model into ``slot.model``
+(``_backfill_canonical_model``) before the gate is read the slot was already
+pinned and nothing routed, while on a seam that backfills ``""`` the same slot DID
+route -- one state, two behaviours, and a composer chip that said ``Auto (Jev)``
+for a turn that in the first case ran on the backend default. The chip and the
+gate now agree that only a choice arms routing.
 
 What neither way in changes is the envelope. Routing can only reach a model the
 owner listed in ``decisions.model_route``, and only while the keystone says
@@ -136,21 +141,45 @@ def _switched_to(client) -> list[str]:
     return [call.args[0] for call in client.set_model.await_args_list]
 
 
+def _armed_slot(key: str):
+    """A slot carrying the owner's choice not to pin, which is what arms routing.
+
+    The factory's own default is ``""`` -- a slot nobody has chosen for yet -- and
+    that does not route. Every case below that expects a turn to move, or that
+    proves some OTHER refusal, needs the arm to be real or it would pass on the
+    absence of a choice instead of on the thing it names.
+    """
+    slot = _slot(key)
+    slot.model = "auto"
+    return slot
+
+
 # ---------------------------------------------------------------------------
 # The predicate, on its own
 # ---------------------------------------------------------------------------
 
 
 class TestWhichSlotsAreArmed:
-    @pytest.mark.parametrize("model", ["", "auto", "  AUTO  ", "Auto"])
-    def test_a_slot_naming_no_model_is_armed(self, model):
-        """Both spellings, and neither is case- or whitespace-sensitive: the value
-        reaches the slot from a client, and a near-miss that reads as a pin would
-        silently turn the feature off for that session."""
+    @pytest.mark.parametrize("model", ["auto", "  AUTO  ", "Auto"])
+    def test_a_slot_the_owner_left_on_auto_is_armed(self, model):
+        """Not case- or whitespace-sensitive: the value reaches the slot from a
+        client, and a near-miss that read as a pin would silently turn the feature
+        off for that session."""
         slot = _slot("chat-armed")
         slot.model = model
 
         assert chat_runner._jev_route_armed(slot) is True
+
+    def test_a_slot_naming_no_model_at_all_is_not_armed(self):
+        """``""`` is the absence of a choice, and the runtime overwrites it before
+        this gate is read: the slot's first session backfills the resolved model into
+        ``slot.model``, so a turn admitted on ``""`` is already pinned by the time the
+        question would be asked. Arming it bought no routing and made the composer
+        chip claim ``Auto (Jev)`` for turns that ran on the backend default."""
+        slot = _slot("chat-unchosen")
+        assert slot.model == "", "a fresh slot must name no model for this to mean anything"
+
+        assert chat_runner._jev_route_armed(slot) is False
 
     @pytest.mark.parametrize("model", ["model-a", "auto:jev", "claude-haiku-4-5"])
     def test_a_slot_naming_a_model_is_not_armed(self, model):
@@ -181,16 +210,32 @@ class TestWhichSlotsAreArmed:
 class TestThePreviewIsTheAuthorization:
     @pytest.mark.asyncio
     async def test_preview_on_and_an_unpinned_slot_routes(self, tmp_path, keystone, answers):
-        """The headline: the owner turned the preview on and never touched the
-        picker, and the turn still lands on the complex tier's model."""
+        """The headline: the owner left the session on ``auto`` and turned the preview
+        on, and the turn lands on the complex tier's model without arming anything
+        per session."""
         keystone(True)
         answers("complex")
-        slot = _slot("chat-auto")
-        assert slot.model == "", "the fixture's slot must be unpinned for this to mean anything"
+        slot = _armed_slot("chat-auto")
 
         client = await _run(tmp_path, slot)
 
         assert _switched_to(client) == ["model-c"]
+
+    @pytest.mark.asyncio
+    async def test_preview_on_and_a_slot_naming_no_model_routes_nothing(
+        self, tmp_path, keystone, answers
+    ):
+        """MUTATION of the case above: only the model field moves, from ``auto`` to
+        the ``""`` a slot carries before anyone picks for it. The turn must run on the
+        backend's own default, which is what the composer chip then names."""
+        keystone(True)
+        answers("complex")
+        slot = _slot("chat-unchosen-turn")
+        assert slot.model == "", "a fresh slot must name no model for this to mean anything"
+
+        client = await _run(tmp_path, slot)
+
+        assert _switched_to(client) == []
 
     @pytest.mark.asyncio
     async def test_preview_on_and_a_pinned_slot_routes_nothing(self, tmp_path, keystone, answers):
@@ -216,7 +261,7 @@ class TestThePreviewIsTheAuthorization:
         keystone(False)
         answers("complex")
 
-        client = await _run(tmp_path, _slot("chat-auto-off"))
+        client = await _run(tmp_path, _armed_slot("chat-auto-off"))
 
         assert _switched_to(client) == []
 
@@ -250,7 +295,7 @@ class TestADeliveredTurnRoutesToo:
         keystone(True)
         answers("complex")
 
-        client = await _run(tmp_path, _slot("chat-worker"), _directive_user_origin=False)
+        client = await _run(tmp_path, _armed_slot("chat-worker"), _directive_user_origin=False)
 
         assert _switched_to(client) == ["model-c"]
 
@@ -265,7 +310,7 @@ class TestADeliveredTurnRoutesToo:
         keystone(True)
         answers("complex")
 
-        client = await _run(tmp_path, _slot("chat-actor"), _turn_actor=actor)
+        client = await _run(tmp_path, _armed_slot("chat-actor"), _turn_actor=actor)
 
         assert _switched_to(client) == []
 
@@ -290,7 +335,7 @@ class TestTheEnvelopeIsTheCeiling:
             lambda: SimpleNamespace(decisions=DecisionsConfig(model_route={"simple": "model-a"})),
         )
 
-        client = await _run(tmp_path, _slot("chat-unlisted"))
+        client = await _run(tmp_path, _armed_slot("chat-unlisted"))
 
         assert _switched_to(client) == []
 
@@ -305,7 +350,7 @@ class TestTheEnvelopeIsTheCeiling:
         client.available_models = MagicMock(return_value=[{"modelId": "model-a"}])
         with _quiet_sel():
             await chat_runner._run_chat(
-                state, _slot("chat-withheld"), "please redesign the scheduler"
+                state, _armed_slot("chat-withheld"), "please redesign the scheduler"
             )
 
         assert _switched_to(client) == []
@@ -332,7 +377,7 @@ class TestRestoredProvenanceDoesNotRoute:
         keystone(True)
         answers("complex")
 
-        client = await _run(tmp_path, _slot("chat-restored"), _turn_provenance_restored=True)
+        client = await _run(tmp_path, _armed_slot("chat-restored"), _turn_provenance_restored=True)
 
         assert _switched_to(client) == []
 
@@ -346,6 +391,8 @@ class TestRestoredProvenanceDoesNotRoute:
         keystone(True)
         answers("complex")
 
-        client = await _run(tmp_path, _slot("chat-in-process"), _turn_provenance_restored=False)
+        client = await _run(
+            tmp_path, _armed_slot("chat-in-process"), _turn_provenance_restored=False
+        )
 
         assert _switched_to(client) == ["model-c"]

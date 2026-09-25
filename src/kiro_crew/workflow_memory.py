@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import stat
 from dataclasses import dataclass
@@ -27,15 +28,38 @@ class WorkflowMemoryError(RuntimeError):
     """A run's original execution context is unavailable."""
 
 
+class WorkflowAllocatorError(WorkflowMemoryError):
+    """The run-id allocator refused; no memory store was involved."""
+
+
 _RUN_ID_MAX = (1 << 64) - 1
 _RUN_ID_ENABLED = b"1"
 
+logger = logging.getLogger(__name__)
 
-def _allocator_path(path: Path) -> None:
+
+def _allocator_path(path: Path, anchor: Path) -> None:
+    """Refuse *path* when a link BELOW *anchor* bends where it lands.
+
+    *anchor* is the parent of the workflows directory. A link at or above it
+    is the operator's own layout -- a symlinked ``$HOME`` (``/home/u ->
+    /local/home/u``), a data home relocated onto another disk -- the same two
+    layouts ``atomic_write``'s parent-link guard trusts. Every directory below
+    the anchor is one the allocator creates itself, so a link there was
+    planted: the resolved path must equal the resolved anchor joined with the
+    lexical names below it. Containment would not do -- a link onto another
+    directory inside the same tree resolves to a contained path while still
+    landing the counter somewhere never named.
+    """
+    try:
+        below = path.relative_to(anchor).parts
+    except ValueError:
+        raise WorkflowAllocatorError("Workflow allocator path is redirected") from None
+    expected = anchor.resolve().joinpath(*below)
     if platform_compat.strip_extended_length_prefix(
         path.resolve()
-    ) != platform_compat.strip_extended_length_prefix(path):
-        raise WorkflowMemoryError("Workflow allocator path is redirected")
+    ) != platform_compat.strip_extended_length_prefix(expected):
+        raise WorkflowAllocatorError("Workflow allocator path is redirected")
 
 
 def _allocator_owner(path: Path, info: os.stat_result) -> None:
@@ -52,25 +76,25 @@ def _allocator_owner(path: Path, info: os.stat_result) -> None:
                 or (security.owner_sid == "S-1-5-32-544" and security.volume_is_local)
             )
         except windows_acl.AclUnavailable as exc:
-            raise WorkflowMemoryError("Workflow allocator owner is unavailable") from exc
+            raise WorkflowAllocatorError("Workflow allocator owner is unavailable") from exc
     if not owned:
-        raise WorkflowMemoryError("Workflow allocator owner is invalid")
+        raise WorkflowAllocatorError("Workflow allocator owner is invalid")
 
 
-def _allocator_file(path: Path, fd: int) -> None:
+def _allocator_file(path: Path, fd: int, anchor: Path) -> None:
     """Validate the opened object, not just its pre-open spelling."""
-    _allocator_path(path)
+    _allocator_path(path, anchor)
     info = os.fstat(fd)
     named = path.lstat()
     if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or not os.path.samestat(info, named):
-        raise WorkflowMemoryError("Workflow allocator file identity is invalid")
+        raise WorkflowAllocatorError("Workflow allocator file identity is invalid")
     _allocator_owner(path, info)
     # On Windows owner-only access is a DACL, not synthesized st_uid/mode bits.
     platform_compat.restrict_to_owner(path)
 
 
-def _read_run_high_water(path: Path) -> int | None:
-    _allocator_path(path)
+def _read_run_high_water(path: Path, anchor: Path) -> int | None:
+    _allocator_path(path, anchor)
     try:
         fd = os.open(
             path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
@@ -78,7 +102,7 @@ def _read_run_high_water(path: Path) -> int | None:
     except FileNotFoundError:
         return None
     try:
-        _allocator_file(path, fd)
+        _allocator_file(path, fd, anchor)
         raw = os.read(fd, 257)
     finally:
         os.close(fd)
@@ -96,11 +120,11 @@ def _read_run_high_water(path: Path) -> int | None:
             raise ValueError("invalid high water")
         return row["high_water"]
     except (ValueError, TypeError) as exc:
-        raise WorkflowMemoryError("Workflow allocator counter is invalid") from exc
+        raise WorkflowAllocatorError("Workflow allocator counter is invalid") from exc
 
 
-def _write_run_high_water(path: Path, value: int) -> None:
-    _allocator_path(path)
+def _write_run_high_water(path: Path, value: int, anchor: Path) -> None:
+    _allocator_path(path, anchor)
     atomic_write(
         path,
         json.dumps({"version": 1, "high_water": value}),
@@ -120,37 +144,40 @@ def allocate_run_id(floor: int = 0) -> str:
     after the witness, missing/corrupt counters fail closed, never reseed.
     """
     if type(floor) is not int or not 0 <= floor <= _RUN_ID_MAX:
-        raise WorkflowMemoryError("Workflow allocator recovery floor is invalid")
+        raise WorkflowAllocatorError("Workflow allocator recovery floor is invalid")
     try:
         from kiro_crew.workflows.store import default_workflows_dir
 
         root = default_workflows_dir().absolute()
+        # Links at or above the workflows directory's parent are the operator's
+        # layout; the directory itself and both files below it must be real.
+        anchor = root.parent
         for directory in (root.parent, root):
-            _allocator_path(directory)
+            _allocator_path(directory, anchor)
             platform_compat.make_owner_only_dir(directory)
             _allocator_owner(directory, directory.stat())
             platform_compat.restrict_dir_to_owner(directory)
         lock = root / ".run-id.lock"
         counter = root / ".run-id.json"
-        _allocator_path(lock)
+        _allocator_path(lock, anchor)
         # Never truncate/replace/unlink the lock inode, including during init.
         fd = os.open(lock, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
         try:
             with platform_compat.file_lock(fd, exclusive=True, required=True):
-                _allocator_file(lock, fd)
+                _allocator_file(lock, fd, anchor)
                 os.lseek(fd, 0, os.SEEK_SET)
                 witness = os.read(fd, 2)
                 if witness not in (b"", _RUN_ID_ENABLED):
-                    raise WorkflowMemoryError("Workflow allocator witness is invalid")
-                high = _read_run_high_water(counter)
+                    raise WorkflowAllocatorError("Workflow allocator witness is invalid")
+                high = _read_run_high_water(counter, anchor)
                 if high is None:
                     if witness:
-                        raise WorkflowMemoryError("Workflow allocator counter is missing")
+                        raise WorkflowAllocatorError("Workflow allocator counter is missing")
                     high = floor
                 if not witness:
                     # Re-sync even an existing initial counter: its previous
                     # publisher may have died between replace and directory sync.
-                    _write_run_high_water(counter, high)
+                    _write_run_high_water(counter, high, anchor)
                     os.lseek(fd, 0, os.SEEK_SET)
                     if os.write(fd, _RUN_ID_ENABLED) != 1:
                         raise OSError("short workflow allocator witness write")
@@ -164,14 +191,14 @@ def allocate_run_id(floor: int = 0) -> str:
                 while high < _RUN_ID_MAX:
                     high += 1
                     candidate = f"wf_{high:06d}"
-                    _write_run_high_water(counter, high)
+                    _write_run_high_water(counter, high, anchor)
                     return candidate
-                _write_run_high_water(counter, high)
-                raise WorkflowMemoryError("Workflow run ID space is exhausted")
+                _write_run_high_water(counter, high, anchor)
+                raise WorkflowAllocatorError("Workflow run ID space is exhausted")
         finally:
             os.close(fd)
     except OSError as exc:
-        raise WorkflowMemoryError("Workflow allocator I/O failed") from exc
+        raise WorkflowAllocatorError("Workflow allocator I/O failed") from exc
 
 
 @overload
@@ -390,17 +417,34 @@ def admission_errors(function):
     async def guarded(*args, **kwargs):
         try:
             return await function(*args, **kwargs)
-        except (WorkflowMemoryError, UnknownMemoryStore):
+        except WorkflowAllocatorError as exc:
+            # The run-id counter refused before any memory store was consulted,
+            # so the memory refusal text below would misname the failure.
+            _log_refusal("Workflow run identity allocation refused", exc)
+            message = f"Workflow run identity could not be allocated: {exc}"
+            code = "workflow_allocator_unavailable"
+        except (WorkflowMemoryError, UnknownMemoryStore) as exc:
+            _log_refusal("Workflow admission refused", exc)
             message = "Workflow memory is unavailable; no Global fallback was used."
-            return {
-                "ok": False,
-                "error": message,
-                "errors": [message],
-                "code": "workflow_memory_unavailable",
-                "admission_rejected": True,
-            }
+            code = "workflow_memory_unavailable"
+        return {
+            "ok": False,
+            "error": message,
+            "errors": [message],
+            "code": code,
+            "admission_rejected": True,
+        }
 
     return guarded
+
+
+def _log_refusal(what: str, exc: BaseException) -> None:
+    """Keep the original refusal text in the log; the caller sees a summary."""
+    cause = exc.__cause__
+    if cause is not None:
+        logger.warning("%s: %s (%s: %s)", what, exc, type(cause).__name__, cause)
+    else:
+        logger.warning("%s: %s", what, exc)
 
 
 class TaskSnapshotError(OSError):

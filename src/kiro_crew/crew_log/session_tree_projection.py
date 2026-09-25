@@ -480,10 +480,18 @@ class SessionTreeProjection:
         for one frame instead of another store's lineage forever.
 
         The root is path arithmetic over the environment, not I/O, which is what makes
-        this safe to call per frame.
+        this safe to call per frame. It can still FAIL -- resolving the data home
+        touches the filesystem -- and :func:`_current_root` answers with an empty
+        string when it does. That is "cannot tell", not "another store", and the two
+        must not be collapsed: read as an identity the empty string matches nothing, so
+        one transient fault reported a correct fold unseeded and every slots frame in
+        that window shipped no lineage at all. An unreadable root therefore leaves the
+        answer at whatever the last readable one established.
         """
         root = _current_root()
         with self._lock:
+            if not root:
+                return self._seeded
             return self._seeded and self._root == root
 
     @property
@@ -856,9 +864,13 @@ class SessionTreeProjection:
         root = _current_root()
         with self._seed_gate:
             with self._lock:
-                if self._seeded and self._root == root and not self._retry_due_locked():
+                # An unreadable root identifies no store, so it neither satisfies the
+                # gate nor condemns the fold: keep the identity already held and let the
+                # next readable answer decide. See ``seeded_for_current_store``.
+                target = root or self._root
+                if self._seeded and self._root == target and not self._retry_due_locked():
                     return
-                if self._root != root:
+                if target != self._root:
                     # A different store. Drop the previous one's fold rather than
                     # reconciling it: none of those records describe this store, and a
                     # replay would keep every one it could not disprove.
@@ -877,6 +889,14 @@ class SessionTreeProjection:
                     # trust them and report one store's lineage as the other's. Moving
                     # the epoch makes that worker a no-op.
                     self._cancel_epoch += 1
+                # Stamped BEFORE the seed runs, not after it returns. The seed installs
+                # its records and raises ``_seeded`` under the lock, so a stamp on the
+                # way out leaves a window where the fold is complete and this object
+                # still names the previous store -- and every reader in that window is
+                # told the projection is unseeded and ships no lineage. The fold and the
+                # identity it belongs to have to become true together, and the identity
+                # is known first.
+                self._root = target
             try:
                 self._seed(live_sids)
             except Exception:  # pragma: no cover -- defensive; every step is guarded
@@ -907,8 +927,6 @@ class SessionTreeProjection:
                     # SUCCESSFUL seed only, which is what makes a recovered store stop
                     # re-scanning.
                     self._seed_retry_at = None
-            with self._lock:
-                self._root = root
 
     def _retry_due_locked(self) -> bool:
         """Whether a seed that failed earlier may be re-attempted now. ``_lock`` held.

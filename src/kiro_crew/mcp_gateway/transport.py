@@ -545,7 +545,19 @@ def probe_live(socket_path: str | os.PathLike[str]) -> bool:
     Runs in a thread at every call site (it blocks for up to a second) and
     never raises: an inconclusive probe reports ``True`` so callers, which use
     this to decide whether it is safe to clobber an endpoint, err toward
-    leaving it alone.
+    leaving it alone. Only a *conclusive* negative -- a refused connect or a
+    name that does not exist -- reports ``False``; every other failure is
+    inconclusive and reports live.
+
+    A full accept backlog is the case this protects: the daemon is healthy but
+    overloaded, so ``connect()`` neither succeeds nor is refused. Which OSError
+    that surfaces as is kernel-dependent -- a ``settimeout``-armed socket is
+    non-blocking, so on Linux the connect fails at once with ``EAGAIN``
+    (``BlockingIOError``) rather than raising ``socket.timeout`` (that fires
+    only for the ``EINPROGRESS`` wait CPython installs) -- so enumerating the
+    live errnos would be a guess. Allowlisting the two conclusive negatives
+    instead is contract-faithful and covers ``EAGAIN``, ``EINTR`` and a real
+    timeout alike, without taking a loaded daemon's socket away.
     """
     address = resolve_address(socket_path)
     if not platform_compat.IS_WINDOWS:
@@ -554,8 +566,15 @@ def probe_live(socket_path: str | os.PathLike[str]) -> bool:
             s.settimeout(1.0)
             s.connect(address)
             return True
-        except (ConnectionRefusedError, OSError):
+        except (ConnectionRefusedError, FileNotFoundError):
+            # The only conclusive negatives: nothing is listening on the
+            # address (refused), or the socket file is gone (no such name).
             return False
+        except OSError:
+            # Anything else -- a full-backlog EAGAIN/BlockingIOError, a real
+            # timeout, EINTR -- is inconclusive. Report live so a loaded but
+            # healthy daemon's socket is never unlinked by ``remove_stale``.
+            return True
         finally:
             s.close()
 

@@ -126,6 +126,10 @@ class DeferPoint:
     batch_id: str
     queued: "SubagentInfo"
     refused: "SubagentInfo"
+    # The gate's label for the wait (``reason`` kind plus the memory figures),
+    # published on the ``subagent_queued`` emit that follows a SUCCESSFUL
+    # defer write -- never before it, so a refused row leaves no label behind.
+    wait: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

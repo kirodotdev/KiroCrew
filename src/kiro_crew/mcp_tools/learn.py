@@ -300,6 +300,19 @@ def learn_add(name: str, args: dict[str, Any]) -> str:
     d = mcp_core._post("/api/lessons", payload)
     err_val = d.get("error")
     if err_val:
+        # The gateway's 400 ``missing_session_key`` is the same missing identity
+        # ``memory_recall`` refuses on before it posts: this process resolved no
+        # session key, so the request went out without X-Session-Key and the
+        # route said exactly that. Echoing the header name sends the reader after
+        # an HTTP detail; answered instead with the established-session refusal
+        # the sibling tool uses and the same diagnosis appended, so the two
+        # tools describe one condition in one voice. Keyed on the code, which is
+        # stable, never on the wording. The decision to post is unchanged.
+        if d.get("code") == "missing_session_key":
+            return (
+                "Error: lesson was NOT saved: learn_add requires an established session"
+                + mcp_core.strict_identity_diagnosis()
+            )
         # Map the backend session-scope error to a user-actionable
         # message so the LLM can explain the situation instead of
         # leaking an opaque HTTP 400 as a "transport failed" error.
@@ -660,6 +673,14 @@ def learn_remove(name: str, args: dict[str, Any]) -> str:
                 "persisted history found for this session key). Retry "
                 "from an established session (dashboard tab or Slack "
                 "thread), or use `kirocrew learn remove` from a shell."
+            )
+        # The same 400 the create route emits when this process resolved no
+        # session key; answered like ``learn_add`` so the two lesson writers
+        # describe one condition in one voice.
+        if d.get("code") == "missing_session_key":
+            return (
+                "No lessons were removed: learn_remove requires an established session"
+                + mcp_core.strict_identity_diagnosis()
             )
         return f"Error: {err_val}"
     return f"Removed lessons matching: {query}"

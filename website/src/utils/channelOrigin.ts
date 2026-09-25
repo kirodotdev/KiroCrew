@@ -29,6 +29,8 @@ const CHANNEL_BRAND: Record<string, string> = {
   wecom: 'WeCom',
   teams: 'Teams',
   weixin: 'Weixin',
+  imessage: 'iMessage',
+  feishu: 'Feishu',
 }
 
 /**

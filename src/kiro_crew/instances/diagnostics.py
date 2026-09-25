@@ -399,9 +399,11 @@ async def _probe_task_exec_ready(
 ) -> tuple[bool, str]:
     """``(ready, reason)`` from the shared exec-readiness preflight, off the loop.
 
-    The preflight is a synchronous ``aws ecs describe-tasks``; it is the same
-    call ``connect_fargate`` makes before opening anything, so the ladder cannot
-    disagree with the connect path about what "ready" means.
+    The preflight is a synchronous ``aws ecs describe-tasks``, and this ladder is
+    where its answer reaches an operator: the ``fargate`` forward opens without
+    consulting it, so a task whose execute-command channel was never enabled, or
+    whose in-task agent cannot reach ``ssmmessages``, surfaces here as the broken
+    link rather than as a forward that just does not come up.
     """
     readiness = await asyncio.to_thread(
         cloud_ssm.task_exec_readiness, cluster, task_id, profile, region

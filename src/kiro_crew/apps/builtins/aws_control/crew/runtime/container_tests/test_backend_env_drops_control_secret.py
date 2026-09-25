@@ -12,6 +12,8 @@ sandbox.
 
 from __future__ import annotations
 
+import json
+
 from container.supervisor import backend as be
 
 from ._settings_helper import make_settings
@@ -41,14 +43,31 @@ def test_the_control_secret_is_not_in_the_backend_environment(tmp_path):
     )
 
 
-def test_the_model_credential_still_reaches_the_backend(tmp_path):
-    """The strip must not take the credential the backend cannot start without."""
+def test_the_model_credential_does_not_reach_the_backend(tmp_path):
+    """Held to the same standard as the control secret: not under any name either.
+
+    The model worker auto-approves every tool it calls on untrusted prompt content,
+    so a credential readable in its environment is reachable by that content. The
+    value check matters as much as the key check, because a forward under a different
+    name would leave it just as readable.
+    """
     key = "aws-kiro-abcdefghijklmnopqrstuvwxyz0123456789"
-    env = be.build_backend_env(
-        _settings(tmp_path), {"SMC_CONTROL_SECRET": "x", "KIRO_API_KEY": key}
+    identity = json.dumps(
+        {
+            "access_token": "atk-test",
+            "expires_at": "2099-01-01T00:00:00+00:00",
+            "provider": "BuilderId",
+            "identity": "builder_id",
+        }
     )
-    assert env["KIRO_API_KEY"] == key
-    be.require_api_key(env)  # must not raise
+    env = be.build_backend_env(
+        _settings(tmp_path),
+        {"SMC_CONTROL_SECRET": "x", "KIRO_API_KEY": key, "KIRO_IDENTITY": identity},
+    )
+    assert "KIRO_API_KEY" not in env
+    assert "KIRO_IDENTITY" not in env
+    survivors = sorted(k for k, v in env.items() if v in (key, identity))
+    assert not survivors, f"a model credential survives under another key: {survivors}"
 
 
 def test_the_front_still_receives_the_secret_through_settings(tmp_path):

@@ -213,6 +213,7 @@
     "resource_tight": "Tight",
     "subagent_cap": "cap: {{cap}}",
     "notifications": "通知",
+    "notifications_ask_agent_help": "离开此页面并打开一个新对话，其中已预填好此错误的报告，你只需按下发送",
     "notifications_failed_to_load": "通知加载失败",
     "open_inbox": "打开收件箱",
     "open_menu": "打开菜单",
@@ -3620,7 +3621,7 @@
         "trust_normal": "普通",
         "trust_normal_desc": "每次工具调用都需要审批",
         "trust_reads": "只读",
-        "trust_reads_desc": "自动批准只读操作（ls、cat、grep），写操作仍需审批",
+        "trust_reads_desc": "自动批准只读 shell 命令（ls、cat、grep），其他操作仍需审批",
         "trust_trust": "信任所有工具",
         "trust_trust_desc": "Mochi 用到的每个工具都自动批准，不再询问",
         "trust_yolo_active": "YOLO（自动批准一切）已启用。该设置对整个 {{productName}} 生效，请在仪表板中修改，而不是这里。",
@@ -5572,6 +5573,7 @@
       "your_selected_setup_is_ready_in_kiro_crew": "你所选的配置已在 {{productName}} 中就绪。"
     },
     "agentSelector": {
+      "agent_id_tooltip": "{{name}} — 代理 ID。定时任务、spawn 参数和 CLI 使用此 ID，而不是标签。",
       "agent_list": "代理列表",
       "default": "默认",
       "filter_agents": "筛选代理",
@@ -5638,9 +5640,9 @@
       "normal_desc": "{{productName}} 在做任何事之前都会与你确认",
       "normal_label": "常规",
       "normal_tooltip": "{{productName}} 在执行任何操作前都会先询问你",
-      "reads_desc": "{{productName}} 会自行查阅信息，但在做出任何更改前都会先询问",
+      "reads_desc": "{{productName}} 会自行运行只读 shell 命令，但其他任何操作都会先询问",
       "reads_label": "读取",
-      "reads_tooltip": "{{productName}} 会自行查阅信息，但在做出更改前会先询问",
+      "reads_tooltip": "{{productName}} 会自行运行只读 shell 命令，但其他任何操作都会先询问",
       "trust_desc": "在此对话中，{{productName}} 无需先询问即可工作",
       "trust_label": "信任",
       "chat_mode_hint": "对话模式",
@@ -6318,7 +6320,7 @@
       "nightly": "Nightly 版",
       "report_problem": "反馈问题",
       "report_problem_on_build": "反馈此 {{channel}} 的问题",
-      "request_feature_starts_agent": "开始一段与代理的对话，由它帮你撰写并提交请求。和普通聊天轮次一样会消耗推理额度。"
+      "request_feature_starts_agent": "开始一段聊天，由它起草你的请求，并在你确认后提交到 GitHub。会消耗你套餐的本月用量。"
     },
     "fileCard": {
       "audio": "音频：{{name}}",
@@ -7094,7 +7096,8 @@
       "close_editor": "关闭编辑器",
       "copied": "已复制！",
       "copy": "复制",
-      "edit_code_block": "编辑代码块"
+      "edit_code_block": "编辑代码块",
+      "not_saved_hint": "不会保存回聊天中。关闭即丢弃修改。"
     },
     "notifications": {
       "notifMeta": {
@@ -8134,6 +8137,7 @@
     },
     "voiceStatusBar": {
       "default_microphone": "默认麦克风",
+      "dictation_kept_for_model": "你的录音已保留，准备好后会自动转写。",
       "recording": "正在录音"
     },
     "webAppArtifactCard": {
@@ -8852,6 +8856,7 @@
       "audio_worklet_unavailable": "audio worklet 不可用",
       "stt_connection_error": "语音转文字连接错误",
       "stt_connection_lost": "语音转文字连接已断开",
+      "stt_model_still_loading": "语音模型还没加载完，这段录音没能转写，也没有保留。等模型加载完成后请重新口述。",
       "stt_error": "语音转文字错误"
     },
     "useVoiceInput": {
@@ -8880,6 +8885,7 @@
     "sttProviders": {
       "downloading_decoder": "正在下载音频解码器：{{pct}}（{{done}} / {{total}}）",
       "downloading_speech_model": "正在下载语音模型：{{pct}}（{{total}} 中的 {{done}}）",
+      "loading_speech_model": "正在加载语音模型…",
       "stream_error_decode_failed": "语音识别未能完成这段转写。请重新口述一次。",
       "stream_error_max_duration": "口述已达到时长上限。重新开始录制即可继续。",
       "stream_error_model_missing": "语音模型还没准备好。请在语音转文字设置中下载它，然后重试。",
@@ -9798,7 +9804,8 @@
         "sign_in": "登录 Kiro",
         "sign_in_hint": "打开“设置 → 概览 → Kiro 登录”重新登录，然后重新发送消息。",
         "feature_request_form": "打开功能请求表单",
-        "feature_request_form_hint": "当前没有可用的推理额度，可以改为打开功能请求表单。"
+        "feature_request_form_hint": "本月用量已用完 — 可以改为通过此表单在 GitHub 上提交请求。此表单不经过代理：它会打开 GitHub 的 Issue 表单，由你自行填写，不消耗本月用量。",
+        "session_start_repeat_hint": "代理会话已连续多次启动失败，继续只会再次执行同一次启动。请在终端运行 {{command}} 重启 gateway，然后重新发送消息。"
       },
       "folderPanel": {
         "clear_search": "清除搜索",
@@ -10046,6 +10053,13 @@
         "stop_failed": "无法停止子代理 {{name}}",
         "stop_all_failed": "无法停止子代理",
         "retry_failed_error": "部分失败的子代理无法重试"
+      },
+      "subagentQueued": {
+        "adaptive_cap_zero": "等待开始 — 本机内存不足或负载过高，暂停启动新任务；恢复后会自动继续",
+        "low_memory": "等待开始 — 需要 {{required}} 可用内存，当前可用 {{available}}；请释放内存以继续",
+        "low_memory_no_figures": "等待开始 — 可用内存不足；请释放内存以继续",
+        "posture_critical": "等待开始 — 本机内存严重不足（可用 {{available}}）；请释放内存以继续",
+        "posture_critical_no_figures": "等待开始 — 本机内存严重不足；请释放内存以继续"
       },
       "subagentRunCard": {
         "agent_finished_other": "{{count}} 个代理已完成",
@@ -10975,6 +10989,7 @@
       "block_semantic_memory": "你告诉过它的事实",
       "block_skill_hint": "相关技能",
       "block_skill_index": "技能索引",
+      "block_task_facts": "为本次任务召回的事实",
       "block_unclassified": "未分类",
       "block_your_message": "你的消息",
       "cat_memory": "关于你的记忆",
@@ -11520,12 +11535,13 @@
       "error": "错误",
       "errors": "错误数",
       "event": "事件",
+      "awaiting_agent": "尚未触发",
       "failed_to_load": "加载 {{section}} 失败",
       "failed_to_load_hooks": "加载钩子失败：{{error}}",
       "filter_hooks": "筛选钩子…",
       "hook_name": "钩子名称",
       "hooks": "钩子",
-      "hooks_run_shell_commands_on_chat_events_agentspa": "钩子在聊天事件发生时运行 shell 命令：AgentSpawn、UserPromptSubmit、PreToolUse、PostToolUse、Stop。工具钩子支持用匹配器模式按工具名筛选。",
+      "hooks_run_shell_commands_on_chat_events_agentspa": "挂钩在聊天事件上运行 shell 命令：AgentSpawn、UserPromptSubmit、PreToolUse、PostToolUse、Stop。工具挂钩支持按工具名称过滤的模式。标记为 尚未触发 的行由代理支持，但这里目前还没有任何事件触发它；标记为 从不触发 的行完全不受支持。测试现在就能运行两者。",
       "last_run": "上次运行",
       "loading": "正在加载…",
       "matcher": "匹配器",
@@ -11545,8 +11561,11 @@
       "runs": "运行次数",
       "s": "s",
       "save": "保存",
-      "script_hooks_fire_shell_commands_on_chat_lifecyc": "脚本钩子在聊天生命周期事件上触发 shell 命令。PreToolUse/PostToolUse 钩子可以按工具名模式筛选。",
+      "script_hooks_fire_shell_commands_on_chat_lifecyc": "脚本挂钩在聊天生命周期事件上运行 shell 命令。PreToolUse/PostToolUse 挂钩可按工具名称模式过滤。选择带标记的触发器会显示该标记的含义，两种情况下测试都能运行挂钩。",
       "shell_commands_that_run_automatically_on_agent_e": "在代理事件时自动运行的 shell 命令",
+      "stored_only": "从不触发",
+      "runs_on_no_event_yet": "代理支持此触发器，但这里目前还没有任何事件触发它。测试可以立即运行它。",
+      "runs_only_via_test": "此触发器从不自行触发。只有测试能运行它。",
       "source": "来源",
       "status": "状态",
       "test": "测试",
@@ -11561,7 +11580,14 @@
       "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills.",
       "retry": "重试",
       "show_last_error": "显示 {{name}} 的最近错误",
-      "test_failed_for": "{{name}} 测试失败"
+      "test_failed_for": "{{name}} 测试失败",
+      "saved_switched_off": "此挂钩将以关闭状态保存：目前没有任何事件触发此触发器。",
+      "no_matcher_for_trigger": "无过滤条件：此触发器没有可过滤的事件数据。",
+      "saved_switched_off_never": "此挂钩将以关闭状态保存：此触发器永远不会自行触发。",
+      "on_but_nothing_fires": "已开启，但目前没有任何事件触发此触发器。",
+      "via_test": "通过测试运行",
+      "skills_only_for_prompt_hooks": "技能只在不运行命令的 UserPromptSubmit 或 AgentSpawn 挂钩上加载。",
+      "on_but_never_fires": "已开启，但此触发器从不自行触发。"
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "此工作区的唯一标识符。代理通过名称引用工作区。",
@@ -11593,6 +11619,7 @@
       "discard_new_schedule": "放弃新建的计划？",
       "discard_new_schedule_body": "输入的计划尚未保存，将会丢失。",
       "discard_schedule_confirm": "放弃计划",
+      "display_name": "显示名称",
       "e_g_oncall": "例如 oncall",
       "edit_crew_named": "编辑代理 {{name}}",
       "edit_model": "编辑默认模型",
@@ -11640,6 +11667,7 @@
       "select_an_agent_template": "选择 Agent 模板…",
       "session_color_hint_member": "该成员发起的会话使用此颜色，除非会话自身设置了颜色。留空则该成员无颜色。",
       "shared_lower": "共用",
+      "shown_across_the_dashboard_instead_of_the_name_l": "在整个面板中代替名称（{{name}}）显示。留空则显示名称本身。",
       "subdirectory_inside_kiro_crew_where_this_workspa": "~/.kiro/crew 下用于存放此工作区数据（聊天历史、经验、项目）的子目录。每个工作区都有各自独立的目录。",
       "template_hint_member": "该成员的起始配置 — 它的工具、连接和指令。",
       "the_agent_definition_it_boots_from_tools_mcp_ser": "这个代理的起始设置 — 自带的工具、连接和指令。",
@@ -12214,6 +12242,8 @@
         "confirm_reapply_body": "此操作会重新加载已配置的模型，并清除、重建已存储的记忆向量。"
       },
       "kiroCrewCfgTab": {
+        "agent_for_pool_processes_empty_uses_default_agent": "用于池化进程的代理。留空则使用默认代理。",
+        "applies_to_sessions_started_after_the_change": "对更改后启动的会话生效。“auto”把代理放进沙箱，但凭证类工具照常可用；“strict”还会隐藏云、SSH、kube 和软件源凭证，因此这些工具在代理内不再可用——仅当由 {{productName}} 自己的沙箱约束进程时才生效，Windows 上或委托给 kiro-cli 内部沙箱的 macOS 进程不受影响；“off”跳过 {{productName}} 的沙箱（macOS 上若已启用 kiro-cli 自带沙箱，则仍然生效）。",
         "approval_mode": "审批模式",
         "auto": "自动",
         "auto_size_max": "自动调整上限",
@@ -12229,9 +12259,9 @@
         "embedding_provider": "嵌入提供方",
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "通过 kiro-cli 启用动态 MCP 工具发现。下次会话生效。",
         "immediate_auto_approves_all_tools_interactive_as": "立即生效。“auto”批准所有工具；“interactive”每次询问。",
-        "immediate_auto_enables_sandbox_for_untrusted_too": "立即生效。“auto”为不受信任的工具启用沙箱。",
         "inherited_provider": "继承 ({{provider}})",
         "kirocrew_agents": "{{productName}} 代理",
+        "max_age_for_pooled_processes_0_disables_expiry": "池化进程的最大存活时间。0 表示不过期。",
         "max_channel_agents": "最大频道代理数",
         "max_channels": "最大频道数",
         "max_concurrent_subagents": "最大并发子代理数",
@@ -12247,6 +12277,7 @@
         "next_update_check_cycle": "下一个更新检查周期生效。",
         "no_agents_defined": "未定义代理",
         "no_memory_stores": "无记忆存储",
+        "number_of_pre_spawned_processes_0_disables": "预启动进程数量。0 表示禁用。",
         "pool_agent": "池代理",
         "pool_size": "池大小",
         "pool_ttl": "池 TTL",
@@ -12263,12 +12294,9 @@
         "using_global_memory_settings": "使用全局记忆设置",
         "using_legacy_mode_agent_default_agent_as_agent_t": "使用旧版模式 — 以 agent.default_agent 作为代理模板",
         "warm_pool": "预热池",
-        "workspace": "工作区",
-        "workspaces": "工作区",
-        "number_of_pre_spawned_processes_0_disables": "预启动进程数量。0 表示禁用。",
-        "agent_for_pool_processes_empty_uses_default_agent": "用于池化进程的代理。留空则使用默认代理。",
         "warm_pool_description": "预先启动 ACP CLI 进程，让会话即时开始。",
-        "max_age_for_pooled_processes_0_disables_expiry": "池化进程的最大存活时间。0 表示不过期。"
+        "workspace": "工作区",
+        "workspaces": "工作区"
       },
       "mcpTab": {
         "actions": "操作",
@@ -12324,6 +12352,21 @@
         "probe_failing_help": "连续 {{failures}} 次探测失败。服务器仍然挂载，这只是健康状态读数，不是变更。",
         "reset_failures": "重置计数",
         "reset_failures_help": "清除该服务器的连续失败计数。",
+        "disabled_in_config": "在配置中已禁用",
+        "disabled_in_config_invalid": "配置错误",
+        "status_invalid_value": "无效的值",
+        "copy_path": "复制路径",
+        "copy_path_named": "复制路径 {{file}}",
+        "path_copied": "已复制",
+        "copy_path_failed": "复制失败",
+        "disabled_in_config_help": "已在共享的 Kiro MCP 配置中禁用，Kiro IDE 也会读取该配置。它不会被启动，此面板也无法重新启用它：请在该配置中修改标志。",
+        "disabled_in_config_where": "已在 <file>{{file}}</file> 中禁用。编辑此文件会解除这里的禁用；其他配置仍可能让服务器保持关闭。开关功能已在计划中。",
+        "disabled_in_config_where_unknown": "已在共享的 MCP 配置中禁用。编辑该配置会解除这里的禁用；其他配置仍可能让服务器保持关闭。开关功能已在计划中。",
+        "disabled_in_config_invalid_where": "已禁用：<file>{{file}}</file> 中的 \"disabled\" 值无效。请在该文件中将其设为 true 或 false。",
+        "disabled_in_config_invalid_where_unknown": "已禁用：共享的 MCP 配置中的 \"disabled\" 值无效。请在该配置中将其设为 true 或 false。",
+        "uninstall_disabled_in_config_help": "从所有 MCP 配置中移除此服务器，包括禁用它的那个共享配置。",
+        "scope_disabled_in_config": "{{label}}：关闭（已在共享 MCP 配置中禁用；请在那里更改）",
+        "disabled_count_other": "{{count}} 个已禁用",
         "sign_in": "登录",
         "sign_in_authorize": "授权 {{name}}",
         "sign_in_mint_failed": "无法启动登录。请重试。",
@@ -14191,6 +14234,11 @@
         "zoom_level": "缩放级别",
         "font_family_option_opendyslexic": "OpenDyslexic",
         "config_load_failed": "无法加载已保存的显示设置。加载完成前，Shell、最近会话和命令补全设置不可用。",
+        "installed_themes_load_failed": "无法加载主题列表，正在自动重试。在加载完成前，无法选择或应用已安装的主题。",
+        "installed_themes_refresh_failed": "无法刷新主题列表。列表已过期。",
+        "installed_themes_refresh_failed_after_install": "主题已安装，但无法刷新主题列表。请点击“重试”以刷新列表并应用它，或在主题列表刷新后从列表中选择它。",
+        "retry_theme_list": "重试",
+        "retrying_theme_list": "正在重试…",
         "recent_tint_save_failed": "无法保存最近会话的高亮数量。"
       },
       "importPanel": {

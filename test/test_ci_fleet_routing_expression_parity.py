@@ -86,6 +86,7 @@ _EXPECTED_ROUTED_JOBS = {
     ("build.yml", "desktop-matrix"),
     ("main-ratchet-audit.yml", "ratchet-gates"),
     ("main-ratchet-audit.yml", "frontend-ceiling"),
+    ("main-ratchet-audit.yml", "bundle-ceiling"),
     ("main-ratchet-audit.yml", "report"),
     ("release.yml", "version"),
     ("release.yml", "resolve-promotion"),

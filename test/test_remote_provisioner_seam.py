@@ -60,9 +60,9 @@ class TestFargateLane:
             "image": "public.ecr.aws/example/kirocrew-crew-base@sha256:" + "b" * 64,
             "secrets": [
                 [
-                    "kirocrew/crew/demo/KIRO_API_KEY",
+                    "kirocrew/crew/demo/KIRO_IDENTITY",
                     "arn:aws:secretsmanager:us-east-1:123456789012:"
-                    "secret:kirocrew/crew/demo/KIRO_API_KEY-AbCdEf",
+                    "secret:kirocrew/crew/demo/KIRO_IDENTITY-AbCdEf",
                 ]
             ],
             "cpu_architecture": "X86_64",
@@ -361,14 +361,14 @@ class TestTheConfirmationReachesTheEngine:
     def _block() -> dict:
         arn = (
             "arn:aws:secretsmanager:us-east-1:123456789012:secret:"
-            "kirocrew/crew/demo/KIRO_API_KEY-abcdef"
+            "kirocrew/crew/demo/KIRO_IDENTITY-abcdef"
         )
         return {
             "cluster": "kirocrew-crew-prod",
             "subnets": ["subnet-a"],
             "security_groups": ["sg-1"],
             "image": "public.ecr.aws/example/kirocrew-crew-base@sha256:" + "a" * 64,
-            "secrets": [["kirocrew/crew/demo/KIRO_API_KEY", arn]],
+            "secrets": [["kirocrew/crew/demo/KIRO_IDENTITY", arn]],
             "cpu_architecture": "X86_64",
         }
 
@@ -446,14 +446,14 @@ class TestTheOperatorCanReadTheRecipientBeforeConfirming:
     def _block() -> dict:
         arn = (
             "arn:aws:secretsmanager:us-east-1:123456789012:secret:"
-            "kirocrew/crew/demo/KIRO_API_KEY-abcdef"
+            "kirocrew/crew/demo/KIRO_IDENTITY-abcdef"
         )
         return {
             "cluster": "kirocrew-crew-prod",
             "subnets": ["subnet-a"],
             "security_groups": ["sg-1"],
             "image": "public.ecr.aws/example/kirocrew-crew-base@sha256:" + "a" * 64,
-            "secrets": [["kirocrew/crew/demo/KIRO_API_KEY", arn]],
+            "secrets": [["kirocrew/crew/demo/KIRO_IDENTITY", arn]],
             "cpu_architecture": "X86_64",
         }
 
@@ -637,9 +637,9 @@ class TestTheAliasRefusalSitsWhereTheFileIsConsumed:
                         "image": "public.ecr.aws/x/base@sha256:" + "a" * 64,
                         "secrets": [
                             [
-                                "kirocrew/crew/demo/KIRO_API_KEY",
+                                "kirocrew/crew/demo/KIRO_IDENTITY",
                                 "arn:aws:secretsmanager:us-east-1:123456789012:secret:"
-                                "kirocrew/crew/demo/KIRO_API_KEY-abcdef",
+                                "kirocrew/crew/demo/KIRO_IDENTITY-abcdef",
                             ]
                         ],
                         "cpu_architecture": "X86_64",

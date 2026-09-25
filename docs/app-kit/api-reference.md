@@ -587,8 +587,12 @@ It is not checked against a vocabulary — a spelling of your own is kept, becau
 rewriting it would record something other than what happened. It is redacted and
 length-clipped like `resources` and `error`, so a credential that reaches it by
 accident is not written; that is a no-op for any real outcome value. This log is
-append-only and readable over `/api/sel/events`, so nothing put in it can be taken
-back — don't route free-form remote output through these fields.
+append-only and readable by the dashboard OWNER over `/api/sel/events` — that
+endpoint is owner-gated, so no non-owner dashboard user reads it. In-process app
+code is NOT isolated from it, though: as the next paragraph says, hook code runs
+inside the gateway and can reach the log directly, so treat anything you write
+here as readable by a co-resident app. Nothing put in it can be taken back:
+don't route free-form remote output through these fields.
 
 There is no `caller=` argument. Attribution is minted from your app name
 (`app:<name>`, the same tag `ctx.cron` uses for ownership), so there is no

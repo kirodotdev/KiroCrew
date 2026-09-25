@@ -311,11 +311,11 @@ async def remove_provider_entry(
     grant in the first case and strand a live one (reported as a deliberate keep)
     in the second.
 
-    The sweep reads the RAW specs, not the probe view: ``list_servers`` drops
-    disabled entries outside the Kiro Crew scope, and a user's switched-off server
-    still owns its grant -- deleting it because its entry is disabled would force a
-    fresh consent the moment they re-enable it. The probe view is unioned in so a
-    row this census cannot parse still counts.
+    The sweep reads the RAW specs, not the probe view: ``list_servers`` is a
+    MERGED read that loses each row's provenance, and a user's switched-off
+    server still owns its grant -- deleting it because its entry is disabled
+    would force a fresh consent the moment they re-enable it. The probe view is
+    unioned in so a row this census cannot parse still counts.
 
     FAIL CLOSED, asymmetrically, because the two acts need opposite evidence. The
     revoke needs the ABSENCE of a sharer, which an unreadable source can hide, so

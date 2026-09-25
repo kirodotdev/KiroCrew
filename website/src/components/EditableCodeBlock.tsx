@@ -84,19 +84,39 @@ const EditableCodeBlock = memo(function EditableCodeBlock(
 
   return (
     <div ref={wrapperRef} className="code-block rounded-xl border border-border bg-bg-elevated overflow-hidden">
-      <div className="flex items-center justify-between px-3 py-1">
-        <span className="text-muted text-[13px] font-mono">{lang || 'code'}</span>
+      {/* The header closes off the scroll box below it: once the editor scrolls,
+          a partly visible first line meets the header edge, and without a rule
+          between them it reads as text sliding under the title bar. Same token
+          as the read-only block's footer rule. */}
+      <div className="flex items-center justify-between px-3 py-1 border-b border-border">
+        <span className="flex items-baseline gap-2 min-w-0">
+          <span className="text-muted text-[13px] font-mono">{lang || 'code'}</span>
+          {/* The editor never writes back to the chat and the X discards
+              silently, so say both up front. No "copy" in the wording: the
+              Copy button sits an inch to the right. The span wraps rather than
+              truncates: a clipped second sentence would hide the discard
+              warning exactly on the narrow (touch) widths that have no hover
+              to recover it. */}
+          <span className="text-muted text-[11px]">{i18nT('components.monacoCodeBlock.not_saved_hint')}</span>
+        </span>
         <div className="flex items-center gap-1">
           <button className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer" onClick={() => { valueRef.current = code; setEditing(false) }} title={i18nT('components.monacoCodeBlock.close_editor')} aria-label={i18nT('components.monacoCodeBlock.close_editor')}><X size={13} /></button>
           <button className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer" onClick={copy} title={copied ? i18nT('components.monacoCodeBlock.copied') : i18nT('components.monacoCodeBlock.copy')} aria-label={copied ? i18nT('components.monacoCodeBlock.copied') : i18nT('components.monacoCodeBlock.copy')}>{copied ? <Check size={13} /> : <Copy size={13} />}</button>
         </div>
       </div>
-      <div className="max-h-[480px] overflow-hidden flex flex-col">
-        <PierreEditor
-          file={{ name: `snippet.${lang || 'txt'}`, contents: code, cacheKey: `chat-edit:${lang}:${code.length}:${contentHash(code)}` }}
-          onChange={v => { valueRef.current = v }}
-        />
-      </div>
+      {/* The height cap goes on the editor's OWN scroller (Pierre's Virtualizer,
+          which is `overflow-auto` and receives `className`), not on a wrapper
+          around it. A wrapper with only `max-height` has an indefinite height,
+          so the editor's `h-full` inside it resolves to auto: the surface grows
+          to its full content height, the wrapper clips it, and the wheel finds
+          nothing scrollable -- it scrolls the transcript instead, and only the
+          caret (arrow keys) can move the view. Capping the scroller itself gives
+          it a definite max height, so it scrolls under the pointer. */}
+      <PierreEditor
+        file={{ name: `snippet.${lang || 'txt'}`, contents: code, cacheKey: `chat-edit:${lang}:${code.length}:${contentHash(code)}` }}
+        onChange={v => { valueRef.current = v }}
+        className="max-h-[480px]"
+      />
     </div>
   )
 })

@@ -1891,11 +1891,26 @@ class TestLocalStreamingSession:
         is the signal that the load is under way, so it must arrive BEFORE ``ready``.
         """
         self._install(monkeypatch, _FakeLocalSession(pending=None, pending_load=True))
+        from kiro_crew.dashboard import stt_stream
+
         async with TestClient(TestServer(_make_app())) as client:
             ws = await client.ws_connect("/api/ws/stt")
             first = await ws.receive_json()
             assert first["type"] == "status"
             assert first["stage"] == stt.STAGE_PREPARING
+            # The deadline belongs to the side that owns the wait, so the frame
+            # states it rather than leaving the client to pick one. A client
+            # number shorter than this abandons a load still running here and
+            # discards audio the next frame would have transcribed.
+            assert (
+                first["prepare_timeout_ms"]
+                == (stt_stream._MAX_MODEL_PREPARE_SECS + stt_stream._LOCAL_FINAL_WIRE_GRACE_SECS)
+                * 1000
+            )
+            # Strictly longer than this server's own ceiling: the timeout must be
+            # reached HERE first, where the reason is known and goes out as a
+            # coded error, instead of at a client that can only guess.
+            assert first["prepare_timeout_ms"] > stt_stream._MAX_MODEL_PREPARE_SECS * 1000
             assert (await ws.receive_json())["type"] == "ready"
             await ws.send_str('{"type":"stop"}')
             await ws.close()
@@ -1982,6 +1997,131 @@ class TestLocalStreamingSession:
         assert counts == sorted(counts) and len(set(counts)) == len(counts), counts
         assert all(frame["stage"] == "downloading" for frame in sent), sent
         assert all(frame["total_bytes"] == model.size_bytes for frame in sent), sent
+        # Every announcing frame carries the deadline, not just the first one: a
+        # client that joins mid-transfer hears one of these as its FIRST word on
+        # the subject, and a frame without the figure leaves it holding a budget
+        # this side never agreed to.
+        expected_ms = (
+            stt_stream._MAX_MODEL_PREPARE_SECS + stt_stream._LOCAL_FINAL_WIRE_GRACE_SECS
+        ) * 1000
+        assert all(frame["prepare_timeout_ms"] == expected_ms for frame in sent), sent
+
+    @pytest.mark.asyncio
+    async def test_a_load_that_starts_after_the_pre_check_is_still_announced(self, monkeypatch):
+        """An eviction between the pre-check and the load must not silence the wait.
+
+        ``pending_load`` is read without a lock before ``prepare`` starts, so a model
+        resident at that instant can be gone by the time the load looks for it. With
+        ``stt.idle_evict_secs`` at 0 -- legal, and documented in ``stt.limits`` as the
+        right setting on a memory-constrained host -- a model becomes evictable the
+        moment a decode finishes, and ``maybe_evict`` is called from the decode
+        completion paths, not only from the periodic sweep. So the pre-check's answer
+        can flip for an ordinary reason rather than an exotic one.
+
+        Unannounced, the client holds its released utterance on the SHORT budget and
+        discards it at sixty seconds while this side is still building the context.
+        The announce is therefore owed late, and this pins that it arrives.
+        """
+        from kiro_crew.dashboard import stt_stream
+
+        released = asyncio.Event()
+
+        class _Store:
+            @property
+            def status(self):
+                # Not a transfer: this is the load half of the wait, the branch
+                # that carries no byte count. Counting the spins HERE, not in
+                # `pending_load`, so releasing `prepare` does not depend on the
+                # announce being asked for -- otherwise removing the announce would
+                # hang this test instead of failing its assertion.
+                reads["store"] += 1
+                if reads["store"] >= 3:
+                    released.set()
+                return {"step": "loading", "downloaded_bytes": 0, "total_bytes": 0}
+
+        monkeypatch.setattr(stt, "model_store", lambda: _Store())
+        monkeypatch.setattr(stt_stream, "_MODEL_PROGRESS_INTERVAL_SECS", 0)
+
+        sent: list[dict] = []
+
+        async def _send(frame):
+            sent.append(frame)
+            return True
+
+        # False at the pre-check, true afterwards: the eviction the pre-check could
+        # not see.
+        reads = {"store": 0, "load": 0}
+
+        def _pending_load():
+            reads["load"] += 1
+            return reads["load"] >= 2
+
+        async def _prepare():
+            await released.wait()
+            return []
+
+        assert _pending_load() is False, "pre-check must see the model resident"
+        task = asyncio.create_task(_prepare())
+        relayed = await asyncio.wait_for(
+            stt_stream._relay_download_progress(task, _send, _pending_load, False),
+            timeout=_AUDIT_WAIT_TIMEOUT_SECS,
+        )
+        assert relayed == []
+
+        preparing = [f for f in sent if f.get("stage") == stt.STAGE_PREPARING]
+        assert len(preparing) == 1, sent
+        assert (
+            preparing[0]["prepare_timeout_ms"]
+            == (stt_stream._MAX_MODEL_PREPARE_SECS + stt_stream._LOCAL_FINAL_WIRE_GRACE_SECS) * 1000
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_wait_with_nothing_loading_announces_nothing(self, monkeypatch):
+        """A socket with no load under way keeps the short budget.
+
+        The announce is what switches the client from the sixty-second budget to the
+        long one, so announcing whenever this branch is reached would hand a backend
+        that is doing nothing -- and a socket that is simply dead -- the whole prepare
+        budget. The gate is ``pending_load`` being true, not merely arriving here.
+        """
+        from kiro_crew.dashboard import stt_stream
+
+        released = asyncio.Event()
+        reads = {"store": 0}
+
+        class _Store:
+            @property
+            def status(self):
+                # The loop's own read, so the spin count is independent of whether
+                # the announce is asked for at all.
+                reads["store"] += 1
+                if reads["store"] >= 5:
+                    released.set()
+                return {"step": "loading", "downloaded_bytes": 0, "total_bytes": 0}
+
+        monkeypatch.setattr(stt, "model_store", lambda: _Store())
+        monkeypatch.setattr(stt_stream, "_MODEL_PROGRESS_INTERVAL_SECS", 0)
+
+        sent: list[dict] = []
+
+        async def _send(frame):
+            sent.append(frame)
+            return True
+
+        async def _prepare():
+            await released.wait()
+            return []
+
+        task = asyncio.create_task(_prepare())
+        relayed = await asyncio.wait_for(
+            stt_stream._relay_download_progress(task, _send, lambda: False, False),
+            timeout=_AUDIT_WAIT_TIMEOUT_SECS,
+        )
+        assert relayed == []
+        # Several spins really happened, so "nothing was sent" is an observation
+        # rather than a race this test won.
+        assert reads["store"] >= 5, reads
+        assert sent == [], sent
 
     @pytest.mark.asyncio
     async def test_a_failed_progress_send_stops_reporting_not_the_transfer(self, monkeypatch):

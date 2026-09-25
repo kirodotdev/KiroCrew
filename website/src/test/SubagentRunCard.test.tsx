@@ -65,6 +65,29 @@ describe('extractSpawnRunLaunch — MCP result envelope', () => {
     expect(extractSpawnRunLaunch(msg)).toEqual({ ids: ['aaaa1111'], announced: 1 })
   })
 
+  it('recognises a queued-only wave (the gate deferred every member) as a launch', () => {
+    // Without this the card never rendered for exactly the wave whose waiting
+    // it exists to show: spawn_run heads a deferred group with `Queued N
+    // subagent(s).` instead of `Spawned`.
+    const queued =
+      'Queued 1 subagent(s). Not started yet: low memory: 3.2 GB available, need 4 GB. ' +
+      'The gateway re-checks every admit wait and starts each one once the condition clears; only then does its result arrive:\n' +
+      '  aaaa1111 (kirocrew): do a thing\n'
+    const msg = { role: 'tool', content: '🔧 spawn', cls: '', meta: { output: queued } } as ChatMessage
+    expect(extractSpawnRunLaunch(msg)).toEqual({ ids: ['aaaa1111'], announced: 1 })
+  })
+
+  it('sums the announced count across a Spawned and a Queued group', () => {
+    const mixed =
+      'Spawned 1 subagent(s). Results will arrive as completion events:\n' +
+      '  aaaa1111 (kirocrew): started\n' +
+      'Queued 2 subagent(s). Not started yet: low memory: 3.2 GB available, need 4 GB. The gateway re-checks:\n' +
+      '  bbbb2222 (kirocrew): waits\n' +
+      '  cccc3333 (kirocrew): waits too\n'
+    const msg = { role: 'tool', content: '🔧 spawn', cls: '', meta: { output: mixed } } as ChatMessage
+    expect(extractSpawnRunLaunch(msg)).toEqual({ ids: ['aaaa1111', 'bbbb2222', 'cccc3333'], announced: 3 })
+  })
+
   it('falls back to raw scanning when the envelope is truncated or malformed', () => {
     // The server caps persisted output, so a large envelope can arrive as
     // invalid JSON. Dropping the launch record there would lose the card.
@@ -240,6 +263,88 @@ describe('SubagentRunCard rendering', () => {
     // "0 agents running" is technically true and useless for a fully-queued wave.
     expect(screen.getByText('3 agents queued')).toBeTruthy()
     expect(screen.queryByText('0 agents running')).toBeNull()
+  })
+
+  it('keeps the concurrency tooltip when the gateway gave no reason', () => {
+    const store = createTestStore({
+      chat: { activeSlot: SLOT, subagents: {}, subagentQueued: { [SLOT]: 3 } } as unknown as ChatState,
+    })
+    renderWithProviders(<SubagentRunCard launch={launch} slot={SLOT} />, { store })
+    expect(screen.getByTestId('subagent-card-queued').getAttribute('title'))
+      .toBe('Waiting to start — queued behind the concurrency limit')
+  })
+
+  it('explains a memory-deferred wait in the queued chip tooltip', () => {
+    const store = createTestStore({
+      chat: {
+        activeSlot: SLOT,
+        subagents: {},
+        subagentQueued: { [SLOT]: 1 },
+        subagentQueuedReason: { [SLOT]: { reason: 'low_memory', available_gb: 3.2, required_gb: 4.5 } },
+      } as unknown as ChatState,
+    })
+    renderWithProviders(<SubagentRunCard launch={launch} slot={SLOT} />, { store })
+    const title = screen.getByTestId('subagent-card-queued').getAttribute('title') ?? ''
+    expect(title).toMatch(/4\.5\s?GB/)
+    expect(title).toMatch(/3\.2\s?GB/)
+    expect(title).not.toContain('concurrency limit')
+    // The visible chip is unchanged: the count and the word "waiting".
+    expect(screen.getByTestId('subagent-card-queued').textContent).toContain('1 waiting')
+  })
+
+  it('renders the deferral sentence as visible text on the card, not only in the tooltip', () => {
+    const store = createTestStore({
+      chat: {
+        activeSlot: SLOT,
+        subagents: {},
+        subagentQueued: { [SLOT]: 1 },
+        subagentQueuedReason: { [SLOT]: { reason: 'low_memory', available_gb: 3.2, required_gb: 4.5 } },
+      } as unknown as ChatState,
+    })
+    renderWithProviders(<SubagentRunCard launch={launch} slot={SLOT} />, { store })
+    const line = screen.getByTestId('subagent-card-wait-reason')
+    expect(line.textContent).toContain('free up memory to continue')
+    expect(line.getAttribute('role')).toBe('status')
+    // The one sentence the user must act on is not the quietest text on the card.
+    expect(line.className).toContain('text-warn')
+  })
+
+  it('keeps the wait line after one member finished while others still wait', () => {
+    // A mixed wave: one member done, two deferred. Gating the line on "nothing
+    // settled yet" hid an hours-long deferral the moment a sibling finished.
+    const store = createTestStore({
+      chat: {
+        activeSlot: SLOT,
+        subagents: { a1: agent('a1', 'done') },
+        subagentQueued: { [SLOT]: 2 },
+        subagentQueuedReason: { [SLOT]: { reason: 'low_memory', available_gb: 3.2, required_gb: 4.5 } },
+      } as unknown as ChatState,
+    })
+    renderWithProviders(<SubagentRunCard launch={launch} slot={SLOT} />, { store })
+    expect(screen.getByTestId('subagent-card-wait-reason').textContent).toContain('free up memory to continue')
+  })
+
+  it('drops the wait line once this whole wave has finished, even if the slot queues again', () => {
+    // The count is keyed by slot, not by launch: a later wave's queue must not
+    // be worn by a card whose own wave is over.
+    const store = createTestStore({
+      chat: {
+        activeSlot: SLOT,
+        subagents: { a1: agent('a1', 'done'), a2: agent('a2', 'done'), a3: agent('a3', 'error') },
+        subagentQueued: { [SLOT]: 1 },
+        subagentQueuedReason: { [SLOT]: { reason: 'low_memory', available_gb: 3.2, required_gb: 4.5 } },
+      } as unknown as ChatState,
+    })
+    renderWithProviders(<SubagentRunCard launch={launch} slot={SLOT} />, { store })
+    expect(screen.queryByTestId('subagent-card-wait-reason')).toBeNull()
+  })
+
+  it('renders no wait line for a bare count (older gateway)', () => {
+    const store = createTestStore({
+      chat: { activeSlot: SLOT, subagents: {}, subagentQueued: { [SLOT]: 3 } } as unknown as ChatState,
+    })
+    renderWithProviders(<SubagentRunCard launch={launch} slot={SLOT} />, { store })
+    expect(screen.queryByTestId('subagent-card-wait-reason')).toBeNull()
   })
 
   it('reads a background slot from slotActivity, not the active map', () => {

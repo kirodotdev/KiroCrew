@@ -26,7 +26,10 @@ Safety is a conjunction, per scope, before a single signal is sent
 1. no member PID is a tracked root/child (``session_pid`` readers) nor a live
    provider in ``SessionManager`` (the caller's ``active_pids``);
 2. at least one member has positive agent-runtime argv identity (the generated
-   launcher, a managed runtime, or a marked MCP launcher), authorizing the
+   launcher, a managed runtime, or a marked MCP launcher), OR every member is a
+   marked toolbox sandbox credential helper -- a scope with nothing else left in
+   it, the helper being the one member that routinely outlives the runtime it
+   served; either way authorizing the
    scope-wide stop; and EVERY member is this install's own: it carries the
    ``KIROCREW_SPAWNED`` marker, or its ``ppid`` chain reaches a marker-bearing
    member without leaving the scope (env-clearing grandchildren such as
@@ -59,6 +62,7 @@ from kiro_crew import platform_compat
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV
 from kiro_crew.session_pid import (
     _is_agent_runtime_anchor,
+    _is_marked_sandbox_credential_helper,
     _pid_cmdline,
     _read_env_has_kirocrew_marker,
 )
@@ -286,6 +290,31 @@ def _scope_has_agent_runtime_anchor(pids: list[int], proc_root: Path) -> bool:
     return False
 
 
+def _scope_is_only_credential_helpers(pids: list[int], proc_root: Path) -> bool:
+    """True when EVERY member of a non-empty scope is a marked credential helper.
+
+    The second, UNIVERSAL authorization: the toolbox's credential helper serves
+    one runtime and routinely outlives it, so a scope holding nothing else has
+    no client left and only holds threads. The helper is kept out of
+    :func:`_is_agent_runtime_anchor` precisely because that arm is existential --
+    one member would authorize stopping every sibling, including a detached
+    server the user meant to keep -- and "every member is a helper" is the same
+    observation without that reach: any other survivor, marked or not, withdraws
+    the authorization and the scope falls back to needing a runtime anchor.
+
+    Each member's own marker is required, so an unreadable ``environ`` denies
+    the whole rule rather than one member.
+    """
+    if not pids:
+        return False
+    for pid in pids:
+        if _read_env_has_kirocrew_marker(pid, proc_root) is not True:
+            return False
+        if not _is_marked_sandbox_credential_helper(_pid_cmdline(pid, proc_root)):
+            return False
+    return True
+
+
 def _leaders_dead(pids: list[int], proc_root: Path) -> bool:
     """True when every process-group leader of *pids* is gone.
 
@@ -349,8 +378,12 @@ def _scope_reclaimable(
 
     # (ii-b) ownership alone is not scope-wide stop authority: intentional
     # detached work inherits the marker too. At least one member must still
-    # positively identify the abandoned agent-runtime tree this reaper owns.
-    if not _scope_has_agent_runtime_anchor(pids, proc_root):
+    # positively identify the abandoned agent-runtime tree this reaper owns, OR
+    # every member must be a marked credential helper -- a scope with nothing
+    # else left in it.
+    if not _scope_has_agent_runtime_anchor(pids, proc_root) and not (
+        _scope_is_only_credential_helpers(pids, proc_root)
+    ):
         return False, "no agent-runtime anchor in scope", age
 
     # (iii) leader dead OR scope predates this gateway's boot.

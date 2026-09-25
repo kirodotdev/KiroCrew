@@ -216,6 +216,7 @@
     "resource_tight": "Tight",
     "subagent_cap": "cap: {{cap}}",
     "notifications": "सूचनाएँ",
+    "notifications_ask_agent_help": "यह पेज छोड़कर एक नई चैट खोलता है जिसमें इस त्रुटि की रिपोर्ट पहले से भरी होती है, तुम्हें बस उसे भेजना है",
     "notifications_failed_to_load": "सूचनाएँ लोड नहीं हो सकीं",
     "open_inbox": "इनबॉक्स खोलें",
     "open_menu": "मेनू खोलें",
@@ -3681,7 +3682,7 @@
         "trust_normal": "सामान्य",
         "trust_normal_desc": "हर टूल उपयोग पर स्वीकृति माँगें",
         "trust_reads": "पठन",
-        "trust_reads_desc": "केवल-पठन कार्यों को स्वतः स्वीकृत करें (ls, cat, grep)। लेखन कार्य अब भी पूछते हैं।",
+        "trust_reads_desc": "केवल-पठन शेल कमांड स्वतः स्वीकृत होते हैं (ls, cat, grep)। बाकी सब कुछ अब भी पूछता है।",
         "trust_trust": "सभी टूल पर भरोसा करें",
         "trust_trust_desc": "Mochi जो भी टूल इस्तेमाल करे, बिना पूछे मंज़ूर कर दो",
         "trust_yolo_active": "YOLO (सब कुछ अपने आप मंज़ूर) चालू है। यह पूरे {{productName}} पर लागू होता है और इसे डैशबोर्ड से बदलो, यहाँ से नहीं।",
@@ -5662,6 +5663,7 @@
       "your_selected_setup_is_ready_in_kiro_crew": "चुना हुआ सेटअप {{productName}} में तैयार है।"
     },
     "agentSelector": {
+      "agent_id_tooltip": "{{name}} — एजेंट ID। क्रॉन, spawn पैरामीटर और CLI इसी ID का इस्तेमाल करते हैं, लेबल का नहीं।",
       "agent_list": "एजेंट सूची",
       "default": "डिफ़ॉल्ट",
       "filter_agents": "एजेंट फ़िल्टर करें",
@@ -5728,9 +5730,9 @@
       "normal_desc": "{{productName}} कुछ भी करने से पहले तुमसे पुष्टि करता है",
       "normal_label": "सामान्य",
       "normal_tooltip": "{{productName}} कुछ भी करने से पहले तुमसे पूछता है",
-      "reads_desc": "{{productName}} खुद चीज़ें ढूँढ़ता है, लेकिन कोई भी बदलाव करने से पहले पूछता है",
+      "reads_desc": "{{productName}} खुद केवल-पठन शेल कमांड चलाता है, लेकिन बाकी हर चीज़ के लिए पूछता है",
       "reads_label": "रीड्स",
-      "reads_tooltip": "{{productName}} खुद चीज़ें ढूँढ़ता है, लेकिन बदलाव करने से पहले पूछता है",
+      "reads_tooltip": "{{productName}} खुद केवल-पठन शेल कमांड चलाता है, लेकिन बाकी हर चीज़ के लिए पूछता है",
       "trust_desc": "इस चैट में, {{productName}} तुमसे पूछे बिना काम करता है",
       "trust_label": "ट्रस्ट",
       "chat_mode_hint": "चैट मोड",
@@ -6417,7 +6419,7 @@
       "nightly": "Nightly बिल्ड",
       "report_problem": "समस्या रिपोर्ट करें",
       "report_problem_on_build": "इस {{channel}} में समस्या रिपोर्ट करें",
-      "request_feature_starts_agent": "एजेंट के साथ बातचीत शुरू करता है, जो अनुरोध लिखने और दर्ज करने में तुम्हारी मदद करता है। यह किसी भी चैट टर्न की तरह इन्फ़रेंस का उपयोग करता है।"
+      "request_feature_starts_agent": "एक चैट शुरू करता है, जो तुम्हारे अनुरोध का मसौदा तैयार करता है और तुम्हारी मंज़ूरी के बाद उसे GitHub पर दर्ज करता है। यह तुम्हारे प्लान का मासिक उपयोग खर्च करता है।"
     },
     "fileCard": {
       "audio": "ऑडियो: {{name}}",
@@ -7199,7 +7201,8 @@
       "close_editor": "एडिटर बंद करें",
       "copied": "कॉपी हो गया!",
       "copy": "कॉपी करें",
-      "edit_code_block": "कोड ब्लॉक संपादित करें"
+      "edit_code_block": "कोड ब्लॉक संपादित करें",
+      "not_saved_hint": "चैट में वापस सहेजा नहीं जाता। बंद करने पर बदलाव हट जाते हैं।"
     },
     "notifications": {
       "notifMeta": {
@@ -8249,6 +8252,7 @@
     },
     "voiceStatusBar": {
       "default_microphone": "डिफ़ॉल्ट माइक्रोफ़ोन",
+      "dictation_kept_for_model": "तुम्हारा डिक्टेशन सुरक्षित है और बाद में ट्रांसक्राइब किया जाएगा।",
       "recording": "रिकॉर्डिंग"
     },
     "webAppArtifactCard": {
@@ -8972,6 +8976,7 @@
       "audio_worklet_unavailable": "ऑडियो वर्कलेट अनुपलब्ध",
       "stt_connection_error": "stt कनेक्शन त्रुटि",
       "stt_connection_lost": "stt कनेक्शन टूट गया",
+      "stt_model_still_loading": "वाक् मॉडल अभी भी लोड हो रहा है, इसलिए तुम्हारा डिक्टेशन ट्रांसक्राइब नहीं हो सका और सुरक्षित भी नहीं रहा। मॉडल लोड हो जाने पर फिर से बोलो।",
       "stt_error": "stt त्रुटि"
     },
     "useVoiceInput": {
@@ -9000,6 +9005,7 @@
     "sttProviders": {
       "downloading_decoder": "ऑडियो डिकोडर डाउनलोड हो रहा है: {{pct}} ({{total}} में से {{done}})",
       "downloading_speech_model": "वाक् मॉडल डाउनलोड हो रहा है: {{pct}} ({{total}} में से {{done}})",
+      "loading_speech_model": "वाक् मॉडल लोड हो रहा है…",
       "stream_error_decode_failed": "वाक् पहचान यह प्रतिलेख पूरा नहीं कर सकी। इसे दोबारा बोलकर लिखवाओ।",
       "stream_error_max_duration": "डिक्टेशन अपनी अवधि सीमा पर पहुँच गया। जारी रखने के लिए नई रिकॉर्डिंग शुरू करो।",
       "stream_error_model_missing": "वाक् मॉडल अभी तैयार नहीं है। इसे वाक्-से-पाठ सेटिंग में डाउनलोड करो, फिर दोबारा कोशिश करो।",
@@ -9936,7 +9942,8 @@
         "sign_in": "Kiro में साइन इन करें",
         "sign_in_hint": "सेटिंग्स → अवलोकन → Kiro साइन-इन खोलें, फिर से साइन इन करें और अपना संदेश दोबारा भेजें।",
         "feature_request_form": "फ़ीचर अनुरोध फ़ॉर्म खोलो",
-        "feature_request_form_hint": "अभी इन्फ़रेंस क्षमता उपलब्ध नहीं है — इसके बजाय फ़ीचर अनुरोध फ़ॉर्म खोलो।"
+        "feature_request_form_hint": "तुम्हारा मासिक उपयोग खत्म हो गया है — इसके बजाय इस फ़ॉर्म से GitHub पर अपना अनुरोध दर्ज करो। यह फ़ॉर्म एजेंट को छोड़ देता है: यह GitHub का इशू फ़ॉर्म खोलता है, जिसे तुम खुद भरते हो, और इसमें तुम्हारे मासिक उपयोग का कुछ भी खर्च नहीं होता।",
+        "session_start_repeat_hint": "एजेंट सत्र लगातार एक से अधिक बार शुरू होने में विफल रहा है, इसलिए फिर से शुरू करने पर वही स्टार्ट दोबारा चलेगा। टर्मिनल में {{command}} चलाकर गेटवे को फिर से शुरू करो, फिर अपना संदेश दोबारा भेजो।"
       },
       "folderPanel": {
         "clear_search": "खोज साफ़ करें",
@@ -10186,6 +10193,13 @@
         "stop_failed": "सबएजेंट {{name}} को रोका नहीं जा सका",
         "stop_all_failed": "सबएजेंट रोके नहीं जा सके",
         "retry_failed_error": "कुछ विफल सबएजेंट फिर से आज़माए नहीं जा सके"
+      },
+      "subagentQueued": {
+        "adaptive_cap_zero": "शुरू होने की प्रतीक्षा — इस कंप्यूटर में मेमोरी कम है या लोड अधिक है, इसलिए नई शुरुआतें रुकी हैं; स्थिति सुधरने पर वे अपने आप फिर शुरू होंगी",
+        "low_memory": "शुरू होने की प्रतीक्षा — {{required}} खाली मेमोरी चाहिए, अभी {{available}} खाली है; जारी रखने के लिए मेमोरी खाली करो",
+        "low_memory_no_figures": "शुरू होने की प्रतीक्षा — पर्याप्त खाली मेमोरी नहीं है; जारी रखने के लिए मेमोरी खाली करो",
+        "posture_critical": "शुरू होने की प्रतीक्षा — इस कंप्यूटर की मेमोरी गंभीर रूप से कम है ({{available}} खाली); जारी रखने के लिए मेमोरी खाली करो",
+        "posture_critical_no_figures": "शुरू होने की प्रतीक्षा — इस कंप्यूटर की मेमोरी गंभीर रूप से कम है; जारी रखने के लिए मेमोरी खाली करो"
       },
       "subagentRunCard": {
         "agent_finished_one": "{{count}} एजेंट पूरा हुआ",
@@ -11138,6 +11152,7 @@
       "block_semantic_memory": "तुमने बताए तथ्य",
       "block_skill_hint": "संबंधित स्किल",
       "block_skill_index": "स्किल सूची",
+      "block_task_facts": "इस कार्य के लिए याद किए गए तथ्य",
       "block_unclassified": "अवर्गीकृत",
       "block_your_message": "तुम्हारा संदेश",
       "cat_memory": "तुम्हारे बारे में मेमोरी",
@@ -11688,12 +11703,13 @@
       "error": "त्रुटि",
       "errors": "त्रुटियाँ",
       "event": "इवेंट",
+      "awaiting_agent": "अभी नहीं चलता",
       "failed_to_load": "{{section}} लोड नहीं हो सका",
       "failed_to_load_hooks": "हुक लोड नहीं हो सके: {{error}}",
       "filter_hooks": "हुक फ़िल्टर करें…",
       "hook_name": "हुक का नाम",
       "hooks": "हुक",
-      "hooks_run_shell_commands_on_chat_events_agentspa": "हुक चैट इवेंट पर शेल कमांड चलाते हैं: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop। टूल हुक में टूल के नाम से फ़िल्टर करने के लिए मैचर पैटर्न का समर्थन है।",
+      "hooks_run_shell_commands_on_chat_events_agentspa": "हुक चैट ईवेंट पर शेल कमांड चलाते हैं: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop। टूल हुक टूल नाम से छाँटने वाले पैटर्न लेते हैं। अभी नहीं चलता वाली पंक्ति को एजेंट सहारा देता है पर यहाँ उसे अभी कुछ भी नहीं चलाता; कभी नहीं चलता वाली पंक्ति को कोई सहारा नहीं है। परीक्षण दोनों को अभी चलाता है।",
       "last_run": "आख़िरी रन",
       "loading": "लोड हो रहा है…",
       "matcher": "मैचर",
@@ -11713,8 +11729,11 @@
       "runs": "रन",
       "s": "s",
       "save": "सहेजें",
-      "script_hooks_fire_shell_commands_on_chat_lifecyc": "स्क्रिप्ट हुक चैट लाइफ़साइकल इवेंट पर शेल कमांड चलाते हैं। PreToolUse/PostToolUse हुक टूल-नाम पैटर्न से फ़िल्टर कर सकते हैं।",
+      "script_hooks_fire_shell_commands_on_chat_lifecyc": "स्क्रिप्ट हुक चैट जीवनचक्र ईवेंट पर शेल कमांड चलाते हैं। PreToolUse/PostToolUse हुक टूल नाम के पैटर्न से छाँट सकते हैं। चिह्नित ट्रिगर चुनने पर उसके चिह्न का अर्थ दिखता है, और दोनों हालात में परीक्षण हुक को चलाता है।",
       "shell_commands_that_run_automatically_on_agent_e": "एजेंट इवेंट पर अपने आप चलने वाले शेल कमांड",
+      "stored_only": "कभी नहीं चलता",
+      "runs_on_no_event_yet": "एजेंट इस ट्रिगर को सहारा देता है, पर यहाँ अभी इसे कुछ भी नहीं चलाता। परीक्षण इसे अभी चलाता है।",
+      "runs_only_via_test": "यह ट्रिगर कभी अपने आप नहीं चलता। इसे सिर्फ़ परीक्षण चलाता है।",
       "source": "स्रोत",
       "status": "स्थिति",
       "test": "टेस्ट करें",
@@ -11729,7 +11748,14 @@
       "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills.",
       "retry": "फिर कोशिश करें",
       "show_last_error": "{{name}} की पिछली त्रुटि दिखाएँ",
-      "test_failed_for": "{{name}} के लिए परीक्षण विफल"
+      "test_failed_for": "{{name}} के लिए परीक्षण विफल",
+      "saved_switched_off": "यह हुक बंद अवस्था में सहेजा जाएगा — अभी इस ट्रिगर को कुछ भी नहीं चलाता।",
+      "no_matcher_for_trigger": "कोई फ़िल्टर नहीं: इस ट्रिगर के पास फ़िल्टर करने योग्य ईवेंट डेटा नहीं है।",
+      "saved_switched_off_never": "यह हुक बंद अवस्था में सहेजा जाएगा — यह ट्रिगर कभी अपने आप नहीं चलता।",
+      "on_but_nothing_fires": "चालू है, पर अभी इस ट्रिगर को कुछ भी नहीं चलाता।",
+      "via_test": "परीक्षण से चलाया गया",
+      "skills_only_for_prompt_hooks": "कौशल सिर्फ़ उन UserPromptSubmit या AgentSpawn हुक पर लोड होते हैं जो कोई कमांड नहीं चलाते।",
+      "on_but_never_fires": "चालू है, पर यह ट्रिगर कभी अपने आप नहीं चलता।"
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "इस वर्कस्पेस के लिए एक अनूठा पहचानकर्ता। एजेंट वर्कस्पेस को नाम से संदर्भित करते हैं।",
@@ -11761,6 +11787,7 @@
       "discard_new_schedule": "नया शेड्यूल हटाओ?",
       "discard_new_schedule_body": "टाइप किया गया शेड्यूल सहेजा नहीं गया है और खो जाएगा।",
       "discard_schedule_confirm": "शेड्यूल हटाओ",
+      "display_name": "प्रदर्शित नाम",
       "e_g_oncall": "उदा. oncall",
       "edit_crew_named": "एजेंट {{name}} संपादित करें",
       "edit_model": "डिफ़ॉल्ट मॉडल संपादित करो",
@@ -11808,6 +11835,7 @@
       "select_an_agent_template": "एजेंट टेम्पलेट चुनें…",
       "session_color_hint_member": "इस सदस्य द्वारा शुरू किए गए सत्र इस रंग का उपयोग करते हैं, जब तक सत्र का अपना रंग न हो। सदस्य रंग न रखने के लिए खाली छोड़ें।",
       "shared_lower": "साझा",
+      "shown_across_the_dashboard_instead_of_the_name_l": "नाम ({{name}}) की जगह पूरे डैशबोर्ड में दिखाया जाता है। नाम ही दिखाने के लिए खाली छोड़ दो।",
       "subdirectory_inside_kiro_crew_where_this_workspa": "~/.kiro/crew के अंदर वह उपडायरेक्टरी जहाँ यह वर्कस्पेस अपना डेटा (चैट इतिहास, सीख, प्रोजेक्ट) रखता है। हर वर्कस्पेस को अपनी अलग डायरेक्टरी मिलती है।",
       "template_hint_member": "इस सदस्य का प्रारंभिक सेटअप — इसके टूल, कनेक्शन और निर्देश।",
       "the_agent_definition_it_boots_from_tools_mcp_ser": "यह एजेंट जिस शुरुआती सेटअप से चलता है — इसके टूल, कनेक्शन और हिदायतें।",
@@ -12390,6 +12418,8 @@
         "confirm_reapply_body": "यह कॉन्फ़िगर किए गए मॉडल को पुनः लोड करता है और संग्रहीत मेमोरी वेक्टर को हटाकर पुनर्निर्मित करता है।"
       },
       "kiroCrewCfgTab": {
+        "agent_for_pool_processes_empty_uses_default_agent": "पूल प्रोसेस के लिए एजेंट। खाली छोड़ने पर डिफ़ॉल्ट एजेंट उपयोग होता है।",
+        "applies_to_sessions_started_after_the_change": "बदलाव के बाद शुरू हुए सत्रों पर लागू। 'auto' एजेंट को सैंडबॉक्स में रखता है पर क्रेडेंशियल टूल काम करते रहते हैं; 'strict' क्लाउड, SSH, kube और रजिस्ट्री क्रेडेंशियल भी छुपा देता है, इसलिए वे टूल एजेंट के अंदर काम नहीं करते — केवल वहीं जहाँ {{productName}} का अपना सैंडबॉक्स प्रोसेस को सीमित करता है, Windows पर या kiro-cli के आंतरिक सैंडबॉक्स को सौंपे गए macOS प्रोसेस पर नहीं; 'off' {{productName}} का सैंडबॉक्स छोड़ देता है (macOS पर kiro-cli का अपना सैंडबॉक्स सक्षम हो तो फिर भी लागू रहता है)।",
         "approval_mode": "अनुमोदन मोड",
         "auto": "auto",
         "auto_size_max": "ऑटो-साइज़ अधिकतम",
@@ -12405,9 +12435,9 @@
         "embedding_provider": "एम्बेडिंग प्रोवाइडर",
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "kiro-cli के ज़रिए डायनामिक MCP टूल डिस्कवरी चालू करें। अगले सत्र से लागू होगा।",
         "immediate_auto_approves_all_tools_interactive_as": "तुरंत लागू। 'auto' सभी टूल स्वीकृत करता है; 'interactive' हर बार पूछता है।",
-        "immediate_auto_enables_sandbox_for_untrusted_too": "तुरंत लागू। 'auto' अविश्वसनीय टूल के लिए सैंडबॉक्स चालू करता है।",
         "inherited_provider": "इनहेरिटेड ({{provider}})",
         "kirocrew_agents": "{{productName}} एजेंट",
+        "max_age_for_pooled_processes_0_disables_expiry": "पूल किए गए प्रोसेस की अधिकतम आयु। 0 से एक्सपायरी बंद हो जाती है।",
         "max_channel_agents": "अधिकतम चैनल एजेंट",
         "max_channels": "अधिकतम चैनल",
         "max_concurrent_subagents": "अधिकतम समवर्ती सबएजेंट",
@@ -12423,6 +12453,7 @@
         "next_update_check_cycle": "अगले अपडेट जाँच चक्र में।",
         "no_agents_defined": "कोई एजेंट परिभाषित नहीं",
         "no_memory_stores": "कोई मेमोरी स्टोर नहीं",
+        "number_of_pre_spawned_processes_0_disables": "पहले से स्पॉन किए गए प्रोसेस की संख्या। 0 से बंद।",
         "pool_agent": "पूल एजेंट",
         "pool_size": "पूल आकार",
         "pool_ttl": "पूल TTL",
@@ -12439,12 +12470,9 @@
         "using_global_memory_settings": "ग्लोबल मेमोरी सेटिंग का उपयोग हो रहा है",
         "using_legacy_mode_agent_default_agent_as_agent_t": "लेगेसी मोड उपयोग में — एजेंट टेम्पलेट के रूप में agent.default_agent",
         "warm_pool": "वॉर्म पूल",
-        "workspace": "वर्कस्पेस",
-        "workspaces": "वर्कस्पेस",
-        "number_of_pre_spawned_processes_0_disables": "पहले से स्पॉन किए गए प्रोसेस की संख्या। 0 से बंद।",
-        "agent_for_pool_processes_empty_uses_default_agent": "पूल प्रोसेस के लिए एजेंट। खाली छोड़ने पर डिफ़ॉल्ट एजेंट उपयोग होता है।",
         "warm_pool_description": "सत्र तुरंत शुरू करने के लिए ACP CLI प्रक्रियाएँ पहले से चालू करें।",
-        "max_age_for_pooled_processes_0_disables_expiry": "पूल किए गए प्रोसेस की अधिकतम आयु। 0 से एक्सपायरी बंद हो जाती है।"
+        "workspace": "वर्कस्पेस",
+        "workspaces": "वर्कस्पेस"
       },
       "mcpTab": {
         "actions": "कार्रवाइयाँ",
@@ -12502,6 +12530,22 @@
         "probe_failing_help": "लगातार {{failures}} जाँच विफल। सर्वर अभी भी माउंट है; यह केवल स्वास्थ्य रीडिंग है, कोई बदलाव नहीं।",
         "reset_failures": "गणना रीसेट करें",
         "reset_failures_help": "इस सर्वर की लगातार विफलता गणना साफ़ करें।",
+        "disabled_in_config": "कॉन्फ़िग में अक्षम",
+        "disabled_in_config_invalid": "कॉन्फ़िग त्रुटि",
+        "status_invalid_value": "अमान्य मान",
+        "copy_path": "पाथ कॉपी करो",
+        "copy_path_named": "पाथ {{file}} कॉपी करो",
+        "path_copied": "कॉपी हो गया",
+        "copy_path_failed": "कॉपी विफल रहा",
+        "disabled_in_config_help": "साझा Kiro MCP कॉन्फ़िग में अक्षम है, जिसे Kiro IDE भी पढ़ता है। इसे कभी शुरू नहीं किया जाता, और यह पैनल इसे फिर से सक्षम नहीं कर सकता: उस कॉन्फ़िग में फ़्लैग बदलो।",
+        "disabled_in_config_where": "<file>{{file}}</file> में अक्षम है। इस फ़ाइल को संपादित करने से इसकी अक्षमता हट जाती है; कोई दूसरा कॉन्फ़िग फिर भी सर्वर को बंद रख सकता है। एक स्विच की योजना है।",
+        "disabled_in_config_where_unknown": "साझा MCP कॉन्फ़िग में अक्षम है। उस कॉन्फ़िग को संपादित करने से इसकी अक्षमता हट जाती है; कोई दूसरा कॉन्फ़िग फिर भी सर्वर को बंद रख सकता है। एक स्विच की योजना है।",
+        "disabled_in_config_invalid_where": "अक्षम: <file>{{file}}</file> में \"disabled\" का मान अमान्य है। उस फ़ाइल में इसे true या false करो।",
+        "disabled_in_config_invalid_where_unknown": "अक्षम: साझा MCP कॉन्फ़िग में \"disabled\" का मान अमान्य है। उस कॉन्फ़िग में इसे true या false करो।",
+        "uninstall_disabled_in_config_help": "इस सर्वर को हर MCP कॉन्फ़िग से हटाता है, उस साझा कॉन्फ़िग सहित जिसमें यह अक्षम है।",
+        "scope_disabled_in_config": "{{label}}: बंद (साझा MCP कॉन्फ़िग में अक्षम; इसे वहाँ बदलें)",
+        "disabled_count_one": "{{count}} अक्षम",
+        "disabled_count_other": "{{count}} अक्षम",
         "sign_in": "साइन इन करें",
         "sign_in_authorize": "{{name}} को अधिकृत करें",
         "sign_in_mint_failed": "साइन-इन शुरू नहीं हो सका। फिर से कोशिश करें।",
@@ -14397,6 +14441,11 @@
         "zoom_level": "ज़ूम स्तर",
         "font_family_option_opendyslexic": "OpenDyslexic",
         "config_load_failed": "सहेजी गई डिस्प्ले सेटिंग लोड नहीं हो सकीं। लोड होने तक शेल, हाल के सत्र और कमांड पूर्णता की सेटिंग उपलब्ध नहीं हैं।",
+        "installed_themes_load_failed": "थीम सूची लोड नहीं हो सकी; अपने आप फिर से कोशिश की जा रही है। लोड होने तक किसी इंस्टॉल थीम को चुना या लागू नहीं किया जा सकता।",
+        "installed_themes_refresh_failed": "थीम सूची रीफ़्रेश नहीं हो सकी। यह पुरानी है।",
+        "installed_themes_refresh_failed_after_install": "थीम इंस्टॉल हो गई, लेकिन थीम सूची रीफ़्रेश नहीं हो सकी। सूची रीफ़्रेश करके इसे लागू करने के लिए फिर से कोशिश करो दबाओ, या थीम सूची रीफ़्रेश होने पर उसमें से चुनो।",
+        "retry_theme_list": "फिर से कोशिश करो",
+        "retrying_theme_list": "फिर कोशिश की जा रही है…",
         "recent_tint_save_failed": "हाल के सत्रों की हाइलाइट संख्या सहेजी नहीं जा सकी।"
       },
       "importPanel": {

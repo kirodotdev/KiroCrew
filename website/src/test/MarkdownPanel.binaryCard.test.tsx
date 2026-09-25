@@ -295,6 +295,29 @@ describe('MarkdownPanel binary gate', () => {
     expect(signal?.aborted).toBe(true)
   })
 
+  it('restores the editor for a .py whose bytes decode on a later read', () => {
+    // A code file's default view IS the editor, and `canPreview` is false for it,
+    // so nothing renders an Edit toggle to undo the card's forced read-only state.
+    const view = renderPanel({ filePath: '/home/user/tool.py', content: '', binary: true })
+    expect(screen.getByTestId('binary-file-card')).toBeInTheDocument()
+    expect(screen.queryByTestId('pierre-editor')).toBeNull()
+
+    view.rerenderPanel({ filePath: '/home/user/tool.py', content: 'print(1)', binary: false })
+    expect(screen.queryByTestId('binary-file-card')).toBeNull()
+    expect(screen.getByTestId('pierre-editor')).toBeInTheDocument()
+  })
+
+  it('keeps markdown in its viewer when the bytes decode on a later read', () => {
+    // The control for the rule above: markdown's default is the PREVIEW, so the
+    // same flip must not push it into an editor the user never asked for.
+    const view = renderPanel({ filePath: '/home/user/notes.md', content: '', binary: true })
+    expect(screen.getByTestId('binary-file-card')).toBeInTheDocument()
+
+    view.rerenderPanel({ filePath: '/home/user/notes.md', content: '# hi', binary: false })
+    expect(screen.queryByTestId('binary-file-card')).toBeNull()
+    expect(screen.queryByTestId('pierre-editor')).toBeNull()
+  })
+
   it('still opens the editor for a same-extension-family TEXT file', () => {
     // The control: nothing about `.bin` decides this, so a file the sniff let
     // through must keep the editor it had before.

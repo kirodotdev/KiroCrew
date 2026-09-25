@@ -26,6 +26,12 @@ vi.mock('../../api/client', () => ({
     members: vi.fn(),
     memberThread: vi.fn(),
     memberActivity: vi.fn(() => Promise.resolve({ slug: '', member: '', capped: false, entries: [] })),
+    // The open member's folded views. The roster list carries the `roster` view
+    // alone, so the drawer's activity timeline and patrol state read their
+    // baseline here. Resolved-and-empty is the state every case not about those
+    // blocks wants, and the patrol tile waits for this read before it forms a
+    // verdict — an unstubbed reject would leave every drawer case racing it.
+    memberProjections: vi.fn(() => Promise.resolve({ asOfSeq: 0, values: {} })),
     // The Notes tab's read. "No notes yet" is the state every case not about
     // Notes wants: an empty state, not an alert.
     memberBriefing: vi.fn(() => Promise.resolve({ slug: '', member: '', supported: true, text: '', updated_ts: null, redacted: false, truncated: false })),
@@ -135,6 +141,9 @@ import { __resetPanelTabs, VIEW_DATA_SOURCE } from '../../hooks/usePanelTabs'
 
 /** The page's own memory key (mirrors the constant in MembersPage.tsx). */
 const LAST_MEMBER_KEY = 'mc-members-last-member'
+// Spelled out rather than imported: the value IS the contract with a returning
+// browser, so a rename of the page's constant must fail here.
+const PANEL_OPEN_KEY = 'mc-members-panel-open'
 
 /** A window wide enough to dock the side panel BESIDE the thread (see
  *  panelSitsBeside): roster 264 + gaps 24 + shell reserve 560 + panel min 320
@@ -269,6 +278,11 @@ beforeEach(() => {
   // the quiet defaults.
   vi.mocked(api.memberActivity).mockImplementation(() =>
     Promise.resolve({ slug: '', member: '', capped: false, entries: [] }),
+  )
+  // The patrol tile waits for this read before it forms a verdict, so a case
+  // that holds it open would leave every later drawer on the skeleton.
+  vi.mocked(api.memberProjections).mockImplementation(() =>
+    Promise.resolve({ asOfSeq: 0, values: {} }),
   )
   // The flag case above turns reply threads ON for one test; back to the default.
   vi.mocked(api.kirocrewConfig).mockImplementation(() => Promise.resolve({}))
@@ -713,21 +727,40 @@ describe('MembersPage side panel (Notes / Work log / Dashboard) and edit jump', 
     expect(api.members).toHaveBeenCalledTimes(1)
   })
 
-  it('docks the chat SidePanel beside the thread on a wide window: permanent, no Details toggle, no close control', async () => {
+  it('docks the chat SidePanel beside the thread on a wide window, and its strip can hide it', async () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))
     expect(await screen.findByTestId('member-notes')).toBeInTheDocument()
-    // The panel is part of the page while a member is open, like the roster:
-    // nothing in the header opens or closes it, and its strip renders no
-    // close control (the chat page's panel shows one because ChatPage passes
-    // onClose; this page does not).
+    // Docked and open, the gesture splits across the two halves exactly as the
+    // chat page splits it: the header shows no opener because the panel's own
+    // strip carries the close control.
     expect(screen.queryByTestId('member-panel-toggle')).toBeNull()
-    expect(screen.queryByRole('button', { name: /close panel/i })).toBeNull()
+    const close = screen.getByRole('button', { name: /close panel/i })
     // The strip is the SidePanel's: its own resize splitter (the same shared
     // handle the chat page drags) pins that the page mounted the real
     // component rather than a lookalike. Named precisely: the roster's own
     // grip ("Resize member list") is a second resize separator on the page.
     expect(screen.getByRole('separator', { name: /resize panel/i })).toBeInTheDocument()
+    // Closing hides the docked column and hands the gesture back to the
+    // header, so the panel is reachable again.
+    fireEvent.click(close)
+    await waitFor(() => expect(screen.queryByTestId('member-notes')).toBeNull())
+    expect(screen.getByTestId('member-panel-toggle')).toBeInTheDocument()
+  })
+
+  it('the side-panel chord is inert on the empty pane, so it cannot hide the panel of the next member opened', async () => {
+    localStorage.setItem(LAST_MEMBER_KEY, 'ghost')
+    await renderPage([row({ name: 'oncall', bound: true, slot_key: 'member-oncall' })])
+    // No member open: the page draws neither the panel nor its opener, so the
+    // chord has no visible effect to give and must leave the shown choice
+    // standing. (The stored value is '1' from the hook's own mount write, not
+    // from the gesture.)
+    await screen.findByText(/Pick a member/i)
+    fireEvent(window, new Event('toggle-activity-panel'))
+    expect(localStorage.getItem(PANEL_OPEN_KEY)).toBe('1')
+    // Opening a member therefore still finds the panel shown.
+    fireEvent.click(await rosterRow('oncall'))
+    expect(await screen.findByTestId('member-notes')).toBeInTheDocument()
   })
 
   it('Notes is the FIRST tab, selected by default, and has no close control', async () => {
@@ -1103,11 +1136,12 @@ describe('MembersPage side panel (Notes / Work log / Dashboard) and edit jump', 
     await screen.findByTestId('chat-pane-stub')
     fireEvent.click(screen.getByTestId('member-panel-toggle'))
     expect(await screen.findByTestId('member-notes')).toBeInTheDocument()
-    // Widen: the panel docks (no toggle, no close control)…
+    // Widen: the panel docks, so the header opener gives way to the strip's
+    // own close control…
     setWindowWidth(WIDE_WINDOW)
     fireEvent(window, new Event('resize'))
     await waitFor(() => expect(screen.queryByTestId('member-panel-toggle')).toBeNull())
-    expect(screen.queryByRole('button', { name: /close panel/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /close panel/i })).toBeInTheDocument()
     // …and narrowing again finds the overlay CLOSED, not popped back over the thread.
     setWindowWidth(NARROW_WINDOW)
     fireEvent(window, new Event('resize'))
@@ -2052,6 +2086,55 @@ describe('MembersPage auto patrol (monitor loop status)', () => {
     expect(cycles).not.toHaveTextContent('61/0')
   })
 
+  it('waits for the durable wake baseline instead of reading an empty registry as nothing scheduled', async () => {
+    // The verdict reads two sources: the live registry for presence, and the
+    // `wake` projection for a stop that outlives it. The projection arrives with
+    // the open member's own read, so a verdict formed before that read lands
+    // shows "nothing scheduled" for a member the log records as STOPPED -- the
+    // exact reading the durable record exists to prevent. Held open here so the
+    // window is observable rather than a race.
+    let release!: (v: { asOfSeq: number; values: Record<string, unknown> }) => void
+    ;(api.memberProjections as ReturnType<typeof vi.fn>).mockReturnValue(
+      new Promise((resolve) => {
+        release = resolve
+      }),
+    )
+    ;(api.autonudgeList as ReturnType<typeof vi.fn>).mockResolvedValue({ enabled: true, loops: [] })
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    await openWorkLog()
+
+    // While the read is in flight the tile shows its skeleton and commits to no
+    // verdict -- in particular not the "nothing scheduled" one.
+    await waitFor(() => expect(screen.getByTestId('member-patrol-loading')).toBeInTheDocument())
+    expect(screen.queryByTestId('member-patrol-status')).toBeNull()
+
+    release({ asOfSeq: 4, values: { wake: { patrol: 'stopped', stopped_reason: 'runtime_budget' } } })
+
+    // Once it lands the durable stop is what renders, reason and all.
+    await waitFor(() => expect(screen.queryByTestId('member-patrol-loading')).toBeNull())
+    expect(screen.getByTestId('member-patrol-status')).toHaveTextContent(/stopped/i)
+    expect(screen.getByTestId('member-patrol-reason')).toBeInTheDocument()
+  })
+
+  it('a FAILED projections read shows the error, never "nothing scheduled"', async () => {
+    // The same window as the test above, ending the other way. A read that fails
+    // is also no longer in flight, so a readiness test asking only whether the
+    // request settled opens the gate on a baseline that never arrived -- and the
+    // tile then states the one thing it cannot know, that nothing is scheduled.
+    // Three states, and a failure is its own: skeleton, error, or a verdict.
+    ;(api.memberProjections as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('projections read failed'),
+    )
+    ;(api.autonudgeList as ReturnType<typeof vi.fn>).mockResolvedValue({ enabled: true, loops: [] })
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    await openWorkLog()
+
+    await waitFor(() => expect(screen.getByTestId('member-patrol-error')).toBeInTheDocument())
+    expect(screen.queryByTestId('member-patrol-status')).toBeNull()
+  })
+
   it('a banner, when set, is what the instruction row shows', async () => {
     await openDrawerWith({ loops: [loop({ banner: 'watching PR #123' })] })
     expect(screen.getByTestId('member-patrol-instruction')).toHaveTextContent('watching PR #123')
@@ -2210,8 +2293,8 @@ describe('MembersPage member edit entry (issue #9425)', () => {
     expect(btn).toHaveAttribute('title', 'Edit member')
     expect(btn.querySelector('svg')).not.toBeNull()
     // It sits INSIDE the title row, right AFTER the name — never a
-    // header-level peer (docked wide, the header carries no panel control at
-    // all; the panel is a permanent column).
+    // header-level peer (docked wide with the panel open, the header carries no
+    // panel control at all; the open column's own strip carries it).
     const titleRow = screen.getByTestId('member-title-row')
     expect(titleRow).toContainElement(btn)
     expect(titleRow.textContent).toContain('oncall')

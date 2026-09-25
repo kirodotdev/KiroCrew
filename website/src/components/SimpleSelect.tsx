@@ -67,7 +67,7 @@ export interface SimpleSelectProps {
    *  Radix path only. On touch the row IS a native `<option>`, which holds text
    *  and nothing else, so the same fact is appended as `name — label` there. The
    *  divergence is deliberate: each path gets the best form it can render. */
-  optionBadges?: ({ label: string; source: string } | undefined)[]
+  optionBadges?: ({ label: string; source: string; hint?: string } | undefined)[]
   disabled?: boolean
   style?: React.CSSProperties
   /** Forwarded to the trigger so a caption's `<label htmlFor>` can name it
@@ -203,7 +203,7 @@ export default function SimpleSelect({ options, optionLabels, optionIcons, value
                         template name — the badge text otherwise joins it and breaks
                         exact-name lookups (locators, SR "select kirocrew"). */}
                     <span aria-hidden="true" className="contents">
-                      <SourceBadge source={badge.source} tone="neutral">{badge.label}</SourceBadge>
+                      <SourceBadge source={badge.source} tone="neutral" title={badge.hint}>{badge.label}</SourceBadge>
                     </span>
                   </span>
                 ) : icon ? (

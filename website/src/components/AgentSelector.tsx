@@ -21,6 +21,11 @@ export interface KiroCrewAgent {
   /** This agent's own default reasoning effort. '' means inherit the global
    *  default. Optional: older payloads predate the field. */
   reasoning_effort?: string
+  /** Optional label shown in place of `name`. Presentation only: `name` stays
+   *  the immutable identity every route, dispatch and binding is keyed on.
+   *  Empty or absent means the name itself is displayed. Optional: older
+   *  payloads predate the field. */
+  display_name?: string
   description: string
   /** Free-text routing intent read by the orchestrator's select_crew. Optional:
    *  older payloads predate the field, and it falls back to `description`. */
@@ -39,6 +44,15 @@ export interface KiroCrewAgent {
   selection_kind?: 'member' | 'template'
   /** `global` or `project`; only catalog rows carry it. */
   scope?: string
+}
+
+/** The label a roster surface shows for a crew: its display name when one is
+ *  set, otherwise its name. One helper rather than `a.display_name || a.name`
+ *  at each site, so every surface applies the same fallback (and the same
+ *  trim — a stored label arrives trimmed, but an in-flight edit draft may
+ *  not be). */
+export function crewDisplayName(a: Pick<KiroCrewAgent, 'name' | 'display_name'>): string {
+  return a.display_name?.trim() || a.name
 }
 
 interface Props {
@@ -108,10 +122,16 @@ export default function AgentSelector({ agents, defaultAgent, value, onChange, m
   const inputRef = useRef<HTMLInputElement>(null)
 
   const active = value || defaultAgent || (agents[0]?.name ?? 'default')
+  // What the trigger shows for the active agent: its display label when the
+  // roster row is at hand, the raw identity otherwise (a roster still loading,
+  // or a value naming an agent the roster does not list).
+  const activeAgent = agents.find(a => a.name === active)
+  const activeLabel = activeAgent ? crewDisplayName(activeAgent) : active
 
   const filtered = useMemo(
     () => filter
-      ? agents.filter(a => a.name.toLowerCase().includes(filter.toLowerCase()))
+      ? agents.filter(a =>
+          (a.name + ' ' + (a.display_name ?? '')).toLowerCase().includes(filter.toLowerCase()))
       : agents,
     [agents, filter],
   )
@@ -219,7 +239,7 @@ export default function AgentSelector({ agents, defaultAgent, value, onChange, m
         className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-mono font-medium border border-border bg-bg-elevated text-text hover:border-border-strong transition-all cursor-pointer"
         aria-label={i18nT('components.agentSelector.switch_agent')}
       >
-        <span className="text-accent"><Bot size={14} /></span> {active}
+        <span className="text-accent"><Bot size={14} /></span> {activeLabel}
         <ChevronDown size={12} className="text-muted ml-1 shrink-0" aria-hidden />
       </PopoverTrigger>
       <PopoverContent
@@ -308,7 +328,13 @@ export default function AgentSelector({ agents, defaultAgent, value, onChange, m
               >
                 <div className="flex flex-col min-w-0 flex-1">
                   <div className="flex items-center gap-1.5">
-                    <span className={`text-[13px] font-mono font-semibold truncate ${isCurrent ? 'text-accent' : 'text-text'}`}>{a.name}</span>
+                    <span className={`text-[13px] font-mono font-semibold truncate ${isCurrent ? 'text-accent' : 'text-text'}`}>{crewDisplayName(a)}</span>
+                    {/* The ID stays visible when a label covers it: `agent=` in
+                        spawn params, crons and the CLI all address the ID, so a
+                        picker that hid it would strand anyone wiring those up. */}
+                    {crewDisplayName(a) !== a.name && (
+                      <span className="text-[11px] font-mono text-muted truncate max-w-[9rem]" title={i18nT('components.agentSelector.agent_id_tooltip', { name: a.name })}>{a.name}</span>
+                    )}
                     {isDefault && <span className="px-1.5 py-[1px] rounded-full text-[10px] font-bold bg-accent-subtle text-accent border border-accent/30 shrink-0">{i18nT('components.agentSelector.default')}</span>}
                     {a.source && (
                       <SourceBadge source={a.source} className="shrink-0">

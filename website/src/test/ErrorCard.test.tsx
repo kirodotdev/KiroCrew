@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 
-import { ErrorCard, isAuthRequired, isModelUnentitled, isUsageLimit, retryProse } from '../pages/chat/ErrorCard'
+import { ErrorCard, isAuthRequired, isModelUnentitled, isSessionStartFailed, isUsageLimit, retryProse, sessionStartFailureStreak } from '../pages/chat/ErrorCard'
+import type { ChatMessage } from '../types'
 import { FEATURE_REQUEST_FORM_URL } from '../prompts/featureRequest'
 import { i18nT } from '../i18n/t'
 
@@ -285,5 +286,82 @@ describe('ErrorCard — feature request refused for a usage limit', () => {
     expect(screen.queryByTestId('error-card-feature-request-form')).toBeNull()
     expect(screen.getByTestId('error-card')).not.toHaveAttribute('data-usage-limit-fallback')
     expect(screen.getByTestId('error-card-continue')).toBeInTheDocument()
+  })
+})
+
+describe('ErrorCard — a session start that failed twice in a row', () => {
+  const prose = 'Request session/new timed out after 90s (4/4 session-injected MCP server(s) reported)'
+
+  it('shows the restart remedy, naming the command, and NO Resume', () => {
+    render(<ErrorCard content={prose} meta={{ kind: 'session_start_failed' }} sessionStartRepeat />)
+    const card = screen.getByTestId('error-card')
+    // The backend's own sentence stays first -- it carries the diagnostic.
+    expect(card).toHaveTextContent(prose)
+    const hint = screen.getByTestId('error-card-session-start-repeat-hint')
+    expect(hint).toHaveTextContent(i18nT('pages.chat.errorCard.session_start_repeat_hint', { command: 'kirocrew restart' }))
+    // The command is the one thing to copy, so it is a code chip at body weight,
+    // not a muted footnote (the only remaining next step must not be the least
+    // visible thing on the card).
+    expect(screen.getByTestId('error-card-restart-command')).toHaveTextContent('kirocrew restart')
+    expect(screen.getByTestId('error-card-restart-command').tagName).toBe('CODE')
+    expect(hint.className).not.toMatch(/text-muted/)
+    expect(screen.queryByTestId('error-card-continue')).toBeNull()
+    expect(card).not.toHaveAttribute('data-continuable')
+  })
+
+  it('keeps the first failure as today: Resume, no hint', () => {
+    render(<ErrorCard content={prose} meta={{ kind: 'session_start_failed' }} onContinue={() => undefined} />)
+    expect(screen.getByTestId('error-card-continue')).toBeInTheDocument()
+    expect(screen.queryByTestId('error-card-session-start-repeat-hint')).toBeNull()
+  })
+})
+
+describe('sessionStartFailureStreak mirrors the server scan', () => {
+  const row = (role: string, over: Partial<ChatMessage> = {}): ChatMessage =>
+    ({ role, content: '', ts: 0, ...over }) as ChatMessage
+  const failed = () => row('error', { content: 'Request session/new timed out after 90s', meta: { kind: 'session_start_failed' } })
+  const resumed = () => row('inject', { content: '[Continue — requested by the user] …', meta: { injectKind: 'recovery' } })
+
+  it('counts consecutive tagged failures across Resume rows', () => {
+    expect(sessionStartFailureStreak([row('user', { content: 'hi' }), failed()])).toBe(1)
+    expect(sessionStartFailureStreak([row('user', { content: 'hi' }), failed(), resumed(), failed()])).toBe(2)
+    expect(sessionStartFailureStreak([row('user', { content: 'hi' }), failed(), resumed(), failed(), resumed(), failed()])).toBe(3)
+  })
+
+  it('a typed message or an assistant reply starts the count over', () => {
+    expect(sessionStartFailureStreak([row('user', { content: 'hi' }), failed(), resumed(), failed(), row('user', { content: 'again' }), failed()])).toBe(1)
+    expect(sessionStartFailureStreak([row('user', { content: 'hi' }), failed(), row('assistant', { content: 'ok' })])).toBe(0)
+  })
+
+  it('a row that opens a turn of its own ends the streak; the Resume row does not', () => {
+    const cron = row('inject', { content: '[Cron notification from "job"] …', meta: { injectKind: 'cron' } })
+    const synthesis = row('inject', { content: 'synthesis', meta: { injectKind: 'synthesis' } })
+    const nudge = row('nudge', { content: '[auto-nudge cycle 2]' })
+    const sub = row('subagent', { content: '[Subagent completion event] …' })
+    for (const opener of [cron, synthesis, nudge, sub]) {
+      expect(sessionStartFailureStreak([row('user', { content: 'hi' }), failed(), opener, failed()])).toBe(1)
+    }
+    expect(sessionStartFailureStreak([row('user', { content: 'hi' }), failed(), resumed(), failed()])).toBe(2)
+  })
+
+  it('an error of another kind, or a Stop card, ends the streak', () => {
+    expect(sessionStartFailureStreak([row('user', { content: 'hi' }), failed(), row('error', { content: '⟳ Connection lost — please retry.' })])).toBe(0)
+    expect(sessionStartFailureStreak([row('user', { content: 'hi' }), failed(), row('error', { content: 'x' }), failed()])).toBe(1)
+    expect(sessionStartFailureStreak([row('user', { content: 'hi' }), failed(), row('system', { kind: 'stop_event' }), failed()])).toBe(1)
+  })
+
+  it('walks past a system notice and reads both kind carriers', () => {
+    const notice = row('assistant', { content: 'Auto-compacted.', meta: { kind: 'compaction' } })
+    expect(sessionStartFailureStreak([row('user', { content: 'hi' }), failed(), notice, failed()])).toBe(2)
+    const rebuilt = row('error', { content: 'timed out', kind: 'session_start_failed' })
+    expect(sessionStartFailureStreak([row('user', { content: 'hi' }), rebuilt, resumed(), rebuilt])).toBe(2)
+    expect(isSessionStartFailed(rebuilt)).toBe(true)
+    expect(isSessionStartFailed(failed())).toBe(true)
+    expect(isSessionStartFailed(row('error', { content: 'timed out' }))).toBe(false)
+  })
+
+  it('never counts an untagged timeout -- the kind decides, not the prose', () => {
+    const untagged = () => row('error', { content: 'Request session/new timed out after 90s' })
+    expect(sessionStartFailureStreak([row('user', { content: 'hi' }), untagged(), resumed(), untagged()])).toBe(0)
   })
 })

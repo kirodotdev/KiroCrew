@@ -40,11 +40,13 @@ from __future__ import annotations
 import logging
 import math
 import re
+import secrets
 import time
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Mapping, Sequence
 
 from kiro_crew import validation as _validation
+from kiro_crew.decisions.log import MAX_VERDICT_ID_CHARS as _MAX_VERDICT_ID_CHARS
 from kiro_crew.decisions.points import nudge_wake as point
 
 logger = logging.getLogger(__name__)
@@ -597,6 +599,324 @@ def verdict_record(verdict: Any, evidence_items: int) -> dict[str, Any]:
     except Exception:
         outcome = "unknown"
     return {"outcome": outcome, "evidence_items": int(evidence_items), "at": time.time()}
+
+
+#: How many labelled verdicts a loop's record keeps. Sized from the QUIET-STREAK
+#: FLOOR, not from the window the judge reads: a full streak is the floor's worth of
+#: suppressed verdicts followed by the delivery that labels them, and a store smaller
+#: than that evicts the earliest suppressions before their label arrives. The floor is
+#: configurable but clamped to ``autonudge._MAX_QUIET_STREAK``, so this covers every
+#: streak the service can produce. ``test_wake_judge_feedback`` pins the two together.
+MAX_STORED_VERDICTS = 11
+
+#: A reply at or under this length, from a turn that called no tool, is the quiet-cycle
+#: shape: the loop woke, the owner looked, there was nothing to do, and the turn said
+#: so. Calibrated against what such a reply actually is -- one or two sentences -- and
+#: deliberately generous, because the direction to be wrong in is calling a real turn
+#: quiet rather than the reverse. A false ``owner_acted`` teaches the judge that a wake
+#: was warranted, which costs turns; a false quiet teaches it to suppress.
+QUIET_REPLY_MAX_CHARS = 280
+
+#: Longest verdict id a stored row keeps. One spelling, held in
+#: :mod:`kiro_crew.decisions.log`, so the stored row's ``id`` and the ``verdict_id`` on
+#: the label row joining to it clip to the same length.
+MAX_VERDICT_ID_CHARS = _MAX_VERDICT_ID_CHARS
+
+
+def owner_action_reading(
+    tool_calls: object,
+    reply_text: object,
+    *,
+    reply_flushed: bool = False,
+) -> tuple[bool, int | None, int]:
+    """The action label and the text-free inputs from which it is derived.
+
+    The tool-call count is ``None`` when it is unknown. The reply measurement is the
+    stripped character count, never the reply or a fragment of it. Returning all three
+    from one reading keeps the durable calibration row aligned with the boolean label.
+    """
+    tool_count = (
+        tool_calls
+        if isinstance(tool_calls, int) and not isinstance(tool_calls, bool) and tool_calls >= 0
+        else None
+    )
+    text = reply_text if isinstance(reply_text, str) else ""
+    stripped = text.strip()
+    reply_chars = len(stripped)
+    acted = owner_acted(tool_calls, reply_text, reply_flushed=reply_flushed)
+    return acted, tool_count, reply_chars
+
+
+def owner_acted(tool_calls: object, reply_text: object, *, reply_flushed: bool = False) -> bool:
+    """Whether the woken turn DID anything. The whole rule, in one function.
+
+    Deterministic and model-free, which is what makes it usable as a label: two
+    readings of the same turn agree, and a curve built from these labels measures the
+    judge rather than a second judge's opinion of it.
+
+    ``True`` when the turn called at least one tool, or when its reply is longer than
+    the quiet-cycle shape (:data:`QUIET_REPLY_MAX_CHARS`) or carries a link. ``False``
+    only for a turn that called nothing and answered short -- which is exactly the
+    reply a loop produces when it wakes, looks, and finds nothing for its owner.
+
+    A turn that CHANGED the loop needs no separate signal: ``monitor_update`` and
+    ``autonudge_stop`` are tool calls, so the count already carries them. Reading them
+    a second way would be a second rule that can disagree with this one.
+
+    An UNKNOWN tool-call count -- no count passed, an older caller, a turn whose runner
+    never reached the hook -- reads as acted. The count is the strong half of the rule,
+    so without it the honest answer is that this turn cannot be shown to have been
+    idle, and the cheap direction to be wrong in is the one that does not teach the
+    judge to stay quiet.
+
+    When *reply_flushed* is true, an earlier segment already left the screen, so the
+    text in hand is not the whole reply and cannot be judged short. Erring toward
+    acted is the safe direction under this function's contract.
+
+    *reply_text* is read and not retained: the answer is one boolean, and nothing
+    downstream of this function stores or logs the reply.
+    """
+    tool_count = (
+        tool_calls
+        if isinstance(tool_calls, int) and not isinstance(tool_calls, bool) and tool_calls >= 0
+        else None
+    )
+    text = reply_text if isinstance(reply_text, str) else ""
+    stripped = text.strip()
+    return (
+        reply_flushed
+        or tool_count is None
+        or tool_count > 0
+        or len(stripped) > QUIET_REPLY_MAX_CHARS
+        or "http://" in stripped
+        or "https://" in stripped
+    )
+
+
+def new_verdict_id() -> str:
+    """An opaque key joining one verdict's decision row to its later label row.
+
+    Random rather than a counter: the two writers are a tick and a turn-complete hook,
+    neither holds a lock over the other, and a restart between them must not hand a
+    second verdict the same key. It never reaches the judge -- the point rebuilds every
+    row it sends and carries no id.
+    """
+    return secrets.token_hex(8)
+
+
+def verdict_entry(
+    verdict: Any,
+    evidence_items: int,
+    *,
+    suppressed: bool,
+    answered: bool,
+    verdict_id: str = "",
+    at: float | None = None,
+) -> dict[str, Any]:
+    """One row for the loop's labelled verdict history, as the TICK knows it.
+
+    A tick knows two things a label pass cannot recover later, and neither is the
+    outcome name. ``suppressed`` says this verdict withheld the turn, which is what
+    makes it eligible for a ``missed`` label. ``answered`` says the judge actually
+    produced it: a tick that read nothing new, or could not read a target, returns a
+    verdict without asking the judge at all, and such a verdict scores nothing --
+    it sat on no evidence and no decision row exists to join a label to.
+
+    ``delivered`` is deliberately NOT set here. A verdict that decided to wake has
+    not delivered anything yet: the fire can be refused because the slot is busy,
+    the timer can be cancelled by the owner typing, or the process can stop in
+    between. Only the fire path knows delivery happened, and it stamps the row
+    there (:func:`confirm_delivery`). So a fresh wake row is neither suppressed nor
+    delivered, and that third state is what keeps an unrelated turn's actions off
+    it.
+
+    ``verdict_id`` keys the calibration log row that carries this row's label, so
+    the two join without rewriting the line the decision already wrote.
+    """
+    row = verdict_record(verdict, evidence_items)
+    row["answered"] = bool(answered)
+    if suppressed:
+        row["suppressed"] = True
+    if at is not None:
+        row["at"] = float(at)
+    if verdict_id:
+        row["id"] = str(verdict_id)[:MAX_VERDICT_ID_CHARS]
+    return row
+
+
+def append_verdict(
+    history: Sequence[Mapping[str, Any]] | None, row: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """*history* with *row* appended, oldest first, bounded to the stored window."""
+    out = [dict(item) for item in list(history or []) if isinstance(item, Mapping)]
+    out.append(dict(row))
+    del out[:-MAX_STORED_VERDICTS]
+    return out
+
+
+def confirm_delivery(
+    history: Sequence[Mapping[str, Any]] | None,
+) -> tuple[list[dict[str, Any]], bool]:
+    """*history* with the newest undecided row stamped delivered, and whether one was.
+
+    The undecided row is the one a wake verdict left behind: neither suppressed nor
+    yet delivered. Stamping it HERE, from the fire path, is what makes ``delivered``
+    mean "a turn really went out" rather than "a tick meant to send one" -- and that
+    is the difference between labelling the woken turn and labelling whatever turn
+    happened to finish next.
+
+    ``False`` when there is no such row, which is the ordinary case for a tick the
+    judge suppressed and for a fire no judge verdict asked for.
+
+    A FORFEITED row is a permanent boundary: its delivery went out but its turn was
+    never seen, so no later turn can supply its label. A re-owed delivery has its own
+    newer undecided row, which this walk stamps without changing the boundary.
+    """
+    rows = [dict(item) for item in list(history or []) if isinstance(item, Mapping)]
+    for position in range(len(rows) - 1, -1, -1):
+        row = rows[position]
+        if row.get("forfeited") is True:
+            return rows, False
+        if row.get("delivered") is True or row.get("suppressed") is True:
+            # The newest row already knows what it is, so no verdict is awaiting a
+            # delivery stamp. Stopping at the first decided row rather than scanning
+            # past it keeps an older undecided row -- a wake whose fire was lost --
+            # from being credited to this delivery.
+            return rows, False
+        rows[position]["delivered"] = True
+        return rows, True
+    return rows, False
+
+
+def mark_fired(history: Sequence[Mapping[str, Any]] | None) -> list[dict[str, Any]]:
+    """*history* with the newest row's suppression withdrawn.
+
+    For the one tick that judged quiet and then fired anyway because its state did
+    not persist. The row claimed to withhold the turn and the turn is going out, so
+    the claim is wrong; clearing it returns the row to the undecided state, where the
+    fire path's own stamp can confirm it like any other delivery.
+    """
+    rows = [dict(item) for item in list(history or []) if isinstance(item, Mapping)]
+    if rows:
+        rows[-1].pop("suppressed", None)
+    return rows
+
+
+def label_latest_delivery(
+    history: Sequence[Mapping[str, Any]] | None,
+    *,
+    acted: bool,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """*history* with one delivery labelled, and the rows whose label changed.
+
+    The newest row marked DELIVERED and carrying no label yet is labelled
+    ``owner_acted``. Every unlabelled suppressed row between it and the delivery
+    before it is then labelled ``missed`` with the same value: the owner had
+    something to do and the judge sat on it for those ticks, or the owner had
+    nothing and the judge was right to.
+
+    Two kinds of row are refused rather than labelled, and both would bias the curve
+    the thresholds are read from. A row the judge did not answer sat on nothing -- the
+    point returned it without asking, because the tick read nothing new or could not
+    read a target -- so a label on it counts a decision that never happened, whether it
+    is the delivery's own ``owner_acted`` or a ``missed`` on a suppression. A FORFEITED
+    delivery belongs to a turn this process never saw, so no ``owner_acted`` for it can
+    be read truthfully.
+
+    A row that is neither suppressed nor delivered is a wake whose fire was lost. It
+    withheld nothing, so it takes no ``missed`` -- and it ENDS the retroactive walk,
+    because the suppressions behind it belong to its own cycle rather than to the
+    delivery this pass is labelling.
+
+    The walk stops at the newest UNLABELLED delivery rather than the newest delivery
+    outright, so a second turn-complete for one delivery -- a retry, a duplicated
+    hook -- relabels nothing. The returned change list is what the caller writes to
+    the calibration log, so a pass that changed nothing logs nothing either.
+    """
+    rows = [dict(item) for item in list(history or []) if isinstance(item, Mapping)]
+    changed: list[dict[str, Any]] = []
+    index: int | None = None
+    for position in range(len(rows) - 1, -1, -1):
+        row = rows[position]
+        if row.get("delivered") is not True:
+            continue
+        if isinstance(row.get("owner_acted"), bool):
+            # This delivery is already judged, and so is everything before it.
+            break
+        if row.get("forfeited") is True or row.get("answered") is not True:
+            # A delivery no label can be read for. It still closes its own cycle, so
+            # the pass ends here rather than reaching back to an older delivery whose
+            # suppressions this one's label does not judge.
+            break
+        index = position
+        break
+    if index is None:
+        return rows, changed
+    rows[index]["owner_acted"] = bool(acted)
+    changed.append(dict(rows[index]))
+    delivery_at = rows[index].get("at")
+    delivery_clock = (
+        float(delivery_at)
+        if isinstance(delivery_at, (int, float))
+        and not isinstance(delivery_at, bool)
+        and math.isfinite(float(delivery_at))
+        else point.now()
+    )
+    for position in range(index - 1, -1, -1):
+        row = rows[position]
+        if row.get("delivered") is True:
+            break
+        if row.get("suppressed") is not True:
+            break
+        if row.get("answered") is not True:
+            continue
+        if isinstance(row.get("missed"), bool):
+            break
+        row["missed"] = bool(acted)
+        changed_row = dict(row)
+        changed_row["position_back"] = index - position
+        changed_row["age_s"] = _age_from_ts(row.get("at"), delivery_clock)
+        changed.append(changed_row)
+    return rows, changed
+
+
+def recent_for_state(
+    history: Sequence[Mapping[str, Any]] | None,
+    *,
+    now_ts: float | None = None,
+) -> list[dict[str, Any]]:
+    """The labelled history with ages in seconds, for the point to screen and bound.
+
+    The stored rows carry an absolute ``at``; the request carries an AGE, because a
+    wall-clock timestamp would tell the judge what day it is and nothing it needs.
+    Screening and the window bound belong to the point and are applied there -- this
+    only turns stored times into elapsed ones.
+    """
+    clock = point.now() if now_ts is None else now_ts
+    out: list[dict[str, Any]] = []
+    for raw in list(history or []):
+        if not isinstance(raw, Mapping):
+            continue
+        row = dict(raw)
+        row["age_s"] = _age_from_ts(row.get("at"), clock)
+        out.append(row)
+    return out
+
+
+def since_last_wake_s(last_fire_ts: object, *, now_ts: float | None = None) -> float | None:
+    """Seconds since this loop last delivered a turn, or ``None`` when it never has.
+
+    ``None`` is the honest answer for a loop on its first tick, and the point omits the
+    field rather than sending a zero that would read as a delivery this instant.
+    """
+    if isinstance(last_fire_ts, bool) or not isinstance(last_fire_ts, (int, float)):
+        return None
+    stamp = float(last_fire_ts)
+    if not math.isfinite(stamp) or stamp <= 0:
+        return None
+    clock = point.now() if now_ts is None else now_ts
+    elapsed = clock - stamp
+    return elapsed if elapsed > 0 else 0.0
 
 
 def _pr_subject(value: str) -> bool:

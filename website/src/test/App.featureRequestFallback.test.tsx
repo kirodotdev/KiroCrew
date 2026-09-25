@@ -20,6 +20,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, fireEvent, act } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import { i18nT } from '../i18n/t'
+import { FEATURE_REQUEST_ROW_META_KEY } from '../prompts/featureRequest'
 import type { RootState } from '../store'
 import App from '../App'
 
@@ -96,47 +97,64 @@ async function clickRequestFeature() {
 
 describe('Request a Feature — the non-inference exit is wired (#13342)', () => {
   beforeEach(() => {
+    localStorage.clear()
     sendChatMock.mockReset()
     createChatSlotMock.mockReset()
     createChatSlotMock.mockResolvedValue({ key: 'fr-slot', name: 'New chat' })
   })
 
-  it('records the slot it created as the feature-request slot, and leaves the agent flow untouched', async () => {
+  it('stamps the row it sends -- the same sendId and marker on the bubble and on the wire -- and keeps nothing on the client', async () => {
     // Capacity available: the accepted-receipt path from the #4198 tests, with
-    // the one addition that makes the fallback possible later -- the slot is
-    // remembered as belonging to this flow.
+    // the one addition that makes the fallback possible later -- the send's
+    // `meta` says this user row IS the feature request. The gateway persists a
+    // send's meta verbatim on the row and echoes it, so that is the whole
+    // record: no store field, no localStorage key.
     sendChatMock.mockResolvedValue({ ok: true, json: vi.fn().mockResolvedValue({ ok: true }) })
     const { store } = await clickRequestFeature()
 
     const chat = store.getState().chat
     expect(chat.activeSlot).toBe('fr-slot')
-    expect(chat.featureRequestSlots).toContain('fr-slot')
-    // Unchanged agent flow: the optimistic bubble, running on, no error row, one send.
-    expect(chat.messages.some(m => m.role === 'user' && m.content === i18nT('app.i_d_like_to_request_a_feature'))).toBe(true)
+    const bubble = chat.messages.find(m => m.role === 'user' && m.content === i18nT('app.i_d_like_to_request_a_feature'))
+    const sendId = bubble?.meta?.sendId
+    expect(sendId).toMatch(/^s-/)
+    expect(bubble?.meta?.[FEATURE_REQUEST_ROW_META_KEY]).toBe(true)
+    // The wire carries the identical meta, so the echo reconciles the bubble by
+    // id and the persisted row carries the stamp the transcript reads.
+    expect(sendChatMock).toHaveBeenCalledTimes(1)
+    expect(sendChatMock.mock.calls[0][4]).toEqual({ sendId, [FEATURE_REQUEST_ROW_META_KEY]: true })
+    // Nothing per-slot is remembered here: the row is the record (First
+    // Principles review on this change).
+    expect(Object.keys(localStorage).filter(k => k.startsWith('mc-feature-request-seed:'))).toEqual([])
+    expect('featureRequestSeeds' in chat).toBe(false)
+    // Unchanged agent flow: running on, no error row.
     expect(chat.messages.some(m => m.role === 'error')).toBe(false)
     expect(chat.slotRunning).toBe(true)
-    expect(sendChatMock).toHaveBeenCalledTimes(1)
   })
 
-  it('marks the slot BEFORE the send settles, so a refusal that lands first still finds it', async () => {
+  it('stamps the bubble BEFORE the send settles, so a refusal that lands first still finds a marked row', async () => {
     // The usage-limit row arrives over the WebSocket after the turn starts; a
-    // marker written only on a happy receipt would miss the one case it exists
-    // for. Same for the #4198 shapes: the marker is a fact about the slot, and
-    // their rows keep rendering exactly as before (no structural kind, so the
-    // transcript never offers the form on them -- see transcriptRenderers.test).
+    // stamp written only on a happy receipt would miss the one case it exists
+    // for. Same for the #4198 shapes: the stamp is a fact about the sent row,
+    // and their error rows keep rendering exactly as before (no structural
+    // kind, so the transcript never offers the form on them -- see
+    // transcriptRenderers.test).
     sendChatMock.mockResolvedValue({ ok: false, json: vi.fn().mockResolvedValue({ ok: false, error: 'slot agent mismatch' }) })
     const { store } = await clickRequestFeature()
 
     const chat = store.getState().chat
-    expect(chat.featureRequestSlots).toContain('fr-slot')
+    const bubble = chat.messages.find(m => m.role === 'user' && m.content === i18nT('app.i_d_like_to_request_a_feature'))
+    expect(bubble?.meta?.[FEATURE_REQUEST_ROW_META_KEY]).toBe(true)
     expect(chat.messages.some(m => m.role === 'error' && m.content === i18nT('pages.chatPage.send_failed_with_error', { error: 'slot agent mismatch' }))).toBe(true)
     expect(chat.slotRunning).toBe(false)
   })
 
-  it('says on the button itself that the action starts an agent conversation', async () => {
+  it('says on the button itself that the action starts a chat and spends the plan\'s monthly usage', async () => {
     sendChatMock.mockResolvedValue({ ok: true, json: vi.fn().mockResolvedValue({ ok: true }) })
     const { button } = await clickRequestFeature()
-    expect(button).toHaveAttribute('title', i18nT('components.feedbackPill.request_feature_starts_agent'))
+    // Real copy, not a hover-only `title`: the explanation is a described-by
+    // tooltip that shows on keyboard focus too (see FeedbackPill.test).
+    expect(button).toHaveAttribute('aria-describedby')
+    expect(button).not.toHaveAttribute('title')
     // The visible label is still the action, so the accessible name is unchanged.
     expect(button).toHaveAccessibleName(i18nT('app.request_a_feature_2'))
   })

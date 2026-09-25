@@ -3,11 +3,16 @@
 Locks in the fix for the "Initializing…" stuck state: when the generic app
 config handler has already seeded an empty ``{}`` config.json, ensure_layout
 must upgrade it to include ``resolved_paths`` so the UI can bootstrap."""
+import collections
+import contextlib
 import errno
 import json
 import os
 import shutil
+import stat
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -321,3 +326,269 @@ class TestRestrictToOwner(unittest.TestCase):
                 store.open_locked_temp(self.tmp)
         self.assertEqual(set(os.listdir(self.tmp)), before,
                          "a temp file was left behind by the failed lockdown")
+
+
+class TestLayoutSeedingIsSerialized(unittest.TestCase):
+    """Concurrent entrants must not each publish the same seeded file.
+
+    ``ensure_layout`` runs on every action and reviews run as separate PROCESSES,
+    so several can each find one seed absent and each publish it. On POSIX the
+    duplicate renames are harmless; on Windows ``os.replace`` raises
+    ``PermissionError`` when a handle is open on the destination or another rename
+    is landing on it, and the loser raises out of ``atomic_write_locked`` and
+    fails its whole action. The exclusion is what these pin, on every platform,
+    because the race is platform-independent even though only one platform
+    punishes it.
+    """
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+
+    def test_every_seeding_publish_happens_while_the_layout_lock_is_held(self):
+        """A publish outside the lock is a publish another entrant can duplicate."""
+        real_lock = store.layout_lock
+        real_write = store.atomic_write_text
+        held: list[bool] = []
+        published: list[tuple[str, bool]] = []
+
+        @contextlib.contextmanager
+        def tracking_lock(root=None):
+            with real_lock(root):
+                held.append(True)
+                try:
+                    yield
+                finally:
+                    held.pop()
+
+        def spy(path, text):
+            published.append((Path(path).name, bool(held)))
+            return real_write(path, text)
+
+        with mock.patch.object(store, "layout_lock", tracking_lock), \
+                mock.patch.object(store, "atomic_write_text", spy):
+            store.ensure_layout(self.root)
+
+        self.assertEqual(
+            sorted(name for name, _ in published),
+            ["config.json", "index.json", "learned-patterns.md"],
+            f"unexpected set of seeding publishes: {published}")
+        self.assertEqual([name for name, was_held in published if not was_held], [],
+                         f"a seed was published outside the lock: {published}")
+
+    def test_a_second_entrant_does_not_republish_a_seed_being_published(self):
+        """The test of presence is re-read INSIDE the lock, so the loser skips.
+
+        Taking the lock and then acting on an answer read before it would leave
+        the duplicate publish in place: both entrants saw the seed absent.
+        """
+        real_lock = store.layout_lock
+        real_write = store.atomic_write_text
+        reached = []
+        entered = threading.Event()
+        release = threading.Event()
+        published: collections.Counter = collections.Counter()
+        count_guard = threading.Lock()
+
+        @contextlib.contextmanager
+        def counting_lock(root=None):
+            # Appended BEFORE the acquire, so the main thread can tell "the second
+            # entrant has reached the lock" from "it has taken it" -- which is
+            # what makes this handshake a wait rather than a sleep.
+            reached.append(True)
+            with real_lock(root):
+                yield
+
+        def spy(path, text):
+            with count_guard:
+                published[Path(path).name] += 1
+                first = not entered.is_set()
+                if first:
+                    entered.set()
+            if first:
+                # Hold the first publish open so the other entrant is inside
+                # ``ensure_layout`` while this seed is still absent on disk.
+                self.assertTrue(release.wait(60), "the handshake never released")
+            return real_write(path, text)
+
+        errors: list[BaseException] = []
+
+        def run():
+            try:
+                store.ensure_layout(self.root)
+            except BaseException as exc:  # pragma: no cover - reported below
+                errors.append(exc)
+
+        entrants: list[threading.Thread] = []
+
+        with mock.patch.object(store, "layout_lock", counting_lock), \
+                mock.patch.object(store, "atomic_write_text", spy):
+            try:
+                first = threading.Thread(target=run)
+                entrants.append(first)
+                first.start()
+                self.assertTrue(entered.wait(60), "the first publish never started")
+                second = threading.Thread(target=run)
+                entrants.append(second)
+                second.start()
+                deadline = time.monotonic() + 60
+                while len(reached) < 2 and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertGreaterEqual(len(reached), 2,
+                                        "the second entrant never reached the lock")
+            finally:
+                # A failed assertion above leaves an entrant parked in
+                # ``release.wait``, and an entrant that outlives this test writes
+                # into a tree the fixture has already removed -- so the release
+                # and the joins run whether or not the handshake held.
+                release.set()
+                for entrant in entrants:
+                    entrant.join(60)
+
+        stranded = [entrant.name for entrant in entrants if entrant.is_alive()]
+        self.assertEqual(stranded, [], f"an entrant outlived the test: {stranded}")
+        self.assertEqual(errors, [], f"an entrant raised: {errors}")
+        self.assertEqual(published["learned-patterns.md"], 1,
+                         f"the seed was published more than once: {published}")
+
+
+class TestLayoutLockFileIsGuarded(unittest.TestCase):
+    """The lock file is opened, so it is also an attack surface.
+
+    It lives in the worker-reachable data dir, so the same guards the candidate
+    lock carries apply: a link planted at the name must be refused rather than
+    written through, and a hardlink to a sensitive inode passes ``O_NOFOLLOW`` but
+    not the link count.
+    """
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        self.data = store.data_dir(self.root)
+        self.data.mkdir(parents=True, exist_ok=True)
+        self.lock_path = self.data / store._LAYOUT_LOCK_NAME
+        self.victim = self.root / "precious.txt"
+        self.victim.write_text("KEEP-ME\n", encoding="utf-8")
+
+    @unittest.skipUnless(SYMLINKS_OK, "platform forbids unprivileged symlinks")
+    def test_a_symlinked_lock_file_does_not_write_through_to_its_target(self):
+        self.lock_path.symlink_to(self.victim)
+        with self.assertRaises(OSError):
+            with store.layout_lock(self.root):
+                pass
+        self.assertEqual(self.victim.read_text(encoding="utf-8"), "KEEP-ME\n")
+
+    @unittest.skipUnless(SYMLINKS_OK, "platform forbids unprivileged symlinks")
+    def test_a_planted_link_is_refused_where_the_platform_lacks_the_flag(self):
+        """Without O_NOFOLLOW the open follows the link, so the lstat is the leg.
+
+        On a platform that has the flag, the flag refuses a planted link and the
+        name check never decides anything -- which is exactly why it needs its own
+        case, with the flag masked to reach the condition. Windows does not define
+        the attribute at all, so there the condition is already live and there is
+        nothing to mask; patching it there raises instead. The descriptor check
+        cannot cover for the name check either: a followed link yields a
+        descriptor on a target that is itself a lone regular file and passes.
+        """
+        masked = (mock.patch.object(os, "O_NOFOLLOW", 0)
+                  if hasattr(os, "O_NOFOLLOW") else contextlib.nullcontext())
+        self.lock_path.symlink_to(self.victim)
+        with masked:
+            with self.assertRaises(OSError):
+                with store.layout_lock(self.root):
+                    pass
+        self.assertEqual(self.victim.read_text(encoding="utf-8"), "KEEP-ME\n")
+
+    def test_a_hardlinked_lock_file_is_refused(self):
+        os.link(self.victim, self.lock_path)
+        with self.assertRaises(OSError):
+            with store.layout_lock(self.root):
+                pass
+        self.assertEqual(self.victim.read_text(encoding="utf-8"), "KEEP-ME\n")
+
+    def test_the_ordinary_path_still_takes_the_lock(self):
+        """The guard must not wedge the self-heal shut."""
+        with store.layout_lock(self.root):
+            pass
+        st = self.lock_path.stat()
+        self.assertTrue(stat.S_ISREG(st.st_mode))
+        self.assertEqual(st.st_nlink, 1)
+
+    @unittest.skipUnless(store._CAN_PIN_WALK,
+                         "platform cannot open a leaf relative to a pinned directory")
+    def test_the_chain_above_the_lock_is_refused_before_it_is_opened(self):
+        """A link at `data` redirects a by-name open, which O_NOFOLLOW cannot see.
+
+        The flag guards the FINAL component only, so the ancestor chain needs its
+        own two legs: the refusal for a link already planted there, and the pin
+        for one swapped after that refusal. Both must run before the leaf is
+        opened, or the lock file lands wherever the link points -- outside the
+        tree the review worker is confined to, and the worker is who plants it.
+        """
+        order: list[str] = []
+        real_refuse = store.refuse_linked_parents
+        real_pin = store.pin_record_dir
+        real_open = os.open
+        opened: list[bool] = []
+
+        def refuse(path):
+            order.append("refuse")
+            return real_refuse(path)
+
+        def pin(directory):
+            order.append("pin")
+            return real_pin(directory)
+
+        def spy_open(path, *args, **kwargs):
+            if str(path) == store._LAYOUT_LOCK_NAME or str(path) == str(self.lock_path):
+                order.append("open")
+                opened.append(kwargs.get("dir_fd") is not None)
+            return real_open(path, *args, **kwargs)
+
+        with mock.patch.object(store, "refuse_linked_parents", refuse), \
+                mock.patch.object(store, "pin_record_dir", pin), \
+                mock.patch.object(os, "open", spy_open):
+            with store.layout_lock(self.root):
+                pass
+
+        self.assertEqual(order[:2], ["refuse", "pin"],
+                         f"the chain guards must precede the open: {order}")
+        self.assertEqual(order[-1], "open", f"the leaf opened too early: {order}")
+        self.assertEqual(opened, [True],
+                         "the lock leaf must be opened relative to the pinned parent")
+
+    @unittest.skipIf(store._CAN_PIN_WALK,
+                     "this is the fallback the pinning platforms do not take")
+    def test_the_chain_is_still_refused_where_the_platform_cannot_pin(self):
+        """Windows has no dir_fd verbs, so the leaf is opened by name there.
+
+        That leaves the ancestor chain covered by the refusal alone, which is a
+        weaker story than the pin and is stated as such on ``layout_lock``. What
+        must not happen is the refusal being skipped as well: it is the only leg
+        left. Runs ONLY on the platform that takes this branch, because a
+        simulated capability cannot show a real host reaching it.
+        """
+        order: list[str] = []
+        real_refuse = store.refuse_linked_parents
+        real_open = os.open
+        opened: list[bool] = []
+
+        def refuse(path):
+            order.append("refuse")
+            return real_refuse(path)
+
+        def spy_open(path, *args, **kwargs):
+            if str(path) == store._LAYOUT_LOCK_NAME or str(path) == str(self.lock_path):
+                order.append("open")
+                opened.append(kwargs.get("dir_fd") is not None)
+            return real_open(path, *args, **kwargs)
+
+        with mock.patch.object(store, "refuse_linked_parents", refuse), \
+                mock.patch.object(os, "open", spy_open):
+            with store.layout_lock(self.root):
+                pass
+
+        self.assertEqual(order, ["refuse", "open"],
+                         f"the refusal must still precede the open: {order}")
+        self.assertEqual(opened, [False],
+                         "this platform has no pinned open to make")

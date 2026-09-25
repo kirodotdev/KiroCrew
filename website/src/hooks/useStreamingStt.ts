@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { acquireMicStream, humanizeMicError, createLevelMeter, setPreferredMicId, activeDeviceId } from './mic'
 import type { AudioSample } from './mic'
 import { streamErrorMessage } from '../lib/sttProviders'
+import type { SttModelProgress } from '../lib/sttProviders'
 import { joinTranscript } from '../lib/dictationText'
 import { i18nT } from '../i18n/t'
 
@@ -21,7 +22,26 @@ const STOP_FRAME = JSON.stringify({ type: 'stop' })
 
 /** `status.stage` reported while model weights are still being fetched. */
 const STAGE_DOWNLOADING = 'downloading'
+/** `status.stage` reported while fetched weights are being loaded into memory. */
+const STAGE_PREPARING = 'preparing'
 const READY_TIMEOUT_MS = 60000
+/**
+ * Fallback budget for the retained audio's wait once the backend has ANNOUNCED
+ * that it is fetching or loading the model, used only when the announcement
+ * carries no `prepare_timeout_ms` of its own.
+ *
+ * A cold local model is minutes of work — a multi-hundred-megabyte fetch, a digest
+ * check, then a GPU-pipeline compile — and the mic is already released by the time
+ * this budget starts, so waiting costs the user nothing but the wait. The silent
+ * socket keeps the short budget: nothing has said anyone is working, so a longer
+ * wait there is just a slower way to report a dead backend.
+ *
+ * A number chosen HERE can only be wrong, because the wait belongs to the other
+ * side: too short abandons a load the backend is still running and discards the
+ * utterance, which is the whole defect. So a backend that states its ceiling is
+ * believed instead, and this covers the older ones that do not.
+ */
+const PREPARE_TIMEOUT_FALLBACK_MS = 300000
 // Older gateways omit their finalization budget. Give their default five-minute
 // native decode ceiling a little transport/cleanup headroom.
 const DEFAULT_FINAL_TIMEOUT_MS = 315000
@@ -55,15 +75,16 @@ interface Opts {
   /** Fired when the backend semantic endpointer judges the utterance complete. */
   onEndpoint?: () => void
   /**
-   * Byte progress of a one-time model download the session is waiting on, or
-   * `null` once the recogniser is ready.
+   * What the recogniser is doing while this session waits for it — byte progress
+   * of a one-time model download, or a load with no bytes to report — and `null`
+   * once the recogniser is ready.
    *
    * The local recogniser fetches its weights on first use, and that is between
    * 78 MB and 1.6 GB. Without this the user holds the mic against a session that
    * looks identical to a hang, which is the worst possible first run, so the
-   * backend reports byte progress and the recording surface shows it.
+   * backend reports its stage and the recording surface shows it.
    */
-  onDownload?: (progress: { done: number; total: number } | null) => void
+  onDownload?: (progress: SttModelProgress | null) => void
   /** Unthrottled per-frame audio features for canvas consumers (see mic.ts). */
   sampleRef?: { current: AudioSample }
 }
@@ -101,6 +122,19 @@ export function useStreamingStt ({ onPartial, onFinal, onCaptureStop, onError, o
   // silence -- which is the normal case for a short push-to-talk tap, not an
   // edge case.
   const readyRef = useRef(false)
+  // True once a `status` frame has said the model is being fetched or loaded.
+  //
+  // It is the only thing that distinguishes the two waits stop() can land in. A
+  // socket that has said nothing may be dead, so it keeps the short budget; a
+  // backend that announced a cold load is working, and the retained audio waits
+  // for it. Without the frame both waits look the same from here, and one budget
+  // has to serve a dead socket and a five-minute load at once.
+  const prepareAnnouncedRef = useRef(false)
+  // The budget the ANNOUNCING backend stated for its own preparation, mirroring
+  // what `ready` does with `final_timeout_ms`. Holds the fallback until a frame
+  // states one, so a backend that announces preparation without a ceiling is
+  // treated exactly as before.
+  const prepareTimeoutRef = useRef(PREPARE_TIMEOUT_FALLBACK_MS)
   const finalTimeoutRef = useRef(DEFAULT_FINAL_TIMEOUT_MS)
   const pendingStopRef = useRef(false)
   const pendingStopTimerRef = useRef<number | null>(null)
@@ -143,6 +177,8 @@ export function useStreamingStt ({ onPartial, onFinal, onCaptureStop, onError, o
       pendingStopTimerRef.current = null
     }
     readyRef.current = false
+    prepareAnnouncedRef.current = false
+    prepareTimeoutRef.current = PREPARE_TIMEOUT_FALLBACK_MS
     pendingStopRef.current = false
     flushCaptureRef.current = null
     try { sourceRef.current?.disconnect() } catch { /* already detached */ }
@@ -175,6 +211,36 @@ export function useStreamingStt ({ onPartial, onFinal, onCaptureStop, onError, o
     }, finalTimeoutRef.current)
   }, [cleanup])
 
+  /**
+   * Arm (or re-arm) the wait for `ready` that a released utterance sits in.
+   *
+   * Re-armable on purpose, because a budget counted from the release bounds the
+   * WORK and the only thing this side can actually judge is SILENCE. A cold
+   * model's fetch has no upper bound worth naming -- the weights run to 1.6 GB
+   * and the link is whatever the user has -- so any fixed figure is wrong for
+   * someone, and being wrong here means discarding a recording the backend was
+   * still about to transcribe. Each frame that says work is under way is proof
+   * the far side is alive, so it buys the wait another full budget, and the
+   * timer only fires once nothing has been heard for one whole budget.
+   *
+   * The message names the stage for the same reason: a socket that announced a
+   * load and then went quiet did not "lose the connection", and reporting it as
+   * one sends the user to their network for a model that is still loading.
+   */
+  const armPreReadyWait = useCallback((ws: WebSocket) => {
+    if (pendingStopTimerRef.current !== null) clearTimeout(pendingStopTimerRef.current)
+    const announced = prepareAnnouncedRef.current
+    pendingStopTimerRef.current = window.setTimeout(() => {
+      if (wsRef.current !== ws) return
+      onErrorRef.current?.(i18nT(
+        announced
+          ? 'hooks.useStreamingStt.stt_model_still_loading'
+          : 'hooks.useStreamingStt.stt_connection_lost',
+      ))
+      cleanup()
+    }, announced ? prepareTimeoutRef.current : READY_TIMEOUT_MS)
+  }, [cleanup])
+
   const stop = useCallback(() => {
     if (captureStoppedRef.current) return
     endCaptureOnce()
@@ -192,18 +258,18 @@ export function useStreamingStt ({ onPartial, onFinal, onCaptureStop, onError, o
     // commits stop after every captured byte.
     flushCaptureRef.current?.()
     if (!readyRef.current && pendingStopTimerRef.current === null) {
-      pendingStopTimerRef.current = window.setTimeout(() => {
-        if (wsRef.current !== ws) return
-        onErrorRef.current?.(i18nT('hooks.useStreamingStt.stt_connection_lost'))
-        cleanup()
-      }, READY_TIMEOUT_MS)
+      // The mic tracks are already stopped above, so this budget holds only the
+      // socket and the retained PCM. Nothing is being recorded while it runs.
+      armPreReadyWait(ws)
     }
-  }, [cleanup, endCaptureOnce])
+  }, [cleanup, endCaptureOnce, armPreReadyWait])
 
   const start = useCallback(async () => {
     if (!streamingSupported || wsRef.current) return false
     finalsRef.current = []
     finalTimeoutRef.current = DEFAULT_FINAL_TIMEOUT_MS
+    prepareAnnouncedRef.current = false
+    prepareTimeoutRef.current = PREPARE_TIMEOUT_FALLBACK_MS
     captureStoppedRef.current = false
     setDraining(false)
     // Claim this start()'s session token BEFORE getUserMedia. A restart during
@@ -266,6 +332,8 @@ export function useStreamingStt ({ onPartial, onFinal, onCaptureStop, onError, o
             finalTimeoutRef.current = timeout
           }
           onDownloadRef.current?.(null)
+          prepareAnnouncedRef.current = false
+          prepareTimeoutRef.current = PREPARE_TIMEOUT_FALLBACK_MS
           resolveReady()
         }
         else if (msg.type === 'partial') {
@@ -303,12 +371,44 @@ export function useStreamingStt ({ onPartial, onFinal, onCaptureStop, onError, o
           // so the caller can submit directly.
           if (msg.complete) onEndpointRef.current?.()
         } else if (msg.type === 'status') {
-          // Preparation progress, ahead of `ready`. The only stage with anything
-          // to show is the weight download; every other stage is instant, so it
-          // clears the line rather than adding a message nobody can act on.
+          // Preparation progress, ahead of `ready`. Two stages say work is under
+          // way -- the weight fetch, which has bytes, and the load that follows
+          // it, which has none -- and both are shown, because this line is all
+          // the user has while there is no transcript yet. Both also mark the
+          // session as preparing, so a release during either one waits for the
+          // model instead of for a socket nobody has heard from.
+          const preparing = msg.stage === STAGE_DOWNLOADING || msg.stage === STAGE_PREPARING
+          if (preparing) prepareAnnouncedRef.current = true
+          // The announcing backend owns this ceiling, so take the figure it
+          // sends rather than assuming one, exactly as `ready` takes
+          // `final_timeout_ms`. Range-checked: a malformed or absent figure
+          // leaves the fallback alone instead of arming a timer that either
+          // fires at once or never fires at all.
+          const prepareMs = msg.prepare_timeout_ms
+          if (
+            preparing
+            && typeof prepareMs === 'number'
+            && Number.isFinite(prepareMs)
+            && prepareMs > 0
+            && prepareMs <= MAX_TIMER_DELAY_MS
+          ) {
+            prepareTimeoutRef.current = prepareMs
+          }
+          // A frame saying work is under way is proof the far side is alive, so
+          // an already-released utterance gets its full budget again from here.
+          // Without this the deadline is counted from the release and expires
+          // mid-fetch on a slow link however large the figure is, which is the
+          // discarded-recording defect again at a later minute.
+          if (preparing && !readyRef.current && pendingStopTimerRef.current !== null) {
+            armPreReadyWait(ws)
+          }
           onDownloadRef.current?.(
-            msg.stage === STAGE_DOWNLOADING
-              ? { done: Number(msg.downloaded_bytes) || 0, total: Number(msg.total_bytes) || 0 }
+            preparing
+              ? {
+                  done: Number(msg.downloaded_bytes) || 0,
+                  total: Number(msg.total_bytes) || 0,
+                  stage: msg.stage === STAGE_PREPARING ? 'preparing' : 'downloading',
+                }
               : null,
           )
         }
@@ -450,7 +550,7 @@ export function useStreamingStt ({ onPartial, onFinal, onCaptureStop, onError, o
       }
     }).catch(() => { /* onclose delivers the transcript and owns teardown */ })
     return true
-  }, [cleanup, commitStop, sampleRef, stop])
+  }, [cleanup, commitStop, sampleRef, stop, armPreReadyWait])
 
 
   /**

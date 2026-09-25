@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
-import RecoveryCard, { parseRecoveryMessage, resolveInjectCard } from '../pages/chat/RecoveryCard'
+import RecoveryCard, { INJECT_KIND_OPENS_TURN, injectOpensTurn, parseRecoveryMessage, resolveInjectCard } from '../pages/chat/RecoveryCard'
 
 // Verbatim prefixes from src/kiro_crew/dashboard/state.py. The separator is an
 // em dash, not a hyphen — a mismatch is exactly the drift this suite guards.
@@ -368,7 +368,7 @@ describe('ChatPage – recovery card wiring', () => {
     // (pages/chat/transcriptRenderers.tsx) that ChatPage spreads into its host
     // list, so the imports live in the factory and the page imports the factory.
     const factory = readFileSync(resolve(__dirname, '../pages/chat/transcriptRenderers.tsx'), 'utf8')
-    expect(factory).toMatch(/import\s+RecoveryCard\s*,\s*\{\s*resolveInjectCard\s*\}\s*from\s*['"]\.\/RecoveryCard['"]/)
+    expect(factory).toMatch(/import\s+RecoveryCard\s*,\s*\{[^}]*\bresolveInjectCard\b[^}]*\}\s*from\s*['"]\.\/RecoveryCard['"]/)
     expect(src).toMatch(/import \{ createTranscriptRenderers \} from '\.\/chat\/transcriptRenderers'/)
   })
 
@@ -513,3 +513,29 @@ describe('resolveInjectCard – which inject rows become notes', () => {
     expect(card?.kind).toBe('stalled')
   })
 })
+
+describe('injectOpensTurn – which inject rows begin a turn of their own', () => {
+  // The row-kind vocabulary's OTHER half: resolveInjectCard says how a stamped
+  // row is drawn, this says whether the rows below it belong to a new turn.
+  // Both key on the persisted `meta.injectKind`, never on the row's text.
+  const row = (meta?: Record<string, unknown>) => ({ role: 'inject', content: 'x', meta })
+
+  it('classifies every stamped kind, and the table is the union', () => {
+    // A kind missing here fails to compile, so this pins the VALUES only.
+    expect(INJECT_KIND_OPENS_TURN).toEqual({ cron: true, synthesis: true, recovery: false, user_replay: false })
+    for (const [kind, opens] of Object.entries(INJECT_KIND_OPENS_TURN)) expect(injectOpensTurn(row({ injectKind: kind })), kind).toBe(opens)
+  })
+
+  it('reads an unstamped row, a kind this build does not know, and a non-inject role as "not an opener"', () => {
+    // A note, the policy-block notice and the hook-halt marker carry no kind and
+    // dispatch nothing; a newer gateway's kind reads the same way, the fail-
+    // passive direction resolveInjectCard takes for an unmarked row; a `user`
+    // row is the caller's business (TURN_OPENER_ROLES), not this predicate's.
+    expect(injectOpensTurn(row())).toBe(false)
+    expect(injectOpensTurn(row({ noteSession: 'chat-2' }))).toBe(false)
+    expect(injectOpensTurn(row({ injectKind: 'some_future_kind' }))).toBe(false)
+    expect(injectOpensTurn(row({ injectKind: 'toString' }))).toBe(false)
+    expect(injectOpensTurn({ role: 'user', content: 'x', meta: { injectKind: 'cron' } })).toBe(false)
+  })
+})
+

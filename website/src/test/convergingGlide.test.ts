@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  GLIDE_BACK_CATCHUP_FRAMES,
+  GLIDE_MAX_BACK_STEP_PX,
   GLIDE_MAX_MS,
   GLIDE_MIN_MS,
   GLIDE_PX_PER_MS,
@@ -135,6 +137,150 @@ describe('runConvergingGlide', () => {
     goal = 2000
     h.flush(400)
     expect(h.scrollTop).toBe(2000)
+  })
+
+  // The far pinned-prompt jump: the anchor row is not mounted, so the goal is
+  // the height-index estimate until the row measures in. The estimate is long by
+  // `LATE_RESIDUAL_PX`, so the correction has to land — the row really is that
+  // far from where the height index guessed, and by the time it mounts the
+  // glide has already travelled past it. It is a glide, so no single frame may
+  // lurch against the direction of travel faster than the glide was moving that
+  // frame, and that holds WHEREVER in the ease the row happens to mount: late in
+  // an ease-out the per-frame motion is vanishing, which is exactly where a
+  // whole residual dropped in one frame is most visible.
+  const LATE_RESIDUAL_PX = 86
+  const LATE_DURATION_MS = 937
+  const LATE_FROM_PX = 24500
+
+  function measureLateHandoff(handoffAtMs: number, residualPx = LATE_RESIDUAL_PX) {
+    let clock = 0
+    const h = harness({
+      goal: () => (clock >= handoffAtMs ? residualPx : 0),
+      durationMs: LATE_DURATION_MS,
+      from: LATE_FROM_PX,
+    })
+    let atDeadline: number | null = null
+    for (let at = 0; at <= LATE_DURATION_MS + 600; at += 1000 / 60) {
+      if (h.pending === 0) break
+      clock = at
+      h.flush(at)
+      if (atDeadline == null && at >= LATE_DURATION_MS) atDeadline = h.scrollTop
+    }
+    const w = h.writes
+    // Travel descends, so a step that INCREASES scrollTop moves backward. The
+    // speed a backward step is judged against is the last FORWARD step before
+    // it: once a correction is under way every step is backward, and comparing
+    // one backward step with the previous backward step compares a quantity
+    // with itself.
+    let worstBack = 0
+    let speedThen = 0
+    let lastFwd = 0
+    let backFrames = 0
+    let clampedFrames = 0
+    for (let i = 1; i < w.length; i++) {
+      const step = w[i] - w[i - 1]
+      if (step < 0) { lastFwd = -step; continue }
+      if (step > 0) backFrames++
+      if (Math.abs(step - GLIDE_MAX_BACK_STEP_PX / 2) < 1e-6) clampedFrames++
+      if (step > worstBack) { worstBack = step; speedThen = lastFwd }
+    }
+    return { worstBack, speedThen, backFrames, clampedFrames, atDeadline, landed: w[w.length - 1] }
+  }
+
+  // Wherever the row mounts, the correction lands and no frame lurches back by
+  // more than the budget.
+  for (const handoffAtMs of [600, 750, 780, 821, 880, 930, 940]) {
+    it(`pays a ${handoffAtMs}ms goal move down within the backward budget`, () => {
+      const m = measureLateHandoff(handoffAtMs)
+      expect(m.landed).toBe(LATE_RESIDUAL_PX)
+      expect(m.worstBack).toBeLessThanOrEqual(GLIDE_MAX_BACK_STEP_PX)
+    })
+  }
+
+  // Past the crossover the correction no longer fits in one frame, so a pay-down
+  // runs — and then the budget is not the bound that matters. A pay-down that
+  // stopped as soon as what remained fit inside the BUDGET would write that
+  // remainder, up to a whole budget, in one frame at tail speed: the same lurch
+  // one size smaller. It runs until what remains fits inside the SLICE, so no
+  // frame of a paid-down correction exceeds half the budget.
+  for (const handoffAtMs of [821, 880, 930, 940]) {
+    it(`holds a paid-down ${handoffAtMs}ms correction to the slice, not the budget`, () => {
+      const m = measureLateHandoff(handoffAtMs)
+      expect(m.landed).toBe(LATE_RESIDUAL_PX)
+      expect(m.worstBack).toBeLessThanOrEqual(GLIDE_MAX_BACK_STEP_PX / 2)
+    })
+  }
+
+  // Below the budget the stronger guarantee holds and is kept: the correction is
+  // smaller than the step the glide was already taking, so the reader sees the
+  // travel slow rather than reverse. This cannot hold once the ease has decayed
+  // past the crossover — reaching a destination the glide has passed requires
+  // backward motion, and there the budget above is the whole guarantee.
+  for (const handoffAtMs of [600, 750, 780]) {
+    it(`keeps a ${handoffAtMs}ms goal move under the speed the glide was making`, () => {
+      const m = measureLateHandoff(handoffAtMs)
+      expect(m.worstBack).toBeLessThanOrEqual(m.speedThen)
+    })
+  }
+
+  // `GLIDE_MAX_BACK_STEP_PX` is not a taste setting, and this recomputes where it
+  // comes from so the basis is executable rather than a number measured once.
+  // Walking the mount time forward, the correction grows while the frame's own
+  // motion decays. The widest correction travel still writes whole is the last
+  // one before the two cross, and the budget is that reading at whole-pixel
+  // resolution. Past the crossing the pay-down takes over, which shows up as the
+  // observed backward step DROPPING — the correction itself only ever grows —
+  // so that drop is where the scan stops.
+  it('derives the backward budget from the widest correction the ease still covers', () => {
+    let widest = 0
+    let widestSpeed = 0
+    let previous = 0
+    for (let at = 600; at <= 940; at += 5) {
+      const m = measureLateHandoff(at)
+      if (m.worstBack < previous) break
+      previous = m.worstBack
+      if (m.worstBack > widest) { widest = m.worstBack; widestSpeed = m.speedThen }
+    }
+    // It is still under the motion the glide was making, so it reads as the
+    // travel slowing rather than reversing.
+    expect(widest).toBeLessThanOrEqual(widestSpeed)
+    // And the budget is that reading, rounded up to a whole pixel.
+    expect(widest).toBeLessThanOrEqual(GLIDE_MAX_BACK_STEP_PX)
+    expect(widest).toBeGreaterThan(GLIDE_MAX_BACK_STEP_PX - 1)
+  })
+
+  it('stops paying down after the catch-up frames and leaves the rest to convergence', () => {
+    // A correction far larger than the catch-up can cover: at half the budget a
+    // frame, finishing it would take a dozen frames more than travel is allowed,
+    // whatever the cap is set to. Travel must not keep extending itself for a
+    // destination that has moved this far — CONVERGE exists for a goal that is
+    // still moving — so the extension is capped and the remainder handed over.
+    const huge = (GLIDE_BACK_CATCHUP_FRAMES + 12) * (GLIDE_MAX_BACK_STEP_PX / 2)
+    const m = measureLateHandoff(940, huge)
+    // Every clamped frame is one travel wrote. The first is travel's own last
+    // frame on the clock; the rest are the extension, which the cap bounds.
+    expect(m.clampedFrames - 1).toBe(GLIDE_BACK_CATCHUP_FRAMES)
+    // The landing is still exact: convergence finishes what the cap cut off.
+    expect(m.landed).toBe(huge)
+  })
+
+  it('absorbs a correction inside the budget in ONE frame and pays a larger one down over several', () => {
+    // A correction the remaining ease can absorb is written whole, on the frame
+    // it arrives: the reader sees the travel slow, and travel still lands on its
+    // own clock. Starting a pay-down here would put backward drift into a jump
+    // that does not need it.
+    const absorbed = measureLateHandoff(780)
+    expect(absorbed.backFrames).toBe(1)
+    // The whole 46.5px correction, in that one frame — not a paid-down slice of
+    // it. This is the largest backward frame travel writes without paying down,
+    // and it is the reading the budget above is derived from.
+    expect(absorbed.worstBack).toBeCloseTo(46.5, 1)
+    expect(absorbed.atDeadline).toBe(LATE_RESIDUAL_PX)
+    // One the ease cannot absorb is spread, so it takes more than one frame and
+    // is still outstanding when the clock runs out.
+    const paid = measureLateHandoff(930)
+    expect(paid.backFrames).toBeGreaterThan(1)
+    expect(paid.atDeadline).not.toBe(LATE_RESIDUAL_PX)
   })
 
   it('under reduced motion skips travel but still converges', () => {

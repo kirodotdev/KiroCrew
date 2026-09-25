@@ -85,12 +85,27 @@ FLAG_NO_DASHBOARD: str = "--no-dashboard"
 FLAG_APPROVAL: str = "--approval"
 APPROVAL_MODE: str = "yolo"
 
-# kiro-cli's own MODEL credential (loader.py:366 CRED_KIRO_API_KEY). Supplied to
-# the task from Secrets Manager as this env var; re-injected into the kiro-cli
-# child (loader.py:1167/1182) and intentionally NOT denied by the sandbox env
-# filter (runtime.py:1251), so forwarding it in the backend env is the whole
-# auth mechanism. We forward it EXPLICITLY (below) and refuse to start without
-# it (require_api_key), rather than relying on the wholesale os.environ copy.
+# The model identity, supplied to the task from Secrets Manager as this env var:
+# one ``KasToken`` document (``auth/store.py``) as JSON. The SUPERVISOR reads it,
+# writes it into the crew's encrypted vault (:func:`seed_model_identity`) and then
+# withholds it from the backend, so the value never reaches the model worker's
+# environment.
+#
+# It is a token document rather than an API key because the vault is what consumes
+# it. ``acp/kas_host_auth.answer_get_access_token`` builds the engine's
+# ``_kiro/auth/getAccessToken`` reply from a stored identity and constructs its
+# provider with ``allow_env_api_key=False``: an API key is not an OIDC bearer and
+# would be sent under the wrong token type. So the deliverable shape is the one the
+# vault stores.
+ENV_KIRO_IDENTITY: str = "KIRO_IDENTITY"
+
+# kiro-cli's own API-key credential (loader.py:366 CRED_KIRO_API_KEY). Nothing
+# delivers it and the backend must not receive it: it is re-injected into the
+# kiro-cli child (loader.py:1167/1182) and is not denied by the sandbox env filter
+# (runtime.py:1251), so a value arriving here by any route would land in the
+# auto-approved worker's environment. It is withheld explicitly (below) rather than
+# left to the absence of a delivery path, because the backend env starts as a
+# wholesale copy of the supervisor's.
 ENV_KIRO_API_KEY: str = "KIRO_API_KEY"
 
 # Environment variable names the backend reads. VERIFIED against the installed
@@ -185,11 +200,11 @@ CHANNEL_CRED_ENV: frozenset[str] = frozenset(
 #: whatever else the role is granted. Keeping it out of the environment closes that
 #: independently of the sandbox.
 #:
-#: Removing them is not a loss for the backend. It talks to the model over
-#: ``KIRO_API_KEY`` and to nothing in AWS; the SUPERVISOR is what uses the task role, and
-#: it keeps its own ``os.environ`` untouched. A container that genuinely needs an AWS call
-#: on the turn path should be given a narrower credential explicitly rather than inherit
-#: the task's.
+#: Removing them is not a loss for the backend. It reaches the model through the vault
+#: rather than through its environment, and nothing in AWS; the SUPERVISOR is what uses
+#: the task role, and it keeps its own ``os.environ`` untouched. A container that
+#: genuinely needs an AWS call on the turn path should be given a narrower credential
+#: explicitly rather than inherit the task's.
 #:
 #: ``AWS_CONTAINER_AUTHORIZATION_TOKEN`` and the full-URI form are listed too: the newer
 #: agent protocol uses them, and a list that only covers the shape in front of us today
@@ -244,23 +259,43 @@ def build_backend_argv(settings: Settings) -> list[str]:
 #: The `agent` settings the container WRITES rather than inherits, and the reason
 #: they are here rather than left to their defaults.
 #:
-#: `verify_sandbox` refuses to start on a host that cannot sandbox the model
-#: subprocess, and this container offers no unsandboxed posture at all. That refusal
-#: is worth nothing if a config file can turn the sandbox off underneath it: the
-#: gateway reads these three keys, `sandbox="off"` skips its own OS-level isolation,
-#: and either fallback flag set true lets `wrap_argv` proceed with no backend instead
-#: of raising. So they are forced exactly as the channel sections are -- written, not
-#: merged, not defaulted.
+#: `config.json` arrives in the task from outside this code, so every one of these is
+#: a posture the container states rather than hopes for. Written, not merged, not
+#: defaulted -- exactly as the channel sections are.
+#:
+#: `acp_backend` selects the KAS harness, which is what keeps the model credential out
+#: of the worker's environment. `acp/harness/kas.KasHarness.apply_spawn_env` strips the
+#: API key from the relay's environment and the relay asks the host for a token
+#: instead, which `acp/kas_host_auth.answer_get_access_token` answers from the vault.
+#: Leaving this to the default would make the credential's location a property of
+#: whatever `config.json` the task was given, and `build_backend_env` withholding the
+#: credential would then starve a relay that owns its own auth.
+#:
+#: The three sandbox keys are all at their protective values, and the reason is a
+#: measurement rather than caution. Taking the credential out of the worker's
+#: environment does NOT put it out of the worker's reach: the backend answers the
+#: engine's token request from the vault, so the backend's uid must be able to decrypt
+#: it, and the worker is a child of the backend under that same uid. A uid-1000 process
+#: reads and decrypts that vault directly. Residency in the environment is therefore
+#: not the property that makes an unsandboxed worker safe -- reachability by its uid is,
+#: and the backend has to reach the credential for any turn to run at all.
+#:
+#: So `sandbox_allow_unsandboxed_exec` stays false. An unsandboxed auto-approved worker
+#: on untrusted prompt content still has a route to the credential, and the routes that
+#: remain are not closable from this file: a user namespace, a worker under a different
+#: uid from the BACKEND (the gateway's own spawn path, not this container's), or a
+#: credential not worth stealing (short-lived and narrowly scoped, issued to the task
+#: rather than to a process).
 #:
 #: Defaults are not a substitute for writing them. `sandbox_allow_unsandboxed_exec`
 #: resolves an UNDECLARED value through `unsandboxed_exec_platform_default()`, so
-#: what silence means is a property of the platform rather than a constant, and
-#: `config.json` arrives in the task from outside this code.
+#: what silence means is a property of the platform rather than a constant.
 #:
-#: `test/test_crew_container_config_isolation.py` ratchets these keys against
+#: `test/test_crew_container_config_isolation.py` ratchets the sandbox keys against
 #: `AgentConfig`, so a sandbox knob added to the gateway reds CI until the container
 #: decides what to write for it.
 FORCED_AGENT_SETTINGS: Mapping[str, object] = {
+    "acp_backend": "kas",
     "sandbox": "auto",
     "sandbox_allow_no_isolation": False,
     "sandbox_allow_unsandboxed_exec": False,
@@ -268,13 +303,14 @@ FORCED_AGENT_SETTINGS: Mapping[str, object] = {
 
 
 def build_backend_config(existing: Mapping[str, object] | None = None) -> dict[str, object]:
-    """The config the backend boots with: no messaging transport, no sandbox opt-out.
+    """The config the backend boots with: no messaging transport, a stated agent posture.
 
     Merges over *existing* rather than replacing it, so a crew bundle that ships
     config keeps them, and a section already present keeps its other settings with
     only the forced keys overwritten. Forcing rather than defaulting is the point: a
-    file that arrives with ``telegram.enabled`` true, or with ``agent.sandbox`` set to
-    ``off``, must lose, or the container's posture is a suggestion.
+    file that arrives with ``telegram.enabled`` true, or with ``agent.acp_backend``
+    naming a backend that owns its own credential, must lose, or the container's
+    posture is a suggestion.
 
     A non-dict where a section should be is REPLACED, not merged. The gateway coerces
     such a section to defaults, and defaults are not what this function is for.
@@ -389,8 +425,9 @@ def build_backend_env(settings: Settings, base: Mapping[str, str] | None = None)
 
     Points the backend at the shared data home and loopback port, pins the bind
     address to loopback (overriding any inherited ``KIROCREW_BIND=0.0.0.0`` from
-    the base image), disables the beacon, removes any channel credential, and
-    forwards the model credential (``KIRO_API_KEY``) explicitly.
+    the base image), disables the beacon, and removes every credential: the
+    channel ones, the task role's, the front's control secret, and the model
+    identity in both of its shapes.
     """
     env = dict(os.environ if base is None else base)
     env[ENV_HOME] = str(settings.data_home)
@@ -416,39 +453,240 @@ def build_backend_env(settings: Settings, base: Mapping[str, str] | None = None)
     # X-SMC-Control-Secret header. The BACKEND never reads it -- the gateway's own
     # internal secret is a separate value derived from its port.
     env.pop(ENV_CONTROL_SECRET, None)
-    # Forward the model credential explicitly. It is already present via the
-    # wholesale copy, but naming it documents that this is the deliberate auth
-    # path (require_api_key refuses to start without it) rather than an
-    # accident of inheriting os.environ.
+    # Withhold the model credential in both of its shapes.
     #
-    # Unlike the two secrets above, this one CANNOT be popped: kiro-cli re-injects
-    # it into the worker and it is the whole model-auth mechanism, so the worker
-    # must carry it. That is precisely why the worker must run sandboxed -- see
-    # verify_sandbox, which refuses to start when it cannot. There is no
-    # unsandboxed posture: a worker that both holds this credential and runs an
-    # auto-approved shell on untrusted prompt content would be a
-    # prompt-injection-to-credential-exfiltration path, so the container refuses
-    # rather than offer it. Brokering the credential out of the worker's
-    # environment (which would let an unsandboxed posture be safe) is future work.
-    source = os.environ if base is None else base
-    if source.get(ENV_KIRO_API_KEY):
-        env[ENV_KIRO_API_KEY] = source[ENV_KIRO_API_KEY]
+    # A positive action, not an omission, and worth doing on every host. The backend
+    # spawns the model worker, the worker auto-approves every tool it calls, and its
+    # prompt content is untrusted; a credential readable in that environment is
+    # therefore reachable by prompt content whatever the sandbox is doing.
+    #
+    # The worker does not need one. ``acp/harness/kas.KasHarness.apply_spawn_env``
+    # strips the API key from the relay's environment, and the relay asks the HOST
+    # for a token over ``_kiro/auth/getAccessToken``, which
+    # ``acp/kas_host_auth.answer_get_access_token`` answers from the vault inside the
+    # backend process.
+    #
+    # It does NOT earn an unsandboxed posture, and ``verify_sandbox`` does not read it
+    # as one. The vault is a second route and the container cannot close it: the
+    # backend must decrypt it to answer that request, and the worker is a child of the
+    # backend under the same uid. This closes the environment route and nothing more.
+    #
+    # ENV_KIRO_IDENTITY is popped even though the supervisor is what consumes it: it
+    # arrives in the supervisor's own environment, and the backend env starts as a
+    # copy of that.
+    env.pop(ENV_KIRO_IDENTITY, None)
+    env.pop(ENV_KIRO_API_KEY, None)
     return env
 
 
-def require_api_key(env: Mapping[str, str]) -> None:
-    """Refuse to start when the model credential is absent or empty.
+def seed_model_identity(settings: Settings, source: Mapping[str, str] | None = None) -> bool:
+    """Write the delivered model identity into the crew's vault. True when stored.
 
-    Presence only. A present key is NOT a working one: an invalid key boots a
-    container that answers the port and fails every turn, and validity can only
-    be established by a real turn (see wait_until_ready). This check therefore
-    proves the credential was supplied, nothing more.
+    The vault under ``<data home>/kas`` is where the backend's auth callback reads
+    from (``auth/bridge.default_token_store`` resolves it from the same data home
+    this container points the backend at), so seeding it here is what lets the
+    relay spawn host-owned: ``acp/kas_transport.build_kas_argv`` omits
+    ``--auth-method cli`` exactly when ``auth/bridge.vault_holds_identity`` is true.
+
+    Called before the backend starts, because the spawn plan is resolved from the
+    vault's state and a seed landing later would leave the first session cli-owned.
+
+    ``TokenStore.save`` is the same entry point a sign-in uses, so nothing about
+    this path is a side door: the document is written encrypted, under the
+    identity's refresh lock, through the vault's own atomic replace.
+
+    False when nothing was delivered, which is not an error here -- the refusal
+    belongs to :func:`require_model_identity`, which reads the vault rather than the
+    environment and so also covers an identity that arrived by another route.
     """
-    if not (env.get(ENV_KIRO_API_KEY) or "").strip():
+    # Imported inside the function, NOT at module scope, and not as a cost
+    # optimisation: this tree is ALSO imported standalone, as a top-level
+    # ``container`` package with only the runtime directory on ``sys.path`` and no
+    # ``kiro_crew`` anywhere -- that is how ``scripts/crew_image_build_plan.py``
+    # reaches ``bundle._content_digest`` to write a probe bundle, under a bare
+    # interpreter that has this repository's package installed nowhere. A module-scope
+    # import here makes importing ANY supervisor module raise ModuleNotFoundError
+    # there, because ``supervisor/__init__.py`` re-exports from this file.
+    # ``test_supervisor_tree_imports_without_kiro_crew`` holds the property.
+    from kiro_crew.auth.store import KNOWN_IDENTITIES, KasToken, TokenStore, TokenStoreError
+
+    raw = ((source if source is not None else os.environ).get(ENV_KIRO_IDENTITY) or "").strip()
+    if not raw:
+        return False
+    try:
+        token = KasToken.from_json(raw)
+    except (ValueError, TypeError, KeyError) as err:
         raise common.ConfigError(
-            f"{ENV_KIRO_API_KEY} is not set. The task injects the model "
-            "credential from Secrets Manager; without it the backend boots and "
-            "every turn fails. Refusing to start."
+            f"{ENV_KIRO_IDENTITY} is not a model identity document. The task delivers "
+            "one KasToken as JSON from Secrets Manager; a value that cannot be parsed "
+            "would leave the backend with no credential and every turn would fail. "
+            f"Refusing to start. ({type(err).__name__})"
+        ) from err
+    # VALIDATE FIRST, before a single slot is touched. `from_json` checks shape and
+    # nothing else -- not expiry, not whether anything can renew it -- so a delivery
+    # that cannot produce a token still parses. Ordering the usability check after the
+    # write would make a bad delivery destructive: the vault on a persistent volume can
+    # hold a token that has refreshed past the Secrets Manager copy, and that copy is
+    # then the older credential. Writing it and emptying the other slots before
+    # discovering it is dead would leave the task with no live credential anywhere and
+    # only a human sign-in to recover, which is strictly worse than refusing with the
+    # vault intact.
+    if not token.is_usable():
+        raise common.ConfigError(
+            f"the delivered {ENV_KIRO_IDENTITY} cannot produce an access token: it has "
+            "expired and carries no refresh token. Refusing to start, without touching "
+            "the vault -- a task that starts on this would fail every turn, and writing "
+            "it first would overwrite whatever the vault still holds."
+        )
+    # `is_usable` accepts an expired token on the strength of a refresh token ALONE, which
+    # is the looser question three host-side readers want and not the one that matters
+    # here: a refresh also needs the inputs its identity kind requires -- client
+    # credentials for builder_id and identity_center, a token endpoint for external_idp --
+    # and without them the first turn raises instead of renewing. That is knowable right
+    # here, with no network call, so an expired delivery that cannot even attempt a
+    # refresh is refused before the write rather than discovered after it.
+    if token.is_expired():
+        blocker = token.refresh_blocker()
+        if blocker:
+            raise common.ConfigError(
+                f"the delivered {ENV_KIRO_IDENTITY} has expired and cannot be renewed: "
+                f"{blocker}. Refusing to start without touching the vault -- the first "
+                "refresh would raise, so every turn would fail, and writing it would "
+                "have replaced whatever the vault still holds."
+            )
+    # And whether the vault will KEEP it, which is a different question from whether it
+    # is live. `save` writes the delivered identity's OWN slot, replacing whatever was
+    # there, so a token the store accepts and then drops on read costs that slot its
+    # previous contents before anything discovers the problem -- and a social identity
+    # with no profile ARN is exactly that token, which `KasToken`'s own docstring calls
+    # optional while the store requires it. Asking the store's predicate before the write
+    # is what keeps the failure non-destructive.
+    if not token.is_storable():
+        raise common.ConfigError(
+            f"the delivered {ENV_KIRO_IDENTITY} is a {token.identity} identity with no "
+            "profile ARN, which KAS rejects and the crew's vault therefore does not keep. "
+            "Refusing to start without touching the vault: writing it would replace this "
+            "slot's contents with an entry that reads back as absent."
+        )
+    store = TokenStore(settings.data_home)
+    # Then WRITE, and confirm the store kept it before anything is removed.
+    try:
+        store.save(token)
+    except (TokenStoreError, ValueError) as err:
+        raise common.ConfigError(
+            f"the delivered {ENV_KIRO_IDENTITY} could not be written to the crew's "
+            f"vault, and no other slot has been touched. Refusing to start. ({err})"
+        ) from err
+    # `save` succeeding is not the store ACCEPTING it: `load` drops an entry its own
+    # rules reject, and a `social` or `identity_center` token with no ``profile_arn`` is
+    # exactly that case. Reading it back is what tells a stored identity from a written
+    # one, and doing it here means a rejected delivery has still removed nothing.
+    if store.load(token.identity) is None:
+        raise common.ConfigError(
+            f"the crew's vault did not keep the delivered {token.identity} identity. A "
+            "social or identity-center token needs a profile ARN, which KAS requires "
+            "and the store enforces on read. Refusing to start with the vault otherwise "
+            "unchanged."
+        )
+    # ONLY NOW empty every other slot, because saving is not enough to make the
+    # delivered identity the one that gets used. `TokenStore.resolve` returns the
+    # highest-ranked slot present rather than the newest write, and `save` touches only
+    # its own token's slot. The data home is a mounted persistent volume that carries
+    # over from a prior task by this image's design, so a slot that task left behind
+    # survives into this one -- and it stays `is_usable` for as long as it holds a
+    # refresh token. Delivering an identity of a LOWER rank than that leftover (Builder
+    # ID after Identity Center, an ordinary migration) would otherwise authenticate the
+    # task as the previous account, silently: every reader downstream calls the same
+    # `resolve`, so nothing would disagree with anything. Deleting the others makes the
+    # delivered identity the resolved one by construction, for every reader at once,
+    # rather than asking each to prefer the right slot.
+    #
+    # Overwriting the delivered identity's OWN slot with a validated, usable delivery is
+    # deliberate and not the data loss above: the task's delivered identity is the
+    # authoritative one for that task, so a rotated secret must win over whatever the
+    # vault holds for the same account.
+    #
+    # Deleting an absent slot is a no-op, so this needs no presence check. A delete that
+    # FAILS propagates: a credential that could not be removed is still live.
+    try:
+        for other in KNOWN_IDENTITIES:
+            if other != token.identity:
+                store.delete(other)
+    except (TokenStoreError, ValueError) as err:
+        raise common.ConfigError(
+            f"the delivered {ENV_KIRO_IDENTITY} could not be established as the crew's "
+            f"only stored identity, so the backend could start authenticated as another "
+            f"account. Refusing to start. ({err})"
+        ) from err
+    # Post-condition, read through the SAME resolver every consumer uses -- the relay's
+    # spawn plan, the startup check, the fingerprint and doctor readers. Asserting on
+    # that reader rather than on the writes is what makes this cover a slot this loop
+    # does not enumerate: whatever `resolve` would hand the backend is what is checked.
+    resolved = store.resolve()
+    if resolved is None or resolved.identity != token.identity:
+        raise common.ConfigError(
+            f"after seeding, the crew's vault resolves to "
+            f"{resolved.identity if resolved else 'nothing'} rather than the delivered "
+            f"{token.identity}. The backend would authenticate as an identity the task "
+            "did not deliver. Refusing to start."
+        )
+    return True
+
+
+def require_model_identity(settings: Settings) -> None:
+    """Refuse to start when the crew's vault holds no usable model identity.
+
+    Reads the VAULT, not the environment, because the vault is what answers the
+    engine's token request. Reading the environment would prove the opposite of what
+    this function is for: a credential present there is one within the worker's reach,
+    which is the condition :func:`__main__.verify_sandbox` refuses on.
+
+    Addresses the store by ``settings.data_home`` rather than through
+    ``auth.bridge.default_token_store``, which resolves ``data_home()`` from
+    ``KIROCREW_HOME`` -- set for the BACKEND (:func:`build_backend_env`) and not for
+    this process. Both therefore name the same directory by construction rather than by
+    both happening to be run the same way.
+
+    The predicate is the shared one, :meth:`KasToken.is_usable`, which the relay's
+    spawn plan, ``kirocrew doctor`` and the dashboard's sign-in card all read, so this
+    refusal cannot disagree with the relay about whether a stored identity is live. A
+    plain file read: no refresh, no network.
+
+    Usable is NOT working. The issuer may reject the refresh token, and only a real
+    turn establishes that (see ``wait_until_ready``). This proves an identity was
+    delivered and is structurally able to produce a token, nothing more.
+    """
+    # Imported inside the function, NOT at module scope, and not as a cost
+    # optimisation: this tree is ALSO imported standalone, as a top-level
+    # ``container`` package with only the runtime directory on ``sys.path`` and no
+    # ``kiro_crew`` anywhere -- that is how ``scripts/crew_image_build_plan.py``
+    # reaches ``bundle._content_digest`` to write a probe bundle, under a bare
+    # interpreter that has this repository's package installed nowhere. A module-scope
+    # import here makes importing ANY supervisor module raise ModuleNotFoundError
+    # there, because ``supervisor/__init__.py`` re-exports from this file.
+    # ``test_supervisor_tree_imports_without_kiro_crew`` holds the property.
+    from kiro_crew.auth.store import TokenStore
+
+    try:
+        token = TokenStore(settings.data_home).resolve()
+    except Exception as err:  # noqa: BLE001 - an unreadable vault is "no identity"
+        # The reason is a store-level verdict (a path, a permissions answer); the store
+        # raises before decrypting, so no stored value can appear here.
+        log.warning("crew vault unreadable (%s): %s", type(err).__name__, err)
+        token = None
+    if token is not None and not token.is_usable():
+        log.warning(
+            "crew vault holds a lapsed %s identity with nothing to renew it",
+            token.identity,
+        )
+        token = None
+    if token is None:
+        raise common.ConfigError(
+            f"the crew's vault holds no usable model identity. The task injects one "
+            f"from Secrets Manager as {ENV_KIRO_IDENTITY}, a KasToken document the "
+            "supervisor writes into the vault before the backend starts; without it "
+            "the backend boots, spawns a relay that owns its own auth, and every turn "
+            "fails on a sign-in it cannot complete. Refusing to start."
         )
 
 

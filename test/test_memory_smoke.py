@@ -294,7 +294,8 @@ class TestMemoryInjectionAllAgents:
 
 
 class TestEpisodicInjectionAllAgents:
-    """Episodic memory is never pasted into the first turn; recall returns it."""
+    """A relevant episode rides the first turn's activity block for every agent,
+    exactly once; recall still returns it for later turns."""
 
     @staticmethod
     def _seeded(tmp_path: Path) -> tuple[MemoryStore, VectorMemoryStore]:
@@ -305,7 +306,7 @@ class TestEpisodicInjectionAllAgents:
         store._vector_store = vs
         return store, vs
 
-    def test_custom_agent_defers_episodic_to_recall_on_new_session(self, tmp_path: Path) -> None:
+    def test_custom_agent_carries_episodic_once_on_new_session(self, tmp_path: Path) -> None:
         store, vs = self._seeded(tmp_path)
         builder = _builder(tmp_path, memory=store)
         msg, _ = builder.build_message(
@@ -313,11 +314,11 @@ class TestEpisodicInjectionAllAgents:
             is_new_session=True,
             agent="my-custom-agent",
         )
-        assert "PostgreSQL" not in msg
+        assert msg.count("PostgreSQL") == 1
         assert "memory_recall" in msg
         assert "PostgreSQL" in vs.recall("what database should I use?")["episodic_context"]
 
-    def test_kirocrew_agent_defers_episodic_to_recall_on_new_session(self, tmp_path: Path) -> None:
+    def test_kirocrew_agent_carries_episodic_once_on_new_session(self, tmp_path: Path) -> None:
         store, vs = self._seeded(tmp_path)
         builder = _builder(tmp_path, memory=store)
         msg, _ = builder.build_message(
@@ -325,7 +326,7 @@ class TestEpisodicInjectionAllAgents:
             is_new_session=True,
             agent="kirocrew",
         )
-        assert "PostgreSQL" not in msg
+        assert msg.count("PostgreSQL") == 1
         assert "memory_recall" in msg
         assert "PostgreSQL" in vs.recall("what database should I use?")["episodic_context"]
 

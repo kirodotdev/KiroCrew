@@ -127,6 +127,24 @@ missing member carrier reports memory unavailable and never chooses Global.
 Existing ordinary V1 sessions retain their V1 behavior; old V2 grants are not
 migrated or used as a second authority.
 
+One record shape is backfilled instead of refused: a persistent session written
+before the field existed (0.7.0.5), carrying `agent` and a `memory_store` that
+names a declared V2 store but no `execution_context`. `read_session_execution`
+derives the carrier from the store's `owner_member_id` only when that id names
+exactly one configured member, that member resolves to the same store, and the
+record's `agent` names that member by alias or id; it then writes the carrier
+into the record with a compare-and-set against the exact legacy shape it read,
+so every later read decodes it like any other session. The derived identity is
+never vouched -- the store came from the session's own record -- so the session
+stands where a member session stands after a restart. A record with no `agent`,
+an `agent` naming anyone else, an explicit template pick, a store the
+start-of-process migration could not attribute, a `member_id` marker, or a
+restricted mode is left unchanged and still refused, and the refusal names the
+remedy that works for that store: open a new chat with the same member (or
+archive this one) when the store has an attributed owner, or the legacy store
+repair `kirocrew doctor` names when the start-of-process migration could not
+attribute it. A successful backfill logs one INFO line naming the session.
+
 Persistent sessions serialize this record in their existing owner metadata.
 Incognito and Temporary sessions keep it in live session state and suppress
 Crew transcript/body persistence. Incognito may read memory; Temporary does not.
@@ -494,7 +512,10 @@ against sweep completeness, and are torn down at `close_all`.
      and suppressed while a Stop is active;
   3. **budget exhausted** (the nudges also produced nothing) → terminal notice card
      asking the user to send a message; the counter resets so the next
-     genuine user turn gets a fresh budget. The card's wording is cause-aware,
+     genuine user turn gets a fresh budget. The card's sentences are the
+     constants in `messaging/empty_turn_copy.py`, shared with the channel
+     driver's empty-turn verdict so a channel thread mirrored into the dashboard
+     reads one story. The card's wording is cause-aware,
      mirroring rung 2's split, and the split is decided per EPISODE, not per
      turn: the card says the turn ended without a closing reply and that
      completed steps will not re-run whenever THIS turn was productive **or**
@@ -1035,7 +1056,14 @@ against sweep completeness, and are torn down at `close_all`.
   only when ALL hold: (i) no member PID is tracked or a live provider; (ii-a)
   AT LEAST ONE member has positive agent-runtime argv identity — the generated
   launcher, an exact argv0 basename of `kiro-cli`, `kiro-cli-chat`,
-  `claude-agent-acp`, or `claude`, or a marked MCP launcher — which is the
+  `claude-agent-acp`, or `claude`, or a marked MCP launcher — OR EVERY member is
+  a marked toolbox sandbox credential helper (an argv0 ending
+  `/sandbox/creds_agent` carrying a `--session-id` argv token, version-independent
+  because the toolbox version sits above `sandbox/` in the path), which is a scope
+  with nothing but the helper left in it: the helper serves one runtime and
+  routinely outlives it, and each holds tens of threads while `pids.current`
+  counts tasks. It is deliberately not one of the existential identities, since
+  one helper must not authorize stopping a sibling; either arm is the
   scope-wide stop authorization; (ii-b) EVERY member is this install's own — it
   carries the `KIROCREW_SPAWNED` marker, or its `ppid` chain reaches a
   marker-bearing member without leaving the scope's member set (ownership is by
@@ -1057,7 +1085,9 @@ against sweep completeness, and are torn down at `close_all`.
   scopes. A no-op off Linux or without cgroup v2 delegation
   (`sandbox._probe_cgroup_scope`). Marker inheritance by itself never authorizes
   a scope-wide stop, so an intentional detached server left after its agent
-  runtime exits is preserved. The accepted fail-closed residual is that a scope
+  runtime exits is preserved — including when a credential helper survives
+  beside it, because that helper authorizes a stop only where it is the whole
+  remaining scope. The accepted fail-closed residual is that a scope
   whose runtime-anchor members have all died is never reclaimed, even if every
   survivor still has the marker or is an attributable env-cleared descendant;
   old skipped scopes are summarized at INFO by stable reason category, making

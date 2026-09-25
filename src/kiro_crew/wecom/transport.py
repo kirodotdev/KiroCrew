@@ -56,6 +56,7 @@ from kiro_crew.messaging.transport import (
 from kiro_crew.sel import sel
 from kiro_crew.wecom.client import (
     CHAT_TYPE_SINGLE,
+    WECOM_MAX_REPLY_BYTES,
     WECOM_SAFE_REPLY_CHARS,
     WeComClient,
     WeComInbound,
@@ -118,6 +119,7 @@ WECOM_CAPABILITIES = TransportCapabilities(
     # against; ``truncate_utf8`` is the exact guard at the wire. A flat 20000-CHAR
     # cap was ~60 KB of Chinese text against a 20480-BYTE limit.
     max_message_chars=WECOM_SAFE_REPLY_CHARS,
+    max_message_bytes=WECOM_MAX_REPLY_BYTES,
     max_buttons=0,
     supports_proactive_send=True,
     # ``aibot_send_msg`` answers with no message id, so an empty return is SUCCESS

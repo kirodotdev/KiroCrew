@@ -152,16 +152,17 @@ container's secret-valued environment. Registering one is an API call, not a
 deployment.
 
 The secret-valued half is load-bearing, and the two secrets are load-bearing
-differently. `KIRO_API_KEY` is the model credential and the container refuses to
-boot without it: `require_api_key` in
+differently. `KIRO_IDENTITY` carries the model identity and the container refuses to
+boot without it: the supervisor writes the delivered document into the crew's vault
+and `require_model_identity` in
 `src/kiro_crew/apps/builtins/aws_control/crew/runtime/container/supervisor/backend.py`
-checks it for presence at startup. `SMC_CONTROL_SECRET` separates the owner's
+then reads that vault at startup. `SMC_CONTROL_SECRET` separates the owner's
 control surface from a customer turn and is NOT a boot requirement -- a task
 started without it boots and then refuses every control route, because the check
 fails closed on an unset secret. Neither is baked into the image. Both arrive as
 container secrets whose `valueFrom` names a Secrets Manager secret or a Parameter
 Store parameter, which is also what the execution role needs read permission on.
-Presence is all the startup check proves: an invalid `KIRO_API_KEY` produces a
+Presence is all the startup check proves: an invalid `KIRO_IDENTITY` produces a
 task that answers its port and fails every turn, so only a real turn establishes
 that the credential works.
 

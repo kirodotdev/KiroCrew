@@ -92,6 +92,27 @@ _active_sessions = 0
 # stalling. Generous enough for the largest model on a slow link, since the
 # alternative to waiting is a first run that cannot succeed.
 _MAX_MODEL_PREPARE_SECS = 1800
+
+
+def _prepare_timeout_ms() -> int:
+    """Milliseconds a client should allow for preparation, per THIS server's ceiling.
+
+    Announced on the `status` frames that say preparation is under way, for the
+    same reason `ready` announces `final_timeout_ms`: the deadline belongs to the
+    side that owns the wait. A client picking its own number picks one this side
+    does not honour, and the only interesting case is the number being SHORTER --
+    the client then abandons a load this server is still working on, discarding
+    audio the next frame would have transcribed.
+
+    Deliberately longer than the server's own ceiling by the wire grace, so the
+    timeout is reached HERE first. This side knows why preparation failed and
+    says so in a coded `error`; the client's timer is a backstop for a socket
+    that dies without one, and a backstop that fires first would replace every
+    real diagnosis with a guess about the connection.
+    """
+    return (_MAX_MODEL_PREPARE_SECS + _LOCAL_FINAL_WIRE_GRACE_SECS) * 1000
+
+
 # How often a download in progress republishes its byte count. This is NOT
 # cosmetic: `useMeetingTranscription` arms a 20s stall watchdog on the last frame
 # it received and RECONNECTS when it fires, so a single status frame at the start
@@ -654,7 +675,8 @@ async def _run_local_session(
     # visible one. Best-effort like every other pre-`ready` send. `pending_load` is
     # advisory (a concurrent session may change residency between the check and the
     # load), so this only ever adds or omits one announce — `prepare` still loads.
-    if session.pending_load():
+    announced_load = session.pending_load()
+    if announced_load:
         logger.info("Loading local speech model %s before first transcript", cfg.stt.model)
         await _send(
             {
@@ -663,13 +685,21 @@ async def _run_local_session(
                 "downloaded_bytes": 0,
                 "total_bytes": 0,
                 "code": "",
+                "prepare_timeout_ms": _prepare_timeout_ms(),
             }
         )
 
     prepare_task = asyncio.create_task(session.prepare())
     try:
         events = await asyncio.wait_for(
-            asyncio.shield(_relay_download_progress(prepare_task, _send)),
+            asyncio.shield(
+                _relay_download_progress(
+                    prepare_task,
+                    _send,
+                    session.pending_load,
+                    announced_load,
+                )
+            ),
             timeout=_MAX_MODEL_PREPARE_SECS,
         )
     except asyncio.TimeoutError:
@@ -1183,6 +1213,8 @@ def _status_int(value: object) -> int:
 async def _relay_download_progress(
     prepare_task: "asyncio.Task[list[stt.SttEvent]]",
     send: Callable[[dict], Awaitable[bool]],
+    pending_load: Callable[[], bool] = lambda: False,
+    announced: bool = True,
 ) -> list[stt.SttEvent]:
     """Await *prepare_task*, republishing the model store's byte count while it runs.
 
@@ -1199,6 +1231,11 @@ async def _relay_download_progress(
     `_MAX_MODEL_PREPARE_SECS` ceiling this wait is what applies. Kept for that, not
     for the case its progress frames were originally written for.
 
+    *announced* says whether a `preparing` frame has already gone out, and
+    *pending_load* re-asks whether one is owed. Both default to announcing nothing,
+    so a caller that does not pass them gets the behaviour this function had before
+    the deferred announce existed.
+
     Sending is best-effort on purpose: a failed send means the peer is gone, and
     the transfer must still be allowed to finish so the bytes are on disk for the
     next attempt. So a send failure stops the reporting, never the download.
@@ -1209,6 +1246,33 @@ async def _relay_download_progress(
             return await prepare_task
         status = stt.model_store().status
         if status.get("step") != stt.STAGE_DOWNLOADING:
+            # Nothing is transferring, so this is the load half of the wait. The
+            # caller asked `pending_load()` once BEFORE starting `prepare`, and
+            # that read is advisory: a model resident at that instant can be
+            # evicted before the load looks for it, and then the load happens with
+            # nothing announced. The client's budget for an un-announced wait is
+            # the short one, so the utterance it is holding is discarded at sixty
+            # seconds while this side is still building the context.
+            #
+            # Asked again HERE because the answer can only have become true: a load
+            # already under way cannot un-need announcing. Gated on `pending_load`
+            # rather than on reaching this branch, so a socket where nothing is
+            # loading announces nothing and keeps the short budget -- which is the
+            # whole reason the two waits are told apart.
+            if not announced and pending_load():
+                announced = True
+                logger.info("Local speech model load began after the pre-check saw it resident")
+                if not await send(
+                    {
+                        "type": "status",
+                        "stage": stt.STAGE_PREPARING,
+                        "downloaded_bytes": 0,
+                        "total_bytes": 0,
+                        "code": "",
+                        "prepare_timeout_ms": _prepare_timeout_ms(),
+                    }
+                ):
+                    return await prepare_task
             continue
         delivered = await send(
             {
@@ -1217,6 +1281,7 @@ async def _relay_download_progress(
                 "downloaded_bytes": _status_int(status.get("downloaded_bytes")),
                 "total_bytes": _status_int(status.get("total_bytes")),
                 "code": stt.CODE_MODEL_MISSING,
+                "prepare_timeout_ms": _prepare_timeout_ms(),
             }
         )
         if not delivered:

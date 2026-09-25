@@ -216,6 +216,40 @@ def project_channel_turn_live(
     return user_mid, assistant_mid
 
 
+def project_channel_row_live(
+    dashboard_state: Any, session_key: str, role: str, text: str, cls: str
+) -> str | None:
+    """Append one extra row to the open dashboard slot and return its row id.
+
+    The channel-side twin of the dashboard runner's own turn-outcome cards: a
+    channel turn that closed with no assistant text mirrors the driver's notice
+    (``notice`` / ``msg msg-info``) into the live window, and one that raised
+    mirrors its error (``error`` / ``msg msg-err``), so the reader there sees
+    the same sentence the channel posted. Called AFTER
+    :func:`project_channel_turn_live` so the row lands behind the user's (and,
+    when there is one, the assistant's) in the window's order. Returns ``None``
+    when no live slot owns the session, or when the append failed, so the caller
+    persists the row under a freshly minted id instead.
+    """
+    slot = live_dashboard_slot(dashboard_state, session_key)
+    if slot is None:
+        return None
+    try:
+        mid = row_mid(slot.append(role, text, cls)) or ""
+    except Exception:
+        logger.debug(
+            "channel turn projection: %s append failed for %s", role, session_key, exc_info=True
+        )
+        return None
+    push = getattr(dashboard_state, "push_slots_update", None)
+    if callable(push):
+        try:
+            push()
+        except Exception:
+            logger.debug("channel turn projection: slot push failed", exc_info=True)
+    return mid or None
+
+
 async def rename_channel_title_live(
     dashboard_state: Any,
     session_key: str,

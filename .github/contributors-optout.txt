@@ -12,3 +12,12 @@
 # here in the same pull request, so the next rebuild does not bring them back.
 #
 # Blank lines and text after a '#' are ignored; matching is case-insensitive.
+
+# Automation / service accounts that author commits or PRs but are not people.
+# `[bot]`-suffixed logins are already rejected by update_contributors.py's login
+# grammar; these are `User`-typed accounts that the grammar would otherwise
+# accept, so they are excluded here through the same single mechanism.
+github-actions
+dependabot
+renovate
+kiro-agent

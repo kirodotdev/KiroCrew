@@ -51,10 +51,10 @@ Everything is a refusal back to "no badge"
 ------------------------------------------
 :func:`risk_record` returns ``None`` for: the seam off, the session unsampled, the
 tool-argument scope not consented to, the turn cap reached, a scrubbed or failed
-call, an unusable answer, a ``safe`` verdict, and a ``caution`` or ``risky``
-verdict the provider was not confident about. So an ordinary tool card is
-byte-identical to the one this build appends today, and a caller needs no
-try/except and no feature check.
+call, an unusable answer, a ``safe`` verdict, a ``caution`` or ``risky`` verdict the
+provider was not confident about, and a ``caution`` on a plain file write. So an
+ordinary tool card is byte-identical to the one this build appends today, and a
+caller needs no try/except and no feature check.
 
 ``safe`` is a refusal to BADGE, not a refusal to record: the row is written with
 ``tier="safe"``, because "the seam looked and thought it was fine" is the answer
@@ -65,9 +65,12 @@ An unconvinced answer in EITHER flagged tier is refused the same way and recorde
 the same way. The tier is not the flag on its own: ``p`` is the probability the
 provider assigned to the option it CHOSE, so an answer at 0.5 is a coin flip about
 which tier the call is even in, and :data:`CAUTION_CONFIDENCE_THRESHOLD` and
-:data:`RISKY_CONFIDENCE_THRESHOLD` are where this build stops printing one. The row
-still carries the tier it was given, so the suppressed answers stay countable --
-which is how both thresholds were measured and the only way the next ones can be.
+:data:`RISKY_CONFIDENCE_THRESHOLD` are where this build stops printing one. A plain
+file write or edit (:func:`kiro_crew.platform.tool_paths.is_edit_call`) never
+draws a ``caution`` badge once its write identity is on the card this point
+reads. The row still carries the tier it was given either way, so the
+suppressed answers stay countable -- which is how both thresholds were
+measured and the only way the next ones can be.
 
 The two bars are equal in value and separate in identity, because they are read off
 two different populations and the next reading may move one without the other.
@@ -96,6 +99,7 @@ from kiro_crew import decisions as core
 from kiro_crew.decisions import log as _log
 from kiro_crew.decisions.points import as_text
 from kiro_crew.decisions.types import Answer, Choice, Question
+from kiro_crew.platform.tool_paths import is_edit_call
 
 logger = logging.getLogger(__name__)
 
@@ -138,45 +142,34 @@ RISKY_CONFIDENCE_THRESHOLD = 0.80
 
 #: Confidence a ``caution`` answer needs before it reaches the card.
 #:
-#: 0.80, and measured the same way -- but over a LATER and separate window from the
-#: 40-call reading above, so the two paragraphs' counts are not meant to reconcile:
-#: two day-files of this build's log, carrying 79 answered ``caution`` calls and 47
-#: answered ``risky`` ones.
+#: 0.80 -- the SAME value as :data:`RISKY_CONFIDENCE_THRESHOLD`, kept rather than
+#: raised, because this build's own measured window for this bar is 0.75..0.85
+#: (above 0.85 the reading starts dropping ordinary rebases and amends, the
+#: tier's own target population) and no fresh reading justifies moving inside
+#: that window, let alone past it. Over five consecutive live day-files --
+#: 7,834 annotated calls, 1,526 ``caution`` rows -- the bar alone still badges
+#: 841 of them; the file-write carve-out below removes 203 of those (24%),
+#: leaving 638 (-58% from the unfiltered count). Raising to 0.90 was tried and
+#: rejected in an earlier round of this PR: it crosses the measured window on
+#: no new evidence, and the carve-out is what does the real work, not a
+#: second, unmeasured bar movement.
 #:
-#: This build shipped ``caution`` badging on its tier alone, on the argument that
-#: the mild word is cheap to be wrong about. The log says the argument was about
-#: the wrong cost. In that window every one of the 79 ``caution`` calls drew a
-#: badge, while 13 of the 47 ``risky`` ones cleared the bar above -- so 86 % of
-#: every badge the seam drew came from the tier that had no bar, and a reader
-#: scanning a transcript met the alarming word buried in six of the mild one. That
-#: is the same "costs every other badge its meaning" failure the bar above exists
-#: for, arriving through the tier that was exempted from it.
-#:
-#: The reading has no gap to cut at: ``caution`` runs continuously from 0.41 to
-#: 0.98 with its median at 0.80, unlike ``risky``'s empty 0.62..0.76. So this bar is
-#: chosen on what sits on each side rather than on a discontinuity. BELOW it the
-#: answers are dominated by calls that only read -- six poll cycles reading PR
-#: status, four ``Check ...`` reads, three ``monitor_start`` arms -- which the
-#: tier's own rubric sentence excludes, and a badge on a read is the failure mode a
-#: badge has. ABOVE it they are what the rubric asks for: rebases, amends,
-#: squashes, conflict resolutions, worktree creation.
-#:
-#: One miss is accepted knowingly, and it is worth naming rather than rounding off:
-#: an "undo the bad squash" at 0.57 rewrote history and now goes unbadged. The
-#: honest reading of that case is that the ANSWER was wrong, not that the call was
-#: harmless -- a history rewrite is what the ``risky`` sentence describes, and the
-#: provider put it in the mild tier at barely better than a coin flip. So the trade
-#: this bar accepts is: below it the tier is not evidence about the call, and a call
-#: the provider could not place goes unannotated. What makes that affordable here
-#: and not above is the CEILING on being wrong -- an unbadged ``caution`` is capped
-#: by what the mild tier claims, while the answers 0.90 would have dropped from
-#: ``risky`` were force-pushes the provider was confident about.
-#:
-#: n was 79, so this is a floor with evidence rather than a tuned optimum, and the
-#: suppressed rows are what a later reading re-derives it from.
-#:
-#: A CONSTANT and not a setting, for the reason the bar above is one.
+#: A CONSTANT for the same reason :data:`RISKY_CONFIDENCE_THRESHOLD` is one.
 CAUTION_CONFIDENCE_THRESHOLD = 0.80
+
+#: A plain file write or edit never draws a ``caution`` badge once its write
+#: identity is already on the card this point reads: writing a file
+#: inside the workspace is what the rubric's ``caution`` sentence describes, so
+#: the badge said nothing a reader of the card did not already know -- in that
+#: same reading 203 of the 841 badges the bar alone drew (24%) carried the
+#: harness's own "Write File" title. ``risky`` still badges on a write, because
+#: a write outside the workspace or over a credential file is exactly what
+#: ``risky`` is for. Whether a call IS that write is
+#: :func:`kiro_crew.platform.tool_paths.is_edit_call`, the same routing
+#: predicate the hook edit gate and governance classification share -- not a
+#: second, private reading of what an edit is keyed on the ACP ``kind`` alone,
+#: which the harness marks agent-influenced and can arrive empty or as
+#: ``read`` on a call whose content block still declares a file change.
 
 #: The rubric, sent as the question's prompt. One sentence per tier, because the
 #: tiers are the answer domain and a domain nobody defined is a domain every
@@ -231,26 +224,25 @@ LOG_BUDGET_SECS = 0.05
 ERROR_TURN_CAP = "turn-cap"
 
 
-def earns_badge(tier: str, p: float) -> bool:
+def earns_badge(tier: str, p: float, *, file_write: bool = False) -> bool:
     """Whether this answer reaches the tool card. The ONE place that is decided.
 
-    Each flagged tier must clear its own bar: ``caution``
-    :data:`CAUTION_CONFIDENCE_THRESHOLD`, ``risky``
-    :data:`RISKY_CONFIDENCE_THRESHOLD`. ``safe`` clears nothing at any confidence.
-    The reason is one sentence and it is the same for both: an alarm nobody
-    believes costs every other badge its meaning, and a tier exempted from that
-    rule becomes the alarm nobody believes -- which is what the log recorded when
-    ``caution`` badged on its tier alone.
+    ``risky`` must clear :data:`RISKY_CONFIDENCE_THRESHOLD`: it is the alarming
+    word, and an alarm nobody believes is what costs every other badge its
+    meaning. ``caution`` must clear :data:`CAUTION_CONFIDENCE_THRESHOLD`, and is
+    never printed on a *file_write* (a plain edit, see
+    :func:`kiro_crew.platform.tool_paths.is_edit_call`): it is the mild word --
+    "inside the workspace, easy to put back" -- so the card only carries it when
+    the provider is sure and the call is not the ordinary workspace edit the word
+    already describes.
 
-    The two bars are read separately even while they hold the same number. They
-    describe different populations, so a later reading that moves one has no
-    business moving the other, and a single shared constant would make that
-    impossible to express.
-
-    Reading an unconvinced ``risky`` DOWN to ``caution`` remains the alternative
-    this does NOT take: it would put "easy to put back" on a call the provider was
-    describing as a force-push, which is a claim nobody made. An unconvinced answer
-    draws nothing in the tier it was actually given.
+    The bars are not two points on one scale. The words name different claims --
+    ``caution`` is about the workspace, ``risky`` is about data, credentials and
+    this machine's edge -- so each has its own bar, measured on its own rows.
+    Reading an unconvinced ``risky`` DOWN to ``caution`` is not what this does: it
+    would put "easy to put back" on a call the provider was describing as a
+    force-push, which is a claim nobody made. A ``risky`` file write still badges,
+    because a write outside the workspace is exactly what ``risky`` names.
 
     One arm per flagged tier, and each arm reads its bar at CALL time, so a test
     can move one bar and leave the other where it was; a mapping built at import
@@ -261,7 +253,7 @@ def earns_badge(tier: str, p: float) -> bool:
     if tier == TIER_RISKY:
         return p >= RISKY_CONFIDENCE_THRESHOLD
     if tier == TIER_CAUTION:
-        return p >= CAUTION_CONFIDENCE_THRESHOLD
+        return not file_write and p >= CAUTION_CONFIDENCE_THRESHOLD
     return False
 
 
@@ -361,6 +353,8 @@ async def risk_record(
     policy: str,
     session_key: str | None = None,
     calls_this_turn: int = 1,
+    tool_kind: str = "",
+    diff_path: str = "",
 ) -> dict[str, Any] | None:
     """The badge record for one tool call, or ``None`` to leave the card alone.
 
@@ -369,6 +363,14 @@ async def risk_record(
     failure, an unusable answer and a ``safe`` verdict all return it. A caller
     therefore writes ``record = await risk_record(...)`` and stamps it only when
     it is truthy.
+
+    *tool_kind* and *diff_path* are the harness's ACP ``kind`` and the tool
+    call's cached diff-block path; neither is sent to the provider, and together
+    they decide whether the call is a file write for :func:`earns_badge` via
+    :func:`kiro_crew.platform.tool_paths.is_edit_call` -- the same predicate the
+    hook edit gate and governance classification share, so ``kind`` alone (which
+    is agent-influenced and can arrive empty or as ``read`` on a real edit) never
+    has to answer this on its own.
 
     *calls_this_turn* is this call's 1-based position in the turn. The caller
     already counts tool calls per turn, so the cap is enforced against the
@@ -420,6 +422,7 @@ async def risk_record(
             tier=tier,
             p=p,
             policy=bounded_policy,
+            file_write=is_edit_call(tool_kind, diff_path),
         )
     except Exception:
         logger.debug("tool.risk: leaving the tool card unannotated", exc_info=True)
@@ -462,6 +465,7 @@ async def _record_outcome(
     tier: str,
     p: float,
     policy: str,
+    file_write: bool = False,
 ) -> dict[str, Any] | None:
     """Write the outcome row; return it only when the tier earns a badge.
 
@@ -491,7 +495,7 @@ async def _record_outcome(
     for. The bound on top is the shape ``gate._write`` already uses for the same
     write on the same loop.
     """
-    badge = earns_badge(tier, p)
+    badge = earns_badge(tier, p, file_write=file_write)
     row = _log.build_row(
         point=POINT,
         session_key=session_key,
@@ -503,6 +507,7 @@ async def _record_outcome(
             "p": p,
             "policy": policy,
             "flagged": badge,
+            "file_write": file_write,
         },
     )
     try:

@@ -94,22 +94,28 @@ official Kiro CLI spawns delegate to the CLI's built-in sandbox; their environme
 is scrubbed by the parent before spawn. The parent gateway process is unaffected.
 
 **`agent.sandbox` defaults to `"auto"`, engaging OS-level isolation
-(namespace on Linux, sandbox-exec on macOS).** The only alternative value is
-`"off"` (`config/loader.py`, `AgentConfig.sandbox`, `enum=["auto", "off"]`;
-the same two-value enum gates the dashboard config editor in
-`dashboard/handlers/core.py`). `"off"` skips Kiro Crew's own sandbox but still
+(namespace on Linux, sandbox-exec on macOS) at the `standard` tier.** The other
+values are `"strict"` and `"off"` (`config/loader.py`, `AgentConfig.sandbox`,
+`enum=["auto", "strict", "off"]`; the same three-value enum gates the dashboard
+config editor in `dashboard/handlers/core.py`, pinned equal by
+`test_sandbox_strict_selectable.py`). `"strict"` is the operator's opt-in to the
+tier that also masks `~/.aws`, `~/.ssh`, `~/.kube`, `~/.config/gh` and the
+credential files in `_CC_FILES`. `"off"` skips Kiro Crew's own sandbox but still
 delegates to `kiro-cli`'s internal agent sandbox on macOS when it is enabled,
 which cannot nest inside Kiro Crew's
 Seatbelt wrap (the macOS kernel returns EPERM even under an allow-all outer
 profile), so exactly one layer can own isolation per spawn. Setting `"auto"`
-re-enables Kiro Crew's own sandbox.
+re-enables Kiro Crew's own sandbox. A change to the key applies to sessions
+started after it; a running session keeps the tier it was spawned with (the
+lifecycle gap for a tightening flip is #5031).
 
 `wrap_argv`'s internal tier vocabulary is wider than the config enum: `standard`
-(what `auto` resolves to), `cc`, `strict` and `off`. Those extra tiers are reached
-by internal callers and by the governance `sandbox.min_level` ordinal floor
+(what `auto` resolves to), `cc`, `strict` and `off`. `cc` and the `standard`
+spelling are reached by internal callers and by the governance `sandbox.min_level`
+ordinal floor
 (`_ORDINAL_SCALES["sandbox"] = ("off", "standard", "cc", "strict")`), which clamps
 a requested mode **up** before resolution, so an enterprise floor confines even a
-`mode="off"` call. They are not values an operator writes into `agent.sandbox`.
+`mode="off"` call. Those two are not values an operator writes into `agent.sandbox`.
 Per-tier hidden paths, the empirical backend probes, the nested-passthrough rule
 and the fail-closed/fail-open flags are specified in
 [`security.md` § OS-Level Sandbox](../system-specs/modules/security.md).
@@ -180,15 +186,38 @@ edition-resolved or user-writable target; it runs a fixed trusted system binary.
 ### Why the default is defensible
 
 The sandbox is the only optional layer, so the credential-read threat has to be
-covered without it. It is, three times over, at different altitudes:
+described honestly for the tier it runs at:
 
 - A tool read of `~/.aws` or `~/.ssh` is refused by the resolved-path gate
   (Layer 1), which follows symlinks before deciding.
-- A shell read of the same paths is refused by `is_sensitive_bash_command`
-  (Layer 2), which tokenizes and normalizes the command rather than pattern-
-  matching raw text, so quoting and expansion tricks do not evade it.
+- A shell command is **not** path-matched (Layer 2). The command gate denies
+  the environment-variable, SDK and exfiltration shapes (`env | grep AWS_`,
+  `boto3 ... get_credentials()`, `curl -d @~/.aws/credentials`), but
+  `is_sensitive_bash_command` deliberately matches no paths: a text matcher
+  cannot hold against `python -c open(...)`, `awk`, a variable or a `cd`, and
+  every spelling it did close denied ordinary commands whenever the fenced
+  spelling appeared as data. The path regexes were removed for that reason
+  (#9183), and the recovered command of a sandboxed shell is exempt from the
+  path tier (#11223). The enforcement point for a shell's `open()` is the OS
+  sandbox.
+- The OS sandbox's **default `standard` tier leaves `~/.aws`, `~/.ssh` and
+  `~/.kube` visible** (`sandbox._STANDARD_DIRS` omits them on purpose) so the
+  `aws` CLI, boto3 `credential_process`, git-over-SSH and `kubectl` work inside
+  the agent. So under the shipped default a shell read such as
+  `cat ~/.aws/credentials` succeeds — a read-only command auto-approves, and no
+  layer above the sandbox fences the path. `agent.sandbox="strict"` is the
+  opt-in tier that masks those directories (Linux bind mount, macOS Seatbelt
+  deny), at the cost of those same tools inside the agent; it does not tighten a
+  spawn Kiro Crew does not wrap (Windows, or a macOS spawn delegated to
+  kiro-cli's internal sandbox).
 - Anything that still reaches tool output is caught by redaction (Layer 4) before
-  it reaches a human or an external service.
+  it reaches a human or an external service — but that boundary is the human
+  and the wire, not the model's context.
+
+Changing the default tier is the wrong fix for that gap: it trades every
+operator's credential tooling for the subset who want the fence, silently, on
+upgrade. The tier is the operator's to tighten (`agent.sandbox="strict"`), and
+this document names what the default leaves open so that choice is informed.
 
 `SSH_AUTH_SOCK` is scrubbed whenever a Kiro Crew sandbox tier is active, so
 ssh-agent forwarding is unavailable inside a confined spawn. Operators who depend
@@ -311,10 +340,12 @@ model's title **and** the raw command:
   `commands` scope is the enterprise force-pin that cannot be opted out of
   (tightest-wins).
 - **Sensitive-bash detection** (`is_sensitive_bash_command`): refuses commands
-  that read credential paths, reach the cloud metadata endpoint under any IP
-  encoding, or dump credential environment variables. Regex fast-path first, then
-  a tokenizing pass that resolves quoting, empty-string concatenation, `$HOME`
-  and tilde before routing path-like tokens through `is_sensitive_path()`.
+  that reach the cloud metadata endpoint under any IP encoding or dump credential
+  environment variables (`env | grep`, `printenv`, `declare -p` and their kin),
+  after a size ceiling. It deliberately matches **no paths** in command text:
+  the credential stores are the OS sandbox's to hide (the default `standard`
+  tier leaves `~/.aws`/`~/.ssh`/`~/.kube` visible; `strict` masks them), and
+  `is_sensitive_path()` fences every resolved path a file tool opens.
 - **Exfiltration shapes** (`audit_bash_exfiltration`): data-egress and
   reverse-shell forms, narrowly scoped so it can be a hard deny at the gate
   without blocking benign local commands.
@@ -396,7 +427,10 @@ the decoded value makes every escape a bypass), and **redact before truncate**
 
 The Security Event Log is append-only and HMAC-chained, so tampering is
 detectable rather than merely discouraged; `GET /api/sel/verify` reports the
-chain's integrity and `GET /api/sel/events` returns recent records. Every event
+chain's integrity and `GET /api/sel/events` returns recent records to the
+dashboard OWNER alone -- the rows name the resources a decision was about, and a
+dashboard session is not by itself the owner, so any other caller is refused and
+the refusal is audited. Every event
 carries a `source` inferred from the session key (`sel._infer_source`, published
 via `sel.audit_sources()`), and a call site may stamp a more specific source, so
 the inferred set is a floor rather than a total.

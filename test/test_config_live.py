@@ -14,7 +14,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from _hot_reload_helpers import write_config as _write
@@ -987,6 +987,199 @@ class TestServerAppliers:
         subs = self._register(SimpleNamespace(workflow_service=None, channel_manager=None))
         assert not any("workflow_run_timeout" in n or "channel" in n for n in subs)
 
+    def test_the_chat_default_model_has_an_applier(self) -> None:
+        """Regression: the list carried ``agent.role_models.background`` but not
+        ``agent.model``.
+
+        Both keys are baked into a kiro agent spec at agent-build time, so both
+        need the same rebuild to take effect. With no applier for the chat
+        default, a change reached ``config.json`` and the provider factory
+        (``refresh_defaults``) but never ``~/.kiro/agents/kirocrew.json`` -- which
+        is the file kiro-cli reads at ``--agent`` startup -- so every newly created
+        session kept inheriting the PREVIOUS model until the gateway restarted.
+        """
+        subs = self._register(SimpleNamespace(workflow_service=None, channel_manager=None))
+        assert "agent.model" in subs
+
+    @pytest.mark.asyncio
+    async def test_the_chat_default_model_applier_rebuilds_only_when_touched(self) -> None:
+        """It fires on its own leaf and stays out of every other change.
+
+        The rebuild is not free -- it rewrites the spec files -- so an unrelated
+        config write must not pay for one, the same discrimination
+        ``_apply_background_model`` makes with its ``change.touched`` guard.
+        """
+        state = SimpleNamespace(
+            workflow_service=None,
+            channel_manager=None,
+            push_refresh=MagicMock(),
+        )
+        apply = self._register(state)["agent.model"].callback()
+        rebuilds: list[int] = []
+        cfg = KiroCrewConfig()
+
+        def _rebuild() -> tuple[Path, bool]:
+            rebuilds.append(1)
+            return (Path("/tmp/kirocrew.json"), True)
+
+        with patch("kiro_crew.agent.rebuild_agent_config_reporting", _rebuild):
+            await apply(
+                ConfigChange(old=KiroCrewConfig(), new=cfg, changed=frozenset({"agent.model"}))
+            )
+            assert rebuilds == [1], "a touched agent.model rebuilds the spec"
+            state.push_refresh.assert_called_once_with("agents")
+            await apply(ConfigChange(old=cfg, new=cfg, changed=frozenset({"agent.log_level"})))
+            assert rebuilds == [1], "an untouched agent.model rebuilds nothing"
+            state.push_refresh.assert_called_once_with("agents")
+
+    @pytest.mark.asyncio
+    async def test_a_successful_rebuild_reconciles_the_warm_pool(self) -> None:
+        """The rebuild must re-drain the warm pool to close the ordering race.
+
+        SessionManager subscribes to ``agent.model`` before this applier, so it
+        runs ``refresh_defaults`` first and re-fills the warm pool from the spec
+        as it stood BEFORE the rebuild. A provider minted in that window pins the
+        old model. After the spec is rebuilt this applier re-runs the same
+        idempotent refresh so any raced provider is discarded and re-spawned from
+        the correct spec. Passing ``change.new`` keeps it off disk on the loop.
+        """
+        sessions = SimpleNamespace(refresh_defaults=AsyncMock())
+        state = SimpleNamespace(
+            workflow_service=None,
+            channel_manager=None,
+            push_refresh=MagicMock(),
+            sessions=sessions,
+        )
+        apply = self._register(state)["agent.model"].callback()
+        new_cfg = KiroCrewConfig()
+        change = ConfigChange(old=KiroCrewConfig(), new=new_cfg, changed=frozenset({"agent.model"}))
+        with patch(
+            "kiro_crew.agent.rebuild_agent_config_reporting",
+            lambda: (Path("/tmp/kirocrew.json"), True),
+        ):
+            await apply(change)
+        sessions.refresh_defaults.assert_awaited_once_with(cfg=new_cfg)
+        state.push_refresh.assert_called_once_with("agents")
+
+    @pytest.mark.asyncio
+    async def test_a_failed_rebuild_notifies_and_defers_for_retry(self) -> None:
+        """A durable config write must not silently claim the stale spec is live.
+
+        The dashboard receives an actionable error, no refresh advertises the
+        unapplied value, and the exception reaches ConfigWatch so it records the
+        applier as stale and retries it on later ticks.
+        """
+        state = SimpleNamespace(
+            workflow_service=None,
+            channel_manager=None,
+            push_refresh=MagicMock(),
+            notify=MagicMock(),
+        )
+        apply = self._register(state)["agent.model"].callback()
+
+        def _boom() -> tuple[Path, bool]:
+            raise OSError("spec directory is read-only")
+
+        with (
+            patch("kiro_crew.agent.rebuild_agent_config_reporting", _boom),
+            pytest.raises(OSError, match="spec directory is read-only"),
+        ):
+            await apply(
+                ConfigChange(
+                    old=KiroCrewConfig(),
+                    new=KiroCrewConfig(),
+                    changed=frozenset({"agent.model"}),
+                )
+            )
+        state.push_refresh.assert_not_called()
+        state.notify.assert_called_once()
+        assert state.notify.call_args.args[:2] == (
+            "agent",
+            "Default model could not be applied",
+        )
+        assert state.notify.call_args.args[2] == (
+            "The setting was saved but new sessions will keep using the previous model. "
+            "Kiro Crew retries automatically; check the gateway logs if this persists."
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_refused_rebuild_is_not_reported_as_applied(self) -> None:
+        """A shared-home refusal returns ``wrote=False`` WITHOUT writing the spec.
+
+        ``rebuild_agent_config_reporting`` returns the spec path even when the
+        shared-agent-home guard declines to rewrite it, so the installed
+        ``kirocrew.json`` keeps its old model pin. That is a no-op, not a
+        success: the applier must take the SAME failure path as a raised error --
+        notify once, push no refresh, and re-raise so ConfigWatch defers it for
+        retry -- instead of clearing the failure state and broadcasting success.
+        """
+        state = SimpleNamespace(
+            workflow_service=None,
+            channel_manager=None,
+            push_refresh=MagicMock(),
+            notify=MagicMock(),
+        )
+        apply = self._register(state)["agent.model"].callback()
+
+        def _refused() -> tuple[Path, bool]:
+            return (Path("/home/x/.kiro/agents/kirocrew.json"), False)
+
+        with (
+            patch("kiro_crew.agent.rebuild_agent_config_reporting", _refused),
+            pytest.raises(RuntimeError, match="refused"),
+        ):
+            await apply(
+                ConfigChange(
+                    old=KiroCrewConfig(),
+                    new=KiroCrewConfig(),
+                    changed=frozenset({"agent.model"}),
+                )
+            )
+        state.push_refresh.assert_not_called()
+        state.notify.assert_called_once()
+        assert state.notify.call_args.args[:2] == (
+            "agent",
+            "Default model could not be applied",
+        )
+
+    @pytest.mark.asyncio
+    async def test_successful_retry_notifies_that_the_saved_model_is_active(self) -> None:
+        """Recovery must resolve the operator-visible failure state."""
+        state = SimpleNamespace(
+            workflow_service=None,
+            channel_manager=None,
+            push_refresh=MagicMock(),
+            notify=MagicMock(),
+        )
+        apply = self._register(state)["agent.model"].callback()
+        attempts = 0
+
+        def _rebuild() -> tuple[Path, bool]:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise OSError("spec directory is read-only")
+            return (Path("/tmp/kirocrew.json"), True)
+
+        change = ConfigChange(
+            old=KiroCrewConfig(),
+            new=KiroCrewConfig(),
+            changed=frozenset({"agent.model"}),
+        )
+        with patch("kiro_crew.agent.rebuild_agent_config_reporting", _rebuild):
+            with pytest.raises(OSError, match="spec directory is read-only"):
+                await apply(change)
+            await apply(change)
+
+        state.push_refresh.assert_called_once_with("agents")
+        assert [call.args[:2] for call in state.notify.call_args_list] == [
+            ("agent", "Default model could not be applied"),
+            ("agent", "Default model applied"),
+        ]
+        assert state.notify.call_args_list[-1].args[2] == (
+            "The saved default model is now active. New sessions will use it."
+        )
+
     @pytest.mark.asyncio
     async def test_the_channel_manager_binds_its_caps_in_its_constructor(
         self, tmp_path: Path
@@ -1147,6 +1340,7 @@ class TestServerAppliers:
         subs = self._register(SimpleNamespace(workflow_service=None, channel_manager=None))
         assert set(subs) == {
             "agent.provider",
+            "agent.model",
             "agent.role_models.background",
             "agent.log_level",
         }

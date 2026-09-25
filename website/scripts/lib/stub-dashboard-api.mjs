@@ -184,7 +184,19 @@ export async function stubDashboardApi(page, opts = {}) {
       })
     }
     if (path === '/api/agents' || path === '/api/chat/agents') {
-      return json(route, [{ name: 'kirocrew', source: 'builtin' }, { name: 'oncall', source: 'aim' }])
+      // Object, not a bare array: every reader (useAgents, KiroCrewAgentsPage,
+      // AgentTemplateDetail) takes the roster off `d.agents` and the default off
+      // `d.default_agent`. An array left both undefined, so the roster was empty
+      // and every configured default rendered as an orphan "(not installed)".
+      // `workspace` / `memory_store` carry the record defaults the handler
+      // serializes (`KiroCrewAgentConfig`), not blanks: the agents page counts
+      // them to decide which crews SHARE a workspace or store, and an absent key
+      // renders the row's Workspace and Memory cells empty.
+      const row = { kiro_agent: '', workspace: 'default', memory_store: 'default' }
+      return json(route, {
+        agents: [{ name: 'kirocrew', source: 'builtin', ...row }, { name: 'oncall', source: 'aim', ...row }],
+        default_agent: 'kirocrew',
+      })
     }
     // Named BEFORE the catch-all: both paths match its `config` test, and the
     // `{}` it would return blanks the whole Developer > Config surface (see

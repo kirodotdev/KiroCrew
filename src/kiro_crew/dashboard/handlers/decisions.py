@@ -327,9 +327,12 @@ def _points(state: dict, *, permits: bool, denied: bool = False) -> list[dict]:
                 # unarmed pinned lane is the owner naming one that cannot run: the gate
                 # refuses rather than answering from the other, so the row says which
                 # grant is missing instead of calling it active.
-                status = (
-                    _POINT_ACTIVE if jev_armed else (_POINT_NEEDS_SCOPE if permits else _POINT_OFF)
-                )
+                if jev_armed:
+                    status = _POINT_ACTIVE
+                elif permits:
+                    status = _POINT_NEEDS_SCOPE
+                else:
+                    status = _POINT_OFF
         elif not permits or not sampled:
             status = _POINT_OFF
         elif scope is not None and not granted.get(scope, False):

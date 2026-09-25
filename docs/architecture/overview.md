@@ -447,12 +447,20 @@ Outer to inner:
    only as strong as the config, and the agent can write agent JSON. Rules are
    default-ON and user-configurable from Settings → Security; the governance
    `commands` scope is the force-pin a user cannot opt out of. Sensitive-path
-   blocking (`~/.aws`, `~/.ssh`, the trust-root files) runs here too.
+   blocking (`~/.aws`, `~/.ssh`, the trust-root files) runs here too — for the
+   **file tools' resolved paths**. A shell command's text is deliberately not
+   path-matched; what a spawned shell can `open()` is decided by the OS sandbox
+   tier below.
 4. **OS sandbox** (`sandbox.py`). `agent.sandbox` defaults to `auto`, engaging
    OS-level isolation (user namespaces on Linux, `sandbox-exec`/Seatbelt on
-   macOS). On macOS, when kiro-cli's own internal sandbox is enabled, Kiro Crew
-   delegates to it instead (the two are mutually exclusive because nested
-   Seatbelt profiles fail with EPERM). Set to `off` to skip Kiro Crew's sandbox.
+   macOS) at the **standard** tier, which masks `~/.gnupg`, `~/.docker`,
+   `~/.azure`, `~/.config/gcloud` and the crew vault but deliberately leaves
+   `~/.aws`, `~/.ssh` and `~/.kube` visible so the `aws` CLI,
+   `credential_process`, git-over-SSH and `kubectl` work inside the agent. Set
+   `strict` to also mask those (at the cost of those tools); set `off` to skip
+   Kiro Crew's sandbox. On macOS, when kiro-cli's own internal sandbox is
+   enabled, Kiro Crew delegates to it instead of applying either tier (the two
+   are mutually exclusive because nested Seatbelt profiles fail with EPERM).
 5. **Output redaction.** Credential shapes (AWS access key IDs, presigned-URL
    credential parameters, and more) are scrubbed before text reaches a user or
    an egress tool.

@@ -91,14 +91,22 @@ export interface RosterQuery {
   sort: MemberSort
 }
 
-interface RosterRowLike { name: string; starred?: boolean; source?: unknown; last_active_ts?: number }
+interface RosterRowLike { name: string; display_name?: string; starred?: boolean; source?: unknown; last_active_ts?: number }
+
+/** What the roster row RENDERS as its title: the display label when set, the
+ *  name otherwise. Sort and search go through the same accessor so the list
+ *  the user reads is the list these functions order and narrow. */
+function rowLabel(m: RosterRowLike): string {
+  return m.display_name?.trim() || m.name
+}
 
 /** Most-recently-active first (like any IM member list); never-talked members
- *  fall to the bottom alphabetically. `name` is a plain locale-aware sort. */
+ *  fall to the bottom alphabetically. `name` is a plain locale-aware sort over
+ *  the DISPLAYED label, since that is the text the user scans. */
 export function sortRoster<M extends RosterRowLike>(members: readonly M[], sort: MemberSort): M[] {
   const out = [...members]
-  if (sort === 'name') return out.sort((a, b) => compareText(a.name, b.name))
-  return out.sort((a, b) => (b.last_active_ts ?? 0) - (a.last_active_ts ?? 0) || compareText(a.name, b.name))
+  if (sort === 'name') return out.sort((a, b) => compareText(rowLabel(a), rowLabel(b)))
+  return out.sort((a, b) => (b.last_active_ts ?? 0) - (a.last_active_ts ?? 0) || compareText(rowLabel(a), rowLabel(b)))
 }
 
 /** True when `query` narrows the roster by something other than the typed
@@ -123,7 +131,7 @@ export function narrowRoster<M extends RosterRowLike>(
       (!query.starredOnly || !!m.starred) &&
       matchesSource(m, query.source) &&
       (query.status.size === 0 || matchesStatus(signalsOf(m), query.status)) &&
-      (!q || m.name.toLowerCase().includes(q)),
+      (!q || m.name.toLowerCase().includes(q) || rowLabel(m).toLowerCase().includes(q)),
   )
 }
 

@@ -402,6 +402,7 @@ function ExpandedRow({ fc, added, removed, isArtifact, onFileOpen, disclosureKey
           renderHeaderPrefix={prefix}
           renderHeaderFilenameSuffix={filenameSuffix}
           renderHeaderMetadata={metadata}
+          titleClickable={clickableTitle}
         />
       ) : (
         <CollapsedRowHeader

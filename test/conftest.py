@@ -239,6 +239,28 @@ def make_dir_link(link: pathlib.Path, target: pathlib.Path) -> None:
     link.symlink_to(target, target_is_directory=True)
 
 
+def plant_day_link(link: pathlib.Path, secret_file: pathlib.Path) -> None:
+    """Plant a reparse point at the dated history name ``link`` that leads outside.
+
+    The property under test is that a memory reader never publishes bytes that
+    live outside the memory tree when the agent-writable dated ``.md`` name is a
+    reparse point. On POSIX the planted shape is a FILE symlink to
+    ``secret_file``, the exact credential-exfiltration vector. On Windows a file
+    symlink needs SeCreateSymbolicLinkPrivilege, so the stand-in is a directory
+    JUNCTION at ``link`` pointing at ``secret_file.parent``: a junction needs no
+    privilege, is a reparse point at the same dated name, and the guarded reader
+    refuses it through ``is_link_or_junction`` and its non-regular check, so the
+    outside directory's contents can never be read as a day. Both variants keep
+    the assertion running on every CI platform instead of skipping it.
+    """
+    if platform_compat.IS_WINDOWS:
+        import _winapi
+
+        _winapi.CreateJunction(str(secret_file.parent), str(link))
+        return
+    link.symlink_to(secret_file)
+
+
 def host_abs(*parts: str) -> str:
     """A fixture path that is absolute on THIS host: ``/opt/shims`` or ``C:\\opt\\shims``.
 

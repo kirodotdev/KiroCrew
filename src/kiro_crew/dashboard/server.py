@@ -4464,6 +4464,99 @@ def _register_config_watch(
         except Exception:
             logger.warning("background-model rebuild failed", exc_info=True)
 
+    default_model_failure_notified = False
+
+    async def _apply_default_model(change: ConfigChange) -> None:
+        # The default (chat) model is baked into the main ``kirocrew`` spec at
+        # agent-build time via ``_refresh_dynamic_fields`` (which reads
+        # config.json ``agent.model``). A dashboard/CLI change to that key only
+        # rewrites config.json, so without this rebuild the installed
+        # ``~/.kiro/agents/kirocrew.json`` keeps its previous ``model`` and
+        # kiro-cli's ``--agent`` startup loads the STALE pin — a newly created
+        # session then runs the old model even though the picker shows the new
+        # default (and "auto" can never clear a prior concrete pin). Mirrors
+        # ``_apply_background_model``: same authoritative rebuild, keyed on the
+        # chat-model config key instead of the background role key.
+        if not change.touched("agent.model"):
+            return
+        nonlocal default_model_failure_notified
+        try:
+            from kiro_crew.agent import rebuild_agent_config_reporting
+
+            # ``rebuild_agent_config_reporting`` returns ``wrote=False`` — WITHOUT
+            # writing — exactly when the shared-home guard refuses to rewrite this
+            # instance's spec. That is a no-op, not a success: the installed
+            # ``kirocrew.json`` keeps its old ``model`` pin, so treating it as
+            # applied would clear the failure state, broadcast a refresh, and log
+            # "rebuilt" while new sessions still run the previous model. Route a
+            # refusal into the failure branch below so it notifies once and defers
+            # for the watcher's retry, the same as any other unwritten spec.
+            _spec_path, wrote = await asyncio.to_thread(rebuild_agent_config_reporting)
+            if not wrote:
+                raise RuntimeError(
+                    "agent spec rebuild was refused (shared agent home); "
+                    "config saved but kirocrew.json still pins the previous model"
+                )
+            # Close the ordering window against SessionManager's own applier.
+            # It subscribes to ``agent.model`` FIRST (its subscription predates
+            # this one), so on the same change it runs ``refresh_defaults``
+            # before this rebuild — draining the warm pool and re-filling it
+            # via ``start_pool(blocking=False)`` from the spec as it stood
+            # BEFORE the rebuild. A warm provider spawned in that window still
+            # pins the previous model until consumed or TTL-evicted. Now that
+            # the spec on disk is correct, re-run the same idempotent refresh so
+            # any provider minted in the race is discarded and re-spawned from
+            # the rebuilt spec. Best-effort and re-entrant: it never touches a
+            # live session, and a manager that is absent (tests) simply has no
+            # pool to reconcile.
+            sessions = getattr(state, "sessions", None)
+            if sessions is not None:
+                try:
+                    await sessions.refresh_defaults(cfg=change.new)
+                except Exception:
+                    logger.warning(
+                        "default-model warm-pool reconcile after rebuild failed",
+                        exc_info=True,
+                    )
+            # The config value and generated agent spec now agree. Tell every
+            # dashboard window to refetch both the config-backed picker and the
+            # effective-model endpoints only after that rebuild has completed;
+            # otherwise an eager refetch can cache the old spec indefinitely.
+            recovered = default_model_failure_notified
+            default_model_failure_notified = False
+            state.push_refresh("agents")
+            if recovered:
+                try:
+                    state.notify(
+                        "agent",
+                        "Default model applied",
+                        "The saved default model is now active. New sessions will use it.",
+                    )
+                except Exception:
+                    logger.debug("default-model recovery notification failed", exc_info=True)
+            logger.info("agent.model changed -- kirocrew agent spec rebuilt")
+        except Exception:
+            logger.warning("default-model rebuild failed", exc_info=True)
+            # The config write is already durable, but the generated spec is
+            # still the one new sessions actually consume. Surface that split
+            # to the operator instead of silently reporting the saved setting
+            # as active. Re-raise so ConfigWatch records this subscriber as
+            # stale and retries it on later ticks; a successful retry emits the
+            # refresh above and brings every open dashboard back into sync.
+            if not default_model_failure_notified:
+                default_model_failure_notified = True
+                try:
+                    state.notify(
+                        "agent",
+                        "Default model could not be applied",
+                        "The setting was saved but new sessions will keep using the "
+                        "previous model. Kiro Crew retries automatically; "
+                        "check the gateway logs if this persists.",
+                    )
+                except Exception:
+                    logger.debug("default-model failure notification failed", exc_info=True)
+            raise
+
     # The workflow-run ceiling and the channel caps are not registered here:
     # WorkflowService and ChannelManager bind their own setters in their
     # constructors (``live.bind``), the rule for an applier a long-lived object owns.
@@ -4474,6 +4567,7 @@ def _register_config_watch(
             callback=_apply_background_model,
             name="agent.role_models.background",
         ),
+        live.subscribe("agent.model", callback=_apply_default_model, name="agent.model"),
         live.subscribe(
             "agent.log_level", callback=apply_log_level_from_config, name="agent.log_level"
         ),

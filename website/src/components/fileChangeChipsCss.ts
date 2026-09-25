@@ -7,7 +7,15 @@
  * them out of the component is what lets the component stay fully covered by
  * the i18n gate (see this path in `eslint.i18n.config.js`).
  */
-import { PIERRE_COMPACT_HEADER_CSS, PIERRE_WRAP_NO_HSCROLL_CSS, PIERRE_SEPARATOR_BG_CSS } from '../pierre/config'
+import {
+  DIFF_HEADER_BG_CSS,
+  DIFF_HEADER_COUNT_MIN_WIDTH_CH,
+  DIFF_HEADER_META_W_PX,
+  DIFF_HEADER_PADDING_INLINE_PX,
+  PIERRE_COMPACT_HEADER_CSS,
+  PIERRE_WRAP_NO_HSCROLL_CSS,
+  PIERRE_SEPARATOR_BG_CSS,
+} from '../pierre/config'
 
 /* ── Expanded row: the closed state is a lightweight outer-tree header, so a
  *   transcript can hydrate many changed files without loading Pierre or
@@ -28,15 +36,11 @@ import { PIERRE_COMPACT_HEADER_CSS, PIERRE_WRAP_NO_HSCROLL_CSS, PIERRE_SEPARATOR
 export const ROW_BODY_MAX_H = 376
 export const ROW_ANIM_MS = 180
 /* Width of Pierre's metadata group, pinned so the diffstat indicator starts at
- * the SAME x on every row. Two things move it otherwise, and the second is the
- * one that actually bites: the counts are 1-3 digits wide, and Pierre omits a
- * count span ENTIRELY when its side is zero (`createMetadataElement` pushes
- * `-N` only when deletions > 0) — so an additions-only file renders one span
- * instead of two and the whole group narrows. Fixing the span widths cannot
- * help with a span that does not exist; a fixed-width group with the indicator
- * pinned left and the counts pinned right can. Sized for two 4ch counts, the
- * 46px indicator and the gaps between them. */
-export const ROW_META_W = 124
+ * the SAME x on every row — the value and its sizing rationale live with the
+ * other header numbers in pierre/config.ts, because the oversized pair's own
+ * light-DOM header rows apply the same width inline and must not drift from
+ * what this stylesheet injects into Pierre's shadow header. */
+export const ROW_META_W = DIFF_HEADER_META_W_PX
 
 /* Injected per shadow root via Pierre's `unsafeCSS` (its sanctioned hook —
  * `@layer unsafe`, which beats the library's own `@layer base` regardless of
@@ -55,12 +59,11 @@ export const ROW_CSS_BASE = `
 ${PIERRE_COMPACT_HEADER_CSS}
 ${PIERRE_WRAP_NO_HSCROLL_CSS}
 ${PIERRE_SEPARATOR_BG_CSS}
-/* Half-way between the chat canvas and --bg-elevated: the full elevated tone
- * reads as prominently as the composer, which pulls the eye to the header
- * instead of the change it labels. */
-[data-diffs-header]{background-color:color-mix(in srgb,var(--bg-elevated) 50%,var(--bg))}
-[data-diffs-header]{padding-inline:10px}
-[data-deletions-count],[data-additions-count]{display:inline-block;min-width:4ch;text-align:right}
+/* The four header rules below are the values in pierre/config.ts — the light-DOM
+ * header rows the oversized pair draws for itself apply the same ones inline. */
+[data-diffs-header]{background-color:${DIFF_HEADER_BG_CSS}}
+[data-diffs-header]{padding-inline:${DIFF_HEADER_PADDING_INLINE_PX}px}
+[data-deletions-count],[data-additions-count]{display:inline-block;min-width:${DIFF_HEADER_COUNT_MIN_WIDTH_CH}ch;text-align:right}
 [data-metadata]{flex:0 0 ${ROW_META_W}px;justify-content:space-between}
 pre{max-height:${ROW_BODY_MAX_H}px;overflow-y:auto}
 `

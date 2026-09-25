@@ -840,3 +840,59 @@ def test_the_plan_script_is_recorded_executable() -> None:
         "and the lane invokes it, so the committed mode must be 100755. Fix with "
         "`git update-index --chmod=+x scripts/crew_image_build_plan.py`"
     )
+
+
+def test_supervisor_tree_imports_without_kiro_crew(tmp_path: Path) -> None:
+    """The build plan imports the container tree with no ``kiro_crew`` on the path.
+
+    ``content_digest`` puts the runtime directory on ``sys.path`` and imports
+    ``container.supervisor.bundle`` as a TOP-LEVEL package, under whatever interpreter
+    the lane happens to run -- a bare ``python3`` with this repository installed
+    nowhere. ``supervisor/__init__.py`` re-exports from ``backend``, so a module-scope
+    ``kiro_crew`` import in ANY supervisor module makes that reach raise
+    ``ModuleNotFoundError`` and fails the image lane on its first step.
+
+    A developer checkout hides this: an editable install makes ``kiro_crew`` importable,
+    so the same call succeeds locally and reds only in CI. ``-S`` reproduces the lane's
+    condition by dropping ``site-packages``, which is where the editable install lives.
+
+    Not a style rule. The supervisor is free to import ``kiro_crew`` inside a function --
+    the vault seed does, because by the time it runs the image HAS the wheel -- and this
+    test says only that reaching a module must not require it.
+    """
+    runtime = ROOT / "src/kiro_crew/apps/builtins/aws_control/crew/runtime"
+    probe = "import container.supervisor.bundle, container.supervisor.__main__"
+
+    def caches() -> set[Path]:
+        return set((runtime / "container").rglob("__pycache__"))
+
+    before = caches()
+    # -B, because importing the tree in place would otherwise write __pycache__ into the
+    # checkout: a side effect this test would be CAUSING, in the source tree, to check a
+    # property that has nothing to do with bytecode. cwd is tmp_path for the same reason.
+    out = subprocess.run(
+        [sys.executable, "-B", "-S", "-c", probe],
+        capture_output=True,
+        encoding="utf-8",
+        cwd=tmp_path,
+        env={"PYTHONPATH": str(runtime), "PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"},
+    )
+    assert out.returncode == 0, (
+        "a supervisor module needs kiro_crew at import time, so "
+        "crew_image_build_plan.py cannot reach the bundle digest:\n" + out.stderr
+    )
+    assert caches() == before, "the probe wrote bytecode into the source tree: " + str(
+        sorted(caches() - before)
+    )
+
+    # Non-vacuity: the probe must fail for the RIGHT reason when kiro_crew is genuinely
+    # required, otherwise a typo in the module names would pass this test silently.
+    broken = subprocess.run(
+        [sys.executable, "-B", "-S", "-c", "import kiro_crew"],
+        capture_output=True,
+        encoding="utf-8",
+        cwd=tmp_path,
+        env={"PYTHONPATH": str(runtime), "PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"},
+    )
+    assert broken.returncode != 0, "kiro_crew is importable under -S, so this proves nothing"
+    assert "ModuleNotFoundError" in broken.stderr

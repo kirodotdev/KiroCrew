@@ -123,14 +123,20 @@ V2 has no automatic history retention limit.
 
 V1 has six distinct storage layers, each with its own store and write path. V2
 unifies learned layers in SQLite. Fresh V1 context includes complete stable
-preferences, a short activity index and applicable lessons; daily history,
-project notebooks and old-task facts/episodes stay behind explicit
-`memory_recall`. Warm follow-ups retain native conversation history without
-repeating startup injection. V2 session context reads essential anchors and
-query-free scoped lessons; its semantic and episodic fragments require an
-explicit `memory_recall` operation. The nesting below is source-of-truth
-ordering (a later layer can override an earlier one), not a storage hierarchy
-and not everything sent on each turn:
+preferences, a short activity index and applicable lessons as protected
+context; with `memory.inject_activity` on (the default) the first turn also
+carries project notebooks, daily history (14 full days, then decayed summaries
+and counts to day 180), task facts and past episodes as one budgeted
+`[Memory activity]` background block
+(`get_activity_context`), and it embeds the request once to rank those facts
+and episodes (two embed calls on the same text, one shared inference). With the
+switch off that material stays behind explicit `memory_recall`, and anything
+the block omits or the budget drops is reached the same way. Warm follow-ups
+retain native conversation history without repeating startup injection. V2
+session context reads essential anchors and query-free scoped lessons; its
+semantic and episodic fragments require an explicit `memory_recall` operation.
+The nesting below is source-of-truth ordering (a later layer can override an
+earlier one), not a storage hierarchy and not everything sent on each turn:
 
 ```
 Memory storage layers (not a model-input or token budget)
@@ -273,7 +279,11 @@ Whether a group is in scope is the intersection of the caller-passed
 `memory.persistence_enabled` as the global switch — computed inside
 `build_session_context()` so every surface (dashboard, channels, cron,
 heartbeat, task runner, eval, subagents) obeys the config without passing
-anything. The member-essentials builder and the post-compaction re-injection in
+anything. `memory.inject_activity` is finer than a group: inside the memory
+group it decides whether the budgeted `[Memory activity]` block (projects,
+daily history (14 full days, then decayed summaries and counts to day 180),
+task facts and relevant episodes) is appended after the protected
+preferences and activity index. The member-essentials builder and the post-compaction re-injection in
 `build_message()` route through the same intersection, because each restores a
 block the session-start build gates: reading the caller scope alone there would
 hand back withheld memory for the rest of the session. The `[CONTEXT SCOPE]`
@@ -844,7 +854,7 @@ SQLite table `semantic_memory` — structured key-value store with:
 - **Write-time embedding**: `_write_semantic()` embeds `"<key> <value_json>"` after the upsert (outside `_db_lock`, at `PRIORITY_BULK` — nothing blocks on it and the tail is reached from consolidation/import loops; same space-generation contract as `write_lesson`) and persists the struct-packed, un-normalized vector into the row's `embedding` column. The upsert's conflict clause keeps the stored vector when the value is unchanged (a re-affirmation — the tail then skips the redundant embed) and clears it when the value changed, so a row never ranks by a vector for text it no longer holds. `lesson.*` keys are excluded (`write_lesson` owns their vector — raw rule text). `set_semantic_if_absent()` (bulk import) defers embedding to the backfill sweep, like `write_episodic(defer_embedding=True)`. Rows missed while the model was absent — plus rows cleared by `reconcile_embedding_space()` — are repaired by `_backfill_semantic_kv_embeddings()` inside `backfill_missing_embeddings()`.
 - **Audit trail**: `memory_events` table logs every create/update/delete with old+new values, bounded at `_MAX_EVENTS = 10_000`. The dashboard events API recursively redacts credentials and unsafe URLs on response for Global V1, named V1 and private V2. Stored events and their identities remain unchanged.
 
-Retrieval formats `key: value` pairs in a `[Semantic Memory]` block and excludes `lesson.*` keys. With a query it uses `_SEMANTIC_VECTOR_WEIGHT` 0.6 × vector_score + `_SEMANTIC_KEYWORD_WEIGHT` 0.4 × keyword_score; `_stored_similarity_scorer` embeds the query once and reads stored vectors. When the query vector is available, a row without a vector contributes zero on that term; without embeddings, retrieval uses keyword scoring. Explicit identity terms supplement keys and values. V1 startup reads only eligible `pref.*` rows through `get_preferences_context`, with the DATA-only wrapper and no query embedding. Other semantic facts are retrieved explicitly through `memory_recall` or the activity-enabled Python reader. V2 also leaves fragment retrieval to `memory_recall`, which has its own total response cap.
+Retrieval formats `key: value` pairs in a `[Semantic Memory]` block and excludes `lesson.*` keys. With a query it uses `_SEMANTIC_VECTOR_WEIGHT` 0.6 × vector_score + `_SEMANTIC_KEYWORD_WEIGHT` 0.4 × keyword_score; `_stored_similarity_scorer` embeds the query once and reads stored vectors. When the query vector is available, a row without a vector contributes zero on that term; without embeddings, retrieval uses keyword scoring. Explicit identity terms supplement keys and values. V1 startup reads eligible `pref.*` rows through `get_preferences_context`, with the DATA-only wrapper and no query embedding, as protected context; with `memory.inject_activity` on, the other semantic facts arrive query-ranked in the budgeted `[Memory activity]` block through `get_semantic_context(facts_only=True)`, which embeds the request. With the switch off they are retrieved explicitly through `memory_recall` or the activity-enabled Python reader. V2 also leaves fragment retrieval to `memory_recall`, which has its own total response cap.
 
 The keyword half's ROW side — the regex scan, set build, and Snowball expansion over a row's key and value — depends only on that row's own text, so it is memoized by `_row_stem_tokens`, bounded at `_ROW_STEM_CACHE_SIZE` entries. The memo is keyed on the TEXT rather than on a row key or rowid: an updated value hashes to a different entry, so no write path has an invalidation step to forget and a stale token set can never be served for text the row no longer holds. Only the row side goes through it — query text has one distinct value per user message, so memoizing it would evict the bounded row population the memo exists to keep. This is a separate memo from the per-word `_stem_one` cache (`_STEM_CACHE_SIZE`), which the row memo populates on a miss.
 
@@ -863,7 +873,7 @@ SQLite table `episodic_memories` — conversation fragments with optional embedd
 - **Scoring-set invalidation**: the validity token is `(in-process generation, PRAGMA data_version)`. `_invalidate_episodic_scoring()` bumps the generation and is called by **every** writer that changes which rows are scored or what they score as — `write_episodic`, `delete_episodic`, `_delete_episodic_row`, `_enforce_episodic_cap`, `_retire_stale_episodic`, `reconcile_embedding_space`, and `backfill_missing_embeddings`. Two of those are traps a naive append-only cache falls into: the backfill rebuilds the FAISS index only `if _HAS_FAISS`, which is False on exactly the install this rung serves, and a body lookup can never repair it (it drops ids that vanished but cannot surface ids that appeared, so recall degrades with no error); and `PRAGMA data_version` is the only in-band signal that a SECOND PROCESS committed to the same file, and both the scoring cache and FAISS search check it. Persisted FAISS loading additionally verifies database and index-file digests. `_touch_last_accessed` is deliberately NOT a writer here — `last_accessed_at` is never scored and is re-read per search with the bodies. A ratchet test (`test_every_episodic_writer_invalidates_the_scoring_set`) fails on a new `episodic_memories` writer that skips the hook. The set is bounded by `_EPISODIC_SCORING_MAX_BYTES` (64 MiB, ~10 MiB for 2,600 rows at dim 1024) and is disabled outright on an sqlite with no `data_version` pragma; either way the rung falls back to reading the population per call.
 - **V1 cap**: `_DEFAULT_EPISODIC_MAX` = 10,000 active entries, overridden by `memory.episodic_max_count`. For V1, `_enforce_episodic_cap()` tombstones `ORDER BY importance ASC, created_at ASC` (lowest-importance oldest first) on write once the count reaches the cap. The gateway passes the configured value as `episodic_max` when it builds the store, and `reconfigure` re-pushes it, so raising the cap stops evicting on the next write and lowering it trims on the next one — the key was parsed and dropped before, which silently pinned every install to the built-in 10,000. V2 bypasses capacity eviction and retains the stored episodes.
 
-Episodic context retains `_DEFAULT_EPISODIC_LIMIT` = 8 results for explicit readers. Neither fresh nor warm V1/V2 session construction automatically queries episodic fragments. Agent retrieval uses `memory_recall`, whose response includes only rows fitting the tool's total cap, including wrappers. Explicit Python callers may still request episodic context through `MemoryStore.get_context(include_activity=True, query=...)`.
+Episodic context retains `_DEFAULT_EPISODIC_LIMIT` = 8 results for explicit readers. Fresh V1 session construction carries a query-ranked episodic slice inside the budgeted `[Memory activity]` block (`MemoryStore.get_activity_context`, capped at `_EPISODIC_INJECT_CAP`) while `memory.inject_activity` is on; warm turns and V2 construction do not query episodic fragments. Agent retrieval uses `memory_recall`, whose response includes only rows fitting the tool's total cap, including wrappers. Explicit Python callers may still request episodic context through `MemoryStore.get_context(include_activity=True, query=...)`.
 
 ### Read-volume counters (`_ReadCounters`, `read_counters()`)
 
@@ -1140,6 +1150,15 @@ it was handed receives the same values. `member-memory.json` and the old
 `memory_meta` rows are left in place. One store's failure is logged and never
 blocks start or another store.
 
+The store migration never touches session records. A member chat written on
+0.7.0.5 carries `{agent, memory_store}` and no `execution_context`, and is
+backfilled at first read instead: `execution_context.read_session_execution`
+derives the carrier from the repaired store's `owner_member_id` when that owner
+is unique and the record's `agent` names it, and persists it with a
+compare-and-set (see [session](session.md), *Agent selection provenance*). A
+record the store migration left unattributed stays refused, with the remedy in
+the message.
+
 V2 labels owner changes as Edit and retained older experiences as Replaced
 experiences. Recall explains which context the member would receive; the record
 list remains available for browsing and editing. Included rules have a summary
@@ -1159,13 +1178,19 @@ identities, and reports imported/skipped outcomes with reasons and provenance.
 No row is selected automatically. This is selective copying, not V1 migration.
 
 V1 fresh-session context keeps complete preferences and eligible project-scoped
-lessons. Project notebooks, decayed daily history and other semantic/episodic
-facts are on demand through the store-bound `memory_recall` route; startup does
-not invoke the three query-embedding paths. Warm follow-ups do not repeat startup
-memory injection. The prompt-build embedding deadline remains a compatibility
-guard for other contributors, not evidence that default memory performs inference.
-The synchronous `ContextBuilder.build_message` call remains off the event loop
-in the bounded `mc-embed` pool.
+lessons as protected context. With `memory.inject_activity` on (the default) the
+first turn also carries project notebooks, daily history (the last 14 days in
+full, days 15–60 as one-entry summaries, older days through 180 as counts — the
+same decayed read `get_context` uses), task facts and past episodes in the
+budgeted `[Memory activity]` block
+(`get_activity_context`); the facts and episodes are ranked against the request,
+so a fresh first turn embeds the request once — two embed calls on the same text
+through the shared embedder, one inference. With the switch off, that material
+is on demand through the store-bound `memory_recall` route and startup performs
+no query embedding. Warm follow-ups do not repeat startup memory injection. The
+prompt-build embedding deadline bounds that first-turn inference, and the
+synchronous `ContextBuilder.build_message` call remains off the event loop in
+the bounded `mc-embed` pool.
 V2 context includes essential preference/project anchors and query-free,
 project-scoped lessons. V2 prompt construction performs no embedding search or
 episodic/semantic retrieval. Its runtime tells the agent to call `memory_recall`
@@ -1173,9 +1198,9 @@ for a changed topic or prior decision and to
 use `learn_add` for corrections. The agent prompts (`config/prompt.md`,
 `config/prompt-orchestrator.md`) give both versions the same order for a question
 about the past: the injected block and lessons, then `memory_recall`, then
-`search_chat_history` for verbatim transcript text. Both versions retrieve facts
-and episodes explicitly instead of relying on activity ranked against a first
-message. Retrieval is reference material and does not
+`search_chat_history` for verbatim transcript text. Anything the V1 activity
+block omits, and every V2 fact or episode, is retrieved explicitly rather than
+inferred from the first message. Retrieval is reference material and does not
 override the current user's instruction. Forgetting removes a row from future
 long-term recall; it does not erase text already in an active conversation.
 Backup and staged restoration cover the entire member memory bundle, as
@@ -1235,7 +1260,23 @@ complete snapshot is submitted only when the conversation needs it.
 bound custom-template persona on fresh, warm, resumed, post-compaction and
 minimal turns, including delegated and cron turns with no DM member argument.
 An execution-template override supplies task instructions; it does not replace
-the memory owner's persona. The generic product prompt retains its existing
+the memory owner's persona. The member OPERATING protocol and working briefing
+are the one exception, and they follow the selection rather than the store: an
+execution whose record carries the owner's `member_id` and store with
+`selection_kind == "template"` — the shape `session_create(agent=…)` and
+`spawn_run(agent=…)` mint for a member caller naming a template — is the owner's
+delegate, and its member section is identity and permanent rules only. The desk
+protocol, whose second item hands substantial work to a separate session, and the
+briefing that protocol maintains are withheld with no placeholder, so a delegate
+picked to do the work is not told to hand it on again. A member selected by name
+receives the whole section, and so does the `session_create` child of a member whose
+record carries no persisted `member_id`: that member is named by `selection_kind
+== "member"` and `selection_name` alone, and no record field can carry "this
+member, under that template", so that arm keeps its selection and changes only the
+template, because a record that does not name the member would lose its rules along
+with its persona. The spawn gate's `spawn_run(agent=…)` child of such a member is a
+plain template run on the parent's store — `ExecutionContext.with_template` flips
+the namespace for every record — and receives no member section at all. The generic product prompt retains its existing
 provider/session-start path, including when a member's fork inherits it. The
 loader recognizes the exact current `file://` URI selected by `_prompt_path()`,
 not a template name or file basename. Package installs outside the user home,
@@ -3472,7 +3513,7 @@ so provider timeouts, the 1 MiB response cap, the SSRF denylist, and
 
 | Tool | Endpoint | Returns |
 |------|----------|---------|
-| `skill_discover(query, limit=10≤50, provider?)` | `GET /api/skills/-/discover` | Candidate list — id, name, description, provider, author, install count, and an `installed` flag resolved against the local catalog. Each entry carries a ready-to-paste `skill_fetch(...)` call so the `owner/repo/skill` id survives verbatim. Publisher-controlled fields are clamped per-entry and labelled untrusted in the **header**. |
+| `skill_discover(query, limit=10≤50, provider?)` | `GET /api/skills/-/discover` | Candidate list — id, name, description, provider, author, install count, and an `installed` flag resolved against the local catalog. Each entry carries a ready-to-paste `skill_fetch(...)` call so the `owner/repo/skill` id survives verbatim. Publisher-controlled fields are clamped per-entry and labelled untrusted in the **header**. The endpoint also returns one `provider_outcomes` row (`ok`, `timeout`, or `error`) per attempted provider, so the tool reports a total failure as an error and labels partial results incomplete rather than claiming a complete zero-match search. |
 | `skill_fetch(id, provider="skillsh")` | `GET /api/skills/-/discover/preview` | The skill's instruction file, usable immediately with **no install step**, capped at `_SKILL_FETCH_MAX_CHARS` (32 KiB) for the context budget, prefixed with an untrusted-content warning. |
 
 Both paths are on `server._MIXED_INTERNAL_API_PATHS` (the Skills page calls the
@@ -4172,7 +4213,7 @@ and exfiltration URLs; clean assets are copied byte-for-byte, including leading
 and trailing whitespace. No per-asset preview truncation is used for either the
 security decision or the copied content.
 
-**Dashboard endpoints**: GET/POST `/api/skills`, GET/PUT/DELETE `/api/skills/{name:.+}`. POST sanitizes name to lowercase + hyphens + slashes. The mutating verbs (POST, PUT, DELETE) are owner-only and SEL-audited — app tokens and non-owner subjects get a 403 before any write — and the same owner gate fronts pending approve/dismiss/dismiss-all, pin, and inject-on-trigger, so every mutating skill endpoint in `prompts.py` refuses non-owner callers (the discover-module install endpoint carries its own internal-secret refusal instead; see learn-cron-dashboard.md's Skills CRUD entry). The two open-standard territories are read-only through this endpoint (`READONLY_SKILL_KEY_PREFIXES` in `handlers/prompts.py`): PUT or DELETE on a `kiro-user/` or `kiro-workspace/` key answers 405 with `Allow: GET` and `code: readonly_skill_prefix`, and a POST whose *sanitized* name lands in either territory answers 400 with `code: reserved_skill_prefix`. Those keys resolve per-machine / per-session on read (`_resolve_skill_root`) while `create/update/delete_skill` join the key onto the core skills root, so a write would edit a different file than the reader was shown; GET is unaffected. GET `/api/skills` discovery (kirocrew `list_skills()` os.walk + frontmatter, `list_kiro_skills`, and the skill→agent annotation) is fully offloaded to the dedicated `discovery_executor` pool (`executors.py`) via `collect_skills_blocking`, so it never stalls the event loop past the loop-stall watchdog on large catalogs. The annotation is O(agents) — `annotate_skills_with_agents` parses the agent JSONs and pre-expands each agent's `skill://` globs once, then matches every skill against that in-memory set. The discovery pool is deliberately separate from the reaper-critical `maintenance_executor` so browser-triggered scans can't starve the orphan sweep. When `?agent=<name>` names an agent whose `skill://` globs are non-empty (the filter is actually applied), the response is the envelope `{"skills": [...], "agent_scoped": true, "agent": <name>}` instead of the bare array; every unscoped path keeps the bare-array shape (#6028 — see the fuller rationale in learn-cron-dashboard.md's Skills CRUD entry).
+**Dashboard endpoints**: GET/POST `/api/skills`, GET/PUT/DELETE `/api/skills/{name:.+}`. POST sanitizes name to lowercase + hyphens + slashes. The mutating verbs (POST, PUT, DELETE) are owner-only and SEL-audited — app tokens and non-owner subjects get a 403 before any write — and the same owner gate fronts pending approve/dismiss/dismiss-all, pin, and inject-on-trigger, so every mutating skill endpoint in `prompts.py` refuses non-owner callers (the discover-module install endpoint carries its own internal-secret refusal instead; see learn-cron-dashboard.md's Skills CRUD entry). The two open-standard territories are read-only through this endpoint (`READONLY_SKILL_KEY_PREFIXES` in `handlers/prompts.py`): PUT or DELETE on a `kiro-user/` or `kiro-workspace/` key answers 405 with `Allow: GET` and `code: readonly_skill_prefix`, and a POST whose *sanitized* name lands in either territory answers 400 with `code: reserved_skill_prefix`. POST also bounds the sanitized name's length against `MAX_PROMPT_NAME_BYTES` and answers 400 with `code: name_too_long` before any write, measured on the whole name so that one bound covers a component past the filesystem cap, a joined path past `PATH_MAX`, and a nesting depth that would make `create_skill`'s `mkdir(parents=True)` recurse per level (#10913). Those keys resolve per-machine / per-session on read (`_resolve_skill_root`) while `create/update/delete_skill` join the key onto the core skills root, so a write would edit a different file than the reader was shown; GET is unaffected. GET `/api/skills` discovery (kirocrew `list_skills()` os.walk + frontmatter, `list_kiro_skills`, and the skill→agent annotation) is fully offloaded to the dedicated `discovery_executor` pool (`executors.py`) via `collect_skills_blocking`, so it never stalls the event loop past the loop-stall watchdog on large catalogs. The annotation is O(agents) — `annotate_skills_with_agents` parses the agent JSONs and pre-expands each agent's `skill://` globs once, then matches every skill against that in-memory set. The discovery pool is deliberately separate from the reaper-critical `maintenance_executor` so browser-triggered scans can't starve the orphan sweep. When `?agent=<name>` names an agent whose `skill://` globs are non-empty (the filter is actually applied), the response is the envelope `{"skills": [...], "agent_scoped": true, "agent": <name>}` instead of the bare array; every unscoped path keeps the bare-array shape (#6028 — see the fuller rationale in learn-cron-dashboard.md's Skills CRUD entry).
 
 **Skill browse containment** (`_resolve_skill_root`, `read_skill_file` in `handlers/_shared.py`): the tree (`/api/skills/{name}/-/tree`) and file (`/api/skills/{name}/-/file`) endpoints serve any directory the resolver returns, so the resolver is the containment boundary. A candidate's *parent* must resolve at or under its own root (that is what rejects a symlinked intermediate directory), and so must the RESOLVED candidate itself — with two exceptions, both in `_leaf_is_contained`: `LEAF_SYMLINK_PREFIX` = `kiro-user/`, where an edition may install `~/.kiro/skills/<name>` as a link into its own tree; and a leaf whose resolved target is a directory an app DECLARES as a skill, because `apps.bridges._register_skills` symlinks each declared skill into the kirocrew skills root (flat AND `skills/<app>/` namespaced) with the target in the app's own tree — without that the browse side would be stricter than the loader and list skills in `GET /api/skills` that 404 when opened. The admissible set is the manifest's own `skills` entries, read through `bridges._registration_source` (the immutable package copy for a shipped builtin), NOT the app's root: an app tree also holds that app's data, tokens and rendered configs, and a link planted at `<root>/x -> <app>/data` must not serve them. The `package/` branch returns before that shared block, so it applies the same containment itself against the resolved `_edition_package_roots()` set — an edition packager can plant an escaping link in its own root like any other, and `package/` carries no allowance. Checking the parent alone for every prefix was a whole-filesystem read primitive: `<project>/.kiro/skills/x -> /etc` resolved to `/etc` and the endpoints enumerated up to `SKILL_TREE_MAX_ENTRIES` names and returned up to `SKILL_FILE_MAX_BYTES` per file from it, and `is_sensitive_path` is no backstop there (it is a `$HOME`-anchored credential denylist, not a containment check). A deliberate cross-checkout leaf link (`<project>/.kiro/skills/x -> ~/dotfiles/skills/x`) is indistinguishable from the exfiltration shape and is refused with it; the sanctioned way to browse a skill tree that lives elsewhere is `skills.extra_paths`, which makes that location a root of its own. `enumerate_skill_catalog`/`_collect_skills_under` carry the same per-prefix policy, because a key enumeration offers must be one the resolver accepts. File bytes then come from `hooks.safe_read_file_bytes_nolink(within_root=…)`, so containment holds on the opened descriptor rather than on a path resolved earlier: re-opening by name left a check-to-use window (an ancestor swapped for a symlink after the check) and no hardlink guard — `resolve()` does not follow a hardlink, so a link to a file outside the root passed the path check and was served. The root is passed as `within_root_is_canonical=True`, because it is already resolved: re-`realpath`ing it at read time would let the skill directory replaced by a link redefine the root it is being contained to. `list_skill_tree` walks by name, so a root replaced after admission is enumerated as whatever its name then denotes — filenames only, and the same exposure the rest of the by-name filesystem surface carries; holding the root across a traversal needs the walk itself to be descriptor-relative, which is a separate change. Every descriptor-level refusal answers one message (`access denied`, 403) rather than naming which guard fired. Refusals are already SEL-audited by the endpoints (`api_skill_tree` / `api_skill_file` outcomes), and the read is NOT trust-gated by design — reading a `SKILL.md` is how an operator decides whether to grant project-skill trust (#4777).
 
@@ -4498,9 +4539,12 @@ never reach an LLM/agent surface.
 ### `SessionLaneChanged` — board-lane transitions (`_fire_session_lane_changed`)
 
 **Status: this section specifies a PENDING implementation, not the tree as it
-stands.** `SessionLaneChanged` is not a live hook event yet: `HOOK_EVENTS`,
-`ALLOWED_HOOK_EVENTS` and `_VALID_HOOK_EVENTS` carry exactly the five
-turn-lifecycle events, and none of the symbols named below exist in `src/`. Read
+stands.** `SessionLaneChanged` is not a live hook event yet: it is absent from
+`HOOK_EVENTS`, from `ALLOWED_HOOK_EVENTS` and from `_VALID_HOOK_EVENTS`, and none
+of the symbols named below exist in `src/`. The three sets are not the same size:
+`HOOK_EVENTS` and `_VALID_HOOK_EVENTS` carry the five turn-lifecycle events, while
+`ALLOWED_HOOK_EVENTS` carries eleven — the five plus the six Kiro Agent triggers
+in `hooks.HOOK_EVENTS_KAS_ONLY`, which are registrable but fired by nothing. Read
 every present-tense sentence here as the contract the implementation must meet.
 Until it lands, `handlers/hooks.py` and the Hooks page behave as the rest of this
 module already describes.
@@ -4693,8 +4737,11 @@ into two tokens or forging the opposite direction.
   `hooks.HOOK_EVENTS` (dispatchable) and `validation.ALLOWED_HOOK_EVENTS`
   (registrable through the hook create/update API), and deliberately **absent**
   from `agent._VALID_HOOK_EVENTS` — kiro-cli rejects a generated agent config
-  naming an event it does not know. A test pins all three memberships together
-  with this rationale, so the divergence cannot be "fixed" by syncing them.
+  naming an event it does not know, refusing to load that agent at all. A test
+  pins all three memberships together with this rationale, so the divergence
+  cannot be "fixed" by syncing them. The Kiro Agent triggers sit one step further
+  out again: registrable, absent from `_VALID_HOOK_EVENTS` for the same reason,
+  and not dispatchable either.
 
 **The SEL rows this event adds, stated so an auditor can find them and a host can
 budget them.** A lane-dispatch decision writes ONE `log_api_access` row under
@@ -4921,8 +4968,8 @@ their reported benchmark gains are not Kiro Crew measurements.
 ## Context Builder (`context.py`)
 
 Assembles all sources into prompts:
-- New session: `_CRITICAL_RULES` (runtime-conditional diff blocks + OPTIONS buttons) + agent prompt + static preference/project anchors + memory tool guidance + skills + scoped lessons + conversation history (last 20 messages, thread history at TOP with explicit framing)
-- Every message: channel history, hook transforms, triggered skills, context rules, OPTIONS hint (interactive sessions only). Memory search is an explicit MCP operation; building a message never generates a query embedding.
+- New session: `_CRITICAL_RULES` (runtime-conditional diff blocks + OPTIONS buttons) + agent prompt + static preference/project anchors + activity index + budgeted `[Memory activity]` block (projects, daily history (14 full days, then decayed summaries and counts to day 180), task facts, relevant episodes; `memory.inject_activity`, default on) + memory tool guidance + skills + scoped lessons + conversation history (last 20 messages, thread history at TOP with explicit framing)
+- Every message: channel history, hook transforms, triggered skills, context rules, OPTIONS hint (interactive sessions only). Memory search is an explicit MCP operation; a fresh first turn with `memory.inject_activity` on embeds the request once to rank the activity block's facts and episodes (two embed calls on the same text, one shared inference), and a warm follow-up generates no query embedding.
 - Runtime identity is turn-aware rather than key-only. Channel and dashboard dispatchers pass trusted `runtime_source` metadata to `build_message()`. New sessions use it for `[RUNTIME]`; follow-up turns refresh `[RUNTIME]` outside the one-time session context. This is required because a stable `dashboard:*` session can be resumed from Discord and `messaging.dm_scope="unified"` intentionally removes the originating channel from the session key. When trusted metadata is absent, namespaced keys (`discord:*`, `telegram:*`, `wecom:*`, `weixin:*`, `webex:*`, `teams:*`, `slack:*`) are recognized directly; bare unknown keys keep the legacy Slack fallback.
 - Thread history is injected only at session start (via `build_session_context`). Within the same ACP session, kiro-cli manages conversation history natively — duplicate injection wastes context window and accelerates compaction.
 - `_CRITICAL_RULES` injected by DEFAULT for every agent (built-in `kirocrew` and custom alike) — it is the dashboard/Slack assistant's own output contract (runtime-conditional diff blocks — tool-made edits render as structured diff cards on the dashboard, so ```diff blocks are required only for non-tool edits or non-dashboard runtimes — `[OPTIONS:]` footer, absolute-path rule with a URL exclusion — a backticked URL renders as a click-to-copy chip rather than a link, so URLs must use markdown link syntax instead), so diff rendering and OPTIONS buttons work universally. A **custom** agent can OPT OUT by setting `includeCrewContext: false` in its materialized `~/.kiro/agents/<...>.json`: a custom app agent ships its own system prompt and output contract, so injecting this on top both conflicts with it and, on a safety-tuned model, reads as an identity override the model refuses as prompt injection. The flag is read through the same sensitive-path-gated scan as the agent prompt (matched by declared `name` or filename stem) and memoized by agent name; an absent/non-boolean flag, an unreadable/missing spec, and the built-in `kirocrew` agent all default to injecting (only an explicit boolean `false` on a custom agent suppresses it). The same opt-out also suppresses the dashboard tool nudges (`ask_question` / `suggest_followup`) that `build_message` adds on dashboard sessions, but NOT the provider-agnostic `[OPTIONS:]` reminder. The `[OPTIONS:]`/diff tags still RENDER for any agent that emits them (the dashboard parses them regardless); the gate only stops the host from MANDATING them where an agent has declared it does not want them.
@@ -4934,9 +4981,15 @@ records. A required activity index (at most 1,800 characters) lists project
 headings/first entries and the last three days' headings or first lines. Each
 source has a share, so project overflow cannot hide recent task names. The
 existing bounded `Recent Session Context` source snippets remain injected:
-those snippets need not exist in vector memory. Index and recalled content are
-reference data, not instructions. Larger notebook bodies and non-preference
-facts/episodes require explicit `memory_recall`.
+those snippets need not exist in vector memory. With `memory.inject_activity`
+on (the default) the notebook bodies, daily history (14 full days, then decayed
+summaries and counts to day 180), task facts and episodes relevant to the
+request follow as one budgeted `[Memory activity]`
+background block (`get_activity_context`) that the admission loop admits or
+drops whole. Index, block and recalled content are reference data, not
+instructions. With the switch off, and for anything the block omits or the
+budget drops, larger notebook bodies and non-preference facts/episodes require
+explicit `memory_recall`.
 
 Recall uses the authenticated session's bound store and workspace, never a
 request-supplied path or another active slot. The V1 notebook query reuses
@@ -5027,7 +5080,7 @@ A spawning parent decides which of three groups its sub-agent inherits, via `inc
 | Group | Sections | Switchable |
 |---|---|---|
 | conduct | `_CRITICAL_RULES`, date, agent/runtime, UI language, workspace identity, bounded skill discovery | no |
-| `memory` | complete preferences, activity index, memory tool guidance, `Recent Session Context` source snippets; V2 essential anchors | yes |
+| `memory` | complete preferences, activity index, budgeted `[Memory activity]` block (projects, daily history (14 full days, then decayed summaries and counts to day 180), task facts, relevant episodes; `memory.inject_activity`), memory tool guidance, `Recent Session Context` source snippets; V2 essential anchors | yes |
 | `lessons` | `[Learned corrections]` (global + workspace), `[USER PROFILE]` | yes |
 | `project` | `[DOCUMENTATION]` pointer, steering resources (CC backend only), `[PROJECT]` directory line | yes |
 

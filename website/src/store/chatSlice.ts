@@ -16,6 +16,7 @@ import { gcSessionStorage } from '../utils/storageGc'
 import type { RootState } from './index'
 import type { ChatMessage, ChatSlot, SessionInfo, SubagentActivity, ToolActivity, ToolPayloadCut, WorkflowRunSummary } from '../types'
 import { SOFT_STOP_DEBOUNCE_MS, SPAWN_LAUNCH_MARKER } from '../pages/chat/types'
+import { parseSubagentQueuedReason, type SubagentQueuedEvent, type SubagentQueuedReason } from '../pages/chat/subagentQueuedReason'
 import { mergePreservedPastes } from '../utils/pasteTokens'
 import { safeSetItem } from '../utils/safeStorage'
 import { errMessage, isMissingSlotError, type StatusRejection } from '../utils/thunkError'
@@ -421,7 +422,7 @@ const slotKeyedMaps = (state: ChatState) => [
   state.slotSide, state.slotSideClosed, state.slotStatusDetail,
   state.slotContextPct, state.slotContextTokens, state.stopPressedAt,
   state.followups, state.folderSuggestions,
-  state.pendingQuestions, state.subagentQueued,
+  state.pendingQuestions, state.subagentQueued, state.subagentQueuedReason,
   state.automations,
   // A surviving pane marker makes a recreated slot's hydrate early-return into
   // nothing, so these must die with the transcript they describe. The retained
@@ -914,14 +915,6 @@ interface ChatState {
   slotStopping: boolean
   slotState: SlotState
   slotStatusDetail: Record<string, SlotStatusDetail>
-  /** Slots the header's "Request a Feature" action created, this tab only. The
-   *  transcript reads it to offer the non-inference route (the repo's
-   *  feature-request form) on a `usage_limit` error row in one of them
-   *  (#13342): the row's kind says the plan is spent, but only the flow that
-   *  created the slot knows the turn was a feature request, and the backend is
-   *  not told. Keys are never removed -- slot keys are unique, so a stale entry
-   *  can match nothing -- and the list grows by one per press. */
-  featureRequestSlots: string[]
   slotHasMore: boolean
   slotOldestIndex: number
   /** Slot the cursor above describes. A switch moves activeSlot first, so
@@ -1058,6 +1051,12 @@ interface ChatState {
    *  by slot name so it survives active-slot switches without the subagents
    *  map's active/non-active split. Populated by `subagent_queued` WS events. */
   subagentQueued: Record<string, number>
+  /** Why the slot's queued agents wait, from the same `subagent_queued` event:
+   *  the gate's `reason` kind plus the memory figures for the memory kinds.
+   *  Absent for a slot exactly when the gateway sent a bare count (an older
+   *  gateway, or nothing labelled), and the chips then keep their default
+   *  "queued behind the concurrency limit" text. Cleared with the count. */
+  subagentQueuedReason: Record<string, SubagentQueuedReason>
   /** The authoritative automation record for each bare slot key.
    *
    * Structured monitors remain here after reaching a terminal outcome so the
@@ -1252,7 +1251,6 @@ const initialState: ChatState = {
   slotStopping: false,
   slotState: 'idle',
   slotStatusDetail: {},
-  featureRequestSlots: [],
   slotHasMore: false,
   slotOldestIndex: 0,
   slotCursorKey: null,
@@ -1281,6 +1279,7 @@ const initialState: ChatState = {
   voiceAudio: null,
   subagents: {},
   subagentQueued: {},
+  subagentQueuedReason: {},
   automations: {},
   selectedSubagentId: null,
   toolLog: [],
@@ -5000,19 +4999,6 @@ const chatSlice = createSlice({
       if (isUnsafeKey(slot)) return
       state.slotStatusDetail[safeKey(slot)] = detail
     },
-    /** Remember that the "Request a Feature" action created `slot`, so a later
-     *  `usage_limit` error row in it can offer the feature-request form (#13342).
-     *  Written right after the slot exists and BEFORE the send settles: the
-     *  refusal arrives over the WebSocket once the turn has started, so a marker
-     *  written only on a happy receipt would miss the one case it exists for.
-     *  Tolerates a preloaded state without the field (older persisted shapes,
-     *  partial test stores). */
-    markFeatureRequestSlot(state, action: PayloadAction<string>) {
-      const slot = action.payload
-      if (!slot) return
-      if (!Array.isArray(state.featureRequestSlots)) state.featureRequestSlots = []
-      if (!state.featureRequestSlots.includes(slot)) state.featureRequestSlots.push(slot)
-    },
     clearMessages(state) { state.messages = []; setPagingCursor(state, false, 0); state.voiceAudio = null; state.voicePlaying = false; if (state.activeSlot) delete state.thinkingOrphans?.[safeKey(state.activeSlot)]; if (state.activeSlot) evictMcpApps(state, state.activeSlot); if (state.activeSlot) writeSlotPage(state, state.activeSlot, [], false) },
     /** A server-confirmed clear for a slot that is NOT the active view. The
      *  active-slot case routes through `clearMessages`; this one exists so a
@@ -5120,20 +5106,32 @@ const chatSlice = createSlice({
       // avoid showing a stale "waiting" count for a wave that finished during
       // the disconnect (under-count self-heals on the next drain frame).
       state.subagentQueued = {}
+      state.subagentQueuedReason = {}
     },
     /** Aggregate "waiting to start" count for a slot. Agents queued behind the
      *  concurrency cap / stagger gate have no individual card; this count lets
      *  the chip appear immediately on spawn and show how many are pending
      *  start (issues: late chip, flicker, invisible queue). */
-    sseSubagentQueued(state, action: PayloadAction<{ slot: string; queued: number }>) {
+    sseSubagentQueued(state, action: PayloadAction<SubagentQueuedEvent>) {
       if (isUnsafeKey(action.payload.slot)) return
       const n = Math.max(0, Math.floor(Number(action.payload.queued) || 0))
       // Tolerate a store built from partial preloaded state (test fixtures and
       // any consumer that predates this key): indexing an absent map throws and
       // would drop the queue update entirely.
       state.subagentQueued ??= {}
-      if (n === 0) delete state.subagentQueued[safeKey(action.payload.slot)]
-      else state.subagentQueued[safeKey(action.payload.slot)] = n
+      state.subagentQueuedReason ??= {}
+      const key = safeKey(action.payload.slot)
+      if (n === 0) {
+        delete state.subagentQueued[key]
+        delete state.subagentQueuedReason[key]
+        return
+      }
+      state.subagentQueued[key] = n
+      // The reason travels with the count it explains. A frame without one is
+      // either an older gateway or a wait nothing labelled: the default text.
+      const reason = parseSubagentQueuedReason(action.payload)
+      if (reason) state.subagentQueuedReason[key] = reason
+      else delete state.subagentQueuedReason[key]
     },
     /** Reconcile whichever independent REST snapshots completed successfully.
      * A failed read is unknown, not an authoritative empty collection. */
@@ -7321,7 +7319,7 @@ const chatSlice = createSlice({
 
 export const {
   setActiveSlot, clearSlotState, setPendingInput, setAgentSwitchNotice, clearSwitchSlotGone, clearUnresumableResume, clearUndeletableHistory, setQuestionCard, retireStatelessQuestion, clearQuestionCard, setQuestionDraft, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, ageFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
-  removeThinking, confirmOptimisticSend, resolveOptimisticSteer, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, settleStopNotRunning, startLocalTurn, endLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, markFeatureRequestSlot, setStopPressedAt, clearMessages, clearSlotCache, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
+  removeThinking, confirmOptimisticSend, resolveOptimisticSteer, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, settleStopNotRunning, startLocalTurn, endLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, clearSlotCache, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
   sseContextUsage, setVoicePlaying, setVoiceAudio,
   toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, requestSlotReveal, clearSlotReveal, requestFolderReveal, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,
   sseSubagentBatchUpdate, sseSubagentBatchChunks, selectSubagent, clearTerminalSubagents,
@@ -7338,17 +7336,6 @@ export function selectAutomationForSlot(
 ): AutomationRecord | null {
   if (isUnsafeKey(slotKey)) return null
   return automationForSlot(state.chat.automations, safeKey(slotKey))
-}
-
-/** True when the header's "Request a Feature" action created `slotKey` in this
- *  tab (see `markFeatureRequestSlot`). Tolerates a state without the field. */
-export function selectIsFeatureRequestSlot(
-  state: { chat: Pick<ChatState, 'featureRequestSlots'> },
-  slotKey: string | null | undefined,
-): boolean {
-  if (!slotKey) return false
-  const marked = state.chat.featureRequestSlots
-  return Array.isArray(marked) && marked.includes(slotKey)
 }
 
 export default chatSlice.reducer

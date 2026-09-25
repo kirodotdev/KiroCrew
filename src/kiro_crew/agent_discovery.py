@@ -20,7 +20,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Generic, Iterator, TypeVar
+from typing import Any, Callable, Generic, Iterator, Sequence, TypeVar
 
 from kiro_crew import agent_state, hooks
 from kiro_crew.agent_files import (
@@ -504,7 +504,17 @@ class AmbiguousAgentSpecError(ValueError):
     hand the caller an agent the operator did not name, with that agent's tools
     and prompt. Every declared-name resolver refuses instead; the message names
     each file so the operator can remove or rename one.
+
+    ``paths`` carries the same files as data, for a caller that must name them
+    WITHOUT their directory -- the tool-policy endpoint's 409 ``reason``
+    crosses the wire into a model-visible refusal, and the message's full
+    paths disclose the account name and on-disk layout there. Empty when the
+    raiser did not supply them; the message is then the only record.
     """
+
+    def __init__(self, message: str, *, paths: Sequence[Path] = ()) -> None:
+        super().__init__(message)
+        self.paths: tuple[Path, ...] = tuple(paths)
 
 
 def spec_by_declared_name(
@@ -574,7 +584,8 @@ def spec_by_declared_name(
         raise AmbiguousAgentSpecError(
             f"{len(match_paths)} specs declare the name {agent_id!r}: "
             f"{', '.join(repr(str(path)) for path in match_paths)}. Which one is live is "
-            f"undefined -- remove or rename one."
+            f"undefined -- remove or rename one.",
+            paths=match_paths,
         )
     return match
 

@@ -1,5 +1,5 @@
 import { Loader2 } from 'lucide-react'
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
 import { useZoomCtx } from '../../hooks/ZoomProvider'
 import type { FontFamily } from '../../hooks/useZoom'
@@ -8,7 +8,7 @@ import type { ColorTheme } from '../../hooks/useTheme'
 import { useUIMode } from '../../hooks/useUIMode'
 import { SettingsSection, SettingsCard, SettingsSelect, SettingsStepper, SettingsButtonGroup, SettingsInput, SettingsCombobox, SettingsToggle } from '../../components/settings'
 import SimpleSelect from '../../components/SimpleSelect'
-import { Input } from '../../components/ui'
+import { Btn, Input } from '../../components/ui'
 import { useThemeEditor, ThemeEditorPanel } from '../../components/themeEditor'
 import Modal from '../../components/Modal'
 import { useAppSelector, useAppDispatch } from '../../store'
@@ -82,10 +82,13 @@ export function DisplayPanel() {
     colorTheme,
     setColorTheme,
     allThemes,
+    customThemesUpdatedAt,
     loadCustomThemes,
     themeSwitching,
     overridesDropReport,
     installedThemeLoadFailed,
+    customThemesLoadError,
+    customThemesLoaded,
   } = useTheme()
   // The load-error notice is shown only for a pack that is actually unstyled.
   // `installedThemeLoadFailed` is derived in the provider from the selection,
@@ -280,6 +283,45 @@ export function DisplayPanel() {
   const [installValue, setInstallValue] = useState('')
   const [installBusy, setInstallBusy] = useState(false)
   const [installError, setInstallError] = useState<string | null>(null)
+  // An install landed but the follow-up catalog refresh failed, so the new pack
+  // is not listed yet and was not selected. That failure is rendered at once
+  // under the picker (it must not wait for the invalidated refetch to SETTLE in
+  // error, which may take a retry); the user picks the pack from the list once
+  // it is current. No deferred auto-select: a selection made minutes later by a
+  // background refetch, possibly with the user gone, is a theme swap nobody
+  // asked for. The notice is withdrawn the next time the list changes.
+  const [installRefreshFailed, setInstallRefreshFailed] = useState(false)
+  // The slug that install left unlisted, so a USER-INITIATED Retry that
+  // succeeds can finish the install by selecting it -- the notice's own
+  // instruction, kept. Never read by an effect: a background refetch landing
+  // minutes later must not restyle the dashboard unprompted.
+  const installedUnlistedSlugRef = useRef<string | null>(null)
+  // `customThemesUpdatedAt` moves whenever a catalog fetch LANDS. Neither
+  // `allThemes` (rebuilt every render) nor `customThemes` (structurally shared:
+  // a deep-equal listing, e.g. a reinstall of an already-listed pack, keeps its
+  // reference) can serve as that signal.
+  const catalogSeenRef = useRef(customThemesUpdatedAt)
+  useEffect(() => {
+    if (catalogSeenRef.current !== customThemesUpdatedAt) {
+      catalogSeenRef.current = customThemesUpdatedAt
+      setInstallRefreshFailed(false)
+      installedUnlistedSlugRef.current = null
+    }
+  }, [customThemesUpdatedAt])
+  // Retry of the catalog list from its notice: busy while the fetch runs so a
+  // failed retry is visibly a retry that ran, not a click that did nothing.
+  const [catalogRetrying, setCatalogRetrying] = useState(false)
+  const retryCatalog = async () => {
+    setCatalogRetrying(true)
+    try {
+      if (await loadCustomThemes()) {
+        setInstallRefreshFailed(false)
+        const slug = installedUnlistedSlugRef.current
+        installedUnlistedSlugRef.current = null
+        if (slug) setColorTheme(`custom-${slug}` as ColorTheme)
+      }
+    } finally { setCatalogRetrying(false) }
+  }
   // Phase for the install status indicator: fetching (api.installTheme in
   // flight) → applying (auto-selecting the freshly installed theme).
   const [installPhase, setInstallPhase] = useState<'fetching' | 'applying' | null>(null)
@@ -289,6 +331,10 @@ export function DisplayPanel() {
     if (!v || installBusy) return
     setInstallBusy(true)
     setInstallError(null)
+    // A new attempt owns the notices: the previous attempt's stale-list state
+    // is replaced by this one's outcome.
+    setInstallRefreshFailed(false)
+    installedUnlistedSlugRef.current = null
     setInstallPhase('fetching')
     try {
       const source =
@@ -301,8 +347,23 @@ export function DisplayPanel() {
         return
       }
       setInstallPhase('applying')
-      await loadCustomThemes()
-      if (res.slug) setColorTheme(`custom-${res.slug}` as ColorTheme)
+      // Select only once the catalog carries the new pack: selecting a slug the
+      // catalog lacks is read by self-repair as dangling and reset. On a failed
+      // refresh the pack is installed but not yet listed; the failure is the
+      // catalog query's to report (`customThemesLoadError` -> the
+      // `installed_themes_refresh_failed` notice under the picker), and the
+      // user picks the pack from the list once it is current.
+      const refreshed = await loadCustomThemes()
+      if (refreshed && res.slug) {
+        setColorTheme(`custom-${res.slug}` as ColorTheme)
+      } else if (!refreshed) {
+        // The install landed but the list refresh did not: the picker's notice
+        // says so at once (it keys on this state, not only on a SETTLED catalog
+        // error, which the invalidated refetch may take a retry to reach) and
+        // carries the Retry.
+        setInstallRefreshFailed(true)
+        installedUnlistedSlugRef.current = res.slug ?? null
+      }
       setInstallValue('')
     } catch (e) {
       setInstallError(e instanceof Error ? e.message : i18nT('pages.settings.displayPanel.install_failed'))
@@ -488,6 +549,41 @@ export function DisplayPanel() {
             </div>
             {themeSwitching && <StatusIndicator label={i18nT('pages.settings.displayPanel.applying')} />}
           </div>
+          {/* The installed-theme catalog failed to load (gateway still booting,
+              tunnel error): without this the picker just lacks the installed
+              rows and the selected theme renders unstyled with no reason on
+              screen. The provider keeps retrying; this reports the wait.
+              No hand-off: `installValue` (the GitHub URL / local path below) may
+              be half-typed, and the hand-off's navigation would discard it. */}
+          {(customThemesLoadError || installRefreshFailed) && (
+            <div className="flex items-center gap-3">
+              <ErrorNotice
+                variant="inline"
+                message={i18nT(
+                  installRefreshFailed
+                    ? 'pages.settings.displayPanel.installed_themes_refresh_failed_after_install'
+                    : customThemesLoaded
+                      ? 'pages.settings.displayPanel.installed_themes_refresh_failed'
+                      : 'pages.settings.displayPanel.installed_themes_load_failed',
+                )}
+              />
+              {/* A settled refetch failure does not retry on its own (the boot
+                  loop does, hence no button while nothing has loaded), so the
+                  notice carries the retry rather than being a dead end. */}
+              {(customThemesLoaded || installRefreshFailed) && (
+                <Btn
+                  type="button"
+                  disabled={catalogRetrying}
+                  aria-busy={catalogRetrying || undefined}
+                  onClick={() => { void retryCatalog() }}
+                >
+                  {i18nT(catalogRetrying
+                    ? 'pages.settings.displayPanel.retrying_theme_list'
+                    : 'pages.settings.displayPanel.retry_theme_list')}
+                </Btn>
+              )}
+            </div>
+          )}
           {/* Surface scoper-dropped overrides.css rules for the ACTIVE
               theme. The slug guard is belt-and-braces for the switch race — the
               provider clears the report on theme change, but a stale report must

@@ -31,6 +31,7 @@ other track's work.
 
 from __future__ import annotations
 
+import ctypes
 import functools
 import logging
 import os
@@ -38,7 +39,7 @@ import signal
 import sys
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from .. import common
@@ -387,57 +388,139 @@ def _user_namespaces_available() -> str:
     )
 
 
-def verify_sandbox(settings: Settings, *, probe=_user_namespaces_available) -> None:
+#: ``prctl`` option number for the dumpable flag (``linux/prctl.h``). Value 0 clears it.
+PR_SET_DUMPABLE: int = 4
+
+
+def _clear_dumpable() -> str:
+    """Clear this process's dumpable flag. Returns "" on success, else a reason.
+
+    A string rather than a bool so the caller can report WHY, and a reason rather than
+    an exception so a platform without ``prctl`` is distinguishable from a ``prctl``
+    that ran and refused.
+    """
+    try:
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+    except OSError as err:
+        # Not Linux, or a libc under another name. The image is Linux; this path exists
+        # so importing this module on a developer's or CI runner's other platform does
+        # not fail.
+        return f"libc.so.6 not loadable ({err})"
+    if not hasattr(libc, "prctl"):
+        return "libc has no prctl"
+    if libc.prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0:
+        return f"prctl(PR_SET_DUMPABLE, 0) failed with errno {ctypes.get_errno()}"
+    return ""
+
+
+def make_non_dumpable(*, clear=_clear_dumpable) -> None:
+    """Make this process's ``/proc`` entries unreadable by other processes of its uid.
+
+    The credential reaches this process in its environment, and `/proc/<pid>/environ`
+    exposes the region the exec set up rather than the live ``environ`` array -- so
+    clearing the variable does not unpublish the value. The model worker runs under this
+    same uid with no PID namespace between them, so it can read this process's
+    environment directly, and it runs an auto-approved shell on untrusted prompt
+    content. Clearing the dumpable flag makes the kernel reparent this process's
+    ``/proc`` entries to root, and a same-uid reader then gets ``EACCES``.
+
+    Side effects, and why they are acceptable here: a non-dumpable process cannot be
+    ``ptrace``d and produces no core dump. The supervisor needs neither -- it spawns and
+    drains children and reads no ``/proc`` entry of its own.
+
+    On Linux a ``prctl`` that RAN and refused is fatal: the alternative is to serve
+    turns with the credential published to the worker. A platform with no ``prctl`` at
+    all is a different case and only logs, because this module is imported by tests on
+    runners that are not the image.
+    """
+    reason = clear()
+    if not reason:
+        log.info("supervisor is non-dumpable: its /proc entries are root-owned")
+        return
+    if sys.platform.startswith("linux"):
+        raise common.ConfigError(
+            f"could not make the supervisor non-dumpable: {reason}. This process holds "
+            "the model identity in its environment, and the model worker runs under the "
+            "same uid with no PID namespace, so without this its /proc entries are "
+            "readable by a worker that auto-approves every tool it calls on untrusted "
+            "prompt content. Refusing to start."
+        )
+    log.warning("not making this process non-dumpable (%s): %s", sys.platform, reason)
+
+
+def verify_sandbox(
+    settings: Settings, *, env: Mapping[str, str], probe=_user_namespaces_available
+) -> None:
     """Refuse to start unless the model subprocess can run sandboxed.
 
     kiro-cli runs the model subprocess inside a sandbox. On Linux that needs an
-    unprivileged user namespace; without one, ``wrap_argv`` fails CLOSED
-    (sections.py:636). This container ships SANDBOXED-ONLY: if the host has no
-    user namespace we refuse to start rather than run the model subprocess
-    without one.
+    unprivileged user namespace; without one, ``wrap_argv`` fails CLOSED. This
+    container is sandboxed-only, so a host that cannot provide one is refused here,
+    loudly, rather than left to fail every turn.
 
-    There is deliberately no opt-in to run unsandboxed. kiro-cli auto-approves
-    every tool (``--approval yolo``, nothing in the container clicks Approve),
-    and the backend's environment carries the model credential ``KIRO_API_KEY``,
-    which kiro-cli re-injects into the worker. An unsandboxed worker would then
-    run an auto-approved shell driven by untrusted customer prompt content with
-    that credential readable in its environment -- a prompt-injection-to-
-    credential-exfiltration path the ECS boundary does not close, because the
-    attacker is the prompt content, already inside the boundary. Offering that
-    safely needs the credential brokered out of the worker's environment, which
-    is not part of this change; until then the only posture this container
-    accepts is sandboxed. On a host without user namespaces (Fargate today) it
-    refuses to start, loudly, rather than boot into the exposed posture.
+    **Why taking the credential out of the worker's environment does not earn an
+    unsandboxed posture.** The worker auto-approves every tool it calls on untrusted
+    prompt content, so what matters is whether it can REACH a credential -- not whether
+    one is resident in its own environment. ``build_backend_env`` closes the
+    environment route, and this function asserts that below. The route it cannot close
+    is the vault: the backend answers the engine's token request from it, so the
+    backend's uid must be able to decrypt it, and the worker is a child of the backend
+    under that same uid. Measured -- a uid-1000 process reads and decrypts that vault
+    directly. An auto-approved unsandboxed worker therefore still has a route, which is
+    why ``sandbox_allow_unsandboxed_exec`` stays false and why this refusal has no
+    credential-shaped escape hatch.
+
+    Closing the remaining route is not something this file can do: it needs a user
+    namespace, or a worker under a different uid from the BACKEND (the gateway's own
+    spawn path), or a credential not worth stealing.
 
     **Only ``SANDBOX_AVAILABLE`` proceeds.** Undetermined refuses, and so does any
     verdict this function does not recognise. Reading a probe that cannot reach an
     answer as permission to continue is the same defect as reading the environment
     through a denylist: it holds for the hosts someone already thought of and fails
-    open on the next one, and here failing open means an auto-approving worker
-    holding the model credential with no sandbox. The refusal repeats the verdict
-    verbatim so an operator learns what could not be determined rather than only
-    that something could not be.
+    open on the next one. The refusal repeats the verdict verbatim so an operator
+    learns what could not be determined rather than only that something could not be.
     """
+    # The environment route, asserted rather than decided -- and checked before the
+    # probe, because it is broken whatever the host can provide. `build_backend_env`
+    # withholds both credential shapes, so a value here means that withholding was
+    # removed or defeated, which is a broken invariant and not a host posture. It is
+    # deliberately NOT a decision: the code that builds `env` is the code that empties
+    # it, so a posture taken from this reading could only ever confirm itself.
+    leaked = sorted(
+        name
+        for name in (backend_mod.ENV_KIRO_IDENTITY, backend_mod.ENV_KIRO_API_KEY)
+        if (env.get(name) or "").strip()
+    )
+    if leaked:
+        raise common.ConfigError(
+            f"the environment prepared for the backend carries {', '.join(leaked)}. "
+            "build_backend_env withholds the model credential in both of its shapes, "
+            "so a value here means that withholding was removed or defeated. The "
+            "backend spawns the model worker, which auto-approves every tool it calls "
+            "on untrusted prompt content. Refusing to start."
+        )
     verdict = probe()
     if verdict == SANDBOX_AVAILABLE:
         return
     if verdict == SANDBOX_DENIED:
         raise common.ConfigError(
             "No user-namespace sandbox is available on this host, so kiro-cli cannot "
-            "spawn the model subprocess sandboxed. This container runs sandboxed-only "
-            "and does not offer an unsandboxed posture, so it refuses to start rather "
-            "than run the model subprocess -- which auto-approves every tool and holds "
-            "the model credential in its environment -- without a sandbox. Run where "
-            "unprivileged user namespaces are permitted."
+            "spawn the model subprocess sandboxed. This container runs sandboxed-only. "
+            "Taking the model credential out of the worker's environment is not enough "
+            "to offer an unsandboxed posture instead: the backend answers the engine's "
+            "token request from the crew's vault, so the backend's uid must be able to "
+            "decrypt it, and the worker runs as a child of the backend under that same "
+            "uid. Run where unprivileged user namespaces are permitted."
         )
     raise common.ConfigError(
         f"Whether this host permits an unprivileged user-namespace sandbox could not be "
         f"determined: {verdict}. This container runs sandboxed-only, so an undetermined "
-        "answer refuses exactly as a denial does: continuing would run the model "
-        "subprocess -- which auto-approves every tool and holds the model credential in "
-        "its environment -- with no evidence that a sandbox is in place. Run this image "
-        "on Linux where unprivileged user namespaces are permitted, and fix what "
-        "stopped the probe rather than reading its silence as consent."
+        "answer refuses exactly as a denial does: continuing would run a model "
+        "subprocess that auto-approves every tool, with no evidence that a sandbox is "
+        "in place. Run this image on Linux where unprivileged user namespaces are "
+        "permitted, and fix what stopped the probe rather than reading its silence as "
+        "consent."
     )
 
 
@@ -455,12 +538,54 @@ def run(settings: Settings, *, wait_for_shutdown=None) -> int:
             _wait_for_shutdown, ttl_seconds=settings.task_ttl_seconds
         )
     # 0. Fail loudly, before anything starts, if the environment cannot run a
-    #    turn: bad path layout, no model credential, an unspawnable sandbox, or a
-    #    bundle that is absent or names a different crew.
+    #    turn: bad path layout, no model identity, a sandbox absent where one is
+    #    required, or a bundle that is absent or names a different crew.
     verify_layout(settings)
     env = backend_mod.build_backend_env(settings)
-    backend_mod.require_api_key(env)
-    verify_sandbox(settings)
+    # The identity is delivered in the SUPERVISOR's environment and moved into the
+    # vault here, which is where the backend's auth callback reads it.
+    #
+    # A seed that did not store anything is FATAL, not a return value to discard. The
+    # delivered identity is what makes this task this account, so "nothing was
+    # delivered" must not fall through to the vault check: that check reads
+    # `TokenStore.resolve`, which would accept a slot left behind by a prior task on
+    # this persistent volume and start the task authenticated as the previous account,
+    # silently. A blank or whitespace secret is exactly that case.
+    if not backend_mod.seed_model_identity(settings):
+        raise common.ConfigError(
+            f"no model identity was delivered: {backend_mod.ENV_KIRO_IDENTITY} is unset "
+            "or blank. The task injects one from Secrets Manager. Refusing to start "
+            "rather than continuing on whatever identity this data home already holds, "
+            "which would authenticate the task as another account without saying so."
+        )
+    backend_mod.require_model_identity(settings)
+    # Now drop BOTH credential shapes from this process's own environment. The front is
+    # spawned with no env argument and so inherits this one whole, and
+    # `build_backend_env` only ever cleaned the COPY handed to the backend -- so without
+    # this a credential reaches a second long-lived process for no reason. The front's
+    # own exec resets the dumpable flag cleared below, so its `/proc` entry is readable
+    # by a same-uid worker whatever this process does about its own.
+    #
+    # `ENV_KIRO_API_KEY` is popped even though nothing is supposed to deliver it. The
+    # secrets path derives each destination variable from its secret's name with no
+    # allowlist refusing this one, so an operator CAN provision it, and the container's
+    # posture is not to rely on the absence of a delivery path. Both names, because
+    # covering one and leaving its sibling is how the same route stays open beside the
+    # fix.
+    for name in (backend_mod.ENV_KIRO_IDENTITY, backend_mod.ENV_KIRO_API_KEY):
+        os.environ.pop(name, None)
+    # And make THIS process unreadable through procfs before anything is spawned.
+    #
+    # Clearing the variable above does not remove it from `/proc/<pid>/environ`, which
+    # exposes the exec-time region rather than the live `environ` array -- measured, not
+    # assumed. The model worker runs as a child of the backend under this same uid with
+    # no PID namespace between them, and it auto-approves every tool it calls on
+    # untrusted prompt content, so it could read this process's environment directly.
+    # `PR_SET_DUMPABLE=0` makes the kernel reparent this process's `/proc` entries to
+    # root, so a same-uid reader gets EACCES. Before the spawn, because after it the
+    # window is already open.
+    make_non_dumpable()
+    verify_sandbox(settings, env=env)
     # Install the crew into the paths Kiro Crew reads BEFORE the backend starts,
     # so "it started" means "the named crew is installed" rather than a default
     # agent. Refuses closed on any mismatch (see bundle.install_bundle).

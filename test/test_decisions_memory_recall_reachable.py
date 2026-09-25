@@ -813,8 +813,9 @@ class TestTheHookIsNotOnThePromptPath:
     """There is no seam on the prompt-assembly path, and that absence is deliberate.
 
     Prompt assembly asks `MemoryStore.get_context` for preferences with
-    `include_activity=False`, and that flag also gates episodic retrieval, so the block
-    is not built. A `keep=` parameter there is a second door nothing opens, which the
+    `include_activity=False`, and reaches `get_episodic_context` only through the
+    budgeted activity block (`MemoryStore.get_activity_context`) with the raw request
+    and no keep. A `keep=` parameter there is a second door nothing opens, which the
     next reader would take for a live path -- so these three assertions pin that it
     stays absent.
     """

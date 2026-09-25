@@ -1535,8 +1535,8 @@ class TestDelete:
 
         real_clear = isolated_store.clear_publication
 
-        def _clear_then_republish(slug):
-            result = real_clear(slug)
+        def _clear_then_republish(slug, **kw):
+            result = real_clear(slug, **kw)
             # The concurrent publish: a NEW copy, so a NEW handle.
             isolated_store.set_publication(
                 slug,

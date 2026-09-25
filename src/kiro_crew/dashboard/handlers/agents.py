@@ -3503,6 +3503,50 @@ def _agent_detail_candidates(name: str) -> list[tuple[Path, dict[str, Any]]]:
     return matches
 
 
+def _merge_resources_delta(
+    fresh: dict[str, Any], before: dict[str, Any], after: dict[str, Any]
+) -> None:
+    """Apply this patch's ``resources`` delta to the freshly-read spec, element-wise.
+
+    ``after`` was built from a snapshot taken before the spec lock, so assigning it whole
+    would drop a URI a concurrent writer added into *fresh* since. Only what this patch
+    NAMED -- the URIs it removed and the ones it added -- may move.
+    """
+
+    def _uris(doc: dict[str, Any]) -> list[str]:
+        """URI strings, with a malformed ``resources`` normalised to empty.
+
+        Iterating a STRING yields characters and every one of them is a ``str``, so an
+        unguarded comprehension would rewrite the value as a per-character list.
+        """
+        resources = doc.get("resources")
+        if not isinstance(resources, list):
+            return []
+        return [r for r in resources if isinstance(r, str)]
+
+    before_uris = _uris(before)
+    after_uris = _uris(after)
+    if before_uris == after_uris:
+        # This patch named no resource change, so it may not rewrite the key at all: a
+        # malformed value it never looked at must survive untouched rather than normalised.
+        return
+    removed = [r for r in before_uris if r not in after_uris]
+    added = [r for r in after_uris if r not in before_uris]
+    fresh_entries = fresh.get("resources")
+    if not isinstance(fresh_entries, list):
+        fresh_entries = []
+    # Only the STRINGS this patch named may leave: an entry of any other shape is not
+    # something this merge has an opinion about, so it is carried through unread.
+    kept = [e for e in fresh_entries if not isinstance(e, str) or e not in removed]
+    merged = kept + [r for r in added if r not in kept]
+    if merged:
+        fresh["resources"] = merged
+    else:
+        # Same reason the mapping writer drops the key rather than writing []: an empty
+        # list suppresses the shipped steering defaults.
+        fresh.pop("resources", None)
+
+
 async def api_agent_detail(request: web.Request) -> web.Response:
     """GET/PATCH /api/agents/detail/{name} — view or update agent config."""
     name = request.match_info["name"]
@@ -3732,11 +3776,16 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                             apply_definition_patch(data, patch_body)
                             agent_state.lift_and_strip_bookkeeping(data, agent_name)
                             for key, value in data.items():
+                                if key == "resources":
+                                    # Merged element-wise below: assigning this list
+                                    # whole would drop a concurrent writer's addition.
+                                    continue
                                 if key not in before_patch or before_patch[key] != value:
                                     fresh[key] = value
                             for key in before_patch:
-                                if key not in data:
+                                if key not in data and key != "resources":
                                     fresh.pop(key, None)
+                            _merge_resources_delta(fresh, before_patch, data)
                             sanitize_agent_config_governance(fresh)
                             # Atomic replace: a direct write truncates first,
                             # so ENOSPC mid-write would destroy the existing
@@ -4120,6 +4169,10 @@ def _agent_roster_row(
         "memory_store": _roster_mask(agent_cfg.memory_store),
         "model": _roster_mask(agent_cfg.model),
         "reasoning_effort": _roster_mask(agent_cfg.reasoning_effort),
+        # Presentation label only — masked like every other user-authored string.
+        # The picker and roster render it in place of ``name`` when non-empty;
+        # ``name`` above stays the row's identity and dispatch handle.
+        "display_name": _roster_mask(agent_cfg.display_name),
         "description": _roster_mask(agent_cfg.description),
         "triggers": _roster_mask(agent_cfg.triggers),
         "source": _roster_mask(agent_cfg.source),
@@ -4840,6 +4893,16 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
             {"error": effort_reason, "code": "invalid_reasoning_effort"}, status=400
         )
     reasoning_effort = _raw_effort.strip()
+    # Same placement rule as the other pre-lock validations: refused before any
+    # state is touched. Presentation only, but strictly a string — every roster
+    # surface renders it verbatim in place of the name.
+    _raw_display = body.get("display_name", "")
+    if not isinstance(_raw_display, str):
+        return web.json_response(
+            {"error": "display_name must be a string", "code": "invalid_display_name"},
+            status=400,
+        )
+    display_name = _raw_display.strip()
     # Same convention as session_color: a non-empty raw value that the coercer
     # collapses to "no override" is a caller mistake worth a 400, not a silent
     # fallback to the name-derived face. The one exception is a well-formed
@@ -4929,6 +4992,7 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
             memory_store=memory_store,
             model=model,
             reasoning_effort=reasoning_effort,
+            display_name=display_name,
             description=body.get("description", ""),
             triggers=body.get("triggers", ""),
             source=body.get("source", "kirocrew"),
@@ -5198,6 +5262,7 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             "source": agent.source,
             "starred": bool(agent.starred),
             "avatar": agent.avatar,
+            "display_name": agent.display_name,
         }
         changed: list[str] = []
         if "kiro_agent" in body:
@@ -5241,6 +5306,17 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         if "description" in body:
             agent.description = body["description"]
             changed.append("description")
+        if "display_name" in body:
+            # Presentation only, but strictly a string: a non-string here would
+            # be stored verbatim and then rendered by every roster surface.
+            # "" is a real value — it clears the label back to the name.
+            if not isinstance(body["display_name"], str):
+                return web.json_response(
+                    {"error": "display_name must be a string", "code": "invalid_display_name"},
+                    status=400,
+                )
+            agent.display_name = body["display_name"].strip()
+            changed.append("display_name")
         if "triggers" in body:
             agent.triggers = body["triggers"]
             changed.append("triggers")
@@ -5405,6 +5481,11 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                 "source": normalize_member_source(agent.source),
                 "starred": bool(agent.starred),
                 "avatar": agent.avatar,
+                # Presentation label; ships raw here like its config peers —
+                # the projection delivery path redacts every string before the
+                # browser (`_redact_projection_value`), and the HTTP roster row
+                # masks it independently (`_roster_mask`).
+                "display_name": agent.display_name,
             }
             _ev_changed = [k for k, v in _ev_after.items() if v != _ev_before.get(k)]
             # A save that touched none of the roster fields is not a fact worth

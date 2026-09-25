@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, useEffect } from 'react'
+import { useState, useMemo, useRef, useEffect, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw, Plug, AlertTriangle, Check, ChevronRight, Zap, X, Download, Braces } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -7,6 +7,7 @@ import { Link } from 'react-router-dom'
 import { api } from '../../api/client'
 import { Card, Btn, Badge, SearchInput, ContentSkeleton } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
+import ErrorNotice from '../../components/ErrorNotice'
 import { useProvider } from '../../providers'
 import McpBrowserModal from '../../components/McpBrowserModal'
 import McpCustomServerModal from '../../components/McpCustomServerModal'
@@ -25,6 +26,8 @@ import McpRowSignIn from './McpRowSignIn'
 import { useConnectionsUiEnabled } from '../../hooks/useConnectionsUi'
 
 import { i18nT } from '../../i18n/t'
+import { copyWithOutcome } from '../../utils/clipboard'
+import { recordError, type ErrorReport } from '../../utils/errorReport'
 async function fetchServers(): Promise<McpServer[]> {
   return await api.mcpServers()
 }
@@ -56,12 +59,143 @@ function hasPendingScopeChange(s: McpServer, pending: PendingChange | undefined)
   )
 }
 
+/**
+ * Disabled in a config this panel does not write: the shared Kiro MCP config
+ * (`~/.kiro/settings/mcp.json`, the file the Kiro IDE edits) or a provider
+ * global. The IDE lists such a server as a greyed "Disabled" row, and so does
+ * this table — present through every sync and probe, never started, and with
+ * no scope toggle to click, because re-enabling it means writing that shared
+ * file, which is a separate decision (#13075). A row that is there on one load
+ * and gone after a sync reads as data loss rather than as a filter, which is
+ * why the backend keeps the row and this table shows it inert instead of hiding
+ * it. The row says so in words, with the file to edit when the backend names it.
+ *
+ * A consent-disabled row in Kiro Crew's OWN store is a different state and
+ * keeps its controls: the Kiro Crew scope badge + Apply IS the consent step the
+ * install flow points at. The two are told apart by `disabledIn`, which the
+ * backend stamps on `GET /api/mcp` and the probe response alike — never by
+ * `enabled` + `kirocrewManaged`: a store-managed server that the SHARED config
+ * disables is `kirocrewManaged` too, and reading it as a consent row would offer
+ * a re-enable that cannot land (lifting the store's flag leaves the shared one).
+ */
+function disabledInSharedConfig(s: McpServer): boolean {
+  return s.disabledIn === 'shared'
+}
+
+/**
+ * A row the backend refused to launch because its `disabled` value is neither
+ * `true` nor `false` (read fail-closed). That is a config ERROR to repair, not a
+ * switch someone turned off, so it takes the panel's error tone and is not
+ * dimmed: the muted, greyed treatment reads as "deliberately off", and this row
+ * needs the operator's attention. Its controls stay inert either way -- the
+ * fix is in the shared file, which this panel does not write.
+ */
+function disabledByInvalidValue(s: McpServer): boolean {
+  return disabledInSharedConfig(s) && s.disabledReason === 'invalid'
+}
+
+/** Status tone for a row the shared config switches off; `null` when it is on. */
+function disabledInConfigVariant(s: McpServer): 'muted' | 'err' | null {
+  if (!disabledInSharedConfig(s)) return null
+  return disabledByInvalidValue(s) ? 'err' : 'muted'
+}
+
+/**
+ * The file a disabled row points the user at, as a chip that copies its path.
+ * This table has no control that writes the shared config (that switch is a
+ * separate decision, and the line says it is planned), so the honest
+ * affordance for "edit this file" is the path itself, one click away from a
+ * terminal or editor. Rendered through `Trans`, so `children` is the path text
+ * the catalog string wraps in `<file>...</file>`. The chip owns only its
+ * "Copied" flash; a refusal is handed to `onFailed`, because the notice for it
+ * belongs UNDER the sentence (see `DisabledWhereLine`), not mid-sentence where
+ * the chip sits.
+ */
+function CopyPathChip({ path, onFailed, children }: { path: string; onFailed: (report: ErrorReport | null) => void; children?: ReactNode }) {
+  const [copied, setCopied] = useState(false)
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  useEffect(() => () => clearTimeout(timer.current), [])
+  // The "Copied" state is gated on the clipboard ACTUALLY taking the text (see
+  // `copyWithOutcome`); a refusal -- no clipboard API on a plain-HTTP gateway,
+  // or permission denied -- is journaled as a report whose `code` names which
+  // way it failed and whose detail is the raw rejection, so the agent gets the
+  // reason and not only the sentence, and handed to the parent to render.
+  const copy = () => {
+    void copyWithOutcome(path).then(outcome => {
+      if (!outcome.ok) {
+        // The `code` names the cause -- no async clipboard API at all (a plain-HTTP
+        // gateway), a refused permission, or an ordinary write failure -- and the
+        // detail is the browser's own rejection text when it produced one. No prose
+        // of ours rides along: this is diagnostic data for the hand-off, not copy.
+        const denied = outcome.asyncError instanceof Error && outcome.asyncError.name === 'NotAllowedError'
+        onFailed(
+          recordError({
+            source: 'system',
+            message: i18nT('pages.overview.mcpTab.copy_path_failed'),
+            code: !outcome.hadAsyncApi ? 'clipboard_unavailable' : denied ? 'clipboard_denied' : 'clipboard_write_failed',
+            detail: outcome.asyncError === undefined ? undefined : String(outcome.asyncError),
+          }),
+        )
+        return
+      }
+      onFailed(null)
+      setCopied(true)
+      clearTimeout(timer.current)
+      timer.current = setTimeout(() => setCopied(false), 1500)
+    })
+  }
+  return (
+    <button
+      type="button"
+      onClick={copy}
+      className="inline font-mono text-[12px] text-text bg-[var(--bg-hover)] rounded px-1 border-none cursor-pointer hover:underline"
+      title={copied ? i18nT('pages.overview.mcpTab.path_copied') : i18nT('pages.overview.mcpTab.copy_path')}
+      aria-label={i18nT('pages.overview.mcpTab.copy_path_named', { file: path })}
+      data-testid="mcp-disabled-in-config-path"
+      data-copied={copied ? 'true' : undefined}
+    >
+      {children ?? path}
+    </button>
+  )
+}
+
+/**
+ * The disabled row's explanation line: the catalog sentence with the file as a
+ * `CopyPathChip`, and -- when a copy was refused -- the failure STACKED under
+ * the whole sentence through `ErrorNotice` (its `block` shape) with the two
+ * actions the error rule requires, Ask the agent + Dismiss. The chip's row keeps
+ * one control and the notice its two, so no row carries three actions, and the
+ * sentence is never split around the notice.
+ */
+function DisabledWhereLine({ whereKey, file, reason, text }: { whereKey: string; file: string | null; reason: string | null | undefined; text: string }) {
+  const [copyFailed, setCopyFailed] = useState<ErrorReport | null>(null)
+  return (
+    <div className="text-muted text-[12px]" data-testid="mcp-disabled-in-config-where" data-disabled-reason={reason ?? undefined}>
+      {file
+        ? <Trans i18nKey={whereKey} values={{ file }} components={{ file: <CopyPathChip path={file} onFailed={setCopyFailed} /> }} />
+        : text}
+      {copyFailed && (
+        <ErrorNotice
+          variant="block"
+          className="mt-1"
+          message={copyFailed.message}
+          report={copyFailed}
+          askAgent
+          onDismiss={() => setCopyFailed(null)}
+          testId="mcp-disabled-in-config-path-copy-failed"
+        />
+      )}
+    </div>
+  )
+}
+
 function ScopeBadge({
   label,
   scope,
   active,
   pendingChange,
   disabled,
+  disabledInConfig,
   onClick,
 }: {
   label: string
@@ -69,10 +203,17 @@ function ScopeBadge({
   active: boolean
   pendingChange: boolean
   disabled: boolean
+  /** The badge is inert because the shared config disables the row (not a pending uninstall). */
+  disabledInConfig?: boolean
   onClick: () => void
 }) {
+  // Every state of the title starts with the scope's own label: three inert
+  // badges on one row that all read the same label-free sentence are, to a
+  // screen reader, three identical unnamed buttons.
   const title = disabled
-    ? i18nT('pages.overview.mcpTab.pending_uninstall', { label })
+    ? (disabledInConfig
+      ? i18nT('pages.overview.mcpTab.scope_disabled_in_config', { label })
+      : i18nT('pages.overview.mcpTab.pending_uninstall', { label }))
     : pendingChange
       ? `${label}: ${active ? 'pending enable' : 'pending disable'} (click to revert)`
       : `${label}: ${active ? 'on' : 'off'} (click to ${active ? 'disable' : 'enable'})`
@@ -416,6 +557,12 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
     tools: (a: McpServer, b: McpServer) => (a.tools?.length || 0) - (b.tools?.length || 0),
   }), [])
   const { sorted: sortedServers, sort: mcpSort, toggle: toggleMcpSort } = useSortableTable(filtered, 'mcp-overview', mcpComparators, { key: 'name', dir: 'asc' })
+  // Counted from the UNFILTERED list, like the header total it sits beside: the
+  // count exists to say "these are here, not dropped", and a search that hides
+  // them must not make the header agree that they are gone. Every disabled row
+  // counts — store (consent) and shared-config alike — because it is the number
+  // of rows whose Status column reads Disabled.
+  const disabledCount = useMemo(() => servers.filter(s => s.enabled === false).length, [servers])
   // Measured overflow state for the servers table's scroller — gates the pinned
   // Actions column's seam (border + fade). Measured, not breakpoint-inferred:
   // the table overflows whenever its container is narrower than its content,
@@ -425,6 +572,14 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
   return (<>
     <h4 className="text-sm font-semibold text-text-strong mt-4 mb-2 flex items-center gap-2">
       {i18nT('pages.overview.mcpTab.mcp_servers_count', { count: servers.length })}
+      {/* Rendered only when non-zero: "0 disabled" would annotate every install
+          with a state it does not have. Muted and unbolded so it reads as a
+          qualifier of the total, not a second heading. */}
+      {disabledCount > 0 && (
+        <span className="text-[12px] font-normal text-muted" data-testid="mcp-disabled-count">
+          {i18nT('pages.overview.mcpTab.disabled_count', { count: disabledCount })}
+        </span>
+      )}
       <InfoTip text={i18nT('pages.overview.mcpTab.servers_scope_tip', { provider: provider.displayName })} />
       <span className="ml-auto flex items-center gap-2">
         <Btn onClick={() => setCustomOpen(true)}><Braces size={14} /> {i18nT('pages.overview.mcpTab.add_custom')}</Btn>
@@ -466,8 +621,12 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
       <div className="flex gap-2 flex-wrap mb-3">
         {/* Same tone rule as the row badge, from the same evidence: these chips carry
             status by colour alone, so a signed-in server wearing the amber "act now"
-            tone here would undo the distinction the row badge just made. */}
-        {filtered.map(s => <Badge key={s.name} variant={mcpStatusVariant(s.status, mcpAuthState(s))}><Plug className="lucide-inline" /> {s.name}</Badge>)}
+            tone here would undo the distinction the row badge just made. A server
+            disabled in the shared config is muted for the same reason — amber would
+            ask for an action this panel does not offer. One disabled by an INVALID
+            value is the exception: that is a config error to repair, so it wears the
+            error tone rather than the off-switch grey (see disabledByInvalidValue). */}
+        {filtered.map(s => <Badge key={s.name} variant={disabledInConfigVariant(s) ?? mcpStatusVariant(s.status, mcpAuthState(s))}><Plug className="lucide-inline" /> {s.name}</Badge>)}
       </div>
       {isLoading ? <ContentSkeleton rows={6} /> : (
         <div ref={attachMcpScroller} className="overflow-x-auto">
@@ -510,16 +669,66 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
             const base = s.presence || DEFAULT_PRESENCE
             const hasToolOverrides = pendingTools[s.name] && Object.keys(pendingTools[s.name]).length > 0
             const managedProvider = connectionProviderForServer(s)
+            // Greyed like a pending uninstall, but not AS a pending uninstall: the
+            // row is inert because its config lives elsewhere. The reason is SAID
+            // on the row -- one line in the Tools cell naming the file to edit --
+            // because a hint that rides only `title` reaches nobody on keyboard
+            // or touch (see disabledInSharedConfig); the badge and the scope
+            // toggles keep the same text as hover help.
+            const disabledInConfig = disabledInSharedConfig(s)
+            const disabledInConfigHelp = i18nT('pages.overview.mcpTab.disabled_in_config_help')
+            // The reason rides on the row: a `disabled` that is not a boolean is
+            // read fail-closed by the backend (an invalid value never launches a
+            // server), and the line says so, because "set it to false" is the
+            // wrong instruction for a value that already reads "false".
+            const invalidValue = disabledByInvalidValue(s)
+            // The line names the file as a chip that copies its path: the
+            // re-enable switch is not in this table (a separate decision), so
+            // the line says so and hands over the one thing it can -- the path.
+            const whereKey = invalidValue
+              ? (s.disabledInFile ? 'pages.overview.mcpTab.disabled_in_config_invalid_where' : 'pages.overview.mcpTab.disabled_in_config_invalid_where_unknown')
+              : (s.disabledInFile ? 'pages.overview.mcpTab.disabled_in_config_where' : 'pages.overview.mcpTab.disabled_in_config_where_unknown')
+            // Plain-text twin for `title` attributes: the catalog wraps the path
+            // in `<file>` for `Trans`, which a string attribute must not carry.
+            const disabledInConfigWhereText = i18nT(whereKey, { file: s.disabledInFile ?? '' }).replace(/<\/?file>/g, '')
             const rowBorder = pendingUninstall
               ? 'border-l-2 border-[var(--danger)]'
               : (hasPendingScopeChange(s, p) || hasToolOverrides)
                 ? 'border-l-2 border-[var(--warn)]'
                 : ''
+            // A config-disabled row greys its non-actionable cells, not the
+            // whole <tr>: Uninstall stays live on such a row (it removes the
+            // entry from every config), and a dimmed live button reads as
+            // disabled. The actions cell keeps full opacity; a staged uninstall
+            // still dims the whole row, since Undo is the only live control.
+            // A row off because of an INVALID value is not dimmed at all: grey
+            // reads as "deliberately off", and this one is an error to repair.
+            const dimmedCell = disabledInConfig && !invalidValue && !pendingUninstall ? { opacity: 0.6 } : undefined
             return (
-              <tr key={s.name} className={`group/mcprow hover:bg-bg-hover transition-colors align-top ${rowBorder}`} style={{ opacity: pendingUninstall ? 0.5 : 1 }}>
-                <td className="px-2.5 py-2 border-b border-border text-sm min-w-[180px]">
+              <tr key={s.name} className={`group/mcprow hover:bg-bg-hover transition-colors align-top ${rowBorder}`} style={{ opacity: pendingUninstall ? 0.5 : 1 }} data-disabled-in-config={disabledInConfig ? 'true' : undefined}>
+                <td className="px-2.5 py-2 border-b border-border text-sm min-w-[180px]" style={dimmedCell}>
                   <div className="flex items-center gap-1.5">
                     <code className={`font-semibold ${pendingUninstall ? 'line-through' : ''}`}>{s.name}</code>
+                    {disabledInConfig && (
+                      /* Same slot and size as the Managed-by-Connections badge, so a
+                         name cell carries at most one row of chips. `title` carries
+                         the explanation: a two-word badge cannot say which file, or
+                         that nothing here can change it. The text token is one step
+                         above the muted variant's: inside a dimmed cell, muted-on-hover
+                         fell under contrast in the light themes. An INVALID value is
+                         not "disabled" -- it is neither true nor false -- so that row's
+                         chip says "Config error" in the error tone, and its help is the
+                         repair line the Tools cell shows. */
+                      <Badge
+                        variant={invalidValue ? 'err' : 'muted'}
+                        className="text-[10px] px-1.5 py-0.5 font-body"
+                        style={invalidValue ? undefined : { color: 'var(--text)' }}
+                        title={invalidValue ? disabledInConfigWhereText : disabledInConfigHelp}
+                        data-testid={invalidValue ? 'mcp-config-error-chip' : 'mcp-disabled-in-config-chip'}
+                      >
+                        {i18nT(invalidValue ? 'pages.overview.mcpTab.disabled_in_config_invalid' : 'pages.overview.mcpTab.disabled_in_config')}
+                      </Badge>
+                    )}
                     {managedProvider && (onManagedProviderClick ? (
                       <button
                         type="button"
@@ -539,24 +748,26 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                   </div>
                   <span className="text-muted text-[12px] block truncate max-w-[240px]" title={s.command}>{s.command || s.url || '—'}</span>
                 </td>
-                <td className="px-2.5 py-2 border-b border-border text-sm whitespace-nowrap">
+                <td className="px-2.5 py-2 border-b border-border text-sm whitespace-nowrap" style={dimmedCell}>
                   <ScopeBadge
                     label={i18nT('pages.overview.mcpTab.kirocrew')}
                     scope="kirocrew"
                     active={eff.kirocrew}
                     pendingChange={!pendingUninstall && !!p?.scopes && 'kirocrew' in p.scopes}
-                    disabled={pendingUninstall}
+                    disabled={pendingUninstall || disabledInConfig}
+                    disabledInConfig={disabledInConfig && !pendingUninstall}
                     onClick={() => toggleScope(s.name, 'kirocrew', !eff.kirocrew, base)}
                   />
                 </td>
-                <td className="px-2.5 py-2 border-b border-border text-sm whitespace-nowrap">
+                <td className="px-2.5 py-2 border-b border-border text-sm whitespace-nowrap" style={dimmedCell}>
                   <div className="flex gap-1">
                     <ScopeBadge
                       label={i18nT('pages.overview.mcpTab.kiro')}
                       scope="kiroGlobal"
                       active={eff.kiroGlobal}
                       pendingChange={!pendingUninstall && !!p?.scopes && 'kiroGlobal' in p.scopes}
-                      disabled={pendingUninstall}
+                      disabled={pendingUninstall || disabledInConfig}
+                      disabledInConfig={disabledInConfig && !pendingUninstall}
                       onClick={() => toggleScope(s.name, 'kiroGlobal', !eff.kiroGlobal, base)}
                     />
                     {extraScopes.map(sc => (
@@ -566,13 +777,14 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                         scope={sc.id}
                         active={!!eff[sc.id]}
                         pendingChange={!pendingUninstall && !!p?.scopes && sc.id in p.scopes}
-                        disabled={pendingUninstall}
+                        disabled={pendingUninstall || disabledInConfig}
+                        disabledInConfig={disabledInConfig && !pendingUninstall}
                         onClick={() => toggleScope(s.name, sc.id, !eff[sc.id], base)}
                       />
                     ))}
                   </div>
                 </td>
-                <td className="px-2.5 py-2 border-b border-border text-sm">
+                <td className="px-2.5 py-2 border-b border-border text-sm" style={dimmedCell}>
                   {/* A "declared" row's tool list is the package's own static
                       declaration — nothing spawned the server. The COLOR carries
                       that, not a tiny word next to a green badge: green asserts
@@ -596,10 +808,19 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                        the rest get undefined and thus no attribute). */
                     <span className="inline-flex items-center gap-1.5">
                       <Badge
-                        variant={mcpStatusVariant(s.status, mcpAuthState(s))}
+                        /* Muted, not the amber the status would otherwise take: amber is
+                           the panel's "act now" colour, and a row disabled in the shared
+                           config offers no action here. A row off because of an INVALID
+                           value is the exception -- a config error to repair, so it wears
+                           the error tone rather than the off-switch grey. */
+                        variant={disabledInConfigVariant(s) ?? mcpStatusVariant(s.status, mcpAuthState(s))}
                         title={s.status === 'needs_auth' ? undefined : mcpStatusHint(s.status, s.name, mcpAuthState(s))}
                       >
-                        {mcpStatusLabel(s.status, mcpAuthState(s))}
+                        {/* The label tells the two off states apart in words: a
+                            deliberate disable reads "Disabled", a non-boolean value
+                            reads "Invalid value" -- colour and the chip are not the
+                            only distinction. */}
+                        {invalidValue ? i18nT('pages.overview.mcpTab.status_invalid_value') : mcpStatusLabel(s.status, mcpAuthState(s))}
                       </Badge>
                       {s.status === 'needs_auth' && (
                         <InfoTip text={mcpStatusHint(s.status, s.name, mcpAuthState(s)) || ''} placement="top" />
@@ -645,7 +866,15 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                     </div>
                   )}
                 </td>
-                <td className="px-2.5 py-2 border-b border-border text-[13px] w-full">
+                <td className="px-2.5 py-2 border-b border-border text-[13px] w-full" style={dimmedCell}>
+                  {disabledInConfig && (
+                    /* The row's explanation, in words on the row: which config
+                       switched it off and where to turn it back on. Here, in the
+                       one cell that is free text and full width (the same cell
+                       that carries a failing row's error), rather than in a
+                       `title` a keyboard or touch user never reaches (#13075). */
+                    <DisabledWhereLine whereKey={whereKey} file={s.disabledInFile ?? null} reason={s.disabledReason} text={disabledInConfigWhereText} />
+                  )}
                   {s.status === 'error' && s.error ? (
                     <span className="text-danger text-[12px]">
                       <AlertTriangle className="lucide-inline" /> {s.error}
@@ -706,7 +935,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                           : effectivelyEnabled ? i18nT('pages.overview.mcpTab.click_to_disable_pending_until_apply') : i18nT('pages.overview.mcpTab.click_to_enable_pending_until_apply')}
                       ><span className={`w-1.5 h-1.5 rounded-full shrink-0 ${effectivelyEnabled ? 'bg-ok' : 'bg-muted'}`} />{t}</button>
                     })}</div></motion.div>}</AnimatePresence>
-                  </div>) : '—'}
+                  </div>) : disabledInConfig ? null : '—'}
                 </td>
                 {/* Pinned like the header cell, on an OPAQUE `bg-card`. The row
                     states live on the <tr>, which the opaque base would hide, so
@@ -730,7 +959,14 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                       {s.kirocrewManaged && (
                         <Btn onClick={() => setEditTarget(s.name)} aria-label={i18nT('pages.overview.mcpTab.edit_json_for', { name: s.name })} title={i18nT('pages.overview.mcpTab.edit_the_server_s_json_spec')}><Braces size={13} /></Btn>
                       )}
-                      <Btn danger onClick={() => stageUninstall(s.name)}>{i18nT('pages.overview.mcpTab.uninstall')}</Btn>
+                      {/* Live on a config-disabled row too: Uninstall is the one
+                          action that does the same thing for every row -- the
+                          backend purges the NAME from every scope, the shared file
+                          included -- so a greyed-out button would lie about it. The
+                          hover text says exactly that; a re-enable stays out (a
+                          separate decision), but a removal the user asks for is not
+                          a re-enable. */}
+                      <Btn danger onClick={() => stageUninstall(s.name)} title={disabledInConfig ? i18nT('pages.overview.mcpTab.uninstall_disabled_in_config_help') : undefined}>{i18nT('pages.overview.mcpTab.uninstall')}</Btn>
                     </div>
                   )}
                 </td>

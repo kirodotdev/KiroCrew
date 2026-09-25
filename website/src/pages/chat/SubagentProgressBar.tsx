@@ -9,6 +9,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import type { SubagentActivity } from '../../types'
 
 import { i18nT } from '../../i18n/t'
+import { queuedWaitText } from './subagentQueuedReason'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 const EMPTY_SUBAGENTS: Record<string, SubagentActivity> = {}
 
@@ -113,6 +114,10 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
   // Aggregate "waiting to start" count for this slot — agents accepted but
   // queued behind the concurrency cap / stagger gate (no individual card yet).
   const queued = useAppSelector(s => s.chat.subagentQueued?.[slot ?? ''] ?? 0)
+  // Why they wait, when the gateway said; undefined keeps the concurrency text.
+  const queuedReason = useAppSelector(s => s.chat.subagentQueuedReason?.[slot ?? ''])
+  // null for the ordinary capacity wait and for a count with no reason.
+  const waitText = queuedWaitText(queuedReason)
   // Only top-level (managed) subagents belong in the chip — its count must
   // match the "spawned N" prose. Native kiro-cli sub-agents (native:* ids,
   // surfaced from _kiro.dev/subagent/list_update) are nested UNDER a managed
@@ -279,7 +284,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
           <span className="text-text-strong font-medium flex items-center gap-2 min-w-0" data-testid="subagent-histogram">
             <span className="inline-flex items-center gap-1" data-testid="subagent-running-count"><Loader2 size={12} className="animate-spin text-accent" /> {running}</span>
             {awaiting > 0 && <span className="inline-flex items-center gap-1 text-warn" data-testid="subagent-awaiting-count" title={i18nT('pages.chat.subagentProgressBar.waiting_for_your_approval_to_start')}><Hand size={12} /> {awaiting}</span>}
-            {queued > 0 && <span className="inline-flex items-center gap-1 text-muted" data-testid="subagent-queued-count" title={i18nT('pages.chat.subagentProgressBar.waiting_to_start_queued_behind_the_concurrency_l')}><Clock size={12} /> {queued}</span>}
+            {queued > 0 && <span className="inline-flex items-center gap-1 text-muted" data-testid="subagent-queued-count" title={waitText ?? i18nT('pages.chat.subagentProgressBar.waiting_to_start_queued_behind_the_concurrency_l')}><Clock size={12} /> {queued}</span>}
             {counts.done > 0 && <span className="inline-flex items-center gap-1 text-ok"><CheckCircle size={12} /> {counts.done}</span>}
             {counts.failed > 0 && <span className="inline-flex items-center gap-1 text-danger"><AlertCircle size={12} /> {counts.failed}</span>}
             {counts.stopped > 0 && <span className="inline-flex items-center gap-1 text-muted"><Square size={12} /> {counts.stopped}</span>}
@@ -308,6 +313,14 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
             )}
           </span>
         </div>
+        {queued > 0 && waitText && (
+          // The histogram's queued count explains itself only on hover; a
+          // deferral can hold for hours, so the sentence is also rendered.
+          // Absent for the ordinary capacity wait, which keeps the chip as it was.
+          <div className="px-3 pb-1.5 text-[11px] leading-4 text-warn" data-testid="subagent-wait-reason" role="status">
+            {waitText}
+          </div>
+        )}
         {actionError && (
           <div className="px-3 pb-1.5">
             {/* askAgent on: the chip is a status surface with no editable field,

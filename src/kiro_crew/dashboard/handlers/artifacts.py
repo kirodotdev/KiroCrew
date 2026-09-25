@@ -35,6 +35,7 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
+from contextlib import AsyncExitStack
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -45,12 +46,14 @@ from kiro_crew import hooks, publish_sync
 from kiro_crew import sel as _sel_mod
 from kiro_crew.artifact_source import LINK, classify_source
 from kiro_crew.artifacts import (
+    EXPECT_ABSENT,
     MAX_CONTENT_BYTES,
     USER_SELECTABLE_KINDS,
     ArtifactAlreadyExistsError,
     ArtifactComment,
     ArtifactError,
     ArtifactNotFoundError,
+    ArtifactReplacedError,
     ArtifactStillPublishedError,
     ArtifactValidationError,
     filter_comments_for_forward,
@@ -58,6 +61,7 @@ from kiro_crew.artifacts import (
     get_default_store,
     has_unthemed_hardcoded_colors,
     is_document_path,
+    slug_is_well_formed,
     webapp_metadata_from_dict,
 )
 from kiro_crew.dashboard.chat_folders import generate_emoji_for_name
@@ -2042,6 +2046,10 @@ async def api_artifact_delete(request: web.Request) -> web.Response:
     # too unless a removal or a confirmed absence says otherwise. Failing loudly is still
     # the cheaper error, but the owner is genuinely stuck until the destination answers.
     if _existing is not None and _existing.publication is not None:
+        # Captured here, where the record is known present: the clear below re-checks it
+        # so that a re-publish of this same artifact -- which replaces the record and
+        # leaves `created_at` untouched -- cannot pass for the copy this request withdrew.
+        _withdrawn_publication_id = _existing.publication.artifact_id
         withdrawal = await publish_sync.delete_for_artifact(_existing)
         if withdrawal in (
             publish_sync.DeleteWithdrawal.FAILED,
@@ -2114,15 +2122,82 @@ async def api_artifact_delete(request: web.Request) -> web.Response:
         #
         # A vanished artifact is not an error: the removal below reports that itself,
         # and the copy is already withdrawn either way.
+        #
+        # Pinned to the generation AND the publication this request resolved. The 409
+        # check above is taken before this clear and before the guard, so on its own it
+        # leaves the order where the replacement arrives after it: this clear would then
+        # discard the NEWCOMER's record, which is the only handle able to withdraw the copy
+        # IT is serving, while the response says the new artifact was left alone. The
+        # generation alone does not settle it either -- re-publishing the same artifact
+        # replaces the record and leaves `created_at` untouched -- so the record's own id
+        # is what makes the check decide. Either way the record is left alone, and the
+        # guarded removal below refuses on the same stamp, so the request answers 409.
         try:
-            await _run_off_loop(lambda: get_default_store().clear_publication(slug))
+            await _run_off_loop(
+                lambda: get_default_store().clear_publication(
+                    slug,
+                    expect_created_at=_existing.created_at,
+                    expect_publication_id=_withdrawn_publication_id,
+                )
+            )
         except ArtifactNotFoundError:
             pass
+        except ArtifactReplacedError:
+            logger.warning(
+                "withdrew the published copy of %s but left the record alone: the "
+                "artifact under that slug was replaced, so the record there belongs "
+                "to the newcomer",
+                slug,
+            )
     try:
         # `refuse_if_published=True` is safe for an artifact that was never published
         # (its record is None and nothing above touched it) and is the whole guard for
         # one that was: see the clear directly above.
-        get_default_store().delete(slug, refuse_if_published=True)
+        #
+        # Under the publication guard, because that re-read is only decisive while no
+        # first publish is halfway through. A first publish uploads the object BEFORE it
+        # writes the record, so a destroy landing in that window finds no record, destroys
+        # the artifact, and leaves a world-readable copy whose only handle went with it.
+        # The guard makes the two orders the only ones reachable: the publish has not
+        # started, so there is genuinely nothing published, or it has finished, so the
+        # re-read finds the record and refuses below.
+        #
+        # The guard covers ANY well-formed slug, including one the store
+        # did not resolve. The artifact that has to be excluded on an absent slug is one
+        # CREATED and first-published entirely inside this window -- a case no pre-read can
+        # resolve, since at read time it did not exist. The guard's registry is refcounted
+        # and drops an entry once nobody holds or waits on it, so admitting a slug from the
+        # request path does not let request volume grow that table: the cost is bounded by
+        # concurrency, not by traffic. A malformed slug still reaches `delete` unguarded and
+        # on purpose, so the store answers 4xx for it.
+        #
+        # Pinned to the generation this request resolved, for the same reason the record
+        # re-read is: the 409 above is a check-then-act taken before this lock, so on its
+        # own it leaves the narrow order where the replacement arrives after it. Passing
+        # the stamp moves the decision inside the lock that removes the directory, which
+        # is where it becomes decisive. When the store resolved nothing above, the stamp is
+        # `EXPECT_ABSENT`: this request read the slug as empty, so any artifact the lock
+        # finds there was created inside this window and the removal refuses it.
+        #
+        # Off the loop, INSIDE the guard: the removal is a recursive directory walk, so on
+        # a versioned artifact over slow storage it blocks the gateway's only loop long
+        # enough to stall chat and the liveness heartbeat, and the watchdog's answer to a
+        # stalled loop is to kill and respawn. The guard and the generation stamp are
+        # unaffected by moving the call to a worker thread: both are re-read inside the
+        # store's own lock, which the worker takes, and `_run_off_loop` propagates the
+        # store's exceptions unchanged so every refusal below still fires.
+        async with AsyncExitStack() as guard:
+            if slug_is_well_formed(slug):
+                await guard.enter_async_context(publish_sync.publication_guard(slug))
+            await _run_off_loop(
+                lambda: get_default_store().delete(
+                    slug,
+                    refuse_if_published=True,
+                    expect_created_at=(
+                        EXPECT_ABSENT if _existing is None else _existing.created_at
+                    ),
+                )
+            )
     except ArtifactStillPublishedError as exc:
         # A publish landed between the withdrawal and the removal. Refusing is the same
         # rule the withdrawal outcomes follow -- a refused delete is recoverable, an
@@ -2133,6 +2208,24 @@ async def api_artifact_delete(request: web.Request) -> web.Response:
             "withdrawn, so it was not deleted. The earlier copy was withdrawn; the new "
             "one is still published and can still be taken down. Delete it again if you "
             "meant to remove the new copy too."
+        )
+        _audit(
+            tool="artifact_delete",
+            request=request,
+            outcome="denied",
+            error=msg,
+            extra={"slug": slug, "detail": str(exc)},
+        )
+        return _err(msg, status=409)
+    except ArtifactReplacedError as exc:
+        # Either a replacement arrived after the 409 check above and before this lock, or
+        # an artifact was created at a slug this request read as empty. Both mean the same
+        # thing to the owner: what is under this name is not what the delete started on,
+        # and the removal has no undo.
+        msg = (
+            "The artifact under this name is not the one this delete started on -- it was "
+            "created while the delete was running, so it was left alone. Delete it again "
+            "if you meant to remove it."
         )
         _audit(
             tool="artifact_delete",
@@ -3255,12 +3348,26 @@ async def api_artifact_folder_update(request: web.Request) -> web.Response:
     return _json_response(_serialize_folder(updated, path=fstore.breadcrumb(fid)))
 
 
-async def _withdraw_subtree_publications(folder_id: str, fstore: Any) -> str:
+async def _withdraw_subtree_publications(folder_id: str, fstore: Any) -> tuple[str, dict[str, str]]:
     """Withdraw every published copy in a folder subtree BEFORE it is cascaded away.
 
-    Returns ``""`` when every copy is withdrawn (or there were none), otherwise the slug
-    of the FIRST artifact whose copy could not be withdrawn -- the caller then refuses the
-    whole cascade and destroys nothing.
+    Returns ``("", generations)`` when every copy is withdrawn (or there were none),
+    otherwise ``(slug, generations)`` naming the FIRST artifact whose copy could not be
+    withdrawn -- the caller then refuses the whole cascade and destroys nothing.
+
+    ``generations`` maps every artifact this found in the subtree, withdrawn or not, to its
+    ``created_at``, and the caller needs it for a second reason: it holds each one's
+    publication guard across the destroy, so a first publish cannot be halfway through on
+    an artifact about to be destroyed. Returning the map rather than letting the caller
+    re-derive it keeps the two from disagreeing, and keeps the listing to one pass over the
+    store.
+
+    The stamp travels with each slug because a slug is only a name. This pass awaits a
+    network withdrawal per copy, and a freed slug is re-minted identically, so an artifact
+    listed here can be deleted and a same-titled newcomer can take its name before the
+    destroy reads the map. The stamp is what lets the store tell them apart, and here too:
+    an artifact whose stamp has already moved on is not the one this pass listed, so it is
+    left entirely alone -- not withdrawn, and not cleared.
 
     Stops at the first failure rather than collecting them all: the question the caller is
     asking is "may I destroy this subtree", and one un-withdrawable copy settles it. A copy
@@ -3269,15 +3376,24 @@ async def _withdraw_subtree_publications(folder_id: str, fstore: Any) -> str:
     """
     ids = await _run_off_loop(lambda: fstore.subtree_ids(folder_id))
     if not ids:
-        return ""
+        return "", {}
     store = get_default_store()
-    slugs = await _run_off_loop(
-        lambda: [a.slug for a in store.list() if (getattr(a, "folder_id", "") or "") in ids]
+    generations = await _run_off_loop(
+        lambda: {
+            a.slug: a.created_at
+            for a in store.list()
+            if (getattr(a, "folder_id", "") or "") in ids
+        }
     )
-    for slug in slugs:
+    for slug, born in generations.items():
         try:
             art = await _run_off_loop(lambda s=slug: store.get(s))
         except ArtifactError:  # pragma: no cover -- listed, then vanished
+            continue
+        if art.created_at != born:
+            # Replaced between the listing and here, so this is not the artifact this pass
+            # is responsible for. Withdrawing or clearing would act on a newcomer nobody
+            # named; the destroy re-checks the same stamp and leaves it alone too.
             continue
         if art.publication is None:
             continue
@@ -3286,12 +3402,30 @@ async def _withdraw_subtree_publications(folder_id: str, fstore: Any) -> str:
             publish_sync.DeleteWithdrawal.FAILED,
             publish_sync.DeleteWithdrawal.UNREACHABLE,
         ):
-            return slug
+            return slug, generations
         # Withdrawn, or nothing was there: the destination no longer serves this copy, so
         # the record must stop claiming it. The cascade deletes the artifact moments later;
-        # clearing here keeps the state honest if the cascade itself then fails.
-        await _run_off_loop(lambda s=slug: store.clear_publication(s))
-    return ""
+        # clearing here keeps the state honest if the cascade itself then fails. Pinned to
+        # the generation AND the record whose copy came down, because the withdrawal above
+        # is a network wait: a newcomer holding this slug by now owns a record this pass
+        # never withdrew, and so does this same artifact re-published in that window, which
+        # leaves `created_at` unchanged. Either record is the only handle able to take ITS
+        # copy down.
+        withdrawn_id = art.publication.artifact_id
+        try:
+            await _run_off_loop(
+                lambda s=slug, b=born, p=withdrawn_id: store.clear_publication(
+                    s, expect_created_at=b, expect_publication_id=p
+                )
+            )
+        except ArtifactReplacedError:
+            logger.warning(
+                "withdrew the published copy of %s but left the record alone: the "
+                "record under that slug names a different artifact or a different "
+                "copy, so it belongs to a publication this pass never withdrew",
+                slug,
+            )
+    return "", generations
 
 
 async def api_artifact_folder_delete(request: web.Request) -> web.Response:
@@ -3318,6 +3452,12 @@ async def api_artifact_folder_delete(request: web.Request) -> web.Response:
         return _err("folder not found", status=404)
     raw = (request.query.get("delete_contents") or "").strip().lower()
     delete_contents = raw in ("1", "true", "yes")
+    # The artifacts whose publication guard the destroy below holds, each mapped to the
+    # ``created_at`` it had when the withdrawal pass listed it -- the guard holds a name,
+    # so the stamp is what says which artifact the name stood for. Empty on the safe path,
+    # which destroys no artifact at all -- it re-parents the children and removes one
+    # folder, so no publication record is at risk there.
+    subtree_generations: dict[str, str] = {}
     if delete_contents:
         # The cascade destroys artifacts through `ArtifactStore.delete`, which knows
         # nothing about publications -- so before this fix a cascade over a folder holding
@@ -3330,7 +3470,7 @@ async def api_artifact_folder_delete(request: web.Request) -> web.Response:
         # refused: a folder that refuses to delete is recoverable, an orphaned public copy
         # is not. A withdrawal that DID succeed has its record cleared so the artifact
         # stops claiming a destination that no longer holds it.
-        blocked = await _withdraw_subtree_publications(fid, fstore)
+        blocked, subtree_generations = await _withdraw_subtree_publications(fid, fstore)
         if blocked:
             msg = (
                 "This folder was not deleted: the published copy of "
@@ -3350,13 +3490,45 @@ async def api_artifact_folder_delete(request: web.Request) -> web.Response:
     try:
         # delete() scans every artifact (O(N)) and, in cascade mode, recursively
         # removes directories — offload off the event loop.
+        #
+        # Under the publication guard of every artifact the withdrawal pass found, for the
+        # reason the single-artifact delete takes it: a first publish uploads its object
+        # before it writes the record, so the store's own `refuse_if_published` re-read
+        # inside the cascade cannot see a publish that is halfway through, and the artifact
+        # is destroyed with its copy already served. Holding the guards here means each of
+        # those artifacts is either not being published at all or already recorded, in
+        # which case the cascade keeps it instead of destroying it.
+        #
+        # Acquired in slug order so two cascades over overlapping subtrees take them in the
+        # same order and cannot each hold what the other waits for. A publish holds exactly
+        # one of these at a time, so it can never be the second party in a cycle.
+        #
+        # An artifact filed INTO the subtree after that pass is not among them, so the
+        # cascade is told to leave anything outside the guarded set alone rather than
+        # destroy it: a publish in flight for it is invisible to the store's own record
+        # check, and the withdrawal pass never saw it either. It survives, unfiled, and is
+        # reported below.
+        #
+        # Each guarded slug carries the `created_at` of the artifact that HELD it when the
+        # pass listed it, because the guard protects a name and the destroy has to name an
+        # artifact. The guard keeps a publish from running under it, not a deletion
+        # followed by a recreation -- creating an artifact takes no guard at all, and a
+        # freed slug is re-minted identically. So the store re-checks the stamp under its
+        # own lock and keeps a newcomer instead of destroying it.
         loop = asyncio.get_running_loop()
-        summary = await loop.run_in_executor(
-            subprocess_executor(),
-            lambda: fstore.delete(
-                fid, delete_contents=delete_contents, artifact_store=get_default_store()
-            ),
-        )
+        async with AsyncExitStack() as guards:
+            guarded = sorted(subtree_generations)
+            for slug in guarded:
+                await guards.enter_async_context(publish_sync.publication_guard(slug))
+            summary = await loop.run_in_executor(
+                subprocess_executor(),
+                lambda: fstore.delete(
+                    fid,
+                    delete_contents=delete_contents,
+                    artifact_store=get_default_store(),
+                    destroyable_generations=dict(subtree_generations),
+                ),
+            )
     except ArtifactNotFoundError as exc:
         return _err(str(exc), status=404)
     except ArtifactError as exc:
@@ -3378,6 +3550,8 @@ async def api_artifact_folder_delete(request: web.Request) -> web.Response:
             "delete_contents": delete_contents,
             "deleted_artifacts": len(summary.get("deleted_artifact_slugs", [])),
             "kept_published_artifacts": len(kept),
+            "unguarded_artifacts": len(summary.get("unguarded_artifact_slugs", [])),
+            "replaced_artifacts": len(summary.get("replaced_artifact_slugs", [])),
         },
     )
     payload: dict[str, Any] = {"ok": True, **summary}
@@ -3393,6 +3567,47 @@ async def api_artifact_folder_delete(request: web.Request) -> web.Response:
             "them would have left a public copy with nothing able to take it down. "
             "They are now unfiled. Unpublish them first, then delete them."
         )
+    unguarded = list(summary.get("unguarded_artifact_slugs", []))
+    if unguarded:
+        # Moved into the subtree while the withdrawal pass was running, so nothing here
+        # can rule out a publish in flight for them and the cascade left them alone.
+        # Saying so is the point: a surviving artifact nobody mentions reads as a bug.
+        joined = ", ".join(unguarded)
+        notice = (
+            f"The folder was deleted, but {joined} "
+            + ("was" if len(unguarded) == 1 else "were")
+            + " moved into it while the delete was running, so "
+            + ("it was" if len(unguarded) == 1 else "they were")
+            + " left alone rather than destroyed -- a copy being published at that "
+            "moment could not be taken down afterwards. "
+            + ("It is" if len(unguarded) == 1 else "They are")
+            + " now unfiled. Delete "
+            + ("it" if len(unguarded) == 1 else "them")
+            + " again if that is what you meant."
+        )
+        payload["notice"] = f"{payload['notice']} {notice}" if payload.get("notice") else notice
+    replaced = list(summary.get("replaced_artifact_slugs", []))
+    if replaced:
+        # The artifact named at this slug was deleted while the cascade ran and a new one
+        # was created under the same title, which takes the freed slug back. Destroying
+        # that newcomer has no undo, so it was kept -- and saying which slug it is matters
+        # more here than anywhere else: the name is shared with the artifact the owner
+        # DID mean to delete, so silence reads as "the delete worked".
+        joined = ", ".join(replaced)
+        notice = (
+            f"The folder was deleted, but the artifact at {joined} "
+            + ("is" if len(replaced) == 1 else "are")
+            + " not the "
+            + ("one" if len(replaced) == 1 else "ones")
+            + " the delete started on -- "
+            + ("it was" if len(replaced) == 1 else "they were")
+            + " created under the same name while it ran, so "
+            + ("it was" if len(replaced) == 1 else "they were")
+            + " kept rather than destroyed. "
+            + ("It is" if len(replaced) == 1 else "They are")
+            + " now unfiled."
+        )
+        payload["notice"] = f"{payload['notice']} {notice}" if payload.get("notice") else notice
     return _json_response(payload)
 
 

@@ -7,13 +7,14 @@ import {
   useContext,
   type ReactNode,
 } from 'react'
-import { useQuery, useMutation } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 // Leaf modules, deliberately not `../api/client`: that module is mocked with a
 // bare factory across most of the test corpus, and the replay path below must
 // not depend on exports those mocks never define.
 import { ApiError } from '../api/apiError'
 import { pendingRefresh } from '../api/refreshOnce'
+import { retryDelayPolicy, retryPolicy } from '../api/queryClient'
 import { reportSeamCollision } from '../apps/seamCollision'
 import { safeSetItem } from '../utils/safeStorage'
 import {
@@ -508,6 +509,20 @@ export interface ThemeContextValue {
    * switching back to a loaded pack is false again.
    */
   installedThemeLoadFailed: boolean
+  /** The installed-theme catalog's current non-auth load failure, or null.
+   *  Set while the boot fetch is still retrying as well as once it has settled,
+   *  so the failure is reportable rather than an invisible retry loop; an auth
+   *  denial is not included because the re-auth banner already reports it. */
+  customThemesLoadError: Error | null
+  /** Whether any installed-theme catalog has loaded yet (false while the boot
+   *  fetch is still retrying). Lets a surface word a load failure as "nothing
+   *  loaded, retrying" versus "the list you see may be out of date". */
+  customThemesLoaded: boolean
+  /** When the catalog query last committed data (React Query's `dataUpdatedAt`,
+   *  0 before the first). A monotonic signal that a fetch LANDED: the arrays
+   *  themselves are structurally shared, so a deep-equal listing keeps its
+   *  reference and cannot serve as that signal. */
+  customThemesUpdatedAt: number
   allThemes: ThemeEntry[]
   /** Active installed theme's branding bot-name, or null for built-ins / L0. */
   brandName: string | null
@@ -543,7 +558,10 @@ export interface ThemeContextValue {
   markCrewmatesOnboarded: () => Promise<void>
   addCustomTheme: (data: Omit<CustomThemeData, 'slug'> & { slug?: string }) => Promise<CustomThemeData>
   deleteCustomTheme: (slug: string) => Promise<void>
-  loadCustomThemes: () => Promise<void>
+  /** Refetch the installed-theme catalog once; `true` when it now reflects the
+   *  server, `false` (never a rejection) when the refresh failed and recovery
+   *  has been handed to the catalog query. */
+  loadCustomThemes: () => Promise<boolean>
 }
 
 const ThemeContext = createContext<ThemeContextValue | null>(null)
@@ -611,6 +629,168 @@ function seedFromRenderCache(
   }
 }
 
+const CATALOG_QUERY_KEY = ['custom-themes-catalog'] as const
+
+/** What one load of the installed-theme catalog yields: the picker entries and
+ *  the per-slug detail that loaded. A listed slug missing from `dataMap` is a
+ *  pack whose own detail failed or whose data the CSS builder threw on:
+ *  installed, but unstyled (`installedThemeLoadFailed` derives from that). */
+interface CatalogSnapshot {
+  themes: ThemeEntry[]
+  dataMap: Map<string, CustomThemeData>
+}
+
+/** What a catalog fetch needs from the provider that owns it. */
+interface CatalogFetchHooks {
+  /** True once a newer fetch has started or the query cancelled this one: no
+   *  state, DOM or cache write may follow, and the result is discarded. */
+  superseded: () => boolean
+  /** The `custom-<slug>` selection, read at call time. */
+  activeSlug: () => string | null
+  /** The active pack's detail landed ahead of the catalog and is injected. */
+  onActiveDetail: (detail: CustomThemeData) => void
+}
+
+/**
+ * Wait for the silent refresh a 403 started. Resolves when it succeeded (the
+ * caller replays). A TERMINAL refresh (401: chain revoked, no refresh cookie)
+ * rethrows the original auth error so the query settles in the auth-denied
+ * state the re-auth banner owns. Any OTHER failed refresh -- a network error,
+ * a 5xx from a gateway still booting, a 429 in the boot burst -- is transport
+ * noise, not a verdict on the session: it must NOT be reported as the auth
+ * error, because the retry predicate refuses auth errors and the notice hides
+ * them, which would leave the catalog silently unstyled with no recovery path
+ * (the banner latches only on 401). It is thrown as a plain retryable
+ * failure instead, so the boot loop retries and the notice reports it.
+ */
+async function awaitRefreshOrThrow(authError: ApiError): Promise<void> {
+  const recovery = pendingRefresh()
+  if (!recovery) return
+  const result = await recovery
+  if (result.ok) return
+  if (result.status === 401) throw authError
+  // The message is never rendered (the Display panel notice is keyed, not
+  // message-driven); an existing key keeps the untranslated-string gate clean.
+  throw new ApiError(result.status || 0, i18nT('pages.settings.displayPanel.installed_themes_load_failed'))
+}
+
+/** Thrown by `fetchCatalog` when a newer fetch took over; never surfaced. */
+function supersededError(): Error {
+  return new DOMException('catalog fetch superseded', 'AbortError')
+}
+
+/**
+ * Fetch `/api/themes` plus every `/api/theme/{slug}` and inject each theme's
+ * CSS and fonts. Injection happens here, before the snapshot reaches any
+ * consumer, so no render sees the picker populated with the styles missing --
+ * and never once `superseded()` reports a newer fetch, so a cancelled fetch
+ * whose detail responses arrive late cannot restyle the page under a newer
+ * catalog.
+ *
+ * The ACTIVE pack's detail is the one request that gates a themed paint, so it
+ * goes out alongside the catalog instead of one round trip behind it; the
+ * moment it lands its CSS/fonts are injected and `onActiveDetail` merges it so
+ * the overrides.css fetch starts too. A failure there is not a verdict -- the
+ * catalog rules on whether the pack still exists and the catalog pass fetches
+ * it again -- and it runs inside a promise chain so that no failure of the
+ * early request, synchronous or not, can take the catalog load with it.
+ *
+ * `/api/theme/boot` is public and restores a persisted `custom-<slug>`
+ * selection on every load, but `/api/themes` is not: with a lapsed access
+ * cookie it answers 403, `checkSessionExpired` starts a silent refresh in the
+ * background, and this ORIGINAL request still rejects. Wait for that refresh
+ * and replay exactly once. A failed refresh (after a gateway restart there is
+ * no valid refresh chain) is rethrown: the query settles in `error` with no
+ * data, which is precisely the set `removeAuthBanner`'s token-paste path
+ * invalidates once the user signs in.
+ *
+ * A detail that fails for its own reasons (a 500 for that slug, a broken file)
+ * is left out of `dataMap`, never held against the other packs: the catalog
+ * row still proves the pack is installed, self-repair reads the LISTING, and
+ * `installedThemeLoadFailed` reports the unstyled selection.
+ */
+async function fetchCatalog(hooks: CatalogFetchHooks, replayed = false): Promise<CatalogSnapshot> {
+  const startSlug = hooks.activeSlug()
+  const earlyDetail: Promise<CustomThemeData | null> = startSlug
+    ? Promise.resolve()
+        .then(() => api.themeDetail(startSlug))
+        .then((d: CustomThemeData) => {
+          if (hooks.superseded()) return d
+          injectCustomThemeCSS(d)
+          injectThemeFonts(d)
+          hooks.onActiveDetail(d)
+          return d
+        })
+        .catch(() => null)
+    : Promise.resolve(null)
+  let res: { themes?: Array<{ slug: string; name: string; emoji: string; source?: string }> }
+  try {
+    res = await api.themes()
+  } catch (e) {
+    if (replayed || !(e instanceof ApiError && e.authRequired)) throw e
+    await awaitRefreshOrThrow(e)
+    return fetchCatalog(hooks, true)
+  }
+  if (hooks.superseded()) throw supersededError()
+  const entries = res.themes || []
+  const themes: ThemeEntry[] = entries.map((t) => ({
+    value: `custom-${t.slug}`,
+    label: `${t.emoji} ${t.name}`,
+    custom: true,
+    installed: t.source === 'installed',
+  }))
+  const catalogSlugs = new Set<string>(entries.map((t) => t.slug))
+  const early = await earlyDetail
+  if (hooks.superseded()) throw supersededError()
+  // Fetch all theme details in parallel to avoid serial waterfall; the active
+  // pack already came back above, so it is not fetched twice.
+  const dataMap = new Map<string, CustomThemeData>()
+  if (early && catalogSlugs.has(early.slug)) dataMap.set(early.slug, early)
+  const pending = entries.filter((t) => !dataMap.has(t.slug))
+  const results = await Promise.allSettled(pending.map((t) => api.themeDetail(t.slug)))
+  if (hooks.superseded()) throw supersededError()
+  // The cookie can lapse BETWEEN the listing and the details (a gateway restart
+  // in that window): the list succeeded, a detail answers 403. Same recovery as
+  // the listing -- wait for the silent refresh this denial started and replay
+  // the whole fetch once; a failed refresh rethrows so the query settles in
+  // `error` for the banner path. Never skip the pack: a denial is not the
+  // pack's own failure, and committing without it would report it as broken.
+  const denied = results.find(
+    (r): r is PromiseRejectedResult => r.status === 'rejected' && r.reason instanceof ApiError && r.reason.authRequired,
+  )
+  if (denied) {
+    if (replayed) throw denied.reason
+    await awaitRefreshOrThrow(denied.reason)
+    return fetchCatalog(hooks, true)
+  }
+  for (const r of results) {
+    if (r.status !== 'rejected') {
+      // A throw while building one pack's CSS leaves only that pack unstyled
+      // (and out of the map, so it is reported), never the whole catalog.
+      try {
+        injectCustomThemeCSS(r.value)
+        injectThemeFonts(r.value)
+        dataMap.set(r.value.slug, r.value)
+      } catch {
+        // Left out of the map on purpose; see above.
+      }
+    }
+  }
+  // The pack that was active when this load began is gone from the catalog:
+  // its early-injected CSS is stale whatever is selected now, so it goes. The
+  // render cache holds one key, for the CURRENT selection: if the user moved
+  // onto another installed pack while this load was in flight, the apply
+  // effect already wrote that pack's projection. Clear only when the vanished
+  // pack is still the selection; self-repair then resets it.
+  if (startSlug && !catalogSlugs.has(startSlug)) {
+    if (startSlug === hooks.activeSlug()) clearCachedThemeData()
+    removeCustomThemeCSS(startSlug)
+  }
+  return { themes, dataMap }
+}
+
+const EMPTY_THEMES: ThemeEntry[] = []
+
 /**
  * Internal state hook — ONLY called once, by ThemeProvider. All theme state,
  * effects, listeners, and API calls live here. Consumers reach this via
@@ -625,7 +805,10 @@ function useThemeState(): ThemeContextValue {
     () => (localStorage.getItem('mc-color-theme') as ColorTheme) || DEFAULT_COLOR_THEME
   )
   const [resolved, setResolved] = useState<ResolvedMode>(() => resolveMode(mode))
-  const [customThemes, setCustomThemes] = useState<ThemeEntry[]>([])
+  // The per-slug detail the hook applies. Seeded from the render cache so a
+  // cold load paints themed at once; the active pack's early fetch merges
+  // into it ahead of the catalog, and every committed catalog replaces it
+  // (keeping the last good detail of a listed pack whose reload failed).
   const [customThemeDataMap, setCustomThemeDataMap] = useState<Map<string, CustomThemeData>>(
     () => seedFromRenderCache(colorTheme, resolved, mode)
   )
@@ -646,10 +829,6 @@ function useThemeState(): ThemeContextValue {
   // async assets settle after a switch (built-ins/editor-customs are instant).
   const [themeSwitching, setThemeSwitching] = useState(false)
   const [overridesDropReport, setOverridesDropReport] = useState<OverridesDropReport | null>(null)
-  // Slugs of installed (folder/GitHub) themes — read synchronously in
-  // setColorTheme (via a ref so its identity stays stable) to decide whether a
-  // selection is one whose async assets warrant the indicator.
-  const installedSlugsRef = useRef<Set<string>>(new Set())
   // Timestamp of the current switch, for the ~150ms minimum-visible guard.
   const switchStartRef = useRef(0)
   // Current colorTheme, read synchronously in setColorTheme (via a ref so its
@@ -658,9 +837,6 @@ function useThemeState(): ThemeContextValue {
   useEffect(() => {
     colorThemeRef.current = colorTheme
   }, [colorTheme])
-  // Gate self-repair on the first custom-theme load so a persisted custom-<slug>
-  // selection isn't reset to the default before the theme list has arrived.
-  const [customThemesLoaded, setCustomThemesLoaded] = useState(false)
   const [importOnboarded, setImportOnboarded] = useState(
     () => !!localStorage.getItem('mc-import-onboarded') || !!localStorage.getItem('mc-onboarded'),
   )
@@ -699,130 +875,161 @@ function useThemeState(): ThemeContextValue {
   const appliedActiveRef = useRef<string | null>(null)
   const loadGenerationRef = useRef(0)
 
-  const loadCustomThemes = useCallback(async (replayed = false): Promise<void> => {
-    try {
-      // Every await may resume after a newer reload has started; re-check the
-      // generation before writing any observable state, DOM, or cache data.
-      const generation = ++loadGenerationRef.current
-      if (generation > 1) appliedActiveRef.current = null
-      // The ACTIVE pack's detail is the one request that gates a themed paint,
-      // so it goes out alongside the catalog instead of one round trip behind
-      // it; the moment it lands its CSS/fonts are injected and it is merged into
-      // the map so the overrides.css fetch starts too. A failure here is not a
-      // verdict — the catalog below rules on whether the pack still exists —
-      // and it is started inside a promise chain so that no failure of the
-      // early request, synchronous or not, can take the catalog load with it.
-      const activeSlug = activeCustomSlug(colorThemeRef.current)
-      const earlyDetail: Promise<CustomThemeData | null> = activeSlug
-        ? Promise.resolve()
-            .then(() => api.themeDetail(activeSlug))
-            .then((d: CustomThemeData) => {
-              if (loadGenerationRef.current !== generation) return d
-              injectCustomThemeCSS(d)
-              injectThemeFonts(d)
-              setCustomThemeDataMap((prev) => new Map(prev).set(d.slug, d))
-              // An injection and its version bump are inseparable: consumers
-              // that snapshot the computed vars (widget/app frames, artifact
-              // previews) re-read on this counter, and the catalog pass below
-              // may never reach its own bump if /api/themes fails.
-              bumpThemeVersion()
-              return d
-            })
-            .catch(() => null)
-        : Promise.resolve(null)
-      const res = await api.themes()
-      if (loadGenerationRef.current !== generation) return
-      const themes: ThemeEntry[] = (res.themes || []).map(
-        (t: { slug: string; name: string; emoji: string; source?: string }) => ({
-          value: `custom-${t.slug}`,
-          label: `${t.emoji} ${t.name}`,
-          custom: true,
-          installed: t.source === 'installed',
-        })
-      )
-      setCustomThemes(themes)
-
-      const catalogSlugs = new Set<string>((res.themes || []).map((t: { slug: string }) => t.slug))
-      const early = await earlyDetail
-      if (loadGenerationRef.current !== generation) return
-      // Fetch all theme details in parallel to avoid serial waterfall; the
-      // active pack already came back above, so it is not fetched twice.
-      const dataMap = new Map<string, CustomThemeData>()
-      if (early && catalogSlugs.has(early.slug)) dataMap.set(early.slug, early)
-      const pendingDetails = (res.themes || []).filter(
-        (t: { slug: string }) => !dataMap.has(t.slug),
-      )
-      const results = await Promise.allSettled(
-        pendingDetails.map((t: { slug: string }) => api.themeDetail(t.slug)),
-      )
-      if (loadGenerationRef.current !== generation) return
-      for (const r of results) {
-        if (r.status === 'fulfilled') {
-          dataMap.set(r.value.slug, r.value)
-          injectCustomThemeCSS(r.value)
-          injectThemeFonts(r.value)
-        }
+  const queryClient = useQueryClient()
+  // One fetch of the catalog, shared by the boot query and the imperative
+  // refresh below. Every await inside may resume after a newer fetch has
+  // started (a reinstall event, a mutation's refresh, a query refetch), so the
+  // fetch checks its generation -- and the query's own cancellation signal --
+  // before writing any observable state, DOM, or cache data. The apply
+  // effect's byte-identical guard is reset at the START of every reload after
+  // the first, because a reinstalled pack can change assets on disk without
+  // changing its detail JSON: one reload then applies exactly once whether or
+  // not the detail changed (the early fetch's run applies and re-arms the
+  // guard; the catalog pass carries the same serialized data and is skipped).
+  // A committed catalog replaces the detail map, keeping the last good detail
+  // (render-cache seed or an earlier load) of a listed pack whose reload
+  // failed: the themed paint it produced stays up while the notice explains
+  // the state, and the map write for a listed pack that never loaded is what
+  // `installedThemeLoadFailed` derives from.
+  const runCatalogFetch = useCallback(async (signal?: AbortSignal): Promise<CatalogSnapshot> => {
+    const generation = ++loadGenerationRef.current
+    if (generation > 1) appliedActiveRef.current = null
+    const superseded = () => signal?.aborted === true || loadGenerationRef.current !== generation
+    const snapshot = await fetchCatalog({
+      superseded,
+      activeSlug: () => activeCustomSlug(colorThemeRef.current),
+      onActiveDetail: (d) => {
+        setCustomThemeDataMap((prev) => new Map(prev).set(d.slug, d))
+        // An injection and its version bump are inseparable: consumers that
+        // snapshot the computed vars (widget/app frames, artifact previews)
+        // re-read on this counter, and the catalog pass may never reach its
+        // own bump if /api/themes fails.
+        bumpThemeVersion()
+      },
+    })
+    if (superseded()) throw supersededError()
+    const currentSlug = activeCustomSlug(colorThemeRef.current)
+    const listed = new Set(snapshot.themes.map((t) => t.value.slice('custom-'.length)))
+    setCustomThemeDataMap((prev) => {
+      const next = new Map(snapshot.dataMap)
+      if (currentSlug && listed.has(currentSlug) && !next.has(currentSlug)) {
+        const kept = prev.get(currentSlug)
+        if (kept) next.set(currentSlug, kept)
       }
-      // A catalog row proves the pack is still installed. If its detail failed,
-      // keep the user's selection instead of treating the absent detail as an
-      // uninstall and persisting the default; `installedThemeLoadFailed` is
-      // derived from the catalog and the map, so the notice follows from the
-      // state written below without a flag of its own. The rejection itself is
-      // not kept: a gateway message ("invalid installed theme") is developer
-      // vocabulary and a fetch `TypeError` is transport noise, so the notice
-      // names the recovery (reinstall, or pick another theme) instead.
-      // The last good detail (render-cache seed or an earlier load) is kept in
-      // the map until a load succeeds, so the themed paint it produced stays up
-      // while the notice explains the state.
-      const currentSlug = activeCustomSlug(colorThemeRef.current)
-      // The pack that was active when this load began is gone from the catalog:
-      // its early-injected CSS is stale whatever is selected now, so it goes.
-      // The render cache holds one key, for the CURRENT selection: if the user
-      // moved onto another installed pack while this load was in flight, the
-      // apply effect already wrote that pack's projection, and the map write
-      // below carries byte-identical data, so nothing would rewrite it. Clear
-      // only when the vanished pack is still the selection; self-repair below
-      // then resets it.
-      if (activeSlug && !catalogSlugs.has(activeSlug)) {
-        if (activeSlug === currentSlug) clearCachedThemeData()
-        removeCustomThemeCSS(activeSlug)
-      }
-      if (loadGenerationRef.current !== generation) return
-      setCustomThemeDataMap((prev) => {
-        const next = new Map(dataMap)
-        if (currentSlug && catalogSlugs.has(currentSlug) && !next.has(currentSlug)) {
-          const kept = prev.get(currentSlug)
-          if (kept) next.set(currentSlug, kept)
-        }
-        return next
-      })
-      setCustomThemesLoaded(true)
-      bumpThemeVersion()
-    } catch (e) {
-      // `/api/theme/boot` is public and restores a persisted `custom-<slug>`
-      // selection on every load, but `/api/themes` is not: on a cold load with a
-      // lapsed access cookie it answers 403, the client starts a silent refresh
-      // in the background, and this ORIGINAL request still rejects. Every later
-      // request in the app succeeds on the refreshed cookie, so nothing else
-      // notices — but this is a one-shot boot fetch with no poll to bring it
-      // back, and swallowing the rejection left the selected theme's variables,
-      // fonts, and branding unloaded until the user reloaded by hand. Wait for
-      // the refresh that this failure triggered and replay exactly once.
-      if (replayed || !(e instanceof ApiError && e.authRequired)) return // API not available yet — ignore
-      const recovery = pendingRefresh()
-      if (recovery && !(await recovery).ok) return // refresh failed: the banner owns it now
-      await loadCustomThemes(true)
-    }
+      return next
+    })
+    bumpThemeVersion()
+    return snapshot
   }, [bumpThemeVersion])
 
-  // Load custom themes from API on mount + listen for cross-instance changes
-  useEffect(() => {
-    loadCustomThemes()
-    const handler = () => loadCustomThemes()
-    window.addEventListener(CUSTOM_THEMES_CHANGED_EVENT, handler)
-    return () => window.removeEventListener(CUSTOM_THEMES_CHANGED_EVENT, handler)
-  }, [loadCustomThemes])
+  // The installed-theme catalog is a query, so the app's existing recovery
+  // paths own it: the token-paste sign-in invalidates every errored, data-less
+  // query (`removeAuthBanner` in api/client), and the retry policy below covers
+  // a tab that raced the gateway restart. Before this, the catalog was a
+  // one-shot callback with no poll to bring it back, and either failure left
+  // the selected theme's variables, fonts and branding unloaded until a reload.
+  const catalogQuery = useQuery({
+    queryKey: CATALOG_QUERY_KEY,
+    queryFn: ({ signal }) => runCatalogFetch(signal),
+    staleTime: Infinity,
+    // An auth denial is `checkSessionExpired`'s to recover (silent refresh, or
+    // the banner and its token paste); retrying it here would only 403 again.
+    // While no catalog has ever loaded, anything else is the gateway still
+    // booting or a tunnel 502/503: keep retrying, because a fetch that gave up
+    // would leave the theme unstyled with no failed state to report and no
+    // trigger left to recover on. Once a catalog IS loaded that justification
+    // is gone (a failed refetch keeps the styles it has), so a refetch that
+    // fails falls back to the app-wide policy instead of retrying forever.
+    retry: (failureCount, error) => {
+      if (error instanceof ApiError && error.authRequired) return false
+      if (queryClient.getQueryData(CATALOG_QUERY_KEY) === undefined) return true
+      return retryPolicy(failureCount, error)
+    },
+    // The shared curve: 1 s, 2 s, 4 s ... capped at 30 s, jittered on a 429.
+    retryDelay: retryDelayPolicy,
+  })
+  // `failureReason` carries the last attempt's error while the query is still
+  // retrying; `error` only once it has settled. The Display panel renders this
+  // through `ErrorNotice`, so a catalog that will not load is never a silent
+  // gap. While NO catalog has loaded the in-progress retry is reported too;
+  // once one has, only a settled refetch failure is (the list may be stale),
+  // not the single app-policy retry in between.
+  const catalogFailure = catalogQuery.error ?? (catalogQuery.data === undefined ? catalogQuery.failureReason : null)
+  const customThemesLoadError =
+    catalogFailure instanceof Error && !(catalogFailure instanceof ApiError && catalogFailure.authRequired)
+      ? catalogFailure
+      : null
+  const customThemes = catalogQuery.data?.themes ?? EMPTY_THEMES
+  // Gate self-repair on the first custom-theme load so a persisted custom-<slug>
+  // selection isn't reset to the default before the theme list has arrived.
+  const customThemesLoaded = catalogQuery.data !== undefined
+  const customThemesUpdatedAt = catalogQuery.dataUpdatedAt
 
+  // One-shot refetch for the theme editor and Display panel, which await it
+  // right after their own mutation. Deliberately not `refetch()`: that would
+  // join the boot query's retry loop and hang a save/delete handler on a down
+  // gateway. The in-flight boot fetch is cancelled first so a slow, stale
+  // response cannot land after this fresh one and overwrite it (self-repair
+  // would then miss a just-installed slug and persist a reset to the default).
+  // Resolves `true` when the catalog now reflects the server, `false` when the
+  // refresh failed -- it never rejects, because every caller's own write has
+  // already landed and must not be reported as failed. On `false` the query is
+  // invalidated without blocking the caller, so recovery resumes on its own
+  // retry policy, and a caller that wants to select a slug decides from the
+  // result whether the catalog can carry it yet. A refresh a newer fetch took
+  // over hands nothing back: that fetch owns recovery.
+  // Refreshes are serialized: two mutations back to back (an update, then a
+  // delete) must not race their fetches, or the older one can land last and
+  // resurrect the deleted entry in the cache.
+  const refreshChainRef = useRef<Promise<unknown>>(Promise.resolve())
+  const loadCustomThemes = useCallback((): Promise<boolean> => {
+    const run = async (): Promise<boolean> => {
+      await queryClient.cancelQueries({ queryKey: CATALOG_QUERY_KEY })
+      try {
+        queryClient.setQueryData(CATALOG_QUERY_KEY, await runCatalogFetch())
+        return true
+      } catch (e) {
+        if (!(e instanceof DOMException && e.name === 'AbortError')) {
+          void queryClient.invalidateQueries({ queryKey: CATALOG_QUERY_KEY })
+        }
+        return false
+      }
+    }
+    const next = refreshChainRef.current.then(run, run)
+    refreshChainRef.current = next
+    return next
+  }, [queryClient, runCatalogFetch])
+
+  // Cross-instance changes (another tab, the editor's post-save broadcast). A
+  // reload must supersede a load still in flight -- a reinstall during a slow
+  // boot fetch has newer assets than the response that is still pending -- and
+  // a query with no data yet would otherwise be joined, not replaced, so the
+  // pending fetch is cancelled first (its late results are then discarded).
+  // Also after a proven auth recovery: `removeAuthBanner` refetches only
+  // errored queries with NO data, so a catalog that already held a snapshot
+  // when its refresh met a terminal auth denial would keep that stale
+  // snapshot (a deleted pack still listed) until something else invalidated
+  // it. `mc-auth-recovered` fires only on a 2xx or an accepted token paste,
+  // never on the banner's X.
+  useEffect(() => {
+    const handler = () => {
+      void queryClient
+        .cancelQueries({ queryKey: CATALOG_QUERY_KEY })
+        .then(() => queryClient.invalidateQueries({ queryKey: CATALOG_QUERY_KEY }))
+    }
+    const onAuthRecovered = () => {
+      void queryClient.invalidateQueries({
+        queryKey: CATALOG_QUERY_KEY,
+        predicate: (q) => q.state.status === 'error',
+      })
+    }
+    window.addEventListener(CUSTOM_THEMES_CHANGED_EVENT, handler)
+    window.addEventListener('mc-auth-recovered', onAuthRecovered)
+    return () => {
+      window.removeEventListener(CUSTOM_THEMES_CHANGED_EVENT, handler)
+      window.removeEventListener('mc-auth-recovered', onAuthRecovered)
+    }
+  }, [queryClient])
   const { mutate: persistTheme, mutateAsync: persistThemeAsync } = useMutation({
     mutationFn: (body: {
       mode?: string
@@ -1027,8 +1234,14 @@ function useThemeState(): ThemeContextValue {
     // + overrides.css apply asynchronously. Built-ins / editor customs (L0) are
     // instant, so we don't flash for them. A ~150ms minimum-visible guard in
     // the apply effect below prevents flicker.
-    const slug = t.startsWith('custom-') ? t.slice('custom-'.length) : ''
-    if (slug && installedSlugsRef.current.has(slug)) {
+    // Read from the query cache, not a render-synced ref: a caller that
+    // selects right after `loadCustomThemes()` runs before React commits the
+    // new catalog, and a ref filled by an effect would still say "not
+    // installed" for the pack just installed.
+    const installed = queryClient.getQueryData<CatalogSnapshot>(CATALOG_QUERY_KEY)?.themes.some(
+      (entry) => entry.installed && entry.value === t,
+    )
+    if (installed) {
       switchStartRef.current = Date.now()
       setThemeSwitching(true)
     }
@@ -1036,17 +1249,7 @@ function useThemeState(): ThemeContextValue {
     const m = (localStorage.getItem('mc-theme') as ModePreference) || 'system'
     broadcast(m, t)
     persistTheme({ color: t })
-  }, [persistTheme])
-
-  // Keep the installed-slug lookup (read in setColorTheme) in sync with the
-  // loaded theme list, without changing setColorTheme's identity.
-  useEffect(() => {
-    installedSlugsRef.current = new Set(
-      customThemes
-        .filter(t => t.installed)
-        .map(t => t.value.slice('custom-'.length))
-    )
-  }, [customThemes])
+  }, [persistTheme, queryClient])
 
   // Apply the active installed theme's branding + scoped overrides.css; revert
   // for built-ins / L0. (Fonts are injected at load, scoped by data-theme.)
@@ -1157,11 +1360,31 @@ function useThemeState(): ThemeContextValue {
     if (!res.ok) throw new Error(res.error || 'Failed to create theme')
     const theme: CustomThemeData = res.theme
     injectCustomThemeCSS(theme)
-    await loadCustomThemes()
+    if (!(await loadCustomThemes())) {
+      // The create landed but the list refresh did not. Seed the catalog with
+      // the theme the server just returned so selecting it below is not read by
+      // self-repair as a dangling slug; the invalidated query replaces this with
+      // the server's list as soon as it can.
+      queryClient.setQueryData<CatalogSnapshot>(CATALOG_QUERY_KEY, (old) => {
+        // Never seed a catalog that has not loaded: a synthetic one-entry
+        // snapshot would flip the boot query's "no catalog yet" retry branch to
+        // the single app-policy retry and leave every other pack absent.
+        // Self-repair is disarmed while nothing has loaded, so nothing is lost.
+        if (old === undefined) return old
+        const value = `custom-${theme.slug}`
+        return {
+          themes: old.themes.some((t) => t.value === value)
+            ? old.themes
+            : [...old.themes, { value, label: `${theme.emoji} ${theme.name}`, custom: true, installed: false }],
+          dataMap: new Map(old.dataMap).set(theme.slug, theme),
+        }
+      })
+      setCustomThemeDataMap((prev) => new Map(prev).set(theme.slug, theme))
+    }
     setColorTheme(`custom-${theme.slug}`)
     broadcastCustomThemesChanged()
     return theme
-  }, [loadCustomThemes, setColorTheme])
+  }, [loadCustomThemes, queryClient, setColorTheme])
 
   /**
    * Delete a custom theme via API. The render cache holds one pack, the
@@ -1258,6 +1481,9 @@ function useThemeState(): ThemeContextValue {
     themeSwitching,
     overridesDropReport,
     installedThemeLoadFailed,
+    customThemesLoadError,
+    customThemesLoaded,
+    customThemesUpdatedAt,
     allThemes,
     brandName,
     brandLogo,

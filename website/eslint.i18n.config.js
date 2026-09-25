@@ -880,7 +880,7 @@ export default [
               // per-channel settings panels. Enumerated and whole-value-anchored,
               // so a sentence merely mentioning a channel is still reported —
               // only the bare name is exempt.
-              '^(Slack|Discord|Telegram|Teams|Webex|WeCom|WeChat|WhatsApp)$',
+              '^(Slack|Discord|Telegram|Teams|Webex|WeCom|WeChat|WhatsApp|iMessage|Feishu)$',
               // The code-forge product brands, in the do-not-translate glossary for
               // the same reason and enforced there by `glossary.test.ts`: "GitLab" is
               // "GitLab" in every language, and a localized spelling would name a
@@ -1449,6 +1449,17 @@ export default [
   // submission rather than localize it. See the module's own header.
   {
     files: ['src/components/sessionPulseWireValues.ts'],
+    rules: {
+      'i18next/no-literal-string': 'off',
+    },
+  },
+
+  // HOOK EVENT NAMES ONLY: matched BY VALUE against the backend's event
+  // allowlist, and rendered verbatim on the hook's own row, so a translated one is
+  // rejected on save and disagrees with its row. Extracted so the page keeps its
+  // gate. See the module's own header.
+  {
+    files: ['src/pages/hookEventWireValues.ts'],
     rules: {
       'i18next/no-literal-string': 'off',
     },

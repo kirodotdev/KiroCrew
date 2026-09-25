@@ -1736,8 +1736,20 @@ dispatcher; `WorkflowService` binds `agent.workflow_run_timeout_secs` to its
 `agent.max_channel_agents` to its cap setters, both with `live.bind`). Only the
 ones whose holder is `DashboardState`, or that must rebuild agent artifacts,
 live in `server.py::_register_config_watch` — `agent.provider`,
-`agent.role_models.background`, and `agent.log_level`
+`agent.model`, `agent.role_models.background`, and `agent.log_level`
 (→ `handlers/updates.py::apply_log_level_from_config`).
+Both model appliers rebuild the installed agent specifications before the
+watcher finishes dispatching the change. After a successful `agent.model`
+rebuild, its applier emits a refresh frame, so dashboard PATCH responses and
+that frame expose the new effective model only after the corresponding
+specification is ready, including when the value is cleared back to `auto`.
+If the rebuild fails, the applier logs the failure and emits no refresh frame;
+the previous specification and effective-model readout remain in force. It also
+raises an actionable dashboard notification and remains stale in the watcher,
+which retries the rebuild on later ticks until the generated spec catches up.
+The first successful retry emits both the refresh frame and a recovery
+notification, so the operator is not left with a stale failure message after
+the saved model becomes active.
 The provider applier only schedules the switch: `reload_provider_factory` clears
 the session registry and then shuts the retired providers down one at a time,
 which can outlast the applier bound, and a timed-out applier is retried on the
@@ -1901,7 +1913,7 @@ class AgentConfig:
     streaming: bool = True
     model: str = "auto"            # resolved from agent config
     provider: str = "acp"          # fixed to "acp" (kiro-cli) — the only provider
-    sandbox: str = "auto"          # default "auto" (namespace on Linux, seatbelt on macOS; delegates to kiro-cli's internal sandbox on macOS when enabled); "off" skips Kiro Crew's sandbox
+    sandbox: str = "auto"          # "auto" (default: standard tier -- namespace on Linux, seatbelt on macOS; leaves ~/.aws, ~/.ssh, ~/.kube visible for credential tooling; delegates to kiro-cli's internal sandbox on macOS when enabled) | "strict" (opt-in: also hides ~/.aws incl. sso/cache, ~/.ssh bar known_hosts, ~/.kube, ~/.config/gh and the _CC_FILES credential files; applies to sessions started after the change) | "off" (skips Kiro Crew's sandbox). Enum widened to admit "strict" (the tier sandbox.py always implemented, and the one its remedies name) -- default and the other two values unchanged
     sandbox_allow_no_isolation: bool = False  # SEC-009: acknowledge running un-isolated when no sandbox backend exists; false = loud SECURITY warning, true = info-level
     soft_stop_budget_secs: float = 10.0  # seconds to wait for cooperative cancel before hard kill [0.5, 60.0]
     dangerously_skip_permissions: bool = False  # persistent all-tool approval; restart required
@@ -1961,6 +1973,7 @@ class MemoryConfig:
     persistence_enabled: bool = True # global switch: off = no automatic memory writes (lessons, consolidation, task-runner) AND no stored memory/lessons injected
     inject_memory: bool = True       # inject the stored memory block (preferences, activity index, recent-session snippets) into new-session context
     inject_lessons: bool = True      # inject the [Learned corrections] + [USER PROFILE] blocks into new-session context
+    inject_activity: bool = True     # inject the budgeted [Memory activity] block (projects, daily history (14 full days, then decayed summaries and counts to day 180), task facts, relevant episodes); requires inject_memory
 
 @dataclass
 class KnowledgeConfig:
@@ -2833,7 +2846,8 @@ Returns the effective config for a channel:
     "history_max_days": 365,
     "persistence_enabled": true,
     "inject_memory": true,
-    "inject_lessons": true
+    "inject_lessons": true,
+    "inject_activity": true
   },
   "knowledge": {
     "auto_add_documents": false,

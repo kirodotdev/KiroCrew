@@ -328,7 +328,7 @@ cancelled caller still lets the worker settle).
   "params": { "sessionId": "...", "options": [PermissionOption], "toolCall": ToolCallUpdate } }
 ```
 
-**Unknown server→client requests are answered, never dropped.** `session/request_permission` is the only inbound *request* `AcpClient` implements. `AcpSessionHandle` serves two more, both read-only and both KAS-specific: `_kiro/hooks/list` and `_kiro/hooks/sessionStart`, answered from `acp/kas_wire.py` (see agent-host-contract.md). They are matched in that handle's own dispatch loop, ahead of the shared classifier, precisely so the classifier keeps reporting them as unknown on the `AcpClient` path — which serves no hooks surface, and where naming an action no branch handles would leave the request unanswered instead of refused. `_kiro/hooks/executeHook` is implemented nowhere, so it is refused like any other unknown request. Any other server→client request (method **and** id — e.g. `fs/read_text_file`, `terminal/create`) is classified by `_process_message` as `"server_request_unknown"`. Every prompt dispatch site (`send_message_stream`, `_dispatch_events`, `_read_prompt_response`) handles that action by calling `_reject_unknown_server_request`, which replies with a JSON-RPC `-32601` (`JSONRPC_METHOD_NOT_FOUND`, "Method not found") error via `_send_error`. Without this, JSON-RPC semantics leave the agent blocked forever on an unanswered request — the turn hangs. Notifications (method, no id) are unaffected and still classified `"skip"`.
+**Unknown server→client requests are answered, never dropped.** `session/request_permission` is the only inbound *request* `AcpClient` implements. `AcpSessionHandle` serves three more, all KAS-specific: `_kiro/hooks/list`, `_kiro/hooks/sessionStart` and `_kiro/hooks/executeHook`, answered from `acp/kas_wire.py` (see agent-host-contract.md, which states the four gates `executeHook` passes before anything spawns). They are matched in that handle's own dispatch loop, ahead of the shared classifier, precisely so the classifier keeps reporting them as unknown on the `AcpClient` path — which serves no hooks surface, and where naming an action no branch handles would leave the request unanswered instead of refused. Any other server→client request (method **and** id — e.g. `fs/read_text_file`, `terminal/create`) is classified by `_process_message` as `"server_request_unknown"`. Every prompt dispatch site (`send_message_stream`, `_dispatch_events`, `_read_prompt_response`) handles that action by calling `_reject_unknown_server_request`, which replies with a JSON-RPC `-32601` (`JSONRPC_METHOD_NOT_FOUND`, "Method not found") error via `_send_error`. Without this, JSON-RPC semantics leave the agent blocked forever on an unanswered request — the turn hangs. Notifications (method, no id) are unaffected and still classified `"skip"`.
 
 `PermissionOption` field names differ between backends — kiro-cli uses `id`/`label`, claude-agent-acp uses `optionId`/`name` (per the public ACP spec). `_build_permission_event` reads both and remembers the optionIds keyed by `kind` (`allow_once`/`allow_always`/`reject_once`/`reject_always`) on the request id — recording an entry when **either** an allow option (for `approve_tool`) **or** a reject option (for a clean `reject_tool`) was advertised. `approve_tool(request_id, *, always=False)` echoes the matching allow id back, so the host doesn't need to know whether it's talking to kiro (`"allow_once"`/`"allow_always"`) or claude-agent-acp (`"allow"`/`"allow_always"`). `reject_tool` prefers a **clean reject**: if a reject optionId was advertised it sends `outcome: "selected"` with that id. Both backends advertise one — claude-agent-acp as `{kind:"reject_once", optionId:"reject"}` (→ `behavior:"deny"`), kiro-cli as `{kind:"reject_once", optionId:"reject_once"}` — and the fallback to `outcome: "cancelled"` therefore only applies to a backend that advertises no reject option at all. The distinction is load-bearing, not cosmetic: a clean reject resolves the tool call to `status:"failed"` with kiro-cli's fixed content `"User denied tool execution"` and the turn continues to the next model-inference boundary (`stopReason: "end_turn"`), whereas `cancelled` ends the turn immediately with `stopReason: "refusal"` and no text — and drops any queued `_session/steer` as `AgentExecutionUserMessageCleared`. That is why the host's in-band deny notice (`_steer_policy_notice`) can only be folded in on the clean-reject path, and why `stopReason: "refusal"` is NOT by itself evidence of a model-side content refusal.
 
@@ -1432,6 +1432,32 @@ collector-owned attempt's frames left there would be read as the NEXT
 session-start timeout's progress and hide the servers that never reported for it.
 Both holders are bounded (`_INIT_NOTIFICATION_BUFFER_LIMIT`) and claim by the
 session id inside the frame, so no frame can reach two sessions.
+
+**What the progress suffix counts, and says it counts.** The roster
+`_mcp_init_progress` (and the dedicated client's `_mcp_timeout_progress`) reports
+against is the `mcpServers` array the session put ON THE WIRE — on kiro-cli the
+broker stubs Kiro Crew injects (`pooled_session_servers`), never the agent spec's
+own servers, which the backend starts itself and which are not in the roster; and
+nothing after MCP init inside the backend's session start is observable from the
+runtime at all. A suffix of the bare shape `4/4 MCP server(s) reported` was
+therefore read as "all MCP is up, so MCP is the problem", and a field report of a
+90 s `session/new` was triaged as an MCP failure on the strength of that suffix
+alone. The count is now labelled `N/M session-injected MCP server(s) reported`
+(same numerator and denominator as before, so a grep on the fraction still
+works), a partial roster still lists `no report from …`, and a COMPLETE roster is
+followed by `types.MCP_ROSTER_COMPLETE_NOTE` — "the stall is later in session
+startup, not in those servers" (the fraction already says every server reported,
+so the note carries only the conclusion; what the count does not cover is
+documented here, not in the error line). The note is withheld when a roster
+member reported an init FAILURE: that member counts as reported, so it is not
+chased as silent, but it is named under `failed:` and the stall may be in it.
+One string for both start paths so the two messages cannot drift. With NO roster (an empty `mcpServers` array) the reports can only
+belong to the agent spec's own servers or a concurrent start, so that branch
+says `N MCP server report(s), roster unknown` and does not claim them as
+session-injected. The `failed:` and `awaiting authorization:` buckets are
+unchanged: an out-of-roster server is still named there, where naming it is the
+point. Pinned by
+`test_session_start_timeout_diagnostics.py::test_a_complete_roster_says_the_stall_is_not_in_those_servers`.
 
 **One permit is reserved for a start that has not gone out.** A collector holding
 its permit is the intended back-pressure — the backend really is still working on

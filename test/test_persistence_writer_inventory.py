@@ -94,6 +94,12 @@ EXEMPT = {
     "eval/bench/ingest.py::ingest_instance": "bench harness, isolated workspace",
     "eval/bench/member_v2.py::_insert": "bench harness, isolated workspace",
     "eval/bench/member_v2.py::_edge_report": "bench harness, isolated workspace",
+    # Ops-dispatch semantic-recall tests seed a VectorMemoryStore under their own
+    # tmp path (never the live store) to exercise the query-vector ranking and
+    # cold-model fallback paths.
+    "apps/builtins/ops_mission_control/tests/test_ledger_index.py::_real_store_with_semantic_pair": (
+        "test harness, isolated workspace"
+    ),
     # The CLI's own explicit `kirocrew learn add`, which carries its own check
     # (a refusal message rather than a silent skip) — see cli_commands.
     "cli_commands.py::_learn": "carries its own refusal",

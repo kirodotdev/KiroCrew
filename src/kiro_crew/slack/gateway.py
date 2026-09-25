@@ -4480,6 +4480,132 @@ class GatewayOrchestrator:
                 cron_execution.template_id,
             )
 
+            def _resolve_cron_agent(
+                alias: str | None,
+            ) -> "tuple[str | None, str | None, str | None]":
+                """Resolve a cron agent alias to (kiro_agent, cwd, crew_alias).
+
+                A cron bound to a Slack channel carries that channel's agent
+                ALIAS (e.g. ``in-3d``) in ``job.agent_id`` / ``agent_sequence``.
+                kiro-cli only accepts a materialized agent MODE, not a Kiro Crew
+                alias, so dispatching the alias verbatim fails closed with
+                "Agent mode 'in-3d' is not available … its ~/.kiro/agents/
+                in-3d.json is likely missing". The dashboard chat path already
+                collapses the alias the right way — see
+                ``chat_runner._allocation_kwargs``, which passes
+                ``agent=<kiro_agent>`` alongside ``crew_agent=<alias>`` so
+                ``prepare_runtime`` still resolves the member identity from the
+                alias. The cron path was the one turn-running surface that
+                skipped it.
+
+                Mirror that here: dispatch the alias's ``kiro_agent`` (usually
+                ``kirocrew``) as ``agent``, run in the agent's workspace ``cwd``,
+                AND return the ``crew_alias`` so the caller can pass it as
+                ``crew_agent=`` — without which ``resolve_crew_identity`` sees
+                only the bare kiro template name (not a ``config.agents`` key),
+                returns ``""``, and every member-capability gate, the crew's
+                pinned model / reasoning-effort, and its watchdog windows are
+                silently skipped. Returns (None, None, None) on any miss so the
+                caller falls back to the raw value unchanged (behavior-preserving
+                for a job whose agent is already a real mode or is unset).
+                """
+                if not alias:
+                    return None, None, None
+                try:
+                    from kiro_crew.config.loader import (
+                        resolve_agent_bindings,
+                        workspace_dir_from_entry,
+                    )
+
+                    cfg = getattr(self, "_cfg", None)
+                    # Prefer the last APPLIED reload over the boot snapshot: an
+                    # agent created at runtime (dashboard/CLI) writes cfg.agents
+                    # in live.snapshot() but not in the boot self._cfg, so a
+                    # boot-only read would miss a hot-added alias and dispatch it
+                    # raw (failing closed) on every fire until a gateway restart.
+                    # Same one-liner the watchdog/mcp reads use elsewhere here.
+                    cfg = live.snapshot() or cfg
+                    if cfg is None:
+                        return None, None, None
+                    agents = getattr(cfg, "agents", None) or {}
+                    # Resolve by IDENTITY, not by name, for a member execution.
+                    # The memory store is captured at authoring (cron_execution),
+                    # but the runtime/workspace/crew_agent are resolved live here;
+                    # if a same-name alias was deleted and recreated, a by-name
+                    # lookup would bind the NEW member's runtime while the store
+                    # stays the retired member's silo — a cross-identity memory
+                    # leak (the memory-store-seam execution_context.py guards).
+                    # member_config_for_id pins resolution to the captured
+                    # member_id, so the alias whose bindings we read is the same
+                    # member the store belongs to; a mismatch (recreated/renamed)
+                    # raises and we fall back to the raw value unchanged.
+                    resolved_alias = alias
+                    captured_member = getattr(cron_execution, "member_id", None)
+                    if captured_member:
+                        try:
+                            from kiro_crew.execution_context import member_config_for_id
+
+                            resolved_alias, _ = member_config_for_id(cfg, captured_member)
+                        except Exception:
+                            logger.debug(
+                                "cron member identity %r not resolvable in live cfg; "
+                                "leaving agent %r unchanged",
+                                captured_member,
+                                alias,
+                                exc_info=True,
+                            )
+                            return None, None, None
+                    # For a non-member (template/legacy) execution there is no
+                    # identity to pin to: ONLY collapse a real Kiro Crew alias.
+                    # resolve_agent_bindings falls back to the default agent for
+                    # an unknown name, so resolving unconditionally would rewrite
+                    # a legitimate kiro mode (e.g. 'kirocrew-lite') into the
+                    # default. A name that is not an alias is either a real mode
+                    # or unset — leave it untouched.
+                    elif alias not in agents:
+                        return None, None, None
+                    # validate_memory_files=False: we only need the alias's
+                    # kiro_agent + workspace mapping here, and this runs on the
+                    # gateway event loop. The default (True) does a synchronous
+                    # store dir stat + SQLite identity read, which would stall
+                    # the loop on every cron fire; the session's own
+                    # execution-context resolution validates the store later.
+                    bindings = resolve_agent_bindings(
+                        cfg, resolved_alias, validate_memory_files=False
+                    )
+                    kiro_agent = bindings.kiro_agent or None
+                    # Anchor the workspace dir by the one placement rule. The
+                    # resolved bindings.workspace_dir is the RAW configured value
+                    # (e.g. the shipped relative default "workspace"); handing
+                    # that to the provider as a cwd would resolve it against the
+                    # gateway PROCESS directory, not the data home. Resolve the
+                    # alias's workspace entry through workspace_dir_from_entry so
+                    # a relative dir anchors under config_dir() and an absolute
+                    # dir is honored as-is.
+                    agent_cfg = agents.get(resolved_alias)
+                    ws_name = getattr(agent_cfg, "workspace", None) if agent_cfg else None
+                    ws_entry = None
+                    if ws_name:
+                        ws_entry = getattr(cfg, "workspaces", {}).get(ws_name)
+                    # workspace_dir_from_entry(None) is the BASE workspace
+                    # directory under config_dir() — the documented answer for an
+                    # unmapped/empty workspace name (loader.py's workspace_dir_for
+                    # rule). Deliberately NOT cfg.default_workspace's dir: that
+                    # rule forbids an unmapped name hopping to whatever absolute
+                    # dir the default declares, so a missing mapping anchors to
+                    # the data home rather than escaping it (or defaulting to the
+                    # gateway process cwd via a None).
+                    ws_dir = workspace_dir_from_entry(ws_entry)
+                    cwd = str(ws_dir) if ws_dir else None
+                    # Carry the identity-resolved alias back as crew_alias:
+                    # prepare_runtime needs it to resolve the member identity (the
+                    # kiro_agent name alone is not a config.agents key), and it is
+                    # the alias pinned to the captured member_id above.
+                    return kiro_agent, cwd, resolved_alias
+                except Exception:
+                    logger.debug("cron agent resolve failed for %r", alias, exc_info=True)
+                    return None, None, None
+
             # ── Concurrent execution guard ──
             if (job.script or job.command) and job.id in self._running_script_ids:
                 logger.info("Cron '%s': previous execution still running, skipping", job.name)
@@ -5331,11 +5457,22 @@ class GatewayOrchestrator:
                 return env or None
 
             async def _acquire_with_model_fallback(
-                key: str, agent_id: str | None
+                key: str,
+                agent_id: str | None,
+                cwd: str | None = None,
+                crew_agent: str | None = None,
             ) -> "tuple[LLMProvider, bool, bool, bool]":
                 """get_or_create honoring job.model; if that model is
                 unavailable, retry once with the registry default.
-                Returns (client, is_new, resumed, downgraded)."""
+                Returns (client, is_new, resumed, downgraded).
+
+                ``agent_id`` is the RESOLVED kiro agent mode (an alias must be
+                collapsed via _resolve_cron_agent before this call), ``cwd``
+                is that agent's workspace so the session runs in the right tree,
+                and ``crew_agent`` is the original alias so prepare_runtime
+                resolves the member identity (its capability gates, model /
+                reasoning-effort pins, and watchdog windows).
+                """
 
                 assert self.sessions is not None
                 from kiro_crew.execution_context import bind_session_execution
@@ -5360,10 +5497,12 @@ class GatewayOrchestrator:
                     client, is_new, resumed = await self.sessions.get_or_create(
                         key,
                         agent=agent_id,
+                        crew_agent=crew_agent,
                         channel_id=job.channel,
                         approval_policy=job.approval_mode,
                         model=job.model or None,
                         extra_env=_cron_extra_env(),
+                        cwd=cwd,
                     )
                     return client, is_new, resumed, False
                 except Exception as model_exc:
@@ -5385,9 +5524,11 @@ class GatewayOrchestrator:
                     client, is_new, resumed = await self.sessions.get_or_create(
                         key,
                         agent=agent_id,
+                        crew_agent=crew_agent,
                         channel_id=job.channel,
                         approval_policy=job.approval_mode,
                         extra_env=_cron_extra_env(),
+                        cwd=cwd,
                     )
                     return client, is_new, resumed, True
 
@@ -5431,8 +5572,12 @@ class GatewayOrchestrator:
                         _box["reason"] = str(getattr(ev, "stop_reason", "") or "")
 
                     try:
+                        # Collapse an alias (e.g. a channel-bound agent) to its
+                        # real kiro mode + workspace; keep the session key on the
+                        # ORIGINAL alias so per-agent keys stay stable.
+                        _seq_kagent, _seq_cwd, _seq_crew = _resolve_cron_agent(agent)
                         client, is_new, _resumed, _downgraded = await _acquire_with_model_fallback(
-                            agent_session_key, agent
+                            agent_session_key, _seq_kagent or agent, _seq_cwd, _seq_crew
                         )
                         _seq_downgraded = _seq_downgraded or _downgraded
                         _acq = True
@@ -5612,8 +5757,12 @@ class GatewayOrchestrator:
             try:
                 assert self.sessions is not None
                 assert self.ctx_builder is not None
+                # Collapse an alias (channel-bound agent) to its real kiro mode
+                # + workspace before dispatch; falls back to the raw value when
+                # it is already a real mode or unset.
+                _single_kagent, _single_cwd, _single_crew = _resolve_cron_agent(cron_agent or None)
                 client, is_new, _resumed, _model_downgraded = await _acquire_with_model_fallback(
-                    session_key, cron_agent or None
+                    session_key, _single_kagent or cron_agent or None, _single_cwd, _single_crew
                 )
                 _acquired = True
                 # Same identity publish as the sequential site above — the

@@ -1765,7 +1765,23 @@ async def create_session(
                 getattr(caller_slot, "memory_mode", "persistent")
             )
             if agent.strip():
-                child_execution = replace(child_execution, template_id=bindings.kiro_agent)
+                # An explicit template selects the child's PERSONA, never its memory:
+                # the store, and the member identity that store is bound to, stay
+                # the caller's, while the selection namespace becomes the template's
+                # -- the same split the subagent admission gate makes for a
+                # `spawn_run(agent=...)` delegate. ContextBuilder reads that
+                # namespace: a member's delegate that was picked to do the work
+                # itself keeps the member's identity and rules but is not handed
+                # the member's operating protocol, which would send it to delegate
+                # again. A member with no persisted id is named by its selection
+                # alone, so the split would leave its child attributed to no member
+                # and drop its [PERMANENT RULES] with its persona; that child keeps
+                # the selection and takes only the template, whole desk included,
+                # until the record can say "this member, under that template".
+                if child_execution.member_id is None and child_execution.selection_kind == "member":
+                    child_execution = replace(child_execution, template_id=bindings.kiro_agent)
+                else:
+                    child_execution = child_execution.with_template(bindings.kiro_agent, agent_name)
         elif bindings.selection_kind == "member":
             child_execution = resolve_member_execution(
                 cfg,

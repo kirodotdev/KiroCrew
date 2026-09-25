@@ -8,6 +8,64 @@ describe('VoiceStatusBar', () => {
     expect(container).toBeEmptyDOMElement()
   })
 
+  it('keeps explaining the model load after capture ends', () => {
+    // The mic is released the moment the key comes up, but the retained audio is
+    // still waiting on the model. An empty strip here is a composer that looks
+    // broken for as long as the load takes.
+    render(<VoiceStatusBar recording={false} level={0} download={{ done: 0, total: 0, stage: 'preparing' }} />)
+    expect(screen.getByTestId('voice-status-download').textContent).toContain('Loading the speech model…')
+    expect(screen.queryByText('Recording')).toBeNull()
+  })
+
+  it('promises the released utterance is kept, only after capture ends', () => {
+    // Without this the wait is indistinguishable from having lost the sentence,
+    // and the sensible response to that is to give up and retype it.
+    const { unmount } = render(
+      <VoiceStatusBar recording={false} level={0} download={{ done: 0, total: 0, stage: 'preparing' }} />,
+    )
+    expect(screen.getByTestId('voice-status-download').textContent)
+      .toContain('Your dictation is kept and will be transcribed.')
+    unmount()
+
+    // Not while the mic is live: nothing looks lost yet, and the recording row
+    // has to keep the controls that end the recording on it.
+    render(<VoiceStatusBar recording level={0.5} download={{ done: 0, total: 0, stage: 'preparing' }} />)
+    expect(screen.queryByText(/Your dictation is kept/)).toBeNull()
+  })
+
+  it('keeps explaining the weight fetch after capture ends', () => {
+    render(<VoiceStatusBar recording={false} level={0} download={{ done: 5000000, total: 10000000, stage: 'downloading' }} />)
+    expect(screen.getByTestId('voice-status-download').textContent).toContain('Downloading the speech model')
+  })
+
+  it('prefers the model line over an idle notice while the model is still working', () => {
+    // The load is why nothing has arrived yet; the idle notice is about a mic
+    // the user is not waiting on.
+    render(
+      <VoiceStatusBar
+        recording={false}
+        level={0}
+        download={{ done: 0, total: 0, stage: 'preparing' }}
+        notice={{ text: 'Dictation added to your message', tone: 'ok' }}
+      />,
+    )
+    expect(screen.getByTestId('voice-status-download').textContent).toContain('Loading the speech model…')
+    expect(screen.queryByText('Dictation added to your message')).toBeNull()
+  })
+
+  it('prefers a mic error over the model line', () => {
+    render(
+      <VoiceStatusBar
+        recording={false}
+        level={0}
+        download={{ done: 0, total: 0, stage: 'preparing' }}
+        error="Microphone permission denied."
+      />,
+    )
+    expect(screen.getByText('Microphone permission denied.')).toBeTruthy()
+    expect(screen.queryByTestId('voice-status-download')).toBeNull()
+  })
+
   it('shows the recording indicator with the active mic name while recording', () => {
     render(<VoiceStatusBar recording level={0.5} deviceLabel="MacBook Pro Microphone" />)
     expect(screen.getByText('Recording')).toBeTruthy()

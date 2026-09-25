@@ -326,6 +326,21 @@ describe('KiroCrewCfgTab — select and toggle rows', () => {
     })
   })
 
+  it('offers the strict tier beside auto and off, with auto still the shipped selection', async () => {
+    const updated = clone()
+    updated.agent.sandbox = 'strict'
+    seed(CFG, updated)
+
+    await renderTab()
+    expect(optionIn('Sandbox', 'auto')).toHaveAttribute('aria-selected', 'true')
+    expect(optionIn('Sandbox', 'off')).toBeInTheDocument()
+    fireEvent.click(optionIn('Sandbox', 'strict'))
+
+    await waitFor(() => {
+      expect(vi.mocked(api).patchConfig).toHaveBeenCalledWith('agent.sandbox', 'strict')
+    })
+  })
+
   it('keeps same-valued options on different rows apart', async () => {
     const updated = clone()
     updated.agent.approval_mode = 'interactive'

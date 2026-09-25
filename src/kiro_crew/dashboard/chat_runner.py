@@ -60,6 +60,7 @@ from kiro_crew.agent_discovery import (
     session_skill_globs,
     warm_project_agent_names,
 )
+from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
 from kiro_crew.agent_sdk.capabilities import capabilities_of
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.autonudge import get_instance
@@ -120,6 +121,7 @@ from kiro_crew.dashboard.chat_title import (
 )
 from kiro_crew.dashboard.chat_utils import (
     _BLOCKED_SLASH_COMMANDS,
+    _KIRO_ONLY_BLOCKED_SLASH_COMMANDS,
     _MAX_TOOL_PURPOSE,
     ResetCause,
     _append_compaction_notice,
@@ -274,6 +276,11 @@ from kiro_crew.members import member_lifecycle, record_activity
 from kiro_crew.messaging.commands import compact_unsupported_reply
 from kiro_crew.messaging.dispatch import consume_reinjection, rearm_reinjection
 from kiro_crew.messaging.display_safety import redact_for_display
+from kiro_crew.messaging.empty_turn_copy import (
+    EMPTY_TURN_NOTICE,
+    EMPTY_TURN_NOTICE_AFTER_RECOVERY,
+    EMPTY_TURN_NOTICE_AFTER_WORK,
+)
 from kiro_crew.messaging.identity import publish_turn_identity
 from kiro_crew.messaging.link import (
     CHAT_TYPE_DIRECT,
@@ -384,6 +391,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402
     EMPTY_RUNG_REPLAY,
     FALSE_TOOL_BLOCKER_REPLAY_KIND,
     MODEL_UNENTITLED_KIND,
+    SESSION_START_FAILED_KIND,
     STAGE_DELIVERY_KINDS,
     SUBAGENT_COMPLETION_KIND,
     SYNTHETIC_RECOVERY_KIND,
@@ -4318,23 +4326,36 @@ def _route_history_source(state: DashboardState, session_key: str) -> "Callable[
     return _rows
 
 
-#: The two spellings of "this slot names no model", which is what the picker's
-#: Auto row means and what a freshly dispatched worker slot carries. Compared
-#: against a stripped, lower-cased model so a hand-written ``"Auto"`` reads the
-#: same as the picker's own value.
-_JEV_ROUTE_AUTO_MODELS = ("", "auto")
+#: The one spelling of "the owner chose to name no model": the picker's Auto row.
+#: Compared against a stripped, lower-cased model so a hand-written ``"Auto"``
+#: reads the same as the picker's own value.
+#:
+#: ``""`` is deliberately NOT here. It is the opposite fact -- a slot nobody has
+#: picked for yet -- and routing is an OWNER action, so the absence of a choice
+#: does not arm it. Admitting ``""`` was also uneven in practice: on a seam whose
+#: first session backfills a resolved model into ``slot.model``
+#: (``_backfill_canonical_model``) before this gate is read, the slot was already
+#: pinned and nothing routed, while on a seam that backfills ``""`` (a Bedrock
+#: profile-form id, or a model not yet reported) the same ``""`` slot DID route --
+#: one state, two behaviours, and a composer chip that could not tell which. This
+#: drops that arm on purpose; ``auto`` (the owner's inherit pick) is the one way in.
+_JEV_ROUTE_AUTO_MODELS = ("auto",)
 
 
 def _jev_route_armed(slot: Any) -> bool:
     """Whether this slot's turns ask ``model.route`` which model to run on.
 
-    Two ways in, and they are the same answer to the same question -- "the owner
-    named no model for this session, so let Jev name one per turn":
+    Two ways in, and both are the OWNER saying "do not pin this session, let Jev
+    name a model per turn":
 
     * the owner picked the ``Auto (Jev)`` row, which survives as ``slot.jev_route``;
-    * the slot names no model at all (``auto``, or the empty string a freshly
-      dispatched worker slot carries) while the Jev preview is on, which is the
-      state the composer chip renders as ``Auto (Jev)``.
+    * the slot's model is ``auto`` -- the picker's inherit row, which the sentinel
+      pick also resolves to -- while the Jev preview is on, which is the state the
+      composer chip renders as ``Auto (Jev)``.
+
+    A slot that names NO model (``""``) is not armed. That value is not a choice,
+    it is the absence of one, and the runtime replaces it with the resolved model
+    before this gate is ever read (see :data:`_JEV_ROUTE_AUTO_MODELS`).
 
     In-memory only, so the turn gate can read it on the event loop and the switch
     can re-read it inside the model locks. Whether the PREVIEW is on is a keystone
@@ -4932,6 +4953,8 @@ async def _tool_risk_meta(
             policy=_auto_approve_reason(slot, state.is_yolo_active()),
             session_key=session_key,
             calls_this_turn=calls_this_turn,
+            tool_kind=event.tool_kind or "",
+            diff_path=event.diff_path or "",
         )
         return {"decisions_tool_risk": record} if record else None
     except Exception:  # pragma: no cover - an observation may not cost a call
@@ -5650,12 +5673,17 @@ def _note_cycle_start_failure(slot_key: str, exc: BaseException, *, self_wake: b
 def _terminal_error_meta(exc: BaseException) -> dict[str, object] | None:
     """Row-level kind for a terminal ACP error, or None for a plain error row.
 
-    Three structural tags, all set by ``_raise_acp_error`` from the raw frame
-    and read here without looking at the prose: a model-entitlement rejection
+    Four structural tags, read here without looking at the prose. Three are set
+    by ``_raise_acp_error`` from the raw frame: a model-entitlement rejection
     (``rejected_model`` / ``advertised``), a sign-in failure (``auth_required``)
     and a spent plan allowance (``usage_limit``). The entitlement verdict wins
     when it is set, because its fix (pick a served model) is the one the prose
-    describes; the other two are exclusive at raise time.
+    describes; the other two are exclusive at raise time. The fourth,
+    ``session_start_failed``, is set at the ACP session-start timeout raise
+    sites on BOTH exception families (``AcpError`` on the dedicated client,
+    ``AcpRequestTimeout`` on the shared runtime, which share no base -- hence
+    ``getattr``) and ranks last: a start that failed because the process is
+    signed out has a fix, and that fix is what the card should show.
     """
     unentitled = _model_unentitled_meta(exc)
     if unentitled is not None:
@@ -5664,6 +5692,8 @@ def _terminal_error_meta(exc: BaseException) -> dict[str, object] | None:
         return {"kind": AUTH_REQUIRED_KIND}
     if getattr(exc, "usage_limit", False):
         return {"kind": USAGE_LIMIT_KIND}
+    if getattr(exc, "session_start_failed", False) is True:
+        return {"kind": SESSION_START_FAILED_KIND}
     return None
 
 
@@ -6699,12 +6729,10 @@ async def _spawn_admitted_prefetch(
         # observes afterwards cannot replace this with the successor's id.
         #
         # Same source as the turn site: the slot-to-session mapping, read
-        # non-pruning. One known limit is recorded rather than worked around here:
-        # an allocation whose replay is still pending defers publishing its fresh
-        # id, so for that window the mapping names the store before the newest one
-        # and the store between them is cited by nobody. Closing that needs a
-        # deferral that resumes once the predecessor's own writes settle, which is
-        # the same mechanism the superseded-tail work needs and is tracked with it.
+        # non-pruning. It is the FALLBACK rather than the answer -- the latch
+        # prefers the store this slot last handed to a `session/opened`, because an
+        # allocation whose history replay is pending holds the prior resumable id in
+        # the mapping on purpose and the mapping is then a generation behind.
         slot.latch_crew_log_previous(sessions.mapped_sid(session_key))
         # speculative=True keeps the one-shot first-turn flag armed for
         # the real first message (atomically, at registration) and
@@ -7679,6 +7707,20 @@ def _session_stop_generation_for(sessions: Any, session_key: str) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
+def _retry_cancel_reason(rebound: bool, superseded: bool, stopped: bool) -> str:
+    """The tail of a "retry cancelled" notice, naming why the retry was dropped.
+
+    A rebind reads as a move only when the retry was neither superseded nor
+    stopped; a newer message outranks a Stop, so a superseded turn never reads
+    as stopped.
+    """
+    if rebound and not (superseded or stopped):
+        return "this chat moved to another session."
+    if superseded:
+        return "your newer message runs instead."
+    return "the turn was stopped."
+
+
 async def _start_next_queued_turn(
     state: DashboardState,
     slot: _ChatSlot,
@@ -7838,16 +7880,15 @@ async def _start_next_queued_turn(
             # Branch on the trigger: only a real user follow-up "takes over"; a Stop
             # with nothing queued ran nothing — do not promise a takeover that
             # never happens.
-            _correction = (
-                "ℹ️ Auto-continue cancelled — your message takes over."
-                if _user_input
-                else (
+            if _user_input:
+                _correction = "ℹ️ Auto-continue cancelled — your message takes over."
+            elif _rebound_since_enqueue:
+                _correction = (
                     "ℹ️ Auto-continue cancelled — this chat moved to another "
                     "session, nothing was run."
-                    if _rebound_since_enqueue
-                    else "ℹ️ Auto-continue cancelled — the turn was stopped, nothing was run."
                 )
-            )
+            else:
+                _correction = "ℹ️ Auto-continue cancelled — the turn was stopped, nothing was run."
             slot.append("notice", _correction, "msg msg-info")
             logger.info(
                 "Purged %d superseded promise-only continuation(s) before dispatch "
@@ -7999,15 +8040,7 @@ async def _start_next_queued_turn(
                 slot.append(
                     "notice",
                     "ℹ️ Content-filter retry cancelled — "
-                    + (
-                        "this chat moved to another session."
-                        if _replay_rebound and not (_replay_superseded or _replay_stopped)
-                        else (
-                            "your newer message runs instead."
-                            if _replay_superseded
-                            else "the turn was stopped."
-                        )
-                    ),
+                    + _retry_cancel_reason(_replay_rebound, _replay_superseded, _replay_stopped),
                     "msg msg-info",
                 )
                 logger.info(
@@ -9451,14 +9484,8 @@ async def _run_chat(
             slot.append(
                 "notice",
                 "ℹ️ Model-fallback retry cancelled — "
-                + (
-                    "this chat moved to another session."
-                    if _ma_rebound_consume and not (_ma_superseded_consume or _ma_stopped_consume)
-                    else (
-                        "your newer message runs instead."
-                        if _ma_superseded_consume
-                        else "the turn was stopped."
-                    )
+                + _retry_cancel_reason(
+                    _ma_rebound_consume, _ma_superseded_consume, _ma_stopped_consume
                 ),
                 "msg msg-info",
             )
@@ -9529,15 +9556,7 @@ async def _run_chat(
             slot.append(
                 "notice",
                 "ℹ️ Content-filter retry cancelled — "
-                + (
-                    "this chat moved to another session."
-                    if _rv_rebound and not (_rv_superseded or _rv_stopped)
-                    else (
-                        "your newer message runs instead."
-                        if _rv_superseded
-                        else "the turn was stopped."
-                    )
-                ),
+                + _retry_cancel_reason(_rv_rebound, _rv_superseded, _rv_stopped),
                 "msg msg-info",
             )
             logger.info(
@@ -9865,14 +9884,24 @@ async def _run_chat(
 
     # ── Slash commands: detect early, before session acquisition ──
     first_word = message.split()[0] if message.strip() else ""
-    _is_cc_provider = is_claude_code(KiroCrewConfig.load().agent.provider)
+    _cfg_agent = KiroCrewConfig.load().agent
+    _is_cc_provider = is_claude_code(_cfg_agent.provider)
+    # The claude harness answers on either provider axis: the claude_code seam, or
+    # the acp seam spawning the claude backend (both selectable in this build).
+    _is_cc_harness = _is_cc_provider or is_claude_backend_name(
+        getattr(_cfg_agent, "acp_backend", "")
+    )
     # Named rather than inlined so the quick-prompt exception is one testable rule
     # instead of a condition only reachable by driving this whole function: a macro
     # must NOT be forwarded to the harness as a command.
     is_slash = is_harness_slash_command(first_word, cc_provider=_is_cc_provider)
 
-    # Block dangerous/local-only commands before acquiring a session
-    if first_word in _BLOCKED_SLASH_COMMANDS:
+    # Block dangerous/local-only commands before acquiring a session. The
+    # kiro-only members are skipped where the harness implements them itself.
+    _blocked = _BLOCKED_SLASH_COMMANDS
+    if _is_cc_harness:
+        _blocked -= _KIRO_ONLY_BLOCKED_SLASH_COMMANDS
+    if first_word in _blocked:
         sel().log_tool_invocation(
             session_key="",
             agent=slot.agent or "kirocrew",
@@ -10525,12 +10554,12 @@ async def _run_chat(
         # resume would not: it asks what the key was last serving, not what can
         # still be resumed.
         #
-        # The window a single mapping read cannot close is a replay-pending
-        # allocation. Such an allocation defers publishing its fresh id, so the
-        # mapping keeps naming the store before it; two successive allocations then
-        # cite that same older store and the store between them is cited by nobody,
-        # which a walker steps over with no signal. That is a recorded residual,
-        # tracked with the superseded-tail work rather than handled here.
+        # What a mapping read alone cannot answer is a replay-pending allocation,
+        # which keeps the prior resumable id here so a restart can still resume it.
+        # The mapping is then a generation behind the store the slot is writing. So
+        # this id is the fallback, and the authority is the store this slot last
+        # handed to a `session/opened`, which the latch prefers when it has one --
+        # an in-process read, so this coroutine still makes no store read at all.
         slot.latch_crew_log_previous(state.sessions.mapped_sid(session_key))
         # ONE allocation site (the crew-log latch above must sit right before
         # it): the cold-start branch claims under the lock without waiting for
@@ -10832,8 +10861,10 @@ async def _run_chat(
             # writes one only on a CREATE naming a different store, so handing
             # the value over on a re-attach costs nothing and leaving it behind
             # would make the slot's next store cite this store's predecessor
-            # instead of this store.
-            previous_sid=slot.take_crew_log_previous(),
+            # instead of this store. `now_writing` records which store the slot
+            # is on as the edge is spent, which is what the next allocation names
+            # as its predecessor without reading anything outside this process.
+            previous_sid=slot.take_crew_log_previous(now_writing=_crew_log_sid),
         )
         agent_label = kiro_agent or slot.agent or "default"
         # The label states what the session RUNS on, so a withheld pin reports the
@@ -11521,8 +11552,8 @@ async def _run_chat(
             await _probe_fallback_restore_for_slot(slot, client)
 
         # ── Jev model routing (decisions/points/model_route.py) ──
-        # For a slot that names no model -- the owner picked "Auto (Jev)", or the
-        # slot is on plain ``auto``/``""`` while the preview is on -- and only for a
+        # For a slot the owner chose not to pin -- the owner picked "Auto (Jev)", or
+        # the slot is on plain ``auto`` while the preview is on -- and only for a
         # NORMAL chat turn: `_crew_log_actor` is the turn's structural origin, so
         # cron deliveries, sub-agent turns, crew-relayed turns, app injections and
         # autonudge wakes are all excluded -- none has an owner watching the price
@@ -16215,24 +16246,15 @@ async def _run_chat(
                 # reaches give-up at one with no auto-continue; a productive
                 # turn's continuation reaches it at two with no verbatim
                 # retry), so the non-zero clause claims only that automatic
-                # recovery was attempted.
+                # recovery was attempted. The sentences are the channel driver's
+                # empty-turn verdict too (``messaging.empty_turn_copy``), so a
+                # channel thread mirrored into this transcript reads one story.
                 if _empty_activity.productive or slot._empty_episode_productive:
-                    _empty_msg = (
-                        "ℹ️ The turn ended without a closing reply. Send a "
-                        "message to continue from where it stopped — completed "
-                        "steps will not re-run."
-                    )
+                    _empty_msg = EMPTY_TURN_NOTICE_AFTER_WORK
                 elif slot._empty_response_retries > 0:
-                    _empty_msg = (
-                        "ℹ️ The model returned nothing this turn (automatic "
-                        "recovery was attempted). Just send your message "
-                        "again to continue."
-                    )
+                    _empty_msg = EMPTY_TURN_NOTICE_AFTER_RECOVERY
                 else:
-                    _empty_msg = (
-                        "ℹ️ The model returned nothing this turn. Just send "
-                        "your message again to continue."
-                    )
+                    _empty_msg = EMPTY_TURN_NOTICE
                 slot.append("notice", _empty_msg, "msg msg-info")
             # ONE warning per empty verdict, emitted AFTER the rung is chosen so
             # the log line carries the decision rather than only the symptom. The
@@ -18524,6 +18546,14 @@ async def _run_chat(
         _err_meta: dict | None = None
         if isinstance(exc, (_MemoryUnavailable, UnknownMemoryStore)):
             _err_meta = {"code": "memory_unavailable"}
+        else:
+            # A session start on the SHARED runtime lands here (see the sibling
+            # note below), and its ``session_start_failed`` tag is what lets the
+            # Continue endpoint count consecutive failed starts: the start
+            # registered no session, so ``record_failure`` a few lines down
+            # returns False and counts nothing. Every other exception reaching
+            # this arm carries none of the tags and keeps its plain row.
+            _err_meta = _terminal_error_meta(exc)
         slot.append("error", _err_text, "msg msg-err", meta=_err_meta)
         # The SIBLING of the tagged-start report in the AcpError branch above.
         # A session start on the SHARED runtime raises AcpRequestTimeout /
@@ -18717,7 +18747,22 @@ async def _run_chat(
 
             _autonudge = _autonudge_get()
             if _autonudge is not None:
-                _autonudge.notify_turn_complete(slot.key)
+                # The two facts only this frame holds: how many tools the turn
+                # dispatched and what it answered. The wake judge's feedback loop
+                # labels its own verdict from them -- a woken turn that called
+                # nothing and answered short is the quiet-cycle shape the judge
+                # should have suppressed. Passed as keywords so a build whose
+                # service predates them is unaffected, and neither is retained: the
+                # service reduces both to one boolean.
+                # A nudge turn labels its verdict only when its response lands;
+                # failed and cancelled turns keep the retry unlabelled.
+                _autonudge.notify_turn_complete(
+                    slot.key,
+                    tool_calls=_turn_tool_calls,
+                    reply_text=assistant_text if isinstance(assistant_text, str) else "",
+                    reply_flushed=_turn_flushed_visible_text,
+                    nudge_turn=_directive_self_wake and _turn_landed,
+                )
         except Exception:
             logger.debug("autonudge.notify_turn_complete failed", exc_info=True)
         # Clean up mirror stream on any exit path.

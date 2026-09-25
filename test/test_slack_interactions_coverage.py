@@ -373,9 +373,7 @@ class TestDispatchPayloadParsing:
         spy.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_message_action_routed_to_shortcut(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_message_action_routed_to_shortcut(self, monkeypatch: pytest.MonkeyPatch) -> None:
         spy = AsyncMock()
         monkeypatch.setattr(ix, "_handle_message_shortcut", spy)
         await ix.dispatch({"type": "message_action", "callback_id": "cb"})
@@ -597,21 +595,19 @@ class TestDispatchTransportToolApproval:
         return dec
 
     @pytest.mark.asyncio
-    async def test_approve_resolves_and_labels(
-        self, orch: MagicMock, _decider: MagicMock
-    ) -> None:
+    async def test_approve_resolves_and_labels(self, orch: MagicMock, _decider: MagicMock) -> None:
         from kiro_crew.slack.renderer import TOOL_APPROVE_ACTION_PREFIX
 
-        await ix.dispatch(_action_payload(f"{TOOL_APPROVE_ACTION_PREFIX}rid1", "sess1:rid1"))
-        _decider.resolve_global.assert_called_once_with("sess1:rid1", True)
+        await ix.dispatch(_action_payload(f"{TOOL_APPROVE_ACTION_PREFIX}rid1", "sess1:rid1|nA"))
+        _decider.resolve_global.assert_called_once_with("sess1:rid1", True, nonce="nA")
         assert orch.slack.update_message.await_args.kwargs["text"] == "✅ Approved"
 
     @pytest.mark.asyncio
     async def test_deny_resolves_false(self, orch: MagicMock, _decider: MagicMock) -> None:
         from kiro_crew.slack.renderer import TOOL_DENY_ACTION_PREFIX
 
-        await ix.dispatch(_action_payload(f"{TOOL_DENY_ACTION_PREFIX}rid2", "sess1:rid2"))
-        _decider.resolve_global.assert_called_once_with("sess1:rid2", False)
+        await ix.dispatch(_action_payload(f"{TOOL_DENY_ACTION_PREFIX}rid2", "sess1:rid2|nB"))
+        _decider.resolve_global.assert_called_once_with("sess1:rid2", False, nonce="nB")
         assert orch.slack.update_message.await_args.kwargs["text"] == "🚫 Denied"
 
     @pytest.mark.asyncio
@@ -622,10 +618,13 @@ class TestDispatchTransportToolApproval:
 
         trust = MagicMock()
         monkeypatch.setattr(ix, "add_trusted_session", trust)
-        await ix.dispatch(_action_payload(f"{TOOL_TRUST_ACTION_PREFIX}rid3", "sess1:rid3"))
+        await ix.dispatch(_action_payload(f"{TOOL_TRUST_ACTION_PREFIX}rid3", "sess1:rid3|nC"))
         trust.assert_called_once()
         assert trust.call_args.args[0] == "sess1"
-        _decider.resolve_global.assert_called_once_with("sess1:rid3", True)
+        # Trust is looked up under the SAME nonce the press carried, so a stale
+        # button cannot widen the session before the resolve behind it refuses.
+        _decider.session_for.assert_called_once_with("sess1:rid3", nonce="nC")
+        _decider.resolve_global.assert_called_once_with("sess1:rid3", True, nonce="nC")
 
     @pytest.mark.asyncio
     async def test_expired_approval_reports_expiry(
@@ -645,6 +644,8 @@ class TestDispatchTransportToolApproval:
 
         await ix.dispatch(_action_payload(f"{TOOL_APPROVE_ACTION_PREFIX}rid5", ""))
         assert _decider.resolve_global.call_args.args[0] == "rid5"
+        # Nothing to split, so no nonce is claimed — the decider refuses it.
+        assert _decider.resolve_global.call_args.kwargs["nonce"] == ""
 
     @pytest.mark.asyncio
     async def test_governance_deny_resolves_approval_as_denied(
@@ -654,8 +655,8 @@ class TestDispatchTransportToolApproval:
         from kiro_crew.slack.renderer import TOOL_APPROVE_ACTION_PREFIX
 
         monkeypatch.setattr(ix, "channel_inbound_permitted", AsyncMock(return_value=False))
-        await ix.dispatch(_action_payload(f"{TOOL_APPROVE_ACTION_PREFIX}rid6", "sess1:rid6"))
-        _decider.resolve_global.assert_called_once_with("sess1:rid6", False)
+        await ix.dispatch(_action_payload(f"{TOOL_APPROVE_ACTION_PREFIX}rid6", "sess1:rid6|nD"))
+        _decider.resolve_global.assert_called_once_with("sess1:rid6", False, nonce="nD")
         orch.slack.update_message.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -819,9 +820,7 @@ def _voice_view(
             "state": {
                 "values": {
                     "tts_enabled_block": {
-                        "mc_voice_tts_enabled": {
-                            "selected_options": [{"value": v} for v in tts]
-                        }
+                        "mc_voice_tts_enabled": {"selected_options": [{"value": v} for v in tts]}
                     },
                     "voice_block": opt("mc_voice_voice", voice),
                     "engine_block": opt("mc_voice_engine", engine),
@@ -838,9 +837,7 @@ def _voice_view(
 class TestVoiceConfigSubmission:
     @pytest.mark.asyncio
     async def test_persists_and_applies_settings(self, orch: MagicMock) -> None:
-        await ix._handle_voice_config_submission(
-            _voice_view(tts=["enabled", "auto_speak"])
-        )
+        await ix._handle_voice_config_submission(_voice_view(tts=["enabled", "auto_speak"]))
         vr = _read_config()["voice_reply"]
         assert vr["enabled"] is True
         assert vr["auto_speak"] is True
@@ -1023,9 +1020,7 @@ class TestAllowlistButtons:
 
     @pytest.mark.asyncio
     async def test_unknown_action_id_produces_no_label(self, orch: MagicMock) -> None:
-        await ix._handle_allowlist(
-            _payload(), {"value": "U9:Nine"}, "mc_unknown", "C1", "m1", "U1"
-        )
+        await ix._handle_allowlist(_payload(), {"value": "U9:Nine"}, "mc_unknown", "C1", "m1", "U1")
         orch.slack.update_message.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1130,9 +1125,7 @@ class TestAgentSelect:
     async def test_reset_rejected_by_setter_aborts(
         self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(
-            sh, "_set_default_agent", MagicMock(side_effect=ValueError("bad name"))
-        )
+        monkeypatch.setattr(sh, "_set_default_agent", MagicMock(side_effect=ValueError("bad name")))
         action = {"action_id": "mc_agent_select", "selected_option": {"value": "default"}}
         await ix._handle_agent_select(_payload(), action, "C1", "m1", "U1")
         orch.slack.update_message.assert_not_awaited()
@@ -1151,9 +1144,7 @@ class TestAgentSelect:
         self, orch: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(sh, "_resolve_agent_name", lambda n, project_dir=None: "reviewer")
-        monkeypatch.setattr(
-            sh, "_set_default_agent", MagicMock(side_effect=ValueError("locked"))
-        )
+        monkeypatch.setattr(sh, "_set_default_agent", MagicMock(side_effect=ValueError("locked")))
         action = {"action_id": "mc_agent_select", "selected_option": {"value": "rev"}}
         await ix._handle_agent_select(_payload(), action, "C1", "m1", "U1")
         orch.slack.update_message.assert_not_awaited()
@@ -1432,9 +1423,7 @@ class TestSessionNew:
         orch.slack.post_message.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_post_failure_skips_ack(
-        self, orch: MagicMock, _mock_aiohttp: AsyncMock
-    ) -> None:
+    async def test_post_failure_skips_ack(self, orch: MagicMock, _mock_aiohttp: AsyncMock) -> None:
         orch.slack.post_message = AsyncMock(side_effect=RuntimeError("api down"))
         payload = _payload(response_url="https://hooks.slack.com/z")
         await ix._handle_session_new(payload, {}, "C1", "m1", "U1")
@@ -1584,9 +1573,7 @@ class TestResumeChoice:
         monkeypatch.setattr(ix, "_orch", resume_orch)
         monkeypatch.setattr("kiro_crew.config.loader.data_home", lambda: tmp_path)
 
-        await ix._handle_resume_choice(
-            _payload(), _choice(key="s9"), "C1", "m1", "U1", mode="dm"
-        )
+        await ix._handle_resume_choice(_payload(), _choice(key="s9"), "C1", "m1", "U1", mode="dm")
         texts = [c.args[1] for c in resume_orch.slack.post_message.await_args_list]
         # Header + the last 5 user messages only.
         assert sum("msg" in t for t in texts) == 5
@@ -1603,9 +1590,7 @@ class TestResumeChoice:
             json.dumps({"role": "assistant", "content": "hi there"}), encoding="utf-8"
         )
         monkeypatch.setattr("kiro_crew.config.loader.data_home", lambda: tmp_path)
-        await ix._handle_resume_choice(
-            _payload(), _choice(key="s9"), "C1", "m1", "U1", mode="dm"
-        )
+        await ix._handle_resume_choice(_payload(), _choice(key="s9"), "C1", "m1", "U1", mode="dm")
         texts = [c.args[1] for c in resume_orch.slack.post_message.await_args_list]
         assert any("hi there" in t for t in texts)
 

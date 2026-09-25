@@ -379,14 +379,31 @@ def _spawn_run(args: argparse.Namespace, base: str) -> None:
         sys.exit(1)
 
     agent_id = result["id"]
+    # A row the gate DEFERRED (memory floor, critical posture, paused cap) is
+    # accepted under this id but not running; the gateway says so with
+    # ``status: "queued"`` and its own sentence, and this reader must not
+    # claim a start the gateway did not make.
+    queued_note = ""
+    if result.get("status") == "queued":
+        queued_note = str(result.get("reason_detail") or result.get("reason") or "deferred")
 
     if args.fire_and_forget:
-        print(f"Spawned subagent {agent_id}: {result['task']}")
+        if queued_note:
+            print(f"Queued subagent {agent_id}: {result['task']} (not started yet: {queued_note})")
+        else:
+            print(f"Spawned subagent {agent_id}: {result['task']}")
         return
 
     # Block: poll until done
 
-    print(f"Spawned subagent {agent_id}, waiting for result...", file=sys.stderr)
+    if queued_note:
+        print(
+            f"Queued subagent {agent_id} (not started yet: {queued_note}); "
+            "waiting for it to start and finish...",
+            file=sys.stderr,
+        )
+    else:
+        print(f"Spawned subagent {agent_id}, waiting for result...", file=sys.stderr)
     poll_url = f"{base}/api/spawn/{agent_id}"
     secret = _internal_secret(args.port)
     told_awaiting = False
@@ -1789,6 +1806,13 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
             _cron_add_fail(found.error)
         folder_id = found.folder_id
 
+    if script:
+        kind = "script"
+    elif command:
+        kind = "command"
+    else:
+        kind = "agent"
+
     # ── Governance: the capabilities.cron on/off gate, at authoring time ──
     # The gateway re-vets every job at fire time, so a job authored under a
     # disabled capability can never run -- but without this fail-fast the CLI
@@ -1798,8 +1822,6 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
     # the cron surface (sel._infer_source), so the profile that governs cron
     # jobs decides authoring too -- a CLI-surface bind does not, by design:
     # what is being gated is the cron capability, not the CLI as a whole.
-
-    kind = "script" if script else ("command" if command else "agent")
     cap_err = _vet_cron_capability_governance("cron:cli_add")
     if cap_err:
         _cron_add_fail(cap_err, audit_kind=kind)
@@ -2386,18 +2408,44 @@ def _security(args: argparse.Namespace) -> None:
             print(f"No security events recorded{window}.")
             return
         print(f"📋 Last {len(events)} security event(s){window}:\n")
+
+        def _safe(key: str, default: str = "") -> str:
+            """One row field, coerced to text and stripped of live controls.
+
+            Two separate hazards meet here. The row can hold CALLER text: SEL's own
+            ``_REDACTED_TEXT_FIELDS`` names ``operation``, ``resources`` and
+            ``error``, and ``log_api_access`` documents ``outcome`` the same way
+            because an installed app reaches it through ``ctx.audit``. Those passes
+            police credentials and length, never control sequences, so an ESC/OSC
+            payload would execute in the owner's terminal -- the one place this
+            trail is read. And the row need not be a string at all: the log is
+            sandbox read-write (``_CREW_SANDBOX_VISIBLE_LEAVES``) while ``recent()``
+            validates only that each line is a dict, so a forged line with a
+            non-string field would abort the whole command inside ``re.sub``.
+            Coercing before sanitizing answers both, and keeps one field's bad
+            value from hiding every other event.
+            """
+            value = e.get(key, default)
+            return safe_terminal_line(value if isinstance(value, str) else str(value))
+
         for e in events:
-            ts = e.get("timestamp", "?")[:19]
-            etype = e.get("event_type", "?")
-            op = e.get("operation", "?")
-            outcome = e.get("outcome", "?")
-            src = e.get("source", "?")
-            caller = e.get("caller_identity", "?")
+            ts = _safe("timestamp", "?")[:19]
+            etype = _safe("event_type", "?")
+            op = _safe("operation", "?")
+            outcome = _safe("outcome", "?")
+            src = _safe("source", "?")
+            caller = _safe("caller_identity", "?")
             print(f"  {ts}  [{src}] {etype}: {op} → {outcome}  (caller: {caller})")
             if e.get("error"):
-                print(f"    error: {e['error'][:120]}")
+                print(f"    error: {_safe('error')[:120]}")
+            # ``resources`` names WHAT the decision was about -- the file a scanner
+            # held back, the destination class a grant covered. Without it the line
+            # says a refusal happened and never says what was refused, which is the
+            # one thing the owner reading this is trying to learn.
+            if e.get("resources"):
+                print(f"    resources: {_safe('resources')[:120]}")
             if e.get("downstream_service"):
-                print(f"    downstream: {e['downstream_service']}")
+                print(f"    downstream: {_safe('downstream_service')}")
     elif action == "verify":
 
         # detailed=True: a segment dir that refused to pin (or was swapped

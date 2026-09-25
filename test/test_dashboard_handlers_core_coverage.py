@@ -60,6 +60,10 @@ def _req(
     is a different thing from ``app`` (the aiohttp application): ``""`` means the
     dashboard user, a name means an app token, and ``None`` reproduces a path
     where no auth middleware ran and the claim is absent.
+
+    The claims are exposed through ``in`` and ``[]`` as well as ``get``, because
+    an owner-gated handler distinguishes an ABSENT app claim from an empty one
+    and reads it with ``"app" in request``.
     """
     req = MagicMock(spec=web.Request)
     req.remote = remote
@@ -69,6 +73,8 @@ def _req(
     req.match_info = match_info or {}
     claims: dict = {"user": user, "app": app_token}
     req.get = lambda key, default=None: claims.get(key, default)
+    req.__contains__.side_effect = lambda key: key in claims and claims[key] is not None
+    req.__getitem__.side_effect = lambda key: claims[key]
     return req
 
 
@@ -1650,24 +1656,136 @@ class TestSttTranscribe:
 
 
 class TestSelEndpoints:
+    #: The audit trail is owner-only, so every read below is made AS the owner.
+    _OWNER_APP = {"state": SimpleNamespace(owner_id="dashboard")}
+
+    def _owner_req(self, **kwargs):
+        return _req(app=self._OWNER_APP, user="dashboard", **kwargs)
+
     @pytest.mark.asyncio
     async def test_events_uses_default_limit(self, fake_sel) -> None:
         fake_sel.recent.return_value = [{"event": "a"}]
-        resp = await core_mod.api_sel_events(_req())
+        resp = await core_mod.api_sel_events(self._owner_req())
         assert json.loads(resp.body) == {"events": [{"event": "a"}], "count": 1}
         assert fake_sel.recent.call_args.kwargs["limit"] == 100
 
     @pytest.mark.asyncio
     async def test_events_caps_limit_at_1000(self, fake_sel) -> None:
         fake_sel.recent.return_value = []
-        await core_mod.api_sel_events(_req(query={"limit": "99999"}))
+        await core_mod.api_sel_events(self._owner_req(query={"limit": "99999"}))
         assert fake_sel.recent.call_args.kwargs["limit"] == 1000
 
     @pytest.mark.asyncio
     async def test_events_falls_back_on_unparsable_limit(self, fake_sel) -> None:
         fake_sel.recent.return_value = []
-        await core_mod.api_sel_events(_req(query={"limit": "many"}))
+        await core_mod.api_sel_events(self._owner_req(query={"limit": "many"}))
         assert fake_sel.recent.call_args.kwargs["limit"] == 100
+
+    @pytest.mark.asyncio
+    async def test_a_successful_owner_read_is_audited_after_it_is_served(self, fake_sel) -> None:
+        """A trail of refusals alone never says the log was read.
+
+        The denial branch records who was turned away; without a matching row for
+        the read that succeeded, an operator reviewing the trail cannot tell an
+        untouched log from one the owner has been reading. The write lands AFTER the
+        rows are captured, because ``recent()`` flushes the write queue before it
+        walks the log: enqueued first, this row would reach disk in time to be
+        served back as the newest event, and a ``limit=1`` read would return nothing
+        but its own audit.
+        """
+        calls: list[str] = []
+        fake_sel.log_api_access.side_effect = lambda **kw: calls.append(f"audit:{kw['outcome']}")
+        fake_sel.recent.side_effect = lambda **kw: calls.append("read") or [{"event": "a"}]
+
+        resp = await core_mod.api_sel_events(self._owner_req())
+
+        assert resp.status == 200
+        assert calls == ["read", "audit:allowed"]
+        assert json.loads(resp.body) == {"events": [{"event": "a"}], "count": 1}
+        kwargs = fake_sel.log_api_access.call_args.kwargs
+        assert kwargs["operation"] == "sel.events.read"
+        assert kwargs["outcome"] == "allowed"
+        assert kwargs["caller"] == "dashboard"
+
+    @pytest.mark.asyncio
+    async def test_a_refused_read_writes_no_allow_row(self, fake_sel) -> None:
+        """The negative: the allow row must mean authorized, not merely attempted.
+
+        A refused caller never reaches this handler's own audit, so it writes
+        nothing at all here -- the denial row belongs to the shared owner gate and
+        is covered where that gate lives. What this pins is that the allow row
+        cannot be produced by an attempt.
+        """
+        resp = await core_mod.api_sel_events(_req(app=self._OWNER_APP, user="someone-else"))
+
+        assert resp.status == 403
+        fake_sel.log_api_access.assert_not_called()
+        fake_sel.recent.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"user": "someone-else"},
+            {"user": None},
+            {"app_token": "an-app"},
+            {"app_token": None},
+        ],
+        ids=["other-user", "no-user", "app-token", "absent-app-claim"],
+    )
+    async def test_events_refuses_every_non_owner_caller(self, fake_sel, kwargs) -> None:
+        """The rows name the resources a security decision was about.
+
+        A dashboard session is not by itself the owner: the messaging bridges
+        mint a presigned token whose subject is the allowed user's own id, so
+        serving these rows to any authenticated session hands one principal the
+        other's audit trail. Each parameter is a caller class that must fail
+        closed, and the read must not happen AT ALL -- a 403 whose body still
+        carried the rows would pass a status-only assertion.
+        """
+        resp = await core_mod.api_sel_events(_req(app=self._OWNER_APP, **kwargs))
+        assert resp.status == 403
+        assert json.loads(resp.body) == {
+            "error": "owner authorization required",
+            "code": "owner_only",
+        }
+        fake_sel.recent.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("subject", ["local-app", "local-startup"])
+    async def test_events_tells_a_pre_owner_session_to_sign_in_again(
+        self, fake_sel, subject
+    ) -> None:
+        """A bootstrap subject under a configured owner IS the owner, refused.
+
+        Configuring an owner after the dashboard session was signed leaves that
+        session's subject at the bootstrap name, and a token refresh preserves the
+        subject, so the real owner keeps failing the gate until they sign in again.
+        A generic 403 gives the one caller class that can act on the refusal no way
+        to know that, which is why the denial goes through the shared tail: the
+        status is 401 and the code names re-authentication. The read must still not
+        happen -- the relabel changes the response, not the decision.
+        """
+        resp = await core_mod.api_sel_events(_req(app=self._OWNER_APP, user=subject, app_token=""))
+        assert resp.status == 401
+        assert json.loads(resp.body)["code"] == "stale_session_reauth"
+        fake_sel.recent.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_events_keeps_a_generic_403_when_no_owner_is_configured(self, fake_sel) -> None:
+        """No owner configured means a bootstrap subject is not stale.
+
+        ``is_owner_dashboard_request`` admits the implicit local owner in that
+        configuration, so this asserts the gate does not hand out the 401 to a
+        caller whose credential is current: reaching the relabel requires a
+        CONFIGURED owner, and the subject here is simply not that owner.
+        """
+        resp = await core_mod.api_sel_events(
+            _req(app={"state": SimpleNamespace(owner_id="")}, user="someone-else")
+        )
+        assert resp.status == 403
+        assert json.loads(resp.body)["code"] == "owner_only"
+        fake_sel.recent.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_verify_reports_intact_chain(self, fake_sel) -> None:

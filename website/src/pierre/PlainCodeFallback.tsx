@@ -1,6 +1,12 @@
 import { useId, useLayoutEffect, useMemo, useRef, type CSSProperties, type ReactNode } from 'react'
 import type { FileContents } from '@pierre/diffs'
-import type { PierreDiffOptions } from './config'
+import {
+  DIFF_HEADER_BG_CSS,
+  DIFF_HEADER_COUNT_MIN_WIDTH_CH,
+  DIFF_HEADER_META_W_PX,
+  DIFF_HEADER_PADDING_INLINE_PX,
+  type PierreDiffOptions,
+} from './config'
 import { changedLineSpan } from '../utils/diffLineCounts'
 import { Btn } from '../components/ui'
 import ErrorNotice from '../components/ErrorNotice'
@@ -44,6 +50,86 @@ function PlainFallbackHeader({ children }: { children: ReactNode }) {
   )
 }
 
+/**
+ * The header row of the simplified file-pair fallback: the caller's prefix
+ * slot (the card's expand/collapse control), the filename, the caller's
+ * filename suffix, an optional state label, and the caller's metadata.
+ *
+ * Exported because the opted-in oversized pair keeps THIS row as its header
+ * once the line-by-line diff replaces the two-side body. Pierre's own header
+ * exists only while its renderer has a highlight result to draw — none while
+ * the worker pool is still initialising, recovering, or unavailable, none for
+ * a patch that will not parse, none at all in plain-diff mode — so a control
+ * slotted into it would vanish in every one of those states. One row, the same
+ * component before and after the swap; only the body beneath it changes.
+ */
+export function PlainFilePairHeader({ filename, titleId, label, titleClickable, stats, renderHeaderPrefix, renderHeaderFilenameSuffix, renderHeaderMetadata }: {
+  filename: string
+  titleId?: string
+  label?: string
+  /** The caller opens the file when the filename is clicked (a light-DOM
+   *  listener resolving `headerClickAction`), so the filename shows the pointer
+   *  and hover accent. Pierre's own header gets the same cue through the
+   *  caller's `unsafeCSS`, which is scoped to Pierre's shadow root and cannot
+   *  reach this row. */
+  titleClickable?: boolean
+  /** Exact added/removed line counts, rightmost like Pierre's own — only the
+   *  opted-in state has them (from its computed patch); the fallback's bounded
+   *  scan cannot count lines and passes none. */
+  stats?: { added: number; removed: number }
+  renderHeaderPrefix?: () => ReactNode
+  renderHeaderFilenameSuffix?: () => ReactNode
+  renderHeaderMetadata?: () => ReactNode
+}) {
+  const metadata = renderHeaderMetadata?.()
+  const removed = stats?.removed ?? 0
+  const added = stats?.added ?? 0
+  return (
+    <div
+      data-diffs-header
+      className="flex min-h-9 items-center gap-2 border-b border-border text-[12px]"
+      style={HEADER_ROW_STYLE}
+    >
+      <div className="flex min-w-0 flex-1 items-center gap-1.5">
+        {renderHeaderPrefix?.()}
+        <span id={titleId} data-title className={`truncate font-mono font-medium${titleClickable ? ' cursor-pointer hover:text-accent' : ''}`}>
+          {filename}
+        </span>
+        {renderHeaderFilenameSuffix?.()}
+        {label != null && <span className="text-[11px] font-normal text-muted">{label}</span>}
+      </div>
+      {/* The same group Pierre's header draws — the caller's metadata (its
+          diffstat indicator) pinned left, the ±counts pinned right, in a box of
+          fixed width — so the indicator starts at the same x on this row as on
+          the within-budget rows around it, whether or not a count is present. */}
+      {(metadata != null || removed > 0 || added > 0) && (
+        <div data-metadata className="flex shrink-0 items-center gap-2" style={HEADER_META_GROUP_STYLE}>
+          {metadata}
+          {removed > 0 && <span data-deletions-count="" className="font-mono text-danger" style={HEADER_COUNT_STYLE}>-{removed}</span>}
+          {added > 0 && <span data-additions-count="" className="font-mono text-ok" style={HEADER_COUNT_STYLE}>+{added}</span>}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* Inline because a `unsafeCSS` stylesheet is scoped to Pierre's shadow root and
+ * cannot reach a light-DOM row; the values are the ones `ROW_CSS_BASE` injects
+ * there (see pierre/config.ts), so the two headers cannot drift apart. */
+const HEADER_ROW_STYLE: CSSProperties = {
+  backgroundColor: DIFF_HEADER_BG_CSS,
+  paddingInline: DIFF_HEADER_PADDING_INLINE_PX,
+}
+const HEADER_META_GROUP_STYLE: CSSProperties = {
+  flex: `0 0 ${DIFF_HEADER_META_W_PX}px`,
+  justifyContent: 'space-between',
+}
+const HEADER_COUNT_STYLE: CSSProperties = {
+  display: 'inline-block',
+  minWidth: `${DIFF_HEADER_COUNT_MIN_WIDTH_CH}ch`,
+  textAlign: 'right',
+}
+
 const KEYBOARD_SCROLL_REGION_PROPS = { role: 'region' as const, tabIndex: 0 }
 
 interface PlainFilePairFallbackProps {
@@ -57,6 +143,8 @@ interface PlainFilePairFallbackProps {
   renderHeaderMetadata?: () => ReactNode
   renderHeaderPrefix?: () => ReactNode
   renderHeaderFilenameSuffix?: () => ReactNode
+  /** See `PlainFilePairHeader`. */
+  titleClickable?: boolean
   onShowLineByLineDiff?: () => void
   /** Off-thread compute status for the opt-in. `computing` swaps the button
    *  for a progress label + Cancel; `error` re-offers the button with a short
@@ -81,6 +169,7 @@ export function PlainFilePairFallback({
   renderHeaderMetadata,
   renderHeaderPrefix,
   renderHeaderFilenameSuffix,
+  titleClickable,
   onShowLineByLineDiff,
   lineByLineState = 'idle',
   onCancelLineByLineDiff,
@@ -184,20 +273,15 @@ export function PlainFilePairFallback({
       className={`pierre-surface min-w-0 overflow-hidden bg-bg text-text ${className ?? ''}`}
     >
       {showHeader && (
-        <div
-          data-diffs-header
-          className="flex min-h-9 items-center gap-2 border-b border-border bg-bg px-3 text-[12px]"
-        >
-          <div className="flex min-w-0 flex-1 items-center gap-1.5">
-            {renderHeaderPrefix?.()}
-            <span id={titleId} data-title className="truncate font-mono font-medium">
-              {filename}
-            </span>
-            {renderHeaderFilenameSuffix?.()}
-            <span className="text-[11px] font-normal text-muted">{filePairLabel}</span>
-          </div>
-          {renderHeaderMetadata && <div className="shrink-0">{renderHeaderMetadata()}</div>}
-        </div>
+        <PlainFilePairHeader
+          filename={filename}
+          titleId={titleId}
+          label={filePairLabel}
+          titleClickable={titleClickable}
+          renderHeaderPrefix={renderHeaderPrefix}
+          renderHeaderFilenameSuffix={renderHeaderFilenameSuffix}
+          renderHeaderMetadata={renderHeaderMetadata}
+        />
       )}
       {/* Opt-in control lives in its own strip BETWEEN the header and the
           scroller, never inside either: the header already carries the

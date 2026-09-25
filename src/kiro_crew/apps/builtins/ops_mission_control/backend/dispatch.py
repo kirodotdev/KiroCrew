@@ -29,6 +29,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -76,6 +78,15 @@ DEFAULT_STALE_AFTER_SECS = 2 * 60 * 60
 _CONFIG_MAX_CLAIMS = "max_claims_per_cycle"
 _CONFIG_STALE_AFTER = "stale_after_secs"
 _CONFIG_NEEDS_HUMAN_STALE_AFTER = "needs_human_stale_after_secs"
+
+# Query inference is optional dispatch enrichment, so it gets the same short
+# admission budget as a fresh prompt build rather than the embedder's general
+# 30-second interactive default. The prompt-build context manager is private to
+# that lifecycle, so dispatch carries the same contract locally. A cold model
+# returns None immediately and loads in the background; queued work may wait
+# only inside this deadline, while native inference already running cannot be
+# interrupted and may finish after it.
+_SIMILAR_QUERY_TIMEOUT_SECS = 5.0
 
 #: Total characters of provider evidence rendered into one investigation brief.
 #:
@@ -224,14 +235,50 @@ def _attach_similar_safely(claimed: ClaimedIncident) -> None:
     store_obj = None
     try:
         from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.embeddings import (
+            PRIORITY_INTERACTIVE,
+            EmbeddingWork,
+            embedding_work,
+            make_sync_embed_fn,
+        )
         from kiro_crew.vector_memory import VectorMemoryStore
 
         # Constructed per call, matching the convention in cli_commands/onboarding_import:
         # there is no shared singleton, and holding one open across cycles would keep a
         # SQLite handle alive for a feature that may never be used on this install.
         store_obj = VectorMemoryStore(embedding_dim=KiroCrewConfig.load().memory.embedding_dim)
+        # One-shot read: bind the shared callable, but no lazy factory. If the
+        # model is cold the callable kicks its background load and returns None;
+        # this store closes after the keyword fallback and has no later work for
+        # a factory to serve.
+        store_obj.embed_fn = make_sync_embed_fn()
         store_obj.init()
-        attach_similar_lessons(claimed, store_obj)
+
+        query = _similar_query(claimed)
+        query_embedding = None
+        inherited_work = embedding_work.get()
+        deadline = time.monotonic() + _SIMILAR_QUERY_TIMEOUT_SECS
+        if inherited_work is not None:
+            deadline = min(deadline, inherited_work.deadline)
+        work = EmbeddingWork(
+            deadline=deadline,
+            cancelled=(
+                inherited_work.cancelled if inherited_work is not None else threading.Event()
+            ),
+            priority=PRIORITY_INTERACTIVE,
+        )
+        token = embedding_work.set(work)
+        try:
+            if query:
+                query_embedding = store_obj._try_embed(query, PRIORITY_INTERACTIVE)
+        except Exception:  # noqa: BLE001 — keyword recall remains useful without a vector
+            logger.debug(
+                "ops-mission-control: query embedding unavailable; using keyword recall",
+                exc_info=True,
+            )
+        finally:
+            embedding_work.reset(token)
+        attach_similar_lessons(claimed, store_obj, query_embedding=query_embedding)
     except Exception:  # noqa: BLE001 — no store, or a broken one, is a supported state
         logger.debug(
             "ops-mission-control: semantic recall unavailable; fingerprint matches stand",
@@ -246,7 +293,11 @@ def _attach_similar_safely(claimed: ClaimedIncident) -> None:
 
 
 def attach_similar_lessons(
-    claimed: ClaimedIncident, store: Any, *, limit: int = 3
+    claimed: ClaimedIncident,
+    store: Any,
+    *,
+    limit: int = 3,
+    query_embedding: list[float] | None = None,
 ) -> ClaimedIncident:
     """Attach semantically similar ledger entries that the fingerprint missed.
 
@@ -266,13 +317,18 @@ def attach_similar_lessons(
     """
     if store is None:
         return claimed
-    query = f"{claimed.incident.signal.title} {claimed.incident.signal.resource}".strip()
+    query = _similar_query(claimed)
     if not query:
         return claimed
     try:
         from kiro_crew.apps.builtins.ops_mission_control.backend import ledger_index
 
-        rows = ledger_index.search_similar(store, query, limit=limit + len(claimed.matches))
+        rows = ledger_index.search_similar(
+            store,
+            query,
+            limit=limit + len(claimed.matches),
+            query_embedding=query_embedding,
+        )
     except Exception:  # noqa: BLE001 — semantic recall is additive, never required
         logger.exception("ops-mission-control: similar-lesson lookup failed")
         return claimed
@@ -301,6 +357,11 @@ def attach_similar_lessons(
             break
     claimed.similar = found
     return claimed
+
+
+def _similar_query(claimed: ClaimedIncident) -> str:
+    """Text whose vector and keyword fallback must describe the same incident."""
+    return f"{claimed.incident.signal.title} {claimed.incident.signal.resource}".strip()
 
 
 def attach_ledger_matches(incident: Incident) -> ClaimedIncident:

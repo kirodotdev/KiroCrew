@@ -82,12 +82,20 @@ jobs:
   # Whatever the reason, the lane stays advisory: it is absent from both of
   # pr-readiness.yml's lists, and test_macos_platform_tests_gate.py pins that
   # absence, so none of these switches can put a macOS queue in front of a merge.
+  #
+  # Over the three switches sits a CEILING, not a fourth switch: `paths` and
+  # `sample` are refused while this lane already holds `LANE_MAX_LIVE_RUNS` live
+  # runs of the hosted macOS pool. `label` is never refused, and neither is a
+  # re-run. See the env block on the verdict step for the measurement behind it.
   decide:
     name: Decide whether the macOS suite runs
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions:
       contents: read
+      # Read-only, and only so the ceiling below can count this lane's own live
+      # runs. Nothing here writes to Actions.
+      actions: read
     outputs:
       run: ${{ steps.verdict.outputs.run }}
       reason: ${{ steps.verdict.outputs.reason }}
@@ -154,10 +162,35 @@ jobs:
       - name: Combine the three switches
         id: verdict
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PATHS_HIT: ${{ steps.filter.outputs.darwin }}
           LABELLED: ${{ contains(github.event.pull_request.labels.*.name, 'ci:macos') }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           SAMPLE_ONE_IN: "20"
+          # The lane's ceiling on the hosted macOS pool, in LIVE runs of this
+          # workflow (each holds three shards). Measured 2026-09-24: this lane
+          # held 53 of the 56 in-progress macOS jobs and 37 of the 40 queued
+          # ones, across 22 live runs, and a shard created at 08:29 did not get a
+          # runner until 22:44 -- 14 hours, against the 176-213 minutes this
+          # file's header assumes. So it was not sharing the pool with the other
+          # macOS work; it WAS the pool, and `build.yml` and `release.yml` (the
+          # signing paths, which cannot run anywhere else) queued behind it.
+          # A capped run is skipped outright rather than queued, so the ceiling
+          # bounds demand and not just occupancy: at roughly 40 minutes a suite
+          # this lane settles at about nine verdicts an hour. That is a deliberate
+          # trade -- a timely verdict for a few pull requests instead of a
+          # 14-hour verdict for all of them, with the nightly still covering
+          # every merge. It is a first calibration off one day's measurement;
+          # revisit it against the queue rather than treating it as tuned.
+          LANE_MAX_LIVE_RUNS: "6"
+          # How many candidate runs the occupancy count may probe for a macOS job
+          # before it reports what it found and moves on. `decide` runs on every
+          # pull request, so this is the ceiling's own cost against a repository-
+          # wide quota; twice the ceiling is enough to find LANE_MAX_LIVE_RUNS
+          # holders when the lane really is full, and stopping early can only
+          # UNDER-count, which lets the suite run.
+          LANE_OCCUPANCY_MAX_READS: "12"
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
           # The first 8 hex digits of the head SHA, read as an integer, modulo
@@ -167,7 +200,90 @@ jobs:
           if [ "$PATHS_HIT" = "true" ]; then reason="paths"; fi
           if [ "$LABELLED" = "true" ]; then reason="${reason:+$reason,}label"; fi
           if [ "$bucket" -eq 0 ]; then reason="${reason:+$reason,}sample"; fi
-          if [ -n "$reason" ]; then
+
+          # The ceiling, applied only to the two switches nobody asked for by
+          # hand. `label` is the on-demand path a fixer reaches for while
+          # repairing a red nightly, so a busy pool must not silence it -- that
+          # is the one request where waiting out the queue is the point.
+          capped=""
+          case ",$reason," in
+            *,label,*) ;;
+            ,,) ;;
+            *)
+              # First attempt only. A re-run must not be able to turn a RED lane
+              # into a skip just because the pool happened to be busy the second
+              # time; that is the same property the SHA sample protects, and it
+              # only holds if the ceiling cannot move a verdict from red to
+              # absent. The reverse direction is safe, so a re-run of a capped
+              # run may go on to run the suite.
+              if [ "$RUN_ATTEMPT" = "1" ]; then
+                ids=""
+                unreadable=""
+                for status in in_progress queued; do
+                  # Workflow-scoped: the repo-wide listing mixes every workflow
+                  # and would need paging to count this one. OLDEST first, because
+                  # a run that actually holds a macOS runner is one that got past
+                  # `decide` some time ago, while the newest runs are the ones
+                  # still deciding -- so oldest-first finds the holders inside the
+                  # read bound below.
+                  page=$(gh api \
+                    "repos/${GITHUB_REPOSITORY}/actions/workflows/macos-on-demand.yml/runs?status=${status}&per_page=100" \
+                    --jq "[.workflow_runs[] | select(.id != ${GITHUB_RUN_ID}) | .id] | reverse | .[]" 2>/dev/null) \
+                    || unreadable="1"
+                  ids="$ids $page"
+                done
+                # A run of this workflow is NOT the same thing as a run holding a
+                # macOS runner. The trigger has no `paths:` filter, so every pull
+                # request to main starts one, and the common verdict is `run=false`
+                # -- the job comment puts `paths` at roughly 5 percent of pull
+                # requests. Counting runs would therefore let six concurrent PRs
+                # that touch no darwin path refuse a PR that does, with not one
+                # macOS job in the pool. So each candidate run is asked whether it
+                # has a `macOS Tests` job still queued or running, which is what
+                # the ceiling is about.
+                live=""
+                if [ -z "$unreadable" ]; then
+                  live=0
+                  reads=0
+                  for id in $ids; do
+                    [ "$live" -ge "$LANE_MAX_LIVE_RUNS" ] && break
+                    if [ "$reads" -ge "$LANE_OCCUPANCY_MAX_READS" ]; then
+                      # Bounded on purpose: this runs in `decide` on EVERY pull
+                      # request, and the quota it spends is shared with the whole
+                      # repository. Stopping here reports the holders actually
+                      # found, which is below the ceiling, so the suite runs --
+                      # the same direction as failing open.
+                      echo "::warning::stopped counting macOS lane occupancy after $reads run(s); $live holder(s) found, under the ceiling"
+                      break
+                    fi
+                    reads=$(( reads + 1 ))
+                    held=$(gh api \
+                      "repos/${GITHUB_REPOSITORY}/actions/runs/${id}/jobs?per_page=100&filter=latest" \
+                      --jq '[.jobs[] | select((.name | startswith("macOS Tests")) and (.status == "queued" or .status == "in_progress"))] | length' 2>/dev/null || true)
+                    case "$held" in
+                      ''|*[!0-9]*) live=""; break ;;
+                      0) ;;
+                      *) live=$(( live + 1 )) ;;
+                    esac
+                  done
+                fi
+                # Fail OPEN when the count cannot be read: the ceiling is an
+                # allocation choice, not a safety control, and a lane that stops
+                # covering darwin because an API call failed is the worse error.
+                if [ -z "$live" ]; then
+                  echo "::warning::macOS lane occupancy could not be read; running without the ceiling"
+                elif [ "$live" -ge "$LANE_MAX_LIVE_RUNS" ]; then
+                  capped="$live"
+                fi
+              fi
+              ;;
+          esac
+
+          if [ -n "$capped" ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "reason=pool-cap" >> "$GITHUB_OUTPUT"
+            echo "::notice::macOS suite skipped on ${HEAD_SHA:0:12} despite $reason: at least $capped live lane run(s) already hold the macOS pool (ceiling $LANE_MAX_LIVE_RUNS). The nightly still covers this change; add the ci:macos label to run it anyway."
+          elif [ -n "$reason" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
             echo "reason=$reason" >> "$GITHUB_OUTPUT"
             echo "::notice::macOS suite runs on ${HEAD_SHA:0:12}: $reason (sample bucket $bucket of $SAMPLE_ONE_IN)"

@@ -888,3 +888,203 @@ class TestConversationExport:
             .fetchall()
         }
         assert tables == {"conversations_v2"}
+
+
+def _build_store_with_tables(path: Path, *, v1_rows: int | None, v2_rows: int | None) -> None:
+    """Write a synthetic kiro-cli store naming which chat tables exist.
+
+    ``None`` means the table is absent from the schema; an int creates it with that
+    many rows. The un-migrated table is shaped the way a real store declares it (a
+    key and a JSON blob, no id or timestamps), so a copy that assumed the migrated
+    column set would not pass here. The auth table is always planted, so every test
+    in this class also checks the allowlist still holds the auth half back.
+    """
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        if v1_rows is not None:
+            conn.execute("CREATE TABLE conversations (key TEXT PRIMARY KEY, value TEXT)")
+            conn.executemany(
+                "INSERT INTO conversations (key, value) VALUES (?, ?)",
+                [(f"/work/proj-{i}", json.dumps({"turn": i})) for i in range(v1_rows)],
+            )
+        if v2_rows is not None:
+            conn.execute(
+                "CREATE TABLE conversations_v2 (conversation_id TEXT PRIMARY KEY, value TEXT)"
+            )
+            conn.executemany(
+                "INSERT INTO conversations_v2 (conversation_id, value) VALUES (?, ?)",
+                [(f"conv-{i}", json.dumps({"turn": i})) for i in range(v2_rows)],
+            )
+        conn.execute(f'CREATE TABLE "{_TOKEN_TABLE}" (k TEXT, {_TOKEN_COLUMN} TEXT)')
+        conn.execute(
+            f'INSERT INTO "{_TOKEN_TABLE}" (k, {_TOKEN_COLUMN}) VALUES (?, ?)',
+            ("idc:default", _TOKEN_VALUE),
+        )
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        conn.close()
+
+
+class TestBothChatTablesAreInTheAllowlist:
+    """The allowlist names the terminal's un-migrated AND migrated chat tables.
+
+    A store holds whichever shape its install has reached. Carrying only the migrated
+    one exports nothing from a store that never migrated, and -- because the reason
+    string is chosen by whether any ALLOWLISTED table was found -- the run then records
+    ``no_conversation_table``, which claims the terminal holds no conversations while it
+    holds all of them. That is a coverage loss wearing a legitimate absence's reason, so
+    these tests pin the export and the reason together rather than separately.
+    """
+
+    @pytest.fixture
+    def needs_pinning(self):
+        """Requested only by the cases that let the export reach its tar write.
+
+        Deliberately NOT autouse. Two cases in this class assert reasons the export
+        returns BEFORE its descriptor-pinning gate -- the no-table reason, and the
+        allowlist constant, which runs no export at all -- so they are meaningful on a
+        host without pinning and an autouse skip would silently drop exactly the two
+        that pin the reason-string boundary.
+
+        For the cases below, a host without ``_CAN_PIN_TRAVERSAL`` never performs this
+        export: ``run_sessions_backup`` refuses the whole sessions kind there, so the
+        rows these assertions are about are unreachable on that platform. Inventing a
+        weaker path-based read so they pass instead would ship the unpinned open the
+        refusal exists to prevent.
+        """
+        if not backup._CAN_PIN_TRAVERSAL:
+            pytest.skip("sessions export needs descriptor-pinned open; kind is unavailable here")
+
+    def test_an_unmigrated_store_has_its_conversations_exported(
+        self, tmp_path, monkeypatch, needs_pinning
+    ):
+        """A store with only the un-migrated table exports its rows.
+
+        MUTATION: drop ``"conversations"`` from ``backup._CONVERSATION_TABLES`` and this
+        reddens -- the rows come back 0 and the reason becomes
+        ``no_conversation_table``, which is the whole defect.
+        """
+        db = tmp_path / "data.sqlite3"
+        _build_store_with_tables(db, v1_rows=5, v2_rows=None)
+        monkeypatch.setattr(backup, "_kiro_cli_conversation_db", lambda: (db, ""))
+
+        archive = tmp_path / "out.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            result = backup._export_cli_conversations(tar)
+
+        assert result.skipped == ""
+        assert result.rows == 5
+        assert result.members == 2
+
+        names, db_bytes, manifest = _export_to_tar(tmp_path)
+        assert manifest is not None
+        assert manifest["tables"] == {"conversations": 5}
+        assert manifest["total_rows"] == 5
+        assert db_bytes is not None
+        assert _TOKEN_VALUE.encode() not in db_bytes
+        assert _TOKEN_TABLE.encode() not in db_bytes
+        scratch = tmp_path / "readback.sqlite3"
+        scratch.write_bytes(db_bytes)
+        conn = sqlite3.connect(str(scratch))
+        try:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_schema WHERE type='table'"
+                ).fetchall()
+            }
+            carried = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
+        finally:
+            conn.close()
+        assert tables == {"conversations"}
+        assert carried == 5
+        assert not any(_TOKEN_TABLE in n or _TOKEN_COLUMN in n for n in names)
+
+    def test_a_migrated_store_carries_both_tables_and_counts_them_apart(
+        self, tmp_path, monkeypatch, needs_pinning
+    ):
+        """Both tables ride, and the manifest counts them separately.
+
+        The migrated store keeps the older table present and empty, so this is the
+        common shape: the manifest must show the empty one too, because that is what
+        lets a restore tell an empty table from a table the export omitted.
+
+        MUTATION: drop ``"conversations"`` from ``backup._CONVERSATION_TABLES`` and this
+        reddens -- the manifest loses its key.
+        """
+        db = tmp_path / "data.sqlite3"
+        _build_store_with_tables(db, v1_rows=0, v2_rows=4)
+        monkeypatch.setattr(backup, "_kiro_cli_conversation_db", lambda: (db, ""))
+
+        _, db_bytes, manifest = _export_to_tar(tmp_path)
+        assert manifest is not None
+        assert manifest["tables"] == {"conversations": 0, "conversations_v2": 4}
+        assert manifest["total_rows"] == 4
+        assert db_bytes is not None
+        scratch = tmp_path / "readback.sqlite3"
+        scratch.write_bytes(db_bytes)
+        conn = sqlite3.connect(str(scratch))
+        try:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_schema WHERE type='table'"
+                ).fetchall()
+            }
+        finally:
+            conn.close()
+        assert tables == {"conversations", "conversations_v2"}
+        assert _TOKEN_TABLE.encode() not in db_bytes
+
+    def test_rows_in_both_tables_are_both_carried(self, tmp_path, monkeypatch, needs_pinning):
+        """A partly-migrated store loses neither half.
+
+        MUTATION: drop either table name from ``backup._CONVERSATION_TABLES`` and this
+        reddens on the total.
+        """
+        db = tmp_path / "data.sqlite3"
+        _build_store_with_tables(db, v1_rows=3, v2_rows=6)
+        monkeypatch.setattr(backup, "_kiro_cli_conversation_db", lambda: (db, ""))
+
+        archive = tmp_path / "out.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            result = backup._export_cli_conversations(tar)
+
+        assert result.rows == 9
+        _, _, manifest = _export_to_tar(tmp_path)
+        assert manifest is not None
+        assert manifest["tables"] == {"conversations": 3, "conversations_v2": 6}
+        assert manifest["total_rows"] == 9
+
+    def test_no_chat_table_at_all_still_reports_no_conversation_table(self, tmp_path, monkeypatch):
+        """The reason survives, and now means what it says.
+
+        With both chat shapes allowlisted, this reason is reachable only when the store
+        really holds neither, so it reports a genuine absence rather than an allowlist
+        gap. Pinned so widening the allowlist did not quietly delete the outcome.
+
+        MUTATION: return an empty ``skipped`` on the no-table exit and this reddens.
+        """
+        db = tmp_path / "data.sqlite3"
+        _build_store_with_tables(db, v1_rows=None, v2_rows=None)
+        monkeypatch.setattr(backup, "_kiro_cli_conversation_db", lambda: (db, ""))
+
+        archive = tmp_path / "out.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            result = backup._export_cli_conversations(tar)
+
+        assert result == backup._ConversationExport(0, 0, "no_conversation_table")
+        with tarfile.open(archive) as tar:
+            assert tar.getnames() == []
+
+    def test_the_allowlist_is_exactly_the_two_chat_tables(self):
+        """The declared boundary, pinned as a value.
+
+        The module header states the boundary and says this tuple is the single place
+        it is expressed, so a change here without a change there is the drift this
+        catches. MUTATION: add any third name and this reddens.
+        """
+        assert backup._CONVERSATION_TABLES == ("conversations", "conversations_v2")
+        assert _TOKEN_TABLE not in backup._CONVERSATION_TABLES

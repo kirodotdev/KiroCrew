@@ -304,18 +304,33 @@ def skill_discover(name: str, args: dict[str, Any]) -> str:
         # audited as outcome="completed".
         return f"Error: skill_discover failed: {d['error']}"
     hits = d.get("results") or []
+    provider_outcomes = [
+        outcome
+        for outcome in (d.get("provider_outcomes") or [])
+        if isinstance(outcome, dict) and outcome.get("status") in {"ok", "timeout", "error"}
+    ]
+    failed_provider_count = sum(outcome["status"] != "ok" for outcome in provider_outcomes)
+    all_providers_failed = bool(provider_outcomes) and (
+        failed_provider_count == len(provider_outcomes)
+    )
     mcp_core.sel().log_tool_invocation(
         session_key=mcp_core._resolve_session_key(),
         source="mcp",
         tool_name="skill_discover",
         tool_kind="read",
-        outcome="success",
+        outcome="error" if all_providers_failed else "success",
         downstream_service=provider or "all",
         metadata={
             "query_hash": hashlib.sha256(query.encode()).hexdigest()[:16],
             "matches": len(hits),
+            "failed_provider_count": failed_provider_count,
         },
     )
+    if all_providers_failed:
+        return (
+            "Error: registry search is incomplete: every attempted provider "
+            "timed out or failed. Retry later; zero matches was not established."
+        )
     if not hits:
         providers = ", ".join(d.get("providers") or []) or "none available"
         return (
@@ -339,6 +354,13 @@ def skill_discover(name: str, args: dict[str, Any]) -> str:
         "follow. Pass an id to skill_fetch to read a skill's instructions.",
         "",
     ]
+    if failed_provider_count:
+        lines.insert(
+            0,
+            "Warning: registry search is incomplete; "
+            f"{failed_provider_count} of {len(provider_outcomes)} providers "
+            "timed out or failed.",
+        )
     for r in hits:
         desc = " ".join(str(r.get("description") or "").split())
         if len(desc) > 240:

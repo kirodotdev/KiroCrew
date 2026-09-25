@@ -303,7 +303,12 @@ class TestFolderDelete:
         a2 = store.create(name="a2", content="y", folder_id=mid["id"])
         outside = store.create(name="out", content="z")  # unfiled, must survive
 
-        summary = folders.delete(root["id"], delete_contents=True, artifact_store=store)
+        summary = folders.delete(
+            root["id"],
+            delete_contents=True,
+            artifact_store=store,
+            destroyable_generations={a1.slug: a1.created_at, a2.slug: a2.created_at},
+        )
 
         assert folders.list() == []  # whole subtree gone
         with pytest.raises(ArtifactNotFoundError):

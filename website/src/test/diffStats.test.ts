@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vitest'
 // them: importing those pulled the Pierre diff runtime, framer-motion,
 // react-markdown, katex and highlight.js into this fork — measured 144.65s, of
 // which 51ms was the tests.
+import { createTwoFilesPatch } from 'diff'
 import { countLines, countDiffStats, changedLineSpan } from '../utils/diffLineCounts'
 
 describe('countLines (diff stats)', () => {
@@ -82,6 +83,52 @@ describe('countDiffStats (unified diff parsing)', () => {
 -old
 +new`
     expect(countDiffStats(diff)).toEqual({ added: 1, removed: 1 })
+  })
+
+  // Headers are found by POSITION, never by prefix: content can start with the
+  // header prefixes too, and the diff worker's own producer marks it that way.
+  it('counts a removed `-- comment` line the way createTwoFilesPatch emits it (`--- comment`)', () => {
+    const before = 'SELECT 1;\n-- retired note\nSELECT 2;\n'
+    const after = 'SELECT 1;\nSELECT 2;\n'
+    const patch = createTwoFilesPatch('q.sql', 'q.sql', before, after, undefined, undefined, { context: 3 })
+    expect(patch).toContain('\n--- retired note\n') // the producer's shape this guards
+    expect(countDiffStats(patch)).toEqual({ added: 0, removed: 1 })
+  })
+
+  it('counts content lines that begin with the header prefixes inside a hunk', () => {
+    const diff = `--- a/doc.md
++++ b/doc.md
+@@ -1,4 +1,4 @@
+ title: x
+----
++--- rule
+-i++
+++++i
+ end`
+    // `----` is a removed markdown rule, `+++i` an added C-style increment.
+    expect(countDiffStats(diff)).toEqual({ added: 2, removed: 2 })
+  })
+
+  it('does not count the second file header pair of a multi-file diff', () => {
+    const diff = `diff --git a/one.ts b/one.ts
+--- a/one.ts
++++ b/one.ts
+@@ -1,2 +1,2 @@
+ keep
+-old one
++new one
+diff --git a/two.ts b/two.ts
+--- a/two.ts
++++ b/two.ts
+@@ -1 +1 @@
+-old two
++new two`
+    expect(countDiffStats(diff)).toEqual({ added: 2, removed: 2 })
+  })
+
+  it('keeps the prefix rule for a fence with no hunk header', () => {
+    expect(countDiffStats('-old\n+new\n+newer')).toEqual({ added: 2, removed: 1 })
+    expect(countDiffStats('--- a\n+++ b\n-old\n+new')).toEqual({ added: 1, removed: 1 })
   })
 })
 

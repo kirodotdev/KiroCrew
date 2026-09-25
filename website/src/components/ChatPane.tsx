@@ -51,10 +51,10 @@ import { usePlanActionMutation, isPlanAction } from '../hooks/usePlanActionMutat
 import { useQueuedMessageActions, queuedSendStash } from '../hooks/useQueuedMessageActions'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAppSelector, useAppDispatch, store } from '../store'
-import { PANE_HYDRATE_LIMIT, retireStatelessQuestion, captureStatelessCard, capturePendingAskId, confirmOptimisticSend, resolveOptimisticSteer, selectSlotMessages, selectSendConfirmed, selectSlotStreamState, selectSlotRunEpoch, selectComposerBusy, selectIsFeatureRequestSlot, hydrateSlotMessages, appendSlotMessage, requestStop, syncSlotRunningFromServer, setAgentSwitchNotice, pendingQuestionFor } from '../store/chatSlice'
-import { FEATURE_REQUEST_FORM_URL } from '../prompts/featureRequest'
+import { PANE_HYDRATE_LIMIT, retireStatelessQuestion, captureStatelessCard, capturePendingAskId, confirmOptimisticSend, resolveOptimisticSteer, selectSlotMessages, selectSendConfirmed, selectSlotStreamState, selectSlotRunEpoch, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, syncSlotRunningFromServer, setAgentSwitchNotice, pendingQuestionFor } from '../store/chatSlice'
 import { handleStopPress, isEscalationState } from '../utils/stopDebounce'
 import { deriveFollowUpOptions } from '../app-sdk/protocol'
+import { appendFollowUpOption, removeFollowUpOption, type OwnedSuffix } from '../lib/followUpToggle'
 import { CONTENT_WIDTH, loadChatConfig, type ChatConfig } from '../pages/chat/ChatSettings'
 import { scaleContentWidth } from '../pages/chat/contentWidth'
 import { tryQuickSend } from '../lib/quickSend'
@@ -375,10 +375,6 @@ export default function ChatPane({
   // has_more freezes at mount while a later bounded warm can truncate the cache.
   const warmHasMore = useAppSelector((s) => s.chat.slotPaneHasMore?.[slotKey])
   const paneSlot = useAppSelector((s) => s.dashboard.slots.find((x) => x.key === slotKey))
-  // Same rule as ChatPage: only the slot the header's "Request a Feature"
-  // action created hands its usage-limit row the issue-form route, so the
-  // pane offers the non-inference exit where the main surface would.
-  const isFeatureRequestSlot = useAppSelector((s) => selectIsFeatureRequestSlot(s, slotKey))
   // The composer is a `Composer` root around the ChatInput preset (chat-core
   // P3-b). Its Voice atom is what gives the pane a microphone: the pane wires no
   // voice props, only the two things the atom cannot know — the endpointer's
@@ -468,6 +464,24 @@ export default function ChatPane({
   // Read by the option handler instead of the state: two clicks landing before
   // a re-render would both see the same set and both take the append branch.
   const followUpPickedRef = useRef(followUpPicked); followUpPickedRef.current = followUpPicked
+  // Ownership of the appended suffix, not content-matching (#7616). See
+  // lib/followUpToggle: the chips own a recorded (base, options) span of the
+  // draft, options kept as an ARRAY so a comma-bearing label is one element.
+  // Advanced SYNCHRONOUSLY in the click handler (never in a render-time state
+  // updater), so React StrictMode's double-invocation cannot rebase it on stale
+  // state (the #7616 F2 defect).
+  const followUpInsertedRef = useRef<OwnedSuffix | null>(null)
+  // Any DIRECT user edit of the composer invalidates chip ownership (#7616):
+  // the recorded span describes a draft the chips produced, and once the user
+  // types the span no longer maps to the live text. Clearing here — the single
+  // path a user keystroke takes into `input` — means the un-toggle path can
+  // never act on a stale span, even one the user edited and then restored
+  // byte-for-byte. Chip append/remove set the ref themselves and go through
+  // setInput directly, not this handler, so they are unaffected.
+  const handleUserInput = useCallback((next: string | ((prev: string) => string)) => {
+    followUpInsertedRef.current = null
+    setInput(next)
+  }, [])
   // Orchestrator plan dispatch (#5893) — same mutation ChatPage uses,
   // targeting THIS pane's slot. The hook owns the latch acknowledgement,
   // keyed on the derived options-row identity passed here; the ref lets the
@@ -484,7 +498,7 @@ export default function ChatPane({
     return true
   }
   const followUpOptionsKey = followUpOptions.join('\x00')
-  useEffect(() => { setFollowUpPicked(new Set()) }, [followUpOptionsKey, slotKey])
+  useEffect(() => { setFollowUpPicked(new Set()); followUpInsertedRef.current = null }, [followUpOptionsKey, slotKey])
   // Quick Send parity with ChatPage: same query key, so the cache is shared
   // with the page and no extra request is made for a pane.
   const { data: dashCfg } = useQuery<{ quick_send?: boolean; decisions_enabled?: boolean }>({ queryKey: ['dashboardConfig'], queryFn: () => api.dashboardConfig(), staleTime: 30_000 })
@@ -1336,11 +1350,10 @@ export default function ChatPane({
       // A steer-only surface has no steer/queue concept to explain, so a
       // confirmed steer draws as an ordinary message: no badge, no tint.
       hideSteerBadge: busyMode === 'steer-only',
-      featureRequestFormUrl: isFeatureRequestSlot ? FEATURE_REQUEST_FORM_URL : undefined,
       crewmate,
       crewmateTranscript,
     }),
-    [slotKey, toolDisclosure, setToolDisclosureFor, busyMode, isFeatureRequestSlot, crewmate, crewmateTranscript],
+    [slotKey, toolDisclosure, setToolDisclosureFor, busyMode, crewmate, crewmateTranscript],
   )
 
   // Quote / Ask on selected assistant text — the same chat-core seam the main
@@ -1536,7 +1549,7 @@ export default function ChatPane({
                   <div className="text-center text-muted text-[13px] px-4 py-8" data-testid={crewmate && paneMessages.length > 0 ? 'crewmate-quiet-hint' : undefined}>
                     {crewmate && paneMessages.length > 0 ? (
                       <>
-                        <div>{i18nT('components.chatPane.crewmate_quiet', { name: crewmate.name })}</div>
+                        <div>{i18nT('components.chatPane.crewmate_quiet', { name: crewmate.label || crewmate.name })}</div>
                         {/* Where the work went: named after the panel tab
                             (pages.membersPage.work_log_tab). A link when the
                             host can focus that tab — the words read as a
@@ -1780,12 +1793,12 @@ export default function ChatPane({
           ref={composerRef}
           slotKey={slotKey}
           value={input}
-          onChange={setInput}
+          onChange={handleUserInput}
           voice={composerVoiceOptions}
         >
         <ChatInput
           value={input}
-          onChange={setInput}
+          onChange={handleUserInput}
           pasteBlocks={pasteBlocks}
           onPasteBlocksChange={setPasteBlocks}
           onSend={doSend}
@@ -1854,27 +1867,26 @@ export default function ChatPane({
             if (followUpPickedRef.current.has(o)) {
               const next = new Set(followUpPickedRef.current); next.delete(o)
               followUpPickedRef.current = next
-              setInput(prev => {
-                // Order matters: try leading ", o" first so "opt, opt" + remove
-                // last "opt" doesn't match "opt, " and splice the wrong one.
-                // lastIndexOf, not indexOf: the handler appends options at the
-                // END, so the last occurrence is the one it created — a draft
-                // merely containing ", o" as a substring (draft "Please, Google"
-                // + option "Go") must not be spliced mid-word.
-                const leading = ', ' + o
-                let idx = prev.lastIndexOf(leading)
-                if (idx >= 0) return prev.slice(0, idx) + prev.slice(idx + leading.length)
-                const trailing = o + ', '
-                idx = prev.indexOf(trailing)
-                if (idx >= 0) return prev.slice(0, idx) + prev.slice(idx + trailing.length)
-                if (prev === o) return ''
-                return prev  // user edited — leave text, still unmark below
-              })
+              // Compute the transform SYNCHRONOUSLY in the event handler from
+              // the live draft + ownership refs, then advance both refs and set
+              // the value. No functional state updater is involved, so React
+              // StrictMode's double-invocation cannot rebase ownership on stale
+              // state (the #7616 F2 defect); and because the refs advance before
+              // the next click, two clicks landing in one uncommitted tick still
+              // compose. The refs are the source of truth between renders;
+              // render re-affirms inputRef.current from committed state.
+              const r = removeFollowUpOption(inputRef.current, followUpInsertedRef.current, o)
+              followUpInsertedRef.current = r.owned
+              inputRef.current = r.value
+              setInput(r.value)
               setFollowUpPicked(next)
             } else {
               const next = new Set(followUpPickedRef.current); next.add(o)
               followUpPickedRef.current = next
-              setInput(prev => prev.trim() ? prev.trimEnd() + ', ' + o : o)
+              const r = appendFollowUpOption(inputRef.current, followUpInsertedRef.current, o)
+              followUpInsertedRef.current = r.owned
+              inputRef.current = r.value
+              setInput(r.value)
               setFollowUpPicked(next)
             }
           }}
@@ -1888,7 +1900,7 @@ export default function ChatPane({
           project={paneSlot?.project ?? ''}
           // A crewmate's chat is a DM with one named crewmate, so the composer
           // addresses it by name rather than the product ("Message Kiro Crew…").
-          placeholder={crewmate ? i18nT('components.chatInput.message_placeholder', { bot: crewmate.name }) : undefined}
+          placeholder={crewmate ? i18nT('components.chatInput.message_placeholder', { bot: crewmate.label || crewmate.name }) : undefined}
           onUploadFiles={uploadFiles}
           onCancelUpload={cancelUpload}
           pendingFiles={pendingFiles}

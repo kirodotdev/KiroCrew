@@ -181,15 +181,18 @@ async def ensure_fresh(
 
 
 async def _refresh(token: KasToken, *, session: aiohttp.ClientSession) -> KasToken:
-    if not token.refresh_token:
-        raise RefreshError(f"no refresh token for identity {token.identity}")
+    # One gate for every local precondition, shared with whoever must REFUSE a token
+    # rather than refresh it (the crew container's vault seed). Spelling these out per
+    # branch is how the refuser and the refresher drift into disagreeing about which
+    # tokens are renewable.
+    blocker = token.refresh_blocker()
+    if blocker:
+        raise RefreshError(blocker)
     if token.identity == "social":
         return await _refresh_social(token, session=session)
     if token.identity == "external_idp":
         return await _refresh_external_idp(token, session=session)
-    if token.identity in ("builder_id", "identity_center"):
-        return await _refresh_sso_oidc(token, session=session)
-    raise RefreshError(f"unknown identity for refresh: {token.identity}")
+    return await _refresh_sso_oidc(token, session=session)
 
 
 async def _refresh_social(token: KasToken, *, session: aiohttp.ClientSession) -> KasToken:
@@ -216,8 +219,6 @@ async def _refresh_social(token: KasToken, *, session: aiohttp.ClientSession) ->
 
 
 async def _refresh_sso_oidc(token: KasToken, *, session: aiohttp.ClientSession) -> KasToken:
-    if not (token.client_id and token.client_secret):
-        raise RefreshError("SSO-OIDC refresh needs stored client credentials")
     region = token.region or "us-east-1"
     url = f"{oidc_url(region)}/token"
     payload = {
@@ -245,17 +246,17 @@ async def _refresh_sso_oidc(token: KasToken, *, session: aiohttp.ClientSession) 
 
 
 async def _refresh_external_idp(token: KasToken, *, session: aiohttp.ClientSession) -> KasToken:
-    if not token.token_endpoint:
-        raise RefreshError("external IdP refresh needs a token endpoint")
+    # Bound for the type checker, which cannot see that `refresh_blocker()` in `_refresh`
+    # already required it. Not a second precondition: the reason string lives there.
+    endpoint = token.token_endpoint
+    assert endpoint, "refresh_blocker() admits no external_idp token without an endpoint"
     form = {
         "grant_type": "refresh_token",
         "refresh_token": token.refresh_token or "",
     }
     if token.client_id:
         form["client_id"] = token.client_id
-    async with session.post(
-        token.token_endpoint, data=form, headers={"User-Agent": USER_AGENT}
-    ) as resp:
+    async with session.post(endpoint, data=form, headers={"User-Agent": USER_AGENT}) as resp:
         if resp.status != 200:
             body = await resp.text()
             raise _http_failure("external IdP", resp.status, body)

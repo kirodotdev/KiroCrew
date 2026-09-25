@@ -395,12 +395,14 @@ def _read_self_process(procfs: Path) -> dict[str, Any]:
 
 
 def _read_posture() -> dict[str, Any]:
-    """Memory posture and the pressure line it is judged against.
+    """Memory posture, the pressure line it is judged against, and slice tasks.
 
     Reuses :func:`kiro_crew.resource_status.probe`, which is cgroup-clamped and
     container-aware, so the recorder's posture is the same one
     ``resource_status`` reports to an agent rather than a second opinion derived
-    from raw ``meminfo``.
+    from raw ``meminfo``. The slice task figures ride along because a bundle
+    captured after a wedge is where "was the host at its task ceiling" gets
+    asked, and nothing else in the bundle answers it.
     """
     try:
         from kiro_crew import resource_status
@@ -413,6 +415,10 @@ def _read_posture() -> dict[str, Any]:
             "critical_gb": _round(status.critical_gb, 2),
             "cpu_count": status.cpu_count,
             "load_per_cpu": _round(status.load_per_cpu, 3),
+            "slice_tasks": status.slice_tasks,
+            "slice_tasks_limit": status.slice_tasks_limit,
+            "slice_tasks_own": status.slice_tasks_own,
+            "slice_tasks_tight": status.slice_tasks_tight,
         }
     except Exception:  # noqa: BLE001
         logger.debug("diag: posture probe failed", exc_info=True)
@@ -423,6 +429,10 @@ def _read_posture() -> dict[str, Any]:
             "critical_gb": None,
             "cpu_count": os.cpu_count(),
             "load_per_cpu": None,
+            "slice_tasks": None,
+            "slice_tasks_limit": None,
+            "slice_tasks_own": None,
+            "slice_tasks_tight": None,
         }
 
 

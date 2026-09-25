@@ -134,8 +134,9 @@ credential the owner did NOT ask for will also be able to put it in the owner's
 outbox. What that buys an attacker is bounded by the audience: the file lands on
 the owner's own disk and in the owner's own authenticated browser, which is where
 the agent could already write it with ordinary file tools. Every delivery under a
-grant is SEL-audited as ``sensitive_content_delivered_with_consent`` so the
-record exists even though the refusal does not.
+grant is SEL-audited as ``sensitive_content_delivered_with_consent``, and a
+refusal is audited beside it and NAMES the file it held back, so the record
+answers both halves of a review: what left, and what did not.
 """
 
 from __future__ import annotations
@@ -739,14 +740,17 @@ def public_pending_view(pending: PendingGrant | None) -> dict[str, Any]:
 
 
 def audit_decision(destination_class: str, *, outcome: str, detail: str = "") -> None:
-    """Record a consent state change, a denial, or a consented delivery in the SEL.
+    """Record a consent state change, a denial, a refusal, or a delivery in the SEL.
 
-    Grants, revocations, denials AND deliveries made under a grant are recorded.
-    The delivery entry is the point: the refusal it replaces was self-evident in
-    the tool's error string, whereas a successful consented delivery would
-    otherwise leave no trace that a flagged file left the gate at all. Every
-    entry answers a question an incident review actually asks -- who authorized
-    delivery, when was it withdrawn, and which flagged files went out under it.
+    Grants, revocations, denials, scanner refusals AND deliveries made under a
+    grant are recorded, and the refusal and delivery entries both NAME the file
+    they are about. That pairing is what lets the trail answer an incident
+    review: which flagged files left under a grant, and which ones the scanner
+    held back. A refused caller does get an error string, but that string is
+    returned to the AGENT, while this log is the surface the owner reads, so the
+    refusal has to be recorded here to reach them at all. Every entry answers a
+    question a review actually asks -- who authorized delivery, when it was
+    withdrawn, what went out, and what did not.
 
     Never raises: an audit failure must not be what stops a refusal from being
     enforced. Imported lazily because this module is reached from the MCP stdio
@@ -779,3 +783,49 @@ def audit_decision(destination_class: str, *, outcome: str, detail: str = "") ->
         )
     except Exception:  # pragma: no cover - audit must never break the gate
         logger.debug("could not write the file-delivery consent audit event", exc_info=True)
+
+
+def audit_refusal(
+    destination_class: str, *, leg: str, name: str, reason: str, caller: str = ""
+) -> None:
+    """Record that the scanner held a file back, NAMING the file it held.
+
+    The one spelling of the refusal entry for the legs a grant can cover, so the
+    tool leg and the two dashboard legs cannot drift into several vocabularies an
+    owner would have to learn. *leg* names the delivery path in the same words the
+    delivery entries use (``file_send``, ``notify``, ``download``), *name* is the
+    file, and *reason* says why the delivery stopped -- which scan tripped, and on
+    a leg whose gate has more than one conjunct, which conjunct refused.
+
+    *caller* names the principal on a leg an authenticated non-owner can reach, and
+    is empty elsewhere. :func:`audit_decision` stamps every refusal ``gateway``,
+    which is the process and not the requester, so a leg that admits more than one
+    principal has to carry the requester itself or the entry cannot tell a scanner
+    refusal from one identity reaching for another's file.
+
+    The file name goes LAST, after the leg, the reason and the caller, because
+    :func:`audit_decision` clips the detail to 200 characters and the name is the
+    only field with no length bound -- an outbox name is taken from the request path
+    and resolved inside the outbox, never measured. Composed name-first, a long
+    enough name pushes the reason and the caller off the end, and what survives is a
+    row indistinguishable from a plain scanner hold-back: the one reading this
+    entry's contract exists to prevent. Clipped in this order the name degrades to a
+    prefix, which is honest, while the fields that say WHAT happened and to WHOM
+    always fit.
+
+    The shared channel-upload gate is NOT a caller. It serves only legs a grant
+    can never cover, and its structural guarantee is that it references nothing in
+    this module, so it names its own refused files in the tool-invocation entry it
+    already writes.
+
+    The name is the whole point of the entry, and it costs no new disclosure:
+    this channel already names a flagged file that went OUT under a grant, and
+    both entries land in the same owner-read log. :func:`audit_decision` redacts
+    the full detail before clipping it, so a caller may pass *name* verbatim; a
+    site whose refusal reason IS a flagged name passes the redacted form anyway,
+    so that entry reads the same as the neighbouring tool-invocation line.
+    """
+    detail = f"{leg} ({reason})"
+    if caller:
+        detail = f"{detail} caller={caller}"
+    audit_decision(destination_class, outcome="refused", detail=f"{detail}: {name}")

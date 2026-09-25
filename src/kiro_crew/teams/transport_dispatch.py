@@ -708,6 +708,11 @@ class TeamsDispatcher:
                 ctx_builder=self.ctx_builder,
             )
         finally:
+            # An approval window the driver never awaited -- the card went out and
+            # the turn then ended before the decider -- has no wait of its own to
+            # close it, so it would outlive this turn with its nonce still armed
+            # and authorizing a click.
+            decider.discard_reservations()
             # A Trust click is granted by the decider the moment it resolves, so
             # the rest of THIS turn stops prompting. Nothing to promote here.
             # A renderer that posted [OPTIONS:] chips must OUTLIVE its turn: the

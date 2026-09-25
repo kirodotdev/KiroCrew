@@ -157,7 +157,7 @@ Client to server:
 
 Server to client, JSON. `stt.session.SttEvent.kind` supplies the local provider's `partial` and `final` frame types; `dashboard.stt_stream` owns the complete wire contract:
 
-- `{"type":"ready"}`: the session is live and the client may send audio. Capture begins before this arrives, so `useStreamingStt` buffers PCM locally and flushes it in order after readiness. Reaching 60 seconds of buffered PCM stops capture and drains the retained audio after readiness instead of discarding the recording's beginning; the worklet's short flushed tail is retained too. Local sessions additionally advertise `final_timeout_ms`, the browser's stop-to-close allowance: `stt.timeout_secs` plus the native abort grace and a wire grace. Readiness keeps its separate 60-second client timeout. For older servers without a valid allowance, the client uses 315 seconds.
+- `{"type":"ready"}`: the session is live and the client may send audio. Capture begins before this arrives, so `useStreamingStt` buffers PCM locally and flushes it in order after readiness. Reaching 60 seconds of buffered PCM stops capture and drains the retained audio after readiness instead of discarding the recording's beginning; the worklet's short flushed tail is retained too. Local sessions additionally advertise `final_timeout_ms`, the browser's stop-to-close allowance: `stt.timeout_secs` plus the native abort grace and a wire grace. Readiness keeps its own client timeout, and which one it is depends on whether anything has announced work: a socket that has said nothing gets 60 seconds, while a `downloading` or `preparing` frame switches the wait to the preparation budget that frame carries in `prepare_timeout_ms`, and every later announcing frame restarts it, so the wait is bounded by SILENCE rather than by the total length of a cold load. A frame without a usable figure leaves a local 300-second fallback in place. For older servers without a valid stop-to-close allowance, the client uses 315 seconds.
 - `{"type":"status","stage":...,"downloaded_bytes":N,"total_bytes":N,"code":...}`
   where `stage` is `downloading`, `preparing` or `ready`. A first-ever local session has to
   fetch weights before it can recognise anything, and a silent transfer is
@@ -436,14 +436,17 @@ state from an environment variable for exactly that. The accelerated stills also
 a second fact worth seeing: the slow-model warning under the picker DISAPPEARS on an
 accelerated build, because `large-v3-turbo` is not slow there.
 
-**UI evidence is attached, never committed.** `gh pr edit --attach` rewrites a local
-path into a permanent `user-attachments` URL, which is what `docs/ci/ci-and-reviews.md`
-prescribes and what the review lanes read. Two wrong answers were tried first and are
-worth naming: force-adding the files into `temp-screenshots/` puts binaries in this
-repository's history forever past a `.gitignore` rule that exists to prevent exactly
-that, and hosting them on a side branch leaves the evidence outside the PR with no tie
-to its head, which the design lane rejects as unevaluable. The attachment path is the
-only one that satisfies both.
+**UI evidence is attached, never committed by anyone who can attach.** `gh pr edit
+--attach` rewrites a local path into a permanent `user-attachments` URL, which is what
+`docs/ci/ci-and-reviews.md` prescribes and what the review lanes read. Two wrong
+answers were tried first and are worth naming: force-adding the files into
+`temp-screenshots/` puts binaries in this repository's history forever past a
+`.gitignore` rule that exists to prevent exactly that -- the force-add is reserved for
+a fork contributor whom GitHub's upload endpoint refuses, never for this repository's
+own agents (prepare-pr's `references/rationale.md` records the exception and its
+merge-time cost) -- and hosting them on a side branch leaves the evidence outside the
+PR with no tie to its head, which the design lane rejects as unevaluable. For an
+author with write access the attachment path is the only one that satisfies both.
 
 Four restraints, each with a test, because a task on every boot has more ways to do
 harm than good:

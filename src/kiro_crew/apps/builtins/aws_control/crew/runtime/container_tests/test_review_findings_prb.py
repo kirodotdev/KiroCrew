@@ -49,7 +49,7 @@ def test_a_bucket_without_a_declared_trust_domain_refuses_to_start(tmp_path) -> 
     """The refusal is at START, not per turn.
 
     A container that answers its port while silently declining to restore history looks
-    healthy and is not, which is why ``require_api_key`` refuses at startup too. The
+    healthy and is not, which is why ``require_model_identity`` refuses at startup too. The
     message has to name the setting, because the operator's next action is to decide
     whether their deployment really is single-principal.
     """

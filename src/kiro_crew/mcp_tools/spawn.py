@@ -727,6 +727,9 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
     # the family settings key a requested effort is delivered under.
     effort_applies: list[tuple[str, str]] = []
     agent_tasks: list[str] = []
+    # subagent id -> the gate's reason, for members the gateway accepted but
+    # answered ``status: "queued"`` (deferred, not started).
+    queued_reasons: dict[str, str] = {}
     errors: list[str] = []
     transport_errors: list[str] = []
     # Forward this session's own approval_mode (set as an env var at
@@ -850,6 +853,16 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
         agent_ids.append(d.get("id", "?"))
         agent_names.append(a)
         agent_tasks.append(t)
+        if d.get("status") == "queued":
+            # Accepted but DEFERRED by the gate (memory floor, critical posture,
+            # adaptive cap at 0): keyed and counted like a started member, but
+            # not running, and re-checked only every admit wait. Reported apart
+            # below so the caller does not wait for a completion event as if
+            # it had started. An older gateway sends no ``status``; a row
+            # waiting merely for a slot or the stagger tick sends ``spawned``.
+            queued_reasons[str(d.get("id", "?"))] = str(
+                d.get("reason_detail") or d.get("reason") or "deferred by the spawn gate"
+            )
         if d.get("effort_dropped"):
             effort_drops.append((str(d.get("id", "?")), str(d["effort_dropped"])))
         if d.get("effort_applied"):
@@ -887,19 +900,42 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
             "session_pid / claim-push.)"
         )
     if agent_ids:
-        if parent_session:
+        members = list(zip(agent_ids, agent_names, agent_tasks))
+        started = [m for m in members if m[0] not in queued_reasons]
+        deferred = [m for m in members if m[0] in queued_reasons]
+        if started:
+            if parent_session:
+                spawn_lines.append(
+                    f"Spawned {len(started)} subagent(s). Results will arrive as completion events:"
+                )
+            else:
+                # Orphaned (warning above): completion events cannot be
+                # delivered — do not promise them in the same breath.
+                spawn_lines.append(
+                    f"Spawned {len(started)} subagent(s). Monitor results via polling:"
+                )
+            for aid, a, t in started:
+                label = f"{aid} ({a})" if a else aid
+                spawn_lines.append(f"  {label}: {t[:80]}")
+        if deferred:
+            # One gate verdict covers the wave (memory is host-wide), so the
+            # first member's reason heads the block; a member whose reason
+            # differs is annotated on its own line. The header keeps the
+            # ``N subagent(s).`` shape of the Spawned line on purpose: the
+            # dashboard's inline run card recognises a launch by that marker
+            # and reads the ``  <id> (<agent>): <task>`` lines that follow, so
+            # a queued-only wave still gets its card (which is what shows the
+            # queued count and, with the event's reason, why it waits).
+            head_reason = queued_reasons[deferred[0][0]]
             spawn_lines.append(
-                f"Spawned {len(agent_ids)} subagent(s). Results will arrive as completion events:"
+                f"Queued {len(deferred)} subagent(s). Not started yet: {head_reason}. "
+                "The gateway re-checks every admit wait and starts each one once the "
+                "condition clears; only then does its result arrive:"
             )
-        else:
-            # Orphaned (warning above): completion events cannot be
-            # delivered — do not promise them in the same breath.
-            spawn_lines.append(
-                f"Spawned {len(agent_ids)} subagent(s). Monitor results via polling:"
-            )
-        for aid, a, t in zip(agent_ids, agent_names, agent_tasks):
-            label = f"{aid} ({a})" if a else aid
-            spawn_lines.append(f"  {label}: {t[:80]}")
+            for aid, a, t in deferred:
+                label = f"{aid} ({a})" if a else aid
+                note = "" if queued_reasons[aid] == head_reason else f" [{queued_reasons[aid]}]"
+                spawn_lines.append(f"  {label}: {t[:80]}{note}")
         if solo:
             # The reason, or a pointer to the gateway's roster-check audit.
             spawn_lines.append(solo_spawn_note(solo_reason))
@@ -1253,6 +1289,8 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
 
     sa_ids: list[str] = []
     sa_errors: list[str] = []
+    # subagent id -> the gate's reason, for members accepted as ``queued``.
+    sa_deferred: dict[str, str] = {}
     for entry in agents_input:
         prompt = entry.get("prompt", "").strip()
         if not prompt:
@@ -1282,6 +1320,16 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
             aid = d.get("id", "")
             if aid:
                 sa_ids.append(aid)
+                if d.get("status") == "queued":
+                    # Deferred by the gate, not started; reported under its
+                    # own ``queued`` line if the wait outlives this call.
+                    sa_deferred[aid] = _redact_sa(
+                        str(
+                            d.get("reason_detail")
+                            or d.get("reason")
+                            or "deferred by the spawn gate"
+                        )
+                    )
             else:
                 sa_errors.append(f"{_redact_sa(prompt)[:60]}: spawn returned no agent id")
 
@@ -1418,6 +1466,27 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
                         "keep running on their own budget. Their [Subagent completion "
                         "event] messages still arrive; poll spawn_list or spawn_status "
                         "for progress."
+                    ),
+                }
+            )
+        )
+    # Members the gate DEFERRED at accept time (memory floor, critical posture,
+    # adaptive cap at 0) that never reached a settled state within the wait. A
+    # deferred row is not registered as a run, so the per-id poll above cannot
+    # see it; without this line the caller's only trace of it is a bare error
+    # entry, and the reason -- the one fact that says what to change -- stays
+    # in the gateway log.
+    never_started = {aid: why for aid, why in sa_deferred.items() if aid not in _settled_ids}
+    if never_started:
+        sa_results.append(
+            json.dumps(
+                {
+                    "status": "queued",
+                    "agents": never_started,
+                    "note": (
+                        "Queued, not started: the spawn gate deferred these at accept "
+                        "time for the reason given and re-checks every admit wait. They "
+                        "start once the condition clears; nothing was cancelled."
                     ),
                 }
             )

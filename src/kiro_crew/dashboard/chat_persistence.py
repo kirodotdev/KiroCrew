@@ -39,6 +39,7 @@ from kiro_crew.dashboard.chat_utils import (
     _redact_meta_for_role,
     _sync_dashboard_slots,
     effective_session_key,
+    redact_display_content,
     session_key_for,
     slot_history_key,
     slot_transcript_key,
@@ -1016,7 +1017,7 @@ def _attach_variants(slot: _ChatSlot, m: dict) -> None:
         slot.messages[-1]["variants"] = [  # type: ignore[assignment]
             {
                 **v,
-                "content": redact_credentials(redact_exfiltration_urls(v.get("content", ""))[0])[0],
+                "content": redact_display_content(v.get("content", "")),
             }
             for v in m["variants"]
             if isinstance(v, dict)
@@ -1762,8 +1763,7 @@ def _rehydrate_slot_from_history(
             # stays raw because its author is its only reader, but `system` MUST be
             # redacted — the write path excludes it, so system bytes reach disk raw.
             if role != "user":
-                content, _ = redact_exfiltration_urls(content)
-                content, _ = redact_credentials(content)
+                content = redact_display_content(content)
             slot.append(
                 role,
                 content,
@@ -2302,8 +2302,7 @@ def _apply_recent_session(
         # measured rationale (content ~0.4s / ~204 readers, meta ~5.5s /
         # 31 readers that touch only control fields outside the emit sites).
         if role != "user":
-            content, _ = redact_exfiltration_urls(content)
-            content, _ = redact_credentials(content)
+            content = redact_display_content(content)
         slot.append(
             role,
             content,

@@ -25,6 +25,18 @@ function BoundaryHarness() {
   )
 }
 
+/** A consumer whose anchor sits at the top of the viewport (the top bar), so
+ *  the bubble opens under it instead. */
+function BelowHarness() {
+  const { tip, tipHandlers, tipId } = useInstantTip({ placement: 'below' })
+  return (
+    <>
+      <button type="button" {...tipHandlers}>anchor</button>
+      <InstantTip tip={tip} tipId={tipId}>bubble content</InstantTip>
+    </>
+  )
+}
+
 // The gesture semantics live in the shared module, so they are pinned here
 // once rather than per consumer. FollowUpBar / ChatInput tests assert only
 // their own tooltip CONTENT, via keyboard focus (the synchronous path).
@@ -206,5 +218,21 @@ describe('InstantTip', () => {
     anchor.getBoundingClientRect = () => ({ top: 300, left: 60, right: 160, bottom: 328, width: 100, height: 28, x: 60, y: 300, toJSON: () => ({}) }) as DOMRect
     fireEvent.focus(anchor)
     expect(parseFloat(screen.getByRole('tooltip').style.top)).toBe(292)
+    // The default is the bubble's BOTTOM edge at `top`: pulled up its own height.
+    expect(screen.getByRole('tooltip').className).toMatch(/-translate-y-full/)
+    expect(screen.getByRole('tooltip')).toHaveAttribute('data-placement', 'above')
+  })
+
+  it('opens under the anchor for placement: below (a top-bar anchor has no room above)', () => {
+    render(<BelowHarness />)
+    const anchor = screen.getByRole('button', { name: 'anchor' })
+    anchor.getBoundingClientRect = () => ({ top: 8, left: 60, right: 160, bottom: 36, width: 100, height: 28, x: 60, y: 8, toJSON: () => ({}) }) as DOMRect
+    fireEvent.focus(anchor)
+    const tip = screen.getByRole('tooltip')
+    // Anchor bottom (36) + 8, and the bubble's TOP edge sits there: no translate.
+    expect(parseFloat(tip.style.top)).toBe(44)
+    expect(tip.className).not.toMatch(/-translate-y-full/)
+    expect(tip).toHaveAttribute('data-placement', 'below')
+    expect(tip.id).toBe(anchor.getAttribute('aria-describedby'))
   })
 })

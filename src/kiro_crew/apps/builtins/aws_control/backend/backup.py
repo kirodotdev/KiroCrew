@@ -22,7 +22,7 @@ Two backup kinds, one push path:
 
 **Terminal conversations (``conversations/`` root).** The two transcript halves
 above are the GATEWAY's session state; the terminal (kiro-cli itself) keeps its
-own conversations in ``conversations_v2`` inside
+own conversations in ``conversations`` and ``conversations_v2`` inside
 ``~/.local/share/kiro-cli/data.sqlite3``, a store disjoint from both halves.
 That file is ALSO the identity auth store -- ``hooks.py`` classifies it as a
 token path and it holds live bearer tokens -- so the archive
@@ -40,8 +40,12 @@ archive is uploaded off-host unattended. A host that relocates its store therefo
 gets no ``conversations/`` root, and the run record says so through
 ``conversations_skipped`` rather than leaving an operator to infer it from an
 absent member. The DECLARED
-BOUNDARY of "conversation state" for this app is exactly ``conversations_v2``;
-if a future table is genuinely conversation state and not auth, it is added to
+BOUNDARY of "conversation state" for this app is exactly the terminal's two chat
+tables, ``conversations`` and ``conversations_v2``; a store that has not migrated
+holds its rows in the first and a migrated one holds them in the second, so
+carrying only one of them would leave an un-migrated install's conversations
+behind while the run recorded a store with no conversation table at all.
+If a future table is genuinely conversation state and not auth, it is added to
 ``_CONVERSATION_TABLES`` and this sentence is updated in the same change --
 there is no other place the boundary is expressed. The export rides the SAME
 standing permission as the ``cli`` half, :func:`sessions_layer_b_enabled`, and
@@ -221,7 +225,7 @@ SESSIONS_LAYER_B_KEY = "sessionsIncludeLayerB"
 #: second toggle and gives the operator nothing new to set. It exists because the
 #: grant's meaning widened: a grant recorded before the terminal conversation
 #: export was disclosed authorized this product's own ``cli`` session files, and
-#: reading it as also authorizing ``conversations_v2`` would ship host-wide
+#: reading it as also authorizing the terminal's chat tables would ship host-wide
 #: terminal context on a consent that never mentioned it, off-host and
 #: unrecallable. Written by :func:`set_sessions_layer_b` only when the caller NAMES
 #: this scope in the request: a bare enable carries no evidence of what the operator
@@ -2037,32 +2041,42 @@ def _record_run_locked(
             _set_conversations_retained(entry)
         if not superseded:
             runs[kind] = record
-        # A completed run ends the retry backoff, and it does so HERE -- inside the
-        # same mutate, under the same sidecar lock as the record that proves the run
-        # -- rather than as a second call beside it. A separate write would leave a
-        # window in which the run is recorded and the failure count is not yet
-        # cleared, and this state is read by a loop that wakes on its own schedule:
-        # that window is exactly long enough for a wake to land in it and withhold
-        # the next attempt on the strength of failures that are already over.
-        #
-        # Both outcomes clear it. `uploaded=False` is a run that found the tree
-        # unchanged, which is a successful comparison against an archive that is
-        # provably in the drive, not a failure -- and it takes a fresh `at` for the
-        # same reason.
-        #
-        # Reached by the OWNER-triggered path too, and that asymmetry is deliberate:
-        # only the unattended loop RECORDS a failure (see
-        # :func:`record_nightly_failure`), while any success clears one. An owner who
-        # presses the button and watches it work has just demonstrated the fault is
-        # gone, so making them wait out a backoff measured for an unattended loop
-        # would be withholding the schedule on evidence that has been superseded.
-        #
-        # It sits OUTSIDE the supersession guard above, which covers the identity slot
-        # alone: this records that a run SUCCEEDED, and that is as true of a superseded
-        # run as of a winning one. The two placements coincide except when a run loses
-        # the slot AND a failure is recorded between the winner's commit and this one,
-        # because the winner otherwise clears the backoff in its own mutate.
-        _clear_nightly_failure(entry, kind)
+            # A completed run ends the retry backoff, and it does so HERE -- inside the
+            # same mutate, under the same sidecar lock as the record that proves the run
+            # -- rather than as a second call beside it. A separate write would leave a
+            # window in which the run is recorded and the failure count is not yet
+            # cleared, and this state is read by a loop that wakes on its own schedule:
+            # that window is exactly long enough for a wake to land in it and withhold
+            # the next attempt on the strength of failures that are already over.
+            #
+            # Both outcomes clear it. `uploaded=False` is a run that found the tree
+            # unchanged, which is a successful comparison against an archive that is
+            # provably in the drive, not a failure -- and it takes a fresh `at` for the
+            # same reason.
+            #
+            # Reached by the OWNER-triggered path too, and that asymmetry is deliberate:
+            # only the unattended loop RECORDS a failure (see
+            # :func:`record_nightly_failure`), while any success clears one. An owner who
+            # presses the button and watches it work has just demonstrated the fault is
+            # gone, so making them wait out a backoff measured for an unattended loop
+            # would be withholding the schedule on evidence that has been superseded.
+            #
+            # INSIDE the supersession guard, sharing the run write's condition for the
+            # reason :func:`_merge_pending` states at the other place a run record and
+            # this clear travel together: a record this document has already superseded
+            # is not evidence of anything, so it must not clear a count a later failure
+            # legitimately accumulated. The two callers therefore answer one question
+            # the same way. It matters in one window: the winner clears the backoff in
+            # its own mutate, so the placements diverge only when a failure is recorded
+            # BETWEEN the winner's commit and a loser's, and there the loser is a run
+            # whose own record was refused as stale -- too stale to write a key, and so
+            # too stale to retire a newer failure.
+            #
+            # The conversations-retained fact above is deliberately NOT gated, and the
+            # difference is what each one is evidence OF. That fact is monotonic and
+            # concerns the drive's contents, which no record can undo; this concerns
+            # whether a run is current, which is exactly what losing the slot settles.
+            _clear_nightly_failure(entry, kind)
         return record
 
     try:
@@ -4033,7 +4047,7 @@ def sessions_layer_b_enabled(account: str) -> bool:
     **What this permission covers, stated here because it is the grant's own
     description.** Two payloads ride on it, and they differ in REACH rather than in
     sensitivity class. The ``cli`` half is this product's own kiro-cli session files.
-    The ``conversations/`` export is ``conversations_v2`` from the terminal's state
+    The ``conversations/`` export is the terminal's own chat tables from its state
     store, which records every interactive kiro-cli use on the host -- including work
     that has nothing to do with this product's sessions. An operator reading only
     "unredacted context in the sessions archive" would price the first and receive
@@ -4060,7 +4074,7 @@ def layer_b_grant_covers_conversations(account: str) -> bool:
     **A grant with no scope marker reads as ``cli``-only, always.** That is the whole
     point of the marker rather than an edge case in it: such a grant was recorded when
     the permission's own description covered this product's session files, so reading
-    it as covering ``conversations_v2`` would ship every interactive kiro-cli use on
+    it as covering the terminal's chat tables would ship every interactive kiro-cli use on
     the host off-host on a consent that never named them, and an object already in a
     bucket cannot be recalled. An operator re-confirming through the existing
     owner-gated endpoint gets the wider scope; nothing new is added for them to set.
@@ -4301,11 +4315,18 @@ def _audit_layer_b_decision(
 #: credential column added to one of THESE tables would ride -- see
 #: :func:`_copy_table`.
 #:
-#: ``conversations_v2`` is the terminal's own chat store. The
+#: ``conversations`` and ``conversations_v2`` are the terminal's own chat stores --
+#: the un-migrated and migrated shapes of the same data. A store carries whichever
+#: its install has reached, and on a store that has migrated the older table is
+#: present and empty, so carrying both costs nothing there and is the only way an
+#: install that never migrated has its conversations exported at all. Carrying just
+#: one also makes the ``no_conversation_table`` outcome untrue on the other kind of
+#: store: the rows exist, they are simply outside the allowlist, and the run record
+#: would report an absence rather than a coverage gap. The
 #: boundary of what counts as "conversation state" is declared in this module's
 #: header; widening this tuple is the one change that widens that boundary, so it
 #: is the single place a reviewer looks.
-_CONVERSATION_TABLES: tuple[str, ...] = ("conversations_v2",)
+_CONVERSATION_TABLES: tuple[str, ...] = ("conversations", "conversations_v2")
 
 #: The archive member names for the conversation export. The database rides under
 #: its own ``conversations/`` root (a third root beside ``crew`` and ``cli``), and
@@ -4920,8 +4941,10 @@ def _export_cli_conversations(tar: tarfile.TarFile) -> _ConversationExport:
                 with contextlib.closing(sqlite3.connect(str(dst))) as target:
                     for table in _CONVERSATION_TABLES:
                         if table not in present:
-                            # A store without this table is a valid state (an old
-                            # or empty terminal). Skip it; do not fail the export.
+                            # The allowlist names the terminal's un-migrated and
+                            # migrated chat tables, and a store holds whichever its
+                            # install has reached, so one of them being absent is an
+                            # ordinary state. Skip it; do not fail the export.
                             continue
                         per_table[table] = _copy_table(source, target, table)
                     target.commit()
@@ -4973,9 +4996,11 @@ def _export_cli_conversations(tar: tarfile.TarFile) -> _ConversationExport:
             return _ConversationExport(0, 0, "store_unreadable")
         total = sum(per_table.values())
         if not per_table:
-            # No allowlisted table existed at all: nothing to carry, and no empty
-            # member to add. (A present-but-empty table DOES get carried, so a
-            # restore sees the real schema.) The store WAS opened, so the access
+            # NO chat table existed at all -- neither the un-migrated nor the migrated
+            # one -- so this reason means the terminal genuinely holds no conversations
+            # rather than holding them in a table the allowlist omits. Nothing to carry,
+            # and no empty member to add. (A present-but-empty table DOES get carried, so
+            # a restore sees the real schema.) The store WAS opened, so the access
             # is still audited.
             hooks.emit_internal_read_audit(_CONVERSATION_READ_ID, "no_table")
             return _ConversationExport(0, 0, "no_conversation_table")
@@ -5106,7 +5131,7 @@ def run_sessions_backup(
             # looking for a fidelity the object does not hold.
             layer_b_files = _add_tree(tar, cli_sessions, "cli") if layer_b else 0
             count += layer_b_files
-            # The kiro-cli terminal conversation store (`conversations_v2` in
+            # The kiro-cli terminal conversation store (the chat tables in
             # `data.sqlite3`) is disjoint from both transcript halves above. It is
             # exported table-scoped, never file-copied, because the same file holds
             # live bearer tokens.
@@ -6580,10 +6605,14 @@ def _a_day_since_last_run(account: str, kind: str, now: Optional[dt.datetime]) -
 def _clear_nightly_failure(entry: dict[str, Any], kind: str) -> None:
     """Drop one kind's failure record from an account entry being mutated.
 
-    Takes the ENTRY rather than the account, because its only caller is already
-    inside :func:`_record_run_locked`'s mutate and holds the document; reading the
-    account again from there would be a second read of state the caller is midway
-    through rewriting.
+    Takes the ENTRY rather than the account, because both callers are already inside
+    a mutate that holds the document -- :func:`_record_run_locked`'s and
+    :func:`_merge_pending`'s -- and reading the account again from there would be a
+    second read of state the caller is midway through rewriting.
+
+    Each caller pairs this with a run-record write under the SAME condition that
+    write is gated on, because a superseded record is not evidence that the backoff
+    it would retire is over.
 
     The key is REMOVED rather than zeroed, so "no failures" has one spelling.
     :func:`_backoff_withholds` already reads a non-positive count as no backoff, so

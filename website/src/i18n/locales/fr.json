@@ -219,6 +219,7 @@
     "resource_tight": "Tight",
     "subagent_cap": "cap: {{cap}}",
     "notifications": "Notifications",
+    "notifications_ask_agent_help": "Quitte cette page et ouvre une nouvelle conversation avec le rapport de cette erreur déjà pré-rempli, que tu n’as plus qu’à envoyer",
     "notifications_failed_to_load": "Échec du chargement des notifications",
     "open_inbox": "Ouvrir la boîte de réception",
     "open_menu": "Ouvrir le menu",
@@ -3817,7 +3818,7 @@
         "trust_normal": "Normale",
         "trust_normal_desc": "Demander une approbation à chaque utilisation d'outil",
         "trust_reads": "Lecture",
-        "trust_reads_desc": "Approuver automatiquement les opérations en lecture seule (ls, cat, grep). Les opérations d'écriture demandent encore.",
+        "trust_reads_desc": "Approuver automatiquement les commandes shell en lecture seule (ls, cat, grep). Tout le reste demande encore.",
         "trust_trust": "Faire confiance à tous les outils",
         "trust_trust_desc": "Approuver automatiquement chaque outil utilisé par Mochi, sans demander",
         "trust_yolo_active": "YOLO (tout approuver automatiquement) est actif. Ce réglage s'applique à tout {{productName}} et se change depuis le tableau de bord, pas ici.",
@@ -5752,6 +5753,7 @@
       "your_selected_setup_is_ready_in_kiro_crew": "La configuration sélectionnée est prête dans {{productName}}."
     },
     "agentSelector": {
+      "agent_id_tooltip": "{{name}} — l'ID de l'agent. Les crons, les paramètres de spawn et la CLI utilisent cet ID, jamais le libellé.",
       "agent_list": "Liste des agents",
       "default": "par défaut",
       "filter_agents": "Filtrer les agents",
@@ -5818,9 +5820,9 @@
       "normal_desc": "{{productName}} vérifie avec vous avant de faire quoi que ce soit",
       "normal_label": "Normal",
       "normal_tooltip": "{{productName}} vous demande avant de faire quoi que ce soit",
-      "reads_desc": "{{productName}} se documente tout seul, mais demande avant de faire la moindre modification",
+      "reads_desc": "{{productName}} exécute seul les commandes shell en lecture seule, mais demande pour tout le reste",
       "reads_label": "Lectures",
-      "reads_tooltip": "{{productName}} se documente tout seul, mais demande avant de faire des modifications",
+      "reads_tooltip": "{{productName}} exécute seul les commandes shell en lecture seule, mais demande pour tout le reste",
       "trust_desc": "Dans ce chat, {{productName}} travaille sans vous demander d'abord",
       "trust_label": "Confiance",
       "chat_mode_hint": "mode de chat",
@@ -6516,7 +6518,7 @@
       "nightly": "Nightly",
       "report_problem": "Signaler un problème",
       "report_problem_on_build": "Signaler un problème sur cette version {{channel}}",
-      "request_feature_starts_agent": "Démarre une conversation avec l’agent, qui t’aide à rédiger et à déposer la demande. Elle consomme de l’inférence comme n’importe quel tour de chat."
+      "request_feature_starts_agent": "Démarre une conversation qui rédige ta demande et la dépose sur GitHub une fois que tu l'as approuvée. Consomme le quota mensuel de ton forfait."
     },
     "fileCard": {
       "audio": "Audio : {{name}}",
@@ -7304,7 +7306,8 @@
       "close_editor": "Fermer l'éditeur",
       "copied": "Copié !",
       "copy": "Copier",
-      "edit_code_block": "Modifier le bloc de code"
+      "edit_code_block": "Modifier le bloc de code",
+      "not_saved_hint": "Non enregistré dans le chat. Fermer supprime les modifications."
     },
     "notifications": {
       "notifMeta": {
@@ -8364,6 +8367,7 @@
     },
     "voiceStatusBar": {
       "default_microphone": "Micro par défaut",
+      "dictation_kept_for_model": "Ta dictée est conservée et sera transcrite.",
       "recording": "Enregistrement"
     },
     "webAppArtifactCard": {
@@ -9092,6 +9096,7 @@
       "audio_worklet_unavailable": "audio worklet indisponible",
       "stt_connection_error": "erreur de connexion stt",
       "stt_connection_lost": "connexion stt perdue",
+      "stt_model_still_loading": "Le modèle vocal est encore en cours de chargement, ta dictée n'a donc pas pu être transcrite et n'a pas été conservée. Redis-la une fois le modèle chargé.",
       "stt_error": "erreur stt"
     },
     "useVoiceInput": {
@@ -9120,6 +9125,7 @@
     "sttProviders": {
       "downloading_decoder": "Téléchargement du décodeur audio : {{pct}} ({{done}} sur {{total}})",
       "downloading_speech_model": "Téléchargement du modèle vocal : {{pct}} ({{done}} sur {{total}})",
+      "loading_speech_model": "Chargement du modèle vocal…",
       "stream_error_decode_failed": "La reconnaissance vocale n'a pas pu terminer cette transcription. Dicte-la à nouveau.",
       "stream_error_max_duration": "La dictée a atteint sa durée maximale. Lance un nouvel enregistrement pour continuer.",
       "stream_error_model_missing": "Le modèle vocal n'est pas encore prêt. Télécharge-le dans les paramètres de reconnaissance vocale, puis réessaie.",
@@ -10074,7 +10080,8 @@
         "sign_in": "Se connecter à Kiro",
         "sign_in_hint": "Ouvrez Paramètres → Aperçu → Connexion Kiro, reconnectez-vous, puis renvoyez votre message.",
         "feature_request_form": "Ouvrir le formulaire de demande de fonctionnalité",
-        "feature_request_form_hint": "Aucune capacité d’inférence pour le moment — ouvre plutôt le formulaire de demande de fonctionnalité."
+        "feature_request_form_hint": "Ton quota mensuel est épuisé — dépose plutôt ta demande sur GitHub avec ce formulaire. Ce formulaire contourne l’agent : il ouvre le formulaire d’issue GitHub que tu remplis toi-même et ne consomme rien de ton quota mensuel.",
+        "session_start_repeat_hint": "La session de l’agent n’a pas pu démarrer plusieurs fois de suite ; reprendre ne ferait que relancer le même démarrage. Redémarre le gateway depuis un terminal avec {{command}}, puis renvoie ton message."
       },
       "folderPanel": {
         "clear_search": "Effacer la recherche",
@@ -10326,6 +10333,13 @@
         "stop_failed": "Impossible d’arrêter le sous-agent {{name}}",
         "stop_all_failed": "Impossible d’arrêter les sous-agents",
         "retry_failed_error": "Impossible de réessayer certains sous-agents en échec"
+      },
+      "subagentQueued": {
+        "adaptive_cap_zero": "en attente de démarrage — les démarrages sont suspendus tant que cet ordinateur manque de mémoire ou est surchargé ; ils reprennent d’eux-mêmes une fois la situation rétablie",
+        "low_memory": "en attente de démarrage — nécessite {{required}} de mémoire libre, {{available}} libres actuellement ; libère de la mémoire pour continuer",
+        "low_memory_no_figures": "en attente de démarrage — mémoire libre insuffisante ; libère de la mémoire pour continuer",
+        "posture_critical": "en attente de démarrage — la mémoire de cet ordinateur est critiquement basse ({{available}} libres) ; libère de la mémoire pour continuer",
+        "posture_critical_no_figures": "en attente de démarrage — la mémoire de cet ordinateur est critiquement basse ; libère de la mémoire pour continuer"
       },
       "subagentRunCard": {
         "agent_finished_many": "{{count}} agents terminés",
@@ -11301,6 +11315,7 @@
       "block_semantic_memory": "Faits que vous avez indiqués",
       "block_skill_hint": "Compétences pertinentes",
       "block_skill_index": "Index des compétences",
+      "block_task_facts": "Faits rappelés pour cette tâche",
       "block_unclassified": "Non classé",
       "block_your_message": "Votre message",
       "cat_memory": "Mémoire à ton sujet",
@@ -11856,12 +11871,13 @@
       "error": "Erreur",
       "errors": "Erreurs",
       "event": "Événement",
+      "awaiting_agent": "pas encore déclenché",
       "failed_to_load": "Échec du chargement : {{section}}",
       "failed_to_load_hooks": "Échec du chargement des hooks : {{error}}",
       "filter_hooks": "Filtrer les hooks…",
       "hook_name": "Nom du hook",
       "hooks": "Hooks",
-      "hooks_run_shell_commands_on_chat_events_agentspa": "Les hooks exécutent des commandes shell sur les événements de chat : AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop. Les hooks d’outils acceptent des motifs de correspondance pour filtrer par nom d’outil.",
+      "hooks_run_shell_commands_on_chat_events_agentspa": "Les hooks exécutent des commandes shell sur les événements du chat : AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop. Les hooks d'outil acceptent des motifs pour filtrer par nom d'outil. Une ligne marquée pas encore déclenché est prise en charge par l'agent mais rien ici ne la déclenche encore ; une marquée ne se déclenche jamais n'est pas prise en charge du tout. Tester exécute l'une ou l'autre maintenant.",
       "last_run": "Dernière exécution",
       "loading": "Chargement…",
       "matcher": "Correspondance",
@@ -11881,8 +11897,11 @@
       "runs": "Exécutions",
       "s": "s",
       "save": "Enregistrer",
-      "script_hooks_fire_shell_commands_on_chat_lifecyc": "Les hooks de script déclenchent des commandes shell sur les événements du cycle de vie du chat. Les hooks PreToolUse/PostToolUse peuvent filtrer par motif de nom d’outil.",
+      "script_hooks_fire_shell_commands_on_chat_lifecyc": "Les hooks de script exécutent des commandes shell sur les événements du cycle de vie du chat. Les hooks PreToolUse/PostToolUse peuvent filtrer par motif de nom d'outil. Choisir un déclencheur marqué affiche le sens de sa marque, et Tester exécute le hook dans les deux cas.",
       "shell_commands_that_run_automatically_on_agent_e": "Commandes shell exécutées automatiquement lors des événements de l'agent",
+      "stored_only": "ne se déclenche jamais",
+      "runs_on_no_event_yet": "L'agent prend en charge ce déclencheur, mais rien ici ne le déclenche encore. Tester l'exécute maintenant.",
+      "runs_only_via_test": "Ce déclencheur ne se déclenche jamais seul. Seul Tester l'exécute.",
       "source": "Source",
       "status": "Statut",
       "test": "Tester",
@@ -11897,7 +11916,14 @@
       "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills.",
       "retry": "Réessayer",
       "show_last_error": "Afficher la dernière erreur de {{name}}",
-      "test_failed_for": "Échec du test pour {{name}}"
+      "test_failed_for": "Échec du test pour {{name}}",
+      "saved_switched_off": "Ce hook sera enregistré désactivé — rien ne déclenche encore ce déclencheur.",
+      "no_matcher_for_trigger": "Aucun filtre : ce déclencheur n'a aucune donnée d'événement à filtrer.",
+      "saved_switched_off_never": "Ce hook sera enregistré désactivé — ce déclencheur ne se déclenche jamais seul.",
+      "on_but_nothing_fires": "Activé, mais rien ne déclenche encore ce déclencheur.",
+      "via_test": "exécuté via Tester",
+      "skills_only_for_prompt_hooks": "Les compétences ne se chargent que sur les hooks UserPromptSubmit ou AgentSpawn qui n'exécutent aucune commande.",
+      "on_but_never_fires": "Activé, mais ce déclencheur ne se déclenche jamais seul."
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "Un identifiant unique pour cet espace de travail. Les agents référencent les espaces de travail par leur nom.",
@@ -11929,6 +11955,7 @@
       "discard_new_schedule": "Abandonner la nouvelle planification ?",
       "discard_new_schedule_body": "La planification saisie n'a pas été enregistrée et sera perdue.",
       "discard_schedule_confirm": "Abandonner la planification",
+      "display_name": "Nom affiché",
       "e_g_oncall": "ex. oncall",
       "edit_crew_named": "Modifier l’agent {{name}}",
       "edit_model": "Modifier le modèle par défaut",
@@ -11976,6 +12003,7 @@
       "select_an_agent_template": "Sélectionner un modèle d'agent…",
       "session_color_hint_member": "Les sessions lancées par ce membre utilisent cette couleur sauf si la session a la sienne. Laissez vide pour aucune couleur de membre.",
       "shared_lower": "en commun",
+      "shown_across_the_dashboard_instead_of_the_name_l": "Affiché dans tout le tableau de bord à la place du nom ({{name}}). Laisse vide pour afficher le nom lui-même.",
       "subdirectory_inside_kiro_crew_where_this_workspa": "Sous-répertoire dans ~/.kiro/crew où cet espace de travail stocke ses données (historique des chats, leçons, projets). Chaque espace de travail dispose de son propre répertoire isolé.",
       "template_hint_member": "La configuration de départ de ce membre — ses outils, connexions et instructions.",
       "the_agent_definition_it_boots_from_tools_mcp_ser": "La configuration de départ de cet agent — ses outils, ses connexions et ses instructions.",
@@ -12566,6 +12594,8 @@
         "confirm_reapply_body": "Cette action recharge le modèle configuré et efface puis reconstruit les vecteurs de mémoire stockés."
       },
       "kiroCrewCfgTab": {
+        "agent_for_pool_processes_empty_uses_default_agent": "Agent pour les processus du pool. Vide = agent par défaut.",
+        "applies_to_sessions_started_after_the_change": "S'applique aux sessions démarrées après la modification. 'auto' isole l'agent dans le sandbox mais les outils d'identifiants continuent de fonctionner ; 'strict' masque en plus les identifiants cloud, SSH, kube et de registres, donc ces outils cessent de fonctionner dans l'agent, uniquement là où le sandbox de {{productName}} confine le processus : pas sous Windows, ni pour un processus macOS délégué au sandbox interne de kiro-cli ; 'off' désactive le sandbox de {{productName}} (sous macOS, le sandbox de kiro-cli s'applique toujours s'il est activé).",
         "approval_mode": "Mode d'approbation",
         "auto": "auto",
         "auto_size_max": "Taille auto max",
@@ -12581,9 +12611,9 @@
         "embedding_provider": "Fournisseur d'embedding",
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "Activer la découverte dynamique des outils MCP via kiro-cli. Prend effet à la prochaine session.",
         "immediate_auto_approves_all_tools_interactive_as": "Immédiat. 'auto' approuve tous les outils ; 'interactive' demande à chaque fois.",
-        "immediate_auto_enables_sandbox_for_untrusted_too": "Immédiat. 'auto' active le sandbox pour les outils non fiables.",
         "inherited_provider": "hérité ({{provider}})",
         "kirocrew_agents": "Agents {{productName}}",
+        "max_age_for_pooled_processes_0_disables_expiry": "Âge maximal des processus du pool. 0 désactive l'expiration.",
         "max_channel_agents": "Agents de canal max",
         "max_channels": "Canaux max",
         "max_concurrent_subagents": "Sous-agents simultanés max",
@@ -12599,6 +12629,7 @@
         "next_update_check_cycle": "Au prochain cycle de vérification des mises à jour.",
         "no_agents_defined": "Aucun agent défini",
         "no_memory_stores": "Aucun stockage mémoire",
+        "number_of_pre_spawned_processes_0_disables": "Nombre de processus prélancés. 0 désactive.",
         "pool_agent": "Agent du pool",
         "pool_size": "Taille du pool",
         "pool_ttl": "TTL du pool",
@@ -12615,12 +12646,9 @@
         "using_global_memory_settings": "Utilisation des paramètres de mémoire globaux",
         "using_legacy_mode_agent_default_agent_as_agent_t": "Mode héritage — agent.default_agent comme modèle d'agent",
         "warm_pool": "Pool préchauffé",
-        "workspace": "Espace de travail",
-        "workspaces": "Espaces de travail",
-        "number_of_pre_spawned_processes_0_disables": "Nombre de processus prélancés. 0 désactive.",
-        "agent_for_pool_processes_empty_uses_default_agent": "Agent pour les processus du pool. Vide = agent par défaut.",
         "warm_pool_description": "Pré-lance des processus ACP CLI pour un démarrage de session instantané.",
-        "max_age_for_pooled_processes_0_disables_expiry": "Âge maximal des processus du pool. 0 désactive l'expiration."
+        "workspace": "Espace de travail",
+        "workspaces": "Espaces de travail"
       },
       "mcpTab": {
         "actions": "Actions",
@@ -12680,6 +12708,23 @@
         "probe_failing_help": "{{failures}} sondages en echec consecutifs. Le serveur reste monte : c'est un releve d'etat, pas une modification.",
         "reset_failures": "Reinitialiser le compteur",
         "reset_failures_help": "Efface le compteur d'echecs consecutifs de ce serveur.",
+        "disabled_in_config": "Désactivé dans la config",
+        "disabled_in_config_invalid": "Erreur de config",
+        "status_invalid_value": "Valeur non valide",
+        "copy_path": "Copier le chemin",
+        "copy_path_named": "Copier le chemin {{file}}",
+        "path_copied": "Copié",
+        "copy_path_failed": "Échec de la copie",
+        "disabled_in_config_help": "Désactivé dans la configuration Kiro MCP partagée, que Kiro IDE lit aussi. Il n’est jamais démarré et ce panneau ne peut pas le réactiver : modifie l’indicateur dans cette configuration.",
+        "disabled_in_config_where": "Désactivé dans <file>{{file}}</file>. Modifier ce fichier lève sa désactivation ; une autre configuration peut encore garder le serveur éteint. Un interrupteur est prévu.",
+        "disabled_in_config_where_unknown": "Désactivé dans la configuration MCP partagée. Modifier cette configuration lève sa désactivation ; une autre configuration peut encore garder le serveur éteint. Un interrupteur est prévu.",
+        "disabled_in_config_invalid_where": "Désactivé : la valeur de \"disabled\" dans <file>{{file}}</file> n’est pas valide. Mets-la à true ou false dans ce fichier.",
+        "disabled_in_config_invalid_where_unknown": "Désactivé : la valeur de \"disabled\" dans la configuration MCP partagée n’est pas valide. Mets-la à true ou false dans cette configuration.",
+        "uninstall_disabled_in_config_help": "Retire ce serveur de toutes les configurations MCP, y compris la configuration partagée où il est désactivé.",
+        "scope_disabled_in_config": "{{label}} : désactivé (désactivé dans la configuration MCP partagée ; modifie-la là-bas)",
+        "disabled_count_one": "{{count}} désactivé",
+        "disabled_count_many": "{{count}} désactivés",
+        "disabled_count_other": "{{count}} désactivés",
         "sign_in": "Se connecter",
         "sign_in_authorize": "Autoriser {{name}}",
         "sign_in_mint_failed": "Impossible de démarrer la connexion. Réessayez.",
@@ -14603,6 +14648,11 @@
         "zoom_level": "Niveau de zoom",
         "font_family_option_opendyslexic": "OpenDyslexic",
         "config_load_failed": "Impossible de charger les réglages d’affichage enregistrés. Les réglages du shell, des sessions récentes et de la complétion des commandes sont indisponibles jusqu’au chargement.",
+        "installed_themes_load_failed": "Impossible de charger la liste des thèmes ; nouvelle tentative automatique. Tant qu'elle n'est pas chargée, un thème installé ne peut être ni sélectionné ni appliqué.",
+        "installed_themes_refresh_failed": "Impossible d'actualiser la liste des thèmes. Elle n'est plus à jour.",
+        "installed_themes_refresh_failed_after_install": "Le thème a été installé, mais la liste des thèmes n'a pas pu être actualisée. Appuie sur Réessayer pour actualiser la liste et l'appliquer, ou choisis-le dans la liste des thèmes une fois actualisée.",
+        "retry_theme_list": "Réessayer",
+        "retrying_theme_list": "Nouvelle tentative…",
         "recent_tint_save_failed": "Impossible d’enregistrer le nombre de sessions récentes mises en évidence."
       },
       "importPanel": {

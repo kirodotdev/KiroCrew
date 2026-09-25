@@ -111,6 +111,13 @@ kirocrew-data.tar.gz
 # fenced block, a document (PDF, docx, zip) dragged in via the web UI. The
 # capture scripts under website/scripts/ and website/capture/ still write here
 # locally.
+# ONE exception, for contributors WITHOUT write access on this repository:
+# GitHub's attachment-upload endpoint answers READ permission with a 404
+# (cli/cli#14302), so `--attach` is not available to them at all. They commit
+# the media here instead -- `git add -f temp-screenshots/<dir>/shot.png`, since
+# this rule ignores it by default -- and reference the repository-relative path
+# from the PR body. Both UX and design review lanes read those files. The
+# ignore rule stays so that nobody else's capture run dirties `git status`.
 temp-screenshots/
 .github/screenshots/
 # Staged blind-review artifacts (prepare-pr review lanes point subagents at

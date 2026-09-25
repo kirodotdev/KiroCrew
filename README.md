@@ -748,6 +748,7 @@ make this tool possible:
 <a href="https://github.com/md-abusayeed" title="Md Abu Sayeed"><img src="https://github.com/md-abusayeed.png?size=64" width="64" height="64" alt="Md Abu Sayeed" /></a>
 <a href="https://github.com/Mdkar" title="Mihir Dhamankar"><img src="https://github.com/Mdkar.png?size=64" width="64" height="64" alt="Mihir Dhamankar" /></a>
 <a href="https://github.com/mdwyer223" title="Matthew Dwyer"><img src="https://github.com/mdwyer223.png?size=64" width="64" height="64" alt="Matthew Dwyer" /></a>
+<a href="https://github.com/megafloras" title="Imogen Reveck"><img src="https://github.com/megafloras.png?size=64" width="64" height="64" alt="Imogen Reveck" /></a>
 <a href="https://github.com/miamanav" title="miamanav"><img src="https://github.com/miamanav.png?size=64" width="64" height="64" alt="miamanav" /></a>
 <a href="https://github.com/michellemxm" title="Michelle Ma"><img src="https://github.com/michellemxm.png?size=64" width="64" height="64" alt="Michelle Ma" /></a>
 <a href="https://github.com/midega-g" title="George Midega"><img src="https://github.com/midega-g.png?size=64" width="64" height="64" alt="George Midega" /></a>
@@ -1051,9 +1052,12 @@ make this tool possible:
 
 Listed alphabetically by GitHub username. Internal contributors appear here if they
 consented to public recognition in the contributor survey; open-source contributors are
-collected automatically from this repository's merged pull requests — both the author of
-each pull request and the people who reported the issues it closed, so a report that
-led to a real change is credited like the change itself. Contributions that leave
+collected automatically from this repository's merged pull requests — the author of
+each pull request, the linked authors and co-authors of the commits that landed via a merged
+pull request, and the people who
+reported the issues it closed, so a report that led to a real change is credited like
+the change itself, and someone whose work landed via a maintainer's replacement pull
+request is credited through their commits. Contributions that leave
 neither trace — a code review, a translation, an idea, a private security report — are
 added on request. If you contributed and would like to be
 added, corrected, or removed, please open an issue or a pull request.

@@ -412,6 +412,11 @@ class DiscordApprovalDecider:
     _REGISTRY: dict[str, "asyncio.Future[bool]"] = {}
     #: key -> the per-prompt nonce embedded in that prompt's buttons.
     _NONCES: dict[str, str] = {}
+    #: Keys whose wait runs OUTSIDE the turn that armed them, so the arming turn's
+    #: end must not close their window. A spawn approval is the case: the gate
+    #: awaits it in its own task and the agent is told to end its turn, so the
+    #: per-turn sweep would otherwise drop a prompt the user is still looking at.
+    _DETACHED: set[str] = set()
 
     def __init__(self, *, session_key: str) -> None:
         self._session_key = session_key
@@ -423,7 +428,7 @@ class DiscordApprovalDecider:
         return f"{session_key}:{request_id}"
 
     @classmethod
-    def register_nonce(cls, key: str) -> str:
+    def register_nonce(cls, key: str, *, detached: bool = False) -> str:
         """Mint the per-prompt nonce for *key* and OPEN its decision window.
 
         Called by whatever is about to post the prompt, so it runs on the event
@@ -443,9 +448,16 @@ class DiscordApprovalDecider:
         would leave that waiter on a future nobody resolves. A DONE future IS
         replaced, and that is the isolation bound: a decision left unawaited must
         not be adoptable by the next request to reuse this key.
+
+        ``detached`` says the wait will run outside the turn arming this, so
+        :meth:`discard_session` must leave it alone. Pass it whenever the prompt
+        outlives its own turn -- the window then closes at the decision, at the
+        wait's timeout, or at a ``retire``, and nowhere else.
         """
         nonce = new_approval_nonce()
         cls._NONCES[key] = nonce
+        if detached:
+            cls._DETACHED.add(key)
         reserved = cls._REGISTRY.get(key)
         if reserved is None or reserved.done():
             cls._REGISTRY[key] = asyncio.get_running_loop().create_future()
@@ -468,6 +480,7 @@ class DiscordApprovalDecider:
         """
         cls._NONCES.pop(key, None)
         cls._REGISTRY.pop(key, None)
+        cls._DETACHED.discard(key)
 
     @classmethod
     def refuse_undelivered(cls, key: str) -> None:
@@ -502,9 +515,18 @@ class DiscordApprovalDecider:
         Drops only PENDING reservations. A resolved one holds a decision that was
         already delivered, and the prefix carries its own ``:`` so one session key
         cannot match another that merely starts the same way.
+
+        A reservation marked detached by :meth:`register_nonce` is left alone: its
+        wait runs in another task and survives this turn, so closing it here would
+        strand a prompt the user can still see, and answer their press with an
+        expiry the window had not actually reached.
         """
         prefix = f"{session_key}:"
-        for k in [k for k, fut in cls._REGISTRY.items() if k.startswith(prefix) and not fut.done()]:
+        for k in [
+            k
+            for k, fut in cls._REGISTRY.items()
+            if k.startswith(prefix) and not fut.done() and k not in cls._DETACHED
+        ]:
             cls._REGISTRY.pop(k, None)
             cls._NONCES.pop(k, None)
 
@@ -528,6 +550,11 @@ class DiscordApprovalDecider:
                 finally:
                     DiscordApprovalDecider._REGISTRY.pop(k, None)
                     DiscordApprovalDecider._NONCES.pop(k, None)
+                    # Every exit that drops this key drops its detached mark with
+                    # it. A mark outliving its key exempts that key from the
+                    # turn-end sweep for the life of the process, so the next
+                    # request reusing it is swept by nothing.
+                    DiscordApprovalDecider._DETACHED.discard(k)
         fut: "asyncio.Future[bool]" = (
             reserved if reserved is not None else asyncio.get_running_loop().create_future()
         )
@@ -559,6 +586,7 @@ class DiscordApprovalDecider:
             # Retire the prompt's nonce with the decision window: a press on
             # the (now stale) buttons can never resolve a future request.
             DiscordApprovalDecider._NONCES.pop(k, None)
+            DiscordApprovalDecider._DETACHED.discard(k)
 
     @classmethod
     def resolve_global(cls, key: str, approved: bool, *, nonce: str = "") -> bool:
@@ -1409,22 +1437,63 @@ class DiscordRenderer(Renderer):
             else None
         )
         # No-rotation fallback: steers were injected but no marker rotated —
-        # prepend one summary chip so they're still shown.
+        # prepend one summary chip so they're still shown. The chip is the USER's
+        # words, so it is kept apart from the body test below: a turn whose only
+        # content is the chip produced no reply, and must take the placeholder
+        # path (with the chip riding on it) rather than close on the chip alone
+        # under a "Finished in" footer.
+        steer_summary = ""
         if self._seal_count == 0 and self._steer_texts:
             quoted = [q for q in (_neutralize_md(t) for t in self._steer_texts) if q]
             if quoted:
+                steer_summary = "> " + " · ".join(quoted)
                 body = self._segment_text().strip()
-                summary = "> " + " · ".join(quoted)
-                self._delivery_text = summary + ("\n\n" + body if body else "")
+                if body:
+                    self._delivery_text = steer_summary + "\n\n" + body
         await self._rotate_on_length()
         if not self._segment_text().strip():
             # Nothing to post. Earlier rotated segments carried the turn ->
             # stay silent; otherwise show a placeholder. An extracted button
-            # row (options-only body) must ALWAYS reach the user.
-            if self._seal_count > 0 and components is None:
+            # row (options-only body) must ALWAYS reach the user. A seal count
+            # alone does not prove a segment carried anything: an acked steer
+            # rotates the pre-steer segment even when it was empty, and
+            # `_seal_current` posts nothing for it. The driver's verdict is the
+            # authority on "the whole turn had no text" -- when it holds one,
+            # this is the only chance to say so, and the dispatcher is about to
+            # record the notice as posted.
+            if self._seal_count > 0 and components is None and not self.empty_turn_notice:
                 await self._maybe_send_redaction_notice()
                 return
-            placeholder = "…" if ok else "⚠️ Error — please try again"
+            # The driver's verdict first: a turn that CLOSED with no text is
+            # told so in words, never handed the same "…" the live frame showed
+            # while it was running -- under a "Finished in" footer that glyph
+            # reads as a finished reply. The bare ellipsis remains only for a
+            # close the driver did not judge (a cancel); a close after an
+            # exception keeps the explicit error placeholder.
+            placeholder = self.empty_turn_notice or ("…" if ok else "⚠️ Error — please try again")
+            if steer_summary:
+                # The chip is the USER's typed words, and this path hands them to
+                # the client directly rather than through `_seal_current`, so the
+                # display-form redaction every other route to the sink applies is
+                # applied HERE: under a shared DM scope the steer can be another
+                # person's, and a credential in it must not land in this thread.
+                # Redacted before the bound below, since a placeholder tag can be
+                # longer than the bytes it replaces.
+                steer_summary = _redact_transformed(steer_summary)
+                # The chip rides on the placeholder instead of going through the
+                # length rotation, and the client cuts one payload at the platform
+                # cap, so the chip is bounded HERE: each steer is already capped by
+                # ``_neutralize_md``, but a burst of them can outgrow one message,
+                # and a cut that ate the notice would hand the user their own
+                # quoted words as the whole reply -- the exact unexplained close
+                # this path exists to end. ``_limit`` holds back the footer's room.
+                room = self._limit() - len(placeholder) - 2
+                if room <= 1:
+                    steer_summary = ""
+                elif len(steer_summary) > room:
+                    steer_summary = steer_summary[: room - 1].rstrip() + "…"
+                if steer_summary:
+                    placeholder = f"{steer_summary}\n\n{placeholder}"
             placeholder = self._with_turn_footer(placeholder)
             # Counted, because when no earlier segment sealed, this placeholder
             # (or an options-only button row, which IS the payload) is the turn's
@@ -1440,10 +1509,12 @@ class DiscordRenderer(Renderer):
                     components=components,
                 ):
                     self._seals_landed += 1
+                    self._tally_redactions(placeholder)
             elif await self._client.send_message(
                 self._channel_id, placeholder, components=components
             ):
                 self._seals_landed += 1
+                self._tally_redactions(placeholder)
             await self._maybe_send_redaction_notice()
             return
         # The footer rides on the final segment rather than as its own message:

@@ -156,14 +156,12 @@ def test_gate_preserves_scope_workers_and_baseline_on_black_result(
 
     def black_run(argv, **kwargs):
         calls.append(argv)
-        launcher = (
-            ["-m", "black"]
-            if runner == "github-hosted"
-            else [str(ROOT / "scripts" / "bounded_black.py")]
-        )
+        # Every runner value, github-hosted included, goes through the recycling
+        # wrapper: native black's compiled workers retain enough memory to take
+        # down an uncapped hosted VM, and the hosted path has no cgroup guard.
         assert argv == [
             sys.executable,
-            *launcher,
+            str(ROOT / "scripts" / "bounded_black.py"),
             "--check",
             "--target-version",
             "py310",

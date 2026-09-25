@@ -126,6 +126,7 @@ def _serialize(loop: Any) -> dict[str, Any]:
     # is how this one did -- and the drop has to be here rather than in the
     # structured-monitor filter, which a plain loop never reaches.
     payload.pop("judge_cursors", None)
+    payload.pop("judge_recent_verdicts", None)
     if loop.monitor is None:
         # Legacy clients predate structured monitors and require their exact shape.
         payload.pop("monitor", None)
@@ -222,11 +223,14 @@ _MONITOR_WITHHELD_LEGACY_FIELDS = frozenset(
         #   names nothing at all. Withheld anyway, for the reason ``judge_quiet_streak``
         #   is: this route holds a structured monitor to the stricter line, and the
         #   plain loop that has a popover to render gets it from ``_serialize``.
+        # * ``judge_recent_verdicts`` is the automation's own calibration accounting,
+        #   like ``judge_quiet_streak``, and no surface renders it.
         "judge",
         "judge_cursors",
         "judge_quiet_streak",
         "judge_last_verdict",
         "judge_wake_pending",
+        "judge_recent_verdicts",
     }
 )
 

@@ -14,6 +14,7 @@ from typing import Any, Awaitable, Callable
 from aiohttp import web
 
 from kiro_crew import memory_schema
+from kiro_crew.apps.registry import minimal_env
 from kiro_crew.config.loader import (
     ConfigReadError,
     KiroCrewConfig,
@@ -1597,6 +1598,12 @@ async def _ensure_pip_available() -> tuple[bool, str]:
             *sandboxed_argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            # don't leak secrets to pip subprocesses (same reason and same
+            # helper as the sibling pip spawn in apps/backend.py): `standard`
+            # mode scrubs only _SENSITIVE_ENV_PREFIXES, and on a host where no
+            # launcher runs at all nothing else strips the gateway's channel
+            # tokens or owner id from a child that executes packaging code.
+            env=minimal_env(),
         )
         try:
             _, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
@@ -1746,6 +1753,15 @@ async def api_memory_enable_embeddings(request: web.Request) -> web.Response:
                         *sandboxed_argv,
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE,
+                        # don't leak secrets to pip subprocesses. The allowlist
+                        # keeps what an install needs (PATH, HOME, TMPDIR,
+                        # PYTHONPATH, VIRTUAL_ENV, XDG_CACHE_HOME) and drops
+                        # proxy/CA/PIP_* hints, so a host that reaches PyPI only
+                        # through an env-configured proxy installs faiss from
+                        # pip.conf (HOME is kept) or by hand -- faiss is an
+                        # accelerator and recall falls back to the stdlib cosine
+                        # path, which is the cheaper side of this trade.
+                        env=minimal_env(),
                     )
                     try:
                         _, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)

@@ -299,6 +299,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           PR: ${{ steps.pr.outputs.pr }}
+          BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
           FETCH_DIR: ${{ runner.temp }}/design-fetch
           DEST_DIR: ${{ runner.temp }}/design-evidence
           NAME_STEM: attachment
@@ -317,20 +319,31 @@ jobs:
           : > "$CLIPS"
           # Sourced from the trusted base checkout, never from the fork's tree.
           . "$GITHUB_WORKSPACE/.github/scripts/pr-attachment-evidence.sh"
+          # Media this revision COMMITS is evidence too, and for a fork
+          # contributor it is the ONLY path they can drive from the CLI:
+          # `gh --attach` uploads through an endpoint that 404s on READ
+          # permission (cli/cli#14302). The blobs are read out of the object
+          # store the authentic-diff step already fetched, so the fork tree is
+          # still never materialized. Counted apart from the attachments so the
+          # reviewer can see which source each piece came from.
+          attached_images="$n"
+          attached_clips="$clips"
+          . "$GITHUB_WORKSPACE/.github/scripts/pr-committed-evidence.sh"
           {
             echo "RENDERED EVIDENCE OF THIS REVISION -- written by the workflow. The description's text is not the predicate; this file is."
-            echo "attachments downloaded and typed as images: $n"
-            echo "attachments downloaded and typed as recordings: $clips"
-            echo "committed images this revision adds or changes: not checked (the fork head is never checked out; a committed image is not evidence in this lane)"
+            echo "attachments downloaded and typed as images: $attached_images"
+            echo "attachments downloaded and typed as recordings: $attached_clips"
+            echo "committed images this revision adds or changes, read from the object store and typed by their bytes: $committed_kept"
+            echo "committed recordings this revision adds or changes, read from the object store and typed by their bytes: $((clips - attached_clips))"
             echo "attachment downloads that failed for a transport reason (presence unconfirmed, not absent): ${failed:-0}"
             echo
-            echo "images (opaque copies, body order):"
+            echo "images (opaque copies, attachments in body order, then committed files):"
             if [ -s "$SHOTS" ]; then cat "$SHOTS"; else echo "(none)"; fi
             echo
-            echo "recordings:"
+            echo "recordings (attachments in body order, then committed files by repository path):"
             if [ -s "$CLIPS" ]; then cat "$CLIPS"; else echo "(none)"; fi
           } > "$EVIDENCE"
-          echo "Rendered evidence: $n image(s), $clips recording(s); ${failed:-0} download(s) failed."
+          echo "Rendered evidence: $n image(s) ($committed_kept committed), $clips recording(s) ($((clips - attached_clips)) committed); ${failed:-0} download(s) failed."
 
       # Mint short-lived, Bedrock-only creds immediately before the model call,
       # via the SAME dedicated least-privilege role the same-repo design reviewer
@@ -392,8 +405,10 @@ jobs:
             RENDERED EVIDENCE: before you judge the missing-evidence trigger below,
             Read ${{ runner.temp }}/design-evidence.txt. The workflow wrote it: it
             downloaded every github.com/user-attachments asset the description
-            offers, typed each by its bytes, and (on a same-repo pull request)
-            listed the committed images this revision adds or changes. That
+            offers, typed each by its bytes, and listed the committed images
+            this revision adds or changes under temp-screenshots/ or
+            .github/screenshots/ (the evidence path for a contributor with no
+            write access, whose `--attach` upload GitHub refuses). That
             file is the predicate for "rendered evidence of THIS revision": a
             URL in the description that is not in it did not download or is
             not an image, and is not evidence. A non-zero "failed for a
@@ -556,10 +571,13 @@ jobs:
               list the workflow wrote (RENDERED EVIDENCE above) names no image
               or recording downloaded from its description (a
               github.com/user-attachments asset the workflow fetched and typed;
-              a URL that did not download is not evidence) and none committed
-              at HEAD that THIS checkout can render (on a fork pull request the head is
-              never checked out, so a committed image is not evidence here --
-              the same rule the fork UX lane applies; the attachment is). An
+              a URL that did not download is not evidence) and no committed
+              image or recording it names (media this revision adds or changes
+              under temp-screenshots/ or .github/screenshots/ counts the same
+              as an attachment -- read as bytes out of the object store at the
+              head SHA, never off a working tree, on a same-repo and a fork pull
+              request alike; a committed path the list does not name was not
+              admitted and is not evidence -- the rule the UX lanes apply). An
               image hosted off a commit outside this PR, or one the description
               itself says shows another PR's state, is not evidence of this
               revision. You cannot judge the shape of a surface you have not
@@ -828,10 +846,58 @@ jobs:
           # verdict is annotated, leaves the gate honestly red, and a re-run
           # fixes it. That is the rule the head-confirmation read above
           # follows -- the destructive half must not proceed on an unknown.
+
+          # A guarded comment read that exhausts its budget reports the fact and
+          # not the cause, and the causes do not share a remedy: installation
+          # throttling is cured by the re-run this step's annotation recommends,
+          # while an expired or rotated credential and a permissions change on this
+          # lane's token each spend another full model review to land in the same
+          # place. So the LAST attempt's exit status and error text are kept and
+          # reported once, inside the annotation a failed publish already writes.
+          # The per-attempt lines are left alone: a read that later succeeds says
+          # nothing new, so an ordinary flake does not fill the log with six copies
+          # of one sentence.
+          #
+          # What the note carries is an API error body, which can echo a token
+          # prefix, an Authorization or Cookie header, the request URL with its
+          # query string, an account id, or a path on the runner. So it is scrubbed
+          # before it is printed and then bounded to one short line. A URL and a
+          # path are each dropped WHOLE rather than trimmed, because the query
+          # string is the part that carries a credential and neither is needed to
+          # tell these causes apart.
+          #
+          # This reports; it does not decide. Whether anything reached the slot is
+          # still answered by the write path alone, so a read that failed cannot
+          # turn an unpublished verdict into a published one.
+          READ_ERR_FILE="${RUNNER_TEMP:-/tmp}/comment-read-stderr.txt"
+          READ_FAILURE_NOTE=""
+          note_read_failure() {
+            local rc="$1" subject="$2" errfile="$3" text=""
+            if [ -s "$errfile" ]; then
+              text="$(perl -0777 -pe '
+                s{\bhttps?://\S*}{[REDACTED-URL]}g;
+                s/\bgh[pousr]_[A-Za-z0-9]{16,}\b/[REDACTED-GH-TOKEN]/g;
+                s/\bgithub_pat_[A-Za-z0-9_]{16,}\b/[REDACTED-GH-TOKEN]/g;
+                s/\b(?:AKIA|ASIA)[A-Z2-7]{16}\b/[REDACTED-AWS-KEY-ID]/g;
+                s{arn:aws\S*}{[REDACTED-ARN]}g;
+                s/(?i)\bbearer\s+\S+/Bearer [REDACTED]/g;
+                s/(?i)\b(authorization|cookie|set-cookie|x-api-key|private-token)\b\s*:[^\r\n]*/$1: [REDACTED]/g;
+                s/(?i)\b(token|secret|password|passwd|api_key|apikey)\b\s*[:=]\s*\S+/$1=[REDACTED]/g;
+                s/(?i)(aws_secret_access_key|aws_session_token|x-amz-security-token)\s*[:=]\s*\S+/$1=[REDACTED]/g;
+                s/\b[0-9]{12}\b/[REDACTED-ACCT]/g;
+                s{(?:/[A-Za-z0-9._@+-]+){2,}/?}{[REDACTED-PATH]}g;
+                s/[^[:print:]]+/ /g;
+                s/\s+/ /g;
+                s/\A //;
+                s/ \z//;
+              ' "$errfile" | cut -c1-240)"
+            fi
+            READ_FAILURE_NOTE="$subject exited $rc and reported: ${text:-(nothing on stderr)}"
+          }
           retry_comment_write() {
             local slot="$1" needle="$2" body_file="$3" target="$4"
             local attempt landed head_now ov_body
-            local occupied slot_ok slot_id mine_id
+            local occupied slot_ok slot_id mine_id slot_rc ov_rc
             shift 4
             # Two reads here answer two DIFFERENT questions, which is why they
             # match on two different needles.
@@ -869,9 +935,12 @@ jobs:
             if [ -n "$slot" ]; then
               occupied=""
               slot_ok=""
+              slot_rc=0
               for attempt in 1 2 3 4 5 6; do
-                if occupied="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-                  --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$slot\"))) | \"\(.id) \(if (.body | contains(\"$needle\")) then \"mine\" else \"other\" end)\"" 2>/dev/null)"; then
+                slot_rc=0
+                occupied="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+                  --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$slot\"))) | \"\(.id) \(if (.body | contains(\"$needle\")) then \"mine\" else \"other\" end)\"" 2>"$READ_ERR_FILE")" || slot_rc=$?
+                if [ "$slot_rc" -eq 0 ]; then
                   slot_ok=1
                   break
                 fi
@@ -882,6 +951,7 @@ jobs:
                 fi
               done
               if [ -z "$slot_ok" ]; then
+                note_read_failure "$slot_rc" "reading this PR's comments to find this lane's slot" "$READ_ERR_FILE"
                 echo "Whether this lane's slot is already taken is unreadable after 6 attempts, so nothing was posted: re-running this lane publishes the verdict, and a second comment in the slot does not come back out without a human."
                 return 1
               fi
@@ -937,8 +1007,11 @@ jobs:
                 # published while this one waited. Reading only this needle made
                 # the second case invisible, and the retry then posted beside that
                 # verdict or overwrote it.
-                if ! landed="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-                  --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$slot\"))) | \"\(.id) \(if (.body | contains(\"$needle\")) then \"mine\" else \"other\" end)\"" 2>/dev/null)"; then
+                slot_rc=0
+                landed="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+                  --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$slot\"))) | \"\(.id) \(if (.body | contains(\"$needle\")) then \"mine\" else \"other\" end)\"" 2>"$READ_ERR_FILE")" || slot_rc=$?
+                if [ "$slot_rc" -ne 0 ]; then
+                  note_read_failure "$slot_rc" "re-reading this PR's comments to confirm whether the previous write landed" "$READ_ERR_FILE"
                   echo "Cannot confirm whether the previous attempt landed, so not posting again."
                   return 1
                 fi
@@ -1001,7 +1074,10 @@ jobs:
                 # terms as an unreadable head, because repeating is the
                 # destructive half.
                 if [ -n "$target" ]; then
-                  if ! ov_body="$(gh api "repos/$REPO/issues/comments/$target" --jq '.body' 2>/dev/null)"; then
+                  ov_rc=0
+                  ov_body="$(gh api "repos/$REPO/issues/comments/$target" --jq '.body' 2>"$READ_ERR_FILE")" || ov_rc=$?
+                  if [ "$ov_rc" -ne 0 ]; then
+                    note_read_failure "$ov_rc" "reading the comment this repeat would overwrite, to check for an accepted human override" "$READ_ERR_FILE"
                     echo "Comment #$target could not be read, so this write was not repeated: a repeat can restore a body over a human decision. Re-run this lane to publish this verdict."
                     return 1
                   fi
@@ -1030,6 +1106,7 @@ jobs:
           guarded_comment_upsert() {
             local marker="$1" stamp="$2" lane="$3" out_file="$4"
             local matches existing lookup_ok pr_head="" attempt withhold="" write_rc
+            local verdict_read_rc
             # Find the bot's existing marker comment (first match wins) and
             # capture its id. Author filter: only a github-actions[bot]
             # comment can match, so a PR commenter cannot plant the marker and
@@ -1049,9 +1126,12 @@ jobs:
             # earned (#12952). Costing runner time on a failure path is the
             # cheap side of that trade: giving up costs a whole new head.
             lookup_ok=0
+            verdict_read_rc=0
             for attempt in 1 2 3 4 5 6; do
-              if matches="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-                --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" 2>/dev/null)"; then
+              verdict_read_rc=0
+              matches="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+                --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" 2>"$READ_ERR_FILE")" || verdict_read_rc=$?
+              if [ "$verdict_read_rc" -eq 0 ]; then
                 lookup_ok=1
                 break
               fi
@@ -1061,6 +1141,9 @@ jobs:
                 sleep "$(( attempt * 5 ))"
               fi
             done
+            if [ "$verdict_read_rc" -ne 0 ]; then
+              note_read_failure "$verdict_read_rc" "reading this PR's comments to find this lane's comment" "$READ_ERR_FILE"
+            fi
             existing="$(printf '%s\n' "$matches" | awk 'NR == 1')"
             # This lane's marker comment is ONE slot shared by every run on the
             # PR, and the REST comments API has no If-Match, so a write to it
@@ -1111,7 +1194,7 @@ jobs:
               # create path there plants a second marker comment over a
               # possibly-live verdict, which no later run undoes.
               if [ "$lookup_ok" -eq 0 ]; then
-                echo "::warning::Withholding $lane comment for $HEAD ($withhold); the comment lookup also failed, so nothing was posted"
+                echo "::warning::Withholding $lane comment for $HEAD ($withhold); the comment lookup also failed, so nothing was posted${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
                 return 0
               fi
               if [ -n "$existing" ] && [ "$existing" != "null" ]; then
@@ -1130,9 +1213,9 @@ jobs:
               elif [ "$write_rc" -eq 4 ]; then
                 echo "$lane stopped publishing its $HEAD body because this PR has moved to a newer head; the run for that head publishes the verdict that counts, so nothing is missing for it."
               elif [ "$write_rc" -eq 2 ]; then
-                echo "::warning::$lane wrote no $HEAD notice because this lane's slot is already taken; nothing was overwritten."
+                echo "::warning::$lane wrote no $HEAD notice because this lane's slot is already taken; nothing was overwritten.${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
               else
-                echo "::error::$lane could not post its $HEAD notice, so this PR carries no $stamp comment at all."
+                echo "::error::$lane could not post its $HEAD notice, so this PR carries no $stamp comment at all.${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
               fi
               return 0
             fi
@@ -1148,7 +1231,7 @@ jobs:
               elif [ "$write_rc" -eq 5 ]; then
                 echo "$lane left comment #$existing alone because it carries an accepted human override for this lane; the override stands and this run's verdict is not published."
               else
-                echo "::error::$lane produced a verdict for $HEAD but could not publish it to comment #$existing. That comment still carries an older head, so every marker-freshness check reads this PR as unreviewed for $HEAD."
+                echo "::error::$lane produced a verdict for $HEAD but could not publish it to comment #$existing. That comment still carries an older head, so every marker-freshness check reads this PR as unreviewed for $HEAD.${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
               fi
             else
               # No existing comment -- or a lookup that could not confirm one
@@ -1168,9 +1251,9 @@ jobs:
               elif [ "$write_rc" -eq 4 ]; then
                 echo "$lane stopped publishing its $HEAD body because this PR has moved to a newer head; the run for that head publishes the verdict that counts, so nothing is missing for it."
               elif [ "$write_rc" -eq 2 ]; then
-                echo "::error::$lane produced a verdict for $HEAD but this lane's slot is already taken, so nothing was written and nothing was overwritten. The PR carries no verdict for this head; re-run this lane once that comment is not the current one."
+                echo "::error::$lane produced a verdict for $HEAD but this lane's slot is already taken, so nothing was written and nothing was overwritten. The PR carries no verdict for this head; re-run this lane once that comment is not the current one.${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
               else
-                echo "::error::$lane produced a verdict for $HEAD but could not publish it, so this run's verdict is not in the slot."
+                echo "::error::$lane produced a verdict for $HEAD but could not publish it, so this run's verdict is not in the slot.${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
               fi
             fi
           }

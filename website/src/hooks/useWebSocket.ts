@@ -29,7 +29,7 @@ import { api } from '../api/client'
 import { AUTONUDGE_LOOPS_QUERY_KEY } from '../components/autoNudgeLoop'
 import { forgetUnobservedMemberThreads } from '../api/membersQuery'
 import { observedPaneSlots } from '../api/slotMessagesQuery'
-import { MEMBERS_ROSTER_QUERY_KEY } from '../api/membersQuery'
+import { MEMBERS_ROSTER_QUERY_KEY, MEMBER_PROJECTIONS_QUERY_PREFIX } from '../api/membersQuery'
 import { memberProjectionStore } from '../state/memberProjectionStore'
 import { threadLiveStore, type ThreadReplyFrame } from '../state/threadLiveStore'
 import { threadQueryKey, threadsQueryKey } from '../api/threads'
@@ -126,6 +126,13 @@ function invalidateRefreshQueries(qc: QueryClient): void {
   qc.invalidateQueries({ queryKey: ['default-agent'] })
   qc.invalidateQueries({ queryKey: ['workspaces'] })
   qc.invalidateQueries({ queryKey: ['kirocrewConfig'] })
+  // These answers derive from the config AND, for an `auto` default, the
+  // installed agent spec rebuilt by the server's config applier. A refresh
+  // frame is emitted only after that applier completes, so invalidate the
+  // infinite-stale caches here rather than relying solely on a changed config
+  // value to mint a new key. This also covers external/CLI config writes.
+  qc.invalidateQueries({ queryKey: ['resolved-model'] })
+  qc.invalidateQueries({ queryKey: ['agent-resolved-model'] })
   // Prefix match on purpose: covers the filtered library list
   // (['artifacts', {tag, kind}]) and the tag-options read
   // (['artifacts', 'all-tags']) in one shot. The `artifact_update` frame
@@ -1812,10 +1819,36 @@ export function useWebSocket() {
                 // recorded something that did not happen, and removing it leaves the
                 // card with no value where the truth is whatever the server holds at
                 // its own seq. The store is a cache and cannot produce that, so the
-                // roster is refetched -- its rows carry each slug's baseline, and
-                // seeding is higher-seq-wins, so this restores the authoritative
-                // value without overwriting anything newer that arrives meanwhile.
-                queryClient.invalidateQueries({ queryKey: MEMBERS_ROSTER_QUERY_KEY })
+                // reads that own those values are refetched -- seeding is
+                // higher-seq-wins, so this restores the authoritative value without
+                // overwriting anything newer that arrives meanwhile.
+                //
+                // BOTH reads, because the truncation drops every key a slug holds
+                // while each read owns only some of them: a roster row carries the
+                // `roster` view, and the open member's activity, wake and driving
+                // views come from its own per-member projections read. Invalidating
+                // the roster alone would leave the drawer blank until something else
+                // happened to refetch it.
+                //
+                // RESET, not invalidate, for BOTH reads. Invalidating a query with
+                // no enabled observer only marks it stale: its pre-rollback block
+                // stays in cache, and the next mount runs `select` over that block
+                // before any refetch lands, seeding the store at the sequence the
+                // server just rolled back. Higher-seq-wins then REJECTS the
+                // authoritative lower-seq baseline the refetch returns, so the
+                // rolled-back values repaint as live with no self-correcting path.
+                // Resetting drops the cached block, so there is nothing stale to
+                // seed from, and an active query still refetches.
+                //
+                // Neither read is exempt. The per-member one is disabled while no
+                // member is open. The roster's own observer outside the members page
+                // is the crewmates gate, which holds it `enabled: eligible`, so the
+                // roster query has no enabled observer either once that page
+                // unmounts. The cost is a fetch where a fresh cache would have
+                // served, and only on a torn tail -- a gateway restart -- against a
+                // wrong value that would otherwise win permanently.
+                queryClient.resetQueries({ queryKey: MEMBERS_ROSTER_QUERY_KEY })
+                queryClient.resetQueries({ queryKey: MEMBER_PROJECTIONS_QUERY_PREFIX })
               }
             }
             break
@@ -2187,7 +2220,9 @@ export function useWebSocket() {
             dispatch(sseSubagentSpawn(data as { slot: string; id: string; task: string; agent: string; model?: string; requested_model?: string }))
             break
           case 'subagent_queued':
-            dispatch(sseSubagentQueued(data as { slot: string; queued: number }))
+            // The count plus the gate's optional `reason` label (absent from an
+            // older gateway); the reducer parses the label.
+            dispatch(sseSubagentQueued(data as { slot: string; queued: number; reason?: string; available_gb?: number; required_gb?: number }))
             break
           case 'subagent_chunk': {
             // Buffer and flush per-frame, mirroring chat_chunk.

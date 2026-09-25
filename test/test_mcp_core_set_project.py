@@ -233,6 +233,90 @@ class TestSetProjectTool:
         assert schema["required"] == ["path"]
 
 
+# ───────────────────── set_project absolute-path shape gate ─────────────────
+
+
+class TestSetProjectAbsolutePathShapes:
+    """The shape gate admits POSIX and plain Windows drive roots, nothing more."""
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            # POSIX, including a body colon the root-prefix match does not police.
+            "/tmp/foo",
+            "/",
+            "/home/u/my-project",
+            "/home/u/proj:v2",
+            # Drive root: both separators, either letter case.
+            r"C:\Work\my-project",
+            "C:/Work/my-project",
+            r"c:\work",
+            "z:/work",
+            "Z:\\",
+        ],
+    )
+    def test_absolute_path_accepted(self, path):
+        result = mcp_core._call_tool_inner("set_project", {"path": path})
+        assert session_directive.decode(result, "set_project") == {
+            "project": path,
+            "clear": False,
+        }
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            # Relative.
+            "foo",
+            "foo/bar",
+            "./x",
+            "../x",
+            # Drive-RELATIVE: no separator, so it names C:'s current directory.
+            "C:foo",
+            r"C:..\x",
+            # Not a root prefix at all.
+            "C:",
+            "C",
+            ":",
+            # A backslash-spelled share root; resolving one contacts the host.
+            r"\\server\share\proj",
+            "\\\\",
+            r"\x",
+            # Every backslash-spelled extended-length root, drive included: the
+            # fence's candidate forms do not fold a `\\?\` prefix away.
+            "\\\\?\\D:\\",
+            "\\\\?\\D:\\Work",
+            "\\\\?\\UNC\\server\\share",
+            "\\\\?\\GLOBALROOT\\Device\\X",
+            "\\\\?\\Volume{12345678-1234-1234-1234-123456789abc}\\",
+            "\\\\?\\",
+            "\\\\?\\D",
+            "\\\\?\\D:",
+            # ``~`` is not expanded at this layer, so it is not a root here.
+            "~/x",
+            "~",
+        ],
+    )
+    def test_non_absolute_path_still_rejected(self, path):
+        from kiro_crew.validation import ValidationError
+
+        with pytest.raises(ValidationError, match="invalid format"):
+            mcp_core._call_tool_inner("set_project", {"path": path})
+
+    def test_project_line_shape_round_trips(self):
+        """A path shaped like the one a session's own ``[PROJECT]`` line carries."""
+        reported = r"C:\Work"
+        result = mcp_core._call_tool_inner("set_project", {"path": reported})
+        assert session_directive.decode(result, "set_project")["project"] == reported
+
+    def test_clear_still_skips_the_shape_gate(self):
+        """An empty path with ``clear`` set bypasses the pattern check."""
+        result = mcp_core._call_tool_inner("set_project", {"path": "", "clear": True})
+        assert session_directive.decode(result, "set_project") == {
+            "project": "",
+            "clear": True,
+        }
+
+
 # ─────────────────────────── set_project applier ────────────────────────────
 
 

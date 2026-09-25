@@ -236,11 +236,12 @@ _CONFIG_FIELDS = (
     "source",
     "starred",
     "avatar",
+    "display_name",
 )
 
 
 def _config_snapshot_for_agent(agent_cfg) -> dict:
-    """The 7 config-derived fields as a member/config would carry them.
+    """The config-derived fields as a member/config would carry them.
 
     ``starred`` is coerced to ``bool`` (it is a load-time-coerced flag), matching
     the snapshot ``handlers/agents.py`` writes and the ``bool(agent_cfg.starred)``
@@ -270,7 +271,7 @@ def _config_snapshot_for_agent(agent_cfg) -> dict:
 def reconcile_member_config(slug, name, agent_cfg, roster_view) -> "list[str] | None":
     """Append a correcting member/config when the log's roster drifts from config.
 
-    Compares the log-derived *roster_view*'s 7 config fields against the live
+    Compares the log-derived *roster_view*'s config fields against the live
     ``agent_cfg`` snapshot. When any differ — or the roster view has NO config
     field at all (no member/config has ever been appended) — appends one
     MEMBER_CONFIG carrying the full config snapshot plus a ``changed`` list, so

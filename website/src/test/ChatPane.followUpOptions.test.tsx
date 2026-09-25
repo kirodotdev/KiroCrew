@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { StrictMode } from 'react'
 import type { ReactNode } from 'react'
 import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import type { RootState } from '../store'
@@ -204,6 +205,144 @@ describe('ChatPane follow-up options (issue #5870)', () => {
     expect(composer().value).toBe('Please, Alphabet, Alpha')
     await act(async () => { clickOption('Alpha') })
     expect(composer().value).toBe('Please, Alphabet')
+  })
+
+  it('leaves earlier draft text alone when the user already deleted the appended option', async () => {
+    // ChatPage removes only the COMPLETE generated suffix (#6092 review). The
+    // pane must hold the same invariant: once the user has deleted the
+    // appended ", Alpha" by hand, unselecting the still-lit chip has nothing of
+    // its own left to remove, and a last-occurrence search would fall back onto
+    // the ", Alpha" the user typed — silently editing their draft.
+    await renderPane('pane-8')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Alpha' })).toBeTruthy())
+    fireEvent.change(composer(), { target: { value: 'Discuss, Alpha home' } })
+    vi.useFakeTimers()
+    await act(async () => { clickOption('Alpha') })
+    expect(composer().value).toBe('Discuss, Alpha home, Alpha')
+
+    // The chip stays lit; the user removes its generated tail themselves.
+    fireEvent.change(composer(), { target: { value: 'Discuss, Alpha home' } })
+    await act(async () => { clickOption('Alpha') })
+    expect(composer().value).toBe('Discuss, Alpha home')
+  })
+
+  it('un-toggle removes only the chip-owned suffix, not user text inserted mid-draft (#7616)', async () => {
+    // The fenced GPT bug generalized: the removal must key on WHAT THE CHIP
+    // APPENDED, not on the picked-set's content. Here the user edits the draft
+    // between two appends, so the owned suffix ("Beta") no longer equals the
+    // picked-set string ("Alpha, Beta"). Un-toggling Beta must strip only the
+    // owned ", Beta" and keep the user's "Alpha and more" — the pre-fix
+    // content search removed the wrong span.
+    await renderPane('pane-7616-owned')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Alpha' })).toBeTruthy())
+    vi.useFakeTimers()
+    await act(async () => { clickOption('Alpha') })
+    expect(composer().value).toBe('Alpha')
+    // The user edits the draft after the first append — this re-baselines
+    // ownership so the chip no longer owns the whole "Alpha, Beta" content.
+    fireEvent.change(composer(), { target: { value: 'Alpha and more' } })
+    await act(async () => { clickOption('Beta') })
+    expect(composer().value).toBe('Alpha and more, Beta')
+    await act(async () => { clickOption('Beta') })
+    expect(composer().value).toBe('Alpha and more')
+  })
+
+  it('un-toggle leaves the draft untouched once the user edited the chip-owned tail (#7616)', async () => {
+    // Even when the picked-set string still equals a suffix of the draft, an
+    // edit to the owned span means the chip no longer owns it: the pre-fix
+    // endsWith()/=== checks would still splice, eating the user's own words.
+    // Ownership makes the un-toggle a no-op on the text, only un-highlighting.
+    await renderPane('pane-7616-edited')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Alpha' })).toBeTruthy())
+    fireEvent.change(composer(), { target: { value: 'note' } })
+    vi.useFakeTimers()
+    await act(async () => { clickOption('Alpha') })
+    expect(composer().value).toBe('note, Alpha')
+    // The user rewrites the whole draft to different text that still ENDS with
+    // ", Alpha" — a content endsWith() match, but NOT the chip's own append.
+    fireEvent.change(composer(), { target: { value: 'other, Alpha' } })
+    await act(async () => { clickOption('Alpha') })
+    // Ownership no longer matches the tail → the user's text is preserved.
+    // The pre-fix endsWith(', Alpha') would have sliced it to 'other'.
+    expect(composer().value).toBe('other, Alpha')
+  })
+
+  it('un-toggle removes a comma-bearing label as one unit, never mis-split (#7616 F1)', async () => {
+    // The option list is "|"-separated, so a label may legally contain ", "
+    // ([OPTIONS: bar | foo, bar]). Selecting both then un-toggling "bar" must
+    // remove only that label; a split-on-", " removal would corrupt "foo, bar".
+    const msgs = [
+      { role: 'user', content: 'hi', ts: '2026-08-25T00:00:00Z' },
+      { role: 'assistant', content: 'Ready.\n\n[OPTIONS: bar | foo, bar]', ts: '2026-08-25T00:00:01Z' },
+    ]
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue({ messages: msgs, running: false, has_more: false, total: msgs.length })
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const store = makeStore('pane-7616-comma')
+    await act(async () => {
+      render(
+        <Provider store={store}>
+          <QueryClientProvider client={qc}>
+            <ThemeProvider><MemoryRouter><ChatPane slotKey="pane-7616-comma" /></MemoryRouter></ThemeProvider>
+          </QueryClientProvider>
+        </Provider>,
+      )
+    })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'bar', exact: true })).toBeTruthy())
+    vi.useFakeTimers()
+    await act(async () => { clickOption('bar') })
+    await act(async () => { clickOption('foo, bar') })
+    expect(composer().value).toBe('bar, foo, bar')
+    await act(async () => { clickOption('bar') })
+    // Only the "bar" label is removed; the comma-bearing "foo, bar" survives whole.
+    expect(composer().value).toBe('foo, bar')
+  })
+
+  it('un-toggle survives StrictMode double-invocation without reclassifying text (#7616 F2)', async () => {
+    // The app mounts under <StrictMode> (main.tsx). A toggle transform that
+    // wrote ownership as a side effect inside a functional state updater would
+    // be double-invoked and rebase on stale state, leaving the un-picked option
+    // in the composer. select Alpha, select Beta, un-select Alpha → "Beta".
+    const store = makeStore('pane-7616-strict')
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue({ messages: PANE_MESSAGES, running: false, has_more: false, total: PANE_MESSAGES.length })
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    await act(async () => {
+      render(
+        <StrictMode>
+          <Provider store={store}>
+            <QueryClientProvider client={qc}>
+              <ThemeProvider><MemoryRouter><ChatPane slotKey="pane-7616-strict" /></MemoryRouter></ThemeProvider>
+            </QueryClientProvider>
+          </Provider>
+        </StrictMode>,
+      )
+    })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Alpha' })).toBeTruthy())
+    vi.useFakeTimers()
+    await act(async () => { clickOption('Alpha') })
+    await act(async () => { clickOption('Beta') })
+    expect(composer().value).toBe('Alpha, Beta')
+    await act(async () => { clickOption('Alpha') })
+    // Ownership was not rebased by the double-invoked handler: Alpha is removed.
+    expect(composer().value).toBe('Beta')
+  })
+
+  it('un-toggle is a no-op after the user edited and restored the draft byte-for-byte (#7616 F3)', async () => {
+    // Ownership must not survive a user edit: select Alpha (composer "Alpha"),
+    // the user edits the draft and then restores it to exactly "Alpha" by hand,
+    // then un-toggles. A span that revalidated on the restored text would delete
+    // the user's restored word; clearing ownership on any edit makes un-toggle
+    // leave the text and only un-highlight.
+    await renderPane('pane-7616-restore')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Alpha' })).toBeTruthy())
+    vi.useFakeTimers()
+    await act(async () => { clickOption('Alpha') })
+    expect(composer().value).toBe('Alpha')
+    // User edits away and then restores the identical text.
+    fireEvent.change(composer(), { target: { value: 'Alpha draft' } })
+    fireEvent.change(composer(), { target: { value: 'Alpha' } })
+    await act(async () => { clickOption('Alpha') })
+    // The edit invalidated ownership, so the user's restored "Alpha" survives.
+    expect(composer().value).toBe('Alpha')
   })
 
   it('offers no pills while the pane is busy, and offers them once busy clears', async () => {

@@ -15,6 +15,7 @@ Covers:
 from __future__ import annotations
 
 import io
+import json
 import logging
 import urllib.error
 from unittest.mock import MagicMock, patch
@@ -137,6 +138,7 @@ class TestSuccessCaching:
         # meaning is unknown, so it is reported unknown rather than narrowed to
         # an empty set that would read as "the operator excluded nothing".
         assert policy.unresolved == "policy_unreadable"
+        assert "managedToolPolicy.exclude" in policy.detail
         ops = [c.kwargs.get("operation") for c in fake_sel.log_api_access.call_args_list]
         assert "tool_policy.unreadable" in ops
 
@@ -168,6 +170,7 @@ class TestSuccessCaching:
             policy = mcp_shared._resolve_tool_policy()
         assert policy.excluded == set()
         assert policy.unresolved == "policy_unreadable"
+        assert "managedToolPolicy.exclude" in policy.detail
 
     def test_a_well_formed_exclude_resolves(
         self, fake_sel, patch_session_setup, monkeypatch
@@ -390,6 +393,42 @@ class TestLongCacheFailures:
         ops = [c.kwargs.get("operation") for c in fake_sel.log_api_access.call_args_list]
         assert "tool_policy.unreadable" in ops
         assert "tool_policy.unattested" not in ops
+        # No reason reached this process, so none is carried; the refusal text
+        # then falls back to its generic wording, as it always has.
+        assert policy.detail == ""
+
+    def test_the_409_bodys_reason_rides_on_the_policy(
+        self, fake_sel, patch_session_setup, monkeypatch
+    ):
+        """The gateway's ``reason`` is carried, so the refusal can name the file.
+
+        A resolver that reads only ``code`` from the 409 body leaves the
+        client's error saying "fix or remove the unreadable spec" with no way to
+        tell which. Nothing else moves: the reason is ``policy_unreadable``,
+        the exclusion set is empty, and the answer is still not negative-cached.
+        """
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "dashboard:chat-4")
+        reason = "agent spec 'broken.json' in the agents directory could not be read (bad JSON)"
+        body = json.dumps({"error": "x", "code": "policy_unreadable", "reason": reason}).encode()
+        urlopen = MagicMock(side_effect=_make_http_error(409, body))
+        with patch.object(mcp_shared, "loopback_urlopen", urlopen):
+            policy = mcp_shared._resolve_tool_policy()
+        assert policy.unresolved == "policy_unreadable"
+        assert policy.excluded == set()
+        assert policy.detail == reason
+        assert mcp_shared._last_failure_time == 0.0
+
+    def test_a_non_string_reason_is_dropped_not_carried(
+        self, fake_sel, patch_session_setup, monkeypatch
+    ):
+        """``reason`` is untrusted wire data: only a string is carried."""
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "dashboard:chat-5")
+        body = b'{"error": "x", "code": "policy_unreadable", "reason": ["not", "a", "string"]}'
+        urlopen = MagicMock(side_effect=_make_http_error(409, body))
+        with patch.object(mcp_shared, "loopback_urlopen", urlopen):
+            policy = mcp_shared._resolve_tool_policy()
+        assert policy.unresolved == "policy_unreadable"
+        assert policy.detail == ""
 
     def test_an_unenumerated_4xx_is_permissive_not_an_outage(
         self, fake_sel, patch_session_setup, monkeypatch

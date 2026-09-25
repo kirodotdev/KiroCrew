@@ -2,9 +2,12 @@
 # Fetch the review evidence a PR description carries as GitHub attachments.
 #
 # Sourced (not executed) by the "Collect blind-read evidence" step of
-# ux-review.yml and the "Fetch attachment evidence from the PR description"
-# step of fork-ux-review.yml, so both lanes run this one copy and the caller
-# keeps $n (images kept) and $clips (recordings listed) afterwards. The fork
+# ux-review.yml and the "Collect review evidence" step of fork-ux-review.yml,
+# so both lanes run this one copy and the caller keeps $n (images kept) and
+# $clips (recordings listed) afterwards -- the fork lane then sources
+# pr-committed-evidence.sh, which continues those counters for the media the
+# PR commits (the only path open to an author whose permission this endpoint
+# refuses). The fork
 # lane checks out the trusted base ref, so it always runs the base tree's copy.
 #
 # Inputs, all environment variables:

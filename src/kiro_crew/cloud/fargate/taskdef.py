@@ -73,11 +73,21 @@ from kiro_crew.cloud.iam import MANAGED_TAG_KEY
 #: address it: an override without a matching container name is ignored.
 CREW_CONTAINER_NAME = "crew"
 
-#: The environment variable carrying the model credential inside the container.
-#: The container's own definition of this name is the authority; a test pins the
-#: two together, because a drift here delivers the secret under a name the
-#: backend does not read and the backend refuses to start.
-MODEL_CREDENTIAL_ENV = "KIRO_API_KEY"
+#: The environment variable carrying the model identity into the container. The
+#: container's own definition of this name is the authority; a test pins the two
+#: together, because a drift here delivers the secret under a name the supervisor does
+#: not read and the supervisor refuses to start.
+#:
+#: The value is one ``KasToken`` document as JSON, not an API key: the supervisor
+#: writes it into the crew's vault and the relay obtains bearer tokens from there
+#: through the host auth callback, which is what keeps any credential out of the model
+#: worker's environment.
+MODEL_CREDENTIAL_ENV = "KIRO_IDENTITY"
+
+#: kiro-cli's API-key credential. Nothing delivers it, and it is named here so a
+#: ``RunTask`` request cannot introduce it: the container withholds it from the
+#: backend, and ``verify_sandbox`` refuses an unsandboxed start if it appears anyway.
+API_KEY_ENV = "KIRO_API_KEY"
 
 #: The front process's control-plane secret. It gates every route except the two
 #: customer ones and keys the audit HMAC, so its value is a credential in the
@@ -93,10 +103,10 @@ CONTROL_SECRET_ENV = "SMC_CONTROL_SECRET"
 #: credential in one of two ways, both of which a test derives from the container
 #: source with ``ast`` in both directions: the supervisor POPS it from the model
 #: worker's environment (so prompt-reachable code cannot read it), or
-#: ``require_api_key`` refuses to start without it. A credential added there
-#: fails that test until it is refused here, and a name refused here that the
+#: ``seed_model_identity`` consumes it as the delivered identity. A credential added
+#: there fails that test until it is refused here, and a name refused here that the
 #: container does not read shows up as drift rather than accumulating quietly.
-CREDENTIAL_ENV = frozenset({MODEL_CREDENTIAL_ENV, CONTROL_SECRET_ENV})
+CREDENTIAL_ENV = frozenset({MODEL_CREDENTIAL_ENV, API_KEY_ENV, CONTROL_SECRET_ENV})
 
 #: The port the task's front process listens on. A constant of the image, not a
 #: launch parameter, so ``portMappings`` can stay out of the revision key.

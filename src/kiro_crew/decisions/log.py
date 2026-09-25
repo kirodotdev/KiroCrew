@@ -67,6 +67,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import stat
@@ -109,6 +110,7 @@ _DAY_FILE_RE = re.compile(rf"^{re.escape(_STEM)}(\d{{8}})\.jsonl$")
 
 _sweep_lock = threading.Lock()
 _swept_on: date | None = None
+
 
 #: Most answers written to one row. A point asks a handful of questions; a
 #: mapping larger than this is a broken implementation, and the row exists to
@@ -268,6 +270,94 @@ FEEDBACK_VERDICTS = ("right", "wrong")
 #: answer, so there is no default -- the caller states it.
 FEEDBACK_SIDES = ("jev", "baseline")
 
+#: ``kind`` on a calibration-label row. A third kind beside the absent-``kind``
+#: decision row and ``feedback``, told apart the same way.
+KIND_WAKE_LABEL = "wake_label"
+
+#: Longest verdict id kept anywhere. ONE bound for one join key: it clips the
+#: ``verdict_id`` on a label row here and the ``id`` on the stored verdict row the
+#: label joins to, so the two sides of that join cannot be truncated to different
+#: lengths. The ids the wake judge mints are fixed-width hex; this is the bound that
+#: holds when the caller is something else.
+MAX_VERDICT_ID_CHARS = 64
+
+#: The two labels a calibration row may carry. ``owner_acted`` judges a verdict that
+#: spent the loop's turn; ``missed`` judges one that suppressed it.
+WAKE_LABELS = ("owner_acted", "missed")
+
+
+def build_wake_label_row(
+    *,
+    verdict_id: str,
+    point: str,
+    session_key: str | None,
+    label: str,
+    value: bool,
+    tool_calls: int | None,
+    reply_chars: int,
+    position_back: int | None = None,
+    age_s: float | None = None,
+) -> dict[str, Any]:
+    """A ``kind="wake_label"`` row: what one wake verdict turned out to be worth.
+
+    The label is known only AFTER the verdict it judges -- a delivery is labelled by
+    what the woken turn did, and a suppressed verdict by the next delivery -- so it
+    arrives as its own row keyed by ``verdict_id``, joined to the decision row
+    carrying the same id. Appended rather than merged for the reason
+    :func:`build_feedback_row` is: this file is append-only by construction, so an
+    edit would rewrite a neighbour and lose when the label was earned.
+
+    ``label`` is ``owner_acted`` on a delivered verdict and ``missed`` on a suppressed
+    one, which are the two sides of one delivery, and *value* is the boolean either
+    way. A label this function does not know writes an empty name, so a malformed
+    caller leaves a row a reader discards rather than one it miscounts.
+
+    Carries no reply, no transcript and no target. ``tool_calls`` is a non-negative
+    count or ``None`` when the count is unknown; ``reply_chars`` is the stripped reply
+    length. A ``missed`` row also carries its numeric position and age behind the
+    delivery that labels it. Every input is reduced to a number or null before the row
+    is returned.
+    """
+    moment = datetime.now(timezone.utc)
+    tool_count = (
+        tool_calls
+        if isinstance(tool_calls, int) and not isinstance(tool_calls, bool) and tool_calls >= 0
+        else None
+    )
+    reply_length = (
+        reply_chars
+        if isinstance(reply_chars, int) and not isinstance(reply_chars, bool) and reply_chars >= 0
+        else 0
+    )
+    row = {
+        "ts": moment.isoformat(),
+        "kind": KIND_WAKE_LABEL,
+        "verdict_id": str(verdict_id)[:MAX_VERDICT_ID_CHARS],
+        "point": str(point)[:_MAX_VALUE_CHARS],
+        "session": session_digest(session_key),
+        "label": label if label in WAKE_LABELS else "",
+        "value": value is True,
+        "tool_calls": tool_count,
+        "reply_chars": reply_length,
+    }
+    if label == "missed":
+        row["position_back"] = (
+            position_back
+            if isinstance(position_back, int)
+            and not isinstance(position_back, bool)
+            and position_back >= 0
+            else 0
+        )
+        row["age_s"] = (
+            float(age_s)
+            if isinstance(age_s, (int, float))
+            and not isinstance(age_s, bool)
+            and math.isfinite(float(age_s))
+            and float(age_s) >= 0
+            else 0.0
+        )
+    return row
+
 
 def build_feedback_row(
     *,
@@ -304,8 +394,12 @@ def build_feedback_row(
     }
 
 
-def append(row: dict[str, Any]) -> bool:
+def append(row: dict[str, Any], *, commit_event: threading.Event | None = None) -> bool:
     """Append *row* as one JSON line. Never raises. Returns whether it was written.
+
+    When supplied, *commit_event* is set immediately after ``append_line`` commits
+    the bytes, before the retention sweep runs. The signal is separate from *row*, so
+    copying or normalizing the mapping cannot detach it.
 
     Best-effort by contract: the seam is an observation, so a read-only home, a
     full disk or a directory someone chmod-ed must not turn into a failed turn
@@ -323,6 +417,8 @@ def append(row: dict[str, Any]) -> bool:
     try:
         line = json.dumps(row, ensure_ascii=False, default=str) + "\n"
         append_line(path, line.encode("utf-8"), max_bytes=MAX_FILE_BYTES)
+        if commit_event is not None:
+            commit_event.set()
     except LogFull:
         # Reported once per file: the operator needs to learn that rows are
         # being dropped, not to have every dropped row say so again.

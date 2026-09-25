@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -48,8 +49,20 @@ class _FakeLoop:
 
 
 def _request(query: dict | None = None) -> MagicMock:
+    """An owner-authenticated fake request.
+
+    ``/api/sel/events`` serves the security audit trail and is owner-gated, so a
+    request that carries no owner identity is refused before the offload this
+    module is about. The identity is shaped the way
+    ``is_owner_dashboard_request`` reads it: a dashboard (empty-``app``) session
+    whose user matches the configured owner.
+    """
     req = MagicMock()
     req.query = query or {}
+    req.app = {"state": SimpleNamespace(owner_id="owner-1")}
+    req.__contains__.side_effect = lambda key: key == "app"
+    req.__getitem__.side_effect = lambda key: "" if key == "app" else None
+    req.get.side_effect = lambda key, default=None: "owner-1" if key == "user" else default
     return req
 
 
@@ -85,6 +98,35 @@ class TestSelHandlerOffload:
         assert order == ["submitted", "sel"]  # singleton built off the loop
         fake_sel.recent.assert_called_once_with(limit=7)
         assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_the_allow_audit_shares_the_read_s_hop(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The authorized read's own audit row must not be written on the loop.
+
+        It is the same constraint as the read: the first ``_sel()`` call constructs
+        the singleton, reading the HMAC key and scanning the log tail. Writing the
+        allow row outside the hop would put that construction back on the loop, so it
+        rides inside the submitted callable instead of paying a second hop.
+        """
+        captured: dict = {}
+        order: list[str] = []
+        fake_sel = MagicMock()
+        fake_sel.recent.return_value = []
+        fake_sel.log_api_access.side_effect = lambda **kw: order.append("audit")
+        monkeypatch.setattr(core_mod, "_sel", _tracking_sel(fake_sel, order))
+        monkeypatch.setattr(core_mod, "discovery_executor", lambda: object())
+        monkeypatch.setattr(
+            core_mod.asyncio, "get_running_loop", lambda: _FakeLoop(captured, order)
+        )
+
+        resp = await core_mod.api_sel_events(_request())
+
+        assert resp.status == 200
+        # Submitted first, then the singleton, then the audit: nothing before the hop.
+        assert order == ["submitted", "sel", "audit"]
+        assert fake_sel.log_api_access.call_args.kwargs["outcome"] == "allowed"
 
     @pytest.mark.asyncio
     async def test_verify_handler_offloads_verify_integrity(

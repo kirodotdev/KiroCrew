@@ -24,6 +24,24 @@ def _cfg(pressure: float, critical: float) -> SimpleNamespace:
     )
 
 
+@pytest.fixture(autouse=True)
+def _unmeasurable_slice(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default every case here to a slice whose task count cannot be read.
+
+    ``probe`` reads the real host's agent slice, so without this default the
+    memory assertions would turn on whatever the machine running them happens to
+    hold: a host sitting above the tight ratio makes an "ample memory is silent"
+    case emit a task line and fail. The cases that exercise the task figure patch
+    it themselves, and those that exercise the READ call
+    :data:`_REAL_SLICE_PROBE`, captured past this default.
+    """
+    monkeypatch.setattr(rs, "_read_agent_slice_tasks", lambda: (-1, -1, -1))
+
+
+#: The genuine probe, bound at import before the autouse default can replace it.
+_REAL_SLICE_PROBE = rs._read_agent_slice_tasks
+
+
 # ── _classify ────────────────────────────────────────────────────────────────
 
 
@@ -279,3 +297,280 @@ def test_prewarm_allowance_tracks_the_advisory_thresholds() -> None:
     assert rs.prewarm_allowance(rs._DEFAULT_PRESSURE_GB - 0.01, defaults) == 1
     assert rs._classify(rs._DEFAULT_PRESSURE_GB - 0.01, rs._DEFAULT_PRESSURE_GB,
                         rs._DEFAULT_CRITICAL_GB) == rs.POSTURE_TIGHT
+
+
+# ── agent-slice task ceiling ─────────────────────────────────────────────────
+#
+# The slice's pids ceiling is the one whose breach fails fork for every agent
+# under that slice at once, so these cases cover the read, the tight band, both
+# render paths, and the invariance the design promises: reported, never gated.
+
+_TOKEN = "kirocrew-agents-abc123def456.slice"
+
+
+def _slice_tree(
+    tmp_path,
+    current: str = "29500\n",
+    limit: str = "32768\n",
+    *,
+    own: str | None = "22000\n",
+    token: str = _TOKEN,
+):
+    """Build a fake agent-slice cgroup tree; returns its directory."""
+    slice_dir = tmp_path / "kirocrew-agents.slice"
+    slice_dir.mkdir()
+    (slice_dir / "pids.current").write_text(current, encoding="utf-8")
+    (slice_dir / "pids.max").write_text(limit, encoding="utf-8")
+    if own is not None:
+        child = slice_dir / token
+        child.mkdir()
+        (child / "pids.current").write_text(own, encoding="utf-8")
+    return slice_dir
+
+
+def _patch_slice(monkeypatch, slice_dir, token: str = _TOKEN) -> None:
+    """Point the probe at a fake tree, through the real cgroup reader."""
+    from kiro_crew import sandbox
+
+    monkeypatch.setattr(sandbox, "_agents_slice_cgroup_dir", lambda: slice_dir)
+    monkeypatch.setattr(sandbox, "_agents_slice_name", lambda: token)
+
+
+def _tasks(monkeypatch, current: int, limit: int, own: int = -1):
+    """Stub the task figures directly, for the render and gate cases."""
+    monkeypatch.setattr(rs, "_read_agent_slice_tasks", lambda: (current, limit, own))
+
+
+def test_slice_tasks_read_from_cgroup(tmp_path, monkeypatch) -> None:
+    """All three figures come from the real single-value cgroup reader."""
+    _patch_slice(monkeypatch, _slice_tree(tmp_path))
+    assert _REAL_SLICE_PROBE() == (29500, 32768, 22000)
+
+
+def test_slice_tasks_max_sentinel_means_no_ceiling(tmp_path, monkeypatch) -> None:
+    """``pids.max`` holding ``max`` is a slice with no wall, reported as 0."""
+    _patch_slice(monkeypatch, _slice_tree(tmp_path, limit="max\n"))
+    current, limit, _own = _REAL_SLICE_PROBE()
+    assert (current, limit) == (29500, 0)
+
+
+def test_slice_tasks_unreadable_ceiling_is_not_an_absent_one(tmp_path, monkeypatch) -> None:
+    """A ceiling that cannot be read must not be published as "no ceiling".
+
+    A slice released between the directory check and this read fails the read,
+    and reporting that as an absent limit is a reassurance nothing measured. The
+    two answers are kept distinct: ``0`` is the kernel's sentinel, ``-1`` is a
+    failure.
+    """
+    slice_dir = _slice_tree(tmp_path)
+    (slice_dir / "pids.max").unlink()
+    _patch_slice(monkeypatch, slice_dir)
+    current, limit, _own = _REAL_SLICE_PROBE()
+    assert current == 29500
+    assert limit == -1
+
+
+def test_slice_tasks_unparseable_ceiling_is_unreadable(tmp_path, monkeypatch) -> None:
+    """Content that is neither the sentinel nor digits reads as unknown."""
+    _patch_slice(monkeypatch, _slice_tree(tmp_path, limit="not-a-number\n"))
+    _current, limit, _own = _REAL_SLICE_PROBE()
+    assert limit == -1
+
+
+def test_slice_tasks_absent_slice_is_unknown(monkeypatch) -> None:
+    """No slice directory (not Linux, no delegation) reads as unknown, not zero."""
+    from kiro_crew import sandbox
+
+    monkeypatch.setattr(sandbox, "_agents_slice_cgroup_dir", lambda: None)
+    assert _REAL_SLICE_PROBE() == (-1, -1, -1)
+
+
+def test_slice_tasks_degraded_token_leaves_own_unattributed(tmp_path, monkeypatch) -> None:
+    """Without a per-instance child, this install's share is unknown.
+
+    The aggregate still reads, because the ceiling is the shared slice's; what
+    cannot be claimed is a share of it, so ``own`` stays -1 rather than taking
+    credit for a co-resident gateway's tasks.
+    """
+    slice_dir = _slice_tree(tmp_path)
+    _patch_slice(monkeypatch, slice_dir, token="kirocrew-agents.slice")
+    current, limit, own = _REAL_SLICE_PROBE()
+    assert (current, limit) == (29500, 32768)
+    assert own == -1
+
+
+def test_slice_tasks_released_child_is_a_true_zero(tmp_path, monkeypatch) -> None:
+    """An install with no live scope holds no tasks; systemd drops the directory."""
+    _patch_slice(monkeypatch, _slice_tree(tmp_path, own=None))
+    assert _REAL_SLICE_PROBE() == (29500, 32768, 0)
+
+
+def test_slice_tasks_unreadable_child_count_is_unknown(tmp_path, monkeypatch) -> None:
+    """A child directory whose count will not parse is unknown, not zero."""
+    _patch_slice(monkeypatch, _slice_tree(tmp_path, own="not-a-number\n"))
+    assert _REAL_SLICE_PROBE() == (29500, 32768, -1)
+
+
+def test_slice_tasks_probe_never_raises(monkeypatch) -> None:
+    """Any failure inside the probe degrades to unknown; it must never raise."""
+    from kiro_crew import sandbox
+
+    def _boom():
+        raise RuntimeError("cgroup gone")
+
+    monkeypatch.setattr(sandbox, "_agents_slice_cgroup_dir", _boom)
+    assert _REAL_SLICE_PROBE() == (-1, -1, -1)
+
+
+@pytest.mark.parametrize(
+    "current,limit,tight",
+    [
+        (29492, 32768, True),   # boundary: exactly the 90% ratio
+        (29491, 32768, False),  # one task below it
+        (32768, 32768, True),
+        (1000, 32768, False),
+        (29500, 0, False),      # no ceiling → nothing to approach
+        (-1, 32768, False),     # unreadable count raises nothing
+        (29500, -1, False),     # unreadable ceiling raises nothing
+    ],
+)
+def test_slice_tasks_tight_band(current: int, limit: int, tight: bool) -> None:
+    status = rs.ResourceStatus(
+        available_gb=32.0,
+        cpu_count=8,
+        load_per_cpu=0.1,
+        posture=rs.POSTURE_AMPLE,
+        pressure_gb=4.0,
+        critical_gb=2.0,
+        slice_tasks=current,
+        slice_tasks_limit=limit,
+    )
+    assert status.slice_tasks_tight is tight
+
+
+def test_slice_tasks_text_shapes(monkeypatch) -> None:
+    """The one reading both surfaces print, in its four shapes."""
+    _tasks(monkeypatch, 29500, 32768, 22000)
+    text = rs.probe(_cfg(4.0, 2.0)).slice_tasks_text()
+    assert text == "29500 of 32768 tasks (90%), this instance 22000"
+    _tasks(monkeypatch, 29500, 0, -1)
+    assert rs.probe(_cfg(4.0, 2.0)).slice_tasks_text() == "29500 tasks, no ceiling set"
+    # An unreadable ceiling reads differently from an absent one, so a released
+    # slice is never printed as a slice without a limit.
+    _tasks(monkeypatch, 29500, -1, -1)
+    assert rs.probe(_cfg(4.0, 2.0)).slice_tasks_text() == "29500 tasks, ceiling unreadable"
+    _tasks(monkeypatch, -1, -1, -1)
+    assert rs.probe(_cfg(4.0, 2.0)).slice_tasks_text() == ""
+
+
+def test_tasks_tight_raises_the_line_on_ample_memory(monkeypatch) -> None:
+    """The case the memory figure cannot express: plenty of RAM, no pids left."""
+    monkeypatch.setattr(rs, "_read_available_gb", lambda: 32.0)
+    _tasks(monkeypatch, 31000, 32768, 22000)
+    status = rs.probe(_cfg(4.0, 2.0))
+    line = status.context_line()
+    assert status.posture == rs.POSTURE_AMPLE
+    assert line.startswith("[RESOURCES]")
+    assert "task" in line
+    assert "31000 of 32768" in line
+    # The line must not borrow the memory advisory's wording for a host with 32 GB
+    # free: a reader acting on "memory is tight" would shed the wrong resource.
+    assert "CRITICALLY" not in line
+    assert "memory is tight" not in line
+    assert "memory is fine" in line
+
+
+def test_tasks_tight_never_claims_memory_it_could_not_read(monkeypatch) -> None:
+    """An unreadable memory probe is not a clean bill of health for memory.
+
+    ``unknown`` is not under pressure, so the task-only line is the branch that
+    renders; it must report memory as unreadable rather than fine, because a
+    reader told memory is fine stops considering it as the constraint.
+    """
+    monkeypatch.setattr(rs, "_read_available_gb", lambda: -1.0)
+    _tasks(monkeypatch, 31000, 32768, 22000)
+    status = rs.probe(_cfg(4.0, 2.0))
+    line = status.context_line()
+    assert status.posture == rs.POSTURE_UNKNOWN
+    assert "31000 of 32768" in line
+    assert "memory is fine" not in line
+    assert "unreadable" in line
+
+
+def test_under_pressure_stays_memory_only(monkeypatch) -> None:
+    """A full slice with ample memory is not memory pressure.
+
+    ``under_pressure`` is what several callers read as "memory is short", so a
+    task count must never set it, however tight the slice is.
+    """
+    monkeypatch.setattr(rs, "_read_available_gb", lambda: 32.0)
+    _tasks(monkeypatch, 32768, 32768, 32768)
+    status = rs.probe(_cfg(4.0, 2.0))
+    assert status.slice_tasks_tight is True
+    assert status.under_pressure is False
+
+
+def test_tasks_tight_rides_the_memory_line_as_a_clause(monkeypatch) -> None:
+    monkeypatch.setattr(rs, "_read_available_gb", lambda: 1.0)
+    _tasks(monkeypatch, 31000, 32768, 22000)
+    line = rs.probe(_cfg(4.0, 2.0)).context_line()
+    assert "CRITICALLY" in line  # the memory advisory is intact
+    assert "also near its task ceiling" in line
+
+
+def test_tasks_clause_absent_when_below_the_band(monkeypatch) -> None:
+    monkeypatch.setattr(rs, "_read_available_gb", lambda: 1.0)
+    _tasks(monkeypatch, 1000, 32768, 500)
+    line = rs.probe(_cfg(4.0, 2.0)).context_line()
+    assert "CRITICALLY" in line
+    assert "task" not in line
+
+
+def test_off_switch_also_suppresses_the_task_line(monkeypatch) -> None:
+    """``pressure_gb == 0`` is one off switch for the injected line, not two."""
+    monkeypatch.setattr(rs, "_read_available_gb", lambda: 32.0)
+    _tasks(monkeypatch, 32768, 32768, 22000)
+    status = rs.probe(_cfg(0.0, 0.0))
+    assert status.context_line() == ""
+    # The pull tool stays honest while the injected line is off.
+    assert "TIGHT" in "\n".join(status.summary_lines())
+
+
+def test_summary_lines_carry_the_task_reading(monkeypatch) -> None:
+    monkeypatch.setattr(rs, "_read_available_gb", lambda: 32.0)
+    _tasks(monkeypatch, 31000, 32768, 22000)
+    joined = "\n".join(rs.probe(_cfg(4.0, 2.0)).summary_lines())
+    assert "Agent slice tasks: 31000 of 32768 tasks (95%), this instance 22000" in joined
+    assert "TIGHT" in joined  # the band marker on the task line
+
+
+def test_summary_lines_omit_an_unmeasurable_slice(monkeypatch) -> None:
+    """A host with no cgroup task ceiling gets no line at all, not 'unknown'."""
+    monkeypatch.setattr(rs, "_read_available_gb", lambda: 32.0)
+    _tasks(monkeypatch, -1, -1, -1)
+    joined = "\n".join(rs.probe(_cfg(4.0, 2.0)).summary_lines())
+    assert "Agent slice tasks" not in joined
+
+
+def test_task_count_never_gates_admission(monkeypatch) -> None:
+    """Reported, never gated: a full slice with ample memory still admits."""
+    monkeypatch.setattr(rs, "_read_available_gb", lambda: 32.0)
+    _tasks(monkeypatch, 32768, 32768, 32768)
+    decision = rs.admission_check(_cfg(4.0, 2.0))
+    assert decision.admitted is True
+    assert decision.posture == rs.POSTURE_AMPLE
+    assert decision.reason == ""
+
+
+def test_task_count_never_shrinks_prewarm(monkeypatch) -> None:
+    monkeypatch.setattr(rs, "_read_available_gb", lambda: 32.0)
+    _tasks(monkeypatch, 32768, 32768, 32768)
+    assert rs.prewarm_allowance(cfg=_cfg(4.0, 2.0)) == rs.PREWARM_MAX_LIVE
+
+
+def test_task_count_does_not_move_the_posture(monkeypatch) -> None:
+    """The posture is a memory scalar at any task count."""
+    monkeypatch.setattr(rs, "_read_available_gb", lambda: 32.0)
+    for current in (0, 16000, 32768):
+        _tasks(monkeypatch, current, 32768, current)
+        assert rs.probe(_cfg(4.0, 2.0)).posture == rs.POSTURE_AMPLE

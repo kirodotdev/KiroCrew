@@ -31,6 +31,7 @@ from kiro_crew.dashboard.handlers.mcp import (
     _is_valid_mcp_name,
     _replace_kirocrew_spec,
 )
+from kiro_crew.mcp_cleanup import mcp_entry_is_muted
 from kiro_crew.mcp_discovery import MCP_REDACTED_HEADER_VALUE, redact_mcp_headers
 from kiro_crew.mcp_provenance import MARKER_KEY
 from kiro_crew.mcp_utils import (
@@ -431,7 +432,9 @@ async def api_mcp_custom_get(request: web.Request) -> web.Response:
     if entry is None:
         return web.json_response({"error": f"server '{name}' not found"}, status=404)
 
-    enabled = not entry.get("disabled", False)
+    # The launch predicate (fail-closed), so the editor's chip and the table's
+    # Disabled row agree on a non-boolean ``disabled``.
+    enabled = not mcp_entry_is_muted(entry)
     spec = {k: v for k, v in entry.items() if k != "disabled"}
     if "headers" in spec:
         spec["headers"] = redact_mcp_headers(spec["headers"])

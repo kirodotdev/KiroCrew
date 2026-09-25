@@ -337,7 +337,9 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
         </Virtualizer>
         </PierreShell>
       ) : (
-        <div className="grid h-full w-full grid-rows-[auto_minmax(0,1fr)]">
+        // Same `className` as the Virtualizer branch: the caller's size cap
+        // must hold whichever surface is on screen.
+        <div className={`grid h-full w-full grid-rows-[auto_minmax(0,1fr)] ${className ?? ''}`}>
           <textarea
             ref={fallbackRef}
             aria-label={file.name}

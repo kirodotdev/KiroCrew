@@ -320,8 +320,10 @@ jobs:
   # it. One extra ~1-minute job buys the whole matrix the right to not start.
   #
   # Fails closed on purpose, in all three ways it can go wrong: a Fast Gate run
-  # that never appears, one that never completes inside the budget, and one that
-  # completes non-success all exit non-zero. A barrier that passed when it could
+  # that never appears, one that never completes inside the budget, and one whose
+  # conclusion is a decided non-success all exit non-zero. `action_required` is
+  # not one of them: GitHub reports a fork run awaiting maintainer approval that
+  # way, so it is polled as pending. A barrier that passed when it could
   # not read its subject would be worse than no barrier, because the matrix would
   # run anyway and the log would claim it was cleared to.
   await-fast-gate:
@@ -411,6 +413,13 @@ jobs:
                 success)
                   echo "Fast Gate passed. Releasing the heavy jobs."
                   exit 0
+                  ;;
+                action_required)
+                  # A fork run still awaiting maintainer approval is reported as
+                  # completed/action_required. That is pending, not decided, so keep
+                  # polling under TOTAL_BUDGET -- otherwise which of the two pending
+                  # runs a maintainer approves first decides whether the matrix runs.
+                  status="awaiting maintainer approval"
                   ;;
                 *)
                   echo "::error::Fast Gate concluded '$conclusion' ($url)." \
@@ -509,8 +518,11 @@ jobs:
       # change. The baseline makes the gate real for everything else, so new code
       # is formatted without any PR being forced to carry unrelated churn.
       - name: Check formatting (black, baselined)
-        # Fleet/local checks recycle at most two workers, capped at 2 GiB each
-        # on Linux. Hosted CI keeps the native command and default worker count.
+        # Every runner recycles black workers: one file per child, at most eight,
+        # capped at 2 GiB each on Linux. Hosted `ubuntu-latest` needs this too:
+        # the compiled wheel retains memory per worker and the VM has no cgroup
+        # cap, so a native pool takes the whole 16 GB runner down mid-step (exit
+        # 143). Recycling costs ~1.6x native wall time on four cores.
         # Keep cgroup evidence: per-process limits do not bound the whole job.
         run: python3 scripts/ci_black_diagnostics.py scripts/check_black_formatting.py
 

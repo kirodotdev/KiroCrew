@@ -208,6 +208,32 @@ describe('crew editor — dirty dismissal is guarded on every pane', () => {
     expect(screen.queryByRole('dialog', { name: GENERIC })).not.toBeInTheDocument()
   })
 
+  it('a whitespace-padded display_name from a hand-edited config opens clean', async () => {
+    // The server trims on save, but a hand-edited config can hold "  Ops  ".
+    // The dirty compare must trim BOTH operands, or the sheet opens with Save
+    // enabled and closing prompts to discard changes the user never made.
+    mockApi.kirocrewAgents.mockResolvedValue({
+      agents: [{
+        name: 'oncall',
+        kiro_agent: 'kirocrew',
+        workspace: 'default',
+        memory_store: 'default',
+        triggers: 'incidents',
+        session_color: '',
+        display_name: '  Ops  ',
+      }],
+      default_agent: 'kirocrew',
+    })
+    renderWithProviders(<KiroCrewAgentsPage />)
+    fireEvent.click(await screen.findByTestId('crew-card'))
+    const sheet = await screen.findByRole('dialog', { name: 'Edit agent Ops' })
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Cancel' }))
+
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Edit agent Ops' })).not.toBeInTheDocument())
+    expect(screen.queryByRole('dialog', { name: GENERIC })).not.toBeInTheDocument()
+  })
+
   it('a rail pane switch while dirty stays unprompted', async () => {
     // The guard is scoped to DISMISSAL on purpose. Every field except the
     // schedule draft lives in the page's own state and survives a pane switch,

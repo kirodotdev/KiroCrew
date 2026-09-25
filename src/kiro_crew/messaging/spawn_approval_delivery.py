@@ -151,6 +151,12 @@ async def deliver_spawn_approval(
     (``dashboard:``, ``cron:``) or a ``unified`` DM bucket — neither of which
     names a governed channel — falls through without asking the profile store
     about a channel type that does not exist.
+
+    The check before the prompt covers only half the window, because the gate holds
+    a spawn for as long as its approval takes and a deny can land while the prompt
+    is already pending. :func:`unpressed_wait_answer` is the other half: a hook
+    whose wait elapsed with no press asks it what that means, and gets ``None``
+    rather than ``False`` once the channel is denied.
     """
     hook = resolve_channel_delivery(parent_session_key)
     if hook is None:
@@ -180,6 +186,48 @@ async def deliver_spawn_approval(
             exc_info=True,
         )
         return None
+
+
+async def unpressed_wait_answer(channel: str, request_id: str) -> "bool | None":
+    """What a hook answers when its deny-by-default wait elapsed UNPRESSED.
+
+    ``False`` — a real deny-by-default the operator declined to answer — while
+    *channel* is still permitted, and ``None`` (fall through) once the operator's
+    ``channels`` ceiling denies it.
+
+    :func:`deliver_spawn_approval` consults the ceiling BEFORE a hook posts, so a
+    channel already denied is never prompted. This is the rest of that window: the
+    gate holds a spawn for as long as its approval takes, so a deny can land while
+    the prompt is pending. From that moment the channel's callback path drops the
+    answering press — every press except an explicit reject — so the prompt is no
+    longer answerable, the wait elapses, and a bare ``False`` would hand the host
+    gate a refusal the operator never made. A deny withholds the channel; it does
+    not vote in the operator's name.
+
+    The split of duties is why this is a seam function a hook calls rather than
+    something either side does alone. Only the hook can know its wait elapsed with
+    no press: the decision arrives as a bool, and the cause behind it
+    (``last_deny_cause``, see :data:`~kiro_crew.messaging.driver.ApprovalDecider`)
+    is the channel decider's own. Only the seam should decide what that fact MEANS,
+    because that reading is the ceiling's authority and belongs in one place for
+    every channel rather than copied per dispatcher.
+
+    A hook that answers a bare ``False`` without calling this keeps today's
+    behaviour. That is the conservative direction on purpose: the seam cannot tell
+    such a ``False`` apart from a press, and reading a press as unpressed would
+    turn an operator's explicit reject into a fall-through that re-offers the spawn
+    they just refused.
+    """
+    if await channel_inbound_permitted(channel):
+        return False
+    logger.info(
+        "Spawn-approval prompt on %s for %s went unanswered and the channel is now "
+        "denied by channels governance policy; falling through to the "
+        "Slack/dashboard path rather than reporting a deny the operator never made",
+        channel,
+        request_id,
+    )
+    return None
 
 
 def clear_channel_delivery_hooks() -> None:

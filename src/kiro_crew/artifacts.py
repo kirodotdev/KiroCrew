@@ -56,8 +56,10 @@ from dataclasses import asdict, dataclass, field
 from dataclasses import fields as fields_of
 from datetime import datetime, timezone
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Callable, Iterator
 from typing import List as _List
+from typing import Mapping
 
 from kiro_crew import hooks, pinned_fs
 from kiro_crew.artifact_source import is_verifiable_root
@@ -216,6 +218,29 @@ class ArtifactStillPublishedError(ArtifactError):
     "not this one" instead of silently erasing that handle. Distinct from the base
     error so such a caller can separate "refused, and correctly" from a real failure.
     """
+
+
+class ArtifactReplacedError(ArtifactError):
+    """Raised when a slug does not hold the artifact generation the caller named.
+
+    A slug is a NAME, not an identity: :meth:`ArtifactStore._unique_slug` re-mints a
+    freed slug identically, so an artifact created under the same title after an
+    earlier one at that slug is gone lands on exactly that slug. A caller that decided
+    what to do while holding a slug therefore has to say WHICH artifact it decided
+    about, and ``created_at`` is that generation stamp.
+
+    Passing ``expect_created_at`` asks for the decision to be re-checked against the
+    record under the store lock; this is raised instead of acting when a different
+    generation now answers to the name. Distinct from the base error so a caller can
+    separate "a replacement arrived, so I left it alone" from a real failure -- the
+    replacement is a live artifact nobody asked to destroy.
+    """
+
+
+#: The empty generation map -- the default for :meth:`ArtifactFolderStore.delete`'s
+#: ``destroyable_generations``, naming no artifact as safe to destroy. Immutable because
+#: a shared mutable default is one caller away from vouching for another's artifacts.
+_NO_GENERATIONS: "Mapping[str, str]" = MappingProxyType({})
 
 
 # ── Data model ────────────────────────────────────────────────────────────────
@@ -635,10 +660,48 @@ def slugify(name: str) -> str:
     return text[:80].rstrip("-") or slug_hash_fallback(name, "artifact")
 
 
+class _ExpectAbsent:
+    """Sentinel for ``expect_created_at``: the caller read this slug as holding NOTHING.
+
+    ``None`` there means "I have no generation to compare", which is the honest answer for
+    a caller that never resolved the artifact -- and it disables the check. A delete that
+    read the slug as ABSENT needs the opposite: any artifact present by the time the lock
+    is held appeared after that read, so it is one nobody asked to delete. Those are two
+    different statements and a single ``None`` cannot carry both, which is why absence gets
+    its own value rather than sharing one.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover -- diagnostics only
+        return "EXPECT_ABSENT"
+
+
+#: The value a caller passes as ``expect_created_at`` when it read the slug as empty.
+EXPECT_ABSENT = _ExpectAbsent()
+
+
 def _validate_slug(slug: str) -> str:
     if not isinstance(slug, str) or not _SLUG_RE.match(slug):
         raise ArtifactValidationError(f"invalid slug {slug!r}: must match {_SLUG_RE.pattern}")
     return slug
+
+
+def slug_is_well_formed(slug: str) -> bool:
+    """Whether this string could name an artifact, said without asking whether one exists.
+
+    Defined on top of the same validator every store method applies, so a caller deciding
+    what to do with a slug the store has not resolved cannot disagree with the store about
+    which strings are slugs at all. The publication guard needs exactly this question: an
+    artifact created inside a delete's own window has no record to resolve, so the guard has
+    to be taken on the NAME, while a malformed name is still passed through unguarded so the
+    store can answer for it.
+    """
+    try:
+        _validate_slug(slug)
+    except ArtifactValidationError:
+        return False
+    return True
 
 
 #: Kinds a HUMAN may select for an artifact from the dashboard's type control.
@@ -2326,7 +2389,13 @@ class ArtifactStore:
         art.updated_at = _now_iso()
         self._write_meta(art)
 
-    def delete(self, slug: str, *, refuse_if_published: bool = False) -> None:
+    def delete(
+        self,
+        slug: str,
+        *,
+        refuse_if_published: bool = False,
+        expect_created_at: "str | _ExpectAbsent | None" = None,
+    ) -> None:
         """Permanently delete an artifact and all of its versions.
 
         ``refuse_if_published`` raises :class:`ArtifactStillPublishedError` instead of
@@ -2343,20 +2412,51 @@ class ArtifactStore:
         withdrew but did NOT clear would be refused on every published artifact, which is
         why the flag is off by default rather than always on.
 
-        The check runs inside the same lock as the removal, so unlike a pre-pass it
-        cannot be overtaken by a publish landing after the decision and before the
-        delete -- which is the whole reason the flag is here rather than at the caller.
+        ``expect_created_at`` names the artifact GENERATION the caller decided to destroy,
+        and raises :class:`ArtifactReplacedError` when the slug now holds a different one.
+        A caller that decided over a slug alone is not naming an artifact: a freed slug is
+        re-minted identically, so between a caller's decision and this call the artifact it
+        meant can be gone and a same-titled newcomer can hold the name. Destroying that
+        newcomer is unrecoverable and, reported as an ordinary deletion, is
+        indistinguishable from the intended victim. Any caller whose decision is older
+        than this call -- one that awaited anything, a bulk pass working from a snapshot --
+        passes it; a caller acting on a record it just read does not need to.
+
+        Pass :data:`EXPECT_ABSENT` for the case a generation cannot express: the caller read
+        this slug as holding NOTHING. Reaching the check below then means an artifact
+        appeared after that read, so it is one nobody asked to delete and this refuses
+        instead. ``None`` remains "no generation to compare", which performs no check, and
+        the two are deliberately separate values rather than one overloaded ``None``.
+
+        Both checks run inside the same lock as the removal, so unlike a pre-pass neither
+        can be overtaken by a publish or a recreation landing after the decision and
+        before the delete -- which is the whole reason they are here rather than at the
+        caller.
         """
         slug = _validate_slug(slug)
         with self._lock:
             adir = self._artifact_dir(slug)
             if not adir.exists():
                 raise ArtifactNotFoundError(f"artifact not found: {slug}")
-            if refuse_if_published:
+            if isinstance(expect_created_at, _ExpectAbsent):
+                raise ArtifactReplacedError(
+                    f"artifact {slug} exists, and the caller read this slug as empty: it "
+                    "was created after that read, so deleting it would destroy an "
+                    "artifact nobody asked to delete"
+                )
+            if refuse_if_published or expect_created_at is not None:
                 # Deliberately re-read under the lock rather than trusting anything the
                 # caller passed in. `_load_meta` does not take this lock (meta reads are
                 # unlocked by design), so this cannot deadlock.
-                if self._load_meta(slug).publication is not None:
+                meta = self._load_meta(slug)
+                if expect_created_at is not None and meta.created_at != expect_created_at:
+                    raise ArtifactReplacedError(
+                        f"artifact {slug} was created at {meta.created_at!r}, not "
+                        f"{expect_created_at!r}: the artifact under this slug was "
+                        "replaced, so deleting it would destroy one nobody asked to "
+                        "delete"
+                    )
+                if refuse_if_published and meta.publication is not None:
                     raise ArtifactStillPublishedError(
                         f"artifact {slug} is still published; withdraw the published "
                         "copy before deleting it, or its record -- the only handle able "
@@ -2870,11 +2970,52 @@ class ArtifactStore:
             )
             return art
 
-    def clear_publication(self, slug: str) -> Artifact:
-        """Remove an artifact's publication block (after unpublish/delete)."""
+    def clear_publication(
+        self,
+        slug: str,
+        *,
+        expect_created_at: str | None = None,
+        expect_publication_id: str | None = None,
+    ) -> Artifact:
+        """Remove an artifact's publication block (after unpublish/delete).
+
+        ``expect_created_at`` names the artifact GENERATION whose copy the caller
+        withdrew, and raises :class:`ArtifactReplacedError` instead of clearing when the
+        slug now holds a different one. A withdrawal is a network round trip, so a caller
+        clearing afterwards is acting on a slug it read before that wait: if the artifact
+        it withdrew is gone and a same-titled newcomer holds the name, clearing here
+        erases the NEWCOMER's record -- the only handle able to withdraw a copy that is
+        still served.
+
+        ``expect_publication_id`` names the PUBLICATION whose copy came down, and is the
+        check that actually decides it. The generation alone cannot: :meth:`set_publication`
+        replaces the publication block and leaves ``created_at`` untouched, so the same
+        artifact re-published during that same round trip carries an unchanged stamp and a
+        brand-new live copy. Matching the record's own ``artifact_id`` is what tells the
+        record the caller withdrew from a record it has never seen.
+
+        Every caller that clears after awaiting anything passes BOTH, and both are compared
+        here rather than at the caller because only this lock also performs the write.
+        """
         slug = _validate_slug(slug)
         with self._lock:
             art = self._load_meta(slug)
+            if expect_created_at is not None and art.created_at != expect_created_at:
+                raise ArtifactReplacedError(
+                    f"artifact {slug} was created at {art.created_at!r}, not "
+                    f"{expect_created_at!r}: the artifact under this slug was replaced, "
+                    "so clearing its publication would discard the only handle able to "
+                    "withdraw a copy nobody asked to unpublish"
+                )
+            if expect_publication_id is not None:
+                current = art.publication.artifact_id if art.publication else None
+                if current != expect_publication_id:
+                    raise ArtifactReplacedError(
+                        f"artifact {slug} is published as {current!r}, not "
+                        f"{expect_publication_id!r}: the record under this slug names a "
+                        "different copy, so clearing it would discard the only handle "
+                        "able to withdraw a copy nobody asked to unpublish"
+                    )
             art.publication = None
             self._write_meta(art)
             logger.info("artifact publication cleared: slug=%s", slug)
@@ -4177,6 +4318,7 @@ class ArtifactFolderStore:
         *,
         delete_contents: bool,
         artifact_store: "ArtifactStore",
+        destroyable_generations: "Mapping[str, str]" = _NO_GENERATIONS,
     ) -> dict[str, Any]:
         """Delete a folder. ``delete_contents`` picks the semantics:
 
@@ -4186,6 +4328,32 @@ class ArtifactFolderStore:
         * **True (cascade)** — permanently delete the whole subtree: every
           descendant artifact (via the guarded :meth:`ArtifactStore.delete`)
           and every descendant folder.
+
+        ``destroyable_generations`` maps the slug of each artifact the caller has made
+        safe to destroy to that artifact's ``created_at``. A descendant whose slug is
+        absent is left in place and reported under ``unguarded_artifact_slugs``; one whose
+        slug is present but whose stamp differs is a REPLACEMENT and is left in place and
+        reported under ``replaced_artifact_slugs``. It defaults to EMPTY rather than to
+        everything, so a cascade whose caller forgot to name its victims empties nothing
+        and says which artifacts it left, instead of destroying a subtree nobody vouched
+        for. Unread when ``delete_contents`` is false, which destroys no artifact at all.
+
+        A slug is not an identity, which is why the stamp travels with it: the caller draws
+        this map up before withdrawing published copies, that withdrawal awaits the
+        network per copy, and a freed slug is re-minted identically. So an artifact the
+        caller named can be deleted and a same-titled newcomer can take the name while the
+        pass runs, and a slug-only map would match the newcomer and destroy it with no
+        undo -- reported as an ordinary deletion, indistinguishable from the intended
+        victim.
+
+        The caller holding each listed artifact's publication guard is what makes the
+        map meaningful: a first publish uploads its object before writing the
+        record naming it, so ``refuse_if_published`` below cannot see one that is
+        in flight, and an artifact filed into this subtree after the caller drew
+        up its list is exactly the artifact whose publish this store cannot
+        observe. Leaving it alone costs a folder that does not fully empty, which
+        the owner deletes again; destroying it can strand a world-readable copy
+        whose only handle goes with it.
 
         Returns a summary dict describing what changed.
         """
@@ -4259,14 +4427,49 @@ class ArtifactFolderStore:
         deleted_slugs: _List[str] = []
         reparented_slugs: _List[str] = []
         kept_published_slugs: _List[str] = []
+        unguarded_slugs: _List[str] = []
+        replaced_slugs: _List[str] = []
         for art in artifact_store.list():
             fid = getattr(art, "folder_id", "") or ""
             if fid not in affected_ids:
                 continue
             if delete_contents:
+                expect = destroyable_generations.get(art.slug)
+                if expect is None:
+                    # Filed into this subtree after the caller drew up its guarded set, so
+                    # its publication state is the one thing this store cannot settle: the
+                    # only evidence here is a record, and a first publish in flight has
+                    # uploaded its object and written none. It survives either way, which
+                    # degrades it to Unfiled exactly as a kept artifact does; the record
+                    # decides only which list reports it, so one that IS published keeps
+                    # the report it already had and only the unknown case is separate.
+                    if art.publication is not None:
+                        kept_published_slugs.append(art.slug)
+                    else:
+                        unguarded_slugs.append(art.slug)
+                    logger.warning(
+                        "cascade left %s alone: it joined the subtree outside the "
+                        "caller's guarded set, so a publish in flight for it cannot be "
+                        "ruled out",
+                        art.slug,
+                    )
+                    continue
                 try:
-                    artifact_store.delete(art.slug, refuse_if_published=True)
+                    artifact_store.delete(
+                        art.slug, refuse_if_published=True, expect_created_at=expect
+                    )
                     deleted_slugs.append(art.slug)
+                except ArtifactReplacedError:
+                    # The artifact the caller named is already gone and a newcomer holds
+                    # its slug. Nobody asked for the newcomer to be destroyed, and the
+                    # removal has no undo, so it survives unfiled like a kept one.
+                    replaced_slugs.append(art.slug)
+                    logger.warning(
+                        "cascade kept %s: the artifact under this slug was replaced "
+                        "after the caller named it, so destroying it would take one "
+                        "nobody asked to delete",
+                        art.slug,
+                    )
                 except ArtifactStillPublishedError:
                     kept_published_slugs.append(art.slug)
                     logger.warning(
@@ -4290,6 +4493,8 @@ class ArtifactFolderStore:
             "deleted_folder_ids": sorted(affected_ids),
             "deleted_artifact_slugs": deleted_slugs,
             "kept_published_artifact_slugs": kept_published_slugs,
+            "unguarded_artifact_slugs": unguarded_slugs,
+            "replaced_artifact_slugs": replaced_slugs,
             "reparented_artifact_slugs": reparented_slugs,
             "reparented_to": parent,
             "delete_contents": delete_contents,

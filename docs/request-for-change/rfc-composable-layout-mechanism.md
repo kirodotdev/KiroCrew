@@ -1,21 +1,25 @@
 ---
 title: Composable Layout Mechanism — a reusable pane-layout foundation, first surfaced as custom member layouts
-status: draft
+status: in-progress
 author: gjjnn
 created: 2026-09-24
-last-audited: 2026-09-24
-audited-at: a305e4fba
+last-audited: 2026-09-25
+audited-at: 20b4c8fee
 doc-pr:
-implementation-prs: []
+implementation-prs: ["https://github.com/kirodotdev/KiroCrew/pull/13572"]
 tracking-issues: []
 supersedes: []
 superseded-by: []
 ---
 # RFC: Composable Layout Mechanism
 
-- Status: draft — nothing in this document is implemented. It is a proposal and a
-  record of the decision to build the mechanism described below and to surface it
-  first as custom member layouts, to be landed as the sequence of small PRs in §7.
+- Status: in-progress — PR 1 of the §7 sequence (the layout model and its tests,
+  pure data with no UI) is in flight as
+  [#13572](https://github.com/kirodotdev/KiroCrew/pull/13572); the remaining
+  elements and the editor/renderer land as the later PRs in §7. The mechanism is
+  not yet reachable from any surface. It is the decision to build the mechanism
+  described below and to surface it first as custom member layouts, landed as the
+  sequence of small PRs in §7.
 - Author: gjjnn
 - Created: 2026-09-24
 - Related: `rfc-chat-core-extraction.md` (owns the ChatPane / ChatInput

@@ -9,7 +9,7 @@ import ErrorNotice, { ErrorNoticeMenuItem } from '../components/ErrorNotice'
 import JiraLogo from '../components/icons/JiraLogo'
 import { sourceProviderMeta } from '../utils/sourceProviderMeta'
 import FolderGlyph from '../components/FolderGlyph'
-import { DndContext, closestCenter, pointerWithin, useDroppable, useDndContext, DragOverlay, MeasuringStrategy, type DragEndEvent, type DragStartEvent, type DragOverEvent, type CollisionDetection, type Collision } from '@dnd-kit/core'
+import { DndContext, closestCenter, pointerWithin, useDroppable, DragOverlay, MeasuringStrategy, type DragEndEvent, type DragStartEvent, type DragOverEvent, type CollisionDetection, type Collision } from '@dnd-kit/core'
 import { SortableContext, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -77,7 +77,7 @@ import SessionActionsMenu from '../components/SessionActionsMenu'
 import { ChannelBrandIcon, hasChannelBrandIcon } from '../components/ChannelBrandIcon'
 import { RemoteCrewChip } from '../components/RemoteCrewChip'
 import TagManagerList from '../components/TagManagerList'
-import { DndDraggable, DndDroppable, pointerWithinDeepest, closestEdge } from '../components/dnd'
+import { DndActiveProbe, DndDraggable, DndDroppable, pointerWithinDeepest, closestEdge } from '../components/dnd'
 import { bySidebarOrder, collectFolderSubtreeIds, folderNameText } from '../utils/folderTree'
 import { normalizeRunSessionKey } from '../apps/workflows/runModel'
 import { sanitizeLlmOutput } from '../utils/sanitize'
@@ -577,37 +577,6 @@ function ChatPaneDropZone({ refusal }: { refusal: SessionRefBlockReason | null }
       )}
     </div>
   )
-}
-
-/**
- * Reports whether the enclosing DndContext has an active drag, so the sidebar
- * can reconcile its own drag mirror (`activeDrag`, `dragFrozen`) against the
- * store dnd-kit actually holds.
- *
- * The mirror is set from `onDragStart` and cleared from `onDragEnd` /
- * `onDragCancel`, but dnd-kit only fires the end callbacks when its
- * `sensorContext.active` is populated, and that ref is filled by a layout
- * effect on the commit AFTER the start. A press-move-release that finishes
- * before this component commits (the sidebar is heavy and the mouse sensor
- * arms at 5px) therefore leaves dnd-kit idle while the mirror still says a
- * drag is live: the row projection stays frozen (rows filtered before the
- * gesture never come back, the pinned divider repeats), and the chat-pane
- * drop zone stays on screen with nothing to drop.
- *
- * One probe per DndContext, keyed by a stable id: the tree/flat lanes have
- * one context and the board has one per column, and only a context that
- * hosted the gesture reports active — an idle neighbour must not be read as
- * "no drag anywhere".
- */
-function DndActiveProbe({ report }: { report: (id: string, active: boolean) => void }) {
-  const id = useId()
-  const { active } = useDndContext()
-  const isActive = active != null
-  useLayoutEffect(() => {
-    report(id, isActive)
-    return () => report(id, false)
-  }, [id, isActive, report])
-  return null
 }
 
 /** Approximate height (px) of a folder header row. For root folder drags the
@@ -2616,9 +2585,14 @@ const SessionRow = memo(function SessionRow({
           // this row is nested under the session that opened it.
           'data-conductor-depth': conductor.depth,
           ...(conductor.depth > 0 ? { 'data-testid': 'conductor-nested-row' } : {}),
+          ...(conductor.anchorOnly ? { 'data-conductor-anchor': 'true' } : {}),
         } : {})}
         initial={rowAnimEnabled ? { opacity: 0, x: -12 } : false}
-        animate={{ opacity: 1, x: 0 }}
+        // The anchor's dimming belongs HERE and not in a class: Motion writes its
+        // animation target to the element's own style, so an inline `opacity: 1` from
+        // this target outranks any opacity utility on the same row and the anchor paints
+        // at full strength. One source of truth, and the property a person actually sees.
+        animate={{ opacity: conductor?.anchorOnly ? 0.55 : 1, x: 0 }}
         transition={{ layout: { type: 'spring', stiffness: 500, damping: 35 }, opacity: { duration: 0.2 }, x: { duration: 0.2 } }}>
         {/* Both dnd ids are ORIGIN-QUALIFIED (`rowIdentity`, not `s.key`): a peer
             row's disabled droppable/draggable still registers its id with dnd-kit,
@@ -3296,10 +3270,18 @@ interface ConductorRowExtras {
    *  is present and simply not above this row right now, and the two must not share a
    *  tooltip that claims the session closed. */
   citesParent?: string | null
+  /** True when this row is on screen only to hold its workers together: the active
+   *  filter does not admit it, but something in its subtree needs it as the row the
+   *  nesting hangs from. Dimmed, because it is context rather than a match. */
+  anchorOnly?: boolean
 }
 
-/** Which conductor rows the user has expanded, as a JSON array of root keys. */
-const CONDUCTOR_EXPANDED_LS_KEY = 'mc-sidebar-conductor-expanded'
+/** Which conductor rows the user has collapsed, as a JSON array of row keys. A row
+ *  absent from it is OPEN, which is what makes the lane match the System page on a
+ *  gateway the user has never touched this control on. */
+const CONDUCTOR_COLLAPSED_LS_KEY = 'mc-sidebar-conductor-collapsed'
+/** The key the one above supersedes, kept only so it can be removed from storage. */
+const CONDUCTOR_SUPERSEDED_EXPANDED_LS_KEY = 'mc-sidebar-conductor-expanded'
 
 /**
  * The persisted lane, migrating the boolean this replaced.
@@ -3316,17 +3298,32 @@ function readStoredLane(): SidebarLane {
   return localStorage.getItem(FLAT_VIEW_LS_KEY) === '1' ? 'flat' : 'tree'
 }
 
-/** The expanded conductor roots, or an empty set when the value is unusable. */
-function readConductorExpanded(): Set<string> {
+/** The conductor rows the user has COLLAPSED, or an empty set when the value is
+ *  unusable. Collapsed rather than expanded is what makes EXPANDED the default: the
+ *  lane must show the tree the System page's Sessions tab shows, and a conductor this
+ *  build has never seen has no entry here, so it renders open.
+ *
+ *  The set this supersedes held the OPPOSITE sense, one row per conductor the user had
+ *  opened, and there is no reading of it that produces this one: a row it names was
+ *  open, which is now the default, and a row it omits was closed only if the user ever
+ *  saw it. So it is dropped rather than converted -- left in place it would sit in
+ *  storage for the life of the browser profile, meaning nothing to any build. */
+function readConductorCollapsed(): Set<string> {
   try {
-    const raw = localStorage.getItem(CONDUCTOR_EXPANDED_LS_KEY)
+    localStorage.removeItem(CONDUCTOR_SUPERSEDED_EXPANDED_LS_KEY)
+  } catch {
+    // Storage that refuses a write still answers reads, so the fold state below is
+    // worth reading; an undeletable stale key costs nothing but the bytes.
+  }
+  try {
+    const raw = localStorage.getItem(CONDUCTOR_COLLAPSED_LS_KEY)
     if (!raw) return new Set()
     const parsed: unknown = JSON.parse(raw)
     if (!Array.isArray(parsed)) return new Set()
     return new Set(parsed.filter((k): k is string => typeof k === 'string' && k !== ''))
   } catch {
-    // Collapsed-by-default is the documented default, so an unreadable value costs
-    // the user one re-expand rather than an error they cannot act on.
+    // Expanded-by-default is the documented default, so an unreadable value costs the
+    // user one re-collapse rather than an error they cannot act on.
     return new Set()
   }
 }
@@ -5369,6 +5366,18 @@ function ChatSidebar({
   // directly and re-renders on change.
   const reduceMotion = useReducedMotion()
 
+  /**
+   * The one order every session lane uses. Extracted so the conductor lane can sort
+   * the FULL row set the same way `filteredSlots` sorts the narrowed one: that lane
+   * builds its tree from every row, and a comparator of its own would make the two
+   * lanes disagree about the same two sessions for no reason a user could see.
+   */
+  const laneOrder = useCallback((a: Slot, b: Slot) => searchRanked
+    ? ((!isPeerRow(a) ? searchRanked.get(a.key) : undefined) ?? Infinity)
+      - ((!isPeerRow(b) ? searchRanked.get(b.key) : undefined) ?? Infinity)
+    : compareLocalPinnedThenSort(a, b, sortKey, pinned, pinnedRank),
+    [searchRanked, sortKey, pinned, pinnedRank])
+
   const filteredSlots = useMemo(() => {
     if (dragFrozen) return frozenSlotsRef.current
     // Live sessions from connected remote instances join the LIVE list, not the
@@ -5391,14 +5400,11 @@ function ChatSidebar({
       // of the sidebar sort (mirrors the Older Sessions lane and the command
       // palette). Pinning stays a reachability promise for browsing, not a
       // ranking hint inside explicit search results.
-      .sort((a, b) => searchRanked
-        ? ((!isPeerRow(a) ? searchRanked.get(a.key) : undefined) ?? Infinity)
-          - ((!isPeerRow(b) ? searchRanked.get(b.key) : undefined) ?? Infinity)
-        : compareLocalPinnedThenSort(a, b, sortKey, pinned, pinnedRank))
+      .sort(laneOrder)
     frozenSlotsRef.current = next
     return next
   },
-    [allRows, filterDimensions, searchRanked, pinned, pinnedRank, sortKey, dragFrozen]
+    [allRows, filterDimensions, laneOrder, dragFrozen]
   )
 
   // Hold the row under the pointer in place. Under a last-activity sort,
@@ -5579,9 +5585,14 @@ function ChatSidebar({
     }
   }, [lineagePending, dispatch])
 
+  // Read from the FULL row set, never from `filteredSlots`. The lane's own tree is
+  // built from every row, so whether there is anything to nest is not a question a
+  // filter gets to answer: computed from the narrowed list, turning on Unread could
+  // hide every parent-carrying row, flip this false and take the whole lane away --
+  // the nesting appeared and then vanished with no control touched that says so.
   const lineageAvailable = useMemo(
-    () => filteredSlots.some(s => s.parent?.key != null || s.parent?.slot),
-    [filteredSlots],
+    () => allRows.some(s => s.parent?.key != null || s.parent?.slot),
+    [allRows],
   )
   // Gated on `lineageAvailable` as well as the board, and the reason is the toggle:
   // it renders only when more than one lane is available, so with a persisted
@@ -5775,12 +5786,37 @@ function ChatSidebar({
   // their folders put them, and today they scatter through a recency-sorted list.
 
   /**
-   * The lineage tree over the rows this lane renders.
+   * Every live session, in the lane's order -- NOT the filtered list.
    *
-   * Built from `flatSlots` -- the flat lane's own ordered list -- so root order AND
-   * sibling order are the flat lane's order, with no comparator of its own. A second
-   * comparator would make the two lanes disagree about the same two sessions for no
-   * reason a user could see.
+   * The tree has to be built over the whole population, because an edge is a fact about
+   * two sessions and not about the current filter. Built from `filteredSlots`, a
+   * conductor the filter did not admit was simply absent, so every worker it opened
+   * resolved no parent and popped to the top level as an orphan: switching on Unread
+   * scattered a conductor's workers across the lane, and the System page nested all of
+   * them at the same moment.
+   *
+   * Order is `laneOrder`, the comparator `filteredSlots` itself sorts by, so root and
+   * sibling order still match the flat lane.
+   */
+  const conductorRows = useMemo(() => {
+    if (!conductorLaneActive) return []
+    return [...allRows].sort(laneOrder)
+  }, [conductorLaneActive, allRows, laneOrder])
+
+  /**
+   * Row identities the active filter ADMITS, as the flat lane computed them.
+   *
+   * The filter still decides what the lane is about; it just no longer decides what the
+   * tree is. A row in this set is a match and renders normally; a row outside it renders
+   * only when something under it matched, and then as a dimmed anchor.
+   */
+  const conductorMatching = useMemo(
+    () => new Set(flatSlots.map(sessionRowIdentity)),
+    [flatSlots],
+  )
+
+  /**
+   * The lineage tree over the rows this lane renders.
    *
    * Only computed while the lane is active: cheap, but still per-render work for a
    * view nobody is looking at.
@@ -5801,7 +5837,7 @@ function ChatSidebar({
     // Nested by origin rather than keyed on one joined string: there is then no
     // separator, so no peer id or slot key containing it can be read as the wrong pair.
     const byOrigin = new Map<string | undefined, Map<string, string>>()
-    for (const s of flatSlots) {
+    for (const s of conductorRows) {
       let inOrigin = byOrigin.get(s.peer_id)
       if (inOrigin === undefined) {
         inOrigin = new Map<string, string>()
@@ -5809,7 +5845,7 @@ function ChatSidebar({
       }
       inOrigin.set(s.key, sessionRowIdentity(s))
     }
-    return buildLineage(flatSlots, {
+    return buildLineage(conductorRows, {
       identityOf: sessionRowIdentity,
       parentIdentityOf: s => {
         const cited = s.parent?.key
@@ -5817,29 +5853,31 @@ function ChatSidebar({
         return byOrigin.get(s.peer_id)?.get(cited) ?? null
       },
     })
-  }, [conductorLaneActive, flatSlots])
+  }, [conductorLaneActive, conductorRows])
 
   /**
-   * Which conductor rows are open. COLLAPSED by default, and persisted.
+   * Which conductor rows are shut. EXPANDED by default, and the shut ones persist.
    *
-   * Collapsed is the default that makes the lane worth having: a conductor with
-   * fourteen workers should read as one row with a count, not as fifteen rows the
-   * user has to skim past. The set is keyed by row key and survives a reload, because
-   * a user who opened a conductor to watch its workers has not finished watching them.
+   * Expanded is the default because this lane exists to show the same tree the System
+   * page's Sessions tab shows, and that one arrives open: a conductor whose fourteen
+   * workers are behind a chevron the user has to find is not the same view. The set
+   * holds what the user has CLOSED, so it survives a reload -- somebody who folded a
+   * conductor away has not changed their mind -- while a conductor it has never held
+   * renders open.
    */
-  const [conductorExpanded, setConductorExpanded] = useState<Set<string>>(readConductorExpanded)
-  const persistConductorExpanded = useCallback((next: Set<string>) => {
-    safeSetItem(CONDUCTOR_EXPANDED_LS_KEY, JSON.stringify(Array.from(next)))
+  const [conductorCollapsed, setConductorCollapsed] = useState<Set<string>>(readConductorCollapsed)
+  const persistConductorCollapsed = useCallback((next: Set<string>) => {
+    safeSetItem(CONDUCTOR_COLLAPSED_LS_KEY, JSON.stringify(Array.from(next)))
   }, [])
   const toggleConductorExpanded = useCallback((key: string) => {
-    setConductorExpanded(prev => {
+    setConductorCollapsed(prev => {
       const next = new Set(prev)
       if (next.has(key)) next.delete(key)
       else next.add(key)
-      persistConductorExpanded(next)
+      persistConductorCollapsed(next)
       return next
     })
-  }, [persistConductorExpanded])
+  }, [persistConductorCollapsed])
 
   /**
    * Open every ancestor of *key* so a nested row becomes visible.
@@ -5856,15 +5894,15 @@ function ChatSidebar({
   const lineageParentsRef = useRef<Map<string, string>>(new Map())
   lineageParentsRef.current = lineage?.parentOf ?? lineageParentsRef.current
   const expandConductorAncestors = useCallback((key: string) => {
-    setConductorExpanded(prev => {
+    setConductorCollapsed(prev => {
       const chain = ancestorsOf(key, lineageParentsRef.current)
-      if (chain.length === 0 || chain.every(k => prev.has(k))) return prev
+      if (chain.length === 0 || chain.every(k => !prev.has(k))) return prev
       const next = new Set(prev)
-      for (const k of chain) next.add(k)
-      persistConductorExpanded(next)
+      for (const k of chain) next.delete(k)
+      persistConductorCollapsed(next)
       return next
     })
-  }, [persistConductorExpanded])
+  }, [persistConductorCollapsed])
 
   /**
    * The creator each row cited on the PREVIOUS frame, so a row that MOVED can be told
@@ -5906,19 +5944,23 @@ function ChatSidebar({
    * very row that moved. The baseline has to predate the move, so it cannot be seeded by
    * the frame that carries it.
    *
-   * For the same reason the next frame's map CARRIES the previous one forward rather than
-   * replacing it. `flatSlots` is search- and folder-filtered, so a row the current filter
-   * excludes is absent from this frame without having gone anywhere -- and rebuilding the
-   * map from this frame alone would evict its baseline. An adoption landing while a search
-   * is active would then be read as a creation once the search cleared, which is the same
-   * row-hiding failure by a different route. A row that is genuinely gone is dropped by
-   * the lane unmounting, not by one filtered frame.
+   * The tracked set is EVERY row, not the filtered one. A row the filter excludes can
+   * still be on screen -- the lane keeps it as a dimmed anchor when something under it
+   * matched -- so reading only the filtered set would miss exactly those rows' moves, and
+   * the promise above is what would break: an anchor adopted under a collapsed conductor
+   * would take its subtree off screen with nothing opening the destination.
+   *
+   * The next frame's map also CARRIES the previous one forward rather than replacing it,
+   * because a row absent from one frame has not necessarily gone anywhere. Rebuilding
+   * from a single frame would evict its baseline, and a later reappearance would read as
+   * a creation rather than a move -- the same row-hiding failure by another route. A row
+   * that is genuinely gone is dropped by the lane unmounting, not by one thin frame.
    */
   useEffect(() => {
     const previous = citedCreatorRef.current
     const current = new Map<string, string | null>(previous)
     const moved: string[] = []
-    for (const slot of flatSlots) {
+    for (const slot of allRows) {
       const identity = sessionRowIdentity(slot)
       const cited = slot.parent?.slot ?? null
       current.set(identity, cited)
@@ -5932,7 +5974,7 @@ function ChatSidebar({
     // able to tell a move from a creation.
     if (!conductorLaneActive || lineage == null) return
     for (const identity of moved) expandConductorAncestors(identity)
-  }, [conductorLaneActive, lineage, flatSlots, expandConductorAncestors])
+  }, [conductorLaneActive, lineage, allRows, expandConductorAncestors])
 
   /**
    * The lanes that can actually render something, in cycle order.
@@ -9309,8 +9351,21 @@ function ChatSidebar({
               // Keyed by identity, exactly as `lineage` is: a raw-key map would let a
               // federated peer row overwrite the local row it collides with, so one
               // session would vanish and the other would render twice.
-              const byKey = new Map(flatSlots.map(s => [sessionRowIdentity(s), s] as const))
-              const rows: Array<{ id: string; slot: Slot; depth: number; childCount: number; expanded: boolean; orphanOf: string | null; citesParent?: string | null; aggregate: { needsYou: number; running: number } | null }> = []
+              const byKey = new Map(conductorRows.map(s => [sessionRowIdentity(s), s] as const))
+              // The rows this lane may show: every match, plus each ancestor a match
+              // needs to hang from. An ancestor is on screen as CONTEXT -- the filter
+              // did not admit it -- so it renders dimmed and still carries its chevron.
+              // Without it a filtered-out conductor's workers each resolved no parent
+              // and scattered to the top level, which is what switching on Unread did.
+              const kept = new Set<string>()
+              for (const id of conductorMatching) {
+                if (!byKey.has(id)) continue
+                kept.add(id)
+                for (const up of ancestorsOf(id, tree.parentOf)) kept.add(up)
+              }
+              const keptKids = (key: string) =>
+                (tree.children.get(key) ?? []).filter(k => kept.has(k))
+              const rows: Array<{ id: string; slot: Slot; depth: number; childCount: number; expanded: boolean; orphanOf: string | null; citesParent?: string | null; anchorOnly: boolean; aggregate: { needsYou: number; running: number } | null }> = []
 
               /** Does this row want the user? The same two signals the row itself
                *  renders as a dot or a subtitle, so a collapsed conductor's badge and
@@ -9335,10 +9390,10 @@ function ChatSidebar({
               const emit = (key: string, depth: number) => {
                 const slot = byKey.get(key)
                 if (!slot) return
-                const kids = tree.children.get(key) ?? []
-                const expanded = conductorExpanded.has(key)
+                const kids = keptKids(key)
+                const expanded = !conductorCollapsed.has(key)
                 const subtree = kids.length > 0 && !expanded
-                  ? descendantsOf(key, tree.children)
+                  ? descendantsOf(key, tree.children).filter(k => kept.has(k))
                   : []
                 rows.push({
                   id: key,
@@ -9347,6 +9402,7 @@ function ChatSidebar({
                   childCount: kids.length,
                   expanded,
                   orphanOf: orphanCitation(slot, tree.parentOf.get(key) ?? null),
+                  anchorOnly: !conductorMatching.has(key),
                   // Only a COLLAPSED conductor aggregates: while it is open its
                   // children show their own badges, and showing both would count the
                   // same session twice on one screen.
@@ -9367,10 +9423,10 @@ function ChatSidebar({
                 for (const s of flatSlots) {
                   // The cited creator rides along even though the lane is not nesting:
                   // flattened, a child is otherwise indistinguishable from a root.
-                  rows.push({ id: sessionRowIdentity(s), slot: s, depth: 0, childCount: 0, expanded: false, orphanOf: null, citesParent: s.parent?.slot ?? null, aggregate: null })
+                  rows.push({ id: sessionRowIdentity(s), slot: s, depth: 0, childCount: 0, expanded: false, orphanOf: null, citesParent: s.parent?.slot ?? null, anchorOnly: false, aggregate: null })
                 }
               } else {
-                for (const key of tree.roots) emit(key, 0)
+                for (const key of tree.roots) if (kept.has(key)) emit(key, 0)
               }
 
               return rows.map((row, i) => {
@@ -9393,6 +9449,7 @@ function ChatSidebar({
                       aggregate: row.aggregate,
                       orphanOf: row.orphanOf,
                       citesParent: row.citesParent ?? null,
+                      anchorOnly: row.anchorOnly,
                     })}
                   </Fragment>
                 )

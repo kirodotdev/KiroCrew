@@ -4943,3 +4943,75 @@ class TestDedupThresholdLoaderValidation:
         assert section.semantic_confidence_threshold == 0.6
         assert section.episodic_max_results == 12
         assert section.episodic_max_count == 500
+
+
+class TestPreferencesStartupCap:
+    """``pref.*`` rows on the first turn are bounded like every other startup block.
+
+    Below the cap the rendering is byte-identical to the unbounded form; above it
+    the rows that speak to the request survive, the rest are deferred to
+    memory_recall, and the block SAYS how many were deferred.
+    """
+
+    @staticmethod
+    def _seed(store, count: int, width: int) -> None:
+        for i in range(count):
+            store.set_semantic(f"pref.row_{i:02d}", f"filler-{i} " * width, 0.9, "user_explicit")
+
+    def test_under_the_cap_is_byte_identical_to_unbounded(self, tmp_path):
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        self._seed(store, 5, 4)
+        unbounded = store.get_preferences_context()
+        assert unbounded == store.get_preferences_context(query_text="anything", cap=10_000)
+        assert "[Context budget" not in unbounded
+        assert unbounded.endswith("\n[End of semantic memory]\n")
+
+    def test_over_the_cap_keeps_whole_rows_and_reports_the_rest(self, tmp_path):
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        self._seed(store, 40, 20)
+        # A sweep, not one cap: the room arithmetic reserves the notice at its
+        # widest, and a single cap can sit exactly where an off-by-a-few error
+        # still fits. Across a range it cannot.
+        for cap in range(1_200, 3_000, 37):
+            ctx = store.get_preferences_context(cap=cap)
+            assert len(ctx) <= cap, cap
+            kept = [line for line in ctx.splitlines() if line.startswith("pref.row_")]
+            assert 0 < len(kept) < 40, cap
+            # Whole rows only: every kept line is a complete `key: value`.
+            for line in kept:
+                assert line.endswith(" "), cap
+            assert f"omitted {40 - len(kept)} of 40 preference facts" in ctx, cap
+            assert f"{cap}-character startup budget" in ctx, cap
+            assert "memory_recall" in ctx, cap
+            # The notice sits between the last row and the footer, never above the rows.
+            assert (
+                ctx.index(kept[-1])
+                < ctx.index("[Context budget")
+                < ctx.index("[End of semantic memory]")
+            ), cap
+            assert ctx.endswith("\n[End of semantic memory]\n"), cap
+
+    def test_rows_matching_the_request_survive_the_cut(self, tmp_path):
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        self._seed(store, 40, 20)
+        # Sorted last by key, so it is the first to fall to a key-ordered cut.
+        store.set_semantic(
+            "pref.zzz_deploy_style", "always rebase before a deploy push " * 3, 0.9, "user_explicit"
+        )
+        blind = store.get_preferences_context(cap=1_800)
+        aimed = store.get_preferences_context(query_text="how should I deploy this", cap=1_800)
+        assert "pref.zzz_deploy_style" not in blind
+        assert "pref.zzz_deploy_style" in aimed
+
+    def test_a_cap_too_small_for_one_row_still_reports_everything_omitted(self, tmp_path):
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        self._seed(store, 3, 30)
+        ctx = store.get_preferences_context(cap=300)
+        assert "pref.row_" not in ctx
+        assert "omitted 3 of 3 preference facts" in ctx
+        assert ctx.startswith("[Semantic Memory")
+        assert ctx.endswith("\n[End of semantic memory]\n")

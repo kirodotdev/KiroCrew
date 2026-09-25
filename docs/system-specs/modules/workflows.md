@@ -1629,6 +1629,25 @@ SID, unreadable owner or any other owner still refuses. The existing fail-loud
 owner-only DACL lockdown remains required for both directories and files; no
 ownership is rewritten. POSIX retains its exact-current-UID check.
 
+The allocator's link trust anchor is the parent of the workflows directory
+(`config_dir()` by default). A link at or above it is the operator's own layout
+-- a symlinked `$HOME` such as `/home/u -> /local/home/u`, or a data home
+relocated onto another disk -- and allocation proceeds through it, the same two
+layouts `atomic_write`'s parent-link guard trusts. Below the anchor every
+directory is one the allocator creates itself, so the workflows directory, the
+lock and the counter are each refused as `redirected` unless their resolved path
+equals the resolved anchor joined with the lexical names below it; the lock and
+counter additionally keep their `O_NOFOLLOW`, regular-file, single-link and
+same-inode checks on the opened descriptor.
+
+Every allocator refusal is a `WorkflowAllocatorError`, a `WorkflowMemoryError`
+subclass. `admission_errors` logs the original refusal text (and its cause) at
+warning level, then answers an allocator refusal with code
+`workflow_allocator_unavailable` and the refusal's own text -- no memory store
+was consulted, so the memory wording would misname it. Every other
+`WorkflowMemoryError` keeps code `workflow_memory_unavailable` and the text
+"Workflow memory is unavailable; no Global fallback was used."
+
 Saved task-plan execution passes its captured execution context to TaskRunner,
 including calls supplying only `author`. Runtime, worker and reviewer contexts
 retain that record; closing the author cannot select Global for the saved work.

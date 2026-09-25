@@ -387,6 +387,52 @@ Admission order (`subagent_manager/admission/gate.py::spawn_impl`):
    Registration consumes the reservation; a durable refusal releases it.
 6. Register, take the slot, `starting`; then the approval branch below.
 
+**Every wait is labelled with the verdict that caused it.** Steps 3 and 4 set
+`SubagentInfo.queued_reason` on the `queued` record they return — one of the
+kinds defined in the leaf module `kiro_crew.subagent_wait_reasons` (re-exported by
+`kiro_crew.subagent`; the channel command layer reads them from the leaf so it never
+imports `kiro_crew.subagent` at runtime): `QUEUED_REASON_LOW_MEMORY` / `QUEUED_REASON_POSTURE_CRITICAL` (step 3, with
+`queued_reason_detail` = the gate's own sentence, the same text the task store's
+`deferred` event records), `QUEUED_REASON_ADAPTIVE_CAP_ZERO` (step 4 when the
+effective cap is 0) or `QUEUED_REASON_CONCURRENCY_LIMIT` (step 4 otherwise: a
+taken slot or the stagger tick). The label is a report of a decision already
+made; no gate reads it back. Two consumers:
+
+- The advisory `subagent_queued` lifecycle event (`_emit_queue_depth`) carries
+  `reason` and, for the memory kinds, `available_gb` / `required_gb` beside
+  `queued`. The label is remembered per parent (`_queue_wait`) so the drain's and
+  the cancel path's re-emits — which carry no verdict of their own — keep it, and
+  forgotten at depth 0, where the event is once again the bare `{"queued": 0}`.
+  One label per parent, last writer wins: it is the verdict on the most recent
+  row the gate judged for that parent, not a per-row ledger. A parent holding a
+  memory-deferred row and then a capacity-queued one shows `concurrency_limit`
+  until the deferred row is re-checked — which the pump does within
+  `admit_wait_secs` (default 30 s), re-labelling it or starting it — so the
+  label is never more than one admit wait stale. This is accepted: the
+  alternative is a per-row label reconciled on every emit, for a chip that
+  states a count, and a stale-by-one-wait label always reads as a wait that
+  does exist for that parent.
+  An event without `reason` (nothing labelled, or an older gateway) leaves the
+  dashboard on its default "queued behind the concurrency limit" text; the
+  memory and adaptive kinds render their own sentence
+  (`website/src/pages/chat/subagentQueuedReason.ts`), visibly on the run card
+  and the composer chip as well as in their tooltips, and with a figure-less
+  sentence when the event names the kind but not the numbers.
+- `POST /api/spawn` answers the three DEFERRED kinds (`DEFERRED_QUEUED_REASONS`)
+  with `status: "queued"`, `reason` and `reason_detail` under the same `id`;
+  every reader of that answer relays it: `spawn_run` prints a
+  `Queued N subagent(s). Not started yet: <detail> …` group apart from the
+  `Spawned` group (same `N subagent(s).` marker and `  <id> (<agent>): <task>`
+  lines, which is what the dashboard's inline run card parses — a queued-only
+  wave still gets its card), `spawn_sub_agents` appends a
+  `{"status": "queued", ...}` record for a deferred member that never settled
+  within its wait, `kirocrew spawn run` prints `Queued subagent <id> …`, and the
+  channel `spawn <task>` keyword (`messaging/commands.py`) replies
+  `⏳ Queued subagent …` with the reason instead of `🚀 Spawned subagent …`. A
+  `concurrency_limit` wait keeps `status: "spawned"`: it is the ordinary wave
+  shape and clears within seconds. Neither the admission verdicts nor the memory
+  pricing (`_startup_cost_gb`, #13489) are touched by the label.
+
 Spawn flow:
 1. **YOLO mode**: skips approval, runs immediately
 2. **Parent trusted**: parent session has `approval_policy="auto"` (set by
@@ -410,10 +456,23 @@ surface is attached. Telegram implements the hook over its existing
 Approve/Deny/Trust inline keyboard (`TelegramDispatcher.deliver_spawn_approval`):
 the press resolves through the same `on_callback` `a:` path as a tool approval, so
 **Trust** grants parent-session trust via `add_trusted_session` and a later spawn
-from that session is auto-approved by the parent-trusted rung. The seam is
-in-memory only (dies with the process); the hook is registered on Telegram startup
-and unregistered on client shutdown. The per-agent `auto_approve_spawn` rung
-(issue #2381 item 2) is deferred to #4751/#4693 and is NOT added here.
+from that session is auto-approved by the parent-trusted rung. Discord implements it
+too (`DiscordDispatcher.deliver_spawn_approval`), over its existing Approve/Deny
+buttons on the same `on_interaction` `a:` path, with three differences: no Trust rung
+(standing spawn trust is granted from the dashboard), a `unified` dm_scope key is
+unaddressable and falls through, and a refused send is reported by an absent message
+id rather than an exception and is read the same way. Consulting the channels
+governance ceiling (`channel_inbound_permitted`) before anything is armed is not a
+Discord peculiarity but a requirement of the seam: every channel's press path drops a
+non-reject press under a governance deny, so a prompt posted into a denied channel
+can never be answered and its wait hands the gate a deny-by-default nobody pressed.
+The seam reads it once for every hook, before invoking one. Discord adds a single
+re-read of its own on the direct route, after the peer's DM channel is opened: that
+open is a full round trip inside the hook, so the seam's answer can go stale across a
+gap the seam cannot see. The seam is in-memory
+only (dies with the process); each hook is registered on its channel's startup and
+unregistered on client shutdown. The per-agent `auto_approve_spawn` rung (issue #2381
+item 2) is deferred to #4751/#4693 and is NOT added here.
 
 **Delivery order.** A spawn-approval prompt that reaches `_spawn_with_approval`
 is offered to surfaces in this fixed order, and the search stops at the first one

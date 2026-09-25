@@ -705,6 +705,13 @@ class TestHookGateKwargs:
             "command",
             "is_shell",
         },
+        # The KAS executeHook path gates a STORED hook's command, not a tool-call
+        # event: there is no event, and the command is the operator's own text.
+        "acp/kas_wire.py": {
+            "tool_kind",
+            "command",
+            "is_shell",
+        },
     }
 
     @staticmethod

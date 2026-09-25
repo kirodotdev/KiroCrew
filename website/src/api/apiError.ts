@@ -49,6 +49,16 @@ export class ApiError extends Error {
 export const isNotFoundError = (e: unknown): boolean =>
   typeof e === 'object' && e !== null && (e as { status?: unknown }).status === 404
 
+/** True when an approval refusal is terminal — the approval itself is gone (404,
+ *  or the endpoint's `no pending approval` 400). Duck-typed like {@link isNotFoundError}. */
+export const isTerminalApprovalRefusal = (e: unknown): boolean => {
+  if (typeof e !== 'object' || e === null) return false
+  const r = e as { status?: unknown; message?: unknown; authRequired?: unknown }
+  // 403 + re-auth leaves the approval live once the user signs back in.
+  if (r.authRequired) return false
+  return r.status === 404 || (r.status === 400 && r.message === 'no pending approval')
+}
+
 /**
  * A body whose first markup is a document type: both doctype spellings, plus a
  * bare `<html>` from a proxy that emits none. Deliberately does NOT match every

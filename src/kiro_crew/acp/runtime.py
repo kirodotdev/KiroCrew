@@ -97,6 +97,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_MARKDOWN_AGENT_SPECS,
+    MCP_ROSTER_COMPLETE_NOTE,
     METHOD_MCP_OAUTH_REQUEST,
     METHOD_MCP_SERVER_INIT_FAILURE,
     METHOD_MCP_SERVER_INITIALIZED,
@@ -4986,6 +4987,18 @@ class AcpRuntime:
         entries carry the roster names, and that is what makes the ABSENT
         servers nameable rather than only the present ones.
 
+        The text says what that roster IS. On kiro-cli the array holds only the
+        broker stubs Kiro Crew injects (``pooled_session_servers``); the agent
+        spec's own servers are started by the backend and are not in it, and
+        the backend's session-start steps after MCP init are not observable
+        from here at all. A bare ``4/4 MCP server(s) reported`` therefore read
+        as "all MCP is up, so MCP is the problem" -- a field report was
+        triaged that way on the strength of the suffix alone -- when it only
+        ever meant that the four injected servers had spoken. The count is
+        now labelled ``session-injected``, and a complete roster is followed
+        by what it does and does not cover, so a reader is not sent to chase
+        MCP for a stall that is past it.
+
         Reports are runtime-wide rather than per-session: a request that never
         answered has no session id to match its frames against, so a concurrent
         init is called out in the text instead of being silently folded in. What
@@ -5039,12 +5052,25 @@ class AcpRuntime:
             # len(reported) can exceed the denominator -- "2/1 reported". The
             # out-of-roster servers still appear by name in the failed and
             # awaiting-authorization buckets, where naming them is the point.
-            parts.append(f"{len(reported & set(roster))}/{len(roster)} MCP server(s) reported")
+            parts.append(
+                f"{len(reported & set(roster))}/{len(roster)} session-injected "
+                "MCP server(s) reported"
+            )
             silent = [n for n in roster if n not in reported]
             if silent:
                 parts.append(f"no report from {_capped_names(silent)}")
+            elif not set(failed) & set(roster):
+                # Every roster member reported READY. A member that reported an
+                # init failure counts as reported (so it is never chased as
+                # silent) but is named under ``failed:`` below, and the stall
+                # may be in it -- so the "not in those servers" verdict is
+                # withheld then.
+                parts.append(MCP_ROSTER_COMPLETE_NOTE)
         else:
-            parts.append(f"{len(reported)} MCP server(s) reported, roster unknown")
+            # No roster to attribute against: these reports belong to the agent
+            # spec's own servers or to a concurrent start, so the count is not
+            # labelled "session-injected" here.
+            parts.append(f"{len(reported)} MCP server report(s), roster unknown")
         if failed:
             parts.append(
                 "failed: "
@@ -6177,6 +6203,7 @@ class AcpRuntime:
                 payload_snapshot=payload_snapshot,
                 late_adopter=late_adopter,
                 memory_mode=memory_mode,
+                session_key=session_key,
             )
             if collector is None:
                 permit.release()
@@ -6206,6 +6233,7 @@ class AcpRuntime:
             session_work_dir=session_work_dir,
             projected_sources=projected_sources,
             payload_snapshot=payload_snapshot,
+            session_key=session_key,
         )
 
     def _collect_late_start(
@@ -6228,6 +6256,7 @@ class AcpRuntime:
         payload_snapshot: Any,
         late_adopter: "Callable[[AcpSessionHandle], Awaitable[bool]] | None",
         memory_mode: str = "persistent",
+        session_key: str = "",
     ) -> StartCollector | None:
         """Hand a timed-out ``session/new`` to a :class:`StartCollector`.
 
@@ -6309,6 +6338,7 @@ class AcpRuntime:
                     session_work_dir=session_work_dir,
                     projected_sources=projected_sources,
                     payload_snapshot=payload_snapshot,
+                    session_key=session_key,
                 )
                 # A declining (or raising) adopter answers False and the
                 # collector performs the one teardown.
@@ -6403,6 +6433,7 @@ class AcpRuntime:
         projected_sources: dict[str, str],
         payload_snapshot: Any,
         memory_mode: str = "persistent",
+        session_key: str = "",
     ) -> AcpSessionHandle:
         """Everything after a successful ``session/new``: queue, handle, mode, drain.
 
@@ -6430,6 +6461,7 @@ class AcpRuntime:
             runtime=self,
             watchdog=_wd,
             crew_agent=_crew,
+            session_key=session_key,
         )
         handle.memory_mode = memory_mode
         # The token this session's stubs carry, so a later claim (warm-pool
@@ -6943,6 +6975,7 @@ class AcpRuntime:
             runtime=self,
             watchdog=_wd,
             crew_agent=_crew,
+            session_key=session_key,
         )
         # Mirrors create_session: the resumed session's own stub token.
         handle.stub_session_token = stub_token

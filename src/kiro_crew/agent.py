@@ -110,7 +110,14 @@ from kiro_crew.hooks import (
     safe_read_file_bytes_nolink,
     unc_probe_allowed,
 )
-from kiro_crew.mcp_cleanup import prune_dangling_tool_refs, purge_deleted_proxy_from_config
+from kiro_crew.mcp_cleanup import (
+    invalid_disabled_flag,
+    mcp_entries_muted,
+    mcp_entry_is_muted,
+    prune_dangling_tool_refs,
+    purge_deleted_proxy_from_config,
+    warn_invalid_disabled,
+)
 from kiro_crew.mcp_provenance import (
     DERIVED_KEY,
     command_is_ours,
@@ -2009,6 +2016,29 @@ _VALID_HOOK_EVENTS = frozenset(
     if k not in _INTERNAL_HOOK_KEYS
 )
 
+# Hook triggers a Kiro Agent session owns, in the camelCase spelling that side
+# uses. They are authorable in Kiro Crew (``hooks.HOOK_EVENTS_KAS_ONLY`` carries
+# the PascalCase twin the hook store persists) and they are deliberately NOT in
+# ``_VALID_HOOK_EVENTS``, because kiro-cli's ``hooks`` map is a CLOSED enum: a
+# spec carrying one of these keys does not load at all. Measured against
+# kiro-cli 2.23.1, ``agent validate`` answers "data did not match any variant of
+# untagged enum Repr" and ``agent list`` refuses the same file, while an unknown
+# TOP-LEVEL key and an unknown hook-entry field are both accepted and ignored.
+# So the closed set is the event map specifically, and one of these names
+# reaching a generated spec would cost the user their whole default agent --
+# which is why ``_merge_kiro_hooks`` names them as a distinct refusal below
+# rather than letting them read as a typo.
+_CREW_ONLY_HOOK_EVENTS = frozenset(
+    {
+        "preTaskExecution",
+        "postTaskExecution",
+        "fileCreated",
+        "fileEdited",
+        "fileDeleted",
+        "userTriggered",
+    }
+)
+
 # Repair is subtractive against the runtime-only key Kiro Crew is known to have
 # serialized into its generated specs. Unknown keys may belong to a newer
 # kiro-cli schema or to the user.
@@ -2063,12 +2093,25 @@ _MAX_TOTAL_USER_HOOKS = 20
 # The agent config stores them in camelCase (preToolUse, ...).  Script headers
 # ("# event: PreToolUse") use kiro-cli's PascalCase convention; this map
 # normalizes both casings back to the canonical camelCase form.
+#
+# It spans the WHOLE authorable vocabulary, kiro-cli's five and the six a Kiro
+# Agent session owns, so a recognised name is never reported as unknown. That is
+# safe because recognising a name is not emitting it: every autoimported entry
+# goes through ``_merge_kiro_hooks``, whose ``_VALID_HOOK_EVENTS`` gate is the one
+# place that decides what reaches the generated spec, and it drops the six there
+# with their own reason.
 _HOOK_EVENT_CANONICAL = {
     "pretooluse": "preToolUse",
     "posttooluse": "postToolUse",
     "userpromptsubmit": "userPromptSubmit",
     "agentspawn": "agentSpawn",
     "stop": "stop",
+    "pretaskexecution": "preTaskExecution",
+    "posttaskexecution": "postTaskExecution",
+    "filecreated": "fileCreated",
+    "fileedited": "fileEdited",
+    "filedeleted": "fileDeleted",
+    "usertriggered": "userTriggered",
 }
 
 
@@ -2882,13 +2925,25 @@ def _merge_kiro_hooks(hooks: dict, user_hooks: dict) -> dict:
     total_added = 0
     for event, entries in user_hooks.items():
         if event not in _VALID_HOOK_EVENTS:
-            logger.warning("kiro_hooks: unknown event type %s, skipping", _hook_diagnostic(event))
+            # Two different rejections wearing one message is a support cost: a
+            # Kiro-Agent-only trigger is a name Kiro Crew knows and stores, it
+            # just cannot travel in a kiro-cli spec, and reporting it as
+            # "unknown" sends the reader hunting a typo that is not there.
+            #
+            # Through `_hook_diagnostic`, like every other rejection line here: the
+            # event name is author-supplied, and that helper escapes before it
+            # redacts so a newline inside it cannot forge a second log record.
+            crew_only = event in _CREW_ONLY_HOOK_EVENTS
+            reason = (
+                "Kiro Agent trigger, not emitted to kiro-cli" if crew_only else "unknown event type"
+            )
+            logger.warning("kiro_hooks: %s: %s, skipping", reason, _hook_diagnostic(event))
             # Audit parity with every other rejection branch in this
             # function: per AUTOSDE.yaml security-controls, rejecting an
             # entire event-bucket is a permission decision that must be
             # SEL-audited.  Use the (invalid) event name as the tag so
             # auditors can correlate with the config input.
-            _sel_hook_rejected(str(event), str(entries), "unknown event type")
+            _sel_hook_rejected(str(event), str(entries), reason)
             continue
         if not isinstance(entries, list):
             logger.warning("kiro_hooks[%s] is not a list, skipping", _hook_diagnostic(event))
@@ -6407,13 +6462,27 @@ def rebuild_agent_config(
     # collision sibling remains mounted. Grant revocation is intentionally looser:
     # every disabled source denies auto-approval to its canonical alias family,
     # because ``allowedTools`` bypasses the PreToolUse gate.
+    #
+    # "Disabled" is ``mcp_entry_is_muted``, the launch predicate the gateway
+    # rewriter, the session projections and the dashboard listing share: a
+    # non-boolean ``disabled`` (``"false"``, ``null``) is read FAIL-CLOSED here
+    # too, so a server the listing shows as Disabled is never mounted by this
+    # rebuild -- truthiness would have mounted one muted with ``null`` or ``0``.
     _shared_source_entries = tuple(
         itertools.chain(extra_shared_mcp.items(), shared_mcp.items(), kirocrew_mcp.items())
     )
+    # The rebuild strips a mount on a non-boolean ``disabled`` exactly as the
+    # listing withholds the row, so it reports the value the same way -- through
+    # the shared bounded warn-once ledger -- rather than silently. A headless
+    # install rebuilds without a dashboard read, and would otherwise never say
+    # why a server the operator meant to switch on is not mounted.
+    for _scope_label, _scope_map in _scopes:
+        for _srv, _srv_spec in _scope_map.items():
+            _invalid, _flag = invalid_disabled_flag(_srv_spec)
+            if _invalid:
+                warn_invalid_disabled(_srv, _flag, _scope_label)
     _disabled_source_names = {
-        srv
-        for srv, srv_spec in _shared_source_entries
-        if isinstance(srv_spec, dict) and srv_spec.get("disabled")
+        srv for srv, srv_spec in _shared_source_entries if mcp_entry_is_muted(srv_spec)
     }
     _disabled_mounted_aliases = {
         mounted
@@ -6424,7 +6493,7 @@ def rebuild_agent_config(
     _disabled_grant_families = {
         mcp_server_alias(srv)
         for srv, srv_spec in _shared_source_entries
-        if isinstance(srv_spec, dict) and srv_spec.get("disabled")
+        if mcp_entry_is_muted(srv_spec)
     }
 
     def _grant_ref_is_in_alias_family(ref: object, base: str) -> bool:
@@ -6489,7 +6558,29 @@ def rebuild_agent_config(
             lst[:] = kept
             return True
 
-        if spec.get("disabled") or alias in _disabled_mounted_aliases:
+        # Muted when ANY scope's entry for this alias mutes it -- the shared
+        # multi-scope predicate, so this arm and the dashboard row answer alike.
+        # ``spec`` is the merge's winner; the other sources are read too, because
+        # a higher-priority ``false`` must never argue a lower scope's mute away.
+        muted_here = mcp_entries_muted(
+            itertools.chain(
+                (spec,),
+                (
+                    s
+                    for srv, s in _shared_source_entries
+                    if _mounted_alias_by_source.get(srv) == alias
+                ),
+            )
+        )
+        if muted_here or alias in _disabled_mounted_aliases:
+            # The rendered entry says ``true`` whenever the server is muted --
+            # over a merged ``false`` from a higher-priority scope as much as over
+            # a raw ``null``/``0``/``"false"``. The file kiro-cli parses must
+            # agree with the listing: a selective ``@srv/tool`` ref this arm keeps
+            # would otherwise launch a server every surface calls muted.
+            rendered = valid_servers.get(alias)
+            if isinstance(rendered, dict):
+                rendered["disabled"] = True
             for key in ("tools", "allowedTools"):
                 if (
                     _strip_owned_refs(key, strip_per_tool=key == "allowedTools")

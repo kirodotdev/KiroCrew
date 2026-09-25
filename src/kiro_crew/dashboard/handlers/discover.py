@@ -210,7 +210,8 @@ async def api_skills_discover(request: web.Request) -> web.Response:
          "display_provider": "skills.sh", "repo_url": "...", "author": "...",
          "installed": false, "tags": [...]}
       ],
-      "providers": ["skillsh"]
+      "providers": ["skillsh"],
+      "provider_outcomes": [{"name": "skillsh", "status": "ok"}]
     }
     """
     if request.query.get("scope") == "installed":
@@ -239,12 +240,14 @@ async def api_skills_discover(request: web.Request) -> web.Response:
     all_skills = await asyncio.to_thread(skills.list_skills)
     local_keys = {s["key"] for s in all_skills}
 
-    results = await registry.search(query, provider=provider_filter, limit=limit)
+    search_response = await registry.search_with_outcomes(
+        query, provider=provider_filter, limit=limit
+    )
 
     # Resolve installed state and build response items.
     registered_names = set(registry.provider_names)
     items = []
-    for r in results:
+    for r in search_response.results:
         # A result's ``provider`` field is provider-supplied data. Only a
         # vetted registration identity may pass through verbatim — anything
         # else is blanked, so a row cannot render an arbitrary provenance
@@ -288,6 +291,11 @@ async def api_skills_discover(request: web.Request) -> web.Response:
         )
 
     active_providers = registry.available_provider_names
+    provider_outcomes = [
+        {"name": _redact_external(outcome.name), "status": outcome.status}
+        for outcome in search_response.provider_outcomes
+    ]
+    failed_provider_count = sum(outcome["status"] != "ok" for outcome in provider_outcomes)
 
     _sel().log_tool_invocation(
         session_key=request.get("session_key", "dashboard"),
@@ -298,9 +306,16 @@ async def api_skills_discover(request: web.Request) -> web.Response:
             "query": query,
             "provider_filter": provider_filter or "all",
             "result_count": str(len(items)),
+            "failed_provider_count": str(failed_provider_count),
         },
     )
-    return web.json_response({"results": items, "providers": active_providers})
+    return web.json_response(
+        {
+            "results": items,
+            "providers": active_providers,
+            "provider_outcomes": provider_outcomes,
+        }
+    )
 
 
 async def api_skills_discover_install(request: web.Request) -> web.Response:

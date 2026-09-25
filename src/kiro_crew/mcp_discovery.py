@@ -42,6 +42,11 @@ from kiro_crew.env import (
     spec_path_key,
 )
 from kiro_crew.hooks import safe_read_file
+from kiro_crew.mcp_cleanup import (
+    invalid_disabled_flag,
+    mcp_entry_is_muted,
+    warn_invalid_disabled,
+)
 from kiro_crew.mcp_grant import grant_observed
 from kiro_crew.mcp_provenance import ABSENT, resolve_write
 from kiro_crew.mcp_utils import kiro_entry_client_id, kiro_entry_scopes, mcp_server_alias
@@ -676,14 +681,31 @@ class McpServerInfo:
         }
     )
     disabled_tools: list[str] = field(default_factory=list)
-    # True when ANY scope's entry for this server carries ``disabled: true``
-    # (a consent-disabled install/custom add, or a server the user switched off
-    # in the dashboard — ``/api/mcp/toggle`` writes the flag into the Kiro-global
-    # ``mcp.json``). Disabled rows are NEVER probed — probing spawns the server
-    # process, which is what consent gates. The refusal is enforced inside
-    # ``probe_server`` itself, so setting this flag is sufficient no matter which
-    # entry point does the probing.
+    # True when ANY scope's entry for this server is muted by the shared launch
+    # predicate (``mcp_entry_is_muted``): ``disabled: true`` -- a consent-disabled
+    # install/custom add, or a server the user switched off in the dashboard
+    # (``/api/mcp/toggle`` writes the flag into the Kiro-global ``mcp.json``) --
+    # or a ``disabled`` that is not a boolean at all, which is read FAIL-CLOSED.
+    # Disabled rows are NEVER probed — probing spawns the server process, which
+    # is what consent gates. The refusal is enforced inside ``probe_server``
+    # itself, so setting this flag is sufficient no matter which entry point does
+    # the probing.
     disabled: bool = False
+    # ``"invalid"`` when the row is disabled by NOTHING but non-boolean
+    # ``disabled`` values (``"false"``, ``1``, ``null``) -- no source carries a
+    # literal ``true``. The table then says "invalid value in <file>" rather than
+    # "disabled in <file>", because the operator's fix differs: repair the value,
+    # not flip a switch. ``None`` when enabled, or when some source really says
+    # ``true`` (the row is off either way, and the switch is the honest story).
+    disabled_reason: str | None = None
+    # True when a scope OTHER than the Kiro Crew store mutes this row -- the
+    # Kiro-global ``mcp.json`` or a provider global: a disable the dashboard
+    # never lifts by editing the store. Set with ``disabled`` in step 3c and
+    # consumed by the ``GET /api/mcp`` stamping, which holds only the Kiro-global
+    # and store maps: without it a server disabled in a provider global AND the
+    # store would read as a store-only (consent) disable, and Apply would lift
+    # the store flag while the provider-global one stood.
+    disabled_in_shared: bool = False
     # THIS source's own ``timeout``/``disabled``, verbatim as the scope spec
     # declares them; an absent key is absent here too. Deliberately separate
     # from ``disabled`` above, which is an aggregate across every scope: a sync
@@ -792,6 +814,12 @@ class McpServerInfo:
             d["disabledTools"] = self.disabled_tools
         if self.disabled:
             d["disabled"] = True
+            if self.disabled_reason:
+                d["disabledReason"] = self.disabled_reason
+            if self.disabled_in_shared:
+                # Consumed (popped) by the handler's stamping, which turns it
+                # into ``disabledIn: "shared"``; not part of the table's contract.
+                d["disabledInShared"] = True
         return d
 
 
@@ -1000,13 +1028,50 @@ def _spec_client_id(spec: dict) -> str:
     return kiro_entry_client_id(spec)
 
 
+#: Longest text a malformed transport value is shown as; the row is a display,
+#: not a copy of the config, and the Edit action opens the real JSON.
+_MALFORMED_TRANSPORT_MAX = 120
+
+
+def _display_transport(value: Any) -> str:
+    """*value* as the table may render it: a string as is, anything else as
+    bounded, redacted JSON text.
+
+    ``command`` and ``url`` reach the page as React children
+    (``{s.command || s.url}``), and a value that is not a string -- a hand-edited
+    ``"command": {"not": "a string"}`` -- throws there and takes the whole
+    Connections page down. A disabled entry is the case that matters: it is
+    never probed, so nothing else ever inspects the value, and the row exists
+    precisely to show the user a config that needs their attention. The text is
+    the value's own JSON so the malformation is visible; an object can carry
+    what a string never did here -- a header map with a token, a URL with a
+    credential in it -- so the site-wide scanners (``redact_credentials``,
+    ``redact_exfiltration_urls``, the same pair ``redact_mcp_error`` runs) go
+    over the COMPLETE text first, and the display cap applies to the redacted
+    result, never the other way round.
+    """
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return ""
+    try:
+        text = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        text = type(value).__name__
+    text, _ = redact_credentials(text)
+    text, _ = redact_exfiltration_urls(text)
+    if len(text) > _MALFORMED_TRANSPORT_MAX:
+        text = text[:_MALFORMED_TRANSPORT_MAX] + "..."
+    return text
+
+
 def _server_from_spec(name: str, spec: dict, source: str) -> McpServerInfo:
     return McpServerInfo(
         name=name,
-        command=spec.get("command", ""),
+        command=_display_transport(spec.get("command", "")),
         args=spec.get("args", []),
         env=spec.get("env", {}),
-        url=spec.get("url", ""),
+        url=_display_transport(spec.get("url", "")),
         headers=spec.get("headers", {}),
         scopes=_spec_scopes(spec),
         client_id=_spec_client_id(spec),
@@ -1300,12 +1365,23 @@ def list_servers() -> list[McpServerInfo]:
     """
     servers: dict[str, McpServerInfo] = {}
     disabled_in_agent: set[str] = set()
+    # Canonical names a RAW scope switches off with a LITERAL ``true``. A
+    # disabled row whose name is not here is off only because of non-boolean
+    # values (read fail-closed), and says so (``disabled_reason``, step 3d).
+    # The agent config is deliberately NOT a source for this: that file is the
+    # rebuild's output, and the rebuild writes ``disabled: true`` for a raw value
+    # it read fail-closed (``"false"``, ``null``) -- counting its ``true`` would
+    # dress a provider-global ``"disabled": "false"`` up as a deliberate disable
+    # after one rebuild. Every row this function marks disabled is marked from a
+    # raw scope's spec (step 3c and the introduce arms), so the raw scopes are
+    # the whole provenance.
+    boolean_true: set[str] = set()
 
     # 1. From agent config (mcpServers key)
     agent_cfg = _load_agent_config()
     for name, spec in agent_cfg.get("mcpServers", {}).items():
         if isinstance(spec, dict):
-            if spec.get("disabled"):
+            if mcp_entry_is_muted(spec):
                 disabled_in_agent.add(name)
             else:
                 # Re-resolve stale managed MCP server paths at runtime
@@ -1322,15 +1398,30 @@ def list_servers() -> list[McpServerInfo]:
         for name, spec in by_source.get(scope, {}).items():
             if not isinstance(spec, dict):
                 continue
+            # ``disabled`` is a boolean or absent. Anything else (``"false"``,
+            # ``1``, ``"yes"``) is a config error, reported once per
+            # (server, value shape) by the shared reporter in ``mcp_cleanup``
+            # -- the same one the agent rebuild calls, so the operator hears it
+            # once from whichever path ran first. The decision below is
+            # ``mcp_entry_is_muted(spec)``, the launch predicate the gateway and
+            # the session projections read, which is FAIL-CLOSED: the entry takes
+            # the disabled arms exactly as a literal ``true`` would, so the row
+            # the table shows as Disabled is the server no session starts.
+            # Reading the string as "enabled" here would have listed -- and
+            # spawned -- a server the user tried to silence.
+            invalid, flag = invalid_disabled_flag(spec)
+            if invalid:
+                warn_invalid_disabled(name, flag, scope)
+            disabled = mcp_entry_is_muted(spec)
             # Introduce the server first (if new) so the disabledTools
             # carry below applies to both new and existing entries.  Without
             # this ordering, the highest-priority scope's disabledTools is
             # dropped for new servers because `name in servers` is False
             # before insertion, letting a lower-priority scope's value
             # overwrite the (empty) default on a later iteration.
-            if not spec.get("disabled") and name not in servers and name not in disabled_in_agent:
+            if not disabled and name not in servers and name not in disabled_in_agent:
                 servers[name] = _server_from_spec(name, spec, "mcp.json")
-            elif scope == SCOPE_KIROCREW and spec.get("disabled") and name not in servers:
+            elif scope == SCOPE_KIROCREW and disabled and name not in servers:
                 # Consent-disabled entries (registry installs and custom adds
                 # land with ``disabled: true`` until the user enables them)
                 # live ONLY in the KiroCrew scope. They must still get a row:
@@ -1344,7 +1435,7 @@ def list_servers() -> list[McpServerInfo]:
                 info = _server_from_spec(name, spec, "mcp.json")
                 info.disabled = True
                 servers[name] = info
-            elif spec.get("disabled") and name not in servers and name in disabled_in_agent:
+            elif disabled and name not in servers and name in disabled_in_agent:
                 # Switched off from the dashboard: ``/api/mcp/toggle`` writes
                 # ``disabled: true`` into the scope that holds the server AND
                 # onto the agent entry — the agent-side marker is what stops a
@@ -1355,6 +1446,24 @@ def list_servers() -> list[McpServerInfo]:
                 # scope's copy may be the bare ``{"disabled": true}`` stub the
                 # toggle creates for a server it found nowhere else.
                 info = _server_from_spec(name, agent_cfg["mcpServers"][name], "agent")
+                info.disabled = True
+                servers[name] = info
+            elif disabled and name not in servers:
+                # Disabled in a SHARED scope (the Kiro-global ``mcp.json`` the IDE
+                # edits, or a provider global) and held by no other source: the
+                # two arms above cover a Kiro Crew store entry and an agent entry
+                # stamped by the toggle, and nothing else ever introduces this
+                # one. Discovery skips disabled entries and the rebuild never adds
+                # a disabled shared server to the agent config, so without this
+                # arm the server is listed only while a pre-disable agent entry
+                # survives and vanishes on the first sync -- read as data loss,
+                # not as a filter, because the IDE keeps showing the same entry
+                # as a greyed "Disabled" row. The row is marked disabled
+                # and never probed: ``probe_server`` refuses on the flag.
+                # ``disabled`` is the launch predicate's read, so a non-boolean
+                # ``"disabled": "false"`` lands here too, reported above and
+                # told apart on the row by ``disabled_reason`` (step 3d).
+                info = _server_from_spec(name, spec, "mcp.json")
                 info.disabled = True
                 servers[name] = info
 
@@ -1382,9 +1491,7 @@ def list_servers() -> list[McpServerInfo]:
     # scope is read as False by the frontend and DELETED on the next apply.
     global_scopes = [s for s in _scope_priority(by_source) if s != SCOPE_KIROCREW]
     for name, server in servers.items():
-        mc_disabled = (
-            isinstance(kirocrew_own.get(name), dict) and kirocrew_own[name].get("disabled") is True
-        )
+        mc_disabled = mcp_entry_is_muted(kirocrew_own.get(name))
         in_any_source = name in agent_names or any(
             name in by_source.get(scope, {}) for scope in by_source
         )
@@ -1436,14 +1543,35 @@ def list_servers() -> list[McpServerInfo]:
     #     is enough, and no scope can re-enable what another disabled. The flag
     #     now IS the safety property (``probe_server`` refuses on it), which is
     #     why populating it correctly matters more than when each caller filtered
-    #     rows for itself.
-    for scope_specs in by_source.values():
+    #     rows for itself. Read with the launch predicate, so a non-boolean value
+    #     on an existing row's shared entry flags the row (fail-closed) exactly
+    #     as the sessions refuse to start it. A mute from any scope but the Kiro
+    #     Crew store is also recorded as ``disabled_in_shared``: the table's
+    #     stamping holds only two of the scope maps and needs this verdict to
+    #     tell a provider-global disable from a store-only one.
+    for scope, scope_specs in by_source.items():
         for raw_name, spec in scope_specs.items():
-            if not isinstance(spec, dict) or not spec.get("disabled"):
+            if not isinstance(spec, dict):
+                continue
+            if spec.get("disabled") is True:
+                boolean_true.add(mcp_server_alias(raw_name))
+            if not mcp_entry_is_muted(spec):
                 continue
             row = servers.get(mcp_server_alias(raw_name))
             if row is not None:
                 row.disabled = True
+                if scope != SCOPE_KIROCREW:
+                    row.disabled_in_shared = True
+
+    # 3d. WHY a row is off, for the table. A row that no RAW scope switches off
+    #     with a literal ``true`` is off only because of non-boolean values, read
+    #     fail-closed above; it says so, because the operator's fix is to repair
+    #     the value where it sits, not to flip a switch the row does not have.
+    #     ``boolean_true`` is filled from the raw scopes alone -- see its
+    #     definition for why the agent config's mirror must not count.
+    for name, row in servers.items():
+        if row.disabled and name not in boolean_true:
+            row.disabled_reason = "invalid"
 
     # 4. Merge cached probe results
     for s in servers.values():
@@ -2661,16 +2789,31 @@ PROBE_MAX_CONCURRENCY = 5
 async def probe_all() -> list[McpServerInfo]:
     """Discover and probe all configured MCP servers (bounded concurrency).
 
-    Consent-disabled rows are excluded: probing spawns the server process,
-    and a disabled server must never run until the user enables it.
+    Consent-disabled rows are never SPAWNED: probing runs the server process,
+    and a disabled server must not run until the user enables it.
 
-    ``probe_server`` now refuses a disabled server on its own, so this filter
-    is defense-in-depth (the idiom ``sync_to_agent_config`` already uses) plus
-    the thing that shapes the RESULT: disabled rows are left out of the
-    returned list entirely rather than reported with ``status="disabled"``,
-    which is the response shape ``GET /api/mcp/probe`` has always had.
+    They are still RETURNED, as ``status="disabled"`` rows with no handshake
+    behind them. This result replaces the dashboard's server list wholesale
+    (the table, the Connections cards and the in-row sign-in all paint the
+    probe response over ``GET /api/mcp``), so a shape that left disabled rows
+    out made every disabled server vanish on the first probe and reappear on
+    the next page load -- the IDE reads the same config and keeps them as greyed
+    rows. The withheld rows are never handed to ``probe_server`` at
+    all: the no-spawn guarantee here does not rest on that function's own
+    refusal arm, which stays as the last line of defence for every other entry
+    point. This filter is also what keeps ``_prune_unresolvable`` keyed to the
+    servers a probe can actually resolve.
     """
-    servers = [s for s in list_servers() if not s.disabled]
+    rows = list_servers()
+    servers = [s for s in rows if not s.disabled]
+    withheld = [s for s in rows if s.disabled]
+    for s in withheld:
+        # The row shape ``probe_server``'s refusal arm produces: an unprobed
+        # ``disabled`` status, no stale failure text, and ``tools`` left as the
+        # last real probe stored them (still worth showing). Nothing is written
+        # to the probe cache -- no probe ran.
+        s.status = "disabled"
+        s.error = ""
     # Keep the warn-once ledger bounded by the config rather than by config
     # churn: a command edited to a different missing binary must not retain the
     # superseded string. Runs before the early return so emptying the config
@@ -2684,7 +2827,7 @@ async def probe_all() -> list[McpServerInfo]:
     # keep failing in isolation inside `probe_server`.
     _prune_unresolvable({(s.name, s.command) for s in servers if isinstance(s.command, str)})
     if not servers:
-        return []
+        return withheld
     # Per-call semaphore: bounds the fan-out within this discovery pass while
     # binding to the currently-running loop (avoids import-time loop capture).
     sem = asyncio.Semaphore(PROBE_MAX_CONCURRENCY)
@@ -2726,7 +2869,11 @@ async def probe_all() -> list[McpServerInfo]:
             out.append(r)  # type: ignore[arg-type]
     for s in out:
         _note_denied_env(s)
-    return out
+    # Same order as ``list_servers`` reported, so the probe response and
+    # ``GET /api/mcp`` list the same servers in the same sequence.
+    by_name = {s.name: s for s in out}
+    by_name.update((s.name, s) for s in withheld)
+    return [by_name[s.name] for s in rows]
 
 
 def _note_denied_env(server: McpServerInfo) -> None:
@@ -2967,7 +3114,10 @@ def discover_servers_to_sync() -> list[McpServerInfo]:
     for name, spec in mcp_servers.items():
         if not isinstance(spec, dict):
             continue
-        if spec.get("disabled"):
+        # The launch predicate: a muted entry -- ``true`` or a non-boolean, read
+        # fail-closed -- is never offered, because syncing it is how it would
+        # reach the agent config the sessions load.
+        if mcp_entry_is_muted(spec):
             continue
         info = McpServerInfo(
             name=name,

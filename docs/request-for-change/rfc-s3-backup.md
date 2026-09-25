@@ -1,13 +1,13 @@
 ---
 title: Off-host backup — a bundle a dead machine cannot take with it
-status: draft
+status: partial
 author: mingweic
 created: 2026-08-11
-last-audited: 2026-08-11
-audited-at: f4d3327a7
+last-audited: 2026-09-25
+audited-at: d6f2ed5a91
 doc-pr: 2744
-implementation-prs: [2764]
-tracking-issues: []
+implementation-prs: [2764, 13272]
+tracking-issues: [13259, 13550]
 supersedes: []
 superseded-by: []
 ---
@@ -346,6 +346,70 @@ off-host copy behaves exactly as today.
   bucket creation on first run. `deploy/iam.py` is not reusable as-is — it carries
   CloudFront permissions a backup has no business holding.
 * **Restore writes into a data home** and is therefore owner-authority only.
+
+## Platform support: where a staged body can be held, and where a kind is refused
+
+This section records a capability WITHDRAWAL, which is why it is here rather than in
+the milestones: on a platform without a staging mask the snapshot kind is refused
+outright instead of uploading bytes whose provenance cannot be established. Recorded
+for review; nothing here is an approval.
+
+**The threat is a same-user writer, not another account.** Every upload body is staged
+in a directory the agent can write, so a name handed to the AWS CLI is a name that gets
+resolved again. A size from one resolution, the CLI's own `--body` open from another and
+a fingerprint from a third are three answers about three moments, and a process running
+as the same user that replaces the file between any two of them makes the stored object
+carry bytes nothing checked -- off-host, unattended, with no recall. Owner-only
+permissions do not address it, because the adversary already runs as the owner.
+
+**On POSIX the writer is removed rather than detected.** The sandbox builds a mount
+namespace and binds an empty directory over the staging leaf, so a confined process
+cannot reach the staged file at all. That is why the archive path is sound there: the
+file is created through a descriptor this app holds from birth, and the one writer that
+could rewrite the inode is absent by construction.
+
+**The snapshot kind cannot have that, on any platform, and on an unmasked one it has
+nothing else.** Its payload is created and closed BY NAME by `snapshot_main` and
+`snapshot.prepare_redacted_copy` before the backup path can open it, so the unguarded
+span is a whole snapshot build plus a redaction copy rather than an instant. Nothing
+available afterwards sees into that span: a same-user replacement is a regular file with
+one name and the right owner, which is all a late `open` can check, and the fingerprint
+and the upload then read that descriptor and agree with each other. Where the mask is in
+place the span is empty and the kind is unaffected.
+
+The refusal is keyed to the platform that has no mask MECHANISM at all. The predicate
+reads `IS_POSIX`, so Windows is where the kind reports itself unavailable before a run
+record exists rather than failing inside one. A POSIX host whose sandbox is off, or which
+has no backend, has no mask either, and that predicate does not tell it apart from a
+confined one: there the span is unguarded and the run is NOT refused. That residual case
+is recorded here rather than left to be found, and the producers-hold-the-payload fix
+below closes it for the same reason it restores Windows -- a body held from birth needs no
+mask to be trustworthy.
+
+**The honest consequence, stated rather than implied: Windows is left with no backup
+kind at all.** The sessions archive kind is ALREADY refused there, and not by this
+decision -- it needs descriptor-pinned directory traversal (`openat`), which that
+platform does not provide, so walking agent-writable directories by name would leave a
+window in which a directory swapped for a link could be archived and uploaded. So a
+Windows host that could previously run a nightly snapshot backup can now run neither
+kind. Each refusal states its own capability and neither speaks for the other, which is
+also why the snapshot refusal's own message makes no claim about the archive kind: on
+the platform that reads it, that claim would be false.
+
+**Why refusing beats shipping the window.** An operator with no backup knows they have
+none. An operator with a substituted backup believes they are covered and finds out at
+restore, off-host, with nothing left to compare against. A digest taken after the
+transfer cannot convert the second case into the first, because a sent object cannot be
+recalled.
+
+**How the capability comes back.** The producers create their payload through a
+deny-write descriptor and hand it over, so the bytes are held from birth exactly as the
+archive path's are. That reaches roughly 90 call sites across a shared subsystem, which
+is why it is tracked separately in
+[#13550](https://github.com/kirodotdev/KiroCrew/issues/13550) rather than folded into
+the fix that closes the archive path. The predicate the refusal reads is named for the
+property and not for the platform, so a platform that gains an equivalent mask changes
+one line rather than every caller's condition.
 
 ## Alternatives considered
 

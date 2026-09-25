@@ -72,6 +72,48 @@ def test_explicit_target_selects_existing_member_without_broadening_privacy(memb
         execution.derive_execution(parent, target_member="missing", config=members)
 
 
+def test_template_selection_keeps_the_store_and_flips_only_the_namespace(members):
+    """`with_template` is the one rewrite for running a store under a template.
+
+    A member with a persisted id can carry "this member, under that template":
+    the store and id stay, the selection namespace becomes the template's. A
+    member with NO persisted id is named by its selection alone, so the same
+    rewrite leaves a record attributed to no member -- the plain template run the
+    spawn gate mints for that caller; the `session_create` arm, which keeps such
+    a member's selection, does not call this. A template record renames its
+    selection.
+    """
+    alice = execution.resolve_member_execution(members, "alice", memory_mode="incognito")
+    delegate = alice.with_template("worker-template", "kirocrew-worker")
+    assert delegate.selection_kind == "template"
+    assert delegate.selection_name == "kirocrew-worker"
+    assert delegate.template_id == "worker-template"
+    assert (delegate.member_id, delegate.store, delegate.memory_mode) == (
+        alice.member_id,
+        alice.store,
+        "incognito",
+    )
+
+    legacy = execution.ExecutionContext(
+        None, execution.MemoryStoreRef("legacy-v1"), "member", "shared-template", "incognito"
+    )
+    legacy = replace(legacy, selection_name="scribe")
+    flipped = legacy.with_template("worker-template", "kirocrew-worker")
+    assert flipped == replace(
+        legacy,
+        selection_kind="template",
+        template_id="worker-template",
+        selection_name="kirocrew-worker",
+    )
+    assert (flipped.store, flipped.memory_mode) == (legacy.store, "incognito")
+
+    plain = execution.ExecutionContext(None, execution.MemoryStoreRef("default"), "template", "")
+    renamed = plain.with_template("worker-template", "kirocrew-worker")
+    assert renamed == replace(
+        plain, template_id="worker-template", selection_name="kirocrew-worker"
+    )
+
+
 def test_corrupt_member_never_becomes_global(members, tmp_path):
     admitted = execution.resolve_member_execution(members, "alice")
     (tmp_path / "memory_stores" / "member-alice" / "memory.db").unlink()

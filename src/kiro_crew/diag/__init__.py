@@ -29,10 +29,16 @@ sampling paths use in-process introspection rather than ``ptrace``.
 Submodules are resolved lazily through :func:`__getattr__`. The recorder starts
 on the gateway boot path, where an eager import chain is a measurable cost, and
 HTTP routes want ``diag.get_recorder()`` without paying for the thread module.
+A re-exported name lives in exactly one place, the submodule that defines it, so
+reading or writing it through this package reaches that submodule and the two
+spellings of a name cannot hold different values.
 """
 
 from __future__ import annotations
 
+import importlib
+import sys
+from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover - import-time typing only
@@ -48,18 +54,55 @@ _LAZY: dict[str, tuple[str, str]] = {
     "get_recorder": ("kiro_crew.diag.recorder", "get_recorder"),
 }
 
+#: Package attribute -> ``(owning module, symbol on that module)``. The recorder is
+#: imported on first access and the value is read from it every time -- never cached
+#: here -- so ``diag.get_recorder`` and ``diag.recorder.get_recorder`` name one
+#: value whatever read it first.
+_OWNED: dict[str, tuple[str, str]] = dict(_LAZY)
+
+_OWNERS: dict[str, ModuleType] = {}
+
+
+def _owner(name: str) -> ModuleType:
+    """Return the module that defines ``name``, importing it on first use."""
+    module_name = _OWNED[name][0]
+    owner = _OWNERS.get(module_name)
+    if owner is None:
+        owner = _OWNERS[module_name] = importlib.import_module(module_name)
+    return owner
+
 
 def __getattr__(name: str) -> Any:
-    """Resolve the re-exported names on first use (PEP 562)."""
-    target = _LAZY.get(name)
-    if target is None:
+    """Read a re-exported name from the module that owns it (:pep:`562`)."""
+    if name not in _OWNED:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
+    return getattr(_owner(name), _OWNED[name][1])
 
-    module = importlib.import_module(target[0])
-    value = getattr(module, target[1])
-    globals()[name] = value  # cache, so the import cost is paid once
-    return value
+
+class _ReExportModule(ModuleType):
+    """Send a write to a re-exported name to the module that owns it.
+
+    Binding the name in this package's own namespace instead would shadow the
+    owner permanently, because ``__getattr__`` runs only for a name the package
+    does not already hold: the shadow would win every later read, and the owner's
+    value would become unreachable through this package. Forwarding the write
+    leaves one value for a test harness to remember and one to put back.
+    """
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in _OWNED:
+            setattr(_owner(name), _OWNED[name][1], value)
+        else:
+            super().__setattr__(name, value)
+
+    def __delattr__(self, name: str) -> None:
+        if name in _OWNED:
+            delattr(_owner(name), _OWNED[name][1])
+        else:
+            super().__delattr__(name)
+
+
+sys.modules[__name__].__class__ = _ReExportModule
 
 
 def __dir__() -> list[str]:

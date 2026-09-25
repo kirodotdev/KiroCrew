@@ -247,6 +247,24 @@ async def test_search_drops_non_string_tags_and_audits_the_search(
     assert kwargs["metadata"]["result_count"] == "1"
 
 
+@pytest.mark.asyncio
+async def test_search_reports_provider_errors_in_response_and_audit(
+    state: MagicMock, registry: ProviderRegistry, sel_mock: MagicMock
+) -> None:
+    provider = _BundleProvider()
+    provider.search = AsyncMock(side_effect=RuntimeError("provider down"))  # type: ignore[method-assign]
+    registry.register(provider)
+
+    payload = _body(
+        await h.api_skills_discover(_mk("GET", "/api/skills/-/discover?q=cov", state=state))
+    )
+
+    assert payload["results"] == []
+    assert payload["provider_outcomes"] == [{"name": "covprov", "status": "error"}]
+    kwargs = sel_mock.log_tool_invocation.call_args.kwargs
+    assert kwargs["metadata"]["failed_provider_count"] == "1"
+
+
 # --- POST /api/skills/-/discover/install ------------------------------------
 
 

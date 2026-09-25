@@ -430,7 +430,9 @@ _lineage_seed_in_flight = False
 _lineage_failure_warned = False
 
 
-def _attach_slot_parents(rows: "list[dict]") -> None:
+def _attach_slot_parents(
+    rows: "list[dict]", resolve_aliases: "Callable[[], dict[str, str] | None] | None" = None
+) -> None:
     """Give every slot row its ``parent`` -- ``{slot, key}`` or ``None``. IN PLACE.
 
     This is what lets the chat sidebar nest a session under the one that opened it
@@ -479,6 +481,24 @@ def _attach_slot_parents(rows: "list[dict]") -> None:
     bound to one store and re-runs when the data home changes, so a process serving
     several homes would queue a full cold scan per bind onto the shared maintenance pool.
 
+    *resolve_aliases* answers ``DashboardState.spend_slot_by_session()`` -- session key
+    to slot key -- and it is the SAME correspondence the Sessions table's payload hands
+    the same join. It is what carries the spellings this payload's own keys do not: a
+    conductor whose turns run on a channel conversation is cited by that channel key, and
+    a dashboard session can be cited by its ``dashboard:`` spelling, neither of which is a
+    slot key. Without it the join answered "creator not running" for exactly those
+    conductors while the Sessions table nested their workers from the same fold, and the
+    two views disagreed about one gateway at one moment.
+
+    It is a CALLABLE rather than the mapping itself so the read happens inside this
+    function's own failure boundary. A fault while resolving it is a fault in the
+    nesting, and the paragraph below is what the whole path owes such a fault: unnested
+    rows plus one WARNING carrying the traceback. Reading it at the call site instead
+    would put that one fault outside the boundary and take the entire sidebar down with
+    it. ``None`` is accepted so a caller with no registry to ask still gets every row's
+    key, and a value that is not a mapping is discarded the same way -- a state double's
+    attribute call can answer with another mock.
+
     Never raises, and every row gets the key either way. A sidebar that cannot paint is
     a worse failure than a sidebar that does not nest, and a row silently MISSING the
     key would make the frontend's ``parent === undefined`` mean two different things.
@@ -512,9 +532,15 @@ def _attach_slot_parents(rows: "list[dict]") -> None:
         from kiro_crew.crew_log.session_tree_projection import projection
         from kiro_crew.dashboard.session_memory import lineage_parents
 
+        # Inside the boundary on purpose: see the docstring. A mapping is required, so a
+        # state double answering with another mock is discarded rather than joined on.
+        aliases = resolve_aliases() if resolve_aliases is not None else None
+        if not isinstance(aliases, dict):
+            aliases = None
+
         proj = projection()
         if proj.seeded_for_current_store:
-            parents = lineage_parents(rows, proj.nodes())
+            parents = lineage_parents(rows, proj.nodes(), aliases)
             # A seed that FAILED leaves a readable but EMPTY state, so the check above
             # is satisfied and this path would otherwise never ask for another one --
             # the projection's own retry is reached only by a caller that seeds, and
@@ -2379,6 +2405,7 @@ class _ChatSlot:
         "served_model",
         "_session_requested_model",
         "_crew_log_previous_sid",
+        "_crew_log_opened_sid",
         "reasoning_effort",
         "autocompact_pct",
         "mode",
@@ -2647,6 +2674,13 @@ class _ChatSlot:
         # than an earlier store. Cleared once `session/opened` has carried it, so
         # the next supersede of this slot latches afresh. "" = nothing to follow.
         self._crew_log_previous_sid: str = ""
+        # The store a `session/opened` of this slot was last written FOR, recorded
+        # as the edge above is handed over. It is what the slot's next allocation
+        # names as its predecessor: the mapping can be a generation behind while a
+        # replay is pending, and the store's own units carry a wall-clock stamp and
+        # are written by a background writer that may not have run yet. "" = this
+        # process has not opened a crew log for this slot.
+        self._crew_log_opened_sid: str = ""
         # The model id the live session resolved to, for a slot that is
         # inheriting rather than pinning. "" = unknown. Written through
         # `record_served_model`.
@@ -4337,11 +4371,31 @@ class _ChatSlot:
         Keeping the FIRST observation keeps the predecessor a `session/opened` can
         cite, and an empty ``sid`` latches nothing rather than latching a store
         with no name.
-        """
-        if sid and not self._crew_log_previous_sid:
-            self._crew_log_previous_sid = sid
 
-    def take_crew_log_previous(self) -> str:
+        ``sid`` is what the slot's MAPPING answers, and the mapping is a proxy for
+        this question rather than its authority. An allocation whose history replay
+        is pending keeps the prior resumable id there deliberately, so that the id
+        a restart can resume stays durable -- and for that window the mapping names
+        a generation OLDER than the newest store this slot wrote. Latching it makes
+        two successive stores cite one predecessor and leaves the store between
+        them cited by nobody, which is the single chain gap a walker cannot detect:
+        both neighbours are well formed and neither says a store is missing.
+
+        So what this slot last handed to a `session/opened` decides, and ``sid``
+        serves only when that is empty -- a slot this process has not yet opened a
+        crew log for. The slot's own record is the authority because it is the
+        statement of the writer itself, taken at the moment the store became this
+        slot's current one, which no other source observes: the mapping tracks
+        resumability instead, and the store's own units carry a wall-clock stamp
+        and are written by a background writer that has not run yet.
+        """
+        if self._crew_log_previous_sid:
+            return
+        chosen = self._crew_log_opened_sid or sid
+        if chosen:
+            self._crew_log_previous_sid = chosen
+
+    def take_crew_log_previous(self, *, now_writing: str) -> str:
         """The latched predecessor store id, clearing it as it is handed over.
 
         Read-and-clear, because the value is owed to exactly one
@@ -4349,9 +4403,19 @@ class _ChatSlot:
         slot cite a predecessor two links back and skip the store between them,
         which is the one thing a chain walker cannot detect. Returns ``""`` when
         nothing is latched, which the emitter reads as "no edge to write".
+
+        ``now_writing`` is the store that entry is FOR, and recording it here is
+        what lets the slot's next allocation name a predecessor without consulting
+        anything outside this process. The two belong in one call because they are
+        one handover: the edge cannot be spent without saying which store is
+        becoming this slot's current one, so a caller cannot take the first and
+        forget the second. It is recorded whether or not an entry is written, since
+        it states which store the slot is on rather than what was appended.
         """
         sid = self._crew_log_previous_sid
         self._crew_log_previous_sid = ""
+        if now_writing:
+            self._crew_log_opened_sid = now_writing
         return sid
 
     def forget_session_model_state(self) -> None:
@@ -7856,7 +7920,13 @@ class DashboardState:
             )
             d["subagents_running"] = bool(subs and subs.running_agents_for(f"dashboard:{s.key}"))
             out.append(d)
-        _attach_slot_parents(out)
+        # The slot-key/session-key correspondence the lineage join needs, read the same
+        # way ``/api/sessions/memory`` reads it for the Sessions table. Handed over
+        # UNCALLED: resolving it is pure dict work over the live registry, but it belongs
+        # inside that function's failure boundary, because a fault in it is a fault in
+        # the nesting and must cost the nesting rather than the whole sidebar.
+        # ``getattr`` because a stub state in the suite may not carry the method at all.
+        _attach_slot_parents(out, getattr(self, "spend_slot_by_session", None))
         return out
 
     def serialize_slot_views(

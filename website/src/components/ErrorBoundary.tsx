@@ -9,7 +9,13 @@ interface State { error: Error | null }
 
 interface Props {
   children: ReactNode
-  fallback?: ReactNode
+  /**
+   * Replaces the default card. A function form receives the caught error, for
+   * a custom fallback that mounts `AskAgentButton` itself: the button resolves
+   * the journaled report by message match at click time, so it needs the
+   * error's own message — a static node has no way to see it.
+   */
+  fallback?: ReactNode | ((error: Error) => ReactNode)
   /**
    * When true, render a full-viewport fallback with a hard "Reload page"
    * action. Use at the root of the app where a render throw would otherwise
@@ -73,7 +79,10 @@ export default class ErrorBoundary extends Component<Props, State> {
     // nothing (the extension-slot case: a faulty contribution disappears
     // instead of showing the default error card), while an omitted fallback
     // still falls through to the default UI below.
-    if ('fallback' in this.props) return this.props.fallback
+    if ('fallback' in this.props) {
+      const { fallback } = this.props
+      return typeof fallback === 'function' ? fallback(this.state.error) : fallback
+    }
 
     // The root fallback can render when ThemeProvider itself crashed -- before
     // the data-theme attribute and CSS variables (--text-strong, --accent, ...)

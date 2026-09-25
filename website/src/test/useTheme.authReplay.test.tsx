@@ -137,7 +137,9 @@ describe('useTheme: installed-theme catalog replay after silent auth recovery', 
     expect(themesFn).toHaveBeenCalledTimes(2)
   })
 
-  it('leaves non-auth failures alone (API not available yet)', async () => {
+  it('does not route non-auth failures through the refresh path', async () => {
+    // Retry/backoff for these failures is covered in useTheme.signInReplay.test.tsx;
+    // here only that the auth branch (pendingRefresh + replay) is not entered.
     const { fetchFn } = installRefreshFetch()
     themesFn.mockRejectedValueOnce(new ApiError(503, 'unavailable')).mockResolvedValue(catalog)
 
@@ -145,6 +147,7 @@ describe('useTheme: installed-theme catalog replay after silent auth recovery', 
     await waitFor(() => expect(themesFn).toHaveBeenCalledTimes(1))
 
     await new Promise((r) => setTimeout(r, 30))
+    // The first backoff step is 1s away: nothing replayed yet, and nothing refreshed.
     expect(themesFn).toHaveBeenCalledTimes(1)
     expect(fetchFn).not.toHaveBeenCalled()
     expect(result.current.customThemes).toEqual([])

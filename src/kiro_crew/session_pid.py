@@ -3738,6 +3738,43 @@ def _work_orphan_basename(cmdline: bytes) -> bytes:
     return _basename_of(tokens[0])
 
 
+#: argv0 path SUFFIX of the credential helper the agent toolbox starts beside a
+#: managed runtime to vend that runtime's credentials. Matched as a suffix, and
+#: with the ``sandbox/`` parent component included, for two separate reasons: the
+#: parent component distinguishes the toolbox's helper from a same-named binary of
+#: the user's own somewhere else on PATH, and the toolbox VERSION sits in a path
+#: component above ``sandbox/``, so a version never appears here and one spelling
+#: covers every installed version at once.
+_SANDBOX_CREDENTIAL_HELPER_ARGV0_SUFFIX = b"/sandbox/creds_agent"
+
+#: The helper's own per-sandbox-session argument. Required alongside the argv0
+#: suffix so a bare binary placed at a path ending that way does not present the
+#: shape on argv0 alone.
+_SANDBOX_CREDENTIAL_HELPER_ARG = b"--session-id"
+
+
+def _is_marked_sandbox_credential_helper(cmdline: bytes) -> bool:
+    """True if *cmdline* is the toolbox's sandbox credential helper.
+
+    NOT sufficient on its own -- the caller MUST pair this with the
+    ``KIROCREW_SPAWNED`` marker, as :func:`_is_marked_mcp_launcher` is paired,
+    because the helper is the agent toolbox's own binary rather than one Kiro
+    Crew spawns by name, and a user's own shell can start an identical one.
+
+    Deliberately NOT one of :func:`_is_agent_runtime_anchor`'s identities. That
+    anchor is existential -- one member authorizes a stop of the whole scope --
+    and a helper shares its scope with whatever else the session left behind,
+    including work a user meant to keep. The helper's only consumer is the scope
+    reaper's UNIVERSAL rule, which asks whether every surviving member is one.
+    """
+    tokens = _argv_tokens(cmdline)
+    if not tokens:
+        return False
+    if not tokens[0].endswith(_SANDBOX_CREDENTIAL_HELPER_ARGV0_SUFFIX):
+        return False
+    return _SANDBOX_CREDENTIAL_HELPER_ARG in tokens[1:]
+
+
 def _is_agent_runtime_anchor(cmdline: bytes, *, has_kirocrew_marker: bool) -> bool:
     """True when *cmdline* positively identifies an agent-runtime tree member.
 

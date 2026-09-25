@@ -24,6 +24,33 @@ def _read(name: str) -> str:
     return (WORKFLOWS / name).read_text(encoding="utf-8")
 
 
+_FORK_BLOCK_HEADER = 'echo "**No write access on this repository?**'
+
+
+def _screenshot_remediation(wf: str) -> tuple[str, str]:
+    """Split the screenshot gate's step-summary remediation into the advice
+    every author reads and the block scoped to authors without write access.
+
+    Returns ``(general, fork_only)``. The remediation is the run of ``echo``
+    lines from the ``### Screenshot evidence required`` heading to the redirect
+    that writes them into the step summary. The fork block opens at its bold
+    header and closes at the first bare ``echo`` (a blank line) after it;
+    ``general`` is everything else. Anchoring on the header rather than on line
+    numbers keeps the split stable while the surrounding wording is edited, and
+    the header is required to occur exactly once so the scoped block cannot
+    quietly be duplicated or split into an unscoped copy.
+    """
+    start = wf.index('echo "### Screenshot evidence required"')
+    end = wf.index('} >> "$GITHUB_STEP_SUMMARY"', start)
+    remediation = wf[start:end]
+    assert remediation.count(_FORK_BLOCK_HEADER) == 1, "exactly one scoped fork block"
+    head, rest = remediation.split(_FORK_BLOCK_HEADER, 1)
+    blank = re.search(r"^[ \t]*echo\n", rest, re.MULTILINE)
+    assert blank is not None, "the fork block must close with a blank echo"
+    fork_only = _FORK_BLOCK_HEADER + rest[: blank.start()]
+    return head + rest[blank.end() :], fork_only
+
+
 class TestScreenshotEvidence:
     """The gate must be satisfiable by editing the PR body alone."""
 
@@ -82,11 +109,27 @@ class TestScreenshotEvidence:
         ), "waiver must emit a warning annotation naming the marker"
 
     def test_remediation_sends_evidence_through_gh_attach_not_the_tree(self):
-        # Evidence is a GitHub attachment on the description, uploaded with
-        # `gh pr create|edit --attach` (or dragged into the web editor); the
-        # remediation must name that procedure, with the local-path convention
-        # the description uses and the size limits, and must not send an
-        # author to commit files or to pin a raw URL to a commit.
+        """Evidence is a GitHub attachment on the description, uploaded with
+        `gh pr create|edit --attach` (or dragged into the web editor); the
+        remediation must name that procedure, with the local-path convention
+        the description uses and the size limits, and must not send an author
+        to pin a raw URL to a commit. Committing the files is offered to ONE
+        population only: authors without write access, whom the upload
+        endpoint answers with a 404 (cli/cli#14302) and who therefore have no
+        CLI path to an attachment at all. Everyone who can attach must not be
+        told to commit -- that is the rule the committed-screenshot sweep left
+        behind, and this test is its ratchet.
+
+        The ratchet is stated against the REGION, not against one phrase. The
+        whole-file check on the swept-out wording is kept, but it pins a single
+        historical sentence, so on its own a reworded "commit them under
+        temp-screenshots/" would pass it. The region check is what has teeth:
+        outside the fork block, `commit` may occur only inside the negation
+        that states the rule, and neither a `git add` nor a `temp-screenshots/`
+        path may appear at all. The fork block is located by its header, which
+        must occur exactly once, so the scoped advice cannot be duplicated into
+        an unscoped copy and pass by being "inside a fork block" somewhere.
+        """
         wf = _read("screenshot-evidence.yml")
         assert "gh pr edit $PR --body-file <body.md> --attach" in wf
         # The create-time hint names the subcommand without spelling out the
@@ -101,6 +144,23 @@ class TestScreenshotEvidence:
         assert "10 MB per image/GIF, 100 MB per video" in wf
         assert "raw/<sha>" not in wf
         assert "Commit the images under" not in wf
+
+        general, fork_only = _screenshot_remediation(wf)
+        # Every author reads the general region, so it states the rule and
+        # contains no instruction to commit in any wording: the only lines
+        # allowed to mention committing are the ones negating it.
+        assert "not committed." in general
+        for line in general.splitlines():
+            if re.search(r"\bcommit", line, re.IGNORECASE):
+                assert "not committed" in line, f"unscoped commit advice: {line.strip()!r}"
+        assert "git add" not in general
+        assert "temp-screenshots/" not in general
+        # The scoped block names who it is for, why the attach path is closed
+        # to them, both alternatives that remain, and the forced add the
+        # ignore rule makes necessary.
+        assert "cli/cli#14302" in fork_only
+        assert "Drag the file into the description in the web UI" in fork_only
+        assert "git add -f temp-screenshots/<topic>/after.png" in fork_only
         # The accepted-evidence check itself is unchanged: an attachment URL,
         # a markdown image, an HTML tag and a still-linked committed path all
         # satisfy the gate.
@@ -108,6 +168,232 @@ class TestScreenshotEvidence:
             "'!\\[[^]]*\\]\\([^)]+\\)|<img[[:space:]]|<video[[:space:]]|temp-screenshots/|user-attachments/'"
             in wf
         )
+
+    def test_the_no_write_access_fallback_is_documented_where_an_author_meets_it(self):
+        """A contributor without write access cannot attach at all, so the
+        committed fallback has to be readable in all three places they look:
+        the PR template they fill in, the gate's remediation when it reds them,
+        and the ignore rule that would otherwise make `git add` silently drop
+        the file. Leaving any one of them at "never committed" is what made the
+        screenshot workflow a dead end for fork PRs."""
+        root = WORKFLOWS.parents[1]
+        template = (root / ".github" / "PULL_REQUEST_TEMPLATE.md").read_text(encoding="utf-8")
+        assert "WITHOUT write access on this repository" in template
+        assert "cli/cli#14302" in template
+        assert "git add -f" in template
+        ignore = (root / ".gitignore").read_text(encoding="utf-8")
+        assert "temp-screenshots/\n" in ignore, "the default stays ignored for everyone else"
+        assert "git add -f temp-screenshots/<dir>/shot.png" in ignore
+        assert "cli/cli#14302" in ignore
+
+    def test_the_exception_is_reconciled_with_the_rule_and_its_merge_time_cost_is_stated(self):
+        """The fallback is an EXCEPTION to a standing rule, so the documents
+        that record WHY committing is banned must carry it too -- a reader who
+        meets the rule's reasons stated absolutely, and the fallback elsewhere,
+        cannot tell which one is current. And a committed file does not stop at
+        review time: the squash lands it on `main` and its blob in history for
+        good, which the author must be told before they choose that path and
+        the maintainer must have a step for at merge. Each place states the
+        part that is its own; the reason lives once, in rationale.md."""
+        root = WORKFLOWS.parents[1]
+        skills = root / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev"
+        rationale = (skills / "prepare-pr" / "references" / "rationale.md").read_text(
+            encoding="utf-8"
+        )
+        section = rationale.split("## Why screenshots are attachments, not commits", 1)[1]
+        section = section.split("\n## ", 1)[0]
+        # The WHY document names the exception, scopes it, and says why the
+        # rule survives it.
+        assert "The one scoped exception: a contributor with no write access" in section
+        assert "cli/cli#14302" in section
+        assert "The exception does not weaken the rule for anyone who CAN attach" in section
+        # ... and is honest about the irreversible half: a deletion commit does
+        # not take a blob out of history.
+        assert "which part is irreversible" in section
+        assert "only a history rewrite removes it" in section
+        assert "chore(evidence): drop the committed review media of #<n>" in section
+
+        # The maintainer-facing merge-time steps live in the CI doc.
+        ci_doc = (root / "docs" / "ci" / "ci-and-reviews.md").read_text(encoding="utf-8")
+        assert "**What happens to committed evidence at merge.** It merges." in ci_doc
+        assert "chore(evidence): drop the committed review media of #<n>" in ci_doc
+        assert "only a history rewrite" in ci_doc
+        assert "never does so silently" in ci_doc
+        # The UX-lane summary states the rule with its exception attached, not
+        # as unconditional.
+        assert "uploaded as a GitHub attachment, not\ncommitted: the author" not in ci_doc
+        assert "except by a fork contributor, whom the upload endpoint refuses" in ci_doc
+
+        # The author-facing instruction states the cost where the author
+        # chooses the path: the PR template, the gate's remediation, and the
+        # skill an agent reads. None of them restates the reason.
+        cost = "a committed file merges into main's"
+        template = (root / ".github" / "PULL_REQUEST_TEMPLATE.md").read_text(encoding="utf-8")
+        assert cost in template and "the blob stays" in template
+        wf = _read("screenshot-evidence.yml")
+        assert cost in wf and 'echo "blob stays."' in wf
+        prepare = (skills / "prepare-pr" / "SKILL.md").read_text(encoding="utf-8")
+        assert "never committed, bar one scoped exception" in prepare
+        assert "never committed. See below." not in prepare
+        assert "is in `main`'s history for good" in prepare
+        assert "references/rationale.md" in prepare
+
+        # The two other standing statements of the rule are scoped, not absolute.
+        stt = (root / "docs" / "system-specs" / "modules" / "stt-streaming.md").read_text(
+            encoding="utf-8"
+        )
+        assert "**UI evidence is attached, never committed.**" not in stt
+        assert "never committed by anyone who can attach" in stt
+        assert "references/rationale.md" in stt
+        worktree = (skills / "kirocrew-worktree-dev" / "SKILL.md").read_text(encoding="utf-8")
+        assert "never committed — with write access, which\nthis agent has" in worktree
+        assert "see prepare-pr's *Screenshots*" in worktree
+
+    def test_the_ci_doc_describes_the_committed_read_as_the_script_performs_it(self):
+        """The CI doc's Design-lane paragraph describes where committed media is
+        read from. Every lane that admits it sources one script, and that
+        script reads each blob with `git cat-file` at `HEAD_SHA` -- there is no
+        working-tree read for a same-repo pull request to take instead. A doc
+        sentence that enumerates a per-lane mechanism ("same-repo only",
+        "from the checkout on a same-repo PR") describes a path the script does
+        not have. So the paragraph is checked against the script, not against
+        a fixed wording: it names the script, states the object-store read, and
+        carries neither enumeration. The wording around those anchors is free
+        to change."""
+        root = WORKFLOWS.parents[1]
+        script = (root / ".github" / "scripts" / "pr-committed-evidence.sh").read_text(
+            encoding="utf-8"
+        )
+        assert 'git cat-file blob "$HEAD_SHA:$path"' in script
+        ci_doc = (root / "docs" / "ci" / "ci-and-reviews.md").read_text(encoding="utf-8")
+        paragraph = ci_doc.split("The Design trigger accepts the same evidence", 1)[1]
+        paragraph = paragraph.split("\n\n", 1)[0]
+        assert ".github/scripts/pr-committed-evidence.sh" in paragraph
+        assert "object store" in paragraph
+        assert "same-repo only" not in paragraph
+        assert "from the checkout on a same-repo PR" not in paragraph
+        assert "fork head is never checked" not in paragraph
+
+    def test_the_committed_path_states_its_own_ceiling_next_to_the_instruction(self):
+        """`Limits: 10 MB per image/GIF, 100 MB per video.` describes the
+        ATTACHMENT path. The committed path the next paragraph offers a fork
+        author is read by `pr-committed-evidence.sh`, which skips EVERY blob
+        over 10 MB, video included; an author who commits a 12 MB recording
+        because the line above invited it has their evidence skipped with a
+        warning nobody reads and is then blocked for supplying none. So each
+        place an author meets the commit instruction states the committed
+        ceiling beside it, and names where a bigger recording goes instead: the
+        description via the web editor, which the attachment path reads at
+        100 MB. The script's ceiling itself is pinned in
+        test_ai_review_workflows.py and is not this test's to move."""
+        root = WORKFLOWS.parents[1]
+        skills = root / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev"
+        template = (root / ".github" / "PULL_REQUEST_TEMPLATE.md").read_text(encoding="utf-8")
+        wf = _read("screenshot-evidence.yml")
+        prepare = (skills / "prepare-pr" / "SKILL.md").read_text(encoding="utf-8")
+        # The attachment limits stay where they are, and the committed ceiling
+        # is stated in the same block as the `git add -f` it applies to, after
+        # the attachment limits and before the merge-time cost. Whitespace is
+        # collapsed so the template's hard wraps do not decide the outcome; each
+        # phrase fits inside one `echo` line of the remediation, whose quoting
+        # survives the collapse.
+        for text in (template, wf):
+            flat = " ".join(text.split())
+            add = "git add -f temp-screenshots/<topic>/after.png"
+            ceiling = "ONE limit for a committed file: 10 MB, video"
+            cost = "a committed file merges into main's"
+            assert "10 MB per image/GIF, 100 MB per video" in flat
+            assert ceiling in flat
+            assert flat.index("100 MB per video") < flat.index(add) < flat.index(ceiling)
+            assert flat.index(ceiling) < flat.index(cost)
+            assert "a bigger file is skipped, not reviewed" in flat
+            assert "A recording over 10 MB" in flat
+            assert "web UI, where the 100 MB video limit" in flat
+        # The skill's fork bullet carries the same ceiling in its own words,
+        # and its attachment bullet keeps the attachment figures.
+        assert "10 MB per image or GIF, 100 MB per video" in prepare
+        fork_bullet = next(
+            ln for ln in prepare.splitlines() if ln.startswith("- **Push access is required")
+        )
+        assert "10 MB per file, video included" in fork_bullet
+        assert "a bigger recording is dragged in, not committed" in fork_bullet
+        assert "same limits" in fork_bullet
+
+    def test_a_committed_file_in_a_format_the_lane_declines_is_named_not_dropped(self):
+        """A `*) continue ;;` catch-all in `pr-committed-evidence.sh`'s
+        extension sort, ABOVE `committed_found` and above every `::warning::`,
+        leaves an `after.svg` an author committed without a trace: the step
+        summarises `0 media path(s)`, the lane blocks the author for supplying
+        no evidence, and nothing names the file or the reason. The rule this
+        pins: a media extension reads the bytes; a text sidecar (README,
+        notes, a JSON provenance record, a capture log) or a dotfile is
+        skipped in silence and uncounted, so it is not a warning on every run;
+        ANY other extension is counted and refused with a warning naming the
+        file, still without a blob read, below the control-character guard
+        (the warning interpolates the path). The skill's format list must say
+        the same thing as the script -- listing SVG as accepted while both
+        evidence scripts drop it is the trap -- and the reason SVG is out is stated
+        where an author reads it. Executed coverage of the script lives in
+        test_ai_review_workflows.py."""
+        root = WORKFLOWS.parents[1]
+        script = (root / ".github" / "scripts" / "pr-committed-evidence.sh").read_text(
+            encoding="utf-8"
+        )
+        prepare = (
+            root
+            / "src"
+            / "kiro_crew"
+            / "builtin_skills"
+            / "kirocrew-dev"
+            / "prepare-pr"
+            / "SKILL.md"
+        ).read_text(encoding="utf-8")
+        media = "*.png|*.jpg|*.jpeg|*.webp|*.gif|*.webm|*.mp4|*.mov) ;;"
+        quiet = ".*|*.txt|*.md|*.json|*.yaml|*.yml|*.csv|*.log|*.html) continue ;;"
+        svg = '*.svg) refuse="SVG is opened as markup, not pixels; export the image as PNG" ;;'
+        other = "*.*) refuse="
+        counted = "committed_found=$((committed_found + 1))"
+        guard = "*[[:cntrl:]]*)"
+        refusal = 'echo "::warning::SKIPPED ($refuse): $path"'
+        tree = 'meta="$(git ls-tree -l'
+        for needle in (media, quiet, svg, other, counted, guard, refusal, tree):
+            assert script.count(needle) == 1, needle
+        # The sort runs on the basename, so a hidden parent directory does not
+        # hide the media inside it, and no silent `*) continue` sits between a
+        # refused extension and the counter.
+        assert 'case "${lower##*/}" in' in script
+        order = [script.index(x) for x in (media, quiet, svg, other, counted, guard, refusal, tree)]
+        assert order == sorted(order), order
+        # The catch-all `*) continue` that stays is the extensionless tier
+        # (README, LICENSE); every dotted name meets a `refuse=` arm first.
+        assert script.index(other) < script.index("    *) continue ;;\n  esac\n  committed_found")
+        # A refused name costs no object read: the refusal is above the tree
+        # metadata read, the budget and `cat-file`.
+        assert script.index(refusal) < script.index('"$committed_read" -ge')
+        assert script.index(refusal) < script.index("git cat-file blob")
+        # The skill does not list SVG as an accepted format, states why it is
+        # out where the format list is, and its fork bullet says the committed
+        # path takes the same formats and names what it skips.
+        formats = next(
+            ln for ln in prepare.splitlines() if ln.startswith("- **Limits and formats:**")
+        )
+        assert "PNG, JPEG, GIF, WebP, MP4, MOV, WebM" in formats
+        assert "SVG, " not in formats
+        assert "**No SVG**, attached or committed" in formats
+        assert "opens it as markup, not pixels" in formats
+        fork_bullet = next(
+            ln for ln in prepare.splitlines() if ln.startswith("- **Push access is required")
+        )
+        assert "same formats (another format is skipped with a warning naming it)" in fork_bullet
+        # The attachment script's own SVG exclusion is the reason the skill
+        # states; the two scripts agree on the mime table.
+        attach = (root / ".github" / "scripts" / "pr-attachment-evidence.sh").read_text(
+            encoding="utf-8"
+        )
+        assert "SVG is left out on" in attach and "SVG" in script
+        for line in ("image/png) ext=png", "video/webm) ext=webm"):
+            assert line in attach and line in script
+        assert "image/svg" not in attach.split('case "$mime" in')[1].split("esac")[0]
 
     def test_body_reaches_grep_via_here_strings_not_pipes(self):
         # Under `set -uo pipefail` a `printf '%s' "$body" | grep -q` pipeline
@@ -890,9 +1176,29 @@ class TestMissingEvidenceIsABlockNotAConcern:
                 "github-production-user-asset-6210df.s3.amazonaws.com:443",
             } <= endpoints, sorted(endpoints)
         else:
-            # The same-repo lane also lists committed images present at HEAD.
-            assert 'git cat-file -e "HEAD:$path"' in raw
-            assert "committed images this revision adds or changes: $k" in raw
+            # The same-repo lane also admits the committed media the revision
+            # adds or changes -- through the SAME shared script the fork lanes
+            # source, sourced after the attachment script, never through a
+            # loop of its own: an inline copy once listed with
+            # `--diff-filter=AM` (which drops a renamed screenshot, as the
+            # script's own contract says) and re-spelled the mode gate and the
+            # mime table with no size cap or skip counting. The reviewer is
+            # told this list means the evidence rendered, so admission is the
+            # script's byte typing and mode gate, exercised by execution in
+            # test_ai_review_workflows.py, not a name plus existence.
+            attach = '"$GITHUB_WORKSPACE/.github/scripts/pr-attachment-evidence.sh"'
+            committed = '"$GITHUB_WORKSPACE/.github/scripts/pr-committed-evidence.sh"'
+            assert attach in raw and committed in raw
+            assert raw.index(attach) < raw.index(committed)
+            assert "--diff-filter" not in raw
+            assert 'file --mime-type -b -- "$path"' not in raw
+            assert '[ -L "$path" ]' not in raw
+            assert "image/png|image/jpeg" not in raw
+            assert "HEAD_SHA: ${{ github.event.pull_request.head.sha }}" in raw
+            assert (
+                "committed images this revision adds or changes, read from the object "
+                "store and typed by their bytes: $committed_kept" in raw
+            )
 
     def test_first_principles_reads_rfc_status_from_the_base_commit(self):
         contract = _flat(_read_prompt(FP_CONTRACT))

@@ -415,9 +415,9 @@ def build_app(
     # question it CAN answer, whether the deployment has vouched that only one principal
     # reaches this task, and declines to serve customer turns at all without that answer.
     #
-    # Refusing at startup rather than per turn, for the reason ``require_api_key`` refuses
-    # at startup: a container that answers its port while mixing two callers' conversations
-    # looks healthy and is not.
+    # Refusing at startup rather than per turn, for the reason
+    # ``require_model_identity`` refuses at startup: a container that answers its port
+    # while mixing two callers' conversations looks healthy and is not.
     if not settings.single_principal:
         raise common.ConfigError(
             "the deployment has not declared a single-principal trust domain "
