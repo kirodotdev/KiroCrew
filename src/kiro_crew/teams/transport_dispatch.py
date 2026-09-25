@@ -84,6 +84,7 @@ from kiro_crew.messaging.queue_receipt import (
     STEER_ACK_EMOJI,
     ReceiptQueue,
     ReceiptSurface,
+    receipt_address_key,
 )
 from kiro_crew.messaging.session_resume import refused_resume_is_restricted
 from kiro_crew.messaging.upload_gate import session_is_restricted
@@ -947,6 +948,10 @@ class TeamsDispatcher:
 
         class _Surface:
             label = "teams"
+            # Both parts ``update_message`` addresses with: an activity id is one
+            # conversation's on one service endpoint, so the endpoint belongs in the key
+            # as much as the conversation does.
+            address_key = receipt_address_key("teams", service_url, conversation_id)
 
             async def send_receipt(self, body: str) -> Any | None:
                 try:
@@ -957,8 +962,8 @@ class TeamsDispatcher:
                     logger.debug("Teams: queue receipt send failed", exc_info=True)
                     return None
 
-            async def edit_receipt(self, msg_id: Any, body: str) -> None:
-                await client.update_message(conversation_id, str(msg_id), body, service_url)
+            async def edit_receipt(self, msg_id: Any, body: str) -> bool:
+                return await client.update_message(conversation_id, str(msg_id), body, service_url)
 
         return _Surface()
 

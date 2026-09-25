@@ -15,7 +15,12 @@ from pathlib import Path
 from typing import Any
 
 import kiro_crew.messaging.queue_receipt as Q
-from kiro_crew.messaging.queue_receipt import RECEIPT_MAX_ITEMS, ReceiptQueue, receipt_text
+from kiro_crew.messaging.queue_receipt import (
+    RECEIPT_MAX_ITEMS,
+    ReceiptQueue,
+    receipt_address_key,
+    receipt_text,
+)
 
 
 class _Surface:
@@ -23,20 +28,42 @@ class _Surface:
 
     label = "fake"
 
-    def __init__(self, *, send_id: Any = 7, edit_raises: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        send_id: Any = 7,
+        edit_raises: bool = False,
+        edit_refuses: bool = False,
+        edit_answers_none: bool = False,
+        send_fails_after: int | None = None,
+        address: str = "chat",
+    ) -> None:
         self._send_id = send_id
         self.edit_raises = edit_raises
+        #: Report the refusal a rate-limited chat or a spent edit cap really answers.
+        self.edit_refuses = edit_refuses
+        #: Answer None: silence, which is not a reported failure.
+        self.edit_answers_none = edit_answers_none
+        self._send_fails_after = send_fails_after
+        #: Which conversation this surface writes to. Two surfaces sharing it address
+        #: one chat; an empty one cannot name its address at all.
+        self.address_key = receipt_address_key("fake", address) if address else ""
         self.sent: list[str] = []
         self.edits: list[tuple[Any, str]] = []
 
     async def send_receipt(self, body: str) -> Any | None:
         self.sent.append(body)
+        if self._send_fails_after is not None and len(self.sent) > self._send_fails_after:
+            return None
         return self._send_id
 
-    async def edit_receipt(self, msg_id: Any, body: str) -> None:
+    async def edit_receipt(self, msg_id: Any, body: str) -> bool | None:
         self.edits.append((msg_id, body))
         if self.edit_raises:
             raise RuntimeError("edit failed mid-flush")
+        if self.edit_answers_none:
+            return None
+        return not self.edit_refuses
 
 
 class TestReceiptText:
@@ -130,6 +157,206 @@ class TestLifecycle:
         assert not q.has_receipt("s")
 
 
+class TestATransitionIsPublishedOnlyWhenItLands:
+    """A refused edit is an ordinary answer, not an exception, and not a success."""
+
+    def test_a_refused_flip_publishes_its_record_instead_of_waiting(self) -> None:
+        """The bubble refuses the edit, so the record is POSTED beside it right away.
+
+        Waiting for a later transition to write it is what strands a burst that ends
+        here: nothing revisits the key on its own, and the bubble reads "Queued" over
+        messages that were answered.
+        """
+        q, s = ReceiptQueue(), _Surface(send_id=42, edit_refuses=True)
+
+        async def go() -> None:
+            async with q.lock:
+                await q.create_or_grow_locked("s", s, "a")
+                await q.flip_answering_locked("s", s, ["a"])
+
+        asyncio.run(go())
+        assert s.sent[-1] == receipt_text(["a"], answering=True), "the record reached the reader"
+        assert "s" not in q._receipts, "and nothing is owed, so no entry is kept"
+
+    def test_a_refused_flip_keeps_the_handle_when_the_post_fails_too(self) -> None:
+        """Only then is there something left to owe, and the entry carries it."""
+        q, s = ReceiptQueue(), _Surface(send_id=42, edit_refuses=True, send_fails_after=1)
+
+        async def go() -> None:
+            async with q.lock:
+                await q.create_or_grow_locked("s", s, "a")
+                await q.flip_answering_locked("s", s, ["a"])
+
+        asyncio.run(go())
+        assert q._receipts["s"].owes_record
+        assert q._receipts["s"].final_body == receipt_text(["a"], answering=True)
+        # Not LIVE though -- it cannot be grown.
+        assert not q.has_receipt("s")
+
+    def test_a_refused_grow_leaves_no_record_owed(self) -> None:
+        """That message is still QUEUED, which is what the bubble's ledger says."""
+        q, s = ReceiptQueue(), _Surface(edit_refuses=True)
+
+        async def go() -> None:
+            async with q.lock:
+                await q.create_or_grow_locked("s", s, "a")
+                await q.create_or_grow_locked("s", s, "b")
+
+        asyncio.run(go())
+        assert q.has_receipt("s"), "nothing has left the queue, so the bubble is still live"
+        assert q._receipts["s"].texts == ["a", "b"]
+
+    def test_silence_is_not_a_reported_failure(self) -> None:
+        """A surface answering None has not reported one; reading it as failure would
+        keep every receipt in the registry for good."""
+        q, s = ReceiptQueue(), _Surface(edit_answers_none=True)
+
+        async def go() -> None:
+            async with q.lock:
+                await q.create_or_grow_locked("s", s, "a")
+                await q.flip_answering_locked("s", s, ["a"])
+
+        asyncio.run(go())
+        assert "s" not in q._receipts
+        assert s.sent == [
+            receipt_text(["a"])
+        ], "silence means the edit LANDED, so no record is owed and none is announced"
+
+    def test_a_raise_and_a_refusal_are_the_same_answer(self) -> None:
+        q, s = ReceiptQueue(), _Surface(edit_raises=True, send_fails_after=1)
+
+        async def go() -> None:
+            async with q.lock:
+                await q.create_or_grow_locked("s", s, "a")
+                await q.flip_answering_locked("s", s, ["a"])
+
+        asyncio.run(go())
+        assert q._receipts["s"].owes_record
+
+    def test_a_refused_cancel_keeps_the_handle_too(self) -> None:
+        q, s = ReceiptQueue(), _Surface(edit_refuses=True, send_fails_after=1)
+
+        async def go() -> None:
+            async with q.lock:
+                await q.create_or_grow_locked("s", s, "a")
+                await q.finish_cancelled_locked("s", s)
+
+        asyncio.run(go())
+        assert q._receipts["s"].final_body == receipt_text(["a"], cancelled=True)
+
+
+class TestAnOwedRecordIsTheOneThatWasOwed:
+    """The record travels with the entry, so a retry writes what actually happened."""
+
+    def test_the_next_message_writes_the_owed_record_before_opening_a_bubble(self) -> None:
+        q = ReceiptQueue()
+        # The post fails too, so the record stays OWED and a later transition writes it.
+        s = _Surface(send_id=42, edit_refuses=True, send_fails_after=1)
+
+        async def go() -> None:
+            async with q.lock:
+                await q.create_or_grow_locked("s", s, "a")
+                await q.flip_answering_locked("s", s, ["a"])  # refused, now terminal
+                s.edit_refuses = False
+                await q.create_or_grow_locked("s", s, "b")
+
+        asyncio.run(go())
+        owed = receipt_text(["a"], answering=True)
+        assert s.edits[-1] == (42, owed), "the retry writes the record the flip owed"
+        # Three sends: the bubble, the record post that failed, then a FRESH bubble --
+        # not a grow of the answered one.
+        assert len(s.sent) == 3
+        assert s.sent[-1] == receipt_text(["b"])
+
+    def test_a_terminal_entry_is_never_grown(self) -> None:
+        """Growing it would put already-answered text back under "Queued".
+
+        The answered text does appear once more, in the RECORD the refused edit posts --
+        that is the record saying it was answered. What must never reappear is that text
+        under "Queued", which is what a grow of a terminal entry would write.
+        """
+        q, s = ReceiptQueue(), _Surface(edit_refuses=True)
+
+        async def go() -> None:
+            async with q.lock:
+                await q.create_or_grow_locked("s", s, "a")
+                await q.flip_answering_locked("s", s, ["a"])
+                s.edit_refuses = False
+                await q.create_or_grow_locked("s", s, "b")
+
+        asyncio.run(go())
+        queued = [body for body in s.sent[1:] + [e[1] for e in s.edits] if "Queued" in body]
+        assert all("a" not in body for body in queued), "answered text must not return"
+        assert s.sent[-1] == receipt_text(["b"]), "the next message opens its own bubble"
+
+    def test_the_key_is_kept_until_the_record_is_on_the_bubble(self) -> None:
+        q = ReceiptQueue()
+        # The edit stays refused AND the record cannot be posted either.
+        s = _Surface(send_id=42, edit_refuses=True, send_fails_after=1)
+
+        async def go() -> None:
+            async with q.lock:
+                await q.create_or_grow_locked("s", s, "a")
+                await q.flip_answering_locked("s", s, ["a"])
+                await q.create_or_grow_locked("s", s, "b")
+
+        asyncio.run(go())
+        assert q._receipts["s"].owes_record, "the record is still owed, so the key is held"
+        assert q._receipts["s"].final_body == receipt_text(["a"], answering=True)
+
+    def test_a_bubble_that_refuses_edits_gets_the_record_posted(self) -> None:
+        """Past Webex's per-message edit cap no edit of that id ever lands, so retrying
+        alone would owe the record for the life of the process."""
+        q = ReceiptQueue()
+        s = _Surface(send_id=42, edit_refuses=True)
+
+        async def go() -> None:
+            async with q.lock:
+                await q.create_or_grow_locked("s", s, "a")
+                await q.flip_answering_locked("s", s, ["a"])
+                await q.create_or_grow_locked("s", s, "b")
+
+        asyncio.run(go())
+        owed = receipt_text(["a"], answering=True)
+        assert owed in s.sent, "the record is POSTED when the bubble will not take it"
+        assert "s" in q._receipts and not q._receipts["s"].owes_record
+
+    def test_a_stop_does_not_recompute_a_record_another_transition_owes(self) -> None:
+        """Writing "Cancelled" over an owed "Now answering" says the opposite of what
+        happened, permanently."""
+        q = ReceiptQueue()
+        # The post fails too, so the entry stays TERMINAL and still owes its record.
+        s = _Surface(send_id=42, edit_refuses=True, send_fails_after=1)
+
+        async def go() -> None:
+            async with q.lock:
+                await q.create_or_grow_locked("s", s, "a")
+                await q.flip_answering_locked("s", s, ["a"])  # owes "Now answering"
+                s.edit_refuses = False
+                await q.finish_cancelled_locked("s", s)
+
+        asyncio.run(go())
+        assert s.edits[-1][1] == receipt_text(["a"], answering=True)
+        assert "Cancelled" not in s.edits[-1][1]
+        assert "s" not in q._receipts
+
+    def test_a_second_flip_retries_the_owed_record_rather_than_its_own(self) -> None:
+        q = ReceiptQueue()
+        # The post fails too, so the entry stays TERMINAL and still owes its record.
+        s = _Surface(send_id=42, edit_refuses=True, send_fails_after=1)
+
+        async def go() -> None:
+            async with q.lock:
+                await q.create_or_grow_locked("s", s, "a")
+                await q.flip_answering_locked("s", s, ["a"])
+                s.edit_refuses = False
+                await q.flip_answering_locked("s", s, ["zzz"])
+
+        asyncio.run(go())
+        assert s.edits[-1][1] == receipt_text(["a"], answering=True)
+        assert "zzz" not in s.edits[-1][1]
+
+
 class TestLockIsCallerHeld:
     def test_the_transitions_do_not_take_the_lock_themselves(self) -> None:
         """The atomicity contract, asserted rather than documented.
@@ -188,3 +415,140 @@ class TestRatchet:
             if "_enqueue_with_receipt" in src and "ReceiptQueue" not in src:
                 missing.append(path.parent.name)
         assert not missing, f"{missing} implement a mid-turn queue without the shared ReceiptQueue"
+
+
+class TestAnAddressKeyNamesOneConversation:
+    """The signal every write rule is decided on, so its edges are its own tests."""
+
+    def test_the_same_conversation_builds_the_same_key(self) -> None:
+        """Two surfaces built separately for one chat MUST compare equal.
+
+        This is what lets a second member of a group space update the one shared
+        bubble: each member's surface is constructed from their own arriving message.
+        """
+        assert receipt_address_key("webex", "room-1") == receipt_address_key("webex", "room-1")
+
+    def test_different_conversations_build_different_keys(self) -> None:
+        assert receipt_address_key("telegram", 11) != receipt_address_key("telegram", 12)
+        assert receipt_address_key("telegram", 11) != receipt_address_key("discord", 11)
+
+    def test_a_missing_part_is_unknown_and_matches_nothing(self) -> None:
+        """An absent provider id reads as UNKNOWN, never as an address.
+
+        Two surfaces that both failed to name their conversation are not thereby in the
+        same one, so the empty key must not equal itself through
+        :meth:`QueueReceipt.addressed_by` -- which is where the comparison happens.
+        """
+        assert receipt_address_key("teams", "https://svc", "") == ""
+        assert receipt_address_key("", "room-1") == ""
+        unknown = Q.QueueReceipt(msg_id=7, opened_on=_Surface(address=""))
+        assert unknown.address == ""
+        assert not unknown.addressed_by(_Surface(address=""))
+        assert unknown.texts_at_address() == []
+
+    def test_multi_part_keys_cannot_collide_across_a_separator(self) -> None:
+        """Teams joins a service URL with a conversation id, and URLs carry ':'.
+
+        Split differently, the same characters are a DIFFERENT pair of addresses, so
+        joining on a character a URL can contain would make two conversations equal.
+        """
+        assert receipt_address_key("teams", "https://a", "b:c") != receipt_address_key(
+            "teams", "https://a:b", "c"
+        )
+
+    def test_no_address_means_no_bubble(self) -> None:
+        """A surface that cannot name its conversation opens nothing.
+
+        Fail closed: with no key every later write would have to guess which chat this
+        entry's ``msg_id`` belongs to, and a wrong guess rewrites a stranger's message.
+        A channel whose inbound omitted its conversation id degrades to no receipt,
+        which is what a refused send already does.
+        """
+
+        async def go() -> tuple[ReceiptQueue, _Surface]:
+            queue, nameless = ReceiptQueue(), _Surface(address="")
+            async with queue.lock:
+                await queue.create_or_grow_locked("s", nameless, "hello")
+            return queue, nameless
+
+        queue, nameless = asyncio.run(go())
+        assert nameless.sent == [], "nothing is posted without an address to post to"
+        assert not queue.has_receipt("s")
+
+    def test_final_body_is_only_set_through_terminalize(self) -> None:
+        """The retention bound lives at ONE seam, so a fourth transition inherits it.
+
+        ``terminalize`` sets the owed body AND drops ``lines``; an assignment anywhere
+        else would retain a whole burst verbatim for the life of the process, which is
+        the defect this pin exists to stop coming back.
+        """
+        src = Path(Q.__file__).with_suffix(".py").read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        offenders = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            for target in node.targets:
+                if isinstance(target, ast.Attribute) and target.attr == "final_body":
+                    offenders.append(node.lineno)
+        # The one inside terminalize is the seam itself.
+        assert len(offenders) == 1, (
+            "final_body is assigned outside terminalize, so that site retains every "
+            f"queued message verbatim: lines {offenders}"
+        )
+        seam = [
+            n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "terminalize"
+        ]
+        assert seam, "terminalize is gone; the bound has no home"
+        assert seam[0].lineno < offenders[0] < seam[0].end_lineno
+
+    def test_every_receipt_surface_stand_in_names_its_address(self) -> None:
+        """A fake without an address withholds every write, and says nothing about why.
+
+        `address_key` is part of what a channel BINDS, so a stand-in that omits it is
+        not a simplified surface -- it is one the registry refuses to write through, and
+        the failure surfaces as an attribute error in whichever suite happens to touch
+        it rather than at the fake's own definition. Checked as an ASSIGNMENT, because a
+        mention in a docstring satisfies a substring search and writes nothing.
+        """
+        root = Path(Q.__file__).resolve().parent.parent.parent.parent
+        missing = []
+        for path in sorted((root / "test").glob("test_*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.ClassDef):
+                    continue
+                posts = any(
+                    isinstance(f, ast.AsyncFunctionDef) and f.name == "send_receipt"
+                    for f in node.body
+                )
+                if not posts:
+                    continue
+                names = {
+                    t.attr if isinstance(t, ast.Attribute) else getattr(t, "id", "")
+                    for inner in ast.walk(node)
+                    if isinstance(inner, (ast.Assign, ast.AnnAssign))
+                    for t in (inner.targets if isinstance(inner, ast.Assign) else [inner.target])
+                }
+                if "address_key" not in names:
+                    missing.append(f"{path.name}::{node.name}")
+        assert not missing, (
+            "these stand in for a receipt surface without assigning an address, so the "
+            f"registry writes through none of them: {missing}"
+        )
+
+    def test_every_channel_surface_names_its_address(self) -> None:
+        """A channel that forgets the key would silently stop updating its bubbles.
+
+        Every write rule reads ``address_key``, and an absent one is UNKNOWN, so a new
+        channel omitting it would pass its own tests while its receipts froze at
+        "Queued" in production.
+        """
+        missing = []
+        for path in _dispatchers():
+            src = path.read_text(encoding="utf-8")
+            if "ReceiptSurface" not in src:
+                continue
+            if "receipt_address_key(" not in src:
+                missing.append(path.parent.name)
+        assert not missing, f"{missing} build a receipt surface without an address key"
