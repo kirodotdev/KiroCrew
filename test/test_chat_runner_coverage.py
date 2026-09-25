@@ -3462,7 +3462,7 @@ class TestRunChatLocalCommands:
             # old, so the live provider is the harness /todos would reach.
             ("claude", "", True),
             ("", "claude", False),
-            # Agreeing axes keep #13805's answer.
+            # Agreeing axes keep the config answer.
             ("claude", "claude", False),
             ("", "", True),
         ],
