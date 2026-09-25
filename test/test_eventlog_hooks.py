@@ -885,10 +885,184 @@ class TestALiveReopenSurvivesTheStartupReconcile:
         assert wrote is not None
         assert wrote["type"] == types.SLOT_CLOSED
 
-    def test_the_predicate_reads_the_current_projection_not_the_callers(
+    def test_the_predicate_is_asked_after_a_foreign_commit_becomes_visible(
         self, tmp_path, monkeypatch
     ):
-        # The point of the recheck is that it sees state the caller could not. A
+        """The window between our fold and our write belongs to another process.
+
+        The per-slug lock orders this process's writers only. The member log has
+        more than one writer, so an entry another process commits after our fold
+        lands BEFORE ours, and a last-wins projection then takes our closer as the
+        newer word for a state that had already closed itself. The predicate is
+        therefore asked inside the store's ownership, where the file cannot move.
+        """
+        from kiro_crew.eventlog import log as log_mod
+        from kiro_crew.eventlog import service as svc_mod
+        from kiro_crew.eventlog import types
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        svc_mod.set_service(None)
+        svc = svc_mod.get_service()
+        svc.ensure("ivy", "Ivy")
+        svc.append("ivy", types.SLOT_OPENED, {"slot_key": "s1"})
+
+        real_get_log = svc._get_log
+        foreign = []
+
+        def _get_log_then_a_foreign_commit(slug):
+            log = real_get_log(slug)
+            if slug == "ivy" and not foreign:
+                foreign.append(True)
+                # Another PROCESS closes the slot through its own handle, so this
+                # service's registry never learns of it. Written after our fold,
+                # which is the window the predicate has to see across.
+                log_mod.MemberLog("ivy").append(
+                    types.SLOT_CLOSED, {"slot_key": "s1", "reason": "finished"}
+                )
+            return log
+
+        monkeypatch.setattr(svc, "_get_log", _get_log_then_a_foreign_commit)
+
+        def _slot_is_still_open(values, _observed):
+            driving = values.get(types.PROJ_DRIVING, {}) or {}
+            return "s1" in (driving.get("open", []) or [])
+
+        wrote = svc.append_closer_if_still_applies(
+            "ivy",
+            types.SLOT_CLOSED,
+            {"slot_key": "s1", "reason": "interrupted"},
+            still_applies=_slot_is_still_open,
+        )
+
+        assert foreign, "the foreign commit never landed; this test proved nothing"
+        assert wrote is None, (
+            "the closer was written against a projection that had already closed "
+            "itself in another process"
+        )
+        closers = [
+            e
+            for e in svc.history("ivy", before=None, limit=None)
+            if e.get("type") == types.SLOT_CLOSED
+        ]
+        assert (
+            len(closers) == 1
+        ), f"expected only the foreign close to be in the log, found {len(closers)}"
+        assert closers[0]["data"].get("reason") == "finished"
+
+    def test_nothing_that_parses_the_log_runs_inside_the_stores_hold(self, tmp_path, monkeypatch):
+        """The hold carries one comparison, not the fold.
+
+        A parse under the store's cross-process lock is a hold nothing bounds: a
+        peer append gives up after its own bounded wait and its event is then lost
+        for good. So the fold happens before ownership is taken, and what runs
+        inside is the check that the tail is still the one that fold reached.
+        """
+        from kiro_crew.crew_log import store as store_mod
+        from kiro_crew.eventlog import service as svc_mod
+        from kiro_crew.eventlog import types
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        svc_mod.set_service(None)
+        svc = svc_mod.get_service()
+        svc.ensure("ivy", "Ivy")
+        for index in range(5):
+            svc.append("ivy", types.SLOT_OPENED, {"slot_key": f"s{index}"})
+
+        in_precondition = []
+        folds_inside = []
+        real_fold = svc._fold_gap_locked
+
+        def _watched_fold(slug, log, *, below=None):
+            if in_precondition:
+                folds_inside.append(below)
+            return real_fold(slug, log, below=below)
+
+        monkeypatch.setattr(svc, "_fold_gap_locked", _watched_fold)
+
+        real_append_if = store_mod.CrewLog.append_if
+
+        def _wrapped(self, type, data, *, src, precondition, **kw):
+            def _watched(last_seq):
+                in_precondition.append(True)
+                try:
+                    return precondition(last_seq)
+                finally:
+                    in_precondition.pop()
+
+            return real_append_if(self, type, data, src=src, precondition=_watched, **kw)
+
+        monkeypatch.setattr(store_mod.CrewLog, "append_if", _wrapped)
+
+        wrote = svc.append_closer_if_still_applies(
+            "ivy",
+            types.SLOT_CLOSED,
+            {"slot_key": "s0", "reason": "interrupted"},
+            still_applies=lambda _values, _observed: True,
+        )
+
+        assert wrote is not None, "fixture must reach the append for this to prove anything"
+        assert folds_inside == [], (
+            f"the log was folded {len(folds_inside)} time(s) inside the store's hold; "
+            "that parse is the unbounded hold this design moves out"
+        )
+
+    def test_a_closer_survives_a_foreign_commit_it_does_not_care_about(self, tmp_path, monkeypatch):
+        """Losing the tail once must re-decide, not decline for good.
+
+        A design that simply refused whenever the tail moved would satisfy the
+        decline test above and quietly stop closing interrupted state on any member
+        another process also writes to.
+        """
+        from kiro_crew.eventlog import log as log_mod
+        from kiro_crew.eventlog import service as svc_mod
+        from kiro_crew.eventlog import types
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        svc_mod.set_service(None)
+        svc = svc_mod.get_service()
+        svc.ensure("ivy", "Ivy")
+        svc.append("ivy", types.SLOT_OPENED, {"slot_key": "s1"})
+
+        real_fold = svc._fold_gap_locked
+        foreign = []
+
+        def _fold_then_a_foreign_commit(slug, log, *, below=None):
+            real_fold(slug, log, below=below)
+            if slug == "ivy" and below is None and not foreign:
+                foreign.append(True)
+                # Another process opens a DIFFERENT slot in the one window this
+                # design still has: after our fold, before the store's tail read.
+                # It moves the tail and has nothing to do with the slot closed here.
+                log_mod.MemberLog("ivy").append(types.SLOT_OPENED, {"slot_key": "other"})
+
+        monkeypatch.setattr(svc, "_fold_gap_locked", _fold_then_a_foreign_commit)
+
+        asked = []
+
+        def _slot_is_still_open(values, _observed):
+            driving = values.get(types.PROJ_DRIVING, {}) or {}
+            asked.append(sorted(driving.get("open", []) or []))
+            return "s1" in (driving.get("open", []) or [])
+
+        wrote = svc.append_closer_if_still_applies(
+            "ivy",
+            types.SLOT_CLOSED,
+            {"slot_key": "s1", "reason": "interrupted"},
+            still_applies=_slot_is_still_open,
+        )
+
+        assert foreign, "the foreign commit never landed; this test proved nothing"
+        assert len(asked) == 2, f"the predicate was asked {len(asked)} time(s), not re-asked"
+        assert asked[-1] == [
+            "other",
+            "s1",
+        ], f"the retry decided on {asked[-1]}, so it did not fold the foreign commit"
+        assert wrote is not None, "a foreign commit it does not care about blocked the closer"
+        assert wrote["data"]["slot_key"] == "s1"
+
+    def test_the_predicate_reads_the_current_projection_not_the_callers(
+        self, tmp_path, monkeypatch
+    ):  # The point of the recheck is that it sees state the caller could not. A
         # predicate handed the caller's own snapshot would close nothing it should not
         # and also nothing it should -- it would just be the same stale answer again.
         from kiro_crew.eventlog import service as svc_mod

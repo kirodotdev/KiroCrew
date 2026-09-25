@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import time
 from collections import deque
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -318,8 +318,35 @@ class MemberLog:
         self._ensure_loaded()
         return event
 
+    def append_if(
+        self, type: str, data: dict, *, precondition: Callable[[int], bool]
+    ) -> Event | None:
+        """:meth:`append`, written only if *precondition* holds under write ownership.
+
+        *precondition* is handed the newest seq committed to the file while this
+        process owns the log and holds the per-append lock, so it judges the state
+        the event will actually land on rather than a state that was current when
+        the caller decided. ``None`` means it declined and nothing was written.
+
+        The reload still happens on a decline, because the tail the precondition saw
+        is newer than the cached list whenever another writer got there first, and
+        that is exactly the case a decline reports.
+        """
+        if not is_known_event_type(type):
+            raise ValueError(f"unknown event type {type!r}")
+        self._ensure_loaded()
+        if self._crew_log is None:
+            raise LogCorrupt(self.path, 0, "cannot append to a log with no header")
+        stored = _stored_type(type)
+        entry = self._append_through_contention(stored, data, precondition)
+        self._loaded = False
+        self._ensure_loaded()
+        return None if entry is None else _as_event(entry)
+
     # ---- read -------------------------------------------------------------
-    def _append_through_contention(self, stored: str, data: dict):
+    def _append_through_contention(
+        self, stored: str, data: dict, precondition: Callable[[int], bool] | None = None
+    ):
         """Append, waiting out a CONTENTION refusal instead of losing the event.
 
         ``crew_log.lease`` takes write ownership non-blocking, so two processes
@@ -352,7 +379,11 @@ class MemberLog:
         delay = APPEND_CONTENTION_FIRST_DELAY
         while True:
             try:
-                return self._crew_log.append(stored, data, src=_src_for(stored))
+                if precondition is None:
+                    return self._crew_log.append(stored, data, src=_src_for(stored))
+                return self._crew_log.append_if(
+                    stored, data, src=_src_for(stored), precondition=precondition
+                )
             except CrewLogError as exc:
                 code = getattr(exc, "code", "")
                 # A refused PAYLOAD keeps this surface's ValueError, the same type

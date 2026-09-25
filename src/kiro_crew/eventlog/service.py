@@ -53,6 +53,13 @@ Broadcast = Callable[[str, object], None]
 #: already handles for free. Matches the crew log's own ``MIN_ADVANCE_ENTRIES``.
 _SAVEPOINT_MIN_ADVANCE = 256
 
+#: How many times a closer re-folds and re-asks its predicate after losing the tail
+#: to another process. Each attempt costs one fold, and a closer that keeps losing is
+#: a member under sustained foreign writes -- where declining is right anyway, since
+#: the next read decides again against a state that has settled. Small for that
+#: reason: the retry exists for the one-commit collision, not to win a write war.
+_CLOSER_TAIL_ATTEMPTS = 3
+
 
 def _redact_projection_value(value: object) -> object:
     """Redact every string in a projection view before it leaves over the WS.
@@ -1105,19 +1112,59 @@ class MemberEventLogService:
         This exists rather than a predicate on :meth:`append` because the predicate
         must not re-enter the service to read state -- ``snapshot`` takes this same
         non-reentrant lock, so a caller that reached for it would deadlock.
+
+        The predicate is asked against a state no foreign commit can have moved,
+        and that guarantee comes from the store rather than from the per-slug lock
+        above. The per-slug lock orders this process's writers, and for them it is
+        enough: a concurrent in-process append queues behind this hold and lands
+        after, which is the winning order. It says nothing about another PROCESS,
+        and the member log has more than one writer -- an entry another process
+        commits between our fold and our write lands FIRST, and a last-wins
+        projection then takes ours as the newer word for a state that had already
+        moved.
+
+        What runs inside the store's hold is ONE comparison, not the decision: the
+        precondition answers whether the newest committed seq is still the one this
+        fold reached. The fold itself parses the log, and a parse under a
+        cross-process lock is a hold nothing bounds -- a peer append gives up after
+        a bounded wait and its event is then lost for good, so the expensive half
+        stays outside. A foreign commit makes the tail exceed what we folded, the
+        append declines without writing, and the loop folds that entry and asks the
+        predicate again. Seqs only increase, so the comparison cannot be fooled by
+        a tail that moved and came back.
         """
         lock = self._slug_lock(slug)
         with lock:
-            log = self._get_log(slug)
-            if log is None:
-                return None
-            values = self._registry.snapshot(slug).get("values", {})
-            if not still_applies(
-                values if isinstance(values, dict) else {},
-                observed if isinstance(observed, dict) else {},
-            ):
-                return None
-            return self._append_locked(slug, log, type, data)
+            for _ in range(_CLOSER_TAIL_ATTEMPTS):
+                log = self._get_log(slug)
+                if log is None:
+                    return None
+                self._fold_gap_locked(slug, log)
+                # The newest seq every cell has folded, which is the state the
+                # predicate is about to read. An empty log reports -1 (no cell has
+                # been driven), and the store reports 0 for a file with a header and
+                # no events, so the two agree only once the floor is clamped up.
+                folded_to = max(self._registry.observed_floor(slug), 0)
+                values = self._registry.snapshot(slug).get("values", {})
+                if not still_applies(
+                    values if isinstance(values, dict) else {},
+                    observed if isinstance(observed, dict) else {},
+                ):
+                    return None
+                event = log.append_if(
+                    type, data, precondition=lambda last_seq: last_seq <= folded_to
+                )
+                if event is not None:
+                    self._fold_gap_locked(slug, log, below=event["seq"])
+                    self._registry.drive(slug, event)
+                    return event
+            # Every attempt lost the same race. Declining is the safe direction --
+            # a closer not written is a normal outcome the next read re-decides,
+            # while one written against a state that moved is permanent.
+            logger.debug(
+                "closer for slug=%r type=%r lost the tail race on every attempt", slug, type
+            )
+            return None
 
     def _fold_gap_locked(self, slug: str, log: MemberLog, *, below: int | None = None) -> None:
         """Fold events on disk that this process has not folded; caller holds the lock.

@@ -273,10 +273,39 @@ when the member has never spoken, so the stale line does not stand beside an emp
 chat — and a second read appends nothing. The correction is written through
 `append_closer_if_still_applies` with `_preview_is_still_at`: the roster's
 `last_message` and `last_active_ts` must still read as they did when `api_members`
-observed them BEFORE its transcript read, re-checked under the per-slug write lock,
-so a `member/message` the crewmate speaks while the read is in flight refuses the
-older answer instead of being overwritten by it (the fold is last-wins by append
+observed them BEFORE its transcript read, re-checked while this process OWNS the
+log, so a `member/message` the crewmate speaks while the read is in flight refuses
+the older answer instead of being overwritten by it (the fold is last-wins by append
 order, so a stale append would otherwise regress both fields durably).
+
+That recheck is ordered by the store's own hold, not by the per-slug lock alone.
+The per-slug lock orders this process's writers, and for them it settles the
+question: a concurrent in-process append queues behind the hold and lands after,
+which is the winning order. It says nothing about another process, and the member
+log has more than one writer, so an entry committed elsewhere between the fold and
+the write lands FIRST and a last-wins projection then reads the closer as the newer
+word for a state that had already moved. `CrewLog.append_if` therefore takes a
+`precondition` and calls it with the newest committed seq after write ownership and
+the per-append lock are both held and the tail has been read, writing only if it
+answers true; a decline appends nothing, though a torn trailing record seen by that
+tail read is still repaired, which is the store's own debt to the file rather than
+part of the append.
+
+What the hold carries is ONE comparison, and deliberately not the decision. The fold
+parses the log, and a parse under a cross-process lock is a hold nothing bounds: a
+peer append gives up after `APPEND_CONTENTION_SECONDS` and its event is then lost for
+good, so the expensive half stays outside. `append_closer_if_still_applies` folds and
+asks the caller's predicate first, remembers the seq that fold reached, and the
+precondition answers only whether the tail is still that seq. A foreign commit makes
+the tail exceed it, the append declines without writing, and the loop folds that
+entry and asks the predicate again, up to `_CLOSER_TAIL_ATTEMPTS` times before
+declining for good -- declining is the safe direction, because a closer not written
+is re-decided by the next read while one written against a state that moved is
+permanent. Seqs only increase, so the comparison cannot be fooled by a tail that
+moved and came back. A precondition must still be bounded and must not write to the
+log; reads are safe, because `iter_from`, `page` and `resolve` take neither the lease
+nor that lock, and the lease is refcounted per process so a nested claim from the
+same process is not contention.
 The correction is also gated on the read being TRUSTWORTHY: `last_speech_info`
 returns a fourth value, `exhaustive`, true only when the tail walk reached the
 start of the transcript. A patroller that has written more than the widest tail

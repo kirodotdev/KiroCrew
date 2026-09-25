@@ -302,6 +302,57 @@ def test_seq_starts_at_one_after_the_header_and_time_is_epoch_ms():
     assert first.time > 1_600_000_000_000
 
 
+def test_append_if_writes_nothing_when_its_precondition_declines():
+    crew = _crew()
+    crew.append("item/opened", {"item": "pr-1"}, src="gateway")
+    before = _log_bytes(lg.KIND_CREW, CREW)
+
+    declined = crew.append_if(
+        "item/opened", {"item": "pr-2"}, src="gateway", precondition=lambda _last: False
+    )
+
+    assert declined is None
+    assert _log_bytes(lg.KIND_CREW, CREW) == before, "a declined append rewrote the file"
+    assert crew.last_seq == 1
+
+
+def test_append_if_writes_and_keeps_the_seq_contract_when_it_holds():
+    # CONTROL. A precondition that never held would satisfy the test above while
+    # silently dropping every closer in the system.
+    crew = _crew()
+    crew.append("item/opened", {"item": "pr-1"}, src="gateway")
+
+    written = crew.append_if(
+        "item/opened", {"item": "pr-2"}, src="gateway", precondition=lambda _last: True
+    )
+
+    assert written is not None
+    assert (written.seq, crew.last_seq) == (2, 2)
+
+
+def test_append_if_hands_its_precondition_the_seq_read_back_under_the_lock():
+    """The precondition judges the file, not the handle's cached idea of it.
+
+    A second handle -- standing in for another process -- commits an entry this
+    handle never saw. The precondition has to be told that entry's seq, because
+    the whole point is to decide against the state the new entry will land on.
+    """
+    crew = _crew()
+    crew.append("item/opened", {"item": "pr-1"}, src="gateway")
+    CrewLog.open(lg.KIND_CREW, CREW).append("item/opened", {"item": "foreign"}, src="gateway")
+
+    seen: list[int] = []
+    written = crew.append_if(
+        "item/opened",
+        {"item": "pr-2"},
+        src="gateway",
+        precondition=lambda last: seen.append(last) is None,
+    )
+
+    assert seen == [2], f"precondition saw {seen}, not the foreign entry's seq"
+    assert written is not None and written.seq == 3
+
+
 def test_seq_stays_contiguous_across_a_reopen():
     crew = _crew()
     for index in range(3):

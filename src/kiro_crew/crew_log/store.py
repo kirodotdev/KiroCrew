@@ -2306,6 +2306,79 @@ class CrewLog:
         the one that knows whether the entry is a sample or a fact -- which is
         why it lives on the append and not on the read.
         """
+        entry = self._append(
+            type,
+            data,
+            src=src,
+            thread=thread,
+            ref=ref,
+            ignorable=ignorable,
+            precondition=None,
+        )
+        assert entry is not None  # no precondition, so nothing can decline
+        return entry
+
+    def append_if(
+        self,
+        type: str,
+        data: dict[str, Any],
+        *,
+        src: str,
+        precondition: Callable[[int], bool],
+        thread: int | None = None,
+        ref: Ref | dict[str, Any] | None = None,
+        ignorable: bool = False,
+    ) -> Entry | None:
+        """:meth:`append`, with the decision re-asked while this process owns the log.
+
+        ``precondition`` is called with the newest seq committed to the file, AFTER
+        write ownership and the per-append lock are both held and the tail has been
+        read, and the entry is written only if it answers true. Returning ``None``
+        means it declined: no entry was appended. The file is not guaranteed
+        byte-identical across a decline, because the tail read happens first and a
+        torn trailing record is repaired as soon as it is seen -- that repair is the
+        store's, owed to the file rather than to this append, and it is the one
+        change a decline can leave behind.
+
+        It must be bounded, and it must not write to this log. Keep the expensive
+        part out of it: this runs under a cross-process lock, so a long precondition
+        is a long hold, and a peer append that exhausts its own bounded wait loses
+        its event for good. Reads are safe -- ``iter_from``, ``page`` and ``resolve``
+        take neither the lease nor this lock, and the lease is refcounted per
+        process, so a nested claim from the same process is not contention.
+
+        This exists because a decision made BEFORE the append is not ordered against
+        another PROCESS. The log has more than one writer, so an entry committed
+        between a caller's decision and its own write lands FIRST and the caller's
+        entry lands after it -- and for a last-wins projection that ordering is the
+        whole outcome, so a decision that was true when it was made is applied to a
+        state that has since moved. The caller cannot close that window from outside:
+        every check it makes is still outside the ownership that decides the order.
+        Inside this hold the file cannot move, so a precondition asked here is asked
+        against the state the entry will actually land on.
+        """
+        return self._append(
+            type,
+            data,
+            src=src,
+            thread=thread,
+            ref=ref,
+            ignorable=ignorable,
+            precondition=precondition,
+        )
+
+    def _append(
+        self,
+        type: str,
+        data: dict[str, Any],
+        *,
+        src: str,
+        thread: int | None,
+        ref: Ref | dict[str, Any] | None,
+        ignorable: bool,
+        precondition: Callable[[int], bool] | None,
+    ) -> Entry | None:
+        """The one append body, shared so the two entry points cannot drift apart."""
         require_data(data)
         check_ownership(self._kind, type, src)
         validate_data(self._kind, type, data)
@@ -2341,6 +2414,13 @@ class CrewLog:
                     code=CODE_BAD_THREAD,
                     field="thread",
                 )
+            # Asked against the tail just read, under the ownership that decides
+            # this entry's order, and before any byte is written -- so a decline
+            # appends nothing. It is not the same as a format refusal above: those
+            # happen before the tail is read, while the torn-tail repair just above
+            # is unconditional, so a decline can still leave that repair behind.
+            if precondition is not None and not precondition(tail.last_seq):
+                return None
             entry = Entry(
                 type=type,
                 seq=tail.last_seq + 1,
