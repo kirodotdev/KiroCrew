@@ -981,29 +981,296 @@ class TestRotationSplitting:
     async def test_a_seal_ending_in_escape_degrades_uploads(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A sealed prefix ending in an odd backslash run escapes the tail's
-        first character in the full text (GPT security finding).
+        """Escape opener UNMATCHED across the seam: the sealed prefix ends in an
+        odd backslash run, so a marker on the live tail's first line is escaped
+        (literal) in the full text but real when the tail is scanned alone.
 
-        A tail that scans markup-bearing alone -- e.g. an image reference
-        whose guarding backslash sealed away -- would otherwise upload a
-        source-literal file at the semantic seal. The rotation must fail
-        closed.
+        The seam-aware classifier asks the extraction reader at the tail's own
+        resume point: the two readings disagree, so the rotation fails closed.
+        Left un-degraded, the semantic seal would upload a source-literal file.
         """
         r, _ = self._renderer(monkeypatch, 60)
-        r._buf = ["x" * 58 + "\\ short tail here"]
+        # Cut lands right after a lone backslash; the tail opens with markup the
+        # backslash escapes in the full text.
+        r._buf = ["y" * 59 + "\\" + "![c](/tmp/c.png) tail"]
         await r._rotate_on_length()
         assert r._segment_uploads_safe is False
+
+    @pytest.mark.asyncio
+    async def test_an_escaped_trailing_space_is_not_escape_debt(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Escape opener MATCHED (spent) at the seam: a backslash escaping a real
+        trailing space straddles nothing the tail resumes.
+
+        The extraction reader judges both readings the same, so the classifier
+        sees no flip and uploads stay eligible. A whole-head escape count on the
+        rstripped sealed chunk would have faked debt here; consulting the reader
+        at the tail's resume point does not.
+        """
+        r, _ = self._renderer(monkeypatch, 60)
+        assert r._segment_uploads_safe is True
+        r._buf = ["x" * 58 + "\\ short tail here"]
+        await r._rotate_on_length()
+        assert r._segment_uploads_safe is True
 
     @pytest.mark.asyncio
     async def test_a_clean_seal_keeps_uploads_eligible(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The escape-debt rule fires only on a real trailing escape."""
+        """A seam with no open literalness context of any kind is neutral: both
+        readings agree, so uploads stay eligible."""
         r, _ = self._renderer(monkeypatch, 60)
         assert r._segment_uploads_safe is True
         r._buf = ["x" * 58 + " short tail here"]
         await r._rotate_on_length()
         assert r._segment_uploads_safe is True
+
+    @pytest.mark.asyncio
+    async def test_a_backtick_balanced_within_the_seam_block_is_not_debt(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A backtick BALANCED within the seam's own blank-line block is not
+        debt: the block closes its inline-code span before the seam, so the
+        prefix opens nothing the tail inherits.
+
+        Check 1 masks the seam's own block with the reader's segmentation. A
+        block whose backticks pair leaves no surviving opener, so uploads stay
+        eligible -- degrading here would only cost a genuinely-real image later.
+        """
+        r, _ = self._renderer(monkeypatch, 60)
+        assert r._segment_uploads_safe is True
+        # An earlier paragraph carries a lone backtick, but the seam's OWN block
+        # closes its inline-code span (`code`) before the over-limit filler is
+        # cut, so nothing is left open at the seam.
+        r._buf = ["a ` char here\n\nthen `code` and " + "y" * 70 + "\n"]
+        await r._rotate_on_length()
+        assert r._segment_uploads_safe is True
+
+    @pytest.mark.asyncio
+    async def test_an_open_inline_code_opener_in_the_seam_block_degrades(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An inline-code opener still OPEN in the seam's own block degrades,
+        fail-closed.
+
+        The seam's block ends inside an unclosed inline-code span. Whether a
+        closing backtick arrives later on the tail is unknown at rotation, and if
+        it does the tail-alone read promotes a marker the full text keeps
+        literal -- so the classifier fails closed on the open opener in the
+        seam's own block rather than gambling on the closer never arriving.
+        """
+        r, _ = self._renderer(monkeypatch, 60)
+        assert r._segment_uploads_safe is True
+        # The seam's own block opens an inline-code span and does not close it
+        # before the over-limit line is cut.
+        r._buf = ["intro\n\nopen `code span " + "y" * 70 + "\n"]
+        await r._rotate_on_length()
+        assert r._segment_uploads_safe is False
+
+    @pytest.mark.asyncio
+    async def test_two_unmatched_backticks_in_separate_paragraphs_degrade(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two unmatched backticks in SEPARATE paragraphs, then a literal local
+        image across the seam, must degrade (GPT finding on the whole-region
+        mask).
+
+        A whole-prefix mask pairs the two lone backticks across the blank line
+        and sees no debt, so a later ``![b](...)`` that the full text keeps
+        literal -- because the second paragraph's inline-code span still covers
+        it -- is uploaded once the tail is scanned alone. Block-bounding the mask
+        to the seam's own block (the reader's own segmentation) sees the second
+        paragraph's opener still open and degrades. Fail closed.
+        """
+        r, _ = self._renderer(monkeypatch, 60)
+        assert r._segment_uploads_safe is True
+        # Para 1 opens a lone backtick; blank line; para 2 opens another and its
+        # over-limit line is cut with the span still open -- a later
+        # ``![b](/tmp/b.png)`` on the tail, closed by a trailing backtick, is
+        # literal in the full text but real in the tail alone.
+        r._buf = [
+            "first `para with a lone tick\n\n"
+            "second `para " + "y" * 70 + " and ![b](/tmp/b.png) done`\n"
+        ]
+        await r._rotate_on_length()
+        assert r._segment_uploads_safe is False
+
+    @pytest.mark.asyncio
+    async def test_a_matched_inline_code_pair_across_the_seam_stays_eligible(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Inline-code opener MATCHED before the seam: a balanced pair leaves no
+        open context for the tail to resume, so uploads stay eligible."""
+        r, _ = self._renderer(monkeypatch, 60)
+        assert r._segment_uploads_safe is True
+        r._buf = ["a `code` here " + "y" * 70 + "\n"]
+        await r._rotate_on_length()
+        assert r._segment_uploads_safe is True
+
+    @pytest.mark.asyncio
+    async def test_an_open_fence_across_the_seam_does_not_disable_uploads(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fence opener across the seam via a REOPENER tail: the splitter builds
+        ``tail = reopener + remainder`` with a synthetic ``"```lang\\n"`` the
+        source never had, so ``split_source.endswith(tail)`` is False.
+
+        The seam then sits inside an open fence -- literal in both readings and
+        already owned by the fence-aware per-chunk span scan -- so the classifier
+        is skipped and uploads stay eligible. A naive concatenation check would
+        have fabricated a closing-then-reopening fence and faked debt.
+        """
+        r, _ = self._renderer(monkeypatch, 60)
+        assert r._segment_uploads_safe is True
+        # A long code fence, still open, over the limit -- no orphaned ref.
+        r._buf = ["```py\n" + "x = 1\n" * 40]
+        await r._rotate_on_length()
+        assert r._segment_uploads_safe is True
+
+    @pytest.mark.asyncio
+    async def test_an_over_limit_indented_fenced_block_stays_eligible(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A fenced block whose lines are themselves indented, crossing the
+        limit, must not disable uploads.
+
+        The reopener tail makes ``split_source.endswith(tail)`` False, so the
+        seam classifier is skipped: every seam is inside the open fence, literal
+        in both readings. Otherwise the reopened fence's indent would have faked
+        indentation debt and disabled uploads for the whole segment.
+        """
+        r, _ = self._renderer(monkeypatch, 60)
+        assert r._segment_uploads_safe is True
+        r._buf = ["```py\n" + "    indented_code = 1\n" * 6]
+        await r._rotate_on_length()
+        assert r._segment_uploads_safe is True
+
+    @pytest.mark.asyncio
+    async def test_a_midline_cut_in_indented_code_degrades_uploads(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Indentation opener UNMATCHED across the seam (head indented, tail
+        not): a four-space indented logical line dirty-cut MID-LINE leaves the
+        tail continuing that literal-code context WITHOUT its indent.
+
+        The full text reads a marker on that line literal (indented code); the
+        de-indented tail reads it real. The classifications differ -- the seam
+        classifier sees the flip and fails closed. This is the original
+        local-path leak repro: left un-degraded, the semantic seal would upload
+        a source-literal file.
+        """
+        r, _ = self._renderer(monkeypatch, 60)
+        assert r._segment_uploads_safe is True
+        # One over-limit indented-code line, no ref yet; it is cut mid-line and
+        # the tail resumes the same logical line without the four-space indent.
+        r._buf = ["    " + "y" * 90 + "\n"]
+        await r._rotate_on_length()
+        assert r._segment_uploads_safe is False
+
+    @pytest.mark.asyncio
+    async def test_a_midline_cut_without_indent_keeps_uploads_eligible(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Indentation MATCHED (absent in both): a non-indented logical line cut
+        mid-line opens no literal-code context.
+
+        A marker on its tail is genuinely real in the full text too, so both
+        readings agree and there is no degrade.
+        """
+        r, _ = self._renderer(monkeypatch, 60)
+        assert r._segment_uploads_safe is True
+        r._buf = ["z" * 90 + "\n"]
+        await r._rotate_on_length()
+        assert r._segment_uploads_safe is True
+
+    @pytest.mark.asyncio
+    async def test_a_midline_cut_before_a_tab_led_tail_degrades_uploads(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Indentation opener UNMATCHED the OTHER way (head not indented, tail
+        tab-led): the mirror flip.
+
+        ``_safe_cut`` admits a mid-line boundary right before a leading ``\\t``
+        (a tab is not a delimiter lead), so the retained tail BEGINS tab-led and
+        reads as indented code at offset 0 -- while the source line's own start
+        is not indented. The full text reads a marker on that line REAL, the
+        tail-alone reading reads it LITERAL: the seal drops the image and ships
+        the raw local path to Discord as display text. The seam classifier fails
+        closed on the mismatch.
+        """
+        r, _ = self._renderer(monkeypatch, 60)
+        assert r._segment_uploads_safe is True
+        # Over-limit single logical line; the mid-line cut lands so the tail
+        # begins with a tab (>= four expanded columns) while the source line
+        # itself is not indented -- a literalness flip.
+        r._buf = ["z" * 59 + "\t  more code on the same over-limit logical line\n"]
+        await r._rotate_on_length()
+        assert r._segment_uploads_safe is False
+
+    @pytest.mark.asyncio
+    async def test_an_over_limit_fenced_block_does_not_fake_seam_debt(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A fenced block crossing the limit must not disable uploads: the
+        reopener tail makes the seam classifier skip (seam inside an open
+        fence, owned by the fence-aware per-chunk span scan)."""
+        r, _ = self._renderer(monkeypatch, 60)
+        assert r._segment_uploads_safe is True
+        # An indented fenced code block, over the limit, carrying no orphaned
+        # reference -- every seam is inside the open fence.
+        r._buf = ["```py\n" + "    indented_code = 1\n" * 6]
+        await r._rotate_on_length()
+        assert r._segment_uploads_safe is True
+
+    @pytest.mark.asyncio
+    async def test_the_original_local_path_leak_is_not_uploaded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """End-to-end: the indentation-seam leak (the class all three review
+        blocks descended from) does not surface a workspace path as an upload.
+
+        A four-space indented over-limit line is cut mid-line; a later image
+        marker arrives on the de-indented tail. The full text keeps it literal
+        (indented code), so the file must NOT be extracted -- degrading routes
+        the seal to redacted display text, where the marker stays literal, and
+        no OutboundFile is produced.
+        """
+        r, cli = self._renderer(monkeypatch, 60)
+        assert r._segment_uploads_safe is True
+        # Rotate on the indented over-limit line -> degrade.
+        r._buf = ["    " + "y" * 90 + "\n"]
+        await r._rotate_on_length()
+        assert r._segment_uploads_safe is False
+        # The later marker arrives on the tail; the segment stays degraded, so
+        # the seal extracts nothing (no local file uploaded).
+        r._buf.append("![c](/tmp/c.png)\n")
+        await r._seal_current(extract_uploads=True)
+        assert cli.uploaded_files == []
+
+    @pytest.mark.asyncio
+    async def test_an_inline_code_span_opened_before_the_seam_degrades(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `` ``code `` inline-code span opened in the sealed prefix, whose
+        closer sits DEEP in the live tail, degrades the segment.
+
+        The rotation seals a prefix that opens a two-backtick inline span; the
+        tail is later sealed WITHOUT that opener, so a marker the full text kept
+        literal because the span covered it reads as real once the tail is
+        scanned alone. The ref-set at the rotation seam cannot see it -- the tail
+        still carries the closing delimiter at that instant -- so the classifier
+        catches it as an inline-code opener with no closer before the seam. Fail
+        closed: the whole segment degrades.
+        """
+        r, _ = self._renderer(monkeypatch, 60)
+        assert r._segment_uploads_safe is True
+        # `` ``code `` opens a two-backtick inline span; the over-limit filler
+        # forces a rotation whose sealed prefix ends inside that open span,
+        # while the closer only arrives far down the live tail.
+        r._buf = ["``code\n" + "x" * 80 + "\n" + "y" * 80 + "\ntail and ![b](/tmp/b.png)\n``"]
+        await r._rotate_on_length()
+        assert r._segment_uploads_safe is False
 
     @pytest.mark.asyncio
     async def test_fence_grammar_seams_survive_a_rotation(

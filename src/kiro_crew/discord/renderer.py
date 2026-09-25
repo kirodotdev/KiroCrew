@@ -76,6 +76,7 @@ from kiro_crew.messaging.outbound_files import (
     extract_local_refs_off_loop,
     hide_local_refs,
     protected_ref_spans,
+    seam_carries_markup_debt,
 )
 from kiro_crew.messaging.renderer import (
     Renderer,
@@ -87,7 +88,10 @@ from kiro_crew.messaging.renderer import (
     session_provenance_tag,
     split_options_trailer,
 )
-from kiro_crew.messaging.split import split_markdown_safe, split_markdown_safe_with_tier
+from kiro_crew.messaging.split import (
+    split_markdown_safe,
+    split_markdown_safe_with_tier,
+)
 from kiro_crew.messaging.status_reactions import (
     PHASE_QUEUED,
     PHASE_THINKING,
@@ -100,7 +104,6 @@ from kiro_crew.messaging.tables import TABLE_POLICY_CARDS
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
-from kiro_crew.widget_parse import mask_inline_code
 
 if TYPE_CHECKING:
     from kiro_crew.discord.client import DiscordClient
@@ -970,39 +973,46 @@ class DiscordRenderer(Renderer):
             sealed, tail = chunks[:-1], chunks[-1] if chunks else ""
             if not degraded and len(chunks) > 1:
                 # No synthetic probe: re-derive the split-tier signal from the
-                # split output. A clean line cut still moves a
-                # reference across a literalness boundary two ways: a chunk
-                # scanned alone carries a span the full text never had (an
-                # opener orphaned into the tail), or the sealed prefix leaves
-                # delimiter debt — an unbalanced backtick run before the live
-                # tail boundary that later (or already sealed away) text
-                # re-pairs, flipping a literal reference to a real one at
-                # the tail seal. A surviving backtick in the masked prefix
-                # is exactly that debt.
+                # split output. A clean line cut still moves a reference across a
+                # literalness boundary two ways: a chunk scanned alone carries a
+                # span the full text never had (an opener orphaned into the
+                # tail), or the sealed prefix leaves markup debt that flips how
+                # the live tail's own first marker classifies at the semantic
+                # seal.
                 for chunk in chunks:
                     if await asyncio.to_thread(protected_ref_spans, chunk):
                         degraded = True
                         break
                 if not degraded:
-                    cut = len(split_source) - len(tail)
-                    masked_head = await asyncio.to_thread(mask_inline_code, split_source[:cut])
-                    if "`" in masked_head:
-                        degraded = True
-                if not degraded:
-                    # Escape debt across the seal boundary: the sealed text
-                    # ends with an odd backslash run, so whatever the live
-                    # tail opens with is escaped in the full text. A tail that
-                    # scans markup-bearing alone -- e.g. a `[x](...)` whose
-                    # guarding `\` sealed away -- would then upload a
-                    # source-literal file at the semantic seal. The per-chunk
-                    # scans above cannot see this: the escape lives in a chunk
-                    # that never extracts. Fail closed. (The spans branch
-                    # above needs no equivalent: its boundary is a verified
-                    # unescaped `!`, so no escape can straddle it.)
-                    sealed_text = "".join(sealed)
-                    run = len(sealed_text) - len(sealed_text.rstrip("\\"))
-                    if run % 2 == 1:
-                        degraded = True
+                    # ONE seam-aware check for all markup-debt families. The
+                    # tail is later scanned ALONE by the extraction reader, so a
+                    # leak is exactly a marker on the tail's first line that the
+                    # reader classifies differently with the sealed prefix
+                    # present than without it -- an unclosed inline-code run, an
+                    # odd backslash escape, an open fence, or a four-wide indent
+                    # opened in the sealed prefix (full literal, tail real -> a
+                    # source-literal file uploaded), or a mid-line cut leaving
+                    # the tail tab-led (full real, tail literal -> the raw local
+                    # path shipped as text). ``seam_carries_markup_debt`` asks
+                    # the extraction reader itself at a probe marker placed where
+                    # the tail's first content sits, so every family -- and any
+                    # future one -- is judged with the reader's own segmentation
+                    # rather than re-derived per opener kind at the seam.
+                    #
+                    # Only meaningful when the tail is the source's own
+                    # remainder (``split_source.endswith(tail)``). When a fenced
+                    # block crosses the limit the splitter builds
+                    # ``tail = reopener + remainder`` with a synthetic
+                    # ``"```lang\n"`` the source never had, so ``source_head +
+                    # tail`` is not the real source and the concatenation's fence
+                    # structure is fabricated; that seam sits inside an open
+                    # fence, literal in BOTH readings, and the fence-aware
+                    # per-chunk span scan above already owns it -- so skip the
+                    # seam check when the tail carries a reopener.
+                    if split_source.endswith(tail):
+                        source_head = split_source[: len(split_source) - len(tail)]
+                        if await asyncio.to_thread(seam_carries_markup_debt, source_head, tail):
+                            degraded = True
             if degraded:
                 self._segment_uploads_safe = False
         for ch in sealed:
