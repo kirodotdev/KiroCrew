@@ -3872,8 +3872,10 @@ def _panel_step(state: dict[str, Any], entry: Entry) -> None:
         if len(owners) >= PANEL_OWNER_LIMIT:
             oldest = min(owners, key=lambda k: _as_int(owners[k].get("seq")))
             del owners[oldest]
-            # Said out loud, not silently dropped: an evicted owner otherwise reads
-            # exactly like a crew that never published on this slot.
+            # Said out loud, not silently dropped: without it the slot reports no
+            # truncation at all. It counts evictions and names none of them -- the
+            # deletion above removes the only thing that could identify one -- so it
+            # cannot tell an evicted crew from one that never published here.
             state["owners_omitted"] = _as_int(state.get("owners_omitted")) + 1
         own = owners[key] = _panel_owner_start()
     # The SUPERSEDED panel becomes a history row, before the new one overwrites it,
@@ -3913,7 +3915,11 @@ def _panel_owner_record(own: Mapping[str, Any]) -> dict[str, Any]:
     """One owner's record, in the shape the drawer already consumes.
 
     ``history_omitted`` is the bound speaking: it is how a reader tells a history
-    trimmed at its cap from one that holds every cycle the crew ever published.
+    trimmed at its cap from one that holds every cycle the crew ever published. It
+    belongs here because it is the OWNER's own bound. The slot's eviction count is
+    not: eviction deletes an owner's entry, so the crew that count is about has no
+    record here to read it from, and a copy on each surviving owner's record would
+    answer a question none of them is asking.
     """
     return {
         "schema": PANEL_SCHEMA_VERSION,
@@ -3947,9 +3953,15 @@ def _panel_render(state: dict[str, Any]) -> dict[str, Any]:
     from "this crew published an empty panel": the store refuses a publish that names
     no template, so no real record has one.
 
-    ``owners_omitted`` is the owner bound speaking, beside each record's own
-    ``history_omitted``: without it a slot that evicted a crew reads exactly like a
-    slot that crew never published on.
+    ``owners_omitted`` is the owner bound speaking, and it sits on THIS record alone
+    rather than on each owner's, because the crew it is about has none: eviction
+    deletes the owner's entry. So it speaks only about the fold. It rises on the
+    eviction of any owner with no reference to any particular key, so a non-zero value
+    says the slot truncated and cannot say whom -- a crew that never published on a
+    slot four others filled reads exactly what a genuinely evicted crew reads. ``0``
+    says this fold recorded no eviction, which is NOT the same as "this crew never
+    published": the append is best-effort, so a publish whose entry never landed
+    leaves no record here while the store's file still holds that crew's panel.
     """
     owners: dict[str, Any] = state["owners"]
     newest = owners.get(state["newest"])
