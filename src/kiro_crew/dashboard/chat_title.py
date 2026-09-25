@@ -20,6 +20,8 @@ from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
 )
 from kiro_crew.dashboard.state import NEW_SESSION_TITLE, DashboardState, _ChatSlot
+from kiro_crew.execution_context import canonical_memory_mode, stricter_memory_mode
+from kiro_crew.history import is_incognito_transcript
 from kiro_crew.llm_helpers import background_turn, run_bg_oneliner
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -1094,8 +1096,32 @@ async def _persist_title(state: DashboardState, slot: _ChatSlot) -> bool:
         # goes True -> False when the early refresh consumes it, and a stale
         # True on disk would re-arm the early milestone on every restart.
         fields["title_low_signal"] = slot._title_low_signal
+        # An upsert can be the FIRST write of this session's line: the on-send
+        # titling attempt runs before the turn-end save and before the periodic
+        # flush. A restricted slot's line must never exist without its mode, and
+        # a title update on an existing restricted line must not loosen its mode.
+        # Fold both values under the transcript lock; a persistent slot still
+        # leaves an ordinary line's mode to the transcript save.
+        slot_mode = canonical_memory_mode(getattr(slot, "memory_mode", "persistent"))
+
+        def _fold_memory_mode(metadata: dict) -> bool:
+            retained_mode = stricter_memory_mode(
+                canonical_memory_mode(metadata.get("memory_mode")), slot_mode
+            )
+            if is_incognito_transcript(retained_mode):
+                fields["memory_mode"] = retained_mode
+            return True
+
         try:
-            await asyncio.to_thread(state.conversation_log.update_metadata, history_key, fields)
+            persisted = await asyncio.to_thread(
+                state.conversation_log.update_metadata_if,
+                history_key,
+                fields,
+                _fold_memory_mode,
+            )
+            if not persisted:
+                logger.debug("Failed to persist title for slot %s", slot.key)
+                return False
             logger.debug("Persisted title %r for slot %s", slot.title, slot.key)
         except Exception:
             logger.debug("Failed to persist title for slot %s", slot.key)

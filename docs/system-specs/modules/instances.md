@@ -1925,8 +1925,9 @@ Three properties worth stating because they are easy to lose:
   slug is built from the bundle's **already-redacted** title and never from
   `slot.title`.
 - **An incognito or temporary session cannot be exported.** Those transcripts
-  exist under a promise that nothing is kept, so writing one into a file is
-  refused rather than best-effort served.
+  are kept for the user's own History and nothing is produced FROM them (no
+  lesson, no summary, no snapshot); a bundle written into a file is such a
+  product, so it is refused rather than best-effort served.
 - **No conversation changes, and nothing installs.** An export creates, moves and
   deletes nothing, so a repeat costs the source nothing and the action needs no
   confirm step. It is not a pure read of the disk, though: like `send-session` it

@@ -41,7 +41,14 @@ def _execution(mode, member_id=None):
 
 @pytest.mark.parametrize("mode", ["incognito", "temporary"])
 @pytest.mark.parametrize("flags", [{}, {"force": True}, {"rows_only": True}, {"rewrite": True}])
-def test_canonical_mode_blocks_stale_slot_rows_and_queue(tmp_path, mode, flags):
+def test_canonical_mode_is_recorded_on_slot_rows_and_queue(tmp_path, mode, flags):
+    """The transcript is written under the STRICTEST mode the session runs in.
+
+    The slot still says persistent while the live carrier is already restricted:
+    the rows and the queue persist (the user can reopen this chat from History),
+    and the metadata line -- the field every learning reader gates on -- names
+    the carrier's stricter mode, so a restart cannot recover the looser one.
+    """
     state, slot, key = _state(tmp_path)
     bind_session_execution(key, _execution(mode))
     assert slot.memory_mode == "persistent"
@@ -49,11 +56,16 @@ def test_canonical_mode_blocks_stale_slot_rows_and_queue(tmp_path, mode, flags):
     slot._queue.append({"id": "q1", "content": "restricted queue sentinel", "kind": ""})
     assert len(slot.durable_queue_entries()) == 1
     assert _save_slot_to_history(state, slot, **flags)
-    assert not state.conversation_log.has_log(key)
+    assert state.conversation_log.has_log(key)
+    body = state.conversation_log._path(key).read_text(encoding="utf-8")
+    assert "restricted row sentinel" in body
+    assert "restricted queue sentinel" in body
+    assert state.conversation_log.get_metadata(key).get("memory_mode") == mode
     assert len(slot._queue) == 1
 
 
-def test_mode_tightening_at_commit_blocks_prepared_body(tmp_path, monkeypatch):
+def test_mode_tightening_at_commit_is_recorded(tmp_path, monkeypatch):
+    """A mode tightened while the save waited for the lock lands on the line it writes."""
     state, slot, key = _state(tmp_path)
     execution = _execution("persistent")
     bind_session_execution(key, execution)
@@ -68,9 +80,10 @@ def test_mode_tightening_at_commit_blocks_prepared_body(tmp_path, monkeypatch):
 
     monkeypatch.setattr(state.conversation_log, "_locked", tighten_before_lock)
     assert _save_slot_to_history(state, slot, force=True)
-    assert "late restricted row sentinel" not in state.conversation_log._path(key).read_text(
+    assert "late restricted row sentinel" in state.conversation_log._path(key).read_text(
         encoding="utf-8"
     )
+    assert state.conversation_log.get_metadata(key).get("memory_mode") == "temporary"
 
 
 @pytest.mark.asyncio
@@ -188,6 +201,9 @@ async def test_late_queue_flush_keeps_closed_slot_restricted(tmp_path, monkeypat
     state, slot, key = _state(tmp_path)
     bind_session_execution(key, _execution(mode))
     assert slot.memory_mode == "persistent"
+    # A row, so the flush has a window to write: ``flush_slot_now`` skips a
+    # slot with no messages before it ever reaches the transcript writer.
+    slot.append("user", "closed restricted row sentinel")
     slot._queue.append({"id": "q1", "content": "closed restricted queue sentinel", "kind": ""})
     entered, release, finished = threading.Event(), threading.Event(), threading.Event()
     original = state.flush_slot_now
@@ -210,7 +226,11 @@ async def test_late_queue_flush_keeps_closed_slot_restricted(tmp_path, monkeypat
         release.set()
         assert await asyncio.to_thread(finished.wait, 5)
         await asyncio.sleep(0)
-        assert not state.conversation_log.has_log(key)
+        # The live carrier is gone, so the retired slot's own tightened mode is
+        # what the late write records: the queue reaches History, and the line
+        # it lands under is the restricted one, never the persistent birth mode.
+        assert state.conversation_log.has_log(key)
+        assert state.conversation_log.get_metadata(key).get("memory_mode") == mode
         assert len(slot.durable_queue_entries()) == 1
     finally:
         release.set()

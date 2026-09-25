@@ -826,9 +826,9 @@ oversight:
   engaged by it.
 - Persisting the title discloses nothing new. `_save_slot_to_history` has no
   `memory_mode` gate, so an incognito/temporary slot already writes its **full
-  transcript** to its session JSONL for tab recovery and gateway-restart
-  restore. The title is a summary of content that is already on disk in the same
-  file, and `restore_recent_sessions` skips only on `closed`, never on
+  transcript** to its session JSONL for tab recovery, gateway-restart restore and
+  the History browser. The title is a summary of content that is already on disk
+  in the same file, and `restore_recent_sessions` skips only on `closed`, never on
   `memory_mode`.
 
 Gating titling on `blocks_reads` (as an earlier revision did) therefore bought
@@ -837,6 +837,79 @@ The manual `POST /api/chat/slots/{slot}/generate-title` endpoint never had such
 a gate, so a temporary session could already be titled and persisted on demand.
 Do not reintroduce a `memory_mode` condition here without first changing what
 `_save_slot_to_history` writes.
+
+### A restricted transcript is kept; what is derived from it is not
+
+Incognito and temporary sessions persist their transcript exactly like a
+persistent one. This was briefly not so: the store simplification that
+introduced the execution carrier (#11780) made the slot save return early for a
+non-persistent slot, so a restart lost every incognito conversation, while the
+mode picker still promised "Keeps the transcript for tab recovery". The mode's
+guarantee is about LEARNING from the conversation, not about the conversation
+existing: consolidation (`HistoryConsolidator`), the MCP chat-history tools,
+memory injection, lesson writes, the session summary and the workflow/task
+snapshots all gate on the `memory_mode` the metadata line carries, and the
+transcript is what the user reopens from History. Two rules follow for the
+writer:
+
+- **The line records the strictest mode known.** The slot's own `memory_mode`
+  and the live execution carrier can disagree for a moment (a mode switch
+  publishes the carrier first; a queued-prompt flush can outlive a close that
+  tightened the slot). The save reads both -- inside the transcript lock, like
+  every other field on the line -- and writes the stricter, so a restart never
+  re-reads a looser mode than the session ran under. A carrier that raises
+  `MissingExecutionIdentity` (a pre-carrier member record) falls back to the
+  slot's own mode; every other unreadable carrier still fails the save.
+- **The on-disk `memory_mode` is a ratchet.** Both writers of the line -- the
+  full save and the empty-window metadata merge -- fold the mode the line
+  already carries into that stricter-wins read, so a later writer on the same
+  key can only tighten the field, never loosen it. The rows a restricted slot
+  committed outlive the slot: its close pops it, `get_or_create_slot` hands the
+  freed key to a persistent slot, and that slot's saves rebuild the line from
+  their own state. Without the fold the first such save would relabel the
+  committed private rows persistent and hand them to every learning reader. A
+  persistent slot recreated on a restricted key therefore writes under the
+  restricted mode, with no store name (next bullet). An absent or unrecognised
+  on-disk value reads as persistent and tightens nothing.
+- **A restricted line names no `memory_store`.** See
+  [session.md](session.md): with no carrier written for a restricted session,
+  the store name is what the restart would read as a legacy owner claim and
+  refuse. The member is re-selected from `agent` on the next turn. The store is
+  gated on the FOLDED mode above, so a persistent slot writing under a
+  ratcheted restricted line names none either.
+- **A title-born header carries the mode too.** `_persist_title` can be the
+  FIRST writer of a session's line (the on-send titling attempt runs before the
+  turn-end save and the periodic flush), and a header with no `memory_mode`
+  reads back as persistent after a restart — restored with memory writes
+  allowed and listed in History as an empty persistent session (the ~190-byte
+  ghost files of the 0.7.0.8 report). So the title upsert of an
+  incognito/temporary slot includes `memory_mode`; a persistent slot's does
+  not, because the transcript save owns the field. The title upsert folds the
+  on-disk mode under the line lock like every other writer, and the full save
+  canonicalises a rehydrated slot mode before applying the stricter-mode fold.
+- **A rows-only hand-over never files restricted rows under a looser line.**
+  The close/cleanup drain (`_persist_handover_tail`) writes a popped original's
+  unsaved tail with `rows_only=True`, which defers every slot-owned field —
+  `memory_mode` included — to the line a same-key replacement published. A
+  restricted original draining onto a PERSISTENT replacement's line would
+  therefore put private rows under a line that says persistent, and the line
+  cannot be tightened from the drain (it is the live replacement's own line,
+  over that slot's persistent rows, and a rows-only write owns none of its
+  fields). The save refuses that write (`False`, nothing written) when the
+  retained mode is stricter than the line's, and the drain reports the rows as
+  lost exactly as it reports a failed write — a 500 `history_save_failed` on
+  the close, a log line naming the count. The reverse (a persistent tail onto a
+  restricted line) commits and keeps the line's stricter mode, as
+  stricter-wins requires. The refusal is reachable only when the original
+  committed nothing before the close: a line it had published ratchets the
+  replacement's own save down to the restricted mode, so the drain then lands
+  the tail under it.
+- **The suggestions builder skips restricted transcripts.**
+  `suggestions._build_context` walks `list_sessions()` and pulls each
+  session's last user messages into a prompt shipped to the model and cached
+  for the dashboard; it skips any session whose `memory_mode` is restricted,
+  mirroring `chat_folder_suggest`, so a restricted transcript is never read
+  there at all.
 
 ## HistoryConsolidator (`history_consolidation.py`, re-exported by `history.py`)
 

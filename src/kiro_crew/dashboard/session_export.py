@@ -285,10 +285,11 @@ async def api_chat_slot_export(request: web.Request) -> web.Response:
             {"error": "session not found", "code": "export_slot_not_found"}, status=404
         )
     if slot.memory_mode != "persistent":
-        # An incognito or temporary transcript exists under a promise that nothing
-        # is kept. Writing one into a file the user then stores somewhere is the
-        # precise opposite of the mode they chose, so this is a refusal rather
-        # than a best-effort export of whatever happens to be resident.
+        # An incognito or temporary transcript is kept for the user's own History
+        # and nothing is produced FROM it -- no lesson, no summary, no snapshot.
+        # A bundle written into a file the user then stores somewhere is such a
+        # product, so this is a refusal rather than a best-effort export of
+        # whatever happens to be resident.
         _audit("denied", error=f"memory_mode={slot.memory_mode}")
         return web.json_response(
             {

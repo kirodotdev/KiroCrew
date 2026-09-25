@@ -706,9 +706,9 @@ class TestPersistWriteOrdering:
         state.conversation_log = log
 
         writes: list[dict] = []
-        real_update = log.update_metadata
+        real_update = log.update_metadata_if
 
-        def _racing_update(key, fields):
+        def _racing_update(key, fields, guard):
             writes.append(dict(fields))
             if len(writes) == 1:
                 # Simulate the rename winning the race while this (stale)
@@ -717,9 +717,9 @@ class TestPersistWriteOrdering:
                 slot.title = "User chosen name"
                 slot._title_origin = _TITLE_ORIGIN_USER
                 slot._title_epoch += 1
-            real_update(key, fields)
+            return real_update(key, fields, guard)
 
-        log.update_metadata = _racing_update  # type: ignore[method-assign]
+        log.update_metadata_if = _racing_update  # type: ignore[method-assign]
 
         await chat_title._persist_title(state, slot)
 
@@ -744,14 +744,14 @@ class TestPersistWriteOrdering:
         state.conversation_log = log
 
         count = 0
-        real_update = log.update_metadata
+        real_update = log.update_metadata_if
 
-        def _counting(key, fields):
+        def _counting(key, fields, guard):
             nonlocal count
             count += 1
-            real_update(key, fields)
+            return real_update(key, fields, guard)
 
-        log.update_metadata = _counting  # type: ignore[method-assign]
+        log.update_metadata_if = _counting  # type: ignore[method-assign]
         await chat_title._persist_title(state, slot)
         assert count == 1
 
@@ -1107,10 +1107,10 @@ class TestRefreshDurableMarkGate:
         log = ConversationLog(base_dir=tmp_path)
         log.append("dashboard:chat-1-1", "user", "seed")
 
-        def _boom(_key, _fields):
+        def _boom(_key, _fields, _guard):
             raise OSError("disk full")
 
-        log.update_metadata = _boom  # type: ignore[method-assign]
+        log.update_metadata_if = _boom  # type: ignore[method-assign]
         slot = _ChatSlot("chat-1-1")
         slot.title = "T"
         slot._titled = True
@@ -1371,7 +1371,13 @@ class TestLowSignalPersistence:
         milestone on every restart."""
         state = _fake_state()
         recorded: list[dict] = []
-        state.conversation_log.update_metadata = lambda _k, fields: recorded.append(fields)
+
+        def _record(_key, fields, guard):
+            assert guard({})
+            recorded.append(dict(fields))
+            return True
+
+        state.conversation_log.update_metadata_if = _record
         slot = _titled_slot(1)
         slot._title_low_signal = True
         await chat_title._persist_title(state, slot)

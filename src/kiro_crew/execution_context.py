@@ -225,6 +225,12 @@ def _unavailable(message: str):
     return UnknownMemoryStore(f"Execution memory is unavailable: {message}; Global was not used")
 
 
+def canonical_memory_mode(mode: object) -> str:
+    """Canonicalise a persisted privacy mode, defaulting unknown values safely."""
+    canonical = str(mode or "persistent").lower()
+    return canonical if canonical in MEMORY_MODES else "persistent"
+
+
 def stricter_memory_mode(*modes: str) -> str:
     if not modes or any(mode not in MEMORY_MODES for mode in modes):
         raise _unavailable("invalid privacy mode")
@@ -730,6 +736,11 @@ def bind_session_execution(
     Vouching does not withdraw an existing entry: a legitimate template switch
     republishes the store the owner already established, so leaving that entry keeps
     the capability while a forged store still disagrees with it.
+
+    The metadata line's canonical ``memory_mode`` is also a ratchet: when no
+    execution carrier exists, it is folded into the candidate before this function
+    chooses a publication branch. A persistent replacement of a restricted record
+    therefore takes the live-only restricted branch and writes no store identity.
     """
     from kiro_crew.history import ConversationLog
 
@@ -739,6 +750,7 @@ def bind_session_execution(
     current = read_session_execution(session_key)
     if expected is not ... and current != expected:
         raise _unavailable("session changed during admission")
+    metadata: dict[str, Any] | None = None
     if current is not None:
         execution = execution.with_mode(current.memory_mode)
     if current is not None and not replace_existing:
@@ -749,10 +761,20 @@ def bind_session_execution(
 
         update_execution_context(session_key.split(":", 1)[1], execution, expected=current)
         return
-    if execution.memory_mode != "persistent":
+    if current is None:
         metadata, readable = log.get_metadata_status(session_key)
         if not readable:
             raise _unavailable("session record is unreadable")
+        retained_mode = stricter_memory_mode(
+            canonical_memory_mode(metadata.get("memory_mode")), execution.memory_mode
+        )
+        if retained_mode != execution.memory_mode:
+            execution = execution.with_mode(retained_mode)
+    if execution.memory_mode != "persistent":
+        if metadata is None:
+            metadata, readable = log.get_metadata_status(session_key)
+            if not readable:
+                raise _unavailable("session record is unreadable")
         durable = execution_from_record(metadata, required=False)
         if durable is not None:
             # Only retained identity/mode metadata is tightened. Never write a
@@ -766,7 +788,7 @@ def bind_session_execution(
                 raise _unavailable("session changed during privacy tightening")
         elif metadata:
             retained_mode = stricter_memory_mode(
-                metadata.get("memory_mode", "persistent"), execution.memory_mode
+                canonical_memory_mode(metadata.get("memory_mode")), execution.memory_mode
             )
             if not log.update_metadata_if(
                 session_key,

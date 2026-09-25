@@ -65,6 +65,12 @@ from kiro_crew.dashboard.state import (
     row_mid,
 )
 from kiro_crew.effort import EFFORT_LEVELS, EFFORT_VALUES
+from kiro_crew.execution_context import (
+    MEMORY_MODES,
+    canonical_memory_mode,
+    read_session_execution,
+    stricter_memory_mode,
+)
 from kiro_crew.history import (
     ROWS_ONLY_DEFERRED_META_KEYS,
     ROWS_ONLY_OWNED_META_KEYS,
@@ -3611,7 +3617,7 @@ def _save_slot_to_history(
     persisted and must not be treated as durable. Every other completion
     (including the benign no-op skips) returns ``True``.
     """
-    if not state.conversation_log or getattr(slot, "memory_mode", "persistent") != "persistent":
+    if not state.conversation_log:
         return True
     # An explicit message snapshot always means "this is the full authoritative
     # window state" → rewrite. Edit paths (rewind/regenerate/fork) pass a snapshot.
@@ -3715,12 +3721,24 @@ def _save_slot_to_history(
         history_key = slot_history_key(slot)
         if getattr(slot, "linked_session_key", "") == routing:
             break
-    from kiro_crew.execution_context import read_session_execution
     from kiro_crew.memory_stores import MissingExecutionIdentity
 
-    def retention_allows_write() -> bool:
-        if getattr(slot, "memory_mode", "persistent") != "persistent":
-            return False
+    def retained_memory_mode() -> str:
+        """The ``memory_mode`` this save records: the strictest one known.
+
+        Every mode writes its transcript -- an incognito or temporary chat is
+        one the user can reopen from History; what the mode withholds is
+        learning FROM it (consolidation, lessons, memory injection), and every
+        one of those readers gates on the ``memory_mode`` this line carries. So
+        the field is the privacy contract of the file, and it must never be
+        looser than what the session is actually running under. The slot's own
+        mode and the live execution carrier can disagree for a moment (a mode
+        switch publishes the carrier first; a queued-prompt flush can outlive
+        the slot's own tightening), and stricter-wins closes that window: a
+        restart re-reads this line, so a looser value here would be exactly
+        the weaker mode a restart must never recover.
+        """
+        slot_mode = canonical_memory_mode(getattr(slot, "memory_mode", "persistent"))
         try:
             execution = read_session_execution(note_auth_key)
         except MissingExecutionIdentity as exc:
@@ -3728,26 +3746,40 @@ def _save_slot_to_history(
             # member or private store but has no ``execution_context`` field at
             # all -- a session written before that field existed. This write is
             # the TRANSCRIPT, not private memory: the carrier only decides
-            # retention here, and with none to read the slot's own mode
-            # (already ``persistent`` above) is the only retention there is.
-            # Refusing would fail every save and every close of such a
-            # session, which then restores itself to the list forever.
-            # Every other ``UnknownMemoryStore`` (unreadable record, a
+            # retention here, and with none to read the slot's own mode is the
+            # only retention there is. Refusing would fail every save and every
+            # close of such a session, which then restores itself to the list
+            # forever. Every other ``UnknownMemoryStore`` (unreadable record, a
             # present-but-malformed carrier, an undeclared store) propagates:
-            # its retention is unknown, so the refusal stands. Authorizing
-            # private memory from the store name stays refused where it is
-            # read for that purpose.
+            # its retention is unknown, so the save fails rather than record a
+            # mode it cannot vouch for. Authorizing private memory from the
+            # store name stays refused where it is read for that purpose.
             logger.debug(
                 "Slot %s predates canonical execution identity (%s); saving its "
                 "transcript under the slot's own retention mode",
                 slot.key,
                 exc,
             )
-            return True
-        return execution is None or execution.memory_mode == "persistent"
+            return slot_mode
+        if execution is None:
+            return slot_mode
+        return stricter_memory_mode(slot_mode, execution.memory_mode)
 
-    if not retention_allows_write():
-        return True
+    def line_memory_mode(meta: dict) -> str:
+        """The ``memory_mode`` the on-disk line already carries, canonicalised.
+
+        The line is a RATCHET: a later writer on the same key folds this value
+        in with :func:`stricter_memory_mode` and can only tighten it. The rows a
+        restricted slot committed stay in the file after that slot is popped,
+        and a persistent slot recreated on the freed key rebuilds the line from
+        its own state -- without the fold it would relabel those rows
+        persistent and hand them to every learning reader. An absent or
+        unrecognised value after case canonicalisation reads as persistent, so
+        it never tightens anything.
+        """
+        line_mode = str(meta.get("memory_mode") or "persistent").lower()
+        return line_mode if line_mode in MEMORY_MODES else "persistent"
+
     if expected_history_key is not None and history_key != expected_history_key:
         # The caller authorized a write against a specific transcript and the
         # slot's routing moved before this snapshot (a rebind on the event
@@ -3818,7 +3850,7 @@ def _save_slot_to_history(
             # (unfiled / untagged / unpinned / untitled / default mode). Fails
             # closed on an unreadable record, per `update_metadata_if`'s own
             # contract.
-            def _fresh_fields() -> dict:
+            def _fresh_fields(meta: dict) -> dict:
                 # Mirrors the FULL save's slot-owned enumeration (the
                 # ``meta_line`` construction below), so a forced save of an
                 # empty slot persists exactly what a forced save of a
@@ -3838,6 +3870,9 @@ def _save_slot_to_history(
                 #   writer that has not learned them).
                 if slot.reasoning_effort:
                     _remember_reasoning_effort_for_restore(slot.reasoning_effort)
+                # ``meta`` is the line as the guard read it under the lock, so
+                # the ratchet folds the CURRENT on-disk mode, not a snapshot.
+                _mode = stricter_memory_mode(line_memory_mode(meta), retained_memory_mode())
                 fields: dict = {
                     "folder_id": slot.folder_id or "",
                     "tags": list(slot.tags),
@@ -3848,7 +3883,7 @@ def _save_slot_to_history(
                     "color_index": slot.color_index,
                     "color_hex": slot.color_hex or "",
                     "color_theme": slot.color_theme or "",
-                    "memory_mode": slot.memory_mode,
+                    "memory_mode": _mode,
                     "model": slot.model,
                     # CLEARABLE: the queued prompts a restore hands back. Written
                     # even when empty, so a drain that emptied the queue is not
@@ -3897,7 +3932,10 @@ def _save_slot_to_history(
                 # rehydrate mirror and the consolidator's own resolver both treat
                 # falsy as "the global store", which is also how a session written
                 # before crew stores existed reads.
-                fields["memory_store"] = named_store_or_empty(slot.memory_store)
+                # A RESTRICTED line names no store (see the full save below).
+                fields["memory_store"] = (
+                    named_store_or_empty(slot.memory_store) if _mode == "persistent" else ""
+                )
                 # Clearable like memory_store: a name-only pick after a template
                 # pick must not keep advertising the template namespace.
                 fields["agent_kind"] = slot.agent_kind
@@ -3977,12 +4015,10 @@ def _save_slot_to_history(
 
             def _refresh_under_lock(meta: dict) -> bool:
                 guard_state["ran"] = True
-                if not retention_allows_write():
-                    return False
                 if not meta:
                     return False
                 merged_fields.clear()
-                merged_fields.update(_fresh_fields())
+                merged_fields.update(_fresh_fields(meta))
                 # Held /note lines: a MERGE writer, so it unions
                 # with the on-disk hold and never shrinks it. A live-state
                 # mirror here could race a turn-end flush that just delivered
@@ -4059,8 +4095,6 @@ def _save_slot_to_history(
         # ``save_slot_off_loop`` helper routes on-loop callers to a worker thread
         # so they take the patient acquire path instead of dropping the save.
         with state.conversation_log._locked(history_key):
-            if not retention_allows_write():
-                return True
             # Status form, not bare ``get_metadata``: the delete-won identity
             # comparison below is exactly the "empty result triggers something
             # destructive" case that ``get_metadata_status`` exists for — a
@@ -4254,7 +4288,15 @@ def _save_slot_to_history(
                 # save-time fallback covers callers with no user gesture to
                 # anchor to (and legacy call sites).
                 meta_line["closed_at"] = closed_at if closed_at is not None else time.time()
-            meta_line["memory_mode"] = slot.memory_mode
+            # Read INSIDE the lock, like every other slot field on this line: a
+            # mode switch that committed while this save waited must land here,
+            # or the restart re-reads the looser value. Folded with the mode the
+            # line already carries (``existing_meta``, read under this same lock)
+            # because the line is a ratchet: the rows a restricted slot committed
+            # outlive that slot, and a persistent slot recreated on the freed key
+            # must not relabel them by rebuilding the line from its own state.
+            _mode = stricter_memory_mode(line_memory_mode(existing_meta), retained_memory_mode())
+            meta_line["memory_mode"] = _mode
             if slot.title and slot.title != slot.key:
                 meta_line["title"] = slot.title
                 # Persist the title's provenance next to it (mirrors
@@ -4289,7 +4331,16 @@ def _save_slot_to_history(
                 meta_line["mode"] = slot.mode
             if slot.workspace and slot.workspace != "default":
                 meta_line["workspace"] = slot.workspace
-            if _named := named_store_or_empty(slot.memory_store):
+            # A restricted session's line names no memory store. The store name is
+            # what ``read_session_execution`` reads as an owner claim when the
+            # line carries no execution carrier -- and a restricted session never
+            # writes one (its carrier lives in process and is released on close).
+            # A store here would make the restart refuse the chat as a legacy
+            # member record with no identity. Left out, the restart reads the
+            # session as unbound, and the first turn re-selects the member from
+            # ``agent`` under the retained mode, exactly as the live session did.
+            # ``agent_kind`` stays: it is a display fact, not an owner claim.
+            if _mode == "persistent" and (_named := named_store_or_empty(slot.memory_store)):
                 meta_line["memory_store"] = _named
             if slot.agent_kind:
                 meta_line["agent_kind"] = slot.agent_kind
@@ -4517,6 +4568,32 @@ def _save_slot_to_history(
             # Decided at the stale-queue guard above, which needs the same answer
             # to know whether this save is deciding the queue at all.
             if rows_only and existing_meta and not line_is_this_slots:
+                # The deferred fields include ``memory_mode``, and that one is the
+                # line's privacy contract: every reader that learns from the file
+                # gates on it. A restricted original handing its unsaved tail to a
+                # PERSISTENT same-key replacement would file private rows under a
+                # line that says persistent, and consolidation, the history tools
+                # and the summary would then treat them as ordinary content. The
+                # line cannot be tightened from here either: it is the live
+                # replacement's own, describing that slot's persistent rows, and a
+                # rows-only write owns none of its fields. So the write is refused
+                # -- ``False``, nothing written -- and the drain reports the rows
+                # as lost, which is the loss the mode chose over disclosure. Only
+                # a STRICTER source refuses: ``_mode`` already folds the line's
+                # value in, so it differs from the line exactly when the source is
+                # stricter; a persistent original over a restricted replacement's
+                # line keeps the line's stricter value, as stricter-wins requires.
+                line_mode = line_memory_mode(existing_meta)
+                if _mode != line_mode:
+                    logger.warning(
+                        "Slot %s save refused: %d unsaved %s row(s) would be filed under "
+                        "another holder's %s line",
+                        slot.key,
+                        len(window),
+                        _mode,
+                        line_mode,
+                    )
+                    return False
                 # A rows-only write does not own the slot-owned fields: the line
                 # describes whichever OTHER live slot published it, and this one is
                 # only here to get its messages down. Drop the rebuild for every
