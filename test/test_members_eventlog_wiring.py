@@ -112,6 +112,271 @@ class TestApiMembersProjections:
         assert svc.last_seq(slug) == seq_after_first, "config reconcile is not idempotent"
 
     @pytest.mark.asyncio
+    async def test_a_save_landing_after_the_config_load_is_not_overwritten(
+        self, tmp_path, monkeypatch
+    ):
+        """The reported window: the request's config goes stale mid-flight.
+
+        `api_members` loads the agents config once and then reads bindings, logged
+        slugs, rosters and transcript tails before any row is projected. A save in
+        that gap writes config.json AND appends its own member/config, so the fold
+        already carries the NEW value while the request still holds the OLD one. The
+        per-row comparison then reads the save as drift and appends the pre-save
+        snapshot over it, and because the fold is last-wins per field with no
+        compaction, the roster row and the member_projection frame keep rendering
+        the pre-save value until something re-reads.
+
+        A predicate over the fold cannot see this: the save landed BEFORE the row's
+        observation, so nothing moves between observing and writing. What tells the
+        two apart is whether the config is still the bytes the request read.
+        """
+        from kiro_crew.config import loader as loader_mod
+        from kiro_crew.dashboard.handlers import members as handlers
+
+        cfg = _fake_config({CREW: _agent(model="sonnet")})
+        # Provenance rides on the config object: a real load records the digest of the
+        # bytes it parsed, and that is what arms the refusal being tested. The live
+        # content agrees with it until the save lands, so the guard starts armed and
+        # matching and the baseline below is free to be written.
+        live = {"stamp": "stamp-as-this-request-read-it"}
+        cfg._content_digest = live["stamp"]
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", lambda: cfg)
+        monkeypatch.setattr(loader_mod, "config_content_stamp", lambda: live["stamp"])
+        state = _make_state(tmp_path)
+        app = _members_app(state)
+
+        svc = get_service()
+        slug = members.slug_for_name(CREW)
+        svc.ensure(slug, CREW)
+
+        # A first read establishes the baseline the log holds for this member.
+        async with TestClient(TestServer(app)) as client:
+            await client.get("/api/members")
+        assert (
+            svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {}).get("model") == "sonnet"
+        ), "the first read never established a config baseline"
+
+        # THE SAVE, landing inside the window: after this request bound its stamp and
+        # before any row is projected. `_logged_slugs` is the request's third read,
+        # between the config load and the row loop, so a save driven from there lands
+        # exactly where the issue reports it. The request's `cfg` is deliberately NOT
+        # touched -- holding the pre-save object IS the staleness being tested.
+        real_logged_slugs = handlers._logged_slugs
+
+        def _save_lands_mid_request(service):
+            out = real_logged_slugs(service)
+            if live["stamp"] != "stamp-after-the-save":
+                service.append(
+                    slug,
+                    types.MEMBER_CONFIG,
+                    {
+                        **eventlog_hooks._config_snapshot_for_agent(_agent(model="opus")),
+                        "changed": ["model"],
+                    },
+                )
+                # config.json now holds different bytes than this request read.
+                live["stamp"] = "stamp-after-the-save"
+            return out
+
+        monkeypatch.setattr(handlers, "_logged_slugs", _save_lands_mid_request)
+
+        async with TestClient(TestServer(app)) as client:
+            await client.get("/api/members")
+
+        monkeypatch.setattr(handlers, "_logged_slugs", real_logged_slugs)
+        folded = svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {}).get("model")
+        assert folded == "opus", (
+            "the save was overwritten: the reconcile appended the config this request "
+            f"loaded before the save, so the projection regressed to {folded!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_load_that_could_not_name_its_bytes_reconciles_nothing(
+        self, tmp_path, monkeypatch
+    ):
+        """A request holding a config of unknown provenance must not correct the log.
+
+        The refusal above needs a digest to compare. When the load could not produce
+        one -- the files were unreadable, or the document was unusable and field
+        defaults stood in -- there is nothing to compare, and the same save landing
+        mid-request would be overwritten by values whose currency cannot be checked.
+        So the read withholds the correcting write entirely rather than falling back
+        to an unguarded append, and the rows still render.
+
+        This is a separate refusal from the stamped one, and the reason the stamped
+        entry takes no stand-in for "unknown": the sweep's exemption is reached by its
+        own name, so a failed load cannot borrow it.
+        """
+        from kiro_crew.config import loader as loader_mod
+        from kiro_crew.dashboard.handlers import members as handlers
+
+        cfg = _fake_config({CREW: _agent(model="sonnet")})
+        live = {"stamp": "stamp-as-the-file-actually-is"}
+        # No provenance rides on this object, which is what a load that could not name
+        # its bytes returns.
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", lambda: cfg)
+        monkeypatch.setattr(loader_mod, "config_content_stamp", lambda: live["stamp"])
+        state = _make_state(tmp_path)
+        app = _members_app(state)
+
+        svc = get_service()
+        slug = members.slug_for_name(CREW)
+        svc.ensure(slug, CREW)
+
+        # A baseline the log holds for this member, written by a save rather than by a
+        # reconcile: this read cannot reconcile at all, so it establishes nothing.
+        svc.append(
+            slug,
+            types.MEMBER_CONFIG,
+            {
+                **eventlog_hooks._config_snapshot_for_agent(_agent(model="sonnet")),
+                "changed": list(eventlog_hooks._CONFIG_FIELDS),
+            },
+        )
+
+        # THE SAVE, landing inside the window, exactly as in the stamped case above.
+        real_logged_slugs = handlers._logged_slugs
+
+        def _save_lands_mid_request(service):
+            out = real_logged_slugs(service)
+            if live["stamp"] != "stamp-after-the-save":
+                service.append(
+                    slug,
+                    types.MEMBER_CONFIG,
+                    {
+                        **eventlog_hooks._config_snapshot_for_agent(_agent(model="opus")),
+                        "changed": ["model"],
+                    },
+                )
+                live["stamp"] = "stamp-after-the-save"
+            return out
+
+        monkeypatch.setattr(handlers, "_logged_slugs", _save_lands_mid_request)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/api/members")
+            assert resp.status == 200, "the rows must still render without a stamp"
+        monkeypatch.setattr(handlers, "_logged_slugs", real_logged_slugs)
+
+        folded = svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {}).get("model")
+        assert folded == "opus", (
+            "a request whose load could not name its bytes reconciled anyway, so the "
+            f"save was overwritten and the projection regressed to {folded!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_cached_config_under_a_colliding_fingerprint_reconciles_nothing(
+        self, tmp_path, monkeypatch
+    ):
+        """The stamp must describe the bytes the returned object was parsed from.
+
+        `KiroCrewConfig.load` answers from a cache keyed on stat metadata, so a
+        replacement landing the same byte count can present an identical fingerprint
+        and be served the EARLIER document. A stamp read around that call would hash
+        the new bytes and certify the old document, which is the one case a content
+        digest exists to catch -- so the digest comes out of the load, and a cache hit
+        reports the digest of the bytes ITS entry was parsed from.
+
+        Here the live content has moved on from what the served entry holds, so the
+        reconcile must write nothing at all.
+        """
+        from kiro_crew.config import loader as loader_mod
+
+        cfg = _fake_config({CREW: _agent(model="sonnet")})
+        state = _make_state(tmp_path)
+        app = _members_app(state)
+
+        svc = get_service()
+        slug = members.slug_for_name(CREW)
+        svc.ensure(slug, CREW)
+        # A newer word already folded, so a stale write would be a visible regression.
+        svc.append(
+            slug,
+            types.MEMBER_CONFIG,
+            {
+                **eventlog_hooks._config_snapshot_for_agent(_agent(model="opus")),
+                "changed": ["model"],
+            },
+        )
+        assert svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {}).get("model") == "opus"
+
+        # The load is served a cached document whose bytes are stale: it reports the
+        # digest of what it was parsed from, and the live content differs.
+        cfg._content_digest = "digest-of-the-bytes-this-entry-was-parsed-from"
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", lambda: cfg)
+        monkeypatch.setattr(loader_mod, "config_content_stamp", lambda: "digest-of-the-live-bytes")
+
+        seq_before = svc.last_seq(slug)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/api/members")
+
+        assert resp.status == 200, "a stale cached config must not fail the roster read"
+        folded = svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {}).get("model")
+        assert svc.last_seq(slug) == seq_before, (
+            "a config served from a colliding cache entry still reconciled, so the log "
+            f"now holds values the live config does not carry (model reads {folded!r})"
+        )
+        assert folded == "opus", f"the stale config was written over the newer word: {folded!r}"
+
+    @pytest.mark.asyncio
+    async def test_a_writer_between_the_observation_and_the_write_refuses_the_correction(
+        self, tmp_path, monkeypatch
+    ):
+        """The second window: the fold moves after the comparison was made.
+
+        The stamp answers for the config side. It says nothing about the log, where
+        another writer can commit between the comparison and this write -- and that
+        writer's values are the newer word, so a correction decided against the older
+        fold must be refused rather than appended over it.
+
+        Distinct from the stale-load window: here the caller's config IS current and
+        what moved is the projection. The direct call below passes no stamp, so the
+        conditional append is the only thing that can refuse it.
+        """
+        from kiro_crew.config import loader as loader_mod
+
+        cfg = _fake_config({CREW: _agent(model="sonnet")})
+        # A real load names the bytes it parsed, and the baseline read below depends on
+        # that: a config of unknown provenance is reconciled by no read at all.
+        cfg._content_digest = "the-bytes-this-request-read"
+        monkeypatch.setattr(loader_mod, "config_content_stamp", lambda: cfg._content_digest)
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", lambda: cfg)
+        state = _make_state(tmp_path)
+        app = _members_app(state)
+
+        svc = get_service()
+        slug = members.slug_for_name(CREW)
+        svc.ensure(slug, CREW)
+        async with TestClient(TestServer(app)) as client:
+            await client.get("/api/members")
+
+        # What the caller observed, and then a foreign commit moving it.
+        observed = svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {})
+        assert observed.get("model") == "sonnet"
+        svc.append(
+            slug,
+            types.MEMBER_CONFIG,
+            {
+                **eventlog_hooks._config_snapshot_for_agent(_agent(model="opus")),
+                "changed": ["model"],
+            },
+        )
+        assert svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {}).get("model") == "opus"
+
+        changed = eventlog_hooks.reconcile_member_config_unstamped(
+            slug, CREW, _agent(model="haiku"), observed
+        )
+
+        folded = svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {}).get("model")
+        assert changed is None, (
+            "the correction reported a write against a projection that had already "
+            f"moved: changed={changed!r}"
+        )
+        assert folded == "opus", (
+            "a correction decided against the older fold landed anyway, so the newer "
+            f"word was regressed to {folded!r}"
+        )
+
+    @pytest.mark.asyncio
     async def test_a_row_whose_log_belongs_to_another_member_gets_no_projection(
         self, tmp_path, monkeypatch
     ):
@@ -279,7 +544,13 @@ class TestApiMembersProjections:
         own save: an operator editing the file with the gateway up. Nothing is
         remembered between requests, so the next read is the one that corrects it.
         """
+        from kiro_crew.config import loader as loader_mod
+
         cfg = _fake_config({CREW: _agent(model="claude-x")})
+        # A real load names the bytes it parsed; a hand edit changes the file, so the
+        # digest moves with it and the live stamp keeps agreeing with what was read.
+        cfg._content_digest = "the-bytes-holding-claude-x"
+        monkeypatch.setattr(loader_mod, "config_content_stamp", lambda: cfg._content_digest)
         monkeypatch.setattr("kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", lambda: cfg)
         state = _make_state(tmp_path)
         app = _members_app(state)
@@ -292,8 +563,9 @@ class TestApiMembersProjections:
         seq_before = svc.last_seq(slug)
         assert seq_before >= 0, "the first read never established a config baseline"
 
-        # The edit: the loader answers the new model from here on.
+        # The edit: the loader answers the new model from here on, out of new bytes.
         cfg.agents[CREW].model = "gpt-y"
+        cfg._content_digest = "the-bytes-holding-gpt-y"
         async with TestClient(TestServer(app)) as client:
             await client.get("/api/members")
 
@@ -855,6 +1127,48 @@ class TestRosterIsAPureRead:
 # 3. reconcile_members_at_startup: synthesize interrupted closers, once
 # ---------------------------------------------------------------------------
 class TestStartupReconcile:
+    def test_the_unstamped_entry_writes_where_the_stamped_one_refuses(self, monkeypatch):
+        """The sweep's exemption is a property of its entry point, not of a value.
+
+        The sweep writes from the gateway's long-lived config object, whose bytes it
+        cannot name, so its entry asks nothing about content currency and appends. The
+        stamped entry under the same live content refuses, because the digest it was
+        given does not describe the file. Both behaviours are deliberate, and pinning
+        them together is what keeps the two entry points from collapsing into one.
+        """
+        from kiro_crew.config import loader as loader_mod
+
+        cfg = _fake_config({CREW: _agent(model="sonnet")})
+        slug = members.slug_for_name(CREW)
+        svc = get_service()
+        svc.ensure(slug, CREW)
+        monkeypatch.setattr(loader_mod, "config_content_stamp", lambda: "the-live-bytes")
+
+        # The stamped entry, handed a digest that does not describe the live file.
+        seq_before = svc.last_seq(slug)
+        refused = eventlog_hooks.reconcile_member_config(
+            slug,
+            CREW,
+            cfg.agents[CREW],
+            svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {}),
+            config_stamp="bytes-this-caller-read-earlier",
+        )
+        assert refused is None, "a stamp that does not match the live config must refuse"
+        assert svc.last_seq(slug) == seq_before, "the refusal must append nothing"
+
+        # The unstamped entry, same member and same live content.
+        wrote = eventlog_hooks.reconcile_member_config_unstamped(
+            slug,
+            CREW,
+            cfg.agents[CREW],
+            svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {}),
+        )
+        assert wrote, "the sweep's entry must reconcile without asserting currency"
+        assert svc.last_seq(slug) > seq_before, "the unstamped reconcile must append"
+        assert (
+            svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {}).get("model") == "sonnet"
+        ), "the unstamped reconcile must land the config it was handed"
+
     def test_writes_one_closer_each_then_nothing_on_rerun(self):
         cfg = _fake_config({CREW: _agent()})
         slug = members.slug_for_name(CREW)
@@ -863,8 +1177,11 @@ class TestStartupReconcile:
         # Establish the config baseline first so the sweep's config-reconcile
         # step is a no-op — this test is about the two interrupted CLOSERS, not
         # the incidental first member/config.
-        eventlog_hooks.reconcile_member_config(
-            slug, CREW, cfg.agents[CREW], svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {})
+        eventlog_hooks.reconcile_member_config_unstamped(
+            slug,
+            CREW,
+            cfg.agents[CREW],
+            svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {}),
         )
         # A wake armed for a slot the autonudge service does not hold, and a
         # driving.open slot missing from state._slots.
@@ -907,8 +1224,11 @@ class TestStartupReconcile:
         slug = members.slug_for_name(CREW)
         svc = get_service()
         svc.ensure(slug, CREW)
-        eventlog_hooks.reconcile_member_config(
-            slug, CREW, cfg.agents[CREW], svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {})
+        eventlog_hooks.reconcile_member_config_unstamped(
+            slug,
+            CREW,
+            cfg.agents[CREW],
+            svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {}),
         )
         svc.append(slug, types.PATROL_STARTED, {"slot_key": "member-code-reviewer"})
         svc.append(slug, types.SLOT_OPENED, {"slot_key": "worker-1"})
@@ -961,8 +1281,11 @@ class TestStartupReconcile:
         slug = members.slug_for_name(CREW)
         svc = get_service()
         svc.ensure(slug, CREW)
-        eventlog_hooks.reconcile_member_config(
-            slug, CREW, cfg.agents[CREW], svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {})
+        eventlog_hooks.reconcile_member_config_unstamped(
+            slug,
+            CREW,
+            cfg.agents[CREW],
+            svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {}),
         )
         svc.append(slug, types.PATROL_STARTED, {"slot_key": "member-code-reviewer"})
         svc.append(slug, types.SLOT_OPENED, {"slot_key": "worker-1"})
@@ -1015,8 +1338,11 @@ class TestStartupReconcile:
         slug = members.slug_for_name(CREW)
         svc = get_service()
         svc.ensure(slug, CREW)
-        eventlog_hooks.reconcile_member_config(
-            slug, CREW, cfg.agents[CREW], svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {})
+        eventlog_hooks.reconcile_member_config_unstamped(
+            slug,
+            CREW,
+            cfg.agents[CREW],
+            svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {}),
         )
         svc.append(slug, types.PATROL_STARTED, {"slot_key": "member-code-reviewer"})
         svc.append(slug, types.SLOT_OPENED, {"slot_key": "worker-1"})
@@ -1088,8 +1414,11 @@ class TestStartupReconcile:
         slug = members.slug_for_name(CREW)
         svc = get_service()
         svc.ensure(slug, CREW)
-        eventlog_hooks.reconcile_member_config(
-            slug, CREW, cfg.agents[CREW], svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {})
+        eventlog_hooks.reconcile_member_config_unstamped(
+            slug,
+            CREW,
+            cfg.agents[CREW],
+            svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {}),
         )
         svc.append(slug, types.PATROL_STARTED, {"slot_key": "member-code-reviewer"})
         svc.append(slug, types.SLOT_OPENED, {"slot_key": "worker-1"})

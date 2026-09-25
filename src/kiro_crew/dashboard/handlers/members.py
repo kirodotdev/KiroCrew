@@ -26,7 +26,11 @@ from aiohttp import web
 
 import kiro_crew.dashboard.handlers as _h
 from kiro_crew import members as members_mod
-from kiro_crew.config.loader import KiroCrewConfig, default_project_dir
+from kiro_crew.config.loader import (
+    KiroCrewConfig,
+    default_project_dir,
+    load_config_with_content_stamp,
+)
 from kiro_crew.dashboard.chat_persistence import (
     pin_private_agent_store,
     rehydrate_slot_from_history_async,
@@ -357,7 +361,22 @@ async def api_members(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
     state: DashboardState | None = request.app.get("state")
-    cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    # Loaded WITH the digest of the bytes it was parsed from. Every config-derived row
+    # field below comes from this one load, and the per-row reconcile that writes them
+    # into the member log runs several awaited reads later, so a save landing in
+    # between would be overwritten by the values held here. The digest is what lets
+    # that reconcile refuse instead.
+    cfg, config_stamp = await asyncio.to_thread(load_config_with_content_stamp)
+    if config_stamp is None:
+        # The load names no bytes: the files could not be read whole, or the document
+        # was unusable and field defaults stand in. There is nothing to check the live
+        # config against, so this read reconciles no member/config at all -- writing
+        # from a config whose currency is unknown is what regresses a projection. The
+        # rows below still render; only the correcting write is withheld.
+        logger.warning(
+            "the agents config load named no content, so this roster read reconciles "
+            "no member/config; a read with a readable config does"
+        )
 
     # The roster's redaction chokepoint, shared with ``GET /api/agents`` so the
     # two endpoints cannot drift apart. Function-local for the same reason
@@ -691,17 +710,22 @@ async def api_members(request: web.Request) -> web.Response:
                 snap = svc.snapshot(slug)
                 agent_cfg = agent_cfgs.get(row["name"])
                 appended = False
-                # Every read, for every member whose log exists. The reconcile
-                # compares the folded roster against the live config and returns
-                # before writing when they match, so a config that has not drifted
-                # costs one field comparison -- and a config edited by hand rather
-                # than through the dashboard reaches the log on the next read with
-                # nothing to remember between requests.
-                if agent_cfg is not None:
+                # Every read whose config load named its bytes, for every member whose
+                # log exists. The reconcile compares the folded roster against the live
+                # config and returns before writing when they match, so a config that
+                # has not drifted costs one field comparison -- and a config edited by
+                # hand rather than through the dashboard reaches the log on the next
+                # read with nothing to remember between requests. Without a stamp there
+                # is nothing to check currency against, so the write is withheld.
+                if agent_cfg is not None and config_stamp is not None:
                     values = snap.get("values", {}) if isinstance(snap, dict) else {}
                     appended = (
                         eventlog_hooks.reconcile_member_config(
-                            slug, row["name"], agent_cfg, values.get("roster", {})
+                            slug,
+                            row["name"],
+                            agent_cfg,
+                            values.get("roster", {}),
+                            config_stamp=config_stamp,
                         )
                         is not None
                     )
