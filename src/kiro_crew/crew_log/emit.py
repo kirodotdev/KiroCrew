@@ -589,7 +589,7 @@ _child_liveness: "Callable[[str], bool] | None" = None
 #: entry type or a unit into that string, so a budget keyed on it would hand
 #: every store its own warning and flood the log the budget exists to protect.
 #: Bounded FIFO, oldest kind evicted first; cleared by ``reset_caches``.
-_warn_budget: "OrderedDict[tuple[str, str], tuple[float, int]]" = OrderedDict()
+_warn_budget: "OrderedDict[tuple[str, str, str], tuple[float, int]]" = OrderedDict()
 _warned_high_water = False
 #: True once the live-turn cap overage has been reported, so a genuinely busy
 #: gateway names the condition once rather than on every event while over the cap.
