@@ -533,6 +533,148 @@ that only covers `test/` is invisibly absent from the built-in-app testpath, and
 failure it was written to prevent — a swapped, unresponsive machine — does not care
 which testpath asked for the workers.
 
+## The integration layer (`test/integration/`)
+
+Three layers, told apart by how much of the product is real:
+
+| Layer | Where | What is real | What is fake | Runs |
+|---|---|---|---|---|
+| Unit | `test/`, `src/kiro_crew/apps/builtins/*/tests/` | one function or one handler on a bare `web.Application()` | everything else | every shard, every platform |
+| Integration | `test/integration/` | the whole gateway, booted by `GatewayOrchestrator.run()` in the pytest process, on a `tmp_path` home; real config, stores, policy files, routes | the model (`kiro_crew.testing.fake_acp_backend`) | the `integration` job, Linux, behind `KIROCREW_INTEGRATION=1` |
+| E2E | `test/test_e2e_smoke.py`, `test/e2e/`, `test/test_playwright_e2e.py` | a `kirocrew gateway` subprocess, and for the browser suite a real Chromium | the model | the `e2e*` jobs, behind `KIROCREW_E2E=1` |
+
+The middle layer exists because the other two cannot see the seams between
+boot steps. A handler test mocks the store the handler reads; the E2E harness
+sees only what crosses the process boundary. Neither catches: a memory
+binding that `doctor` accepts but workflow creation refuses; a chat that is on
+disk before a restart and gone after it; a policy file the boot itself wrote
+that the next request cannot parse; a second session starved because the
+first holds the event loop. Those all live in one process, between modules,
+and that is exactly what a test in `test/integration/` can hold in one hand.
+
+### The fixtures
+
+`integration_home` is a fresh `KIROCREW_HOME` under `tmp_path` with the same
+environment the E2E harness sets (`KIRO_HOME` moved under it so the boot's
+agent-spec rewrite cannot touch the operator's `~/.kiro/agents`;
+`KIROCREW_KIRO_BIN` pointing at the fake backend). `gateway_boot` binds the
+boot helper to that home; the boot itself is an `async with` block inside the
+test -- this repo's convention for anything whose teardown must AWAIT on the
+test's own loop (see "Async tests" above), not an `@pytest_asyncio.fixture`:
+
+```python
+@pytest.mark.asyncio
+async def test_sessions_survive_a_restart(gateway_boot):
+    async with gateway_boot() as gw:
+        created = await gw.post_json("/api/sessions", {...})
+        await gw.restart()                        # second boot, SAME home
+        listed = await gw.get_json("/api/sessions")
+        assert created["key"] in {s["key"] for s in listed}
+```
+
+`get`/`post`/`put`/`patch`/`delete` return the aiohttp response;
+`get_json`/`post_json` assert the status and decode. `auth=False` proves the
+denied side of a contract. `gw.state` is the live `DashboardState`, `gw.app`
+the real `web.Application`, `gw.home` the data home -- use them to assert on
+what a request left behind, not to bypass the request.
+
+The directory is a package (`test/integration/__init__.py`) so its conftest
+imports as `integration.conftest`. The unit files import `test/conftest.py` by
+the bare name `conftest`; a second top-level `conftest` shadows it and 160
+files fail to import.
+
+### What the boot helper does that a test must not undo
+
+`run()` ends in `_shutdown_and_exit` -> `os._exit`. `booted_gateway` starts
+`run()` as a task, waits until the dashboard answers `/api/health` on the port
+it bound, and on exit sets `shutdown_event` -- exactly what SIGTERM does -- so
+`run()` walks its OWN exit path: the run-marker settle and clear,
+`_shutdown()`, the orphaned-session cleanup, the crew-log and event-log
+drains, the log-queue drain. The helper intercepts only `os._exit`
+(`conftest.intercepted_os_exit`, held for the WHOLE boot -- a `run()` that
+exits on its own mid-test must raise, not end pytest), which raises
+`HarnessExit` with the exit code instead of ending the interpreter.
+Nothing about shutdown is re-implemented in the harness, so a step added to
+`_shutdown_and_exit` runs here the day it lands.
+`test_boot_smoke.py::test_shutdown_and_exit_ends_in_os_exit` pins the shape
+that makes the interception sufficient: `os._exit` is the last statement of
+`_shutdown_and_exit` and the only hard exit `run()` reaches. A `run()` that
+does not reach its exit within `SHUTDOWN_PATH_SECS` of the event is cancelled
+and `_shutdown()` awaited directly, and the teardown reports it. The serve/stop
+seam on `GatewayOrchestrator` (issue #13627) would let an in-process caller
+skip the interception altogether; until it lands, a change to the exit path
+that trips the pin is a change that needs the harness updated in the same PR.
+Do not set `shutdown_event` from a test, do not call `run()` yourself, and do
+not `await` the helper's task.
+
+A production gateway is one process for one home and never expects its
+process-wide state to be undone; this layer boots many homes in one process,
+so the helper undoes it, by four mechanisms the conftest docstring lists in
+full: a **reset list** for module globals a boot derives from its home
+(signing key, revoked-nonce store, crash-log path, `SafetyOverride`, live
+config, autonudge, platform context, embedder and model-download manager); a
+**snapshot** of the process settings a boot changes in place (signal handlers,
+`os.environ`, the loop exception handler, `RLIMIT_NOFILE`) restored on every
+exit; a **wait** for the memory-preparation worker thread to drop its
+process-wide fence (`MemoryStartup`), because cancelling its awaiter does not
+stop the thread and a second boot on the same home would otherwise be refused
+with "Another gateway is still preparing memory" (a fence still held at the
+deadline fails the test by name); and a **reap** of every
+asyncio task the boot added that `_shutdown()` left running (production leaves
+those to `os._exit`), failing the test by name if one ignores cancellation.
+The lists are kept honest by
+`test_boot_smoke.py::test_a_second_boot_touches_only_known_module_globals`:
+it diffs every loaded `kiro_crew` module's globals across a second boot, and a
+changed name that is neither restored by the harness nor listed with a reason
+in `_KNOWN_SECOND_BOOT_CHANGES` fails there. When startup grows a home-derived
+global, that test names it; put it on the reset list, or on the known list
+with its reason, in the same PR.
+
+The only fake is the model, but not every production step runs: the boot is
+`GatewayOrchestrator.run()`, not `kirocrew gateway`, with `test_mode=True` and
+`no_crons=True`. Skipped, and so left to the E2E layer: everything
+`run_gateway()` does before constructing the orchestrator (platform boot,
+slice limits, the agents-dir janitor, the agent scratch sweep, the kiro-cli
+log cap, the telemetry beacon); under `test_mode`, the kiro-cli readiness
+probe and the outbound policy-distribution refresher; under `no_crons`, cron
+arming and reconciliation. The flags are fixed: a test that needs one of
+those steps is an E2E test today, and the helper grows the flag when the
+first such in-tree test does.
+
+Every boot is a fresh boot (one per `async with`). That is deliberate: the
+bugs this layer chases are state bugs, and a shared boot would let one test's
+residue explain another's failure. Budget accordingly -- a boot is about two
+seconds here, and a file should hold a few tests, not fifty.
+
+### The metric is routes, not lines
+
+Each request through the handle is attributed to the aiohttp route it
+resolved to (`/api/sessions/abc` counts toward `GET /api/sessions/{key}`).
+With `KIROCREW_INTEGRATION_HITS_DIR` set the conftest writes the hit set and
+the registered-route list per process; `scripts/check_integration_route_coverage.py`
+unions them and prints the share of registered routes the suite requested,
+`--missing` grouped by path prefix so the next file to write is obvious. A
+route served end to end proves the wiring; a line reached through a mock
+proves the line exists. Line coverage of the layer is still worth reading
+(`--cov=kiro_crew` works as usual), it is just not what the layer is gated on.
+`--min` in the `integration` job is a ratchet: a little under what `main`
+measures, never above.
+
+### Writing one
+
+- One file per route group or per bug family. Name the contract in the test
+  name: `test_bad_spec_does_not_disable_memory_tools_for_other_agents`, not
+  `test_policy`.
+- Assert three things per route where they apply: the denied side without a
+  token, the happy path's status and JSON shape, one validation `4xx`.
+- A test that documents a bug we have not fixed is welcome -- mark it
+  `xfail(strict=True, reason="GH #<n>")` so the fix flips it and the marker
+  has to come off in the same PR.
+- Seed the home through the product (a request, or the same store the
+  product uses), not by hand-writing JSON the product never wrote.
+- Run locally with `KIROCREW_INTEGRATION=1 python -m pytest test/integration/test_x.py -n0`.
+  A multi-file run keeps `-n 2 --dist loadgroup --max-worker-restart=2`.
+
 ## Rules
 
 - **Host-floor patches use `_floor_monkeypatch`, never the test's shared

@@ -463,6 +463,11 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
         # pre-push floor would make every contributor's push depend on that
         # service being up in order to print a number nobody is blocked on.
         "scripts/check_python_audit.py",
+        # Reports route coverage from the dumps the Linux-only `integration` job
+        # writes while booting real gateways in-process; it has no verdict
+        # without that run, and prepare-pr does not boot gateways in its
+        # repeated static floor -- the layer's proof stays in CI, like E2E.
+        "scripts/check_integration_route_coverage.py",
     }
 
     invoked = set(re.findall(r"\bscripts/[A-Za-z0-9_.-]+\.(?:py|sh)", run_text))

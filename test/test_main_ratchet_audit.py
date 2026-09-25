@@ -385,6 +385,8 @@ class TestGateParityWithCi:
             # own tree has nothing to be judged against.
             "check_decisions_history.py",
             "check_per_file_coverage.py",
+            # Consumes the `integration` job's route-hit dumps, which this lane never produces.
+            "check_integration_route_coverage.py",
         }
     )
 

@@ -3243,6 +3243,70 @@ jobs:
           echo "::remove-matcher owner=python::"
           python -m pytest -q -n0 --no-cov --timeout=600 test/e2e/test_private_workflow_memory.py
 
+  # The integration layer: the real gateway booted IN the pytest process.
+  #
+  # `test/integration/` sits between the unit shards (bare `web.Application()`
+  # shells, everything mocked) and the E2E jobs above (a `kirocrew gateway`
+  # subprocess). Each test boots `GatewayOrchestrator.run()` on a scratch
+  # `KIROCREW_HOME` with the packaged fake ACP backend, then talks HTTP to the
+  # port it bound -- same interpreter, same event loop. That is what lets a test
+  # here assert on a restart (second boot, same home), on an event-loop stall
+  # seen from a second request, or on a policy file the boot itself wrote.
+  #
+  # Opt-in by `KIROCREW_INTEGRATION=1`; the unit shards collect and skip it.
+  # Linux only: the fixture snapshots and restores the SIGINT/SIGTERM handlers
+  # `run()` installs, which is a POSIX dance the Windows shards must not pay.
+  #
+  # The gate is ROUTE coverage, not line coverage: the conftest records which
+  # registered dashboard routes the suite requested, and
+  # `scripts/check_integration_route_coverage.py` reports the share. `--min` is
+  # a ratchet -- raise it a little under what main measures, never above.
+  integration:
+    name: Integration (in-process gateway)
+    needs: [changes, await-fast-gate]
+    runs-on: ${{ needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+      - name: Install dependencies
+        run: uv pip install --system -e ".[voice,desktop]" --group dev
+      - uses: ./.github/actions/run-as-runner
+      - name: Run the integration layer
+        shell: /usr/local/bin/ci-shell {0}
+        env:
+          KIROCREW_INTEGRATION: "1"
+          KIROCREW_INTEGRATION_HITS_DIR: ${{ runner.temp }}/integration-hits
+        run: |
+          echo "::remove-matcher owner=python::"
+          python -m pytest -q -n 2 --dist loadgroup --max-worker-restart=2 \
+            --timeout=300 --no-cov test/integration
+      - name: Route coverage
+        shell: /usr/local/bin/ci-shell {0}
+        env:
+          HITS_DIR: ${{ runner.temp }}/integration-hits
+        run: |
+          python3 scripts/check_integration_route_coverage.py "$HITS_DIR" --missing --min 0.1 \
+            | tee "$HITS_DIR/route-coverage.txt"
+      - name: Upload route-coverage report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: integration-route-coverage
+          path: ${{ runner.temp }}/integration-hits/
+          if-no-files-found: ignore
+          retention-days: 7
+
   # The only job that BOOTS A GATEWAY on macOS and Windows.
   #
   # Everything else on those two runners is unit tests. `e2e` above spawns a real
