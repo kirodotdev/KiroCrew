@@ -42,6 +42,16 @@ logger = logging.getLogger(__name__)
 #: limit; the count prefix still reflects the true total.
 RECEIPT_MAX_ITEMS = 5
 
+#: Records one bubble may owe at once. Each is already bounded -- a terminal entry
+#: stores what :func:`receipt_text` rendered, never the burst behind it -- so this
+#: bounds the LIST, which grows only while a channel refuses every write in a row.
+#: On overflow the OLDEST is released: the newest record is the one that corrects
+#: what the reader can currently see, so losing it would leave the visible state
+#: wrong, while losing the oldest loses one earlier burst's record alone. What is
+#: released is counted and named on the next record that reaches the reader, so a
+#: shortened list cannot pass for a burst that produced no such records.
+RECEIPT_MAX_OWED = 4
+
 #: Instant, no-extra-bubble acknowledgement that a mid-turn steer was accepted
 #: and folded into the running turn (not merely "seen" — 👀 reads as passive).
 STEER_ACK_EMOJI = "🫡"
@@ -193,20 +203,38 @@ class QueueReceipt:
     #: rather than through some caller's surface.
     opened_on: ReceiptSurface | None = None
     lines: list[ReceiptLine] = field(default_factory=list)
-    #: The FINAL record this bubble still owes, set when that edit did not land.
+    #: The FINAL records this bubble still owes, OLDEST first, each set when its own
+    #: write did not land.
     #:
-    #: An entry carrying one is TERMINAL: its messages have already left the queue,
+    #: An entry carrying any is TERMINAL: those messages have already left the queue,
     #: so it is not grown and not flipped again -- the next mid-turn message opens a
-    #: fresh bubble rather than putting answered text back under "Queued". The body
+    #: fresh bubble rather than putting answered text back under "Queued". A body
     #: travels WITH the entry because the record owed is the one that transition
     #: computed; recomputing it later would write whatever the later transition
     #: happened to be instead.
-    final_body: str | None = None
+    #:
+    #: It is a LIST because a transition can meet an entry that already owes one: the
+    #: channel that refused the earlier record is usually still refusing, and a single
+    #: slot would mean the later transition's record is dropped on the floor with
+    #: nothing left to publish it. They are kept in the order they happened, which is
+    #: the order a reader must see them in, and capped at :data:`RECEIPT_MAX_OWED`.
+    owed_bodies: list[str] = field(default_factory=list)
+    #: How many owed records were released to keep :attr:`owed_bodies` inside
+    #: :data:`RECEIPT_MAX_OWED`. Counted at the same seam that releases them, because a
+    #: released record has no other trace: a shortened list reads exactly like a burst
+    #: that never produced those records. The count is said out loud once, on the body
+    #: that reaches the reader first, and cleared when that body lands.
+    omitted_records: int = 0
+    #: Whether a record for this debt has already reached the reader. There is ONE
+    #: bubble and it holds the OLDEST record, so once anything has been published the
+    #: bubble is spent: every later body is posted beneath it. Without this a retry
+    #: would edit the next body over the record already sitting in the bubble.
+    bubble_consumed: bool = False
 
     @property
     def owes_record(self) -> bool:
         """Whether this entry is terminal, still owing a record it could not write."""
-        return self.final_body is not None
+        return bool(self.owed_bodies)
 
     @property
     def texts(self) -> list[str]:
@@ -248,18 +276,34 @@ class QueueReceipt:
         return [line.text for line in self.lines if line.address == mine]
 
     def terminalize(self, body: str) -> None:
-        """Make this entry terminal, owing *body*, and release the lines it does not need.
+        """Make this entry terminal, owing *body* after anything it already owes.
 
-        The one way to set :attr:`final_body`, so the bound on what a terminal entry
+        The one way to add to :attr:`owed_bodies`, so the bound on what a terminal entry
         retains is applied HERE -- at the point of retention -- rather than at each of
-        the transitions that terminalize, where the next one added would forget it.
-        ``body`` is already bounded: :func:`receipt_text` lists at most
-        :data:`RECEIPT_MAX_ITEMS` items and :func:`short` truncates each, so the
-        retained string cannot grow with the burst that produced it, while ``lines``
-        holds every message verbatim and is of no further use -- a terminal entry is
-        never grown, never flipped, and never rendered again.
+        the transitions that terminalize, where the next one added would forget it. Two
+        bounds meet at this seam. Each ``body`` is already bounded:
+        :func:`receipt_text` lists at most :data:`RECEIPT_MAX_ITEMS` items and
+        :func:`short` truncates each, so one retained string cannot grow with the burst
+        that produced it. The LIST is bounded here, to :data:`RECEIPT_MAX_OWED`, because
+        it grows by one every time a transition meets a channel that is still refusing.
+
+        ``lines`` is released: it holds every message verbatim and is of no further use
+        -- a terminal entry is never grown, never flipped, and never rendered again.
+
+        Appending rather than replacing is the whole point. The earlier record describes
+        messages that left the queue earlier, and *body* describes this transition's own;
+        writing one over the other would say the wrong thing happened, permanently.
+
+        What the cap releases is COUNTED here, at that same seam. A released record has
+        no other trace of itself: the list simply becomes shorter, which reads exactly
+        like a burst that never produced those records at all. The count travels with the
+        entry until a record reaches the reader carrying it.
         """
-        self.final_body = body
+        self.owed_bodies.append(body)
+        released = len(self.owed_bodies) - RECEIPT_MAX_OWED
+        if released > 0:
+            del self.owed_bodies[:released]
+            self.omitted_records += released
         self.lines = []
 
     def withdraw(self, owner: str) -> list[str]:
@@ -379,6 +423,15 @@ class ReceiptQueue:
                 del self._receipts[session_key]
                 receipt = None
             else:
+                # Still no channel, so this entry stays terminal and this message gets no
+                # bubble yet -- the residual is one missing "⏳ Queued" acknowledgement,
+                # and nothing is lost: the caller enqueued before calling, and the drain
+                # renders its answering record from what it dequeued rather than from
+                # here. The line is deliberately NOT retained on a terminal entry. No
+                # path reads those lines -- every transition returns above on
+                # ``owes_record`` -- so keeping them would change nothing a reader sees
+                # while growing a verbatim burst for as long as the channel refuses,
+                # which is the retention the bound at ``terminalize`` exists to release.
                 return
         if receipt is None:
             if not surface.address_key:
@@ -448,7 +501,18 @@ class ReceiptQueue:
             # first -- writing this transition's words over what actually happened would
             # say the opposite, permanently -- and keep the entry until it lands.
             if not await self._write_record(receipt):
-                self._receipts[session_key] = receipt
+                # The debt has no channel: that call just tried an edit AND a post and
+                # both failed, so THIS record has none either and posting it now would
+                # fail the same way. It JOINS the debt behind the older one instead of
+                # being dropped -- these messages have already left the queue and a
+                # retired key is revisited by nothing, so dropping it is permanent
+                # silence over answered messages. Only this bubble's own chat's text may
+                # be retained here: otherwise ``answered`` belongs to another
+                # conversation, and a retained body is written to this bubble later.
+                if receipt.addressed_by(surface):
+                    self._retain_owed(session_key, receipt, body)
+                else:
+                    self._receipts[session_key] = receipt
                 return
             # It landed, so the bubble now carries the older record and this
             # transition's own record has no bubble left to edit: it is POSTED beside
@@ -657,13 +721,43 @@ class ReceiptQueue:
         which together are true; a silent bubble alone is not. The post goes to the
         bubble's own send address, so on a channel with forum Topics the record lands
         in the Topic the bubble is in rather than the parent chat.
+
+        Several records can be owed, and they are published OLDEST FIRST: the oldest
+        goes into the bubble, and each later one is POSTED beneath it, which is the
+        order they happened in and so the order a reader must read them in. Only the
+        oldest can take the bubble -- there is one bubble and the rest arrived after it.
+
+        The bubble is spent by the FIRST record that reaches the reader, whether it got
+        there by edit or by post, and that is remembered on the entry. A later call must
+        not edit again: the bubble sits above everything posted beneath it, so editing a
+        later body into it would both erase the record already shown there and put the
+        two records in the wrong order for whoever reads them.
+
+        Records released by the cap are named once, on the first body to reach the
+        reader, and the count is cleared when that body lands. A shortened list is
+        otherwise indistinguishable from a burst that produced no such records.
+
+        Each body is dropped from the debt only once it LANDS, one at a time, so a
+        failure partway through keeps exactly what has not reached anybody. Returns
+        whether the debt is now empty.
         """
-        body = receipt.final_body
-        if body is None:
+        bodies = receipt.owed_bodies
+        if not bodies:
             return True
         surface = receipt.opened_on
         if surface is None:
             return False
-        if await self._edit(surface, receipt.msg_id, body):
-            return True
-        return await self._post_record(surface, body)
+        while bodies:
+            body = bodies[0]
+            if receipt.omitted_records:
+                body += f" · …and {receipt.omitted_records} earlier record(s) omitted"
+            if receipt.bubble_consumed:
+                if not await self._post_record(surface, body):
+                    return False
+            elif not await self._edit(surface, receipt.msg_id, body):
+                if not await self._post_record(surface, body):
+                    return False
+            receipt.bubble_consumed = True
+            receipt.omitted_records = 0
+            del bodies[0]
+        return True
