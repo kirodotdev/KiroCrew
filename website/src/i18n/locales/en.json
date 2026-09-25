@@ -9367,7 +9367,12 @@
       "window_tokens_col": "Window (tokens)",
       "off_body": "Enable with <settingRef/>. Metrics stay local (<metricsDir/>) — nothing leaves this machine.",
       "gauges": "Gauges",
-      "gauges_latest": "latest sample"
+      "gauges_latest": "latest sample",
+      "credits_by_origin": "Credits by origin",
+      "credits_by_model": "Credits by model",
+      "top_sessions": "Top sessions",
+      "other_group": "Other ({{n}})",
+      "full_table": "Full table"
     },
     "terminalPopoutFrame": {
       "return": "Return to dock",

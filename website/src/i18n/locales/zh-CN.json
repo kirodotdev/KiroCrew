@@ -15599,7 +15599,12 @@
       "window_tokens_col": "窗口（tokens）",
       "off_body": "使用 <settingRef/> 启用。指标保留在本地 (<metricsDir/>) — 不会离开此计算机。",
       "gauges": "仪表",
-      "gauges_latest": "最新采样"
+      "gauges_latest": "最新采样",
+      "credits_by_origin": "按会话归属的额度",
+      "credits_by_model": "按模型的额度",
+      "top_sessions": "花费最高的会话",
+      "other_group": "其他（{{n}}）",
+      "full_table": "完整表格"
     },
     "terminalPopoutFrame": {
       "return": "返回停靠面板",

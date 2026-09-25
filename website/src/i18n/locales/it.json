@@ -16023,7 +16023,12 @@
       "window_tokens_col": "Finestra (token)",
       "off_body": "Attiva con <settingRef/>. Le metriche restano locali (<metricsDir/>) — nulla esce da questa macchina.",
       "gauges": "Indicatori",
-      "gauges_latest": "ultimo campione"
+      "gauges_latest": "ultimo campione",
+      "credits_by_origin": "Crediti per origine",
+      "credits_by_model": "Crediti per modello",
+      "top_sessions": "Sessioni principali",
+      "other_group": "Altri ({{n}})",
+      "full_table": "Tabella completa"
     },
     "terminalPopoutFrame": {
       "return": "Torna al dock",

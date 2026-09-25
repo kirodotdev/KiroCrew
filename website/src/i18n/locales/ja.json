@@ -15599,7 +15599,12 @@
       "window_tokens_col": "ウィンドウ (トークン)",
       "off_body": "<settingRef/> で有効にします。メトリクスはローカルに保存されます (<metricsDir/>) — このマシンの外には何も送信されません。",
       "gauges": "ゲージ",
-      "gauges_latest": "最新サンプル"
+      "gauges_latest": "最新サンプル",
+      "credits_by_origin": "発生元別のクレジット",
+      "credits_by_model": "モデル別のクレジット",
+      "top_sessions": "上位セッション",
+      "other_group": "その他（{{n}}）",
+      "full_table": "テーブル全体"
     },
     "terminalPopoutFrame": {
       "return": "ドックに戻る",

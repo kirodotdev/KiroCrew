@@ -16023,7 +16023,12 @@
       "window_tokens_col": "Janela (tokens)",
       "off_body": "Ativar com <settingRef/>. As métricas ficam locais (<metricsDir/>) — nada sai desta máquina.",
       "gauges": "Medidores",
-      "gauges_latest": "última amostra"
+      "gauges_latest": "última amostra",
+      "credits_by_origin": "Créditos por origem",
+      "credits_by_model": "Créditos por modelo",
+      "top_sessions": "Principais sessões",
+      "other_group": "Outros ({{n}})",
+      "full_table": "Tabela completa"
     },
     "terminalPopoutFrame": {
       "return": "Voltar ao dock",

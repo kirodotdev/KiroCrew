@@ -15811,7 +15811,12 @@
       "window_tokens_col": "विंडो (टोकन)",
       "off_body": "<settingRef/> से सक्रिय करें। मेट्रिक्स स्थानीय रहती हैं (<metricsDir/>) — इस मशीन से कुछ भी बाहर नहीं जाता।",
       "gauges": "गेज",
-      "gauges_latest": "नवीनतम नमूना"
+      "gauges_latest": "नवीनतम नमूना",
+      "credits_by_origin": "स्रोत के अनुसार क्रेडिट",
+      "credits_by_model": "मॉडल के अनुसार क्रेडिट",
+      "top_sessions": "शीर्ष सेशन",
+      "other_group": "अन्य ({{n}})",
+      "full_table": "पूरी तालिका"
     },
     "terminalPopoutFrame": {
       "return": "डॉक पर वापस जाएँ",

@@ -15811,7 +15811,12 @@
       "window_tokens_col": "Fenster (Token)",
       "off_body": "Aktivieren mit <settingRef/>. Metriken bleiben lokal (<metricsDir/>) — nichts verlässt diesen Rechner.",
       "gauges": "Messwerte",
-      "gauges_latest": "letzter Messwert"
+      "gauges_latest": "letzter Messwert",
+      "credits_by_origin": "Guthaben nach Ursprung",
+      "credits_by_model": "Guthaben nach Modell",
+      "top_sessions": "Top-Sitzungen",
+      "other_group": "Sonstige ({{n}})",
+      "full_table": "Vollständige Tabelle"
     },
     "terminalPopoutFrame": {
       "return": "Zurück zum Dock",

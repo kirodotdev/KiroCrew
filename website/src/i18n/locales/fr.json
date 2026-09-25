@@ -16023,7 +16023,12 @@
       "window_tokens_col": "Fenêtre (tokens)",
       "off_body": "Activer avec <settingRef/>. Les métriques restent locales (<metricsDir/>) — rien ne quitte cette machine.",
       "gauges": "Jauges",
-      "gauges_latest": "dernier échantillon"
+      "gauges_latest": "dernier échantillon",
+      "credits_by_origin": "Crédits par origine",
+      "credits_by_model": "Crédits par modèle",
+      "top_sessions": "Principales sessions",
+      "other_group": "Autres ({{n}})",
+      "full_table": "Tableau complet"
     },
     "terminalPopoutFrame": {
       "return": "Revenir au dock",

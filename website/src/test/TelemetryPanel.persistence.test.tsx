@@ -18,7 +18,7 @@
  *     rather than an error path.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
@@ -134,15 +134,23 @@ describe('TelemetryPanel — the page remembers where you were', () => {
   })
 
   it('reopens on the group-by that was last selected', async () => {
+    // The group-by control lives inside the spend table's collapsible, so the
+    // preference under test is only reachable with the collapsible open.
+    localStorage.setItem('telemetry:spend-table-open', '1')
     const first = await mount()
     await waitFor(() => expect(screen.getByRole('button', { name: /model/i })).toBeTruthy())
     await userEvent.click(screen.getByRole('button', { name: /model/i }))
     await waitFor(() => expect(localStorage.getItem('telemetry:spend-group')).toBe('model'))
     first.unmount()
 
+    localStorage.setItem('telemetry:spend-table-open', '1')
     await mount()
     // `opus-5` is a by_model row label; the session grouping does not have it.
-    await waitFor(() => expect(screen.getByText('opus-5')).toBeTruthy())
+    // Scoped to the table because the by-model bar block above it plots the same
+    // name whichever grouping the table is on.
+    await waitFor(() =>
+      expect(within(document.querySelector('table') as HTMLElement).getByText('opus-5')).toBeTruthy(),
+    )
   })
 
   it('falls back when the remembered tab is not a choice this payload offers', async () => {
@@ -156,9 +164,16 @@ describe('TelemetryPanel — the page remembers where you were', () => {
 
   it('ignores a stored value that is not one of the choices at all', async () => {
     localStorage.setItem('telemetry:spend-group', 'not-a-grouping')
+    localStorage.setItem('telemetry:spend-table-open', '1')
     await mount()
-    // The session grouping is the fallback, so the conversation title is on screen.
-    await waitFor(() => expect(screen.getByText('Porting the trash containment')).toBeTruthy())
+    // The session grouping is the fallback, so the conversation title is in the
+    // TABLE — the session bars carry titles under every grouping, so an unscoped
+    // match could not tell the fallback from a by-model table.
+    await waitFor(() =>
+      expect(
+        within(document.querySelector('table') as HTMLElement).getByText('Porting the trash containment'),
+      ).toBeTruthy(),
+    )
   })
 })
 

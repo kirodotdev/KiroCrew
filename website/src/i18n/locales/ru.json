@@ -16235,7 +16235,12 @@
       "window_tokens_col": "Окно (токены)",
       "off_body": "Включить через <settingRef/>. Метрики остаются локальными (<metricsDir/>) — ничего не покидает эту машину.",
       "gauges": "Датчики",
-      "gauges_latest": "последнее значение"
+      "gauges_latest": "последнее значение",
+      "credits_by_origin": "Кредиты по источнику",
+      "credits_by_model": "Кредиты по модели",
+      "top_sessions": "Самые дорогие сессии",
+      "other_group": "Прочие ({{n}})",
+      "full_table": "Полная таблица"
     },
     "terminalPopoutFrame": {
       "return": "Вернуть в док",

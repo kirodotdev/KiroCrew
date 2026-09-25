@@ -15599,7 +15599,12 @@
       "window_tokens_col": "윈도(토큰)",
       "off_body": "<settingRef/>로 활성화하세요. 메트릭은 로컬(<metricsDir/>)에 유지되며 이 컴퓨터를 벗어나지 않습니다.",
       "gauges": "게이지",
-      "gauges_latest": "최신 샘플"
+      "gauges_latest": "최신 샘플",
+      "credits_by_origin": "출처별 크레딧",
+      "credits_by_model": "모델별 크레딧",
+      "top_sessions": "상위 세션",
+      "other_group": "기타 ({{n}})",
+      "full_table": "전체 표"
     },
     "terminalPopoutFrame": {
       "return": "독으로 돌아가기",

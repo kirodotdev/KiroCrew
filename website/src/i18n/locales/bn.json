@@ -15811,7 +15811,12 @@
       "window_tokens_col": "উইন্ডো (টোকেন)",
       "off_body": "সক্রিয় করুন <settingRef/> দিয়ে। মেট্রিক্স স্থানীয় থাকে (<metricsDir/>) — এই মেশিন থেকে কিছুই বের হয় না।",
       "gauges": "গেজ",
-      "gauges_latest": "সর্বশেষ নমুনা"
+      "gauges_latest": "সর্বশেষ নমুনা",
+      "credits_by_origin": "উৎস অনুযায়ী ক্রেডিট",
+      "credits_by_model": "মডেল অনুযায়ী ক্রেডিট",
+      "top_sessions": "শীর্ষ সেশন",
+      "other_group": "অন্যান্য ({{n}})",
+      "full_table": "সম্পূর্ণ টেবিল"
     },
     "terminalPopoutFrame": {
       "return": "ডকে ফিরে যান",
