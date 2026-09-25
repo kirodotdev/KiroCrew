@@ -4148,3 +4148,67 @@ async def test_no_refresh_link_expires_a_refresh_cookie_the_browser_already_had(
     # Present in the response, but as an EXPIRY (max-age=0) — not left alone.
     assert stale in resp.cookies
     assert int(resp.cookies[stale]["max-age"]) == 0
+
+
+# -- A non-ASCII credential is a wrong credential, never a crash --
+#
+# hmac.compare_digest raises TypeError on a str holding a non-ASCII character.
+# "\udcff" is what a raw non-UTF-8 header byte decodes to; "\ud800" is any lone surrogate.
+
+_NON_ASCII = ["é", "\udcff", "\ud800"]
+
+
+@pytest.mark.parametrize("bad", _NON_ASCII)
+def test_non_ascii_signature_is_invalid_not_a_crash(bad: str) -> None:
+    payload = generate_token("user-na").split(".", 1)[0]
+    assert validate_token(f"{payload}.{bad}") == (False, "", "invalid signature")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", _NON_ASCII)
+async def test_non_ascii_query_token_denied_like_a_forged_one(bad: str) -> None:
+    payload = generate_token("user-na").split(".", 1)[0]
+    mw = token_auth_middleware()
+    forged = await mw(_make_request(path="/", query={"token": f"{payload}.AAAA"}), _ok_handler)
+    resp = await mw(_make_request(path="/", query={"token": f"{payload}.{bad}"}), _ok_handler)
+    assert forged.status in (401, 403)
+    assert resp.status == forged.status
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", _NON_ASCII)
+async def test_non_ascii_internal_secret_denied_loopback(bad: str) -> None:
+    mw = token_auth_middleware(internal_paths=frozenset({"/api/spawn"}), internal_secret="real")
+    req = _make_request(path="/api/spawn", headers={"X-Internal-Secret": bad})
+    resp = await mw(req, _ok_handler)
+    assert resp.status == 403
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", _NON_ASCII)
+async def test_non_ascii_internal_secret_denied_non_loopback_mixed(bad: str) -> None:
+    token = generate_token("testuser", ttl_seconds=300)
+    bind_token_ip(token, "10.0.0.1")
+    mark_consumed(token)
+    mw = token_auth_middleware(
+        mixed_internal_paths=frozenset({"/api/spawn"}), internal_secret="real"
+    )
+    req = _make_request(
+        path="/api/spawn",
+        remote="10.0.0.1",
+        headers={"X-Internal-Secret": bad},
+        cookies={"mc_token_5476": token},
+    )
+    resp = await mw(req, _ok_handler)
+    assert resp.status == 403
+
+
+@pytest.mark.parametrize("bad", _NON_ASCII)
+def test_non_ascii_app_secret_is_rejected(bad: str, tmp_path) -> None:
+    from kiro_crew.dashboard.token_auth import validate_app_secret
+
+    app_dir = tmp_path / "apps" / "demo"
+    app_dir.mkdir(parents=True)
+    (app_dir / ".app_secret").write_text("real", encoding="utf-8")
+    assert validate_app_secret("demo", "real") is True
+    assert validate_app_secret("demo", bad) is False
