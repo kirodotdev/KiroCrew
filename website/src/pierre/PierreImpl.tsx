@@ -680,14 +680,17 @@ export function PierrePatchImpl({ patch, options, className, renderHeaderMetadat
   const noHunks = files.length > 0 && files.every(f => (f.hunks?.length ?? 0) === 0)
   const looksLikeChanges = /^[+-](?![+-][+-] )/m.test(patch)
   if (files.length === 0 || (noHunks && looksLikeChanges)) {
-    return <PlainCodeFallback text={patch} />
+    return <PlainCodeFallback text={patch} degraded />
   }
   if (activePool === undefined) {
     // No header actions in the fallback (`max-two-buttons-per-row`); they
-    // return with Pierre's own header when a generation is ready.
+    // return with Pierre's own header when a generation is ready. `degraded`:
+    // this text stands in for the diff itself, not for a hold before it
+    // paints, so a caller that draws its own row (`PlainPatchBodyContext`)
+    // gets the hunks' content and the word that the body is plain.
     return <>
       {poolState.phase === 'unavailable' ? <PierreWorkerUnavailableNotice failure={poolState.failure} /> : null}
-      <PlainCodeFallback text={patch} />
+      <PlainCodeFallback text={patch} degraded />
     </>
   }
   return (

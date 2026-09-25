@@ -2061,9 +2061,18 @@
       "copy_2": "Copy {{label}}"
     },
     "diffBlock": {
+      "added": "added",
+      "binary": "binary",
       "copied": "Copied!",
       "copy_patch": "Copy patch",
+      "deleted": "deleted",
+      "file_count_one": "{{count}} file",
+      "file_count_other": "{{count}} files",
+      "mode_changed": "mode changed",
+      "no_longer_executable": "no longer executable",
+      "now_executable": "now executable",
       "open_in_side_panel": "Open {{path}} in side panel",
+      "plain_view": "No highlighting — plain view",
       "split_view": "Split view",
       "switch_to_split_view": "Switch to split view",
       "switch_to_unified_view": "Switch to unified view",
