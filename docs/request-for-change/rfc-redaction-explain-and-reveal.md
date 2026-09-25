@@ -1,13 +1,13 @@
 ---
 title: Redaction that explains itself
-status: accepted
+status: partial
 author: rayrayxu
 created: 2026-09-21
-last-audited: 2026-09-24
-audited-at: 61d5bb577
+last-audited: 2026-09-25
+audited-at: 8d47ac90d
 doc-pr:
-implementation-prs: []
-tracking-issues: []
+implementation-prs: [13685]
+tracking-issues: [13741]
 supersedes: []
 superseded-by: []
 ---
@@ -67,7 +67,10 @@ worked correctly.
    cannot recover it from the conversation. The replacement also keeps the
    value out of Slack, artifacts, memory, sub-agents, and backups — although
    the source file, tool logs, model provider, or screenshots may still
-   contain it. There is no setting to turn this off.
+   contain it. There is no setting to turn this off. (The one owner switch
+   that exists, described under *What does not change*, does not reach the
+   saved conversation: it applies only to files the owner opens in their own
+   dashboard.)
 2. **The value usually remains at its source.** Removing it from the saved
    conversation does not usually remove it from the file, command output, or
    environment variable where it came from. Because the user can already read
@@ -394,9 +397,41 @@ beside the message.
 - Secrets found in agent replies are never saved in the conversation, which
   means there cannot be a "show original" button.
 - Known credential formats such as `AKIA`, PEM, `xoxb-`, and `ghp_` remain
-  hidden everywhere, including inside links. Remove only the credential from a
-  URL rather than deleting the whole URL, and never let the "Allow" list
-  weaken credential rules.
+  hidden everywhere the agent's output reaches another person or service —
+  chat, every messaging channel, artifacts, logs, backups — including inside
+  links. Remove only the credential from a URL rather than deleting the whole
+  URL, and never let the "Allow" list weaken credential rules.
+- **One exception, decided with [#13685](https://github.com/kirodotdev/KiroCrew/pull/13685):
+  the dashboard owner can turn the credential pass off for the files their own
+  dashboard opens for them** (the chat side panel's Files tab, and the Library
+  and Artifacts previews that read through the same route). This is the
+  completion of the *save it to a mode-0600 file* remedy above: without it the
+  Files view ran the same pass over the saved file and hid the value again.
+  Its fences are the reason it is allowed to exist. It is **on by default**;
+  only the owner can turn it off (a non-owner or an app token is refused); it
+  lives on the keystone floor beside `file_delivery_consent.json`, which the
+  agent's file tools refuse and its sandbox mounts read-only, so a
+  prompt-injected agent cannot flip it through the filesystem (the owner gate
+  is an identity check, so an agent driving the owner's already-authenticated
+  browser through computer use could reach the PUT; what that buys is bounded
+  to the owner's own file views, and the flip leaves an audit record); every
+  change is written to the security event log *before* the switch moves, and
+  a *disable* that cannot be audited does not happen — turning redaction back
+  on is the fail-safe direction and proceeds even when the log is unavailable;
+  it reaches the credential pass only — the
+  exfiltration-URL pass, every request-blocking gate, the chat and every
+  channel keep the unconditional pass — and the two file handlers that feed
+  the viewer take one verdict per request, so neither side of a diff is raw
+  while the other is masked. When the owner turns it back on, every open
+  dashboard document drops the file bodies it holds — cached reads, diffs and
+  clean open tabs; a tab with unsaved edits keeps the owner's own typing — and
+  re-reads them under the pass now in force. Settings → Security shows the
+  state with a warning
+  and the time it was switched off. An in-viewer indicator and an auto-revert
+  window were considered and are open decisions
+  ([#13741](https://github.com/kirodotdev/KiroCrew/issues/13741) tracks the
+  exfiltration-URL carve-out for the same owner view on a companionless
+  build).
 - Logs, audits, and backups continue to use full redaction, and they do not
   receive any tools for viewing the source.
 
@@ -417,9 +452,14 @@ beside the message.
    are at least 44×44 points.
 5. Decode percent-encoded text before checking it, then extend the internal
    list of exact hosts that can bypass only the long-query and base64 checks.
-6. Add a read-only Redaction section under Settings → Security that shows
-   groups of rules, recent match counts, and allowed hosts, while clearly
-   stating that redaction cannot be turned off.
+6. Add a Redaction section under Settings → Security that shows groups of
+   rules, recent match counts, and allowed hosts, and states which surfaces
+   redaction cannot be turned off for (everything the agent's output reaches
+   another person or service through). The one control it carries is the
+   owner's credential-redaction switch for their own file views, shipped in
+   [#13685](https://github.com/kirodotdev/KiroCrew/pull/13685) as *Credential
+   redaction in file views* with the fences listed under *What does not
+   change*; the rules and hosts view remains read-only.
 
 Each step can be released or rolled back without requiring the later steps.
 Steps 1 and 3 ship together in one implementation PR: the renderer rules
