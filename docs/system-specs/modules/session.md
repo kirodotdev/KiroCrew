@@ -1035,10 +1035,14 @@ against sweep completeness, and are torn down at `close_all`.
   only when ALL hold: (i) no member PID is tracked or a live provider; (ii-a)
   AT LEAST ONE member has positive agent-runtime argv identity — the generated
   launcher, an exact argv0 basename of `kiro-cli`, `kiro-cli-chat`,
-  `claude-agent-acp`, or `claude`, a marked MCP launcher, or the marked toolbox
-  sandbox credential helper (an argv0 ending `/sandbox/creds_agent` carrying
-  `--session-id`, version-independent because the toolbox version sits above
-  `sandbox/` in the path) — which is the
+  `claude-agent-acp`, or `claude`, or a marked MCP launcher — OR EVERY member is
+  a marked toolbox sandbox credential helper (an argv0 ending
+  `/sandbox/creds_agent` carrying a `--session-id` argv token, version-independent
+  because the toolbox version sits above `sandbox/` in the path), which is a scope
+  with nothing but the helper left in it: the helper serves one runtime and
+  routinely outlives it, and each holds tens of threads while `pids.current`
+  counts tasks. It is deliberately not one of the existential identities, since
+  one helper must not authorize stopping a sibling; either arm is the
   scope-wide stop authorization; (ii-b) EVERY member is this install's own — it
   carries the `KIROCREW_SPAWNED` marker, or its `ppid` chain reaches a
   marker-bearing member without leaving the scope's member set (ownership is by
@@ -1060,7 +1064,9 @@ against sweep completeness, and are torn down at `close_all`.
   scopes. A no-op off Linux or without cgroup v2 delegation
   (`sandbox._probe_cgroup_scope`). Marker inheritance by itself never authorizes
   a scope-wide stop, so an intentional detached server left after its agent
-  runtime exits is preserved. The accepted fail-closed residual is that a scope
+  runtime exits is preserved — including when a credential helper survives
+  beside it, because that helper authorizes a stop only where it is the whole
+  remaining scope. The accepted fail-closed residual is that a scope
   whose runtime-anchor members have all died is never reclaimed, even if every
   survivor still has the marker or is an attributable env-cleared descendant;
   old skipped scopes are summarized at INFO by stable reason category, making

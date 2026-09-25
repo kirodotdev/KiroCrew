@@ -472,43 +472,126 @@ def test_live_session_scope_holding_a_credential_helper_is_untouched(tmp_path, c
     assert "tracked=1" in caplog.text
 
 
-class TestSandboxCredentialHelperAnchor:
-    """The argv shape that authorizes a helper-only scope reclaim.
+def test_a_detached_survivor_beside_the_helper_keeps_the_scope_alive(tmp_path, caplog):
+    # A scope can hold BOTH a leaked helper and work the user meant to keep: a
+    # preview server the agent detached inherits the marker and outlives the
+    # runtime. Authorizing on the helper alone would stop the whole scope and
+    # kill that server, so the helper authorizes only where nothing else is left.
+    slice_dir = tmp_path / "slice"
+    proc = tmp_path / "proc"
+    _make_proc(
+        proc,
+        405,
+        pgrp=400,
+        comm="creds_agent",
+        cmdline=_creds_helper_cmdline(),
+    )
+    _make_proc(
+        proc,
+        406,
+        pgrp=400,
+        comm="node",
+        cmdline=b"/usr/bin/node\x00/app/node_modules/.bin/vite\x00--port\x005173\x00",
+    )
+    _make_scope(slice_dir, "run-creds-plus-server.scope", [405, 406])
+    rec = _Recorder()
 
-    Tested here rather than beside the other argv predicates because the scope
-    reaper is its only caller: the shape grants scope-wide stop authority and
-    nothing else reads it.
+    with caplog.at_level("INFO", logger=r.__name__):
+        summary = _reap(
+            slice_dir,
+            proc,
+            rec,
+            enter={"run-creds-plus-server.scope": _enter_us_for_age(700)},
+        )
+
+    assert summary.reclaimed == 0
+    assert summary.skipped == 1
+    assert rec.stopped == []
+    assert rec.killed == []
+    assert "no-runtime-anchor=1" in caplog.text
+
+
+def test_several_helpers_and_nothing_else_still_authorizes_the_stop(tmp_path):
+    # The rule is universal, not single-member: a scope left holding only helpers
+    # has no client for any of them.
+    slice_dir = tmp_path / "slice"
+    proc = tmp_path / "proc"
+    for pid, port in ((407, 45257), (408, 39743)):
+        _make_proc(
+            proc,
+            pid,
+            pgrp=400,
+            comm="creds_agent",
+            cmdline=_creds_helper_cmdline(port=port),
+        )
+    scope = _make_scope(slice_dir, "run-creds-pair.scope", [407, 408])
+    rec = _Recorder()
+    rec.register("run-creds-pair.scope", scope)
+
+    summary = _reap(
+        slice_dir,
+        proc,
+        rec,
+        enter={"run-creds-pair.scope": _enter_us_for_age(700)},
+    )
+
+    assert summary.reclaimed == 1
+    assert rec.stopped == ["run-creds-pair.scope"]
+
+
+class TestSandboxCredentialHelperRule:
+    """The argv shape and the universal rule that authorize a helper-only stop.
+
+    Exercised through :func:`_scope_is_only_credential_helpers` rather than the
+    existential anchor: the helper is deliberately not one of that anchor's
+    identities, because one member there authorizes stopping every sibling.
     """
 
-    def _anchors(self, cmdline: bytes, *, marker: bool = True) -> bool:
-        from kiro_crew.session_pid import _is_agent_runtime_anchor
+    def _authorizes(self, cmdline: bytes, *, marker: bool = True) -> bool:
+        proc = self.tmp_path / "proc"
+        _make_proc(proc, 601, pgrp=600, marker=marker, comm="creds_agent", cmdline=cmdline)
+        return r._scope_is_only_credential_helpers([601], proc)
 
-        return _is_agent_runtime_anchor(cmdline, has_kirocrew_marker=marker)
+    @pytest.fixture(autouse=True)
+    def _tmp(self, tmp_path):
+        self.tmp_path = tmp_path
 
     @pytest.mark.parametrize("version", ["1.0.5431.0", "1.0.5989.0"])
-    def test_a_marked_helper_anchors_at_any_toolbox_version(self, version):
+    def test_a_marked_helper_authorizes_at_any_toolbox_version(self, version):
         # The version is a path component ABOVE ``sandbox/``, so one match holds
         # across the several versions a long-lived host accumulates.
-        assert self._anchors(_creds_helper_cmdline(version=version)) is True
+        assert self._authorizes(_creds_helper_cmdline(version=version)) is True
 
-    def test_an_unmarked_helper_does_not_anchor(self):
-        assert self._anchors(_creds_helper_cmdline(), marker=False) is False
+    def test_an_unmarked_helper_does_not_authorize(self):
+        assert self._authorizes(_creds_helper_cmdline(), marker=False) is False
 
-    def test_a_same_named_binary_outside_a_sandbox_dir_does_not_anchor(self):
+    def test_a_same_named_binary_outside_a_sandbox_dir_does_not_authorize(self):
         # A user's own ``creds_agent`` on PATH must not grant stop authority over
         # a scope, so the ``sandbox/`` parent component is part of the shape.
         cmdline = b"/usr/local/bin/creds_agent\x00--port\x0045257\x00--session-id\x00x\x00"
-        assert self._anchors(cmdline) is False
+        assert self._authorizes(cmdline) is False
 
-    def test_a_helper_path_without_the_session_argument_does_not_anchor(self):
+    def test_a_helper_path_without_the_session_argument_does_not_authorize(self):
         cmdline = (
             b"/home/u/.toolbox/tools/aim/1.0.5917.0/sandbox/creds_agent\x00--port\x0045257\x00"
         )
-        assert self._anchors(cmdline) is False
+        assert self._authorizes(cmdline) is False
 
     def test_the_argument_must_be_an_argv_token_not_a_path_substring(self):
         cmdline = b"/home/u/--session-id/sandbox/creds_agent\x00--port\x0045257\x00"
-        assert self._anchors(cmdline) is False
+        assert self._authorizes(cmdline) is False
+
+    def test_an_empty_scope_authorizes_nothing(self):
+        assert r._scope_is_only_credential_helpers([], self.tmp_path / "proc") is False
+
+    def test_the_helper_is_not_one_of_the_existential_anchor_identities(self):
+        # Pinned in the direction that matters: if the helper ever becomes an
+        # existential anchor, one of them authorizes killing every sibling.
+        from kiro_crew.session_pid import _is_agent_runtime_anchor
+
+        cmdline = _creds_helper_cmdline()
+        assert _is_agent_runtime_anchor(cmdline, has_kirocrew_marker=True) is False
+        assert _is_agent_runtime_anchor(cmdline, has_kirocrew_marker=False) is False
 
 
 def test_reclaims_env_clearing_descendants_by_tree(tmp_path):
