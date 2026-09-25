@@ -28,9 +28,12 @@ from typing import Any
 import pytest
 
 from kiro_crew.slack.renderer import (
+    TOOL_APPROVE_ACTION_PREFIX,
     SlackApprovalDecider,
     SlackRenderer,
     _approval_registry_key,
+    build_approval_token,
+    split_approval_token,
 )
 from kiro_crew.teams.approvals import TeamsApprovalDecider, registry_key
 from kiro_crew.teams.renderer import TeamsRenderer
@@ -71,16 +74,24 @@ def _clean_registries() -> Any:
     """Both process-global registries, emptied around every test.
 
     They are class attributes, so a reservation one test leaves behind would be
-    adopted by the next and turn a real failure into a pass.
+    adopted by the next and turn a real failure into a pass. The ownership sets
+    are class state on the same footing: a key left in one makes the end-of-turn
+    sweep skip it, which reads as the sweep being broken.
     """
     TelegramApprovalDecider._REGISTRY.clear()
     TelegramApprovalDecider._NONCES.clear()
+    TelegramApprovalDecider._AWAITED.clear()
     SlackApprovalDecider._REGISTRY.clear()
+    SlackApprovalDecider._NONCES.clear()
+    SlackApprovalDecider._AWAITED.clear()
     TeamsApprovalDecider.reset_for_tests()
     yield
     TelegramApprovalDecider._REGISTRY.clear()
     TelegramApprovalDecider._NONCES.clear()
+    TelegramApprovalDecider._AWAITED.clear()
     SlackApprovalDecider._REGISTRY.clear()
+    SlackApprovalDecider._NONCES.clear()
+    SlackApprovalDecider._AWAITED.clear()
     TeamsApprovalDecider.reset_for_tests()
 
 
@@ -329,13 +340,30 @@ class TestTelegramEarlyPress:
         assert TelegramApprovalDecider.resolve_global(mine, True, nonce="n1") is False
 
     @pytest.mark.asyncio
-    async def test_a_delivered_decision_is_not_discarded_by_the_teardown(self) -> None:
-        """Only PENDING reservations are dropped, so a real answer survives."""
+    async def test_a_delivered_decision_nobody_awaited_is_swept_too(self) -> None:
+        """An answer no wait adopted has no reader, and its nonce still authorizes.
+
+        ``__call__`` for that turn never ran and :meth:`arm` re-mints rather than
+        letting the next request inherit the answer, so retaining it keeps the
+        future and a live nonce for the life of the process.
+        """
         key = TelegramApprovalDecider.key(_SESSION, _RID)
         TelegramApprovalDecider.arm(key, "n1")
         assert TelegramApprovalDecider.resolve_global(key, True, nonce="n1") is True
         TelegramApprovalDecider.discard_session(_SESSION)
+        assert key not in TelegramApprovalDecider._REGISTRY
+        assert TelegramApprovalDecider.nonce_matches(key, "n1") is False
+
+    @pytest.mark.asyncio
+    async def test_a_window_a_wait_owns_survives_the_teardown(self) -> None:
+        """Ownership, not the future's state, is what the sweep spares."""
+        key = TelegramApprovalDecider.key(_SESSION, _RID)
+        TelegramApprovalDecider.arm(key, "n1")
+        TelegramApprovalDecider._AWAITED.add(key)
+        assert TelegramApprovalDecider.resolve_global(key, True, nonce="n1") is True
+        TelegramApprovalDecider.discard_session(_SESSION)
         assert key in TelegramApprovalDecider._REGISTRY
+        assert TelegramApprovalDecider.nonce_matches(key, "n1") is True
 
     @pytest.mark.asyncio
     async def test_arming_twice_keeps_the_future_the_waiter_holds(self) -> None:
@@ -382,9 +410,13 @@ class TestArmingOffTheEventLoop:
 
     def test_slack_reserve_off_the_loop_is_inert(self) -> None:
         decider = SlackApprovalDecider(session_key=_SESSION)
-        decider.reserve(_RID)
+        assert decider.reserve(_RID) == ""
         assert _RID not in decider._futures
-        assert _approval_registry_key(_SESSION, _RID) not in SlackApprovalDecider._REGISTRY
+        key = _approval_registry_key(_SESSION, _RID)
+        assert key not in SlackApprovalDecider._REGISTRY
+        # No nonce armed either, so the buttons such a caller posts carry none
+        # and every press on them is refused rather than silently authorized.
+        assert key not in SlackApprovalDecider._NONCES
 
 
 class TestAReservationFromAClosedLoop:
@@ -438,6 +470,19 @@ class TestAReservationFromAClosedLoop:
         assert decider._futures[_RID].get_loop() is asyncio.get_running_loop()
 
 
+def _slack_button_token(blocks: list[dict]) -> str:
+    """The ``value`` Slack sends back when the Approve button is clicked.
+
+    Taken out of the posted blocks rather than rebuilt, so a test presses with
+    the token the user's own button carries -- including the prompt's nonce.
+    """
+    for block in blocks:
+        for element in block.get("elements", []):
+            if str(element.get("action_id", "")).startswith(TOOL_APPROVE_ACTION_PREFIX):
+                return str(element.get("value", ""))
+    raise AssertionError("no approval button in the posted blocks")
+
+
 class _PressingSlackClient:
     """A Slack client that clicks the button while ``post_blocks`` is in flight."""
 
@@ -446,15 +491,17 @@ class _PressingSlackClient:
         self.raising = raising
         self.press_accepted: bool | None = None
         self.session_at_press = ""
+        self.pressed_token = ""
 
     async def post_blocks(
         self, channel: str, blocks: list[dict], text: str, thread_ts: str | None = None
     ) -> str:
+        self.pressed_token = _slack_button_token(blocks)
         if self.raising:
             raise RuntimeError("channel gone")
-        key = _approval_registry_key(_SESSION, _RID)
-        self.session_at_press = SlackApprovalDecider.session_for(key)
-        self.press_accepted = SlackApprovalDecider.resolve_global(key, self.approved)
+        key, nonce = split_approval_token(self.pressed_token)
+        self.session_at_press = SlackApprovalDecider.session_for(key, nonce=nonce)
+        self.press_accepted = SlackApprovalDecider.resolve_global(key, self.approved, nonce=nonce)
         return "1.0"
 
 
@@ -496,29 +543,29 @@ class TestSlackEarlyPress:
     @pytest.mark.asyncio
     async def test_a_click_after_the_wait_starts_still_works(self) -> None:
         decider = SlackApprovalDecider(session_key=_SESSION)
-        decider.reserve(_RID)
+        nonce = decider.reserve(_RID)
         task = asyncio.create_task(decider(_event()))
         await asyncio.sleep(0)
         key = _approval_registry_key(_SESSION, _RID)
-        assert SlackApprovalDecider.resolve_global(key, True) is True
+        assert SlackApprovalDecider.resolve_global(key, True, nonce=nonce) is True
         assert await asyncio.wait_for(task, _TEST_WAIT_S) is True
 
     @pytest.mark.asyncio
     async def test_a_second_click_is_refused(self) -> None:
         decider = SlackApprovalDecider(session_key=_SESSION)
-        decider.reserve(_RID)
+        nonce = decider.reserve(_RID)
         key = _approval_registry_key(_SESSION, _RID)
-        assert SlackApprovalDecider.resolve_global(key, True) is True
-        assert SlackApprovalDecider.resolve_global(key, False) is False
+        assert SlackApprovalDecider.resolve_global(key, True, nonce=nonce) is True
+        assert SlackApprovalDecider.resolve_global(key, False, nonce=nonce) is False
         assert await asyncio.wait_for(decider(_event()), _TEST_WAIT_S) is True
 
     @pytest.mark.asyncio
     async def test_a_click_for_another_session_cannot_resolve_this_one(self) -> None:
         decider = SlackApprovalDecider(session_key=_SESSION)
-        decider.reserve(_RID)
+        nonce = decider.reserve(_RID)
         theirs = _approval_registry_key("slack:C9:t9", _RID)
-        assert SlackApprovalDecider.resolve_global(theirs, True) is False
-        assert SlackApprovalDecider.session_for(theirs) == ""
+        assert SlackApprovalDecider.resolve_global(theirs, True, nonce=nonce) is False
+        assert SlackApprovalDecider.session_for(theirs, nonce=nonce) == ""
 
     @pytest.mark.asyncio
     async def test_a_raising_post_discards_the_window_and_propagates(self) -> None:
@@ -527,62 +574,204 @@ class TestSlackEarlyPress:
         renderer = SlackRenderer(client, "C1", "t1", reactions_enabled=False, decider=decider)
         with pytest.raises(RuntimeError):
             await renderer.on_prompt_choice([], _RID, tool_title="bash")
-        key = _approval_registry_key(_SESSION, _RID)
+        key, nonce = split_approval_token(client.pressed_token)
+        assert key == _approval_registry_key(_SESSION, _RID)
+        assert nonce, "the buttons carried a nonce, so pressing with it is the real test"
         assert key not in SlackApprovalDecider._REGISTRY
-        assert SlackApprovalDecider.resolve_global(key, True) is False
+        assert SlackApprovalDecider.resolve_global(key, True, nonce=nonce) is False
 
     @pytest.mark.asyncio
     async def test_an_unanswered_window_denies_with_the_expiry_cause(self) -> None:
         decider = SlackApprovalDecider(session_key=_SESSION)
-        decider.reserve(_RID)
+        nonce = decider.reserve(_RID)
         import kiro_crew.slack.renderer as sl
 
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(sl, "_APPROVAL_TIMEOUT", 0.01)
             assert await asyncio.wait_for(decider(_event()), _TEST_WAIT_S) is False
         assert decider.last_deny_cause != ""
-        assert _approval_registry_key(_SESSION, _RID) not in SlackApprovalDecider._REGISTRY
+        key = _approval_registry_key(_SESSION, _RID)
+        assert key not in SlackApprovalDecider._REGISTRY
+        # The buttons outlive the prompt in the thread, so the nonce must not.
+        assert SlackApprovalDecider.nonce_matches(key, nonce) is False
 
     @pytest.mark.asyncio
     async def test_a_cancelled_reservation_is_not_read_as_a_decision(self) -> None:
         decider = SlackApprovalDecider(session_key=_SESSION)
-        decider.reserve(_RID)
+        nonce = decider.reserve(_RID)
         decider._futures[_RID].cancel()
         await asyncio.sleep(0)
         task = asyncio.create_task(decider(_event()))
         await asyncio.sleep(0)
         key = _approval_registry_key(_SESSION, _RID)
-        assert SlackApprovalDecider.resolve_global(key, True) is True
+        assert SlackApprovalDecider.resolve_global(key, True, nonce=nonce) is True
         assert await asyncio.wait_for(task, _TEST_WAIT_S) is True
 
     @pytest.mark.asyncio
     async def test_an_unawaited_reservation_does_not_outlive_its_turn(self) -> None:
         mine = SlackApprovalDecider(session_key=_SESSION)
-        mine.reserve(_RID)
+        my_nonce = mine.reserve(_RID)
         theirs = SlackApprovalDecider(session_key="slack:C9:t9")
         theirs.reserve(_RID)
         SlackApprovalDecider.discard_session(_SESSION)
-        assert _approval_registry_key(_SESSION, _RID) not in SlackApprovalDecider._REGISTRY
+        my_key = _approval_registry_key(_SESSION, _RID)
+        assert my_key not in SlackApprovalDecider._REGISTRY
         assert _RID not in mine._futures
+        # Swept means unusable, not merely unreachable: the buttons are still there.
+        assert SlackApprovalDecider.nonce_matches(my_key, my_nonce) is False
         # Another session's live window is untouched.
         assert _approval_registry_key("slack:C9:t9", _RID) in SlackApprovalDecider._REGISTRY
 
     @pytest.mark.asyncio
-    async def test_a_delivered_decision_is_not_discarded_by_the_teardown(self) -> None:
+    async def test_a_delivered_decision_nobody_awaited_is_swept_too(self) -> None:
         decider = SlackApprovalDecider(session_key=_SESSION)
-        decider.reserve(_RID)
+        nonce = decider.reserve(_RID)
         key = _approval_registry_key(_SESSION, _RID)
-        assert SlackApprovalDecider.resolve_global(key, True) is True
+        assert SlackApprovalDecider.resolve_global(key, True, nonce=nonce) is True
+        SlackApprovalDecider.discard_session(_SESSION)
+        assert key not in SlackApprovalDecider._REGISTRY
+        assert _RID not in decider._futures
+        # The buttons outlive the turn, so a retained nonce would still grant Trust.
+        assert SlackApprovalDecider.nonce_matches(key, nonce) is False
+        assert SlackApprovalDecider.session_for(key, nonce=nonce) == ""
+
+    @pytest.mark.asyncio
+    async def test_a_window_a_wait_owns_survives_the_teardown(self) -> None:
+        """Ownership, not the future's state, is what the sweep spares."""
+        decider = SlackApprovalDecider(session_key=_SESSION)
+        nonce = decider.reserve(_RID)
+        key = _approval_registry_key(_SESSION, _RID)
+        SlackApprovalDecider._AWAITED.add(key)
+        assert SlackApprovalDecider.resolve_global(key, True, nonce=nonce) is True
         SlackApprovalDecider.discard_session(_SESSION)
         assert key in SlackApprovalDecider._REGISTRY
+        assert SlackApprovalDecider.nonce_matches(key, nonce) is True
 
     @pytest.mark.asyncio
     async def test_reserving_twice_keeps_the_future_the_waiter_holds(self) -> None:
         decider = SlackApprovalDecider(session_key=_SESSION)
-        decider.reserve(_RID)
+        first_nonce = decider.reserve(_RID)
         first = decider._futures[_RID]
-        decider.reserve(_RID)
+        second_nonce = decider.reserve(_RID)
         assert decider._futures[_RID] is first
+        # A re-render reprints the buttons, so only the newest nonce may decide.
+        assert second_nonce != first_nonce
+        key = _approval_registry_key(_SESSION, _RID)
+        assert SlackApprovalDecider.resolve_global(key, True, nonce=first_nonce) is False
+        assert SlackApprovalDecider.resolve_global(key, True, nonce=second_nonce) is True
+
+
+class TestTheSlackButtonCarriesAPerPromptNonce:
+    """A Slack press must prove it came from the buttons now on screen.
+
+    The registry key is ``session_key:request_id`` and both halves recur: request
+    ids restart at ``1`` in each provider process, and a session key outlives any
+    one prompt. A prompt that expired keeps its buttons in the thread, because
+    only a decided press rewrites the message. So without a per-prompt value the
+    key alone is the whole credential, and a press on a leftover button decides --
+    or Trusts -- whatever request happens to hold that key now.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_posted_button_carries_the_key_and_the_nonce(self) -> None:
+        decider = SlackApprovalDecider(session_key=_SESSION)
+        client = _PressingSlackClient()
+        renderer = SlackRenderer(client, "C1", "t1", reactions_enabled=False, decider=decider)
+        await renderer.on_prompt_choice([], _RID, tool_title="bash")
+        key, nonce = split_approval_token(client.pressed_token)
+        assert key == _approval_registry_key(_SESSION, _RID)
+        assert nonce, "the buttons must carry this prompt's own nonce"
+        assert client.press_accepted is True
+        # The press decided it. Replaying the same button cannot change that: the
+        # nonce still matches until the wait retires it, and the future is done.
+        assert SlackApprovalDecider.resolve_global(key, False, nonce=nonce) is False
+
+    @pytest.mark.asyncio
+    async def test_a_button_from_the_previous_prompt_cannot_decide_this_one(self) -> None:
+        """The reported defect: a stale button plus a replayed request id."""
+        first = SlackApprovalDecider(session_key=_SESSION)
+        stale_nonce = first.reserve(_RID)
+        SlackApprovalDecider.discard_session(_SESSION)
+
+        # A later turn in the same thread reaches the same request id again.
+        second = SlackApprovalDecider(session_key=_SESSION)
+        live_nonce = second.reserve(_RID)
+        key = _approval_registry_key(_SESSION, _RID)
+        assert stale_nonce != live_nonce
+
+        assert SlackApprovalDecider.resolve_global(key, True, nonce=stale_nonce) is False
+        assert _RID in second._futures and not second._futures[_RID].done()
+        assert SlackApprovalDecider.resolve_global(key, True, nonce=live_nonce) is True
+
+    @pytest.mark.asyncio
+    async def test_a_stale_button_grants_no_session_trust(self) -> None:
+        """Trust is the wider grant: the handler escalates BEFORE it resolves."""
+        first = SlackApprovalDecider(session_key=_SESSION)
+        stale_nonce = first.reserve(_RID)
+        SlackApprovalDecider.discard_session(_SESSION)
+        second = SlackApprovalDecider(session_key=_SESSION)
+        live_nonce = second.reserve(_RID)
+        key = _approval_registry_key(_SESSION, _RID)
+
+        assert SlackApprovalDecider.session_for(key, nonce=stale_nonce) == ""
+        assert SlackApprovalDecider.session_for(key, nonce=live_nonce) == _SESSION
+
+    @pytest.mark.asyncio
+    async def test_an_answered_prompt_grants_no_session_trust(self) -> None:
+        """A second press after the first decided must not escalate the session.
+
+        The nonce is retired by the wait's ``finally``, not by the decision, so
+        between a Deny landing and that wait resuming both presses carry a nonce
+        that still matches. Trust there would turn on blanket approval for every
+        later tool in the session while the handler reports the press as expired.
+        """
+        decider = SlackApprovalDecider(session_key=_SESSION)
+        nonce = decider.reserve(_RID)
+        key = _approval_registry_key(_SESSION, _RID)
+        assert SlackApprovalDecider.session_for(key, nonce=nonce) == _SESSION
+
+        assert SlackApprovalDecider.resolve_global(key, False, nonce=nonce) is True
+        # The nonce is still armed here -- that is precisely the exposed gap.
+        assert SlackApprovalDecider.nonce_matches(key, nonce) is True
+        assert SlackApprovalDecider.resolve_global(key, True, nonce=nonce) is False
+        assert SlackApprovalDecider.session_for(key, nonce=nonce) == ""
+
+    @pytest.mark.asyncio
+    async def test_a_press_carrying_no_nonce_is_refused(self) -> None:
+        decider = SlackApprovalDecider(session_key=_SESSION)
+        decider.reserve(_RID)
+        key = _approval_registry_key(_SESSION, _RID)
+        assert SlackApprovalDecider.resolve_global(key, True, nonce="") is False
+        assert SlackApprovalDecider.resolve_global(key, True) is False
+        assert SlackApprovalDecider.session_for(key, nonce="") == ""
+
+    @pytest.mark.asyncio
+    async def test_a_press_carrying_the_wrong_nonce_is_refused(self) -> None:
+        decider = SlackApprovalDecider(session_key=_SESSION)
+        decider.reserve(_RID)
+        key = _approval_registry_key(_SESSION, _RID)
+        assert SlackApprovalDecider.resolve_global(key, True, nonce="not-the-one") is False
+
+    @pytest.mark.asyncio
+    async def test_a_key_with_no_window_matches_nothing(self) -> None:
+        assert SlackApprovalDecider.nonce_matches("slack:C9:t9:99", "anything") is False
+
+    def test_the_token_round_trips_through_a_session_key_holding_colons(self) -> None:
+        """Slack session keys are ``slack:<channel>:<thread>``, so ``:`` is not a
+        usable separator between the key and the nonce."""
+        token = build_approval_token("slack:C1:t1", "7", "nonce-abc")
+        key, nonce = split_approval_token(token)
+        assert key == "slack:C1:t1:7"
+        assert nonce == "nonce-abc"
+
+    def test_a_token_minted_without_a_nonce_yields_an_empty_one(self) -> None:
+        """A button predating this change carries no separator; it must not be
+        read as carrying a nonce that happens to match."""
+        token = build_approval_token("slack:C1:t1", "7", "")
+        assert "|" not in token
+        key, nonce = split_approval_token(token)
+        assert key == "slack:C1:t1:7"
+        assert nonce == ""
 
 
 class _PressingTeamsClient:
@@ -748,12 +937,14 @@ class TestTeamsEarlyPress:
         assert registry_key("teams:other", _RID) in TeamsApprovalDecider._REGISTRY
 
     @pytest.mark.asyncio
-    async def test_a_delivered_decision_is_not_discarded_by_the_teardown(self) -> None:
+    async def test_a_delivered_decision_nobody_awaited_is_swept_too(self) -> None:
         decider = TeamsApprovalDecider(session_key=_SESSION)
         decider.arm(_RID, "n1")
         assert TeamsApprovalDecider.resolve_global(_SESSION, _RID, "n1", approved=True) is True
         decider.discard_reservations()
-        assert registry_key(_SESSION, _RID) in TeamsApprovalDecider._REGISTRY
+        assert registry_key(_SESSION, _RID) not in TeamsApprovalDecider._REGISTRY
+        assert _RID not in decider._futures
+        assert _RID not in decider._nonces
 
     @pytest.mark.asyncio
     async def test_arming_twice_keeps_the_future_the_waiter_holds(self) -> None:
@@ -762,3 +953,219 @@ class TestTeamsEarlyPress:
         first = decider._futures[_RID]
         decider.arm(_RID, "n2")
         assert decider._futures[_RID] is first
+
+
+class TestTheSweepReachesTheRealRegistry:
+    """The end-of-turn sweep must not travel through the construction seam.
+
+    Each dispatcher holds a module-level name for its decider class and calls it
+    to build the turn's decider. Callers and tests substitute that name to observe
+    which decider a turn constructs, and a substitute need not be a class at all.
+    Reservations live on the real class, so a sweep that resolved the class through
+    that name would aim at the substitute: it raises on a plain function, and on a
+    stand-in class it silently sweeps an empty registry and leaves the real window
+    armed past the end of its turn.
+    """
+
+    def test_the_slack_sweep_is_the_class_that_holds_the_reservations(self) -> None:
+        from kiro_crew.slack import transport_dispatch as slack_dispatch
+
+        assert slack_dispatch._APPROVAL_REGISTRY is SlackApprovalDecider
+
+    def test_the_telegram_sweep_is_the_class_that_holds_the_reservations(self) -> None:
+        from kiro_crew.telegram import transport_dispatch as telegram_dispatch
+
+        assert telegram_dispatch._APPROVAL_REGISTRY is TelegramApprovalDecider
+
+    @pytest.mark.asyncio
+    async def test_substituting_the_slack_construction_seam_leaves_the_sweep_working(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.slack import transport_dispatch as slack_dispatch
+
+        def spy(*a: Any, **k: Any) -> Any:
+            return SlackApprovalDecider(*a, **k)
+
+        monkeypatch.setattr(slack_dispatch, "SlackApprovalDecider", spy)
+        decider = spy(session_key=_SESSION)
+        decider.reserve(_RID)
+        assert _approval_registry_key(_SESSION, _RID) in SlackApprovalDecider._REGISTRY
+        slack_dispatch._APPROVAL_REGISTRY.discard_session(_SESSION)
+        assert _approval_registry_key(_SESSION, _RID) not in SlackApprovalDecider._REGISTRY
+
+    @pytest.mark.asyncio
+    async def test_substituting_the_telegram_construction_seam_leaves_the_sweep_working(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.telegram import transport_dispatch as telegram_dispatch
+
+        def spy(*a: Any, **k: Any) -> Any:
+            return TelegramApprovalDecider(*a, **k)
+
+        monkeypatch.setattr(telegram_dispatch, "TelegramApprovalDecider", spy)
+        key = TelegramApprovalDecider.key(_SESSION, _RID)
+        TelegramApprovalDecider.arm(key, "n1")
+        telegram_dispatch._APPROVAL_REGISTRY.discard_session(_SESSION)
+        assert TelegramApprovalDecider.is_pending(key, "n1") is False
+
+    @pytest.mark.parametrize(
+        ("module_name", "seam"),
+        [
+            ("kiro_crew.slack.transport_dispatch", "SlackApprovalDecider"),
+            ("kiro_crew.telegram.transport_dispatch", "TelegramApprovalDecider"),
+        ],
+    )
+    def test_no_dispatcher_sweeps_through_its_construction_seam(
+        self, module_name: str, seam: str
+    ) -> None:
+        """The source-level half, which the behavioural pins above cannot cover.
+
+        Calling the sweep on the alias works whatever the dispatcher does, so only
+        reading the dispatcher shows which name its own end-of-turn path uses.
+        """
+        import importlib
+        import inspect
+
+        source = inspect.getsource(importlib.import_module(module_name))
+        assert f"{seam}.discard_session" not in source, (
+            f"{module_name} sweeps reservations through {seam}, the name callers and "
+            "tests substitute -- use the registry alias instead"
+        )
+        assert "_APPROVAL_REGISTRY.discard_session(session_key)" in source
+
+
+class TestTheSweepSparesAWindowAWaitOwns:
+    """A wait under a session key need not belong to the turn running the sweep.
+
+    A spawn-approval prompt is armed under the PARENT session key and awaited by a
+    detached task with its own window, so the parent turn's end-of-turn sweep runs
+    while that wait is still live. Popping its future and nonce there would leave
+    the operator holding buttons that resolve nothing, and the spawn would deny at
+    its own timeout on a refusal nobody made.
+    """
+
+    @pytest.mark.asyncio
+    async def test_telegram_spares_a_detached_window_before_its_wait_starts(self) -> None:
+        """The exposed span is the SEND, before the detached wait has claimed anything.
+
+        The spawn gate arms, then suspends in the post. Its own task has not reached
+        the decider yet, so ``__call__`` has claimed nothing -- and the turn that
+        asked for the spawn has already returned, because admission runs this gate
+        in a task of its own. Its sweep therefore lands on a window whose buttons
+        are on screen and whose wait is still one await away.
+        """
+        spawn_rid = "spawn:sub-1"
+        spawn_key = TelegramApprovalDecider.key(_SESSION, spawn_rid)
+        TelegramApprovalDecider.arm(spawn_key, "n-spawn", detached=True)
+
+        # The parent turn ends here: the gate is still inside its send.
+        TelegramApprovalDecider.discard_session(_SESSION)
+
+        assert TelegramApprovalDecider.is_pending(spawn_key, "n-spawn") is True
+        decider = TelegramApprovalDecider(session_key=_SESSION)
+        waiter = asyncio.create_task(decider(_event(spawn_rid)))
+        await asyncio.sleep(0)
+        assert TelegramApprovalDecider.resolve_global(spawn_key, True, nonce="n-spawn") is True
+        assert await asyncio.wait_for(waiter, _TEST_WAIT_S) is True
+
+    @pytest.mark.asyncio
+    async def test_telegram_sweeps_an_undeclared_window_before_its_wait_starts(self) -> None:
+        """Without the declaration there is nothing to tell this from an orphan."""
+        key = TelegramApprovalDecider.key(_SESSION, _RID)
+        TelegramApprovalDecider.arm(key, "n-tool")
+        TelegramApprovalDecider.discard_session(_SESSION)
+        assert TelegramApprovalDecider.is_pending(key, "n-tool") is False
+
+    @pytest.mark.asyncio
+    async def test_telegram_retire_releases_a_detached_claim(self) -> None:
+        """A gate that falls through must not leave its key exempt for good.
+
+        The spawn gate retires and falls through to Slack when the post fails or the
+        destination stops being authorized. Keeping the claim would make every
+        later sweep skip that key, so a real orphan at the same id would survive.
+        """
+        spawn_rid = "spawn:sub-1"
+        spawn_key = TelegramApprovalDecider.key(_SESSION, spawn_rid)
+        TelegramApprovalDecider.arm(spawn_key, "n-spawn", detached=True)
+        TelegramApprovalDecider.retire(spawn_key)
+        assert spawn_key not in TelegramApprovalDecider._AWAITED
+
+        TelegramApprovalDecider.arm(spawn_key, "n-again")
+        TelegramApprovalDecider.discard_session(_SESSION)
+        assert TelegramApprovalDecider.is_pending(spawn_key, "n-again") is False
+
+    @pytest.mark.asyncio
+    async def test_telegram_spares_the_key_a_detached_wait_is_holding(self) -> None:
+        spawn_rid = "spawn:sub-1"
+        spawn_key = TelegramApprovalDecider.key(_SESSION, spawn_rid)
+        TelegramApprovalDecider.arm(spawn_key, "n-spawn")
+        decider = TelegramApprovalDecider(session_key=_SESSION)
+        waiter = asyncio.create_task(decider(_event(spawn_rid)))
+        await asyncio.sleep(0)  # let the wait take ownership of the key
+
+        # The parent turn ends while that detached wait is still pending.
+        TelegramApprovalDecider.discard_session(_SESSION)
+
+        assert TelegramApprovalDecider.is_pending(spawn_key, "n-spawn") is True
+        assert TelegramApprovalDecider.resolve_global(spawn_key, True, nonce="n-spawn") is True
+        assert await asyncio.wait_for(waiter, _TEST_WAIT_S) is True
+
+    @pytest.mark.asyncio
+    async def test_telegram_still_drops_an_unawaited_window_beside_it(self) -> None:
+        spawn_rid = "spawn:sub-1"
+        spawn_key = TelegramApprovalDecider.key(_SESSION, spawn_rid)
+        TelegramApprovalDecider.arm(spawn_key, "n-spawn")
+        decider = TelegramApprovalDecider(session_key=_SESSION)
+        waiter = asyncio.create_task(decider(_event(spawn_rid)))
+        await asyncio.sleep(0)
+
+        # A tool prompt whose turn ended before the driver reached the decider.
+        tool_key = TelegramApprovalDecider.key(_SESSION, _RID)
+        TelegramApprovalDecider.arm(tool_key, "n-tool")
+
+        TelegramApprovalDecider.discard_session(_SESSION)
+
+        assert TelegramApprovalDecider.is_pending(tool_key, "n-tool") is False
+        assert TelegramApprovalDecider.resolve_global(tool_key, True, nonce="n-tool") is False
+        # The owned one is untouched.
+        assert TelegramApprovalDecider.is_pending(spawn_key, "n-spawn") is True
+        TelegramApprovalDecider.resolve_global(spawn_key, False, nonce="n-spawn")
+        assert await asyncio.wait_for(waiter, _TEST_WAIT_S) is False
+
+    @pytest.mark.asyncio
+    async def test_telegram_releases_ownership_when_the_wait_ends(self) -> None:
+        key = TelegramApprovalDecider.key(_SESSION, _RID)
+        TelegramApprovalDecider.arm(key, "n1")
+        decider = TelegramApprovalDecider(session_key=_SESSION)
+        waiter = asyncio.create_task(decider(_event(_RID)))
+        await asyncio.sleep(0)
+        assert key in TelegramApprovalDecider._AWAITED
+        TelegramApprovalDecider.resolve_global(key, True, nonce="n1")
+        assert await asyncio.wait_for(waiter, _TEST_WAIT_S) is True
+        assert key not in TelegramApprovalDecider._AWAITED
+
+    @pytest.mark.asyncio
+    async def test_slack_spares_the_key_a_wait_is_holding(self) -> None:
+        decider = SlackApprovalDecider(session_key=_SESSION)
+        nonce = decider.reserve(_RID)
+        waiter = asyncio.create_task(decider(_event(_RID)))
+        await asyncio.sleep(0)
+        key = _approval_registry_key(_SESSION, _RID)
+
+        SlackApprovalDecider.discard_session(_SESSION)
+
+        assert SlackApprovalDecider._REGISTRY.get(key) is decider
+        assert SlackApprovalDecider.resolve_global(key, True, nonce=nonce) is True
+        assert await asyncio.wait_for(waiter, _TEST_WAIT_S) is True
+
+    @pytest.mark.asyncio
+    async def test_slack_releases_ownership_when_the_wait_ends(self) -> None:
+        decider = SlackApprovalDecider(session_key=_SESSION)
+        key = _approval_registry_key(_SESSION, _RID)
+        nonce = decider.reserve(_RID)
+        waiter = asyncio.create_task(decider(_event(_RID)))
+        await asyncio.sleep(0)
+        assert key in SlackApprovalDecider._AWAITED
+        SlackApprovalDecider.resolve_global(key, True, nonce=nonce)
+        assert await asyncio.wait_for(waiter, _TEST_WAIT_S) is True
+        assert key not in SlackApprovalDecider._AWAITED

@@ -67,7 +67,10 @@ from kiro_crew.slack.handler import (
     maybe_route_linked_thread,
     track_background_task,
 )
-from kiro_crew.slack.renderer import PARTIAL_TURN_MARKER, SlackApprovalDecider, SlackRenderer
+from kiro_crew.slack.renderer import PARTIAL_TURN_MARKER
+from kiro_crew.slack.renderer import SlackApprovalDecider
+from kiro_crew.slack.renderer import SlackApprovalDecider as _APPROVAL_REGISTRY
+from kiro_crew.slack.renderer import SlackRenderer
 from kiro_crew.stats import Stats
 
 if TYPE_CHECKING:
@@ -1210,7 +1213,15 @@ async def handle_message_transport(
         # the turn then ended before the decider -- has no wait of its own to close
         # it, so a later click would resolve a future nobody reads while the user
         # is told their decision was applied.
-        SlackApprovalDecider.discard_session(session_key)
+        #
+        # ``_APPROVAL_REGISTRY`` is ``SlackApprovalDecider`` under a second name.
+        # Reservations are class state, so the sweep has to reach the class holding
+        # them, and the construction name above is a seam callers and tests
+        # substitute to observe the decider a turn builds. Sweeping through that
+        # name aims at the substitute: it raises on a plain function, and on a
+        # stand-in class it clears an empty registry and leaves the real window
+        # armed past the end of its turn.
+        _APPROVAL_REGISTRY.discard_session(session_key)
         # A turn that consumed the post-compaction flag but never landed
         # discarded the prompt carrying the re-injected context; put the flag
         # back so the next turn re-injects it.

@@ -131,8 +131,9 @@ from kiro_crew.telegram.commands import (
     parse_dashboard_argument,
     parse_mid_turn_override,
 )
+from kiro_crew.telegram.renderer import TelegramApprovalDecider
+from kiro_crew.telegram.renderer import TelegramApprovalDecider as _APPROVAL_REGISTRY
 from kiro_crew.telegram.renderer import (
-    TelegramApprovalDecider,
     TelegramRenderer,
     md_to_telegram_html_safe,
 )
@@ -1526,7 +1527,15 @@ class TelegramDispatcher:
             # and the turn then ended before the decider -- has no wait of its own
             # to close it, so it would outlive this turn with its nonce still
             # armed and authorizing a press.
-            TelegramApprovalDecider.discard_session(session_key)
+            #
+            # ``_APPROVAL_REGISTRY`` is ``TelegramApprovalDecider`` under a second
+            # name. Reservations are class state, so the sweep has to reach the
+            # class holding them, and the construction name above is a seam
+            # callers and tests substitute to observe the decider a turn builds.
+            # Sweeping through that name aims at the substitute: it raises on a
+            # plain function, and on a stand-in class it clears an empty registry
+            # and leaves the real window armed past the end of its turn.
+            _APPROVAL_REGISTRY.discard_session(session_key)
             # A turn that consumed the post-compaction flag but never landed
             # discarded the prompt carrying the re-injected context; put the
             # flag back so the next turn re-injects it.
@@ -3295,7 +3304,12 @@ class TelegramDispatcher:
         rid = str(request_id)
         nonce = new_approval_nonce()
         key = TelegramApprovalDecider.key(session_key, rid)
-        TelegramApprovalDecider.arm(key, nonce)
+        # The wait below runs in this gate's OWN task, not in the turn that asked
+        # for the spawn: that turn returns as soon as the spawn is admitted, so its
+        # end-of-turn sweep can land while this coroutine is still in the send.
+        # Claiming the window here keeps the sweep off a prompt the operator is
+        # looking at; every exit path below releases the claim.
+        TelegramApprovalDecider.arm(key, nonce, detached=True)
         keyboard = {
             "inline_keyboard": [
                 [
@@ -3334,6 +3348,12 @@ class TelegramDispatcher:
                 reply_markup=keyboard,
                 message_thread_id=thread_id,
             )
+        except asyncio.CancelledError:
+            # The only suspension point between the arm and the wait, so a cancel
+            # here is the one exit that would otherwise leave the window claimed
+            # with no wait coming to release it. Close it, then let the cancel run.
+            TelegramApprovalDecider.retire(key)
+            raise
         except Exception:
             # Could not surface it: retire the armed nonce and fall through so the
             # spawn can still be answered on Slack/dashboard rather than deny by a

@@ -672,7 +672,7 @@ class TestTransportApprovalAuth:
             "user": {"id": user_id},
             "channel": {"id": "C1"},
             "message": {"ts": "200.0"},
-            "actions": [{"action_id": action_id, "value": "rq1", "text": {"text": "x"}}],
+            "actions": [{"action_id": action_id, "value": "rq1|nonce-rq1", "text": {"text": "x"}}],
         }
 
     @pytest.mark.asyncio
@@ -703,7 +703,7 @@ class TestTransportApprovalAuth:
         monkeypatch.setattr(SlackApprovalDecider, "resolve_global", spy)
 
         await interactions.dispatch(self._payload("mc_tool_approve_rq1", "U_OWNER"))
-        spy.assert_called_once_with("rq1", True)
+        spy.assert_called_once_with("rq1", True, nonce="nonce-rq1")
         orch_fixture.slack.update_message.assert_awaited()
 
     @pytest.mark.asyncio
@@ -916,7 +916,9 @@ class TestTransportApprovalAuth:
 
         monkeypatch.setattr(interactions, "is_allowed_user", lambda uid: True)
         monkeypatch.setattr(
-            SlackApprovalDecider, "session_for", classmethod(lambda cls, rid: "thread-1")
+            SlackApprovalDecider,
+            "session_for",
+            classmethod(lambda cls, rid, *, nonce="": "thread-1"),
         )
         monkeypatch.setattr(SlackApprovalDecider, "resolve_global", MagicMock(return_value=True))
         grant = MagicMock()

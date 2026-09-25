@@ -533,10 +533,15 @@ prefix. A spawn approval matches that prefix but does not belong to the turn: th
 gate awaits it in its own task and the agent is told to end its turn, so the sweep
 would close a window while the user is still looking at the prompt, answer their
 press with an expiry it had not reached, and hand the gate a refusal nobody
-pressed. `register_nonce(key, detached=True)` marks such a key and the sweep skips
-it, so the window closes at the decision, at the wait's timeout, or at a `retire`
-and nowhere else. The mark is per key, so a tool approval awaited inside its own
-turn is swept exactly as before.
+pressed. Each channel's arming call therefore takes a `detached=True` flag
+(`DiscordApprovalDecider.register_nonce`, `TelegramApprovalDecider.arm`) which marks
+the key so the sweep skips it, and the window closes at the decision, at the wait's
+timeout, or at a `retire` and nowhere else. The flag is set where the window is
+ARMED, not where the wait starts: the span between them is the post, and it is
+exactly the span the originating turn can end inside. Every exit that closes the
+window clears the mark too, so a gate that falls through to another surface cannot
+leave its key permanently exempt. The mark is per key, so a tool approval awaited
+inside its own turn is swept exactly as before.
 
 **The task preview is cleared in the form Discord RENDERS, not the form it arrives
 in.** The preview is the agent-authored `spawn_run(<task>)` string and it is the one
@@ -2143,7 +2148,7 @@ Wraps `SlackClientOps` in the Layer-1 contract; declares Slack's real (rich-end)
 | Trust session | `mc_tool_trust_` | per-session auto-approve (not global YOLO) |
 | Deny | `mc_tool_deny_` | this tool |
 
-`SlackApprovalDecider` is the `TurnDriver` `decider`. The decision window opens where the prompt is rendered, not where the wait starts: `SlackRenderer.on_prompt_choice` calls `reserve(request_id)` before `post_blocks`, which creates the per-request future and registers the decider in a process-global `_REGISTRY` keyed `session_key:request_id`; `__call__` adopts that reservation, awaits it with `asyncio.wait_for(..., timeout=_APPROVAL_TIMEOUT)`, and **denies by default** on timeout. `TurnDriver` dispatches `PROMPT_CHOICE` and only then awaits the decider, so a click landing between the blocks going out and the wait starting resolves the reservation and `__call__` returns that decision without waiting; minting the future in `__call__` instead discards such a click, reports it as an approval that already expired, and denies when the window elapses. `reserve` never replaces a live future (a second reserve, or one after the wait, keeps the object the waiter holds) and is inert off the event loop, where no waiter can exist. A window no wait adopted is closed by `discard(request_id)` when the post raises and by the classmethod `discard_session(session_key)` in the dispatch's per-turn `finally`, so a click cannot later resolve a future nobody reads. The Slack interaction handler (`slack/interactions.py`) — which has no direct reference to the per-turn decider — resolves clicks via the classmethods `resolve_global(request_id, approved)` and `session_for(request_id)`; a Trust click calls `add_trusted_session()` before resolving so subsequent tools in the session are auto-approved (via the driver's `auto_approve_session` predicate).
+`SlackApprovalDecider` is the `TurnDriver` `decider`. The decision window opens where the prompt is rendered, not where the wait starts: `SlackRenderer.on_prompt_choice` calls `reserve(request_id)` before `post_blocks`, which creates the per-request future, registers the decider in a process-global `_REGISTRY` keyed `session_key:request_id`, mints this prompt's nonce into `_NONCES` under the same key, and RETURNS that nonce for the buttons to carry; `__call__` adopts that reservation, awaits it with `asyncio.wait_for(..., timeout=_APPROVAL_TIMEOUT)`, and **denies by default** on timeout. `TurnDriver` dispatches `PROMPT_CHOICE` and only then awaits the decider, so a click landing between the blocks going out and the wait starting resolves the reservation and `__call__` returns that decision without waiting; minting the future in `__call__` instead discards such a click, reports it as an approval that already expired, and denies when the window elapses. `reserve` never replaces a live future (a second reserve, or one after the wait, keeps the object the waiter holds) but always re-mints the nonce, so only the buttons now on screen can decide; it is inert off the event loop, where no waiter can exist, and returns no nonce there. A window no wait adopted is closed by `discard(request_id)` when the post raises and by the classmethod `discard_session(session_key)` in the dispatch's per-turn `finally`, each retiring the nonce with the window, so a click cannot later resolve a future nobody reads; both drop every reservation no WAIT owns (`_AWAITED`), whatever state its future is in, because a decision no wait adopted has no reader and retaining it leaves a live nonce behind buttons that stay in the thread. The Slack interaction handler (`slack/interactions.py`) — which has no direct reference to the per-turn decider — splits a press's token with `split_approval_token` and resolves clicks via the classmethods `resolve_global(registry_key, approved, nonce=)` and `session_for(registry_key, nonce=)`, both of which refuse a press whose nonce is not the live one; `session_for` additionally requires the prompt's future to exist and still be PENDING, since the nonce is retired by the wait's `finally` rather than by the decision, so between a Deny landing and that wait resuming the nonce still matches a prompt nothing can answer. A Trust click calls `add_trusted_session()` before resolving so subsequent tools in the session are auto-approved (via the driver's `auto_approve_session` predicate), and is therefore gated on the same nonce and skipped entirely when the lookup yields no session — without the pending requirement it would escalate the session for every later tool while the handler reported the press as expired. The token travels in each button's `value` as `session_key:request_id|nonce` and NOT in its `action_id`, whose valueless fallback splits on `_` — a character the nonce alphabet contains.
 
 ### `handle_message_transport` (`slack/transport_dispatch.py`)
 
@@ -2946,7 +2951,9 @@ where the driver WILL still await — Telegram reports a failed send by returnin
 message id, so the refusal is recorded on the reservation and denies at once instead
 of spending the whole window on an invisible prompt — and `discard_session(session_key)`
 in the dispatch's per-turn `finally`, for a prompt that went out before the turn ended
-early. Each drops only PENDING reservations, so a decision already delivered survives.
+early. Each drops every reservation no wait OWNS, whatever state its future is in: a
+decision no wait adopted has no reader, and retaining it leaves the nonce live for a
+button still in the chat.
 
 Budget: Telegram caps `callback_data` at 64 BYTES. The fixed parts cost 21, leaving 43
 for a request id. A button rendered before the nonce existed has no nonce segment, so
@@ -4150,7 +4157,9 @@ replacement, because "answered" is not the only way a prompt stops being live:
   replaces a live future and is inert off the event loop, where no waiter can exist.
   A reservation no wait adopted is dropped by `discard_reservations()` in the
   dispatch's per-turn `finally`, and by `__call__`'s own abandoned-card return;
-  both drop only PENDING reservations, so a delivered decision survives.
+  both drop every reservation whatever state its future is in: a decision no wait
+  adopted has no reader, and retaining it leaves the nonce live for a card still in
+  the channel.
 - **A chip pick.** `settle_options` replaces the chips card with the choice before
   the turn runs, so no other chip still looks live and the transcript records which
   one was picked. If the chips card could not be posted at all the choices degrade

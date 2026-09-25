@@ -843,6 +843,12 @@ class TelegramApprovalDecider:
     #: nonce does not match is refused, which is what stops a button from a previous
     #: run answering a live prompt that reuses its request id.
     _NONCES: dict[str, str] = {}
+    #: Keys a wait currently OWNS -- added when ``__call__`` takes the future and
+    #: discarded in the same ``finally`` that unregisters it. The registry holds
+    #: one future per key, so the wait that added a key is the one that clears it.
+    #: :meth:`discard_session` reads this to leave an owned window alone, since a
+    #: wait under this session key need not belong to the turn running that sweep.
+    _AWAITED: set[str] = set()
 
     def __init__(self, *, session_key: str) -> None:
         self._session_key = session_key
@@ -854,7 +860,7 @@ class TelegramApprovalDecider:
         return f"{session_key}:{request_id}"
 
     @classmethod
-    def arm(cls, key: str, nonce: str) -> None:
+    def arm(cls, key: str, nonce: str, *, detached: bool = False) -> None:
         """Record the nonce for the buttons about to be posted, and OPEN the window.
 
         Called by whatever is about to post the prompt, so it runs on the event
@@ -881,6 +887,18 @@ class TelegramApprovalDecider:
         wait that runs on THIS loop, so without one there is no waiter to hold a
         window open for -- and a caller that cannot await the decider cannot be
         raced by a press. That keeps this callable as a pure nonce operation.
+
+        Pass *detached* when the wait this arms for runs OUTSIDE the turn whose
+        end-of-turn sweep would otherwise reach the key. ``__call__`` claims a key
+        as owned when it starts awaiting, which leaves the span from here to there
+        unowned -- and for a caller whose wait is in a task of its own that span
+        contains a network send, long enough for the originating turn to finish and
+        sweep the window away under the buttons. The press then resolves nothing
+        and the request denies at its own timeout on a refusal nobody made. The
+        claim is released by ``__call__``'s ``finally`` and by :meth:`retire`, so
+        every exit that ends the window also ends the claim. Ownership stays the
+        sweep's one predicate; this only lets the caller that knows its wait is
+        detached say so, rather than the sweep guessing from a request id's shape.
         """
         cls._NONCES[key] = nonce
         try:
@@ -890,6 +908,8 @@ class TelegramApprovalDecider:
         reserved = adoptable_reservation(cls._REGISTRY.get(key), loop)
         if reserved is None or reserved.done():
             cls._REGISTRY[key] = loop.create_future()
+        if detached:
+            cls._AWAITED.add(key)
 
     @classmethod
     def retire(cls, key: str) -> None:
@@ -907,9 +927,13 @@ class TelegramApprovalDecider:
         :meth:`refuse_undelivered` instead, because dropping the reservation there
         only means the wait opens a fresh window and spends the whole timeout on a
         prompt nobody can see.
+
+        Releases a detached caller's ownership claim as well, so a window that ends
+        here cannot leave the key permanently exempt from the sweep.
         """
         cls._NONCES.pop(key, None)
         cls._REGISTRY.pop(key, None)
+        cls._AWAITED.discard(key)
 
     @classmethod
     def refuse_undelivered(cls, key: str) -> None:
@@ -941,12 +965,27 @@ class TelegramApprovalDecider:
         so nothing else closes that window, and the nonce left behind is what
         authorizes a press.
 
-        Drops only PENDING reservations. A resolved one holds a decision that was
-        already delivered, and the prefix carries its own ``:`` so one session key
-        cannot match another that merely starts the same way.
+        Skips a key a wait OWNS, which is what keeps this a sweep of unawaited
+        windows rather than of every window a session holds. Not every wait under
+        a session key belongs to the turn that runs this sweep: a spawn-approval
+        prompt is armed under the parent session key and awaited by a detached
+        task with its own window, so sweeping it would pop the future and nonce
+        while an operator still had the buttons in front of them -- their press
+        would then resolve nothing and the spawn would deny at its timeout on a
+        refusal nobody made. Ownership is the predicate rather than the shape of
+        the request id, so a wait added later is covered without being enumerated
+        here.
+
+        Drops every reservation no wait owns, whatever state its future is in. A
+        completed one no wait adopted has no reader -- ``__call__`` for that turn
+        never ran -- so keeping it retains the future and its nonce for the life of
+        the process, once per key. The nonce is the worse half: the buttons stay in
+        the chat, so a later press still matches a prompt nothing can answer. The
+        prefix carries its own ``:`` so one session key cannot match another that
+        merely starts the same way.
         """
         prefix = f"{session_key}:"
-        for k in [k for k, fut in cls._REGISTRY.items() if k.startswith(prefix) and not fut.done()]:
+        for k in [k for k in cls._REGISTRY if k.startswith(prefix) and k not in cls._AWAITED]:
             cls._REGISTRY.pop(k, None)
             cls._NONCES.pop(k, None)
 
@@ -976,6 +1015,8 @@ class TelegramApprovalDecider:
             reserved if reserved is not None else asyncio.get_running_loop().create_future()
         )
         TelegramApprovalDecider._REGISTRY[k] = fut
+        # This wait now owns the key, so the end-of-turn sweep must leave it be.
+        TelegramApprovalDecider._AWAITED.add(k)
         try:
             return bool(await asyncio.wait_for(fut, _APPROVAL_TIMEOUT_S))
         except asyncio.TimeoutError:
@@ -984,6 +1025,7 @@ class TelegramApprovalDecider:
             self.last_deny_cause = DENY_CAUSE_APPROVAL_TIMEOUT
             return False  # deny-by-default on timeout
         finally:
+            TelegramApprovalDecider._AWAITED.discard(k)
             TelegramApprovalDecider._REGISTRY.pop(k, None)
             # Retire the nonce with the prompt, so a button for a request id the
             # provider later reuses cannot match a nonce that is not live.

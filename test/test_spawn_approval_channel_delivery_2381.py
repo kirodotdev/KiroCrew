@@ -703,3 +703,39 @@ class TestAnOverlappingRestartKeepsItsReplacementHook:
         seam.unregister_channel_delivery("telegram", gone.deliver_spawn_approval)
 
         assert seam.resolve_channel_delivery("telegram:k:direct:7") == live.deliver_spawn_approval
+
+
+class TestTheOriginatingTurnsSweepSparesAnInFlightSpawnPrompt:
+    """Admission runs this gate in a task of its own, so the turn that asked for the
+    spawn returns as soon as the spawn is admitted -- and its end-of-turn sweep can
+    land while the gate is still inside the post. The decision window is armed
+    before that post, and the gate's own wait has not started yet, so nothing in the
+    sweep's view distinguishes this window from a tool prompt whose turn died. The
+    gate declares the wait detached when it arms, which is what keeps the sweep off
+    a prompt the operator is looking at.
+    """
+
+    def test_a_sweep_during_the_post_leaves_the_prompt_answerable(self) -> None:
+        d, _cli, _sess = _dispatcher({7})
+        session_key = d._session_key(("direct", "7"))
+        assert d.client is not None
+        real_send = d.client.send_message
+
+        async def _send_while_the_turn_ends(*a, **k):  # type: ignore[no-untyped-def]
+            TelegramApprovalDecider.discard_session(session_key)
+            return await real_send(*a, **k)
+
+        d.client.send_message = _send_while_the_turn_ends  # type: ignore[method-assign]
+
+        async def _go() -> bool:
+            task = asyncio.ensure_future(
+                d.deliver_spawn_approval("spawn:abc", "spawn_run(build)", session_key)
+            )
+            await asyncio.sleep(0)
+            key = TelegramApprovalDecider.key(session_key, "spawn:abc")
+            # The sweep has already run, inside the send above.
+            assert key in TelegramApprovalDecider._NONCES, "the sweep retired the nonce"
+            await _press(d, session_key, "spawn:abc", "1")
+            return bool(await task)
+
+        assert asyncio.run(_go()) is True

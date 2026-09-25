@@ -281,7 +281,6 @@ src/kiro_crew/slack/blocks.py
 src/kiro_crew/slack/client.py
 src/kiro_crew/slack/enterprise.py
 src/kiro_crew/slack/events.py
-src/kiro_crew/slack/interactions.py
 src/kiro_crew/slack/sessions_view.py
 src/kiro_crew/subagent_scale.py
 src/kiro_crew/suggestions.py
@@ -867,7 +866,6 @@ test/test_slack_dashboard_live_sync.py
 test/test_slack_handler_coverage_branches.py
 test/test_slack_home_tab.py
 test/test_slack_inline_stop.py
-test/test_slack_interactions_coverage.py
 test/test_slack_linked_approval.py
 test/test_slack_mirror_unlink.py
 test/test_slack_options_lifecycle.py

@@ -133,10 +133,15 @@ class TeamsApprovalDecider:
         ran, so nothing else closes that window, and the nonce left behind is what
         authorizes a click.
 
-        Drops only PENDING reservations, so a decision already delivered is left
-        alone.
+        Drops every reservation, whatever state its future is in. A completed one no
+        wait adopted has no reader -- ``__call__`` for this decider's turn never ran
+        -- so keeping it retains the future, its nonce and this decider for the life
+        of the process, once per request id. The nonce is the worse half: the card
+        stays in the channel, so a later click still matches a prompt nothing can
+        answer. Scoped to this decider's own reservations, and called as its turn
+        ends, so no wait of its own can still be reading one.
         """
-        for rid in [r for r, fut in self._futures.items() if not fut.done()]:
+        for rid in list(self._futures):
             self._futures.pop(rid, None)
             self._nonces.pop(rid, None)
             key = registry_key(self.session_key, rid)
