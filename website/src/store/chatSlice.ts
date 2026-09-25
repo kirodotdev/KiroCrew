@@ -3996,7 +3996,9 @@ export const selectSlotPendingSpawnApprovals = (state: RootState, slot: string |
   if (!slot) return _EMPTY_PENDING_SPAWNS
   const subs = getSlotSubs(state.chat, slot)
   if (!subs) return _EMPTY_PENDING_SPAWNS
-  const out = Object.values(subs).filter(isAwaitingSpawnApproval)
+  // A gone approval is still parked (the run tallies keep counting it), but the
+  // banner's buttons can only re-send a refusal, so it leaves this list.
+  const out = Object.values(subs).filter(a => isAwaitingSpawnApproval(a) && a.approvalGone !== a.approval_id)
   return out.length ? out : _EMPTY_PENDING_SPAWNS
 }
 
@@ -5194,6 +5196,24 @@ const chatSlice = createSlice({
       for (const sa of Object.values(state.slotActivity)) {
         const b = sa.subagents[action.payload.id]
         if (b) { b.approving = action.payload.approving; return }
+      }
+    },
+    /** One owner for a terminal refusal, so the side panel and the composer
+     *  banner, which resolve the same id, both withdraw it (#11180). */
+    markSubagentApprovalGone(state, action: PayloadAction<{ id: string; approval_id: string }>) {
+      if (isUnsafeKey(action.payload.id)) return
+      const mark = (a: SubagentActivity | undefined) => {
+        if (!a) return false
+        // Only the approval that was refused: a newer one on this card stays live.
+        if (a.approval_id === action.payload.approval_id) {
+          a.approving = false
+          a.approvalGone = action.payload.approval_id
+        }
+        return true
+      }
+      if (mark(state.subagents[action.payload.id])) return
+      for (const sa of Object.values(state.slotActivity)) {
+        if (mark(sa.subagents[action.payload.id])) return
       }
     },
     sseSubagentSpawn(state, action: PayloadAction<{ slot: string; id: string; task: string; agent: string; model?: string; requested_model?: string; child_session?: string }>) {
@@ -7321,7 +7341,7 @@ export const {
   setActiveSlot, clearSlotState, setPendingInput, setAgentSwitchNotice, clearSwitchSlotGone, clearUnresumableResume, clearUndeletableHistory, setQuestionCard, retireStatelessQuestion, clearQuestionCard, setQuestionDraft, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, ageFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
   removeThinking, confirmOptimisticSend, resolveOptimisticSteer, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, settleStopNotRunning, startLocalTurn, endLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, clearSlotCache, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
   sseContextUsage, setVoicePlaying, setVoiceAudio,
-  toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, requestSlotReveal, clearSlotReveal, requestFolderReveal, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,
+  toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, requestSlotReveal, clearSlotReveal, requestFolderReveal, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, markSubagentApprovalGone, sseSubagentSpawn, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,
   sseSubagentBatchUpdate, sseSubagentBatchChunks, selectSubagent, clearTerminalSubagents,
   setAutomations, sseAutomation, removeAutomation,
   sseSubagentSnapshot, sseToolActivity, sseToolResult, sseActivityEvent,

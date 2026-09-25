@@ -51,7 +51,7 @@ import ActivityViewer from '../pages/chat/ActivityViewer'
 import { countDiffStats } from '../utils/diffLineCounts'
 import { api } from '../api/client'
 import { createTestStore } from './helpers'
-import { openActivityToTab, selectSubagent } from '../store/chatSlice'
+import { openActivityToTab, selectSubagent, selectSlotPendingSpawnApprovals } from '../store/chatSlice'
 import { __resetPanelTabs } from '../hooks/usePanelTabs'
 import type { SubagentActivity, ToolActivity, Artifact } from '../types'
 import type { ExtractedLink } from '../utils/extractChatLinks'
@@ -320,6 +320,38 @@ describe('ActivityViewer — subagent card controls', () => {
     await waitFor(() => {
       expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
     })
+    expect(screen.queryByRole('button', { name: 'Reject' })).not.toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      i18nT('components.approvalCard.approval_no_longer_pending'),
+    )
+  })
+
+  it('a terminal refusal here withdraws the composer banner copy of the same approval', async () => {
+    // The composer's spawn banner resolves the same id from the store, not
+    // from this pane, so the verdict must land where that banner reads it.
+    vi.mocked(api.resolveApproval).mockRejectedValue(Object.assign(new Error('not found or expired'), { status: 404 }))
+    const pending = mkAgent('p1', { status: 'pending', approval_id: 'ap-1' })
+    const { store } = renderPanel(
+      <ActivityViewer {...baseProps} view="subagents" subagents={{ p1: pending }} />,
+      storeTracking(pending),
+    )
+    expect(selectSlotPendingSpawnApprovals(store.getState(), SLOT)).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
+
+    await waitFor(() => {
+      expect(selectSlotPendingSpawnApprovals(store.getState(), SLOT)).toEqual([])
+    })
+    // Withdrawn, not terminated: no outcome is known for a gone approval.
+    expect(store.getState().chat.subagents.p1?.status).toBe('pending')
+  })
+
+  it('withholds the buttons for an approval the composer found gone', () => {
+    const gone = mkAgent('p1', { status: 'pending', approval_id: 'ap-1', approvalGone: 'ap-1' })
+    renderPanel(
+      <ActivityViewer {...baseProps} view="subagents" subagents={{ p1: gone }} />,
+      storeTracking(gone),
+    )
+    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Reject' })).not.toBeInTheDocument()
     expect(screen.getByRole('alert')).toHaveTextContent(
       i18nT('components.approvalCard.approval_no_longer_pending'),

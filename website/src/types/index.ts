@@ -1410,6 +1410,11 @@ export interface SubagentActivity {
   retrying?: boolean      // transient-backend retry (or cancel auto-continue) in flight
   approval_id?: string
   approving?: boolean
+  /** The `approval_id` a resolve attempt found gone (`isTerminalApprovalRefusal`):
+   *  decided or expired where this client could not see it. Scoped by id so a
+   *  fresh approval on the same card is decidable again; the card itself stays
+   *  pending, since no outcome is known. */
+  approvalGone?: string
   /** Inline terminal output for native (`native:*`) cards only. Native cards
    *  cannot lazy-load from disk (no SubagentManager record), so the bounded
    *  done-event result is stored here. Managed cards leave this unset and use
