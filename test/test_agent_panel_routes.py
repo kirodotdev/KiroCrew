@@ -134,6 +134,17 @@ class _Sessions:
         self._namespace = namespace
         self.unit = _unit_for(agent) if agent else ""
 
+    def has_session(self, _key) -> bool:
+        """Whether a live allocation exists for the caller.
+
+        The gate asks this before it asks WHICH crew, because the two answers are
+        different refusals. This stub models one live session per mounted state,
+        so ``agent=None`` is a state with no allocation to resolve -- which is a
+        distinct case from an allocation that resolved to no crew, and the real
+        allocation tests below are what hold the key-exactness this cannot.
+        """
+        return self._agent is not None
+
     def get_agent_selection(self, _key) -> tuple[str, str]:
         if self._agent is None:
             return "template", ""
@@ -148,7 +159,7 @@ class _Sessions:
 class _State:
     """Just enough DashboardState for the crew resolver, plus a broadcast log."""
 
-    def __init__(self, agent: str | None, *, namespace: str = "member"):
+    def __init__(self, agent: str | None, *, namespace: str = "member", sessions: Any = None):
         self._agent = agent
         # What the allocation SELECTED, which is the crew binding the resolver
         # trusts. ``get_slot().agent`` carries the same string for a provider
@@ -156,7 +167,10 @@ class _State:
         # the resolver keeps them separate: a template selection must not read as
         # a crew binding.
         self._namespace = namespace
-        self.sessions = _Sessions(agent, namespace)
+        # A REAL ``SessionManager`` when one is injected, which is the only way to
+        # exercise the key the resolver hands the registry -- the stub answers
+        # whatever key it is given.
+        self.sessions = _Sessions(agent, namespace) if sessions is None else sessions
         self.broadcasts: list[tuple[str, object]] = []
 
     def get_slot(self, _name):
@@ -169,7 +183,11 @@ class _State:
 
 
 def _mounted(
-    agent: str | None = CREW, *, internal: bool = True, namespace: str = "member"
+    agent: str | None = CREW,
+    *,
+    internal: bool = True,
+    namespace: str = "member",
+    sessions: Any = None,
 ) -> web.Application:
     """The panel routes on a bare app.
 
@@ -180,9 +198,12 @@ def _mounted(
 
     ``namespace`` is what the allocation selected: ``member`` for a crew, or
     ``template`` for a provider template that merely shares the name.
+
+    ``sessions`` replaces the stub with a real ``SessionManager``, for the tests
+    that have to see which KEY the resolver looks the caller up under.
     """
     app = web.Application()
-    app["state"] = _State(agent, namespace=namespace)
+    app["state"] = _State(agent, namespace=namespace, sessions=sessions)
     if internal:
 
         @web.middleware
@@ -223,7 +244,13 @@ def vetted(monkeypatch):
 
 
 @asynccontextmanager
-async def _client(agent: str | None = CREW, *, internal: bool = True, namespace: str = "member"):
+async def _client(
+    agent: str | None = CREW,
+    *,
+    internal: bool = True,
+    namespace: str = "member",
+    sessions: Any = None,
+):
     """A started client that always closes.
 
     An ``async with`` helper rather than an ``@pytest_asyncio.fixture``, by this
@@ -236,7 +263,9 @@ async def _client(agent: str | None = CREW, *, internal: bool = True, namespace:
     does say so -- "Unclosed client session" -- but on stderr, where a green run
     hides it.
     """
-    c = TestClient(TestServer(_mounted(agent, internal=internal, namespace=namespace)))
+    c = TestClient(
+        TestServer(_mounted(agent, internal=internal, namespace=namespace, sessions=sessions))
+    )
     await c.start_server()
     try:
         yield c
@@ -424,8 +453,13 @@ async def test_the_crew_is_not_taken_from_the_body(vetted):
         assert agent_panel.read("research-lab") is None
 
 
-async def test_a_session_with_no_crew_is_refused_plainly(vetted):
-    """A conductor publishing every cycle into a void looks like a broken feature."""
+async def test_a_session_with_no_allocation_is_not_reported_as_no_crew(vetted):
+    """A conductor publishing every cycle into a void looks like a broken feature.
+
+    A state with no allocation to resolve is reported as THAT, not as a crew
+    binding the caller is missing. The two were one message, which is how a gate
+    closed against every member read as routine.
+    """
     async with _client(agent=None) as c:
         resp = await c.post(
             "/api/agent-panel/publish",
@@ -433,7 +467,7 @@ async def test_a_session_with_no_crew_is_refused_plainly(vetted):
             headers={"X-Session-Key": "dashboard:chat-1"},
         )
         assert resp.status == 400
-        assert (await resp.json())["code"] == "no_crew"
+        assert (await resp.json())["code"] == "session_not_resolved"
 
 
 async def test_an_omitted_template_resolves_to_the_crews_own(vetted):
@@ -790,6 +824,10 @@ def test_the_stub_matches_where_the_real_selection_lives():
     assert hasattr(_State(CREW).sessions, "get_agent_selection")
     # And NOT on the state itself, which is what made the wrong receiver pass.
     assert not hasattr(_State(CREW), "get_agent_selection")
+    # Same for the existence question that tells the two refusals apart.
+    assert hasattr(SessionManager, "has_session")
+    assert hasattr(_State(CREW).sessions, "has_session")
+    assert not hasattr(_State(CREW), "has_session")
 
 
 async def test_a_same_named_provider_template_cannot_publish_as_the_crew(vetted):
@@ -827,6 +865,148 @@ async def test_a_same_named_provider_template_cannot_publish_as_the_crew(vetted)
     assert after is not None
     assert after["crew"] == CREW
     assert after["data"] == {"cycle": 47}
+
+
+# ------------------------------------------------- through a real allocation
+
+
+def _member_session_key(crew_name: str = CREW) -> str:
+    """The key the SESSION REGISTRY holds a crew's DM session under.
+
+    Production's own derivation rather than a string spelled a second way here,
+    because a key spelled a second way is the entire bug this section guards.
+    """
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    slug = members_mod.member_slug(crew_name)
+    try:
+        _slot, store = routes._member_thread_slot(KiroCrewConfig.load(), crew_name, slug)
+    except Exception:
+        store = ""
+    return members_mod.member_thread_session_alias(slug, store)
+
+
+def _real_allocation(crew_name: str = CREW, *, member: str | None = None):
+    """A REAL ``SessionManager`` holding *crew_name*'s DM session under its real key.
+
+    Every other test here drives the resolver through ``_Sessions``, whose
+    ``get_agent_selection`` ignores the key it is handed. That blindness is what
+    let the resolver ask the registry with a key the registry never holds and
+    stay green, so the regression cannot be written against that stub: the
+    assertion needed is about WHICH key reaches a live allocation, and only a
+    real registry has an opinion about that.
+
+    ``member`` is the allocation's ``capability_member`` -- the crew binding
+    itself. Empty models the other cause the issue names: a session created with
+    a blank ``crew_agent``, which is a live allocation that genuinely selected a
+    provider template.
+    """
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.session import SessionManager, _Session
+
+    sessions = SessionManager(KiroCrewConfig())
+    session = _Session(provider=SimpleNamespace(session_id=_unit_for(crew_name)), agent=crew_name)
+    session.capability_member = crew_name if member is None else member
+    sessions._sessions[_member_session_key(crew_name)] = session
+    return sessions
+
+
+def test_the_registry_key_is_the_slot_key_behind_a_transport_prefix():
+    """The two keyspaces, pinned, so a future reader cannot merge them back.
+
+    ``_normalize_slot_key`` STRIPS the prefix, so its output addresses the slot
+    layer and nothing else. Handing it to the registry is a guaranteed miss, and
+    a guaranteed miss on the only session this tool is mounted on refused every
+    member.
+    """
+    from kiro_crew.dashboard.state import _normalize_slot_key
+
+    registry_key = _member_session_key()
+    slot_key = _crew_slot(CREW)
+    assert registry_key == f"dashboard:{slot_key}"
+    assert _normalize_slot_key(registry_key) == slot_key
+    assert _normalize_slot_key(registry_key) != registry_key
+
+
+async def test_a_real_member_allocation_can_publish(vetted):
+    """The accepting path against a real allocation, which nothing covered.
+
+    This is the issue's own case: a member's DM session, the one session the
+    panel tool is ever mounted on, publishing with valid arguments. It was
+    refused ``no_crew`` for every member because the resolver looked the caller
+    up by slot key in a registry keyed by session key.
+    """
+    sessions = _real_allocation()
+    async with _client(CREW, sessions=sessions) as c:
+        resp = await c.post(
+            "/api/agent-panel/publish",
+            json={"data": {"cycle": 47}, "title": "fleet"},
+            headers={"X-Session-Key": _member_session_key()},
+        )
+        assert resp.status == 200, await resp.text()
+        assert (await resp.json())["ok"] is True
+    record = _folded()
+    assert record is not None
+    assert record["crew"] == CREW
+    assert record["data"] == {"cycle": 47}
+
+
+async def test_a_bare_slot_key_reaches_the_same_member_allocation(vetted):
+    """A caller presenting the slot name alone resolves to the same session.
+
+    ``dashboard:<name>`` IS the session of slot ``<name>``, so the retry cannot
+    reach another identity -- it reaches the one the recognition gate already
+    vetted this key against.
+    """
+    sessions = _real_allocation()
+    async with _client(CREW, sessions=sessions) as c:
+        resp = await c.post(
+            "/api/agent-panel/publish",
+            json={"data": {"cycle": 48}},
+            headers={"X-Session-Key": _crew_slot(CREW)},
+        )
+        assert resp.status == 200, await resp.text()
+    record = _folded()
+    assert record is not None and record["data"] == {"cycle": 48}
+
+
+async def test_a_real_allocation_that_selected_a_template_is_refused_no_crew(vetted):
+    """The other cause the issue names, and it keeps the ``no_crew`` message.
+
+    A live allocation whose ``capability_member`` is empty selected the provider
+    template. That IS an absent crew binding, so this refusal is the accurate
+    one -- and it stays distinguishable from the key that reached no allocation
+    at all.
+    """
+    sessions = _real_allocation(member="")
+    async with _client(CREW, sessions=sessions) as c:
+        resp = await c.post(
+            "/api/agent-panel/publish",
+            json={"data": {"cycle": 49}},
+            headers={"X-Session-Key": _member_session_key()},
+        )
+        assert resp.status == 400, await resp.text()
+        assert (await resp.json())["code"] == "no_crew"
+    assert _folded() is None
+
+
+async def test_a_key_the_registry_does_not_hold_is_refused_as_unresolved(vetted):
+    """A live member allocation exists, but not under the key the caller presents.
+
+    Reported as an unresolved session rather than a missing crew binding, which
+    is the difference an operator needs: nothing about this caller says it has no
+    crew.
+    """
+    sessions = _real_allocation()
+    async with _client(CREW, sessions=sessions) as c:
+        resp = await c.post(
+            "/api/agent-panel/publish",
+            json={"data": {"cycle": 50}},
+            headers={"X-Session-Key": "dashboard:chat-not-a-member"},
+        )
+        assert resp.status == 400, await resp.text()
+        assert (await resp.json())["code"] == "session_not_resolved"
+    assert _folded() is None
 
 
 async def test_a_degraded_roster_refuses_takeover_rather_than_granting_it(vetted, monkeypatch):
