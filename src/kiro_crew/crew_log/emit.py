@@ -3060,6 +3060,33 @@ def _candidate_is_same_slot(candidate_sid: str, slot: str) -> bool:
     return unit_header_slot(_KIND, candidate_sid) == slot
 
 
+def slot_previous_store(slot: str) -> str:
+    """The crew log *slot* is writing NOW, which its next one cites as ``previous``.
+
+    Read from the store, so it survives the process that wrote it. Every gateway
+    process asking this question of the same slot gets the same answer: the units
+    under *slot* and the succession edges they recorded are the whole input, and a
+    restart reads them exactly as the process before it would have. The
+    slot-to-session mapping cannot answer it -- an allocation whose history replay
+    is pending holds the prior resumable id there on purpose, so for that window the
+    mapping names a generation older than the store the slot is writing, and citing
+    it would leave the store between the two cited by nobody.
+
+    Blocking, and gated: ``""`` whenever the crew log is off, which is also what
+    keeps the storage subsystem unimported on a flag-off launch. The caller hops a
+    thread for it (:func:`~kiro_crew.crew_log.session_tree.slot_chain_head` lists
+    the store and reads a line pair per unit of the slot).
+
+    ``""`` also for a slot with no unit yet -- its first store, or one whose units
+    this data home does not hold -- and the caller decides what to fall back on.
+    """
+    if not slot or not enabled():
+        return ""
+    from kiro_crew.crew_log.session_tree import slot_chain_head
+
+    return slot_chain_head(slot)
+
+
 def on_session_opened(
     session_id: str,
     *,
@@ -5538,6 +5565,7 @@ __all__ = [
     "on_turn_refused",
     "on_turn_started",
     "reset_caches",
+    "slot_previous_store",
 ]
 
 # The graceful path is the gateway's own cleanup hook, which drains in a thread

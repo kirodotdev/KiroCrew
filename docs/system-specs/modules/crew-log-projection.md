@@ -800,17 +800,27 @@ clock, so a backward step across a restart gives the newer log the earlier stamp
 two creates inside one millisecond tie. The edge inverts in neither case, which is
 why it was recorded.
 
-One gap is inherited rather than introduced, and the walk cannot detect it: the edge's id is
-the store a slot last handed to a `session/opened`, recorded in the gateway process that wrote
-it, and a slot this process has not opened one for falls back to the slot-to-session mapping.
-An allocation whose replay is still pending holds the prior resumable id in that mapping on
-purpose, so a gateway that restarts inside that window has only the behind-by-one answer: two
-successive logs then cite one predecessor and the log between them is cited by nobody. Closing
-it needs a durable per-slot record of the store a slot is on, which this store does not keep --
-`header.createdAt` cannot stand in for one, per the rule above. No
-shipped route calls this walk yet; closing a superseded log's own interrupted turn
-and tool calls is a WRITE into another log and is tracked with the rest of the supersede work
-in #12148.
+**The head the walk starts from comes from the edges too.** `fold_slot_head` answers a
+slot's newest log as the log no other log of that slot cites as `previous`, and
+`slot_chain_head` reads that from the units on disk for a caller holding only the slot
+key -- which is what the emitter's `previous` edge is taken from, so the id a successor
+cites is the store's own answer rather than a gateway process's memory of it. That is
+what closes the gap this section used to record: the id was held in the process that
+wrote it, and a restart inside a replay-pending allocation was left with the mapping's
+behind-by-one answer, so two successive logs cited one predecessor and the log between
+them was cited by nobody.
+
+One uncited log IS the answer and the stamp is not consulted at all. SEVERAL uncited
+logs mean the record is already incomplete -- an announce that has not landed or cannot
+be read, an edge that was never recorded, a predecessor retention has removed -- and
+only there does `created_at`, then the id, place them. Their succession DEPTHS must not,
+and the reason is worth stating because the opposite reading is intuitive: depth orders
+logs inside ONE chain, so a freshly created log with no edge yet (depth 0) would lose to
+the head of a long chain (depth 5) although it is the newer store by every other reading.
+
+No shipped route calls this walk yet; closing a superseded log's own interrupted turn
+and tool calls is a WRITE into another log and is tracked with the rest of the supersede
+work in #12148.
 
 ## 7. Savepoints on disk
 

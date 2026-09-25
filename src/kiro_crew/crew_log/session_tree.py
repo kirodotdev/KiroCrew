@@ -93,6 +93,7 @@ from kiro_crew.crew_log.store import (
     newest_segment,
     oldest_segment,
     read_head,
+    session_units_for_slot,
     unit_dir_for,
     unit_dirs,
 )
@@ -656,6 +657,118 @@ def fold_slot_chain(records: Iterable[OpenedRecord], head_sid: str) -> SlotChain
         sids.append(step.sid)
         seen.add(step.sid)
         cursor = step
+
+
+def fold_slot_head(records: Iterable[OpenedRecord], slot: str) -> str:
+    """*slot*'s NEWEST log among *records* -- the head :func:`fold_slot_chain` walks
+    from. Pure.
+
+    The walk above is handed its head; this is where that head comes from when the
+    caller has only the slot. The edges answer it: a log another log of this slot
+    cites as ``previous`` has a successor, so the newest is the log nothing cites.
+
+    Order comes from the edges, never from a timestamp, and that holds here for the
+    reason it holds for the walk: a backward clock step across a restart gives the
+    newer log the earlier stamp, and the citation inverts in neither case. So a
+    single uncited log IS the answer and the stamp is not consulted at all.
+
+    The stamp decides only between SEVERAL uncited logs, where the edges have
+    nothing left to say -- and each way that happens is a record that is already
+    incomplete: a log whose own announce has not landed or could not be read, one
+    whose edge was never recorded, one whose predecessor retention has removed.
+    Comparing their succession DEPTHS instead would be worse than the clock, not
+    better: depth orders logs inside one chain, so a freshly created log with no
+    edge yet (depth 0) would lose to the head of a long chain (depth 5) even though
+    it is the newer store by every other reading. ``created_at`` then ``sid``, so
+    one input set has one answer whatever order it arrived in.
+
+    Records of other slots take no part: succession is a relation inside ONE slot,
+    and letting a foreign log either rank or CITE here would hand this slot's answer
+    to another slot's writer -- the refusal :func:`_chain_step` makes for the same
+    reason. ``""`` when no record names *slot*, which is a slot with no log rather
+    than a slot whose newest log could not be decided: there is nothing to cite
+    either way.
+    """
+    mine = [record for record in records if record.slot == slot and record.sid]
+    if not mine:
+        return ""
+    cited = {record.previous_sid for record in mine if record.previous_sid}
+    heads = [record for record in mine if record.sid not in cited] or mine
+    # ``or mine``: every log cited by another is only reachable through a cycle, which
+    # takes a forged or damaged record. There is no head to find then, and answering
+    # nothing would drop the edge for a slot whose logs are all real -- so the stamp
+    # places them, the same fallback the ordinary tie uses.
+    return max(heads, key=lambda record: (record.created_at, record.sid)).sid
+
+
+def slot_chain_head(slot: str) -> str:
+    """*slot*'s newest crew log, read from the units on disk. ``""`` when it has none.
+
+    The durable answer to "which store is this slot writing". Every input is inside
+    the fenced crew log tree: the units are the ones whose own header names *slot*,
+    and the order over them comes from the ``previous`` edges those units recorded,
+    so nothing a gateway process held in memory takes part in the answer and a
+    restart reads exactly what the process before it would have.
+
+    Blocking. It lists the store -- cached against the root's identity, so a scan is
+    paid once per change to the set of units -- and reads one line pair per unit of
+    this slot, which is a handful of small reads for a slot that has superseded a
+    handful of times. A coroutine hops a thread for it.
+
+    A unit the listing proved but whose own record cannot be built contributes its
+    IDENTITY without edges, and the distinction matters in both directions. The
+    ordinary case is a create whose ``session/opened`` has not landed yet: the
+    creating job writes the header first and appends the announce second, so a read
+    between the two finds a store this slot has certainly opened and an edge that is
+    merely not written yet. Leaving it out would answer the store before it and
+    orphan it, which is the defect this function exists to remove. Admitting it with
+    no edge is what the record supports -- it ranks as a chain start, and the stamp
+    then places it, which is the one case ``created_at`` is for.
+    """
+    if not slot:
+        return ""
+    records: list[OpenedRecord] = []
+    for unit in session_units_for_slot(slot):
+        if not _bounded(unit, MAX_ACP_SESSION_ID_LEN):
+            # A unit id longer than any the gateway writes. Refused rather than
+            # truncated, for the reason `opened_record` refuses one: a shortened id
+            # is a different name, and citing it would point at no store or at
+            # another one.
+            continue
+        directory = unit_dir_for(KIND_SESSION, unit)
+        if directory is None:
+            continue
+        segment = oldest_segment(directory)
+        if segment is None:
+            continue
+        try:
+            header, entry, _announced = read_head(segment)
+        except OSError:
+            # The bytes were not seen. A moment's fault, or retention taking the
+            # unit between the listing and this open -- neither is evidence about
+            # which store the slot is on, so this unit says nothing rather than
+            # being ranked on a header nobody read.
+            continue
+        if header is None:
+            continue
+        record = opened_record(directory, header, entry)
+        if record is None:
+            # Identity without edges. The listing already proved this header's own
+            # id folds back to its directory and that it names this slot, so the
+            # store exists and belongs here; what is missing is the announce, or an
+            # announce this build refuses to read. Either way the edge is UNKNOWN,
+            # and an unknown edge is a chain start.
+            created = header.get("createdAt")
+            record = OpenedRecord(
+                sid=unit,
+                slot=slot,
+                created_at=(
+                    created if isinstance(created, int) and not isinstance(created, bool) else 0
+                ),
+            )
+        if record.slot == slot:
+            records.append(record)
+    return fold_slot_head(records, slot)
 
 
 def opened_record(

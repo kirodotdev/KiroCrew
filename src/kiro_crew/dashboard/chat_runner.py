@@ -1415,6 +1415,35 @@ def _agent_fallback_chain() -> tuple[str, ...]:
 #: the turn-close sweep to guess at. A status NOT in here (`in_progress`, `pending`,
 #: an unknown word) leaves the call open, which is the honest reading: the frame did
 #: not say the call was over.
+async def _slot_predecessor_store(sessions: Any, slot: Any, session_key: str) -> str:
+    """The store *slot* was writing before, for its next ``session/opened`` to cite.
+
+    Two sources, and the order between them is the whole point. The STORE decides:
+    the units under this slot's key and the succession edges they recorded are
+    durable, so this answer does not change when the gateway restarts. The
+    slot-to-session mapping serves only where the store answers nothing -- a slot
+    with no unit yet, or a launch with the crew log off -- because it is a proxy for
+    this question rather than its authority: an allocation whose history replay is
+    pending holds the prior resumable id there deliberately, so for that window the
+    mapping names a generation older than the store the slot is writing, and citing
+    it leaves the store between the two cited by nobody.
+
+    Keyed by ``slot.key`` on the store side and by *session_key* on the mapping
+    side, which are the keys each one actually holds: a unit's header records the
+    SLOT, while a channel-born slot runs its turns on the channel's session key
+    (``effective_session_key``), so reading the units under the session key would
+    find none for exactly those slots.
+
+    The store read hops a thread. ``mapped_sid`` is one dict lookup, no disk and no
+    mutation, and it is the non-pruning accessor on purpose: ``resumable_sid`` stats
+    the ACP transcript and PRUNES the entry when that file is gone, which erases the
+    id exactly when the two stores disagree -- a crew log unit can outlive a
+    truncated transcript, and that unit is the one whose tail most needs closing.
+    """
+    derived = await asyncio.to_thread(crew_log_emit.slot_previous_store, slot.key)
+    return derived or sessions.mapped_sid(session_key)
+
+
 def _crew_log_model(slot: Any, fallback: str = "") -> str:
     """The model the session RUNS on, for the crew log.
 
@@ -7039,12 +7068,13 @@ async def _spawn_admitted_prefetch(
         # the failure this edge exists to remove. The latch is write-once, so a turn that
         # observes afterwards cannot replace this with the successor's id.
         #
-        # Same source as the turn site: the slot-to-session mapping, read
-        # non-pruning. It is the FALLBACK rather than the answer -- the latch
-        # prefers the store this slot last handed to a `session/opened`, because an
-        # allocation whose history replay is pending holds the prior resumable id in
-        # the mapping on purpose and the mapping is then a generation behind.
-        slot.latch_crew_log_previous(sessions.mapped_sid(session_key))
+        # Same source as the turn site, and the source is the STORE: the units this
+        # slot's own key names, ordered by the succession edges they recorded, with
+        # the slot-to-session mapping as the fallback where they answer nothing. A
+        # record on the slot cannot serve it -- it dies with the process, and the
+        # window where the mapping alone is left is the replay-pending one, where
+        # the mapping is deliberately a generation behind.
+        slot.latch_crew_log_previous(await _slot_predecessor_store(sessions, slot, session_key))
         # speculative=True keeps the one-shot first-turn flag armed for
         # the real first message (atomically, at registration) and
         # refuses resumable keys — unless allow_resume opted in, in
@@ -10870,26 +10900,27 @@ async def _run_chat(
         # that saw the predecessor; when no prefetch ran, the latch is empty and
         # this read is that first observation.
         #
-        # `mapped_sid` is the single source here, and it is the right one of the
-        # two mapping accessors. `resumable_sid` asks "can this id still be
-        # resumed": it stats the ACP transcript on the calling thread, which is a
-        # synchronous store read this coroutine must not make, and it PRUNES the
-        # entry when that file is gone or empty. Both consequences are wrong for a
-        # history citation. The stat is work on the loop for a fact that needs no
-        # file, and the prune erases the id exactly when the two stores disagree --
-        # a crew log unit can outlive a truncated ACP transcript, and that unit is
-        # the one whose tail most needs closing. `mapped_sid` is one dict lookup,
-        # no disk and no mutation, so it is safe here and it still answers when a
-        # resume would not: it asks what the key was last serving, not what can
-        # still be resumed.
+        # `mapped_sid` is the FALLBACK here, and it is the right one of the two
+        # mapping accessors. `resumable_sid` asks "can this id still be resumed": it
+        # stats the ACP transcript on the calling thread, which is a synchronous
+        # store read this coroutine must not make, and it PRUNES the entry when that
+        # file is gone or empty. Both consequences are wrong for a history citation.
+        # The stat is work on the loop for a fact that needs no file, and the prune
+        # erases the id exactly when the two stores disagree -- a crew log unit can
+        # outlive a truncated ACP transcript, and that unit is the one whose tail
+        # most needs closing. `mapped_sid` is one dict lookup, no disk and no
+        # mutation, and it still answers when a resume would not: it asks what the
+        # key was last serving, not what can still be resumed.
         #
-        # What a mapping read alone cannot answer is a replay-pending allocation,
-        # which keeps the prior resumable id here so a restart can still resume it.
-        # The mapping is then a generation behind the store the slot is writing. So
-        # this id is the fallback, and the authority is the store this slot last
-        # handed to a `session/opened`, which the latch prefers when it has one --
-        # an in-process read, so this coroutine still makes no store read at all.
-        slot.latch_crew_log_previous(state.sessions.mapped_sid(session_key))
+        # What the mapping cannot answer is a replay-pending allocation, which keeps
+        # the prior resumable id here so a restart can still resume it. The mapping
+        # is then a generation behind the store the slot is writing. So the
+        # AUTHORITY is the slot's own units, read off the loop through
+        # `_slot_predecessor_store` -- durable, so the answer does not change when
+        # the gateway restarts, which a record held on the slot could not promise.
+        slot.latch_crew_log_previous(
+            await _slot_predecessor_store(state.sessions, slot, session_key)
+        )
         # ONE allocation site (the crew-log latch above must sit right before
         # it): the cold-start branch claims under the lock without waiting for
         # a lease; a busy refusal there means a session registered underneath
@@ -11196,10 +11227,10 @@ async def _run_chat(
             # writes one only on a CREATE naming a different store, so handing
             # the value over on a re-attach costs nothing and leaving it behind
             # would make the slot's next store cite this store's predecessor
-            # instead of this store. `now_writing` records which store the slot
-            # is on as the edge is spent, which is what the next allocation names
-            # as its predecessor without reading anything outside this process.
-            previous_sid=slot.take_crew_log_previous(now_writing=_crew_log_sid),
+            # instead of this store. Nothing is recorded in exchange: this entry
+            # IS the record of which store the slot is now on, and the slot's next
+            # allocation reads it back from the store rather than from memory.
+            previous_sid=slot.take_crew_log_previous(),
         )
         agent_label = kiro_agent or slot.agent or "default"
         # The label states what the session RUNS on, so a withheld pin reports the

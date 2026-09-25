@@ -344,11 +344,12 @@ same slot was writing before. Same citation shape as `parent`, written once at c
 rewritten, absent rather than empty when there is nothing to name -- the slot's first crew log, a
 predecessor the gateway could not name, and one whose own header does not name this slot are all
 "nothing to follow". No `slot` is repeated inside it,
-because it is the slot in `data.slot`. The id is the store this slot last handed to a
-`session/opened`, recorded on the slot as that entry's edge is spent. That record is the
-authority because it is the writer's own statement about which store the slot is on. The
-persisted slot-to-session mapping, read without pruning, is the fallback for a slot this process
-has not opened a crew log for. It cannot be the authority: an allocation whose replay is still
+because it is the slot in `data.slot`. The id is the slot's own newest unit in the store --
+the unit no other unit of that slot cites as `previous`. The store is the authority because
+it is the only source that outlives the gateway process that wrote it, and it cannot
+disagree with the units because it IS the units. The persisted slot-to-session mapping,
+read without pruning, is the fallback for a slot with no unit yet -- its first crew log, or
+a launch with the crew log off. It cannot be the authority: an allocation whose replay is still
 pending holds the prior resumable id in the mapping on purpose, so that a restart can still
 resume it, and the mapping is then a generation
 behind -- two successive crew logs would cite one predecessor

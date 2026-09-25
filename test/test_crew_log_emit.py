@@ -5612,14 +5612,18 @@ def test_every_slot_allocation_site_latches_the_predecessor_first():
 
 
 def test_the_turn_path_reads_the_predecessor_through_the_non_pruning_accessor():
-    """A source ratchet, because the two accessors are one identifier apart.
+    """A source ratchet, because the sources are one identifier apart.
 
-    `mapped_sid` and `resumable_sid` differ by a filesystem stat and a prune, and
-    at this call site that difference is a sync store read on the gateway loop
-    plus the loss of the very edge being recorded. Both spellings type-check, both
-    return the id on the happy path, and every behavioural test of the emitter
-    passes either way, because the emitter is handed the value rather than
-    choosing it. So the choice is pinned where it is made.
+    Three spellings type-check here and only one is right. `mapped_sid` and
+    `resumable_sid` differ by a filesystem stat and a prune, and at this call site
+    that difference is a sync store read on the gateway loop plus the loss of the
+    very edge being recorded. Feeding the latch from the mapping ALONE type-checks
+    too, and is the defect this edge was moved off: the mapping is deliberately a
+    generation behind while an allocation's replay is pending, so a gateway that
+    restarts inside that window cites a generation back and the store between is
+    cited by nobody. Every behavioural test of the emitter passes on any of the
+    three, because the emitter is handed the value rather than choosing it. So the
+    choice is pinned where it is made.
 
     It is pinned at EVERY site, not one: the slot has two allocation sites -- the
     eager prefetch and the first real turn -- and a spelling that is right at one
@@ -5627,29 +5631,40 @@ def test_the_turn_path_reads_the_predecessor_through_the_non_pruning_accessor():
     edge, which is the shape that shipped broken once already. A site added later
     that feeds the latch from anything else reds this.
 
-    Mutation guard: swapping either call site to `resumable_sid`, or feeding the
-    latch from any other source, reds this.
+    Mutation guard: feeding either latch from `mapped_sid` directly, or swapping the
+    resolver's own fallback to `resumable_sid`, reds this.
     """
     runner = Path(__file__).parent.parent / "src" / "kiro_crew" / "dashboard" / "chat_runner.py"
     source = runner.read_text(encoding="utf-8")
     # Joined because the call can be wrapped across lines; the whole expression is
     # what this pins, so a line-at-a-time read could not see it.
     flat = " ".join(source.split())
-    latches = re.findall(r"slot\.latch_crew_log_previous\([^)]*\)[^)]*\)", flat)
-    # Both allocation sites, each reading the mapping through the non-pruning
-    # accessor under the session key. The `sessions` receiver differs because the
+    found = re.findall(r"slot\.latch_crew_log_previous\( ?await [^)]*\) ?\)", flat)
+    # Paren-adjacent spaces dropped, because whether a call fits on one line is the
+    # formatter's business and this ratchet is about what feeds the latch.
+    latches = [call.replace("( ", "(").replace(" )", ")") for call in found]
+    # Both allocation sites, each resolving the predecessor through the one helper
+    # that reads the store first. The `sessions` receiver differs because the
     # prefetch is handed the boundary directly and the turn reaches it through
     # `state`.
     assert latches == [
-        "slot.latch_crew_log_previous(sessions.mapped_sid(session_key))",
-        "slot.latch_crew_log_previous(state.sessions.mapped_sid(session_key))",
+        "slot.latch_crew_log_previous(await _slot_predecessor_store(sessions, slot, session_key))",
+        "slot.latch_crew_log_previous("
+        "await _slot_predecessor_store(state.sessions, slot, session_key))",
     ], f"the predecessor is latched somewhere unexpected: {latches}"
-    # Spent exactly once, at the emitter call, which is also where the slot is told
-    # which store it is now on. A second consumer would hand the same edge to two
-    # entries; none would leave it for the slot's next store.
+    # The store is the authority and the mapping is the fallback, read non-pruning,
+    # inside that one helper -- so this ratchet pins one resolution rather than one
+    # per call site.
+    resolver = source[source.index("async def _slot_predecessor_store(") :]
+    resolver = resolver[: resolver.index("\ndef ")]
+    assert "await asyncio.to_thread(crew_log_emit.slot_previous_store, slot.key)" in resolver
+    assert "return derived or sessions.mapped_sid(session_key)" in resolver
+    # Spent exactly once, at the emitter call. A second consumer would hand the same
+    # edge to two entries; none would leave it for the slot's next store. Nothing is
+    # recorded in exchange: the entry IS the record of which store the slot is on.
     takes = [line.strip() for line in source.splitlines() if "take_crew_log_previous(" in line]
     assert takes == [
-        "previous_sid=slot.take_crew_log_previous(now_writing=_crew_log_sid),"
+        "previous_sid=slot.take_crew_log_previous(),"
     ], f"the predecessor edge is consumed somewhere unexpected: {takes}"
 
 
