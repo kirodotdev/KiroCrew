@@ -2075,6 +2075,79 @@ class TestDisableBranches:
             assert (await resp.json())["error"] == "metadata locked"
 
 
+class TestRepeatedToggleIsIdempotent:
+    """A repeated enable skips the Python hooks; overlapping disables run app code once."""
+
+    @pytest.mark.asyncio
+    async def test_repeated_enable_runs_hooks_once_and_repeats_the_rest(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path, setup={"onEnable": "setup.sh"})
+        calls: list[str] = []
+
+        async def _script(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            calls.append("onEnable")
+            return {"output": "", "failed": False}
+
+        async def _hooks(*args: Any, **kwargs: Any) -> None:
+            calls.append("hooks")
+
+        monkeypatch.setattr(routes_mod, "_run_lifecycle_script", _script)
+        monkeypatch.setattr(routes_mod, "on_app_enable", _hooks)
+        monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: calls.append("backend"))
+        async with TestClient(TestServer(_make_app())) as client:
+            first = await client.post(f"/api/apps/{APP}/enable")
+            assert first.status == 200
+            assert calls == ["backend", "onEnable", "hooks"]
+            second = await client.post(f"/api/apps/{APP}/enable")
+            assert second.status == 200
+            assert (await second.json())["message"] == f"{APP} is already enabled"
+        # The flag is not evidence onEnable ran, so the script and backend start repeat.
+        assert calls == ["backend", "onEnable", "hooks", "backend", "onEnable"]
+
+    @pytest.mark.asyncio
+    async def test_concurrent_disables_run_on_disable_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path, setup={"onDisable": "teardown.sh"})
+        enable_app(APP)
+        from kiro_crew.apps import teardown as teardown_mod
+
+        both_read = asyncio.Event()
+        real_get_app = routes_mod.get_app
+        reads = 0
+
+        def _get_app(name: str) -> Any:
+            nonlocal reads
+            reads += 1
+            if reads == 2:
+                both_read.set()
+            return real_get_app(name)
+
+        scripts: list[str] = []
+
+        async def _script(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            scripts.append("onDisable")
+            # Hold the lock until the second request has read its pre-lock metadata.
+            await asyncio.wait_for(both_read.wait(), timeout=5)
+            return {"output": "", "failed": False}
+
+        monkeypatch.setattr(routes_mod, "get_app", _get_app)
+        monkeypatch.setattr(teardown_mod, "run_lifecycle_script", _script)
+        monkeypatch.setattr(teardown_mod, "stop_app_backend", lambda n: None)
+        async with TestClient(TestServer(_make_app())) as client:
+            first, second = await asyncio.gather(
+                client.post(f"/api/apps/{APP}/disable"),
+                client.post(f"/api/apps/{APP}/disable"),
+            )
+            assert (first.status, second.status) == (200, 200)
+            messages = {(await r.json())["message"] for r in (first, second)}
+        assert messages == {f"disabled {APP}", f"{APP} is already disabled"}
+        assert scripts == ["onDisable"]
+
+
 # ---------------------------------------------------------------------------
 # _client_install_manifest
 # ---------------------------------------------------------------------------
