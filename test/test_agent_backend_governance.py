@@ -419,3 +419,43 @@ class TestNoSecondGate:
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
         }
         assert "current_context" not in called
+
+
+class TestCustomMustBeNamedUnderACeiling:
+    """Custom's unasked tool calls reach no Crew gate, so a ceiling's silence is not consent.
+
+    A fleet POLICY written before ``custom`` existed -- no ``agent_backend`` rule, or a
+    deny-mode rule listing other harnesses -- must not admit it on upgrade. Only an
+    explicit allow entry does. With no ceiling at all nothing changes.
+    """
+
+    CUSTOM = acp_backends.ACP_BACKEND_CUSTOM
+
+    def test_no_ceiling_keeps_custom(self, monkeypatch):
+        _registered(monkeypatch, FLOOR, "kas", self.CUSTOM)
+        _install(None)
+        assert abg.narrow_selectable_backends() == []
+        assert self.CUSTOM in acp_backends.selectable_backends()
+
+    def test_a_ceiling_without_the_scope_removes_only_custom(self, monkeypatch):
+        _registered(monkeypatch, FLOOR, "kas", self.CUSTOM)
+        _install({"version": 1, "boot": {"fail_closed": True}})
+        assert abg.narrow_selectable_backends() == [self.CUSTOM]
+        assert acp_backends.selectable_backends() == frozenset({FLOOR, "kas"})
+
+    def test_a_deny_rule_that_does_not_name_custom_still_removes_it(self, monkeypatch):
+        _registered(monkeypatch, FLOOR, "kas", "claude", self.CUSTOM)
+        _install(_policy({"mode": "deny", "deny": ["claude"]}))
+        assert abg.narrow_selectable_backends() == ["claude", self.CUSTOM]
+        assert acp_backends.selectable_backends() == frozenset({FLOOR, "kas"})
+
+    def test_an_allow_entry_naming_custom_admits_it(self, monkeypatch):
+        _registered(monkeypatch, FLOOR, "kas", self.CUSTOM)
+        _install(_policy({"mode": "allow", "allow": ["custom"]}))
+        assert abg.narrow_selectable_backends() == ["kas"]
+        assert acp_backends.selectable_backends() == frozenset({FLOOR, self.CUSTOM})
+
+    def test_an_explicit_deny_of_custom_removes_it(self, monkeypatch):
+        _registered(monkeypatch, FLOOR, self.CUSTOM)
+        _install(_policy({"mode": "deny", "deny": ["custom"]}))
+        assert abg.narrow_selectable_backends() == [self.CUSTOM]

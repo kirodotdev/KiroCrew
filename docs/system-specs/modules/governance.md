@@ -2949,6 +2949,16 @@ binary while adding a second thing that can be absent. The floor has to be the
 member with the fewest preconditions of its own; revisit if KAS ever ships a
 binary of its own.
 
+**Custom must be named.** Additive-over-a-floor is permissive by default: a
+backend the scope is silent about stays selectable. That is wrong for `custom`,
+whose routing is unverified, because a fleet policy written before it existed
+would admit it on upgrade. So `custom` is in
+`agent_backend_governance._CEILING_MUST_NAME`: when a POLICY ceiling is installed,
+it stays selectable only if the ceiling's `agent_backend` rule permits it AND
+names it with one of its patterns. An absent rule, or a deny-mode rule that does
+not list it, removes it. No ceiling means no change. The denial is audited with
+`rule="must-name"`.
+
 **Enforced by RECOMPUTING the registry, not by a per-decision read.** This is the
 one scope here whose answer is materialised instead of resolved at each decision.
 `agent_backend_governance.narrow_selectable_backends()` iterates the BASELINE
