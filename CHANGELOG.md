@@ -2,6 +2,24 @@
 
 All notable changes to KiroCrew are documented in this file.
 
+## [0.7.1] - 2026-09-24
+
+A hot patch for two ways the dashboard had become slow: slow to start a chat, and slow to
+move between them.
+
+### Notable fixes
+
+**Sessions and subagents.** The per agent view files Kiro Crew publishes for its agent
+backend are now reclaimed as soon as no running session holds one, so that directory no
+longer grows without bound. On hosts where it had reached thousands of entries every new
+chat and every background subagent paid several seconds before its first reply, and past a
+few thousand the backend stopped loading agents at all, so chats failed to start. The
+cleanup runs by itself on the next session you open.
+
+**Chat panes.** Switching between chat tabs no longer stalls the dashboard: a pane that
+reconnects asks only for the rows it displays instead of the session's entire transcript,
+and a message read again reuses the redaction already computed for it.
+
 ## [0.7.0] - 2026-09-15
 
 Kiro Crew stops asking you to restart it: almost every setting now reaches the
