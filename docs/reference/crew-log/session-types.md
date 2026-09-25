@@ -142,9 +142,9 @@ is recorded rather than worked around: an allocation whose replay is still pendi
 does not publish its fresh id over the mapping, so for that window a mapping read
 names the crew log BEFORE the newest one — two successive crew logs then cite one
 predecessor and the crew log between them is cited by nobody, which a chain walker
-steps over without any sign that a crew log is missing. Closing that needs a
-deferral that resumes once the predecessor's own writes settle, and it is tracked
-with the rest of the supersede work in #12148. The mapping can also name a crew log
+steps over without any sign that a crew log is missing. That is a gap in mapping
+publication rather than in the tail repair, and it is tracked as #12567. The mapping
+can also name a crew log
 the slot never wrote, since an entry can be stale or recycled by the time a
 successor cold-starts, so the emitter reads the named crew log's own header —
 written once at create, never rewritten — and records the edge only when that

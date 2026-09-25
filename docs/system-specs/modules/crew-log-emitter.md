@@ -38,9 +38,8 @@ whichever allocation observes it first. One limit is recorded rather than worked
 allocation whose replay is still pending does not publish its fresh id over the mapping, so for
 that window a mapping read names the crew log BEFORE the newest one, and two successive crew
 logs cite that same predecessor while the crew log between them is cited by nobody -- a chain
-walker steps over it with no signal that it did. Closing that needs a deferral that resumes
-once the predecessor's own writes settle, which is tracked with the rest of the supersede work
-in #12148. `mapped_sid` rather
+walker steps over it with no signal that it did. That is a mapping-publication gap rather than a
+repair gap, unchanged by the tail repair below, and it is tracked as #12567. `mapped_sid` rather
 than `resumable_sid`: the latter asks "can this id still be resumed", so it stats the ACP
 transcript on the calling thread (a sync store read the turn coroutine must not make) and
 PRUNES the entry when that file is gone or empty, which erases the id exactly when the two
@@ -61,7 +60,7 @@ unset here -- see "Reconnect is not resume" below for what it is for.
 
 | Fact | Site | Data |
 |---|---|---|
-| `session/opened` | after `get_or_create`, on create or re-attach only | agent, slot key, model, `model_requested` when a tier resolved one, cwd, `resumed`; `previous {sid}` on a CREATE whose slot was mapped to a different session id, from `mapped_sid` (in-memory, non-pruning); a replay-pending allocation defers publishing its fresh id, so for that window the mapping names the crew log before the newest one and the one between is cited by nobody, which is recorded as a residual on #12148 rather than handled here; latched on the slot by whichever allocation observes it FIRST -- the eager prefetch maps its own session over the key before the first turn runs, so a turn reading the mapping for itself would answer the successor and write no edge; the latch is write-once and is spent on one entry; recorded only when the named crew log's own header names this slot, read at emit time, so a stale or recycled mapping entry yields no edge; `parent {slot, sid?}` when `session_create` made the session IN THIS GATEWAY PROCESS (`_lineage_minted`) -- the creator's key from the slot's `_created_by`, and the creator's ACP session id FROZEN at mint (`_created_by_sid`) from the live caller handle, present when the caller had a session at that moment; a slot restored from transcript metadata writes no `parent` |
+| `session/opened` | after `get_or_create`, on create or re-attach only | agent, slot key, model, `model_requested` when a tier resolved one, cwd, `resumed`; `previous {sid}` on a CREATE whose slot was mapped to a different session id, from `mapped_sid` (in-memory, non-pruning); a replay-pending allocation defers publishing its fresh id, so for that window the mapping names the crew log before the newest one and the one between is cited by nobody, which is recorded as a residual on #12567 rather than handled here; latched on the slot by whichever allocation observes it FIRST -- the eager prefetch maps its own session over the key before the first turn runs, so a turn reading the mapping for itself would answer the successor and write no edge; the latch is write-once and is spent on one entry; recorded only when the named crew log's own header names this slot, read at emit time, so a stale or recycled mapping entry yields no edge; `parent {slot, sid?}` when `session_create` made the session IN THIS GATEWAY PROCESS (`_lineage_minted`) -- the creator's key from the slot's `_created_by`, and the creator's ACP session id FROZEN at mint (`_created_by_sid`) from the live caller handle, present when the caller had a session at that moment; a slot restored from transcript metadata writes no `parent` |
 | `turn/started` | after every dispatch gate, immediately before the stream opens | turn ordinal, actor, prompt depth |
 | `turn/refused` | each gate that refuses the dispatch | turn ordinal, actor, `reason`, prompt depth |
 | `turn/completed` | the `EVENT_COMPLETE` arm, beside `_emit_turn_metric`; the turn's `finally` when no terminal event arrived | the four `TurnUsage` token counts, credits, `duration_ms`, `stop_reason`, model, provider -- or `stop_reason: "failed"` with `error` and no usage |
@@ -1163,9 +1162,79 @@ crew log the slot never wrote -- a persisted mapping entry can be stale or recyc
 that source against itself would prove nothing. The
 open is a read; `CrewLog.open` claims write ownership only when asked to repair, and nothing here
 asks. A candidate whose header cannot be read gets no edge, since unverifiable is not verified.
-Closing a superseded crew log's dangling turn and tool calls still needs a deferral that can resume
-once that unit's outstanding writes settle rather than being decided once, which the edge neither
-needs nor has; it is tracked with its reproductions as #12148.
+Closing that crew log's dangling turn and tool calls is a SEPARATE job rather than part of this
+entry, and the separation is the deferral: the repair is queued under the PREDECESSOR's id, and
+the writer runs a session's jobs in submission order, so it cannot run until everything that crew
+log already owes has been attempted. A real `turn/completed` still queued or retrying at supersede
+time is therefore written first; one abandoned after its attempt budget is spent is dropped and
+admitted in a `write/dropped` marker first. Either way the tail is closed exactly once and the file
+never carries two outcomes for one turn, and nothing has to decide at create time whether to wait.
+Deciding it once at create time instead stands the repair down permanently, because a
+superseded id is never resumed and nothing maps to it once the successor takes over.
+
+Waiting in that bucket is also how this job is LOST. A batch the filesystem refuses is retained
+with everything behind it, and once the attempt budget is spent the WHOLE retained batch is
+dropped -- the owed append and this job with it. So the job carries a permanent-drop hook that
+submits it once more, which is what makes the paragraph above hold in the dropped case rather than
+merely intend it. The re-submission lands behind the `write/dropped` marker, so the file states both
+that entries are missing and that the turn did not finish. It carries NO hook of its own, and that
+is what bounds this at one extra attempt: the order the first submission was waiting for is gone,
+since nothing ahead of it will be written now, and a hook that re-armed itself would follow a wedged
+disk around its retry budget for as long as the disk stayed wedged. The drop counted this job as one
+missing append before the hook ran, and it is not missing, so the count is taken back out before any
+marker is authored -- a marker is written by a LATER pass of the one writer thread, so no reader can
+have seen the count. Only the count moves: a job re-submitted this way carries no body, so the
+marker's byte total was already exact. Debt that falls to nothing is removed rather than left at
+zero, so a session whose only dropped entry is coming back appends no marker announcing that nothing
+is missing.
+
+The repair asks `_candidate_is_same_slot` again before writing, against the same immutable header
+the edge reads: this is the one place an outcome is authored into a unit that is not the session's
+own, and the same branch answers for a crew log retention collected inside the deferral window,
+which would otherwise raise `no_ledger` and be counted as a lost append. It passes no `child_gone`
+predicate, so an unmatched `subagent/spawned` stays OPEN -- the children were dispatched by a
+session that is gone, and a synthesised `unknown` ahead of a child's own real terminal would leave
+two outcomes for one `agent_id`. A turn still running in this process stands the repair down, and
+its live record is read AS IT STANDS rather than released first. `closer_owed` is set where a
+terminal is handed over, so a turn still running is indistinguishable from a leaked record by that
+field alone; releasing on it would drop the record of a turn a forced reset tore down mid-flight --
+the one case whose closer arrives later, from its own `finally` -- and the repair would then write
+`interrupted` ahead of a real `turn/completed`. `on_session_closed` preserves live records for
+exactly this reason and the repair must not undo it.
+
+Standing down is right only while that terminal is still COMING, so the stand-down records the debt
+and the TERMINAL carries the trigger that settles it. A terminal that spends its attempt budget is
+dropped, and then no outcome is coming at all; the queue cannot cover that, because it orders this
+job behind entries ALREADY queued rather than behind one handed over after it drained. So every
+terminal handover carries a permanent-drop hook, and a drop re-queues the repair that stood down for
+it. `after` cannot serve: it runs when the append RESOLVES, written or given up on alike, so it
+cannot tell the two apart, while a permanent-drop hook fires only on the giving up. The hook runs
+before the `after` that releases the live pin, so by the time the re-queued repair runs `live_turn`
+answers 0 and it closes the tail. A terminal that LANDS clears the debt instead, in `_forget_turn`:
+the tail closed truthfully, and a debt never cleared would grow the record once per supersede for
+the life of the process. In-memory state is enough, because a restart is covered by the re-attach
+recovery below.
+
+All three entry points -- the supersede, that re-attach, and a dropped terminal -- go through ONE
+submission site, so the guards, the bucket and the ceiling exemption cannot drift apart between
+them; they differ only in what brought them there.
+
+The repair JOB rides the in-memory buffer while the opening entry carrying `previous.sid` is a
+durable append, so a crash between the two loses the job and a superseded id is never resumed to
+re-queue it. A RE-ATTACH recovers it. That is the one moment a later process holds the crew log
+again, so it reads its OWN `previous.sid` back through `unit_opened_previous` -- a read-only
+accessor that proves the header folds back to its directory, takes no lease, and reads the oldest
+segment's second line, which is where `session/opened` is, so the read is O(1) whatever the file
+has grown to -- and queues the repair through the SAME submission site, so the guards, the bucket
+and the ceiling exemption cannot differ between a first pass and a recovery. The recovered value is
+latched like every other decision in that job, so a retry acts on the first attempt's reading. It is
+never the caller's `previous_sid`, which the latch refuses on a re-attach because the unit it names
+may be this same one or an unrelated one still running; the file's value was written by an earlier
+attempt of that session's own opening entry, which verified it against the slot first. Gated on the
+slot being known, which loses nothing, since an edge is only written for two crew logs KNOWN to be
+one slot's and a session with no slot therefore has no durable edge to recover. Re-queued on every
+re-attach, because the repair closes nothing when the tail is already closed, and skipping it would
+need durable state saying the repair had run -- more cross-restart state than it saves.
 
 `resumed=True` is a BELIEF about a writer this process cannot see, and two things check it,
 because they see different populations. A live turn of OUR OWN contradicts the flag directly

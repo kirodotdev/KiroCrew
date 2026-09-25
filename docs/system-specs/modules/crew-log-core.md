@@ -349,9 +349,9 @@ without pruning before allocation publishes the successor over it. One limit is 
 handled: an allocation whose replay is still pending does not publish its fresh id over the mapping,
 so for that window a mapping read can
 name the crew log BEFORE the newest one -- two successive crew logs then cite one predecessor
-and the crew log between them is cited by nobody, which is a chain gap tracked with the rest of the
-supersede work in #12148. A successful resume answers the same id and the emitter writes no edge,
-since a crew log cannot be its own predecessor.
+and the crew log between them is cited by nobody, which is a chain gap in mapping publication rather
+than in the repair, tracked as #12567. A successful resume answers the same id and the emitter writes
+no edge, since a crew log cannot be its own predecessor.
 
 The edge is a citation and nothing else. Recording it opens no store for writing but this session's
 own, and no writer here appends to the crew log it names. It does READ that crew log's header, because
@@ -359,10 +359,16 @@ own, and no writer here appends to the crew log it names. It does READ that crew
 wrote -- a mapping entry can be stale or recycled: the
 edge is recorded only when the named crew log's own header names this slot, and a candidate whose
 header cannot be read is not named at all. Closing that crew log's own dangling turn and tool calls
-is a separate change: a repair that must wait on the predecessor's outstanding writes has to be
-resumable rather than decided once, which a citation neither needs nor has. Tracked as #12148. Until
-then a superseded crew log keeps an open `turn/started`, which is the state every reader of this log
-already tolerates.
+is a SEPARATE job, and the separation is what makes the wait possible: the repair is queued under the
+PREDECESSOR's id, and the writer keeps a session's jobs in submission order, so it runs only after
+everything that crew log already owes has been attempted -- a real `turn/completed` still queued or
+retrying is written first, and one abandoned after its attempt budget is spent is dropped and admitted
+in a `write/dropped` marker first. So the superseded crew log's turn is closed as
+`turn/completed {stop_reason: "interrupted"}` and its open calls as `tool/completed {status: "unknown"}`,
+exactly once, with no create-time decision to stand down on and nothing left to re-run. The repair
+re-reads the candidate's header before writing, because it is the one place an outcome is authored into
+a unit that is not this session's own, and it closes no unmatched `subagent/spawned`: those children
+were dispatched by a session that is gone.
 
 The read side is `session/opened.data.previous` itself, folded into the `status` projection and served
 by the existing projection route. A reader that wants the SLOT rather than the session folds the newest
