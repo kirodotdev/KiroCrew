@@ -4325,6 +4325,30 @@ class _ChatSlot:
         """
         self.served_model = model_id or ""
 
+    def _newest_crew_log_store(self) -> str:
+        """The newest crew log this slot wrote, or ``""`` when none can be read.
+
+        The units of a slot are ordered by their header's ``createdAt``, which the
+        store defines as the order they were opened in, so the last one is the store
+        a fresh session supersedes.
+
+        A unit whose header cannot be PROVED to be its own is left out of that
+        listing, and such an id is one the emitter would refuse to cite anyway --
+        both sides prove a unit's slot from that same write-once header -- so a
+        short listing loses no edge that would otherwise have been written.
+
+        ``""`` while the crew log is off: there is no store to read, and no entry
+        that could carry an edge either.
+        """
+        from kiro_crew.crew_log import emit as crew_log_emit
+
+        if not crew_log_emit.enabled():
+            return ""
+        from kiro_crew.crew_log.store import session_units_for_slot
+
+        units = session_units_for_slot(self.key)
+        return units[-1] if units else ""
+
     def latch_crew_log_previous(self, sid: str) -> None:
         """Remember the crew log store this slot was writing, if none is remembered.
 
@@ -4337,9 +4361,28 @@ class _ChatSlot:
         Keeping the FIRST observation keeps the predecessor a `session/opened` can
         cite, and an empty ``sid`` latches nothing rather than latching a store
         with no name.
+
+        ``sid`` is what the slot's MAPPING answers, and the mapping is a proxy for
+        this question rather than its authority. An allocation whose history replay
+        is pending keeps the prior resumable id there deliberately, so that the id
+        a restart can resume stays durable -- and for that window the mapping names
+        a generation OLDER than the newest store this slot wrote. Latching it makes
+        two successive stores cite one predecessor and leaves the store between
+        them cited by nobody, which is the single chain gap a walker cannot detect:
+        both neighbours are well formed and neither says a store is missing.
+
+        So the slot's own units decide, and ``sid`` serves when they cannot answer.
+        The store is the authority because a unit's header names its slot, is
+        written once at create and is never rewritten, while a mapping entry moves
+        with resumability. Reading it also covers a mapping that names a session
+        which never opened a crew log at all, where the id on offer is one no
+        reader could follow.
         """
-        if sid and not self._crew_log_previous_sid:
-            self._crew_log_previous_sid = sid
+        if self._crew_log_previous_sid:
+            return
+        chosen = self._newest_crew_log_store() or sid
+        if chosen:
+            self._crew_log_previous_sid = chosen
 
     def take_crew_log_previous(self) -> str:
         """The latched predecessor store id, clearing it as it is handed over.

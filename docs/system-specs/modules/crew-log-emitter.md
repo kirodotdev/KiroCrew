@@ -32,15 +32,18 @@ crew log; when it did not, the next cold start resumes the same id via `session/
 `CrewLog.exists` decides between create and open and a resumed session never truncates it.
 
 A create that a slot's PREVIOUS crew log already exists behind is the supersede case, and
-the successor records it: `session/opened.data.previous = {sid}`. The id comes from
-`SessionManager.mapped_sid`, the slot's session mapping read without pruning, latched by
-whichever allocation observes it first. One limit is recorded rather than worked around: an
-allocation whose replay is still pending does not publish its fresh id over the mapping, so for
-that window a mapping read names the crew log BEFORE the newest one, and two successive crew
-logs cite that same predecessor while the crew log between them is cited by nobody -- a chain
-walker steps over it with no signal that it did. Closing that needs a deferral that resumes
-once the predecessor's own writes settle, which is tracked with the rest of the supersede work
-in #12148. `mapped_sid` rather
+the successor records it: `session/opened.data.previous = {sid}`. The id is the slot's own
+newest crew log unit -- `store.session_units_for_slot`, ordered by the header's `createdAt` --
+latched by whichever allocation observes it first. The store is the authority because a unit's
+header names its slot, is written once at create and is never rewritten.
+`SessionManager.mapped_sid`, the slot's session mapping read without pruning, is the fallback
+for a slot whose units cannot be read. It cannot be the authority: an allocation whose replay
+is still pending holds the prior resumable id in the mapping deliberately, so that a restart can
+still resume it, and for that window a mapping read names the crew log BEFORE the newest one.
+Latching that would make two successive crew logs cite one predecessor while the crew log
+between them is cited by nobody -- the one chain gap a walker steps over with no signal, since
+both neighbours are well formed. Reading the units also covers a mapping that names a session
+which opened no crew log at all. `mapped_sid` rather
 than `resumable_sid`: the latter asks "can this id still be resumed", so it stats the ACP
 transcript on the calling thread (a sync store read the turn coroutine must not make) and
 PRUNES the entry when that file is gone or empty, which erases the id exactly when the two
@@ -61,7 +64,7 @@ unset here -- see "Reconnect is not resume" below for what it is for.
 
 | Fact | Site | Data |
 |---|---|---|
-| `session/opened` | after `get_or_create`, on create or re-attach only | agent, slot key, model, `model_requested` when a tier resolved one, cwd, `resumed`; `previous {sid}` on a CREATE whose slot was mapped to a different session id, from `mapped_sid` (in-memory, non-pruning); a replay-pending allocation defers publishing its fresh id, so for that window the mapping names the crew log before the newest one and the one between is cited by nobody, which is recorded as a residual on #12148 rather than handled here; latched on the slot by whichever allocation observes it FIRST -- the eager prefetch maps its own session over the key before the first turn runs, so a turn reading the mapping for itself would answer the successor and write no edge; the latch is write-once and is spent on one entry; recorded only when the named crew log's own header names this slot, read at emit time, so a stale or recycled mapping entry yields no edge; `parent {slot, sid?}` when `session_create` made the session IN THIS GATEWAY PROCESS (`_lineage_minted`) -- the creator's key from the slot's `_created_by`, and the creator's ACP session id FROZEN at mint (`_created_by_sid`) from the live caller handle, present when the caller had a session at that moment; a slot restored from transcript metadata writes no `parent` |
+| `session/opened` | after `get_or_create`, on create or re-attach only | agent, slot key, model, `model_requested` when a tier resolved one, cwd, `resumed`; `previous {sid}` on a CREATE whose slot already wrote a different crew log, taken from the slot's newest unit (`store.session_units_for_slot`, ordered by the header's `createdAt`) and falling back to `mapped_sid` (in-memory, non-pruning) when no unit of the slot can be read -- the mapping cannot be the authority because a replay-pending allocation holds the prior resumable id there on purpose, which would name the crew log before the newest one and leave the one between cited by nobody; latched on the slot by whichever allocation observes it FIRST -- the eager prefetch maps its own session over the key before the first turn runs, so a turn reading the mapping for itself would answer the successor and write no edge; the latch is write-once and is spent on one entry; recorded only when the named crew log's own header names this slot, read at emit time, so a stale or recycled mapping entry yields no edge; `parent {slot, sid?}` when `session_create` made the session IN THIS GATEWAY PROCESS (`_lineage_minted`) -- the creator's key from the slot's `_created_by`, and the creator's ACP session id FROZEN at mint (`_created_by_sid`) from the live caller handle, present when the caller had a session at that moment; a slot restored from transcript metadata writes no `parent` |
 | `turn/started` | after every dispatch gate, immediately before the stream opens | turn ordinal, actor, prompt depth |
 | `turn/refused` | each gate that refuses the dispatch | turn ordinal, actor, `reason`, prompt depth |
 | `turn/completed` | the `EVENT_COMPLETE` arm, beside `_emit_turn_metric`; the turn's `finally` when no terminal event arrived | the four `TurnUsage` token counts, credits, `duration_ms`, `stop_reason`, model, provider -- or `stop_reason: "failed"` with `error` and no usage |

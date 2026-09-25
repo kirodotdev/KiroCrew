@@ -344,13 +344,15 @@ same slot was writing before. Same citation shape as `parent`, written once at c
 rewritten, absent rather than empty when there is nothing to name -- the slot's first crew log, a
 predecessor the gateway could not name, and one whose own header does not name this slot are all
 "nothing to follow". No `slot` is repeated inside it,
-because it is the slot in `data.slot`. The id comes from the persisted slot-to-session mapping, read
-without pruning before allocation publishes the successor over it. One limit is recorded rather than
-handled: an allocation whose replay is still pending does not publish its fresh id over the mapping,
-so for that window a mapping read can
-name the crew log BEFORE the newest one -- two successive crew logs then cite one predecessor
-and the crew log between them is cited by nobody, which is a chain gap tracked with the rest of the
-supersede work in #12148. A successful resume answers the same id and the emitter writes no edge,
+because it is the slot in `data.slot`. The id is the slot's own newest crew log unit, read from the
+store's slot index before allocation. The store is the authority because a unit's header names its
+slot and is written once and never rewritten. The persisted slot-to-session mapping, read without
+pruning, is the fallback for a slot whose units cannot be read. It cannot be the authority: an
+allocation whose replay is still pending holds the prior resumable id in the mapping on purpose, so
+that a restart can still resume it, and for that window a mapping read can
+name the crew log BEFORE the newest one -- two successive crew logs would then cite one predecessor
+and the crew log between them would be cited by nobody, the one chain gap a reader cannot see.
+A successful resume answers the same id and the emitter writes no edge,
 since a crew log cannot be its own predecessor.
 
 The edge is a citation and nothing else. Recording it opens no store for writing but this session's

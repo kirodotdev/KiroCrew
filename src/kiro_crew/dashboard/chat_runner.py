@@ -6719,12 +6719,10 @@ async def _spawn_admitted_prefetch(
         # observes afterwards cannot replace this with the successor's id.
         #
         # Same source as the turn site: the slot-to-session mapping, read
-        # non-pruning. One known limit is recorded rather than worked around here:
-        # an allocation whose replay is still pending defers publishing its fresh
-        # id, so for that window the mapping names the store before the newest one
-        # and the store between them is cited by nobody. Closing that needs a
-        # deferral that resumes once the predecessor's own writes settle, which is
-        # the same mechanism the superseded-tail work needs and is tracked with it.
+        # non-pruning. It is the FALLBACK rather than the answer -- the latch reads
+        # the slot's own crew log units first, because an allocation whose history
+        # replay is pending holds the prior resumable id in the mapping on purpose
+        # and the mapping then names a generation older than the newest store.
         slot.latch_crew_log_previous(sessions.mapped_sid(session_key))
         # speculative=True keeps the one-shot first-turn flag armed for
         # the real first message (atomically, at registration) and
@@ -10545,12 +10543,11 @@ async def _run_chat(
         # resume would not: it asks what the key was last serving, not what can
         # still be resumed.
         #
-        # The window a single mapping read cannot close is a replay-pending
-        # allocation. Such an allocation defers publishing its fresh id, so the
-        # mapping keeps naming the store before it; two successive allocations then
-        # cite that same older store and the store between them is cited by nobody,
-        # which a walker steps over with no signal. That is a recorded residual,
-        # tracked with the superseded-tail work rather than handled here.
+        # What a mapping read alone cannot answer is a replay-pending allocation,
+        # which keeps the prior resumable id here so a restart can still resume it.
+        # The mapping then names a store older than the newest one this slot wrote.
+        # So this id is the fallback and the slot's own units are the authority: the
+        # latch reads them and takes this value only when they answer nothing.
         slot.latch_crew_log_previous(state.sessions.mapped_sid(session_key))
         # ONE allocation site (the crew-log latch above must sit right before
         # it): the cold-start branch claims under the lock without waiting for

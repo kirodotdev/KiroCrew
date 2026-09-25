@@ -136,15 +136,17 @@ same-slot rule below rather than trusting it. It reports WHY it stopped, and onl
 `first` means it reached the slot's first crew log; no shipped route calls it yet.
 
 `previous` always names a crew log of the SAME slot, and that is verified rather
-than assumed. The id reaches the emitter from the slot-to-session mapping, read
-without pruning and latched by whichever allocation observes it first. One limit
-is recorded rather than worked around: an allocation whose replay is still pending
-does not publish its fresh id over the mapping, so for that window a mapping read
-names the crew log BEFORE the newest one — two successive crew logs then cite one
-predecessor and the crew log between them is cited by nobody, which a chain walker
-steps over without any sign that a crew log is missing. Closing that needs a
-deferral that resumes once the predecessor's own writes settle, and it is tracked
-with the rest of the supersede work in #12148. The mapping can also name a crew log
+than assumed. The id is the slot's own newest crew log unit, taken from the store's
+slot index and latched by whichever allocation observes it first. The store is the
+authority here because a unit's header names its slot, is written once at create and
+is never rewritten. The slot-to-session mapping, read without pruning, is the fallback
+for a slot whose units cannot be read, and it cannot be the authority: an allocation
+whose replay is still pending holds the prior resumable id in the mapping on purpose,
+so that a restart can still resume it, and for that window a mapping read names the
+crew log BEFORE the newest one — two successive crew logs would then cite one
+predecessor and the crew log between them would be cited by nobody, which a chain
+walker steps over without any sign that a crew log is missing. The mapping can also
+name a crew log
 the slot never wrote, since an entry can be stale or recycled by the time a
 successor cold-starts, so the emitter reads the named crew log's own header —
 written once at create, never rewritten — and records the edge only when that
