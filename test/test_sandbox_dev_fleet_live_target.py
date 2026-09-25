@@ -298,7 +298,7 @@ class TestTheMaskGetsAMountTarget:
 
     def test_the_linux_spawn_path_calls_it(self) -> None:
         """Pinned by source: the mask is built from the live host, which CI cannot dirty."""
-        assert "_materialize_live_target_mask_target()" in inspect.getsource(
+        assert "_materialize_live_target_mask_target(" in inspect.getsource(
             sandbox.namespace_argv
         ), "the namespace spawn path does not materialise the live-target mask target"
 

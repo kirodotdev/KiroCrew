@@ -58,7 +58,7 @@ _MS_NOEXEC = 8
 _MS_REMOUNT = 32
 _MS_BIND = 4096
 
-_HELPER_START = "def _locked_mount_flags("
+_HELPER_START = "_O_PATH = getattr"
 _HELPER_END = "REAL_UID = "
 
 
@@ -178,14 +178,25 @@ class TestSealRemountCarriesTheLockedBits:
 
         target = tmp_path / "sealed"
         target.mkdir()
+        sealed_ino = target.stat().st_ino
         events: list[tuple] = []
+
+        def _resolved(path) -> int:
+            """The inode *path* reaches, resolved while its descriptor is open.
+
+            The loop hands ``mount`` a descriptor path pinning the object it
+            classified, so the spelling is a live fd number and says nothing on
+            its own. What the assertion needs is the OBJECT, which is what both
+            the bind and the sealing remount must reach.
+            """
+            return os.stat(path).st_ino
 
         def _record_mount(source, target_, flags, what):
             assert source == target_, "a ceiling is bound over ITSELF"
-            events.append(("mount", os.fsdecode(target_), flags))
+            events.append(("mount", _resolved(target_), flags))
 
         def _fake_statvfs(target_):
-            events.append(("statvfs", os.fsdecode(target_)))
+            events.append(("statvfs", _resolved(target_)))
             return SimpleNamespace(f_flag=os.ST_NOSUID | os.ST_NODEV)
 
         monkeypatch.setattr(os, "statvfs", _fake_statvfs)
@@ -193,7 +204,9 @@ class TestSealRemountCarriesTheLockedBits:
             str(region_file),
             init_globals={
                 "os": os,
+                "sys": sys,
                 "READONLY_DIRS": [str(target)],
+                "REQUIRED_MASK_TARGETS": frozenset(),
                 "_mount_or_die": _record_mount,
                 "_MS_BIND": _MS_BIND,
                 "_MS_REMOUNT": _MS_REMOUNT,
@@ -205,11 +218,11 @@ class TestSealRemountCarriesTheLockedBits:
         )
 
         assert events == [
-            ("mount", str(target), _MS_BIND),
-            ("statvfs", str(target)),
+            ("mount", sealed_ino, _MS_BIND),
+            ("statvfs", sealed_ino),
             (
                 "mount",
-                str(target),
+                sealed_ino,
                 _MS_REMOUNT | _MS_BIND | _MS_RDONLY | _MS_NOSUID | _MS_NODEV,
             ),
         ]
@@ -303,6 +316,7 @@ def _inner_script() -> str:
             sys.exit(46)
         sealed = os.path.join(mnt, b"sealed")
         READONLY_DIRS = [os.fsdecode(sealed)]
+        REQUIRED_MASK_TARGETS = frozenset()
         """)
     epilogue = textwrap.dedent("""\
         try:

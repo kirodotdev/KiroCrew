@@ -136,6 +136,7 @@ def _run_scan(
         "sys": fake_sys,
         "SENSITIVE_DIRS": dirs,
         "SENSITIVE_FILES": files,
+        "REQUIRED_MASK_TARGETS": frozenset(),
     }
     block = tmp_path / "_scan_block.py"
     block.write_text(_scan_source(), encoding="utf-8")

@@ -28,6 +28,7 @@ from __future__ import annotations
 import errno
 import os
 import runpy
+import stat
 import sys
 import tempfile
 import textwrap
@@ -126,6 +127,21 @@ def _region(script: str) -> str:
         cut(_HIDE_START, _HIDE_END)
     )
     region = helper + "\n" + body
+    # Neutralise the post-mount name check: it asks whether the configured name
+    # now reaches the stand-in, which is only true after a REAL mount, and this
+    # ``_libc`` records instead of mounting. Left in force it would refuse every
+    # run here and these assertions would describe the harness. Its own verdict
+    # is tested in test_sandbox_mount_pinned_target.py against real objects.
+    _verify = "def _verify_masked_name(name, stand_in, what):"
+    _after = "def _locked_mount_flags(target):"
+    assert _verify in region, "the name-check helper was renamed"
+    assert _after in region, "the helper after the name check was renamed"
+    region = (
+        region[: region.index(_verify)]
+        + _verify
+        + "\n    return None\n\n"
+        + region[region.index(_after, region.index(_verify)) :]
+    )
     missing = [m for m in _LANDMARKS if m not in region]
     assert not missing, f"the extracted mount region is missing {missing}"
     return region
@@ -179,6 +195,7 @@ def _run(
         "_MS_NOEXEC": 8,
         "ctypes": ctypes,
         "os": os,
+        "stat": stat,
         "sys": sys,
         "tempfile": tempfile,
         "_tmpfs_src": str(src_dir),
@@ -196,6 +213,7 @@ def _run(
         # the carve-out tests inject their own entry.
         "WRITABLE_DIRS": list(writable_dirs or []),
         "SENSITIVE_FILES": [str(lone)],
+        "REQUIRED_MASK_TARGETS": frozenset(),
         "SSH_DIR": str(ssh),
         "SSH_KNOWN_HOSTS": str(ssh / "known_hosts"),
         "HIDE_SSH": True,
@@ -270,12 +288,15 @@ def test_a_failed_mount_refuses_to_exec(
 def test_the_refusal_names_the_hidden_path(tmp_path: Path) -> None:
     """An operator needs the path, not just 'a mount failed'.
 
+    The path the operator must act on is the NAME they configured, which is what
+    the label carries. The mount target itself is a descriptor path pinning the
+    object that name resolved to, and would tell them nothing.
+
     Break-arm: ``drop_path`` (the dirs site's label made a constant).
     """
-    libc, refusal = _run(tmp_path, fail_at=2)
+    _libc_unused, refusal = _run(tmp_path, fail_at=2)
     assert refusal is not None
-    target = libc.calls[-1][1].decode()
-    assert target in refusal
+    assert str(tmp_path / "home" / ".aws") in refusal
 
 
 def test_the_refusal_carries_the_errno(tmp_path: Path) -> None:
@@ -385,31 +406,32 @@ _ARMS: dict[str, tuple[str, str]] = {
         '_libc.mount(None, b"/", None, _MS_REC | _MS_PRIVATE, None)',
     ),
     "site2": (
-        "_mount_or_die(per_dir_empty, target, _MS_BIND,\n"
+        "_mount_or_die(per_dir_empty, _dir_target, _MS_BIND,\n"
         '                              "hiding credential directory %s" % d)',
-        "_libc.mount(per_dir_empty, target, None, _MS_BIND, None)",
+        "_libc.mount(per_dir_empty, _dir_target, None, _MS_BIND, None)",
     ),
     "site3": (
-        "_mount_or_die(target, target, _MS_BIND,\n"
+        "_mount_or_die(_seal_target, _seal_target, _MS_BIND,\n"
         '                              "exposing read-only path %s" % d)',
-        "_libc.mount(target, target, None, _MS_BIND, None)",
+        "_libc.mount(_seal_target, _seal_target, None, _MS_BIND, None)",
     ),
     "site4": (
-        "_mount_or_die(target, target,\n"
-        "                              _MS_REMOUNT | _MS_BIND | _MS_RDONLY\n"
-        "                              | _locked_mount_flags(target),\n"
-        '                              "sealing read-only path %s" % d)',
-        "_libc.mount(target, target, None, _MS_REMOUNT | _MS_BIND | _MS_RDONLY, None)",
+        "_mount_or_die(_rdonly_target, _rdonly_target,\n"
+        "                                      _MS_REMOUNT | _MS_BIND | _MS_RDONLY\n"
+        "                                      | _locked_mount_flags(_rdonly_target),\n"
+        '                                      "sealing read-only path %s" % d)',
+        "_libc.mount(_rdonly_target, _rdonly_target, None,\n"
+        "                                    _MS_REMOUNT | _MS_BIND | _MS_RDONLY, None)",
     ),
     "site5": (
-        "_mount_or_die(empty_path.encode(), target, _MS_BIND,\n"
+        "_mount_or_die(empty_path.encode(), _file_target, _MS_BIND,\n"
         '                              "hiding sensitive file %s" % f)',
-        "_libc.mount(empty_path.encode(), target, None, _MS_BIND, None)",
+        "_libc.mount(empty_path.encode(), _file_target, None, _MS_BIND, None)",
     ),
     "site6": (
-        "_mount_or_die(ssh_tmp, SSH_DIR.encode(), _MS_BIND,\n"
-        '                          "hiding ssh key directory %s" % SSH_DIR)',
-        "_libc.mount(ssh_tmp, SSH_DIR.encode(), None, _MS_BIND, None)",
+        "_mount_or_die(ssh_tmp, _ssh_target, _MS_BIND,\n"
+        '                              "hiding ssh key directory %s" % SSH_DIR)',
+        "_libc.mount(ssh_tmp, _ssh_target, None, _MS_BIND, None)",
     ),
     "happy_path": (
         "if _libc.mount(source, target, None, flags, None) != 0:\n"
