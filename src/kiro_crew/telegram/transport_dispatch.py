@@ -39,6 +39,7 @@ from kiro_crew.agent_discovery import list_agents
 from kiro_crew.config import live
 from kiro_crew.config.loader import ACTIVATION_MENTION, ACTIVATION_OFF
 from kiro_crew.config.sections import _clamp_pct
+from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT
 from kiro_crew.context import session_store_for_turn
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.history import mint_row_mid
@@ -106,6 +107,7 @@ from kiro_crew.messaging.session_resume import (
     refused_resume_is_restricted,
 )
 from kiro_crew.messaging.session_trust import add_trusted_session, is_session_trusted
+from kiro_crew.messaging.spawn_approval_delivery import unpressed_wait_answer
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
 from kiro_crew.messaging.upload_gate import (
@@ -3261,9 +3263,16 @@ class TelegramDispatcher:
         generation, so the recomputed key does not match the armed one, the press
         resolves nothing, and the prompt deny-by-defaults at the timeout (the user
         sees "already expired"). This mirrors how a mid-run tool prompt behaves
-        across a rotation. An elapsed wait is a DENY and NOT a fall-through: the
-        prompt was surfaced, so ``False`` is a real decision and the gate refuses
-        the spawn on it rather than re-offering it on Slack/dashboard.
+        across a rotation. An elapsed wait is a DENY only while the prompt stayed
+        answerable for the whole wait: the prompt was surfaced, so ``False`` is a
+        real decision and the gate refuses the spawn on it. An elapsed wait whose
+        prompt STOPPED being answerable is a fall-through instead, because no press
+        could have resolved it. Two authorities can end answerability mid-wait and
+        both are re-read when the wait elapses: this conversation's own
+        authorization, which ``on_callback`` checks first for every press with no
+        exemption (``_spawn_prompt_destination_permitted``, the same pair consulted
+        before posting), and the operator's ``channels`` ceiling, whose reading
+        belongs to the seam (``unpressed_wait_answer``) for every channel.
         """
         client = self.client
         if client is None:
@@ -3329,7 +3338,37 @@ class TelegramDispatcher:
 
         decider = TelegramApprovalDecider(session_key=session_key)
         event = SimpleNamespace(request_id=rid)
-        return bool(await decider(event))
+        approved = bool(await decider(event))
+        if not approved and decider.last_deny_cause == DENY_CAUSE_APPROVAL_TIMEOUT:
+            # Nobody pressed. An elapsed wait is a deny-by-default only while the
+            # prompt was answerable for the whole wait; once it stopped being
+            # answerable, reporting ``False`` would refuse the spawn in the
+            # operator's name. Two authorities can end that, and both are asked:
+            #
+            # * this conversation's own authorization, which ``on_callback`` checks
+            #   FIRST for every press with no exemption: the peer roster gates
+            #   every press, and a Topic passes the shared ``forum_gate_outcome``
+            #   as well. A peer dropped from the roster, or a Topic dropped from
+            #   the allow-list, therefore silences even a reject.
+            #   ``_spawn_prompt_destination_permitted`` is the same pair this
+            #   method already consults before posting, read here as "could a
+            #   press still have been honored";
+            # * the operator's ``channels`` ceiling, which the seam owns for every
+            #   channel (``unpressed_wait_answer``).
+            #
+            # A press — approve, trust, or the explicit reject the channels drop
+            # exempts — is the operator's own decision and is returned verbatim
+            # below, so a real refusal never becomes a fall-through.
+            if not self._spawn_prompt_destination_permitted(chat_id, thread_id):
+                logger.info(
+                    "Telegram: the spawn-approval prompt for %s went unanswered and "
+                    "its conversation is not authorized, so no press could have "
+                    "resolved it; falling through to the Slack/dashboard path",
+                    rid,
+                )
+                return None
+            return await unpressed_wait_answer("telegram", rid)
+        return approved
 
     def _spawn_prompt_destination_permitted(self, chat_id: int, thread_id: int | None) -> bool:
         """May a spawn-approval prompt be posted into this chat RIGHT NOW? Fails closed.
@@ -3347,10 +3386,12 @@ class TelegramDispatcher:
         Two authorities, both consulted, neither sufficient alone:
 
         * the dispatcher's own live gates, which are exactly the ones a PRESS is
-          judged by in ``on_callback`` (``_authorized`` for a DM, whose chat id IS
-          the peer's user id; the shared ``forum_gate_outcome`` predicate for a
-          Topic), so a prompt is never posted where its own button could not be
-          honored;
+          judged by in ``on_callback``: the peer roster gates EVERY press, and a
+          Topic passes the shared ``forum_gate_outcome`` predicate as well. A DM's
+          chat id IS the peer's user id, so ``_authorized`` answers it directly; a
+          Topic names no single peer, so the roster is asked whether it admits
+          anybody. Either way a prompt is never posted where its own button could
+          not be honored;
         * ``transport.may_send_to``, the transport's revocation-at-egress decision,
           when a transport is wired. Absent (no transport, as in a unit harness) the
           dispatcher's gates above stand alone; a raise is read as a denial.
@@ -3360,6 +3401,14 @@ class TelegramDispatcher:
             if not self._authorized(chat_id):
                 return False
         else:
+            # A Topic press passes BOTH gates, the roster first and then the
+            # shared forum predicate. The roster is keyed by the PRESSING peer,
+            # and a Topic route names none of them -- any authorized peer in it
+            # may press -- so what the roster can answer here is whether it
+            # admits anybody at all. An empty roster denies every press, reject
+            # included, leaving a prompt in this Topic answerable by nobody.
+            if not self._allowed:
+                return False
             forum_cfg = self._live_cfg().telegram
             if (
                 forum_gate_outcome(

@@ -1436,6 +1436,13 @@ disposition:
   refusal the operator never made; a deny therefore falls through and leaves the
   spawn answerable on Slack or the dashboard instead. The check sits at that seam,
   not inside each dispatcher, so a channel hook written without it is gated too.
+  The same ceiling is consulted a SECOND time for one prompt: the spawn gate holds
+  a spawn for as long as its approval takes, so a deny can land while the prompt is
+  already pending, and from that moment the press that would answer it is dropped.
+  A hook whose wait elapsed with no press therefore asks the seam
+  (`unpressed_wait_answer`) what the elapsed wait means, and a deny makes it a
+  fall-through rather than a refusal in the operator's name. An explicit reject,
+  which this gate exempts from the drop, stays a real denial either way.
   **Audit disposition:** a GOVERNED allow is audit-or-deny (`critical=True` — a SEL
   persistence failure denies the inbound, so a governed channel never receives
   unaudited); every DENY is recorded best-effort. The **ungoverned default-permit
