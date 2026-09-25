@@ -11,8 +11,9 @@ The package is split into:
 
 from __future__ import annotations
 
-import importlib
 from typing import TYPE_CHECKING
+
+from kiro_crew import lazy_exports as _lazy_exports
 
 # Lazy attribute access (PEP 562) so importing anything under this package —
 # e.g. ``dashboard.urls`` for the two URL helpers the CLI needs, or
@@ -33,13 +34,13 @@ _LAZY = {
     "_fmt_duration": ("state", "_fmt_duration"),
 }
 
-
-def __getattr__(name: str):
-    target = _LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    module = importlib.import_module(f"{__name__}.{target[0]}")
-    return getattr(module, target[1])
+#: A re-exported name lives in exactly one place, the submodule that defines it:
+#: reads resolve that submodule's current value and writes go to it, so the two
+#: spellings of a name cannot hold different values.
+__getattr__ = _lazy_exports.bind(
+    __name__,
+    {name: (f"{__name__}.{module}", symbol) for name, (module, symbol) in _LAZY.items()},
+)
 
 
 def __dir__():

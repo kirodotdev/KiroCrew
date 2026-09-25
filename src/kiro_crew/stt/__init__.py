@@ -18,24 +18,15 @@ path of everything that touches any part of this package, including
 import X`` keeps working for every name in ``__all__``; it just resolves on first
 access instead of at package import.
 
-**A caller and anything that substitutes what it calls must name the SAME
-module.** ``__getattr__`` resolves a name fresh on every access, but only while
-the package does not itself hold that name, and a ``monkeypatch.setattr(stt,
-"x", ...)`` leaves the original behind as a real attribute on teardown. From then
-on that attribute shadows ``__getattr__``, and a patch applied to
-``stt.models.x`` is invisible to anyone reading ``stt.x``. The failure is silent
-and order-dependent: it needs a full-suite run and some unrelated file to have
-touched the name first.
-
-Either side is fine as long as they agree. ``transcribe.py`` reads
-``stt.transcribe_pcm`` and its tests patch the package, which works. A caller
-whose substitute lives on the submodule reads the submodule
-(``from kiro_crew.stt import models as stt_models``). Mixing the two is the bug,
-and it cost this package one: ``GET /api/stt/status`` read ``stt.is_present``
-while its test patched ``stt.models.is_present``, and reported every model absent
-on a host where the files were there.
-
-Constants and classes are safe either way, because nothing substitutes them.
+**A re-exported name lives in exactly one place: the submodule that defines it.**
+Reading ``stt.transcribe_pcm`` reads ``stt.session.transcribe_pcm``, and writing
+``stt.transcribe_pcm`` writes ``stt.session.transcribe_pcm``, so the two spellings
+of a name always hold the same value. A caller and anything that substitutes what
+it calls are therefore free to name either one: ``transcribe.py`` reads
+``stt.transcribe_pcm`` while a test patches the package, a caller whose substitute
+lives on the submodule reads the submodule
+(``from kiro_crew.stt import models as stt_models``), and mixing the two spellings
+resolves to the same object.
 
 Nothing here imports the recogniser binding itself. It is an optional extra, so a
 gateway installed without it starts normally and :func:`availability` reports why
@@ -45,6 +36,8 @@ voice input is unavailable.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+
+from kiro_crew import lazy_exports as _lazy_exports
 
 #: Which submodule owns each public name, and the table :func:`__getattr__`
 #: resolves through, so a name absent here is genuinely not part of the surface.
@@ -186,16 +179,11 @@ def model_store() -> ModelStore:
     return _store()
 
 
-def __getattr__(name: str) -> object:
-    """Resolve a public name from its owning submodule (PEP 562)."""
-    module = _EXPORTS.get(name)
-    if module is not None:
-        # Imported here, not at module scope: a top-level import would defeat this
-        # seam entirely and put numpy back on the CLI's import path.
-        from importlib import import_module
-
-        return getattr(import_module(f"{__name__}.{module}"), name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+#: Each owning submodule is imported on first access, not here: a top-level import
+#: would defeat this seam entirely and put numpy back on the CLI's import path.
+__getattr__ = _lazy_exports.bind(
+    __name__, {name: (f"{__name__}.{module}", name) for name, module in _EXPORTS.items()}
+)
 
 
 def __dir__() -> list[str]:

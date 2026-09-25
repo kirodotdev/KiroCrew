@@ -7,11 +7,17 @@ such as :mod:`kiro_crew.config.paths` does NOT eagerly pull in the heavy
 and the lazily-imported provider factory). ``from kiro_crew.config import X``
 continues to work for every name in ``__all__`` — it just resolves on first
 access instead of at package import.
+
+A re-exported name lives in exactly one place, the loader. Reading it through
+this package reads the loader and writing it through this package writes the
+loader, so the two spellings of a name cannot hold different values.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+
+from kiro_crew import lazy_exports as _lazy_exports
 
 __all__ = [
     "KiroCrewConfig",
@@ -37,18 +43,15 @@ if TYPE_CHECKING:  # imported for type checkers only; no runtime loader import
     )
 
 
-def __getattr__(name: str) -> object:
-    """Resolve public config names lazily from the loader (PEP 562)."""
-    if name in __all__:
-        # circular import: config.loader imports from kiro_crew.config.paths,
-        # which triggers this package __init__ — a top-level import of loader
-        # here would create an init <-> loader runtime cycle AND eagerly pull the
-        # heavy loader in whenever the config package is touched (including from
-        # the lightweight config.paths leaf), defeating this PEP 562 lazy seam.
-        from kiro_crew.config import loader
-
-        return getattr(loader, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+#: The loader owns every public name, and is imported on first access rather than
+#: here: ``config.loader`` imports ``kiro_crew.config.paths``, which triggers this
+#: package ``__init__``, so a top-level import would create an init <-> loader
+#: runtime cycle AND eagerly pull the heavy loader in whenever the config package
+#: is touched (including from the lightweight ``config.paths`` leaf), defeating
+#: this PEP 562 lazy seam.
+__getattr__ = _lazy_exports.bind(
+    __name__, {name: ("kiro_crew.config.loader", name) for name in __all__}
+)
 
 
 def __dir__() -> list[str]:

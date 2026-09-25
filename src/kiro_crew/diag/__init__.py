@@ -29,11 +29,16 @@ sampling paths use in-process introspection rather than ``ptrace``.
 Submodules are resolved lazily through :func:`__getattr__`. The recorder starts
 on the gateway boot path, where an eager import chain is a measurable cost, and
 HTTP routes want ``diag.get_recorder()`` without paying for the thread module.
+A re-exported name lives in exactly one place, the submodule that defines it, so
+reading or writing it through this package reaches that submodule and the two
+spellings of a name cannot hold different values.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
+
+from kiro_crew import lazy_exports as _lazy_exports
 
 if TYPE_CHECKING:  # pragma: no cover - import-time typing only
     from kiro_crew.diag.recorder import Recorder, get_recorder
@@ -48,18 +53,10 @@ _LAZY: dict[str, tuple[str, str]] = {
     "get_recorder": ("kiro_crew.diag.recorder", "get_recorder"),
 }
 
-
-def __getattr__(name: str) -> Any:
-    """Resolve the re-exported names on first use (PEP 562)."""
-    target = _LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-
-    module = importlib.import_module(target[0])
-    value = getattr(module, target[1])
-    globals()[name] = value  # cache, so the import cost is paid once
-    return value
+#: Reads resolve the recorder module on first use and read the value from it every
+#: time; writes go to the recorder module too, so ``diag.get_recorder`` and
+#: ``diag.recorder.get_recorder`` name one value.
+__getattr__ = _lazy_exports.bind(__name__, dict(_LAZY))
 
 
 def __dir__() -> list[str]:
