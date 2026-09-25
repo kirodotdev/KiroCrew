@@ -183,10 +183,9 @@ class DefaultCredentialPolicy:
         return security.redact(text)
 
     def exempt_exact_hosts(self) -> "frozenset[str]":
-        # The public edition exempts no hosts from the exfil heuristics — the
-        # base64-blob / query-length checks run for every domain, so redaction
-        # is byte-identical to today.  The companion returns its trusted-tenant
-        # host set (empty = MORE redaction, the safe direction).
+        # The public edition exempts no hosts from heuristic redaction. The
+        # base64/query exfil checks and markerless bare-secret pass therefore run
+        # for every domain; the companion alone returns trusted exact tenants.
         return frozenset()
 
 

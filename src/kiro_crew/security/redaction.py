@@ -415,6 +415,75 @@ _PREFILTER_MIN_LEN = 16
 _B64_CHUNK_RE = re.compile(r"[A-Za-z0-9+/]{40,}={0,2}")
 
 
+# Microsoft SharePoint's generated sharing route owns one opaque item-id path
+# segment. Its URL-safe identifier can contain a 40-character alphanumeric run
+# that is byte-indistinguishable from a bare AWS secret to the entropy heuristic.
+# The route shape is not authority: model-authored text can imitate it, and
+# SharePoint is multi-tenant. A span is therefore eligible only when its exact
+# host is supplied by the active CredentialPolicy's non-agent-writable trusted
+# tenant set. The public policy returns an empty set.
+#
+# Within a trusted tenant, require the provider's HTTPS ``/:<type>:/s/`` route,
+# E/I-prefixed URL-safe id, and terminal ``?e=`` marker. The id must contain ``-``
+# or ``_`` -- outside the AWS-secret alphabet -- so an ordinary 40-character key
+# in the same path does not earn this context.
+#
+# This affects pass 3 only. Fixed/prefixed credentials (pass 1), encoded
+# credentials (pass 2), token query values (pass 4), and every run outside the
+# captured item-id span retain their existing decisions. Accepted residual: a
+# bare 40-character key deliberately wrapped in the remaining six characters of
+# a valid item-id shape on a trusted tenant is byte-identical to the benign link
+# this rule preserves. The exact non-agent-writable tenant boundary is what keeps
+# that ambiguity from becoming a shared-domain or attacker-destination waiver.
+_SHAREPOINT_SHARE_ID_RE = re.compile(
+    r"https://"
+    r"(?P<host>(?i:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.sharepoint\.com))"
+    r"/:[bdfilopstuvwxy]:/s/"
+    r"[A-Za-z0-9._~-]+/"
+    r"(?P<share_id>[EI][A-Za-z0-9_-]{45})"
+    r"(?=\?e=[A-Za-z0-9_-]{6,}(?:[&#\s)\]\"']|$))"
+)
+
+
+def _trusted_sharepoint_hosts() -> frozenset[str]:
+    """Return policy-owned exact hosts that may carry SharePoint locators."""
+    # circular import: exfil imports this module's credential classifiers. This
+    # call happens only after package initialization and reuses exfil's declared,
+    # no-I/O installed-context peek rather than composing context on an egress
+    # hot path.
+    from .exfil import _exfil_exempt_hosts
+
+    try:
+        raw = _exfil_exempt_hosts()
+        return frozenset(host for host in raw if host.endswith(".sharepoint.com"))
+    except Exception:
+        # Empty means more redaction. This runs on egress paths, including stdio
+        # MCP servers, so a malformed adapter must neither weaken the boundary
+        # nor write a log line that can corrupt transport framing.
+        return frozenset()
+
+
+def _sharepoint_share_id_spans(text: str) -> tuple[tuple[int, int], ...]:
+    """Return trusted generated SharePoint item-id spans for pass-3 decline."""
+    if "sharepoint.com/:" not in text.lower() or "?e=" not in text:
+        return ()
+    matches = tuple(_SHAREPOINT_SHARE_ID_RE.finditer(text))
+    if not matches:
+        return ()
+    trusted_hosts = _trusted_sharepoint_hosts()
+    if not trusted_hosts:
+        return ()
+    spans: list[tuple[int, int]] = []
+    for match in matches:
+        if match.group("host").lower() not in trusted_hosts:
+            continue
+        share_id = match.group("share_id")
+        if "-" not in share_id and "_" not in share_id:
+            continue
+        spans.append(match.span("share_id"))
+    return tuple(spans)
+
+
 # ── Label-independent bare-secret detection ──
 # A 40-char AWS *secret access key* (the value paired with an AKIA/ASIA access
 # key ID) is a bare run of the base64 alphabet with NO distinctive prefix and NO
@@ -1287,8 +1356,19 @@ def redact_credentials(text: str) -> tuple[str, list[str]]:
     # plaintext redacted, because the run as a whole was judged to hold a key
     # and the earlier pass consumed only its label.
     pass3: list[_RedactionSpan] = []
+    sharepoint_share_id_spans = _sharepoint_share_id_spans(text) if b64_matches else ()
     for m in b64_matches:
         run = m.group().rstrip("=")
+        run_start = m.start()
+        run_end = run_start + len(run)
+        # A provider-generated SharePoint item id is an opaque locator. Only
+        # decline a run fully contained by that captured path segment; query,
+        # fragment, neighbouring text and malformed lookalikes stay in scope.
+        if any(
+            share_start <= run_start and run_end <= share_end
+            for share_start, share_end in sharepoint_share_id_spans
+        ):
+            continue
         # Slide a 40-char window across the run rather than gating the whole run
         # on len == 40: a real secret glued to an adjacent base64 char (no
         # delimiter) yields a 41+ char run that the exact-40 shape check would
