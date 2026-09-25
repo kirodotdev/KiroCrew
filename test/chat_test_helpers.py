@@ -157,6 +157,21 @@ def _make_state(tmp_path, **kwargs):
     sessions.get_slack_link = MagicMock(side_effect=_get_slack_link)
     sessions.clear_slack_link = MagicMock(side_effect=_clear_slack_link)
 
+    # Real in-memory INBOUND channel-link store (``get_origin_link``/``set_origin_link``, the SessionManager surface), for
+    # the same reason: a bare MagicMock return is unconditionally truthy, so a
+    # reader asking "does this session have a channel link" would see one on
+    # every key. Parity with SessionStore: absent -> None.
+    _channel_links: dict[str, object] = {}
+
+    def _set_link(key, link):
+        _channel_links[key] = link
+
+    def _get_link(key):
+        return _channel_links.get(key)
+
+    sessions.set_origin_link = MagicMock(side_effect=_set_link)
+    sessions.get_origin_link = MagicMock(side_effect=_get_link)
+
     # Real in-memory mirror-link store, for the same reason as the Slack one and
     # with a sharper failure mode: callers branch on whether a mirror is PRESENT,
     # and a bare MagicMock is unconditionally truthy, so every session reads as

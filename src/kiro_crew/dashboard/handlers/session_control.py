@@ -209,6 +209,13 @@ def _refusal(exc: sc.SessionControlError) -> web.Response:
         # history save), each of which left the tab open with every partial step
         # rolled back. It is not a client error, so it must not degrade to 400.
         return web.json_response({"error": exc.message, "code": exc.code}, status=500)
+    if exc.status == 503:
+        # A retryable server-side failure -- `revive_session` raises this when the
+        # reopen write could not land (`reopen_failed`) or a refused resume could
+        # not confirm its `closed` marker restored (`reopen_rollback_failed`).
+        # The distinction from 500 is the remedy: try again, or close from the
+        # History tab. Neither is a client error, so neither degrades to 400.
+        return web.json_response({"error": exc.message, "code": exc.code}, status=503)
     return web.json_response({"error": exc.message, "code": exc.code}, status=400)
 
 
@@ -333,6 +340,28 @@ async def api_session_control_close(request: web.Request) -> web.Response:
             state,
             caller_session_key=_read_session_key(request),
             target=_target(body),
+            caller_fenced=_carried_fence(request),
+        )
+    except sc.SessionControlError as exc:
+        return _refusal(exc)
+    return web.json_response(result)
+
+
+async def api_session_control_revive(request: web.Request) -> web.Response:
+    """POST /api/session-control/revive — bring an archived session back (mirror of close)."""
+    refused = await _require_internal(request)
+    if refused is not None:
+        return refused
+    # No prewarm here either: `revive_session` warms the SEL logger and the
+    # config after its own SEL prewarm, the same ordering `close_target` uses.
+    state: DashboardState = request.app["state"]
+    try:
+        body = await _body(request)
+        result = await sc.revive_session(
+            state,
+            caller_session_key=_read_session_key(request),
+            target=_target(body),
+            folder_id=str(body.get("folder_id") or ""),
             caller_fenced=_carried_fence(request),
         )
     except sc.SessionControlError as exc:

@@ -139,14 +139,17 @@ def test_the_page_matches_the_session_control_group_and_the_channel_block(
     from kiro_crew.channel import CHANNEL_AGENT_BLOCKED_TOOLS
     from kiro_crew.mcp_dashboard import SESSION_CONTROL_TOOLS
 
-    assert len(SESSION_CONTROL_TOOLS) == 8
+    assert len(SESSION_CONTROL_TOOLS) == 9
+    numeral = {6: "six", 7: "seven", 8: "eight", 9: "nine", 10: "ten"}[len(SESSION_CONTROL_TOOLS)]
     for tool in SESSION_CONTROL_TOOLS:
         assert f"`{tool}`" in doc_text
         assert tool in CHANNEL_AGENT_BLOCKED_TOOLS, (
             f"{tool} left the channel containment list; the page tells a channel agent "
-            "it is blocked from all eight"
+            f"it is blocked from all {numeral}"
         )
-    assert "all eight\nsession tools" in doc_text or "all eight session tools" in doc_text
+    # The page's count is derived from the group, so adding a verb cannot leave
+    # the page understating what a channel agent is blocked from.
+    assert f"all {numeral}\nsession tools" in doc_text or f"all {numeral} session tools" in doc_text
 
 
 def test_every_tabulated_refusal_code_is_one_the_source_raises(doc_text: str) -> None:

@@ -780,8 +780,43 @@ def _authorize_target_refusal_codes() -> set[str]:
     One ``deny`` call re-raises a resolution failure with ``exc.code`` rather
     than a literal; it carries no new constraint, so a non-literal code is
     skipped instead of failing the parse.
+
+    The caller-side refusals live in the two helpers ``authorize_target`` shares
+    with ``revive_session`` (``_check_caller_identity``, ``_check_caller_slot`` and its
+    store-free half ``_check_caller_slot_fields``);
+    they are ``authorize_target``'s refusals still, so the parse walks them too.
+    The four live-target containment refusals live in ``_live_target_refusal``,
+    which RETURNS ``(reason, code)`` for its caller to raise through ``deny``, so
+    its returned tuples are read as codes the same way.
     """
-    tree = ast.parse(textwrap.dedent(inspect.getsource(sc.authorize_target)))
+    codes: set[str] = set()
+    for fn in (
+        sc.authorize_target,
+        sc._check_caller_identity,
+        sc._check_caller_slot,
+        sc._check_caller_slot_fields,
+    ):
+        tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+        codes |= _deny_codes(tree)
+    codes |= _returned_refusal_codes(
+        ast.parse(textwrap.dedent(inspect.getsource(sc._live_target_refusal)))
+    )
+    return codes
+
+
+def _returned_refusal_codes(tree: ast.AST) -> set[str]:
+    """Codes from ``return ("reason", "code")`` statements in a refusal helper."""
+    codes: set[str] = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Return) and isinstance(node.value, ast.Tuple)):
+            continue
+        elts = node.value.elts
+        if len(elts) == 2 and isinstance(elts[1], ast.Constant) and isinstance(elts[1].value, str):
+            codes.add(elts[1].value)
+    return codes
+
+
+def _deny_codes(tree: ast.AST) -> set[str]:
     codes: set[str] = set()
     for node in ast.walk(tree):
         if not (isinstance(node, ast.Call) and getattr(node.func, "id", "") == "deny"):

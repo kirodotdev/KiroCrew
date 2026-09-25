@@ -22,6 +22,7 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 | `session_fork` | `POST /api/session-control/fork` | Open a new session that CARRIES a copy of a source session's transcript — the caller's own by default — the way the dashboard's Fork button does; optionally titled, filed, and cut at a fork point |
 | `session_stop` | `POST /api/session-control/stop` | Stop another session's in-flight turn |
 | `session_close` | `POST /api/session-control/close` | Close (archive) another session, as the tab ✕ does — heavier than stop, and recoverable rather than a delete |
+| `session_revive` | `POST /api/session-control/revive` | Bring an archived session back into the live sidebar, as clicking it in the History tab does — the mirror of close, optionally filing it into a folder |
 | `session_send` | `POST /api/session-control/send` | Deliver a message that another session runs as its next turn, or cut it into the turn already running (`steer`) |
 | `session_read_message` | `GET /api/session-control/read` | Read another session's transcript tail + liveness |
 
@@ -426,8 +427,8 @@ ownership fence both read):
   store is that member's private V2 store — the store a DM slot would be bound
   to. A member agent (e.g. `kirocrew-conductor`) also runs in an ordinary chat
   slot bound to its V2 store, and its whole operating model (`session_create` /
-  `session_send` / `session_read_message` / `session_stop` / `session_close`)
-  runs from there, so refusing it in a chat slot would leave the member
+  `session_send` / `session_read_message` / `session_stop` / `session_close` /
+  `session_revive`) runs from there, so refusing it in a chat slot would leave the member
   chat-only in the surface it exists to drive. The identity here is the STORE,
   not the key: a store counts iff its config record carries a non-empty
   `owner_member` AND `memory_version == 2` AND that owner is still an active
@@ -1264,6 +1265,88 @@ status. This is the same "re-gate adjacent to the mutation, comparing identity n
 presence" discipline `create_session` uses for its slot allocation, and the same
 theme as the queued-drain re-check (#5911). The human ✕ path passes no check — the
 person owns the tab and closes it unconditionally.
+
+## Reviving is the mirror of closing, authorized from the metadata line
+
+`session_revive` is the tool-side equivalent of clicking an archived session in
+the History tab. It reuses the dashboard's own resume core
+(`chat_handlers.resume_slot_from_history`, the request-free half of
+`POST /api/chat/slots/{slot}/resume`), so a controlled revive and a human click
+share one materialisation, one set of member-pin and delete/recreate barriers and
+one set of refusal codes. The revived slot is idle — nothing runs until a
+`session_send` — and the reply carries its live key so every other verb can
+address it. A `folder_id` files it as part of the same call, after the revive
+has landed and only after the folder's existence was confirmed BEFORE anything
+was revived, so a refused filing leaves history untouched.
+
+**There is no live slot to authorize against, so the target-side checks read
+the persisted metadata line instead** — the same fields `authorize_target` reads
+off a live slot (`workspace`, `app`, `linked_session_key` / `channel_origin`,
+`memory_mode`, `created_by`), in the same order, raising the same codes. The
+caller-side checks are literally shared: `authorize_target` and `revive_session`
+both call `_check_caller_identity` (key-only refusals, before the target is
+resolved, so a refused caller learns nothing) and `_check_caller_slot` (the
+live-slot refusals), and the fence wording comes from one `_not_creator_reason`.
+The ownership fence therefore has the same reach on an archived session as on a
+live one: an ownership-fenced caller (crew member, scheduled run, agent-created
+session) may revive only a session whose `created_by` is itself, corroborated
+against the crew-log session-tree lineage through `_slot_tree_parent` (the record
+`create_session` writes from the in-process `_lineage_minted` witness) because the
+metadata line is agent-editable: an unreadable lineage (crew log off, unseeded,
+incomplete) or a different parent refuses `ownership_unverified`, fail-closed. The
+`created_by` the metadata carries is restored onto the revived slot as attribution
+only (`_lineage_minted` stays False) — reviving never transfers ownership to the
+reviver. For the per-caller slot cap the revived slot is charged to the reviver
+through an in-memory `_revived_by` field (the registry's `creator_slot_count`
+charges `_created_by` or `_revived_by`, so create and revive share one
+accounting), tested before the resume and re-tested, with the global cap, the
+mirror, the store-recorded channel link and the four live-target fields, in the
+resume core's pre-publish `containment` hook: the core hands the built slot to
+the hook after hydration and before publish, holding it retracted from the slot
+table and under construction while the hook awaits (a concurrent resume of the
+key meanwhile is answered `resume_in_progress`), with the row broadcast held back
+and the reopen write (clearing `closed`) deferred until the hook has passed, so a
+refusal discards the built slot with nothing durable to undo and a clear that
+cannot land refuses `reopen_failed` instead of publishing a tab that would not
+restore. The existence and `created_at` identity barrier that guards the
+hook-less resume is re-run after the hook's last await, again on the
+verification read after the deferred clear, and a final time synchronously after
+the last await, so a session deleted or delete-and-recreated inside the hook
+window is refused `resume_session_deleted` rather than published over the
+replacement (an unreadable answer on that last read refuses `resume_conflict`
+rather than falling through); the marker rollback compares `created_at` too, so it never archives
+a replacement. Because the deferred clear and its verification read are awaits
+after the hook's store-backed probes, the hook runs a second time after them as
+the last awaiting act, so a channel binding recorded in the store during those
+awaits is still refused. The store-free answers (slot fields, caps) are re-asserted once more in a
+synchronous `final_check` after the core's last await, immediately before the
+publish; a refusal there restores the marker while the construction mark still
+reserves the key, and the restore is confirmed by a re-read (one retry on a
+raise): a marker that cannot be confirmed back answers `reopen_rollback_failed`
+(503) in place of the refusal that triggered it, so the caller hears that the
+durable session may reopen at the next start rather than a refusal that implies
+it was left as found. A revive that finds the session already live (a live match
+before the history scan, one that went live during it, or a human click that won
+the race with the resume) answers through one builder that authorizes the live
+slot as any live target before naming it: a protected slot answers with that
+refusal and reveals neither its existence nor its key, an unprotected one answers
+`target_already_live` with its key. Under a hook the built slot's `_app`,
+`linked_session_key` and `channel_origin` are restored from the fresh metadata
+re-read (the resume core hydrates neither link field itself), so the hook's app
+and link checks read the line as it is, not a constant. The History tab's own
+resume passes neither hook and is unchanged.
+
+Resolution mirrors `_resolve_slot`'s doctrine for archived sessions: a target
+may be a slot key, the `dashboard:<slot>` session key, the `dashboard_<slot>`
+transcript stem, or an exact case-insensitive title, every form is resolved
+before anything is returned, and two different sessions matching across forms
+is `ambiguous_target`. A target that is LIVE is refused with `target_already_live`
+and the message names the live key, because the caller asked for an archived
+session and should learn that this one is not — the resume core would have
+deduplicated the slot anyway, but silently answering "done" would hide that the
+caller's model of the sidebar is stale. Member DM threads
+(`member-*`) are refused outright (`member_thread_target`): they are opened only
+through the roster route that re-checks the member binding.
 
 ## Configuration
 

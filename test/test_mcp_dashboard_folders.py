@@ -1831,6 +1831,7 @@ class TestAdvertisedSet:
             "session_fork",
             "session_stop",
             "session_close",
+            "session_revive",
             "session_send",
             "session_read_message",
             "session_adopt",

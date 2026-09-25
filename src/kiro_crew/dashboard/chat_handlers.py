@@ -164,6 +164,7 @@ from kiro_crew.dashboard.state import (
     durable_row_count,
     is_stop_event_row,
     is_turn_interrupted,
+    note_crew_log_class,
     parse_cls_meta,
     request_slot_origin,
     stage_boundary_for,
@@ -10800,16 +10801,17 @@ def _resume_session_identity(state: DashboardState, history_key: str) -> str:
     return _history_key_for(history_key)
 
 
-async def _live_slot_resume_response(
-    state, request: web.Request, history_key: str, name: str
-) -> web.Response | None:
+async def _live_slot_for_resume(
+    state, request_app: str, history_key: str, name: str
+) -> "ResumeOutcome | None":
     """Answer a resume that a live slot already satisfies, else return None.
 
-    Returns 404 when the caller's app does not own the slot, otherwise the
-    dedup early-return. Called on BOTH sides of the threaded transcript read:
-    that await lets a concurrent resume publish the slot in between, and
-    ``get_or_create_slot`` would then hand it back having never applied this
-    ownership gate for the second caller's app.
+    Returns the app-isolation 404 refusal when the caller's app does not own
+    the slot, otherwise the dedup outcome carrying the EXISTING slot. Called on
+    BOTH sides of the threaded transcript read: that await lets a concurrent
+    resume publish the slot in between, and ``get_or_create_slot`` would then
+    hand it back having never applied this ownership gate for the second
+    caller's app.
     """
     canonical = _resume_session_identity(state, history_key)
     existing = state._slots.get(name)
@@ -10819,8 +10821,6 @@ async def _live_slot_resume_response(
                 existing = slot
                 break
     if existing:
-        # App ownership check (App Kit §5.2)
-        request_app = request.get("app", "")
         if request_app:
             if not existing._app:
                 sel().log_api_access(
@@ -10831,7 +10831,7 @@ async def _live_slot_resume_response(
                     resources=f"slot={existing.key}",
                     error="app cannot access unscoped slots",
                 )
-                return web.json_response({"error": "not found"}, status=404)
+                return ResumeOutcome(refusal=ResumeRefusal("not found", "slot_not_found", 404))
             elif request_app != existing._app:
                 sel().log_api_access(
                     caller=request_app,
@@ -10841,57 +10841,33 @@ async def _live_slot_resume_response(
                     resources=f"slot={existing.key}",
                     error="app does not own this slot",
                 )
-                return web.json_response({"error": "not found"}, status=404)
-        # Reconcile: if disk grew beyond what the in-memory window covers,
-        # append the missing tail so a page refresh self-heals.
-        await _reconcile_slot_window(state, existing)
-        # Reduce the wire-only rows before bounding, for the same reason the
-        # detail handler does: a segment still streaming is hundreds of `chunk`
-        # rows that render as one message, so a raw 200-row bound over the live
-        # window can be filled entirely by one unfinished reply -- and it then
-        # returns only that window's slice of the reply, dropping the text
-        # ahead of it. Reducing first makes the bound, `total` and the cursor
-        # below all count displayed messages.
-        #
-        # It also puts the cursor's two terms in the same unit: persisted rows
-        # carry no wire-only role, so `_disk_older_count` is already a message
-        # count, while a raw window length is not.
-        #
-        # O(window) on the event loop, and the window is capped -- the
-        # `_prepare_messages` redaction pass on the next line is the larger
-        # cost at this call site either way.
-        window = _collapse_wire_rows(existing.messages)
-        total = len(window)
-        recent = window[-200:] if total > 200 else window
-        prepared = _prepare_messages(
-            recent, existing.running, live_child=_live_child_instance(state, existing)
-        )
-        # Raw index this window starts at: the frozen on-disk prefix plus the
-        # in-memory rows it skipped. has_more is derived from the same number so
-        # the flag cannot contradict the cursor -- counting only the in-memory
-        # window said "no more" for a slot with a prefix, and the client drops a
-        # cursor it was told not to use.
-        next_before = (getattr(existing, "_disk_older_count", 0) or 0) + (total - len(recent))
-        return web.json_response(
-            {
-                "ok": True,
-                "key": existing.key,
-                "messages": prepared,
-                "queue": [queue_entry_view(q) for q in existing._queue],
-                "total": total,
-                "has_more": next_before > 0,
-                "next_before": next_before,
-                "memory_mode": existing.memory_mode,
-                # Return the slot's mode (and its `surface` alias) so the
-                # frontend can render the recovered slot in the correct mode
-                # (e.g. autopilot/"orchestrator") immediately, without waiting
-                # for the racy SSE slots push to arrive (resumed autopilot
-                # sessions came back as plain chat until SSE reconciled).
-                "mode": existing.mode,
-                "surface": existing.mode,
-            }
-        )
+                return ResumeOutcome(refusal=ResumeRefusal("not found", "slot_not_found", 404))
+        return ResumeOutcome(slot=existing, already_live=True)
     return None
+
+
+async def _live_slot_resume_payload(state, existing) -> dict:
+    """The resume endpoint's dedup body: the already-open slot's live window."""
+    await _reconcile_slot_window(state, existing)
+    window = _collapse_wire_rows(existing.messages)
+    total = len(window)
+    recent = window[-200:] if total > 200 else window
+    prepared = _prepare_messages(
+        recent, existing.running, live_child=_live_child_instance(state, existing)
+    )
+    next_before = (getattr(existing, "_disk_older_count", 0) or 0) + (total - len(recent))
+    return {
+        "ok": True,
+        "key": existing.key,
+        "messages": prepared,
+        "queue": [queue_entry_view(q) for q in existing._queue],
+        "total": total,
+        "has_more": next_before > 0,
+        "next_before": next_before,
+        "memory_mode": existing.memory_mode,
+        "mode": existing.mode,
+        "surface": existing.mode,
+    }
 
 
 # Bound for normalising the non-string ``content`` a legacy or hand-edited
@@ -11423,9 +11399,154 @@ def _hydrate_slot_from_history(
     slot._disk_window_len = len(slot.messages)
 
 
+class ResumeRefusal(NamedTuple):
+    """One refusal of :func:`resume_slot_from_history`, shaped for the wire.
+
+    Every refusal carries a machine-readable ``code`` (the error-code contract),
+    including the missing conversation log (``no_conversation_log``) and the
+    app-isolation 404 on a live slot (``slot_not_found``), so the wire wrapper
+    can emit one transparent coded body for every status.
+    """
+
+    error: str
+    code: str
+    status: int
+
+
+class ResumeOutcome(NamedTuple):
+    """What :func:`resume_slot_from_history` decided.
+
+    Exactly one of ``refusal`` / ``slot`` is set. ``already_live`` marks the
+    dedup arm: the session was already open, so ``slot`` is the EXISTING slot
+    and nothing was hydrated; ``total`` is the on-disk transcript length on the
+    hydrate arm (what the wrapper's ``next_before`` is derived from).
+    """
+
+    refusal: ResumeRefusal | None = None
+    slot: "_ChatSlot | None" = None
+    already_live: bool = False
+    total: int = 0
+
+
 async def api_chat_slot_resume(request: web.Request) -> web.Response:
-    """POST /api/chat/slots/{slot}/resume — load a history session into a slot."""
+    """POST /api/chat/slots/{slot}/resume — load a history session into a slot.
+
+    Thin wire wrapper over :func:`resume_slot_from_history`: it reads the
+    request, hands the core the request-derived facts, and shapes the outcome
+    into the responses this endpoint has always returned.
+    """
     state: DashboardState = request.app["state"]
+    name = _normalize_slot_key(request.match_info["slot"])
+    request_app = request.get("app", "")
+    if not state.conversation_log:
+        return web.json_response(
+            {"error": "no conversation log", "code": "no_conversation_log"}, status=400
+        )
+    if name.casefold().startswith(members_mod.DM_SLOT_KEY_PREFIX) and request_app:
+        # Refused by the core too; checked here first so the body is not read
+        # for a request that cannot proceed (the entry-gate posture the core
+        # documents).
+        outcome = await resume_slot_from_history(
+            state, name=name, request_app=request_app, caller_label=request.remote or ""
+        )
+        assert outcome.refusal is not None
+        return _resume_refusal_response(outcome.refusal)
+    body, body_err = await read_bounded_json(request, allow_absent=True)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
+    outcome = await resume_slot_from_history(
+        state,
+        name=name,
+        history_key=body.get("key", name),
+        request_app=request_app,
+        caller_label=request.remote or "",
+        request_title=body.get("title", ""),
+    )
+    if outcome.refusal is not None:
+        return _resume_refusal_response(outcome.refusal)
+    assert outcome.slot is not None
+    if outcome.already_live:
+        return web.json_response(await _live_slot_resume_payload(state, outcome.slot))
+    slot, total = outcome.slot, outcome.total
+    recent = slot.messages[-200:] if len(slot.messages) > 200 else slot.messages
+    return web.json_response(
+        {
+            "ok": True,
+            "key": slot.key,
+            # `total` is the full on-disk length here, so this already is the
+            # raw index the next older page starts from.
+            "next_before": total - len(recent),
+            "messages": _prepare_messages(
+                recent, slot.running, live_child=_live_child_instance(state, slot)
+            ),
+            "queue": [queue_entry_view(q) for q in slot._queue],
+            "total": total,
+            "has_more": total > len(recent),
+            "memory_mode": slot.memory_mode,
+            "mode": slot.mode,
+            "surface": slot.mode,
+        }
+    )
+
+
+def _resume_refusal_response(refusal: ResumeRefusal) -> web.Response:
+    return web.json_response({"error": refusal.error, "code": refusal.code}, status=refusal.status)
+
+
+async def resume_slot_from_history(
+    state: "DashboardState",
+    *,
+    name: str,
+    history_key: str | None = None,
+    request_app: str = "",
+    caller_label: str = "",
+    request_title: str = "",
+    containment: "Callable[[_ChatSlot], Awaitable[ResumeRefusal | None]] | None" = None,
+    final_check: "Callable[[_ChatSlot], ResumeRefusal | None] | None" = None,
+) -> ResumeOutcome:
+    """Load an archived (history) session back into a live slot.
+
+    The request-free core behind ``POST /api/chat/slots/{slot}/resume``; the
+    session-control ``revive`` verb reaches the same path so a controlled revive
+    and a human click in the History tab share one materialisation, one set of
+    guards and one set of refusal codes. ``name`` is the slot key to publish
+    under (any spelling ``_normalize_slot_key`` folds), ``history_key`` the
+    transcript to load (``None`` means ``name``), ``request_app`` the app token's
+    scope when the caller is an app (empty for the dashboard user and for
+    session control), and ``caller_label`` what SEL records as the caller.
+
+    ``containment`` is a caller's LAST gate before publish. It runs once the slot
+    is hydrated -- so it reads the fields the slot actually carries, not a
+    metadata snapshot from before the transcript read -- and before the slot is
+    published, with the slot RETRACTED from ``state._slots`` and its construction
+    mark held for the duration (the import path's posture for an awaited tail):
+    nothing resolves it, ``serialize_slots`` never shows it, and a named create on
+    its key is refused by the construction guard. A refusal it returns discards
+    the built slot the way a failed construction is discarded and comes back as
+    ``ResumeOutcome.refusal``. With a hook the reopen write (clearing ``closed``)
+    is deferred until the hook has passed, so a hook refusal has nothing durable
+    to undo, and a clear that cannot land refuses (``reopen_failed``) rather than
+    publishing a tab that would not restore. The hook is a read-only predicate and
+    runs TWICE: once before the deferred clear, and once after it as the last
+    awaiting act, because the clear and its verification read are awaits during
+    which a store-recorded channel binding could land, and ``final_check`` may not
+    read the store. The existence and ``created_at`` identity barrier is re-run
+    after each of those awaits, the last time synchronously, so a delete or a
+    delete-and-recreate inside the window is refused rather than published over
+    the replacement, and the marker rollback only ever targets the transcript
+    this resume read. The folder un-hide keeps the
+    hook-less path's place, before construction: a refused resume can leave a
+    folder visible, as a click refused at the member barrier already can.
+    ``final_check`` is the SYNCHRONOUS last word, run after the last await and
+    immediately before the publish, for the hook's store-free answers (slot
+    fields, caps); a refusal there restores the marker the deferred clear just
+    dropped. Nothing is published on any refusal. A human click passes neither.
+
+    Refusals come back as :class:`ResumeOutcome.refusal` rather than being
+    raised, because the wire wrapper reproduces each one's historical body and
+    status and a session-control caller maps them onto its own error class.
+    """
     # Fold the requested name with the function that keys the slot table, so
     # every spelling of one slot resolves to that slot: a caller may hold a
     # filename stem, a session key (a notification deep link carries the
@@ -11433,29 +11554,28 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     # fold leaves the lookup below missing an open tab and falls through to the
     # create path, which re-reads the transcript into the slot it should have
     # returned.
-    name = _normalize_slot_key(request.match_info["slot"])
+    name = _normalize_slot_key(name)
+    if history_key is None:
+        history_key = name
     if not state.conversation_log:
-        return web.json_response({"error": "no conversation log"}, status=400)
+        return ResumeOutcome(
+            refusal=ResumeRefusal("no conversation log", "no_conversation_log", 400)
+        )
     # App tokens get the uniform isolation 404 for member-* keys AT ENTRY —
     # before the live-slot probe, the folder unhide, the closed-flag clear, or
     # any transcript read. An app can never own a member slot; running any of
     # those side effects first would let an unauthorized caller mutate the
     # member thread's history state even while the resume itself is refused.
-    if name.casefold().startswith(members_mod.DM_SLOT_KEY_PREFIX) and request.get("app", ""):
+    if name.casefold().startswith(members_mod.DM_SLOT_KEY_PREFIX) and request_app:
         sel().log_api_access(
-            caller=request.get("app", ""),
+            caller=request_app,
             operation="chat_resume",
             outcome="denied",
             source="app_isolation",
             resources=f"slot={name}",
             error="app cannot access member slots",
         )
-        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
-    body, body_err = await read_bounded_json(request, allow_absent=True)
-    if body_err is not None:
-        return body_err
-    assert body is not None  # read_bounded_json returns (dict, None) on success
-    history_key = body.get("key", name)
+        return ResumeOutcome(refusal=ResumeRefusal("not found", "slot_not_found", 404))
 
     # If slot already exists (active session), just return it — no duplicate.
     # Check both by slot name AND by canonical session key to prevent two
@@ -11467,9 +11587,9 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     # the same way, via the session map. Two rules in play and a channel
     # transcript matches nothing here: it gets a second tab, so one conversation
     # shows as two sidebar rows backed by two kiro-cli processes.
-    resume_resp = await _live_slot_resume_response(state, request, history_key, name)
-    if resume_resp is not None:
-        return resume_resp
+    resume_outcome = await _live_slot_for_resume(state, request_app, history_key, name)
+    if resume_outcome is not None:
+        return resume_outcome
 
     # Boundary for the compare-and-clear below, captured BEFORE the metadata read
     # it is compared against. Everything from here to the ``clear_closed`` call is
@@ -11505,38 +11625,36 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         _early_binding = await asyncio.to_thread(members_mod.read_dm_binding_for_slot, name)
         if _early_binding is None or history_key != _history_key_for(name):
             sel().log_api_access(
-                caller=request.remote or "",
+                caller=caller_label,
                 operation="chat_resume",
                 outcome="denied",
                 source="member_pin",
                 resources=f"slot={name} key={history_key}",
                 error="member binding missing or foreign history key",
             )
-            return web.json_response(
-                {
-                    "error": "member thread agent is pinned",
-                    "code": "member_thread_agent_pinned",
-                },
-                status=409,
+            return ResumeOutcome(
+                refusal=ResumeRefusal(
+                    "member thread agent is pinned", "member_thread_agent_pinned", 409
+                )
             )
     elif str(meta.get("mode", "")) == members_mod.DM_SLOT_MODE:
         # Same early refusal for the mirror case: a member transcript may not
         # ride onto an ordinary key, and that rejection must also precede the
         # mutations. The late twin re-checks against the post-await snapshot.
         sel().log_api_access(
-            caller=request.remote or "",
+            caller=caller_label,
             operation="chat_resume",
             outcome="denied",
             source="member_pin",
             resources=f"slot={name} key={history_key}",
             error="member transcript on an ordinary key",
         )
-        return web.json_response(
-            {
-                "error": "a member thread can only be resumed on its own member slot",
-                "code": "member_mode_key_mismatch",
-            },
-            status=409,
+        return ResumeOutcome(
+            refusal=ResumeRefusal(
+                "a member thread can only be resumed on its own member slot",
+                "member_mode_key_mismatch",
+                409,
+            )
         )
 
     # Read the transcript BEFORE publishing the slot: this await would otherwise
@@ -11560,7 +11678,24 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     if meta.get("folder_id"):
         folder_checked_id = meta["folder_id"]
         folder_unhidden = await _unhide_folder(state, folder_checked_id)
-    if meta.get("closed"):
+    cleared_closed: bool = False
+    cleared_closed_at: Any = meta.get("closed_at")
+    # With a containment hook the clear is DEFERRED until the hook has passed:
+    # a refusal then has no durable change to undo, and a clear that cannot
+    # land refuses the resume instead of publishing a tab that would not restore.
+    defer_clear = containment is not None and bool(meta.get("closed"))
+    if name in getattr(state, "_slots_under_construction", ()):
+        # Another resume of this key is between hydration and publish. The same
+        # coded conflict is answered again at construction (the window can open
+        # after this read); asking here first means the common case refuses
+        # BEFORE the eager clear below has dropped the ``closed`` marker, so a
+        # click that lost the race leaves the line as it found it.
+        return ResumeOutcome(
+            refusal=ResumeRefusal(
+                "this session is being resumed elsewhere; try again", "resume_in_progress", 409
+            )
+        )
+    if meta.get("closed") and not defer_clear:
         # Clear the closed flag so the session restores on the next gateway restart.
         # Offloaded because clear_closed takes the per-session cross-process lock,
         # which fails fast on the loop under contention. Best-effort: resume anyway.
@@ -11583,6 +11718,7 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         except Exception:
             logger.warning("Failed to clear closed flag for %s", history_key, exc_info=True)
         else:
+            cleared_closed = True
             # Absorb OUR OWN mutation into the identity baseline: the member
             # guard further down compares a later snapshot against ``meta``,
             # and clear_closed just dropped exactly ``closed``/``closed_at``
@@ -11604,9 +11740,9 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     )
     # Re-check after the await: a concurrent resume can publish the slot while we
     # are suspended, and the publish below would skip the ownership gate above.
-    resume_resp = await _live_slot_resume_response(state, request, history_key, name)
-    if resume_resp is not None:
-        return resume_resp
+    resume_outcome = await _live_slot_for_resume(state, request_app, history_key, name)
+    if resume_outcome is not None:
+        return resume_outcome
 
     # Re-check DELETION in the same window and for the same reason. The transcript
     # loaded above can be permanently deleted while we are suspended, and
@@ -11652,12 +11788,10 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
             "refusing to publish a slot that would resurrect it",
             history_key,
         )
-        return web.json_response(
-            {
-                "error": "the session was deleted while it was being resumed",
-                "code": "resume_session_deleted",
-            },
-            status=409,
+        return ResumeOutcome(
+            refusal=ResumeRefusal(
+                "the session was deleted while it was being resumed", "resume_session_deleted", 409
+            )
         )
     # IDENTITY, not merely existence. The arm above fires on metadata being
     # ABSENT, which the delete-then-RECREATE interleaving does not produce: the
@@ -11703,12 +11837,10 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         # session it asked for was deleted. That it was then recreated does not
         # change what happened to the conversation being resumed, and one code
         # keeps the client contract single-valued.
-        return web.json_response(
-            {
-                "error": "the session was deleted while it was being resumed",
-                "code": "resume_session_deleted",
-            },
-            status=409,
+        return ResumeOutcome(
+            refusal=ResumeRefusal(
+                "the session was deleted while it was being resumed", "resume_session_deleted", 409
+            )
         )
 
     # ── Member-thread pin guard ─────────────────────────────────────────────
@@ -11739,24 +11871,22 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         # go unseen — this request would then get_or_create the EXISTING
         # slot and hydrate the disk transcript onto it a second time,
         # persisting duplicated history on the next flush.
-        resume_resp = await _live_slot_resume_response(state, request, history_key, name)
-        if resume_resp is not None:
-            return resume_resp
+        resume_outcome = await _live_slot_for_resume(state, request_app, history_key, name)
+        if resume_outcome is not None:
+            return resume_outcome
         if _member_binding is None or history_key != _history_key_for(name):
             sel().log_api_access(
-                caller=request.remote or "",
+                caller=caller_label,
                 operation="chat_resume",
                 outcome="denied",
                 source="member_pin",
                 resources=f"slot={name} key={history_key}",
                 error="member binding missing or foreign history key (late barrier)",
             )
-            return web.json_response(
-                {
-                    "error": "member thread agent is pinned",
-                    "code": "member_thread_agent_pinned",
-                },
-                status=409,
+            return ResumeOutcome(
+                refusal=ResumeRefusal(
+                    "member thread agent is pinned", "member_thread_agent_pinned", 409
+                )
             )
     post_read_meta = state.conversation_log.get_metadata(history_key)
     if _member_binding is not None and post_read_meta != meta:
@@ -11768,36 +11898,34 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         # them. Equal snapshots bracket the whole window — the pairing is
         # consistent; any drift refuses, and re-opening reads fresh.
         sel().log_api_access(
-            caller=request.remote or "",
+            caller=caller_label,
             operation="chat_resume",
             outcome="denied",
             source="member_pin",
             resources=f"slot={name} key={history_key}",
             error="metadata drifted across the binding read",
         )
-        return web.json_response(
-            {
-                "error": "this thread changed while resuming; open it again",
-                "code": "member_resume_conflict",
-            },
-            status=409,
+        return ResumeOutcome(
+            refusal=ResumeRefusal(
+                "this thread changed while resuming; open it again", "member_resume_conflict", 409
+            )
         )
     meta = post_read_meta
     if _member_binding is None and str(meta.get("mode", "")) == members_mod.DM_SLOT_MODE:
         sel().log_api_access(
-            caller=request.remote or "",
+            caller=caller_label,
             operation="chat_resume",
             outcome="denied",
             source="member_pin",
             resources=f"slot={name} key={history_key}",
             error="member transcript on an ordinary key (late barrier)",
         )
-        return web.json_response(
-            {
-                "error": "a member thread can only be resumed on its own member slot",
-                "code": "member_mode_key_mismatch",
-            },
-            status=409,
+        return ResumeOutcome(
+            refusal=ResumeRefusal(
+                "a member thread can only be resumed on its own member slot",
+                "member_mode_key_mismatch",
+                409,
+            )
         )
 
     # Redact only the newest 500 rows -- the live window the next save
@@ -11806,50 +11934,337 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     # put transcript-sized GIL regex on the loop for bytes that never change.
     # Bounded by the window, so a long transcript costs the same as a short one.
     all_messages = _redact_history_rows(all_messages, window_limit=500)
+
+    async def _restore_closed_marker() -> bool:
+        # Put the ``closed`` marker back and CONFIRM it is there. The
+        # compare-and-set answers False for two states that are both fine
+        # (somebody re-closed the session, or its file is gone), so the
+        # verdict is the re-read, not the write's return value: one retry
+        # on a raise, then the marker must be readable on disk.
+        #
+        # The marker belongs to the transcript this resume READ: a delete and
+        # same-key recreate landing inside the clear's own worker call leaves
+        # a replacement whose line carries a different ``created_at``, and
+        # archiving that would put a marker the user never set onto a live
+        # conversation. Both the write's guard and the verdict compare the
+        # stamp; a stamp that moved means there is nothing of ours to restore.
+        log = state.conversation_log
+        if log is None:
+            return True
+
+        def _same_transcript(current: dict) -> bool:
+            stamp = current.get("created_at")
+            return not pre_identity or not stamp or stamp == pre_identity
+
+        fields = {"closed": True, "closed_at": cleared_closed_at}
+        for attempt in range(2):
+            try:
+                await asyncio.to_thread(
+                    log.update_metadata_if,
+                    history_key,
+                    fields,
+                    lambda current: "closed" not in current and _same_transcript(current),
+                    require_existing=True,
+                )
+                break
+            except Exception:
+                if attempt == 0:
+                    logger.warning(
+                        "restoring the closed marker of %s failed once; retrying",
+                        history_key,
+                        exc_info=True,
+                    )
+        try:
+            current, readable = await asyncio.to_thread(log.get_metadata_status, history_key)
+        except Exception:
+            return False
+        if not readable:
+            return False
+        # An absent line means the session was deleted meanwhile, and a moved
+        # stamp means it was replaced: in both there is nothing of ours to
+        # restore, and nothing of ours that would reopen at the next start.
+        return not current or not _same_transcript(current) or "closed" in current
+
+    if name in getattr(state, "_slots_under_construction", ()):
+        # Another resume of this key is between hydration and publish with the
+        # slot retracted (the containment hook's window; the import path's tail
+        # has the same shape). ``get_or_create_slot`` would refuse the mint with
+        # a bare ``ValueError``; answer with a coded conflict instead, since a
+        # retry a moment later finds the key either published or free.
+        #
+        # This arm sits AFTER the hook-less path's eager clear: a click that won
+        # the guard at the top and lost here has already dropped the ``closed``
+        # marker, and if the resume it lost to is then refused (a hooked revive
+        # discards its build and restores only what IT cleared) the archived
+        # session would come back as a sidebar row at the next start. Put the
+        # marker back, compare-and-set, before answering.
+        if cleared_closed and not await _restore_closed_marker():
+            logger.error(
+                "resume of %s lost to a concurrent resume after its closed marker was "
+                "cleared, and the marker could not be confirmed restored; the session "
+                "may restore as open",
+                history_key,
+            )
+            # The same answer ``_discard`` gives for this failure: the caller
+            # must hear that the durable session is not as it found it, not an
+            # ordinary conflict that a retry would clear.
+            return ResumeOutcome(
+                refusal=ResumeRefusal(
+                    "the session was refused but its closed marker could not be restored; "
+                    "close it again from the History tab",
+                    "reopen_rollback_failed",
+                    503,
+                )
+            )
+        return ResumeOutcome(
+            refusal=ResumeRefusal(
+                "this session is being resumed elsewhere; try again", "resume_in_progress", 409
+            )
+        )
     slot = _materialise_slot_from_history(
         state,
         name=name,
         history_key=history_key,
         meta=meta,
         all_messages=all_messages,
-        app=request.get("app", ""),
-        request_title=body.get("title", ""),
+        app=request_app,
+        request_title=request_title,
         member_binding=_member_binding,
         folder_unhidden=folder_unhidden,
         folder_checked_id=folder_checked_id,
+        # Under a hook the rows must not reach any client before the hook has
+        # passed: a refused build is discarded, and frames already pushed for it
+        # would describe a session that never appears.
+        broadcast_rows=containment is None,
     )
     if _member_binding is None:
         # Restore the protected choice read before construction, not the
         # editable transcript's provisional agent name.
         slot.agent = restored_agent
+    if containment is not None and not getattr(slot, "_app", "") and post_read_meta.get("app"):
+        # The hook reads the slot's own fields; ``_app`` comes from the request
+        # (none here), so the line's app scope is restored onto the built slot
+        # the way the restart path restores it, and the hook's app check is a
+        # real read rather than a constant. From the fresh re-read, as below.
+        slot._app = str(post_read_meta["app"])
+    if containment is not None:
+        # Same for the channel link: the resume core does not hydrate
+        # ``linked_session_key`` (the restart path and the History surfacing do),
+        # so the hook's link check would read an empty field whatever the line
+        # says. Restored from the FRESH re-read (``post_read_meta``), not the
+        # pre-transcript snapshot, so a link written to the line inside the read
+        # window is what the hook sees; a channel-born key marks the origin the
+        # way the surfacing path does.
+        fresh_link = str(post_read_meta.get("linked_session_key") or "")
+        if fresh_link and not getattr(slot, "linked_session_key", ""):
+            slot.linked_session_key = fresh_link
+            # Beside the assignment, as every link-setting site records it
+            # (``test_crew_log_class_recorder``). The built slot has no open
+            # log yet, so this is the in-memory restriction mark; a hook that
+            # refuses the linked build discards the slot and the mark with it.
+            note_crew_log_class(state, slot)
+        if fresh_link or post_read_meta.get("channel_origin"):
+            slot.channel_origin = True
     total = len(all_messages)
-    recent = slot.messages[-200:] if len(slot.messages) > 200 else slot.messages
+    if containment is not None:
+        # Retract while the hook awaits, keep the construction mark: a lookup
+        # finds nothing, the payload shows nothing, and a create on this key is
+        # refused by the construction guard, so no acquirer can reach a slot the
+        # hook may still refuse. The refusal discard mirrors the construction
+        # rollback above (mark released, key freed, restricted marker dropped) and
+        # puts back the ``closed`` marker this call cleared, so a refused resume
+        # leaves the durable session exactly as it found it.
+        state._slots.pop(slot.key, None)
+
+        async def _discard() -> ResumeRefusal | None:
+            # Durable rollback FIRST, while the construction mark still reserves
+            # the key: released earlier, a concurrent resume of the same session
+            # could publish in the gap and then have its live slot marked closed
+            # by the restore below. The mark is the reservation; it goes last.
+            # Returns the rollback failure when the marker could NOT be confirmed
+            # restored; that answer outranks the refusal that triggered the
+            # discard, because the durable session is now in a state the caller
+            # must hear about (it would reopen at the next start).
+            rollback: ResumeRefusal | None = None
+            if cleared_closed and not await _restore_closed_marker():
+                logger.error(
+                    "resume of %s refused after its closed marker was cleared and the "
+                    "marker could not be confirmed restored; the session may restore as open",
+                    history_key,
+                )
+                rollback = ResumeRefusal(
+                    "the session was refused but its closed marker could not be restored; "
+                    "close it again from the History tab",
+                    "reopen_rollback_failed",
+                    503,
+                )
+            state._restricted_keys.discard(f"dashboard:{slot.key}")
+            state.end_slot_construction(slot.key)
+            return rollback
+
+        def _identity_refusal(post: dict, readable: bool) -> ResumeRefusal | None:
+            # The existence and ``created_at`` identity barrier above ran BEFORE
+            # the hook's awaits. A delete, or a delete-and-recreate, landing
+            # inside the hook window would otherwise publish a slot holding the
+            # old transcript under the new file's key; every later save then
+            # takes the delete-won arm and drops its rows. Same terms, same code
+            # as the pre-hook barrier, re-read after the last await.
+            #
+            # UNREADABLE refuses here, unlike the pre-hook barrier, which lets it
+            # through to protect legitimate resumes of transcripts that predate
+            # the stamp. That leniency is affordable before the build because a
+            # bad publish there is still caught by these re-reads; on the LAST
+            # read there is nothing after it, and the read that cannot be made
+            # is exactly the delete-and-recreate's own signature (the file is
+            # being rewritten). A hooked caller retries; the marker rollback is
+            # identity-guarded, so a replacement is never archived by it.
+            if not readable:
+                return ResumeRefusal(
+                    "this session changed while resuming; open it again",
+                    "resume_conflict",
+                    409,
+                )
+            if not post and session_existed:
+                return ResumeRefusal(
+                    "the session was deleted while it was being resumed",
+                    "resume_session_deleted",
+                    409,
+                )
+            post_created = post.get("created_at")
+            if pre_identity and post_created and pre_identity != post_created:
+                return ResumeRefusal(
+                    "the session was deleted while it was being resumed",
+                    "resume_session_deleted",
+                    409,
+                )
+            return None
+
+        # ONE arm for every await between the retraction and the publish. A
+        # cancellation (the task torn down mid-resume) is a ``BaseException``,
+        # and an ``except Exception`` on any of these awaits would let it skip
+        # ``_discard``: the slot is already popped from the table, so the
+        # construction mark would stay reserved for the process lifetime
+        # (counted by ``live_slot_count``, refusing every later mint on the key,
+        # with no scavenge) and a cleared ``closed`` marker would stay cleared.
+        # Same shape as the construction rollback above. The discard is
+        # shielded so a second cancellation cannot cut the rollback short.
+        try:
+            refusal = await containment(slot)
+            if refusal is not None:
+                return ResumeOutcome(refusal=(await _discard()) or refusal)
+            holder = state._slots.get(slot.key)
+            if holder is not None and holder is not slot:
+                # Cannot happen while the construction mark holds (the create guard
+                # refuses the key); kept as the fail-closed answer rather than
+                # clobbering whatever did take it.
+                return ResumeOutcome(
+                    refusal=(await _discard())
+                    or ResumeRefusal(
+                        "this session changed while resuming; open it again", "resume_conflict", 409
+                    )
+                )
+            log = state.conversation_log
+            try:
+                _post_hook, _post_readable = await asyncio.to_thread(
+                    log.get_metadata_status, history_key
+                )
+            except Exception:
+                _post_hook, _post_readable = {}, False
+            refusal = _identity_refusal(_post_hook, _post_readable)
+            if refusal is not None:
+                return ResumeOutcome(refusal=(await _discard()) or refusal)
+            if defer_clear:
+                # The reopen write, after the hook and before the publish. A clear
+                # that cannot land refuses: publishing a tab whose line still says
+                # ``closed`` would give the person a session that vanishes at the
+                # next start. Compare-and-clear against the resume's own boundary,
+                # as on the hook-less path; a marker still present afterwards means
+                # somebody re-closed the session inside the window, which refuses too.
+                try:
+                    # Recorded BEFORE the write is awaited: a cancellation can be
+                    # delivered at this very await after the worker has already
+                    # written, and a flag set afterwards would then never be set,
+                    # leaving the session durably reopened. Likewise a
+                    # verification read that comes back unreadable (a
+                    # just-rewritten file is transiently unopenable on Windows)
+                    # must refuse WITH the restore. Restoring a marker the clear
+                    # never removed is a no-op (the restore's guard requires the
+                    # marker absent), so an early flag costs nothing.
+                    cleared_closed = True
+                    await asyncio.to_thread(
+                        log.clear_closed, history_key, only_if_closed_before=resume_started_at
+                    )
+                    _after, _readable = await asyncio.to_thread(
+                        log.get_metadata_status, history_key
+                    )
+                except Exception:
+                    logger.warning("Failed to clear closed flag for %s", history_key, exc_info=True)
+                    return ResumeOutcome(
+                        refusal=(await _discard())
+                        or ResumeRefusal(
+                            "the session could not be reopened; try again", "reopen_failed", 503
+                        )
+                    )
+                # The clear was itself an await: the identity barrier runs once more
+                # on the verification read, before the marker check.
+                refusal = _identity_refusal(_after, _readable)
+                if refusal is not None:
+                    return ResumeOutcome(refusal=(await _discard()) or refusal)
+                if not _readable or "closed" in _after:
+                    return ResumeOutcome(
+                        refusal=(await _discard())
+                        or ResumeRefusal(
+                            "this session changed while resuming; open it again",
+                            "resume_conflict",
+                            409,
+                        )
+                    )
+            # The identity re-read and the deferred reopen write above were awaits
+            # taken AFTER the hook answered, and the hook is where the store-backed
+            # boundaries (channel link, Slack binding, outbound mirror) are read --
+            # ``final_check`` below may not touch the store. A binding recorded in the
+            # store during those awaits would otherwise publish. So the hook runs
+            # once more here, as the LAST awaiting act: after it only the synchronous
+            # ``final_check`` and the publish remain. The hook is a read-only
+            # predicate, so the second pass has no side effect of its own.
+            refusal = await containment(slot)
+            if refusal is not None:
+                return ResumeOutcome(refusal=(await _discard()) or refusal)
+            # The second hook pass was itself an await, so the transcript identity is
+            # read one final time SYNCHRONOUSLY here, where nothing can run between
+            # the read and the publish. A plain file read, not a session-store getter
+            # (those share a lock with an off-loop writer and stay in the hook);
+            # ``get_metadata_status`` sleeps between retries only when off the loop,
+            # so on the loop it answers at once; an unreadable answer refuses
+            # (``resume_conflict``) rather than publishing on a read that could not
+            # be made, and the caller retries.
+            try:
+                _last, _last_readable = log.get_metadata_status(history_key)
+            except Exception:
+                _last, _last_readable = {}, False
+            refusal = _identity_refusal(_last, _last_readable)
+            if refusal is not None:
+                return ResumeOutcome(refusal=(await _discard()) or refusal)
+            if final_check is not None:
+                # The last word, SYNCHRONOUS, after the last await above: the hook's
+                # answers that need no store read are re-asserted on the built slot
+                # with nothing able to run between this and the publish.
+                refusal = final_check(slot)
+                if refusal is not None:
+                    return ResumeOutcome(refusal=(await _discard()) or refusal)
+            state._slots[slot.key] = slot
+        except BaseException:
+            await asyncio.shield(_discard())
+            raise
     # The slot was registered throughout hydration (so a concurrent same-key
     # resume resolved it and hit the idempotency guard) but hidden from the
     # payload while under construction. End construction and push once: this is
     # the first frame any client sees, and it shows a fully hydrated session.
-    # Nothing awaits between here and the response.
+    # Nothing awaits between here and the return.
     state.end_slot_construction(slot.key)
     _sync_dashboard_slots(state)
     state.push_slots_update()
-    return web.json_response(
-        {
-            "ok": True,
-            "key": slot.key,
-            # `total` is the full on-disk length here, so this already is the
-            # raw index the next older page starts from.
-            "next_before": total - len(recent),
-            "messages": _prepare_messages(
-                recent, slot.running, live_child=_live_child_instance(state, slot)
-            ),
-            "queue": [queue_entry_view(q) for q in slot._queue],
-            "total": total,
-            "has_more": total > len(recent),
-            "memory_mode": slot.memory_mode,
-            "mode": slot.mode,
-            "surface": slot.mode,
-        }
-    )
+    return ResumeOutcome(slot=slot, total=total)
 
 
 async def api_chat_mode(request: web.Request) -> web.Response:

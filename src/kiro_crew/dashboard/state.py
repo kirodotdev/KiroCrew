@@ -2450,6 +2450,7 @@ class _ChatSlot:
         "_created_by",
         "_created_by_sid",
         "_lineage_minted",
+        "_revived_by",
         "_artifact",
         "_channel_folder_filed",
         "_resumed_count",
@@ -2885,6 +2886,12 @@ class _ChatSlot:
         #: ``parent`` -- ``_created_by`` alone is restored for authorization, never
         #: promoted to lineage.
         self._lineage_minted: bool = False
+        #: Slot key of the session-control caller that REVIVED this slot from
+        #: history, or "". Cap attribution only: ``creator_slot_count`` counts it
+        #: beside ``_created_by`` for the per-caller slot cap, since a revive keeps
+        #: the target's own creator and would otherwise be free. In memory only,
+        #: never persisted or restored, never read for ownership.
+        self._revived_by: str = ""
         # Artifact companion binding: set when this slot is a
         # companion chat session for an artifact (slug). At most one
         # non-archived slot per slug by convention — the frontend flow

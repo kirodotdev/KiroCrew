@@ -956,6 +956,23 @@ class TestTheRoutesRequireTheInternalSecret:
         assert resp.status == 500
         assert self._body(resp)["code"] == "history_save_failed"
 
+    @pytest.mark.parametrize("code", ["reopen_failed", "reopen_rollback_failed"])
+    def test_revive_keeps_its_503_instead_of_degrading_to_400(self, tmp_path, monkeypatch, code):
+        """`revive_session` promises 503 for a reopen write that could not land and
+        for a refused resume whose closed marker could not be confirmed restored;
+        the route must forward that status, since 400 would tell the caller it
+        sent a bad request when the remedy is to retry or re-close."""
+        req = self._request(tmp_path, internal=True, path="/api/session-control/revive")
+
+        async def _boom(*_a, **_kw):
+            raise sc.SessionControlError("try again", status=503, code=code)
+
+        monkeypatch.setattr(sc, "revive_session", _boom)
+        resp = asyncio.run(handlers_sc.api_session_control_revive(req))
+
+        assert resp.status == 503
+        assert self._body(resp)["code"] == code
+
     def test_send_without_the_secret_is_forbidden(self, tmp_path):
         req = self._request(tmp_path, internal=False, path="/api/session-control/send")
         resp = asyncio.run(handlers_sc.api_session_control_send(req))
