@@ -1088,6 +1088,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         COMMANDS_SCOPE,
         RULESET,
         SCOPEDMAP,
+        STEERING_SOURCES_SCOPE,
         ScopeSpec,
         register_scope,
     )
@@ -1097,6 +1098,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         resolve,
         resolve_ordinal,
         resolve_pinned_commands,
+        ungoverned_decision,
     )
     from kiro_crew.platform.governance_parts.matching import (  # noqa: F401
         _DEFAULT_MATCHER,

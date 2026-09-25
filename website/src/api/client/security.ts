@@ -146,7 +146,8 @@ export interface GovernanceScopeDetail {
 export interface GovernanceScope {
   scope: string
   archetype: 'ruleset' | 'ordinal' | 'capability' | 'scopedmap'
-  /** false = neither policy nor profile governs it → the scope permits. */
+  /** false = neither policy nor profile governs it. The scope permits unless
+   *  its catalog row sets `deny_when_ungoverned`. */
   governed: boolean
   source: 'policy' | 'profile' | 'policy+profile' | 'ungoverned'
   /** WHOSE ceiling this row describes, so a host-only pin is not read as
@@ -156,6 +157,8 @@ export interface GovernanceScope {
    *  surfaces enable them under their own profiles). `policy_wide` = policy alone
    *  governs, which applies to every surface. Absent/'' = ungoverned. */
   scope_note?: '' | 'host_profile' | 'policy_wide'
+  /** An ungoverned opt-in scope reads as "nothing allowed", not "not restricted". */
+  deny_when_ungoverned?: boolean
   detail: GovernanceScopeDetail
 }
 

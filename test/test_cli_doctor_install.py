@@ -707,7 +707,9 @@ class TestDoctorPrintsNoBareInstallCommand:
     def test_the_fts5_fix_names_this_interpreter_and_is_gated(self) -> None:
         lines = self._source().splitlines()
         renders = [
-            i for i, ln in enumerate(lines) if "pip_install_command_for('pysqlite3-binary')" in ln
+            i
+            for i, ln in enumerate(lines)
+            if "pip_install_command_for('pysqlite3>=0.6.1,<0.7')" in ln
         ]
 
         assert len(renders) == 1

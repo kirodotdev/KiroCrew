@@ -1759,6 +1759,36 @@ a link that stays inside the root instead, below). The managed-state isolation
 resolved spelling, so it fires for resolved candidates on symlinked-home hosts
 exactly as it does elsewhere.
 
+One linked source is admissible, and only by opt-in: a symlink sitting under the
+user's global `~/.kiro/steering` (through real directories, never below a linked
+one) whose name the glob's final component selects — a wildcard (`**/*.md`) or a
+literal (`**/shared.md`, `*/shared.md`) alike, one rule for both — and whose
+CANONICAL target the host-bound `steering.sources` ruleset names (policy ∩ host
+profile; the catalog row is flagged `deny_when_ungoverned`, so absence from both
+denies, and `fail_closed` so an evaluation error denies — see
+[governance](governance.md#global-steering-leaf-links--steeringsources)). The
+link keeps its own spelling as the document's logical identity — its source
+label and the stem its `#name` / `fileMatch` trigger runs against — while
+authorization and the read address the resolved target, pinned to that exact
+file through the no-follow byte reader so a leaf or ancestor swapped after
+approval cannot redirect the read to an unapproved sibling. Admission is decided
+by the link's location, so the same link reached by the global scan, the default
+template's `file://.kiro/steering/**/*.md` resource, the native launch capture or
+a project rooted at the home is one document, judged by the same admission rules
+at scan time and again at read time (a grant revoked between the two refuses the
+read); `validate_file_path` is the first call that resolves it, its ancestors are
+screened before the leaf itself is probed, and the target's type is judged by the
+pinned descriptor, not probed by name — an admitted link is captured as a
+document, never walked as a directory. Both spellings pass the managed-state
+refusal and the sensitive-path fence first. Failed admission retains the ordinary
+link contract below: implicit links are omitted and named, declared steering
+links inside their root may be omitted, and declared escapes still refuse.
+After admission, a revoked grant or a dangling, directory or device target still
+refuses at read time. Nonmatching leaf names never reach authorization; the
+recursive scan may screen their targets and check directory metadata only to
+decide which omitted links to name. Project steering links, template links to
+anything else and directory links keep their ordinary omission/refusal rules.
+
 These essentials are read and validated on every member turn. The builder
 stages a complete snapshot on the actual serving provider, which suppresses its
 wire envelope after successful consumption while its content, source list and
@@ -1786,7 +1816,8 @@ not refuse the turn: the guide is not read, a warning is logged, and an in-band
 `#omitted` note names it so the agent does not assume its contents. A template
 that declares the same file still refuses, and an oversized guide still raises.
 The implicit global and project `.kiro/steering/**/*.md` scan treats a link the
-same way: a linked steering file or directory is not followed or read, and one
+same way unless global-leaf admission succeeds: a linked steering file or directory
+is not traversed or read, and one
 `essential-context#linked-skipped` note names it, so a member whose steering is
 symlinked into a repository still starts. kiro-cli follows the link natively. A
 declared steering glob (a `steering` component in the pattern, such as the shipped
@@ -3271,8 +3302,8 @@ gateway output from failing under a locale encoding such as Windows cp1252.
 |----------|--------------|-----|-------|
 | macOS (Apple Silicon) | `macos_arm64/` | Metal (shader embedded in dylib) | Fastest |
 | macOS Intel (x86_64) | `macos_x86_64/` | CPU (Metal OFF) | Built from the pinned 0.3.34 sdist for the universal desktop app's x64 slice |
-| Linux x86_64 | `linux_x86_64/` | CPU | manylinux2014 (glibc ≥ 2.17) — AL2 and AL2023 both work |
-| Linux aarch64/Graviton | `linux_aarch64/` | CPU | manylinux2014 (glibc ≥ 2.17) — AL2 and AL2023 both work |
+| Linux x86_64 | `linux_x86_64/` | CPU | Vendored library: manylinux2014; Kiro Crew requires glibc ≥ 2.28 (AL2023, not AL2) |
+| Linux aarch64/Graviton | `linux_aarch64/` | CPU | Vendored library: manylinux2014; Kiro Crew requires glibc ≥ 2.28 (AL2023, not AL2) |
 | Windows x86_64 | `win_amd64/` | CPU | DLLs found via `os.add_dll_directory` |
 
 The model download requires only outbound HTTPS (no git/git-lfs) on all platforms.

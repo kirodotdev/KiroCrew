@@ -1739,4 +1739,4 @@ Versions are owned by `setup.cfg` `install_requires`.
 | `websockets` | Socket Mode transport |
 | `croniter` | Cron expression matching |
 | `snowballstemmer` | Snowball stemming for semantic KV keyword scoring |
-| `pysqlite3-binary` | FTS5/UPSERT compat (Linux x86_64 only) |
+| `pysqlite3` | Bundled SQLite with FTS5/UPSERT and the WAL open/close deadlock fix (Linux x86_64 only; glibc >=2.28) |

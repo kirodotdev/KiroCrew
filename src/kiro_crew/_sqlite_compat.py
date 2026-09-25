@@ -4,7 +4,7 @@ KiroCrew's memory and knowledge stores require SQLite's FTS5 full-text
 extension. We prefer ``pysqlite3`` (which bundles a recent SQLite with FTS5)
 when present, and fall back to the stdlib ``sqlite3``.
 
-``pysqlite3-binary`` only ships wheels for Linux x86_64 (see setup.cfg), so on
+``pysqlite3`` is required on Linux x86_64 (see setup.cfg), so on
 macOS and Linux aarch64 we rely on the host's stdlib SQLite having FTS5 built
 in. Modern macOS and mainstream Linux distros do, but minimal container images
 occasionally compile SQLite without ``SQLITE_ENABLE_FTS5``. When that happens,
@@ -217,9 +217,9 @@ __all__ = [
 FTS5_UNAVAILABLE_HINT = (
     "SQLite FTS5 full-text extension is not available in this Python's sqlite3 "
     "build. KiroCrew memory and knowledge search require it.\n"
-    "  - Linux x86_64: pip install pysqlite3-binary (KiroCrew depends on it here).\n"
+    "  - Linux x86_64 (glibc >=2.28): pip install 'pysqlite3>=0.6.1,<0.7'.\n"
     "  - Linux aarch64 / minimal images: install a python3 whose libsqlite3 was "
-    "built with SQLITE_ENABLE_FTS5, or `pip install pysqlite3-binary` if a wheel "
+    "built with SQLITE_ENABLE_FTS5, or `pip install 'pysqlite3>=0.6.1,<0.7'` if a wheel "
     "exists for your platform.\n"
     "  - macOS: the system Python and Homebrew Python both ship FTS5; reinstall "
     "Python from python.org or Homebrew if this fails."

@@ -237,8 +237,8 @@ _find_python() {
 }
 
 # Provision Python $PYTHON_VERSION without a package manager, for hosts whose
-# archive carries no python3.12 (Ubuntu 22.04, Debian 12, RHEL/CentOS 7). mise
-# ships python-build-standalone builds, which run on old glibc. Every probe
+# archive carries no python3.12 (Ubuntu 22.04, Debian 12). mise
+# ships python-build-standalone builds; Kiro Crew requires glibc >=2.28. Every probe
 # below tries this before giving up: without it the >= 3.12 floor turns a host
 # the package manager cannot satisfy into a hard abort, where the >= 3.10 floor
 # had simply accepted the distro's own python3.

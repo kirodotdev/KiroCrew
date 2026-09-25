@@ -12,7 +12,10 @@ from kiro_crew.config import KiroCrewConfig, config_dir
 from kiro_crew.config.loader import workspace_dir_for
 from kiro_crew.config.paths import project_agents_dir
 from kiro_crew.frontmatter import STEERING_LOADER, split_frontmatter
-from kiro_crew.hooks import safe_read_file_bytes_nolink, validate_file_path
+from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink, validate_file_path
+from kiro_crew.platform.context import PlatformCompositionError
+from kiro_crew.platform.governance import STEERING_SOURCES_SCOPE
+from kiro_crew.platform.governance_profiles import HOST_SESSION_KEY, vet_and_audit
 from kiro_crew.platform_compat import first_linked_ancestor, is_link_or_junction
 
 logger = logging.getLogger(__name__)
@@ -225,7 +228,27 @@ def _admitted_root(root: Path) -> Path | None:
     return None if admitted is None else Path(admitted)
 
 
+def _global_steering_tree() -> Path | None:
+    """The canonical home's steering tree, whose leaf links may be admitted."""
+    home = _admitted_root(Path.home())
+    return None if home is None else home / ".kiro" / "steering"
+
+
+def _is_global_steering_leaf_link(path: Path) -> bool:
+    """Judge location before probing the leaf, so no linked ancestor is traversed."""
+    tree = _global_steering_tree()
+    return (
+        tree is not None
+        and ".." not in path.parts
+        and path.parent.is_relative_to(tree)
+        and first_linked_ancestor(path) is None
+        and is_link_or_junction(path)
+    )
+
+
 def _read(path: Path, root: Path) -> str:
+    if _is_global_steering_leaf_link(path):
+        return _read_governed_steering_leaf(path)
     try:
         _refuse_managed_source(path)
         admitted = validate_file_path(str(path))
@@ -255,6 +278,70 @@ def _read(path: Path, root: Path) -> str:
         raise
     except (OSError, ValueError) as exc:
         raise MemberEssentialContextError(f"Essential source {path}: {exc}") from exc
+
+
+def _admit_governed_steering_leaf(logical: Path) -> Path:
+    """Authorize the canonical target while preserving the link's logical identity."""
+    try:
+        if not _is_global_steering_leaf_link(logical):
+            raise ValueError("linked source outside the global steering tree")
+        _refuse_managed_source(logical)
+        admitted = validate_file_path(str(logical))
+        if admitted is None:
+            raise ValueError("linked target cannot be read safely")
+        canonical = Path(admitted)
+        _refuse_managed_source(canonical)
+        decision = vet_and_audit(
+            STEERING_SOURCES_SCOPE,
+            str(canonical),
+            session_key=HOST_SESSION_KEY,
+            tool_name="steering_source",
+            fail_closed=True,
+        )
+        if not getattr(decision, "permitted", False):
+            raise ValueError(
+                f"{STEERING_SOURCES_SCOPE} does not permit linked document target "
+                f"{str(canonical)!r} ({getattr(decision, 'reason', '')})"
+            )
+        return canonical
+    except MemberEssentialContextError:
+        raise
+    except (OSError, ValueError, PlatformCompositionError) as exc:
+        raise MemberEssentialContextError(f"Essential source {logical}: {exc}") from exc
+
+
+def _read_governed_steering_leaf(logical: Path) -> str:
+    """Reauthorize at read time and pin the exact file, never an approved sibling."""
+    canonical = _admit_governed_steering_leaf(logical)
+    try:
+        data = safe_read_file_bytes_nolink(
+            str(canonical),
+            within_root=str(canonical),
+            max_bytes=_MAX_SOURCE_BYTES,
+            allow_truncate=False,
+            within_root_is_canonical=True,
+        )
+        if data is None:
+            raise ValueError(
+                f"linked target {str(canonical)!r} is missing, unreadable, hardlinked, "
+                "not a regular file, or no longer the approved file"
+            )
+        return data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    except FileTooLargeError as exc:
+        raise MemberEssentialContextError(
+            f"Essential source {logical}: linked target {str(canonical)!r} exceeds "
+            f"{_MAX_SOURCE_BYTES} bytes"
+        ) from exc
+    except (OSError, ValueError) as exc:
+        raise MemberEssentialContextError(f"Essential source {logical}: {exc}") from exc
+
+
+def _leaf_link_candidate(name: str, pieces: tuple[str, ...], offset: int) -> bool:
+    """Whether the glob selects this leaf now or on the next pass through ``**``."""
+    final = len(pieces) - 1
+    return offset == final or (
+        pieces[offset] == "**" and offset + 1 == final and fnmatch.fnmatchcase(name, pieces[final])
+    )
 
 
 def _read_implicit_guide(path: Path, root: Path) -> str | None:
@@ -449,7 +536,8 @@ def _matches(
     steering scan passes *linked* alone, so it leaves a link out wherever it
     points. A declared steering glob also passes *confined*: only a link whose
     target the path screen resolves inside *root* is left out, and any other link
-    still refuses.
+    still refuses. An approved global steering leaf is captured instead; failed
+    opt-in admission retains those omission/refusal rules.
 
     A glob-free *pattern* naming a path that does not exist is appended to
     *missing*, when given, and matches nothing -- kiro-cli skips an absent
@@ -493,6 +581,38 @@ def _matches(
     pruned: set[Path] = set()
     scanned = 0
     visited: set[tuple[Path, int]] = set()
+
+    def capture(path: Path) -> None:
+        result.add(path)
+        if len(result) > _MAX_DOCUMENTS:
+            raise MemberEssentialContextError(
+                f"Essential source {root / pattern}: too many documents"
+            )
+
+    def capture_global_link(path: Path, offset: int) -> bool:
+        if not _leaf_link_candidate(path.name, pieces, offset):
+            return False
+        if not _is_global_steering_leaf_link(path):
+            return False
+        if offset == len(pieces) - 1:
+            try:
+                _admit_governed_steering_leaf(path)
+            except MemberEssentialContextError as exc:
+                # Failed opt-in admission leaves the ordinary link contract in
+                # force: implicit links are omitted, declared escapes refuse.
+                if linked is None:
+                    raise
+                try:
+                    escapes = _escapes(path)
+                except (OSError, ValueError):
+                    raise exc
+                if escapes:
+                    raise
+                linked.append(path)
+                return True
+            capture(path)
+        return True
+
     while pending:
         directory, offset = pending.pop()
         if (directory, offset) in visited:
@@ -512,6 +632,8 @@ def _matches(
             # project root must not exhaust a steering subtree's scan budget.
             path = directory / component
             if is_link_or_junction(path):
+                if capture_global_link(path, offset):
+                    continue
                 if linked is not None and not _escapes(path):
                     linked.append(path)
                     continue
@@ -521,7 +643,7 @@ def _matches(
             if offset + 1 < len(pieces):
                 pending.append((path, offset + 1))
             elif path.is_file():
-                result.add(path)
+                capture(path)
             continue
         if component == "**" and offset + 1 < len(pieces):
             pending.append((directory, offset + 1))
@@ -568,6 +690,8 @@ def _matches(
                                 logger.debug("Managed state %s pruned from %s", path, pattern)
                         continue
                     if is_link_or_junction(path):
+                        if capture_global_link(path, offset):
+                            continue
                         if linked is not None and not _escapes(path):
                             # Name only a link the glob could have used: a document
                             # matching the final component, or a directory to descend.
@@ -588,11 +712,7 @@ def _matches(
                         if component == "**" or offset + 1 < len(pieces):
                             pending.append((path, offset if component == "**" else offset + 1))
                     elif offset == len(pieces) - 1:
-                        result.add(path)
-                        if len(result) > _MAX_DOCUMENTS:
-                            raise MemberEssentialContextError(
-                                f"Essential source {root / pattern}: too many documents"
-                            )
+                        capture(path)
         except FileNotFoundError:
             continue  # A declared glob matching no existing source is valid.
         except OSError as exc:

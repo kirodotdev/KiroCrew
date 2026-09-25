@@ -2,17 +2,17 @@
 
 A symlink under ``~/.kiro/steering`` pointing at a file outside the home is the
 one linked source the essentials collector may read, and only when the
-policy ∩ host-profile ruleset names the CANONICAL target. Everything else the
-collector already refuses stays refused: project steering links, template
-resource links, directory links, non-regular targets, managed state and the
-sensitive-path fence. Every tree here is a temporary fixture; nothing reads the
-operator's home.
+policy ∩ host-profile ruleset names the CANONICAL target. Implicit links that
+cannot be admitted stay omitted; declared escapes, non-regular approved targets,
+managed state and sensitive paths cannot supply bytes. Every tree here is a
+temporary fixture; nothing reads the operator's home.
 """
 
 from __future__ import annotations
 
 import json
 import os
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -21,6 +21,7 @@ import pytest
 from conftest import requires_symlinks
 from kiro_crew import member_essential_context as essentials
 from kiro_crew.member_essential_context import MemberEssentialContextError
+from kiro_crew.sel import SecurityEventLog
 
 pytestmark = requires_symlinks
 
@@ -130,6 +131,36 @@ def test_authorized_external_leaf_link_is_delivered_with_its_body(tree, monkeypa
     assert str(tree.external / "shared.md") not in docs
 
 
+@pytest.mark.parametrize("permitted", [True, False])
+def test_steering_authorization_records_a_sel_event(tree, monkeypatch, permitted):
+    monkeypatch.setattr(SecurityEventLog, "_instance", None)
+    audit = SecurityEventLog(base_dir=tree.root / "audit", sync=True)
+    monkeypatch.setattr("kiro_crew.sel.sel", lambda: audit)
+    allowed = str(tree.external / "shared.md") if permitted else str(tree.external / "other.md")
+    _install(monkeypatch, {_SCOPE: _ruleset(allowed)})
+
+    if permitted:
+        assert _global_docs()[str(tree.steering / "shared.md")] == _SHARED_BODY
+    else:
+        docs = _global_docs()
+        assert str(tree.steering / "shared.md") not in docs
+        assert str(tree.steering / "shared.md") in docs[essentials.ESSENTIAL_LINKED_SKIP_SOURCE]
+
+    events = [event for event in audit.recent() if event["event_type"] == "governance_decision"]
+    assert events
+    for event in events:
+        assert event["caller_identity"] == "_host"
+        assert event["operation"] == "steering_source"
+        assert event["resources"] == str(tree.external / "shared.md")
+        assert event["outcome"] == ("allowed" if permitted else "denied")
+        assert event["metadata"]["scope"] == _SCOPE
+        assert event["metadata"]["layer"] == "policy"
+        assert event["metadata"]["rule"]
+        assert event["metadata"]["reason"]
+    total, valid = audit.verify_integrity()
+    assert total == valid == len(events)
+
+
 def test_native_capture_path_delivers_the_same_authorized_leaf(tree, monkeypatch):
     _install(monkeypatch, {_SCOPE: _ruleset(f"{tree.external}/*.md")})
     docs = dict(essentials.kiro_launch_documents("kirocrew", None))
@@ -158,9 +189,12 @@ def _link(tree, name: str, target: Path) -> Path:
     return link
 
 
-def _assert_refused(match: str | None = None, **kw):
+def _assert_refused(match: str | None = None):
+    """A declared steering resource escaping home must still fail closed."""
     with pytest.raises(MemberEssentialContextError, match=match):
-        _global_docs(**kw)
+        essentials.projected_resource_documents(
+            {"resources": [f"file://{_STEERING_GLOB}"]}, str(Path.home())
+        )
 
 
 # ── Default deny: nothing about the link carries trust ────────────────────
@@ -175,11 +209,18 @@ def _assert_refused(match: str | None = None, **kw):
     ],
     ids=["ungoverned", "scope-absent", "unapproved-target"],
 )
-def test_unapproved_or_ungoverned_leaf_link_refuses_the_build(tree, monkeypatch, controls):
+def test_unapproved_leaf_is_omitted_implicitly_but_declared_escape_refuses(
+    tree, monkeypatch, controls
+):
     _install(monkeypatch, controls)
+    docs = _global_docs()
+    link = str(tree.steering / "shared.md")
+    assert link not in docs
+    assert _SHARED_BODY not in docs.values()
+    assert link in docs[essentials.ESSENTIAL_LINKED_SKIP_SOURCE]
+    assert docs[str(tree.steering / "local.md")].startswith("Local guide")
     _assert_refused("steering.sources")
-    with pytest.raises(MemberEssentialContextError, match="steering.sources"):
-        essentials.kiro_launch_documents("kirocrew", None)
+    assert link not in dict(essentials.kiro_launch_documents("kirocrew", None))
 
 
 def test_policy_and_host_profile_intersect(tree, monkeypatch):
@@ -304,13 +345,24 @@ def test_non_regular_or_non_leaf_links_are_refused(tree, monkeypatch, kind, reas
         _link(tree, "gone.md", tree.root / "external" / "missing.md")
     else:
         _link(tree, "notes.txt", tree.external / "shared.md")
+        docs = _global_docs()
+        assert str(tree.steering / "notes.txt") not in docs
+        assert docs[str(tree.steering / "shared.md")] == _SHARED_BODY
     _assert_refused(reason)
 
 
 def test_hardlinked_inodes_are_refused_on_both_sides(tree, monkeypatch):
     _install(monkeypatch, _BROAD)
+    (tree.steering / "shared.md").unlink()
     os.link(tree.external / "shared.md", tree.steering / "hard.md")
-    _assert_refused("hard.md")
+    docs = _global_docs()
+    assert str(tree.steering / "hard.md") not in docs
+    assert (
+        str(tree.steering / "hard.md")
+        in docs[f"{essentials.ESSENTIAL_UNREADABLE_SKIP_SOURCE}:kirocrew"]
+    )
+    _link(tree, "shared.md", tree.external / "shared.md")
+    _assert_refused("shared.md.*hardlinked")
     (tree.steering / "hard.md").unlink()
     os.link(tree.external / "shared.md", tree.external / "twin.md")
     _assert_refused("hardlinked")
@@ -319,13 +371,16 @@ def test_hardlinked_inodes_are_refused_on_both_sides(tree, monkeypatch):
 # ── Everything that is not a global steering leaf link is unchanged ────────
 
 
-def test_project_steering_links_stay_refused_under_broad_approval(tree, monkeypatch):
+def test_project_steering_links_stay_omitted_under_broad_approval(tree, monkeypatch):
     _install(monkeypatch, _BROAD)
     project = tree.root / "project"
     (project / ".kiro" / "steering").mkdir(parents=True)
-    (project / ".kiro" / "steering" / "team.md").symlink_to(tree.external / "shared.md")
-    with pytest.raises(MemberEssentialContextError, match="linked document or directory"):
-        essentials.documents_for_member("kirocrew", str(project))
+    link = project / ".kiro" / "steering" / "team.md"
+    link.symlink_to(tree.external / "shared.md")
+    docs = dict(essentials.documents_for_member("kirocrew", str(project)))
+    assert str(link) not in docs
+    assert str(link) in docs[essentials.ESSENTIAL_LINKED_SKIP_SOURCE]
+    assert docs[str(tree.steering / "shared.md")] == _SHARED_BODY
 
 
 def test_template_resource_links_stay_refused_under_broad_approval(tree, monkeypatch):
@@ -344,6 +399,10 @@ def test_real_files_and_global_steering_directory_links_behave_as_before(tree, m
     (tree.steering / "shared.md").unlink()
     assert _global_docs()[str(tree.steering / "local.md")].startswith("Local guide")
     (tree.steering / "nested").symlink_to(tree.external, target_is_directory=True)
+    docs = _global_docs()
+    assert str(tree.steering / "nested") in docs[essentials.ESSENTIAL_LINKED_SKIP_SOURCE]
+    assert _SHARED_BODY not in docs.values()
+    assert docs[str(tree.steering / "local.md")].startswith("Local guide")
     _assert_refused("linked document or directory")
 
 
@@ -600,28 +659,77 @@ class TestNoFollowOrdering:
         assert _global_docs()[str(link)] == _SHARED_BODY
         assert str(link) in validated
 
-    def test_no_stat_of_a_link_whose_name_the_glob_never_selects(self, tree, monkeypatch):
+    @pytest.mark.parametrize("kind", ["file", "directory", "screen-refused"])
+    def test_unselected_links_only_receive_screened_metadata_probes(self, tree, monkeypatch, kind):
         _install(monkeypatch, _BROAD)
-        link = _link(tree, "notes.txt", tree.external / "shared.md")
+        target = tree.external / "unselected"
+        if kind == "file":
+            target.write_text("UNSELECTED BODY", encoding="utf-8")
+        else:
+            target.mkdir()
+            (target / "inner.md").write_text("UNSELECTED BODY", encoding="utf-8")
+        link = _link(tree, "notes.txt", target)
         real_validate = essentials.validate_file_path
+        screened = []
+        probes = []
 
-        def refuse_validate(raw):
-            assert raw != str(link), "validate_file_path resolved a link the glob never selects"
+        def screen(raw):
+            if raw == str(link):
+                screened.append(raw)
+                if kind == "screen-refused":
+                    return None
             return real_validate(raw)
 
-        monkeypatch.setattr(essentials, "validate_file_path", refuse_validate)
+        monkeypatch.setattr(essentials, "validate_file_path", screen)
+        real_scandir = os.scandir
 
-        def guard(original):
-            def probe(path, *a, **k):
-                assert str(path) != str(link), f"followed {path}"
-                return original(path, *a, **k)
+        def wrap(entry):
+            def is_dir(*, follow_symlinks=True):
+                if Path(entry.path) == link and follow_symlinks:
+                    assert screened and kind != "screen-refused"
+                    probes.append(entry.path)
+                return entry.is_dir(follow_symlinks=follow_symlinks)
 
-            return probe
+            return SimpleNamespace(name=entry.name, path=entry.path, is_dir=is_dir)
 
-        monkeypatch.setattr(os.path, "isdir", guard(os.path.isdir))
-        monkeypatch.setattr(Path, "is_file", guard(Path.is_file))
-        monkeypatch.setattr(Path, "is_dir", guard(Path.is_dir))
-        _assert_refused("linked document or directory")
+        @contextmanager
+        def scandir(path):
+            if not isinstance(path, int):
+                assert not Path(path).is_relative_to(link)
+                assert not Path(path).is_relative_to(target)
+            with real_scandir(path) as entries:
+                if not isinstance(path, int) and Path(path) == tree.steering:
+                    yield (wrap(entry) for entry in entries)
+                else:
+                    yield entries
+
+        monkeypatch.setattr(os, "scandir", scandir)
+        real_read = essentials.safe_read_file_bytes_nolink
+
+        def read(path, **kw):
+            assert not Path(path).is_relative_to(link)
+            assert not Path(path).is_relative_to(target)
+            return real_read(path, **kw)
+
+        monkeypatch.setattr(essentials, "safe_read_file_bytes_nolink", read)
+        real_authorize = essentials.vet_and_audit
+        authorized = []
+
+        def authorize(scope, item, **kw):
+            assert item == str(tree.external / "shared.md")
+            authorized.append(item)
+            return real_authorize(scope, item, **kw)
+
+        monkeypatch.setattr(essentials, "vet_and_audit", authorize)
+        docs = _global_docs()
+        assert docs[str(tree.steering / "shared.md")] == _SHARED_BODY
+        assert "UNSELECTED BODY" not in docs.values()
+        assert str(link) not in docs
+        assert screened and authorized
+        assert bool(probes) == (kind != "screen-refused")
+        assert (str(link) in docs.get(essentials.ESSENTIAL_LINKED_SKIP_SOURCE, "")) == (
+            kind != "file"
+        )
 
     def test_directory_link_is_never_descended(self, tree, monkeypatch):
         _install(monkeypatch, _BROAD)
@@ -683,12 +791,12 @@ class TestErrorTranslation:
             raise PlatformCompositionError("unknown governed key")
 
         monkeypatch.setattr(gp, "governance_permits", boom)
-        with pytest.raises(MemberEssentialContextError, match="unknown governed key"):
-            _global_docs()
-        with pytest.raises(MemberEssentialContextError, match="unknown governed key"):
-            essentials.kiro_launch_documents("kirocrew", None)
+        link = str(tree.steering / "shared.md")
+        assert link not in _global_docs()
+        assert link not in dict(essentials.kiro_launch_documents("kirocrew", None))
+        _assert_refused("unknown governed key")
 
-    def test_os_error_during_admission_is_translated_not_skipped(self, tree, monkeypatch):
+    def test_os_error_during_admission_omits_implicit_but_refuses_declared(self, tree, monkeypatch):
         _install(monkeypatch, {_SCOPE: _ruleset(f"{tree.external}/*.md")})
         real_validate = essentials.validate_file_path
 
@@ -698,8 +806,11 @@ class TestErrorTranslation:
             return real_validate(raw)
 
         monkeypatch.setattr(essentials, "validate_file_path", flaky)
-        with pytest.raises(MemberEssentialContextError, match="vanished"):
-            _global_docs()
+        docs = _global_docs()
+        link = str(tree.steering / "shared.md")
+        assert link not in docs
+        assert link in docs[essentials.ESSENTIAL_LINKED_SKIP_SOURCE]
+        _assert_refused("vanished")
 
     def test_oversized_linked_target_names_the_bound_in_bytes_and_the_target(
         self, tree, monkeypatch
@@ -763,8 +874,8 @@ class TestProfileStoreHostBind:
         real_matches = essentials._matches
         scanned: list[Path] = []
 
-        def scan_then_revoke(root, pattern):
-            found = real_matches(root, pattern)
+        def scan_then_revoke(root, pattern, *args, **kwargs):
+            found = real_matches(root, pattern, *args, **kwargs)
             if not scanned and tree.steering / "shared.md" in found:
                 scanned.extend(found)
                 self._bind_host(store)
@@ -772,7 +883,8 @@ class TestProfileStoreHostBind:
             return found
 
         monkeypatch.setattr(essentials, "_matches", scan_then_revoke)
-        _assert_refused("profile denies")
+        with pytest.raises(MemberEssentialContextError, match="profile denies"):
+            _global_docs()
         assert tree.steering / "shared.md" in scanned
 
 

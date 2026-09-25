@@ -30,7 +30,6 @@ _DIST_TO_IMPORT: dict[str, str] = {
     "slack-sdk": "slack_sdk",
     "pyyaml": "yaml",
     "python-docx": "docx",
-    "pysqlite3-binary": "pysqlite3",
     "amazon-transcribe": "amazon_transcribe",
     "cron-descriptor": "cron_descriptor",
     "opentelemetry-api": "opentelemetry",

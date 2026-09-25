@@ -448,7 +448,7 @@ jobs:
   # CI hosts are new enough that a wheel always fits, so a sdist-only entry
   # added to install_requires passes every other job and only refuses on old
   # glibc. This job resolves the install_requires closure as wheels at the
-  # manylinux2014 / manylinux_2_17 floor, cp312, on x86_64 and aarch64 -- the
+  # manylinux_2_28 floor, cp312, on x86_64 and aarch64 -- the
   # floor the installers' supported-platform message promises. Advisory: it is
   # not a required check and not part of any review gate.
   wheel-closure:
@@ -480,8 +480,12 @@ jobs:
           python -m pip install "packaging==26.2"
           python scripts/ci/install_requires_closure.py --machine "$MACHINE" \
             --out "$RUNNER_TEMP/install_requires.txt"
+          platforms=(--platform "manylinux2014_$MACHINE" --platform "manylinux2010_$MACHINE" --platform "manylinux1_$MACHINE")
+          for minor in {28..5}; do
+            platforms+=(--platform "manylinux_2_${minor}_$MACHINE")
+          done
           python -m pip download --only-binary=:all: \
-            --platform "manylinux2014_$MACHINE" --platform "manylinux_2_17_$MACHINE" \
+            "${platforms[@]}" \
             --python-version 3.12 --implementation cp --abi cp312 --abi abi3 --abi none \
             -d "$RUNNER_TEMP/closure" -r "$RUNNER_TEMP/install_requires.txt"
 

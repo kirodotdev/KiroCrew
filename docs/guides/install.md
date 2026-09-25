@@ -37,7 +37,8 @@ Builds use plain `pip` + `npm`/Vite + `pytest`, driven by the repo-root
 | Requirement | Needed for | Floor |
 |-------------|------------|-------|
 | **Python** | Backend | `>= 3.12` (`requires-python` in `pyproject.toml`; `make build` provisions a 3.12 `.venv` by default) |
-| **Node.js + npm** | Building the dashboard | `>= 22.12.0` (`website/package.json` `engines`; Node 24 LTS recommended); on x86_64 Amazon Linux 2, the glibc-217 fallback installs Node 24 because official builds need a newer glibc (no glibc-217 arm64 build is available) |
+| **Linux glibc** | Linux source and wheel installs | `>= 2.28` (`manylinux_2_28`); CentOS 7 and Amazon Linux 2 are unsupported. Desktop packages have the higher floor documented below. |
+| **Node.js + npm** | Building the dashboard | `>= 22.12.0` (`website/package.json` `engines`; Node 24 LTS recommended) |
 | **`kiro-cli`** | Driving the LLM | Required; see below |
 
 Node is only needed to *build* the dashboard. The prebuilt wheel, the DMG, the
@@ -221,8 +222,8 @@ commonly leads with agent-writable directories), then installs a
 [python-build-standalone](https://github.com/astral-sh/python-build-standalone)
 CPython 3.12 into a user-owned directory beside the data home
 (`~/.kiro/crew-python`, override with `KIROCREW_PYTHON_DIR`). No package
-manager, no sudo, and the prebuilt interpreter runs on old-glibc distros
-(CentOS 7) whose base repos never reach 3.10. Pass `--system-python` (or set
+manager or sudo is needed. Kiro Crew requires glibc 2.28 or newer on Linux,
+even where the interpreter itself supports older glibc. Pass `--system-python` (or set
 `KIROCREW_MANAGED_PYTHON=0`) to run on a system Python 3.12+ instead — the
 choice is sticky: it is recorded in the data home (`python-mode`, next to
 `channel`), so later installer runs keep it without the flag; opt back in
@@ -251,7 +252,12 @@ start now, or `kirocrew service install` to run it as a service.
 
 Dependencies are installed from **prebuilt wheels only** (`pip
 --only-binary=:all:`), so the install never needs a C compiler or `-dev`
-headers on the host. pip picks the newest release of each dependency that
+headers on the host. Linux x86_64 uses `pysqlite3>=0.6.1,<0.7`, whose bundled
+SQLite includes the WAL open/close deadlock fix and requires glibc 2.28.
+When upgrading an existing editable environment, uninstall `pysqlite3-binary`
+before installing the new requirements: both distributions own the same
+`pysqlite3` import package. Fresh managed update environments need no removal.
+pip picks the newest release of each dependency that
 publishes a wheel the host can run; on a host where no release does (its glibc
 is older than every candidate's manylinux floor, or the architecture has no
 wheel), the installer stops before any build starts and names the platform and
@@ -514,8 +520,9 @@ sandbox-profile step and the move-breaks-it caveat documented in the
 All three Linux formats are built from the same glibc floor as the build runner.
 Verified requirement at the time of writing is **glibc 2.34**, which covers
 Ubuntu 22.04+, Debian 12+, Fedora, CentOS Stream 9 and Amazon Linux 2023, and
-excludes Ubuntu 20.04, Debian 11 and Amazon Linux 2 — on those, use the
-[one-line install](#a-one-line-install-fastest) instead.
+excludes Ubuntu 20.04 and Debian 11 — on those, use the
+[one-line install](#a-one-line-install-fastest) instead. Amazon Linux 2 is
+unsupported by all install paths because its glibc is older than 2.28.
 
 Prebuilt downloads for the release channels are linked from the
 [README](../../README.md#app-downloads). The Windows NSIS installer is

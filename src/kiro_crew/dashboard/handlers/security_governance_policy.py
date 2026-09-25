@@ -226,8 +226,10 @@ def build_governance_policy_snapshot() -> dict:
     POLICY control with the host-surface PROFILE control using the model's OWN
     composition algebra (``_compose_controls`` — the same helper the evaluator's
     ``compose_profiles`` path uses); it does not re-implement ``policy ∩
-    profile``. A scope governed by neither level is reported ``ungoverned`` (it
-    permits — the standalone default), so with NO policy and NO profile every
+    profile``. A scope governed by neither level is reported ``ungoverned``.
+    It permits unless its catalog row flags ``deny_when_ungoverned``; that flag
+    is included so a viewer never reads the absence as "not restricted".
+    With NO policy and NO profile every
     scope is ``ungoverned`` and the response is byte-identical to a standalone
     host.
 
@@ -278,16 +280,17 @@ def build_governance_policy_snapshot() -> dict:
                 source = "ungoverned"
                 effective = None
 
-            scopes.append(
-                {
-                    "scope": scope,
-                    "archetype": spec.kind,
-                    "governed": effective is not None,
-                    "source": source,
-                    "scope_note": _surface_scope_note(source, policy_control, spec.kind),
-                    "detail": _serialize_control(spec.kind, effective),
-                }
-            )
+            row = {
+                "scope": scope,
+                "archetype": spec.kind,
+                "governed": effective is not None,
+                "source": source,
+                "scope_note": _surface_scope_note(source, policy_control, spec.kind),
+                "detail": _serialize_control(spec.kind, effective),
+            }
+            if spec.deny_when_ungoverned:
+                row["deny_when_ungoverned"] = True
+            scopes.append(row)
 
         return {
             "version": ceiling.version if ceiling is not None else None,

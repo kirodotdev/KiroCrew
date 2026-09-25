@@ -25,6 +25,7 @@ from kiro_crew.platform.governance_parts.archetypes import (
     _dedup,
 )
 from kiro_crew.platform.governance_parts.carriers import GovernanceCeiling, Profile
+from kiro_crew.platform.governance_parts.catalog import SCOPE_CATALOG
 from kiro_crew.platform.governance_parts.tool_calls import classify_tool_args, classify_tool_title
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -35,6 +36,19 @@ from kiro_crew.platform.governance_parts.tool_calls import classify_tool_args, c
 # is identical for every scope and never branches on a scope name.
 
 _PERMIT_NOT_GOVERNED = Decision(True, "not governed", rule="default", layer="default")
+
+
+def ungoverned_decision(scope: str) -> Decision:
+    """The outcome when neither level names the scope: the catalog row decides."""
+    spec = SCOPE_CATALOG.get(scope)
+    if spec is not None and spec.deny_when_ungoverned:
+        return Decision(
+            False,
+            f"{scope} is not named by any policy or profile; denied until one names it",
+            rule="default",
+            layer="default",
+        )
+    return _PERMIT_NOT_GOVERNED
 
 
 def _query_level(control: object, scope: str, item: str) -> Decision:
@@ -85,11 +99,16 @@ def resolve(
     Policy is the hard ceiling; the profile can only further restrict.  Either
     level being ``None`` (or not governing the scope) contributes a permit, so
     ``resolve(None, None, …)`` permits everything (the ungoverned standalone
-    default) and a policy-deny is final regardless of the profile.
+    default) and a policy-deny is final regardless of the profile. A catalog row
+    flagged ``deny_when_ungoverned`` instead denies when neither level names it.
     """
     policy_control = ceiling.get(scope) if ceiling is not None else None
-    policy_dec = _query_level(policy_control, scope, item)
     profile_control = profile.get(scope) if profile is not None else None
+    if policy_control is None and profile_control is None:
+        absent = ungoverned_decision(scope)
+        if not absent.permitted:
+            return absent
+    policy_dec = _query_level(policy_control, scope, item)
     if not policy_dec.permitted:
         # Same provenance rule as ``_AndRuleset.permits``: a policy allow-mode
         # miss is the answer, but a profile deny beneath it still marks the

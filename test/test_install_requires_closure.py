@@ -46,7 +46,7 @@ install_requires =
 
     truststore==0.10.4; sys_platform == "darwin"
     tzdata>=2024.1; platform_system == "Windows"
-    pysqlite3-binary>=0.5.4; sys_platform == "linux" and platform_machine == "x86_64"
+    pysqlite3>=0.6.1,<0.7; sys_platform == "linux" and platform_machine == "x86_64"
     uvloop>=0.19; platform_system != "Windows"
 
 [options.extras_require]
@@ -61,7 +61,7 @@ def test_continuation_lines_and_comments() -> None:
         "qrcode[pil]>=7.4,<9",
         'truststore==0.10.4; sys_platform == "darwin"',
         'tzdata>=2024.1; platform_system == "Windows"',
-        'pysqlite3-binary>=0.5.4; sys_platform == "linux" and platform_machine == "x86_64"',
+        'pysqlite3>=0.6.1,<0.7; sys_platform == "linux" and platform_machine == "x86_64"',
         'uvloop>=0.19; platform_system != "Windows"',
     ]
 
@@ -75,7 +75,7 @@ def test_extras_section_is_not_read() -> None:
     [
         (
             "x86_64",
-            ["aiohttp<4,>=3.9", "qrcode[pil]<9,>=7.4", "pysqlite3-binary>=0.5.4", "uvloop>=0.19"],
+            ["aiohttp<4,>=3.9", "qrcode[pil]<9,>=7.4", "pysqlite3<0.7,>=0.6.1", "uvloop>=0.19"],
         ),
         ("aarch64", ["aiohttp<4,>=3.9", "qrcode[pil]<9,>=7.4", "uvloop>=0.19"]),
     ],

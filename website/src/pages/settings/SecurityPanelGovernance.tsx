@@ -42,6 +42,8 @@ export const SCOPE_LABEL_KEY: Record<string, string> = {
   channels: 'pages.settings.securityPanel.gov_scope_channels',
   'filesystem.read': 'pages.settings.securityPanel.gov_scope_filesystem_read',
   'filesystem.write': 'pages.settings.securityPanel.gov_scope_filesystem_write',
+  // This governs linked targets only; ordinary steering remains readable.
+  'steering.sources': 'pages.settings.securityPanel.gov_scope_steering_sources',
   'network.egress': 'pages.settings.securityPanel.gov_scope_network_egress',
   'sandbox.min_level': 'pages.settings.securityPanel.gov_scope_sandbox_level',
   approval_mode: 'pages.settings.securityPanel.gov_scope_approval_mode',
@@ -133,7 +135,11 @@ function rulesetLabel(d: GovernanceScopeDetail): string {
 
 /** Compact human label for a scope's EFFECTIVE state, by archetype. */
 function effectiveLabel(row: GovernanceScope): string {
-  if (!row.governed) return i18nT('pages.settings.securityPanel.not_restricted')
+  if (!row.governed) {
+    return row.deny_when_ungoverned
+      ? i18nT('pages.settings.securityPanel.nothing_allowed')
+      : i18nT('pages.settings.securityPanel.not_restricted')
+  }
   const d = row.detail
   switch (row.archetype) {
     case 'ruleset':
@@ -220,6 +226,7 @@ const SCOPE_PLANE: Record<string, GovPlaneKey> = {
   commands: 'access',
   'filesystem.read': 'io',
   'filesystem.write': 'io',
+  'steering.sources': 'io',
   'network.egress': 'io',
   channels: 'channels',
   approval_mode: 'modes',
@@ -271,7 +278,7 @@ function GovernanceRow({ row }: { row: GovernanceScope }) {
             <InfoTip text={i18nT(tipKey)} />
           </>
         ) : (
-          <span className="text-[12px] text-muted italic shrink-0">{i18nT('pages.settings.securityPanel.not_restricted')}</span>
+          <span className="text-[12px] text-muted italic shrink-0">{label}</span>
         )}
       </div>
     </div>

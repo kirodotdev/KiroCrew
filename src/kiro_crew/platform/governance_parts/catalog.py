@@ -36,6 +36,9 @@ SCOPEDMAP = "scopedmap"
 # SCOPE_CATALOG key whose deny-mode deny list is force-pinned (un-opt-out-able).
 COMMANDS_SCOPE = "commands"
 
+# Canonical files a global steering leaf link may read.
+STEERING_SOURCES_SCOPE = "steering.sources"
+
 
 @dataclass(frozen=True)
 class ScopeSpec:
@@ -53,6 +56,9 @@ class ScopeSpec:
     # loader's contract is that registering a scope needs no loader edit, and a
     # second scope with a floor should be a catalog entry, not another `if`.
     always_permitted: tuple[str, ...] = ()
+    # An opt-in scope denies when neither host-controlled tier names it.
+    # Once named, the ordinary policy ∩ profile algebra applies.
+    deny_when_ungoverned: bool = False
 
 
 # ── CAPABILITY-DEFAULT CONTRACT (read before touching any capability_default) ──
@@ -69,8 +75,9 @@ class ScopeSpec:
 # the children physically present in the document, so an unnamed capability is an
 # absent scope, and ``resolve`` PERMITS an absent scope (``_PERMIT_NOT_GOVERNED``)
 # exactly as it does for an unnamed ``mcp``, ``commands`` or ``network.egress``.
-# Omission means ungoverned-and-permitted for every archetype; capabilities are
-# not a special case, and making them one would put a namespace-specific rule in
+# Omission means ungoverned-and-permitted unless the catalog row declares
+# ``deny_when_ungoverned`` (the opt-in ``steering.sources`` scope). Capabilities
+# are not a special case, and making them one would put a namespace-specific rule in
 # a loader whose whole contract is that a newly registered scope family parses
 # without a loader edit.
 #
@@ -124,6 +131,7 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     "filesystem.write": ScopeSpec(RULESET, matcher="path"),
     "folders.read": ScopeSpec(RULESET, matcher="path"),
     "folders.write": ScopeSpec(RULESET, matcher="path"),
+    STEERING_SOURCES_SCOPE: ScopeSpec(RULESET, matcher="path", deny_when_ungoverned=True),
     "network.egress": ScopeSpec(RULESET, matcher="host"),
     "channels": ScopeSpec(SCOPEDMAP),
     "approval_mode": ScopeSpec(ORDINAL, ordinal_scale="approval"),

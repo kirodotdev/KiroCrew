@@ -539,7 +539,7 @@ def _doctor_sqlite_fts5(issues: list[str]) -> None:
     """Report whether this interpreter's SQLite carries FTS5.
 
     Memory and knowledge full-text search need it. On macOS and Linux aarch64 the
-    host sqlite3 build is what runs (pysqlite3-binary is x86_64-Linux only), and a
+    host sqlite3 build is what runs (pysqlite3 is required on Linux x86_64), and a
     build without FTS5 breaks memory init.
     """
     try:
@@ -554,7 +554,7 @@ def _doctor_sqlite_fts5(issues: list[str]) -> None:
             # exactly the case the gate hides the command.
             if cli_doctor.pip_install_channel_available():
                 print(
-                    f"{render._INDENT}Fix: {cli_doctor.pip_install_command_for('pysqlite3-binary')}"
+                    f"{render._INDENT}Fix: {cli_doctor.pip_install_command_for('pysqlite3>=0.6.1,<0.7')}"
                 )
             print("               Or use a Python whose SQLite was built with FTS5.")
             issues.append("sqlite fts5")

@@ -14,7 +14,7 @@
 #
 # Python: provisions a python-build-standalone CPython via a SHA-256-pinned uv
 # into a user-owned directory (the default) — no package manager, no sudo,
-# works on old-glibc distros (CentOS 7). Opt out with --system-python to run on
+# with glibc >=2.28 required on Linux. Opt out with --system-python to run on
 # a system interpreter (>=3.12) instead; the choice is recorded and survives
 # updates. If the managed default cannot be provisioned (no network), the run
 # falls back to a usable system interpreter rather than failing.
@@ -350,7 +350,7 @@ _run_step() {
 # toolchain and -dev headers the host was never required to have; the failure
 # lands deep inside a compiler run, after the working venv has already been
 # moved aside. The managed python-build-standalone interpreter runs on
-# old-glibc distros, but each dependency's wheels carry their own glibc floor
+# older distros, but Kiro Crew requires glibc >=2.28 and dependencies carry a floor
 # (their manylinux tag), which is the part that varies per host.
 # `--only-binary=:all:` makes pip resolve the newest release of every
 # dependency that publishes a wheel this host can run, and when no release
