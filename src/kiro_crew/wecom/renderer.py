@@ -314,10 +314,16 @@ class WeComRenderer(Renderer):
         chunks = await asyncio.to_thread(
             bounded_for_delivery, chunks, WECOM_SAFE_REPLY_CHARS, _default_redactor
         ) or [remainder]
-        # Re-counted over the chunks that SHIP: the tally above read the pre-split
-        # answer, and a boundary repair can add a placeholder of its own, so a reply
-        # whose only redaction came from one would announce none.
-        self._notice_creds, self._notice_urls = count_redaction_tags("\n".join(chunks))
+        # Re-counted over the chunks that SHIP, as an ADDITION: the tally above read
+        # the whole answer, and a boundary repair can add a placeholder of its own.
+        # Only the difference against this remainder belongs here. Assigning the
+        # chunk count instead would read a subject that is not the answer -- after a
+        # bubble rotation ``remainder`` starts at ``_carried``, so a placeholder in
+        # an already-delivered bubble would drop out of the notice entirely.
+        shipped_creds, shipped_urls = count_redaction_tags("\n".join(chunks))
+        before_creds, before_urls = count_redaction_tags(remainder)
+        self._notice_creds += max(0, shipped_creds - before_creds)
+        self._notice_urls += max(0, shipped_urls - before_urls)
         # Tables convert per CHUNK, and only now that the turn has sealed: a table
         # whose last row was still arriving stayed raw in the streaming frames, so
         # ``final=True`` is the first point it can be rendered whole. Done once,

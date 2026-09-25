@@ -10,11 +10,15 @@ into one message has to tell it, which is what the enumeration below enforces.
 from __future__ import annotations
 
 import ast
+import inspect
 from pathlib import Path
 
 import pytest
 
 import kiro_crew
+from kiro_crew.discord.client import DISCORD_MAX_TEXT
+from kiro_crew.discord.renderer import _fit_platform_cap
+from kiro_crew.discord.renderer import _redact_all as _discord_redact_all
 from kiro_crew.messaging.display_safety import (
     canonicalize_display,
     joins_to_a_credential,
@@ -53,22 +57,45 @@ HEAD, TAIL = KEY[:10], KEY[10:]
 
 SRC = Path(kiro_crew.__file__).parent
 
-#: Every path that delivers one splitter chunk as one message. A boundary there
-#: is a seam between two messages a reader reads in order, so each of these must
-#: pass its redactor at every splitter call. Enumerated rather than discovered:
-#: a path that maintains none of the state is invisible to a search for the
-#: state's names, and those are exactly the ones left open.
-DELIVERY_PATHS = (
-    "slack/renderer.py",
-    "webex/renderer.py",
-    "whatsapp/renderer.py",
-    "teams/renderer.py",
-    "wecom/renderer.py",
-    "dashboard/chat_mirror.py",
-    "telegram/renderer.py",
-)
-
+#: The splitters that ACCEPT a redactor, which is what makes "pass one" a
+#: well-formed demand. ``chunk_text`` takes no such parameter: it is the blind
+#: fixed-width last resort, and its safety comes from the subject it is handed --
+#: a chunk already cut and graded -- rather than from a scan it could run itself.
 SPLITTERS = frozenset({"split_markdown_safe", "chunk_utf8_bytes"})
+
+#: Calls a redactor would not help, keyed by module, each with the PROPERTY that
+#: makes that true. Not a list of things to get to later: an entry is a claim
+#: about the call, and ``test_no_exception_has_gone_stale`` fails when the claim
+#: stops holding, so an entry cannot outlive the code it describes.
+NO_SEAM_TO_GRADE = {
+    "teams/session_resume.py": (
+        "the replay preview keeps chunks[0] and discards the rest, so the split "
+        "produces no second message for a boundary to rejoin across"
+    ),
+    "whatsapp/renderer.py": (
+        "the prefix-stable branch cuts an already-redacted body at the caller's "
+        "own budget and nowhere else -- searching for a safer one reads text that "
+        "arrives later and would move a boundary under a message already sent -- "
+        "and that caller grades its own seam before it counts a chunk final"
+    ),
+}
+
+#: Modules the walk MUST reach, so a derivation that silently returns a subset
+#: fails instead of passing on an emptier population than the tree really holds.
+KNOWN_DELIVERY_MODULES = frozenset(
+    {
+        "dashboard/chat_mirror.py",
+        "discord/renderer.py",
+        "feishu/client.py",
+        "messaging/renderer.py",
+        "slack/renderer.py",
+        "teams/renderer.py",
+        "telegram/renderer.py",
+        "webex/renderer.py",
+        "wecom/renderer.py",
+        "whatsapp/renderer.py",
+    }
+)
 
 
 def _rejoins(chunks: list[str]) -> bool:
@@ -170,26 +197,84 @@ def _splitter_calls(tree: ast.AST) -> list[tuple[str, set[str]]]:
     return calls
 
 
-class TestEveryDeliveryPathIsEnumerated:
-    """The enforcement: a path that forgets the redactor fails here."""
+def _modules_that_split() -> dict[str, list[tuple[str, set[str]]]]:
+    """Every module under ``src/kiro_crew`` that calls a redactor-accepting splitter.
 
-    @pytest.mark.parametrize("path", DELIVERY_PATHS)
-    def test_the_path_still_reaches_a_splitter(self, path: str) -> None:
-        calls = _splitter_calls(ast.parse((SRC / path).read_text(encoding="utf-8")))
-        assert calls, (
-            f"{path} reaches no splitter. If its delivery moved, move it in "
-            "DELIVERY_PATHS too -- an empty list would otherwise pass the "
-            "redactor check below by having nothing to check."
+    DERIVED by walking the tree, not curated. A curated list of delivery paths has
+    one failure mode that matters: a path nobody adds to it is not merely
+    unchecked, it is invisible, and the paths most likely to be forgotten are the
+    new ones. Reaching a splitter is a property of the code, so the population
+    reads it off the code -- a module joins the moment it calls one, and the
+    enforcement below then applies to it without anyone remembering to say so.
+
+    ``messaging/split.py`` itself is skipped: it DEFINES these functions and its
+    own recursive cut deliberately passes no redactor one level down.
+    """
+    found: dict[str, list[tuple[str, set[str]]]] = {}
+    for path in sorted(SRC.rglob("*.py")):
+        relative = path.relative_to(SRC).as_posix()
+        if relative == "messaging/split.py":
+            continue
+        calls = _splitter_calls(ast.parse(path.read_text(encoding="utf-8")))
+        if calls:
+            found[relative] = calls
+    return found
+
+
+#: Resolved once at collection time: the tests below parametrize over it.
+SPLITTING_MODULES = _modules_that_split()
+GRADED_MODULES = sorted(set(SPLITTING_MODULES) - set(NO_SEAM_TO_GRADE))
+
+
+class TestEveryDeliveryPathIsEnumerated:
+    """The enforcement: a path that forgets the redactor fails here.
+
+    The population is derived from the tree, so "enumerated" means the code says
+    so rather than that somebody listed it.
+    """
+
+    def test_the_walk_reaches_the_channels_that_deliver(self) -> None:
+        """A derivation that finds nothing, or too little, must not pass quietly."""
+        missing = sorted(KNOWN_DELIVERY_MODULES - set(SPLITTING_MODULES))
+        assert not missing, (
+            f"the module walk did not reach {missing}, so the population is smaller "
+            "than the tree really holds and an unguarded call in a module it missed "
+            "would pass unseen. If delivery genuinely moved out of one of these, "
+            "move it in KNOWN_DELIVERY_MODULES too."
         )
 
-    @pytest.mark.parametrize("path", DELIVERY_PATHS)
+    @pytest.mark.parametrize("path", GRADED_MODULES)
     def test_every_splitter_call_passes_a_redactor(self, path: str) -> None:
-        calls = _splitter_calls(ast.parse((SRC / path).read_text(encoding="utf-8")))
-        unguarded = [name for name, keywords in calls if "redactor" not in keywords]
+        unguarded = [
+            name for name, keywords in SPLITTING_MODULES[path] if "redactor" not in keywords
+        ]
         assert not unguarded, (
             f"{path} calls {unguarded} with no redactor, so the boundary is "
             "chosen by a length budget alone and a severed key reaches two "
             "adjacent messages."
+        )
+
+    @pytest.mark.parametrize("path", sorted(NO_SEAM_TO_GRADE))
+    def test_no_exception_has_gone_stale(self, path: str) -> None:
+        """An exception outlives its reason unless something fails when it does.
+
+        Two ways a claim stops holding, and both fail here: the module reaches no
+        splitter at all, or every call in it passes a redactor, which means the
+        exception grants a licence nothing uses. Deleting the entry is then the fix,
+        and leaving it would let a LATER unguarded call in that module inherit an
+        exemption written for a call that is gone.
+        """
+        assert path in SPLITTING_MODULES, (
+            f"{path} is excepted but reaches no splitter -- delete its "
+            "NO_SEAM_TO_GRADE entry rather than leaving the module exempt."
+        )
+        unguarded = [
+            name for name, keywords in SPLITTING_MODULES[path] if "redactor" not in keywords
+        ]
+        assert unguarded, (
+            f"{path} is excepted but every splitter call in it now passes a "
+            "redactor -- delete its NO_SEAM_TO_GRADE entry so a later call cannot "
+            "inherit the exemption."
         )
 
 
@@ -1035,11 +1120,14 @@ class TestWhatsAppsOwnSendPathStaysBounded:
         """No extra bound runs there: its boundaries are the budget's, unchanged.
 
         A streaming caller treats all but the last chunk as delivered, so a bound
-        that re-cut them would move a boundary under a message already sent.
+        that re-cut them would move a boundary under a message already sent. Stated
+        as the two calls the branch makes, which is where the contract lives now
+        that the shared splitter carries no mode for it.
         """
         converted = to_whatsapp_text(self._dense())
+        redacted, _ = redact_for_display(converted, _redact_all)
         assert render_chunks(self._dense(), self.LIMIT, stable=True) == split_markdown_safe(
-            converted, self.LIMIT, redactor=_redact_all, stable=True
+            redacted, self.LIMIT
         )
 
     def test_ordinary_prose_is_untouched(self) -> None:
@@ -1118,7 +1206,16 @@ class TestAStreamedReplyNeverRevisesADeliveredChunk:
         return f"{'w' * self.PAD} {HEAD} {TAIL} trailing words after the key here"
 
     def _split(self, text: str, *, stable: bool) -> list[str]:
-        return split_markdown_safe(text, self.LIMIT, redactor=_default_redactor, stable=stable)
+        """The two cuts the streaming contract is about.
+
+        ``stable`` is the WhatsApp renderer's own branch -- redact the whole body,
+        then cut at the budget and nowhere else -- written out here as the two calls
+        it makes, because the shared splitter carries no mode for one caller.
+        """
+        if stable:
+            redacted, _ = redact_for_display(text, _default_redactor)
+            return split_markdown_safe(redacted, self.LIMIT)
+        return split_markdown_safe(text, self.LIMIT, redactor=_default_redactor)
 
     def test_searching_the_whole_body_revises_a_sealed_chunk(self) -> None:
         """The state a streaming caller cannot survive, on the searching path."""
@@ -1477,3 +1574,220 @@ class TestTelegramRotatesWithoutHandingOverAKey:
         assert chunks
         assert not _rejoins(chunks)
         assert KEY not in _on_screen(chunks)
+
+
+class TestDiscordRotatesWithoutHandingOverAKey:
+    """Discord seals every chunk but the last as its own message, like Telegram.
+
+    Its rotation redacts each segment alone, so a boundary between the halves of a
+    key is a boundary neither message reports. Sized against the channel's real
+    2000-character cap rather than a toy budget.
+    """
+
+    BUDGET = DISCORD_MAX_TEXT
+
+    def _body(self) -> str:
+        """Filler, then the key's halves either side of a line break."""
+        return ("w " * 980) + HEAD + "\n" + TAIL + " and some trailing words after it"
+
+    def test_the_budget_alone_hands_the_reader_the_key(self) -> None:
+        """The control: without the redactor this is exactly what ships."""
+        chunks = split_markdown_safe(self._body(), self.BUDGET)
+        assert len(chunks) > 1
+        assert _rejoins(chunks)
+        assert KEY in _on_screen(chunks)
+
+    def test_the_rotation_cut_moves_instead(self) -> None:
+        chunks = split_markdown_safe(self._body(), self.BUDGET, redactor=_discord_redact_all)
+        assert len(chunks) > 1
+        assert not _rejoins(chunks)
+        assert KEY not in _on_screen(chunks)
+        for chunk in chunks:
+            assert KEY not in chunk
+
+    def test_every_character_still_ships(self) -> None:
+        body = self._body()
+        chunks = split_markdown_safe(body, self.BUDGET, redactor=_discord_redact_all)
+        assert "".join(chunks).replace("\n", "") == body.replace("\n", "")
+
+    def test_a_declined_cut_is_still_bounded(self) -> None:
+        """The cap truncates a larger payload after every scan has run."""
+        dense = " ".join(f"{HEAD} {TAIL}" for _ in range(120))
+        chunks = bounded_for_delivery(
+            split_markdown_safe(dense, self.BUDGET, redactor=_discord_redact_all),
+            self.BUDGET,
+            _discord_redact_all,
+            _fit_platform_cap,
+        )
+        assert chunks
+        assert max(len(chunk) for chunk in chunks) <= self.BUDGET
+
+    def test_the_seam_record_has_exactly_one_writer(self) -> None:
+        """One grader and one writer, so no sealing path carries its own rule."""
+        tree = ast.parse((SRC / "discord" / "renderer.py").read_text(encoding="utf-8"))
+        writers = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and any(
+                isinstance(inner, ast.Assign)
+                and any(
+                    isinstance(target, ast.Attribute) and target.attr == "_sent_tail"
+                    for target in inner.targets
+                )
+                for inner in ast.walk(node)
+            )
+        ]
+        assert sorted(node.name for node in writers) == ["__init__", "_record_sent"], (
+            "the predecessor record must be written in one place besides __init__, "
+            "or a sealing path that forgets it ships an open seam"
+        )
+
+    def test_both_sinks_grade_against_the_message_above(self) -> None:
+        """Two sinks show text -- the seal and the live frame -- and both must grade.
+
+        A grade on only one of them reads as covered: after a rotation seals a
+        bubble ending in a credential prefix, the live frame is where the
+        completing characters first reach the reader.
+        """
+        tree = ast.parse((SRC / "discord" / "renderer.py").read_text(encoding="utf-8"))
+        graded = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for inner in ast.walk(node):
+                if not isinstance(inner, ast.Call):
+                    continue
+                # Both shapes: the direct call, and the REFERENCE handed to a worker
+                # thread. Reading only direct calls sees one of the two sinks and
+                # reports the offloaded one as ungraded.
+                offloaded = _name_of(inner.args[0]) if inner.args else ""
+                if _name_of(inner.func) == "_seam_safe" or (
+                    _name_of(inner.func) == "to_thread" and offloaded == "_seam_safe"
+                ):
+                    graded.add(node.name)
+        for sink in ("_seal_current", "_stream_live"):
+            assert sink in graded, f"{sink} shows text without grading its seam"
+
+    def test_the_record_is_written_only_after_a_delivery_confirms(self) -> None:
+        """Unsent text as the predecessor costs the NEXT message a leading span."""
+        tree = ast.parse((SRC / "discord" / "renderer.py").read_text(encoding="utf-8"))
+        grader = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "_seam_safe"
+        )
+        assert not [
+            inner
+            for inner in ast.walk(grader)
+            if isinstance(inner, ast.Assign)
+            and any(
+                isinstance(target, ast.Attribute) and target.attr == "_sent_tail"
+                for target in inner.targets
+            )
+        ], "the grader must not record: every send and edit below it can still fail"
+
+
+class TestTheTallyKeepsWhatWasAlreadyDelivered:
+    """A re-count over what shipped may ADD to the notice, never replace it.
+
+    Both paths here deliver a reply across more than one message, and both had a
+    subject narrower than the answer: WeCom re-counts a remainder that starts at
+    the rotation offset, and Slack reads a ledger. Counting only that subject drops
+    every placeholder already on screen.
+    """
+
+    def test_wecom_adds_the_repair_rather_than_overwriting(self) -> None:
+        source = (SRC / "wecom" / "renderer.py").read_text(encoding="utf-8")
+        assert "self._notice_creds += max(0, shipped_creds - before_creds)" in source
+        assert "self._notice_urls += max(0, shipped_urls - before_urls)" in source
+        assert 'self._notice_creds, self._notice_urls = count_redaction_tags("\\n".join(' not in (
+            source
+        ), "assigning the chunk count discards the placeholders already delivered"
+
+    def test_slack_records_every_chunk_it_posts(self) -> None:
+        """The ledger IS the tally's subject, so a chunk left out of it is lost."""
+        tree = ast.parse((SRC / "slack" / "renderer.py").read_text(encoding="utf-8"))
+        fallback = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "_render_fallback"
+        )
+        recorded = [
+            inner
+            for inner in ast.walk(fallback)
+            if isinstance(inner, ast.AugAssign)
+            and isinstance(inner.target, ast.Attribute)
+            and inner.target.attr == "_delivered"
+        ]
+        assert len(recorded) >= 2, (
+            "chunk 0 and every continuation must reach the delivery ledger, or an "
+            "over-limit answer announces fewer placeholders than it shipped"
+        )
+
+
+class TestTheRepairStaysOnTheTableAwarePath:
+    """A repaired body is re-cut by the assembly that graded it, not another one.
+
+    The prose splitter knows nothing of the table blocks or the rich budget, and
+    both callers only reach the repair with text already past their budget, so it
+    would cut the table run mid-body and strand header-less rows.
+    """
+
+    #: A table long enough to be split at row boundaries, whose seam to the prose
+    #: after it rejoins a key -- so the repair really does fire.
+    BODY = (
+        "col | val\n--- | ---\n"
+        + "".join(f"r{i} | value number {i}\n" for i in range(12))
+        + "last | "
+        + HEAD
+        + "\n\n"
+        + TAIL
+        + " then ordinary trailing prose with **bold** in it."
+    )
+
+    def test_the_repair_fires_on_this_body(self) -> None:
+        """The premise: without the repair the seam hands the key over."""
+        blocks = ["\n".join(lines) for _, lines in _table_blocks(self.BODY)]
+        assert _rejoins(blocks)
+
+    def test_the_table_rows_are_still_cut_at_row_boundaries(self) -> None:
+        chunks = _split_markdown_table_aware(self.BODY, 600, 120)
+        assert chunks
+        assert not _rejoins(chunks)
+        assert KEY not in _on_screen(chunks)
+        table_chunks = [c for c in chunks if "|" in c]
+        assert table_chunks, "the table run must survive as table text"
+        for chunk in table_chunks:
+            for line in chunk.splitlines():
+                if line.strip():
+                    assert "|" in line, "a row was cut mid-body and reads as prose"
+
+    def test_the_repaired_body_still_honours_the_rich_budget(self) -> None:
+        """The discriminator: a table run budgets in SOURCE chars, not rendered ones.
+
+        The prose splitter measures everything against ``rendered_limit`` and knows
+        nothing of ``rich_limit``, so a repaired body it re-cuts comes back as one
+        chunk far over the budget the table run actually seals under.
+        """
+        chunks = _split_markdown_table_aware(self.BODY, 600, 120)
+        assert max(len(chunk) for chunk in chunks) <= 120
+
+    def test_the_prose_keeps_its_markup(self) -> None:
+        chunks = _split_markdown_table_aware(self.BODY, 600, 120)
+        assert "**bold**" in "".join(chunks)
+
+
+class TestTheSharedSplitterCarriesNoMode:
+    """One caller's need is that caller's branch, not the primitive's parameter.
+
+    A mode on a shared pure splitter is read by everyone and used by one, and the
+    branch it selected was two calls the owning renderer already makes.
+    """
+
+    def test_the_splitter_takes_no_stable_parameter(self) -> None:
+        assert "stable" not in inspect.signature(split_markdown_safe).parameters
+
+    def test_the_streaming_contract_still_has_a_home(self) -> None:
+        """Deleting the mode must not delete the behaviour it selected."""
+        assert "stable" in inspect.signature(render_chunks).parameters

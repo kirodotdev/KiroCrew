@@ -904,7 +904,7 @@ class TestRotationSplitting:
         r._buf = [source]
         offloads: list[tuple[Any, tuple[Any, ...], dict[str, Any]]] = []
 
-        def _capture(text: str, limit: int) -> list[str]:
+        def _capture(text: str, limit: int, **kwargs: Any) -> list[str]:
             return [text]
 
         async def _offload(func: Any, /, *args: Any, **kwargs: Any) -> Any:
@@ -918,7 +918,7 @@ class TestRotationSplitting:
 
         assert offloads == [
             (renderer_module.protected_ref_spans, (source,), {}),
-            (_capture, (source, 100), {}),
+            (_capture, (source, 100), {"redactor": renderer_module._redact_all}),
         ]
 
     @pytest.mark.asyncio

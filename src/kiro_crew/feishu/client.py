@@ -29,7 +29,8 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 from kiro_crew import extras
-from kiro_crew.messaging.split import split_markdown_safe
+from kiro_crew.messaging.renderer import _default_redactor
+from kiro_crew.messaging.split import bounded_for_delivery, split_markdown_safe
 
 logger = logging.getLogger(__name__)
 
@@ -209,8 +210,17 @@ class LarkClient:
         inbound anchor, in order, and the first failure stops the rest — a
         partial send reported as success is what makes a dropped answer
         invisible.
+
+        The cut is credential-aware because each chunk is its own message: a
+        boundary here is a seam between two replies the reader reads in order, and
+        a key the model wrote across a line break is invisible to a per-message
+        scan yet whole on screen once the break is gone. That cut is fail-closed --
+        it can decline to cut and answer with the text whole -- and this ceiling
+        drops a larger payload, so the answer is bounded and graded again before
+        anything is sent.
         """
-        chunks = split_markdown_safe(text, FEISHU_MAX_TEXT)
+        chunks = split_markdown_safe(text, FEISHU_MAX_TEXT, redactor=_default_redactor)
+        chunks = bounded_for_delivery(chunks, FEISHU_MAX_TEXT, _default_redactor) or chunks
         if not chunks:
             return True
         loop = asyncio.get_running_loop()

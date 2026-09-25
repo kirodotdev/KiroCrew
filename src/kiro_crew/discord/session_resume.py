@@ -103,7 +103,9 @@ async def _replay_preview(text: str, limit: int, *, reserve: int) -> str:
     redacted = _redact_discord_text(text)
     probe = redacted[: max(1, limit) * 2]
     probe_left_content = len(probe) < len(redacted)
-    chunks = await asyncio.to_thread(split_markdown_safe, probe, limit, reserve=reserve)
+    chunks = await asyncio.to_thread(
+        split_markdown_safe, probe, limit, reserve=reserve, redactor=_redact_discord_text
+    )
     if not chunks:
         return ""
 

@@ -1171,6 +1171,11 @@ class SlackRenderer(Renderer):
                 await self.slack.post_message(self.channel, part, self.thread_ts)
             except Exception:
                 logger.debug("slack: posting a continuation chunk failed", exc_info=True)
+                continue
+            # Recorded like every other confirmed send: the ledger IS the subject
+            # the redaction notice counts, so a continuation left out of it makes an
+            # over-limit answer announce fewer placeholders than it shipped.
+            self._delivered += part
 
     async def _append_task(self, task_id: str, title: str, status: str, details: str = "") -> bool:
         """Append a task card. Never rotates (native ``_append_task``).
