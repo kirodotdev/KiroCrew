@@ -59,7 +59,7 @@ from kiro_crew.messaging.renderer import (
     redaction_notice,
     split_options_trailer,
 )
-from kiro_crew.messaging.split import split_markdown_safe
+from kiro_crew.messaging.split import bounded_for_delivery, split_markdown_safe
 from kiro_crew.messaging.tables import TABLE_POLICY_CARDS
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.sel import sel
@@ -379,11 +379,20 @@ class TeamsRenderer(Renderer):
         # Overflow past max_buttons is appended to the body as a numbered list by
         # the shared cap, so the user still learns those choices exist.
         content, kept = apply_options_cap(content, choices, self.capabilities)
+        # Re-bound: the splitter declines to cut when no budget is clean and
+        # answers with the text whole, and this transport truncates a larger
+        # payload after every scan has run, so the tail would go unseen.
         chunks = await asyncio.to_thread(
             split_markdown_safe,
             content,
             self.capabilities.max_message_chars,
             redactor=_default_redactor,
+        )
+        chunks = await asyncio.to_thread(
+            bounded_for_delivery,
+            chunks,
+            self.capabilities.max_message_chars,
+            _default_redactor,
         ) or ([] if (kept or files) else ["…"])
         for index, chunk in enumerate(chunks):
             # Reuse the progress bubble for the first chunk so a turn that showed
@@ -414,7 +423,10 @@ class TeamsRenderer(Renderer):
             # After the text, so an image lands next to the prose that introduced
             # it rather than above the answer it belongs to.
             await self._send_inline_images(files)
-        cred_count, url_count = count_redaction_tags(content)
+        # Counted over the chunks that SHIPPED, not the source they were cut from:
+        # a boundary repair can add a placeholder of its own, and a reply whose only
+        # redaction came from one would otherwise announce none.
+        cred_count, url_count = count_redaction_tags("\n".join(chunks))
         if cred_count or url_count:
             # The answer above carries a redaction placeholder, so a follow-up
             # notice tells the reader the text was rewritten. Counted over the

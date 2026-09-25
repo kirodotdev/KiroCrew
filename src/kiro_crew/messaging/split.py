@@ -67,12 +67,18 @@ import re
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
-from kiro_crew.messaging.display_safety import canonicalize_display, redact_for_display
+from kiro_crew.messaging.display_safety import (
+    canonicalize_display,
+    joins_to_a_credential,
+    redact_for_display,
+)
 
 __all__ = [
     "split_markdown_safe",
     "split_markdown_bytes",
     "chunk_utf8_bytes",
+    "repaired_for_delivery",
+    "bounded_for_delivery",
     "iter_fence_spans",
     "iter_fence_lines",
     "truncate_utf8",
@@ -184,54 +190,401 @@ class _Fence:
 #: can flip the state halfway through itself.
 _Frag = tuple[str, str, bool]
 
-#: A whitespace run holding at least one line break, with the horizontal
-#: whitespace on either side of it. Sealing a chunk trims the whitespace that
-#: ended it and the next chunk starts at the first character after that run, so
-#: this is exactly the span a cut at a line boundary removes from the screen.
-_BREAK_RUN = re.compile(r"[^\S\n]*\n\s*")
+#: Any whitespace run. A cut consumes the run it lands on -- the character
+#: splitter trims it when it seals, and a platform drops it when it renders the
+#: message either way -- so the form with EVERY run gone is what some cut could
+#: produce. Used only by the repair, never to decide whether one is needed.
+_WHITESPACE_RUN = re.compile(r"\s+")
+
+#: How many budgets below the caller's own are tried one at a time before the
+#: walk starts doubling its step. Bounded because each probe costs a redaction
+#: pass over the whole text, and chosen so the worst case stays near a second at
+#: the largest message sizes this module cuts.
+_DENSE_PROBES = 128
 
 
-def _cut_safe_text(text: str, redactor: Callable[[str], str]) -> str:
-    """*text* made safe to cut at ANY boundary this module may choose.
+def _rejoins_a_key(chunks: list[str], redactor: Callable[[str], str]) -> bool:
+    """Does the delivered sequence show a key that the text on its own does not?
 
-    A caller that scans each produced chunk on its own cannot see a credential
-    the cut severed: neither piece matches, so both are reported clean, and the
-    reader rejoins the halves reading one message and then the next. The scan has
-    to happen while the text is still whole, and against the form a reader ends
-    up seeing rather than the characters as written.
+    Graded on the RENDERED SEQUENCE, not the characters as stored. A platform
+    drops the whitespace at a message's edges, so the last visible character of
+    one message sits against the first visible character of the next: neither a
+    trailing newline nor a trailing space separates anything once the two are on
+    screen. Stripping every chunk's edges before the grade is what makes this
+    predicate see what a reader sees, and it is the difference between the two
+    splitters -- the character one trims the whitespace itself when it seals,
+    while the byte one is lossless and carries the run into the chunk, where the
+    client drops it anyway.
 
-    Two reductions, because a cut removes one thing and a client removes another:
+    The whole sequence at once, not boundary by boundary, because a key needs no
+    more than a narrow budget to span three chunks. Split ``AKIA``-then-sixteen
+    over four chunks and every neighbouring pair holds a fragment that matches
+    nothing, while the screen holds the key whole; the same gap swallows a chunk
+    that renders to nothing at all, which the lossless byte splitter can place
+    between the two halves. A fragment is only ever part of a key, so no pair of
+    neighbours can be asked about it -- the reading that sees it is the sequence.
 
-    * **The rendered form.** :func:`~kiro_crew.messaging.display_safety.
-      redact_for_display` scans the literal text and the form the platform
-      renders, so a key broken by markup is a marker before any boundary can
-      land inside it. This alone closes a mid-line hard cut, where the text on
-      each side of the boundary is unchanged.
-    * **The break a seal drops.** A chunk sealed at a line boundary loses the
-      whitespace that ended it, and the next chunk begins at the first character
-      after that whitespace. So on screen the last character before the break
-      sits flush against the first one after it, while the whole text still
-      holds the break between them. A key whose halves straddle a line break is
-      therefore invisible to a scan of the text as written, invisible to a scan
-      of either chunk, and whole in the reader's eye.
+    Both readings
+    :func:`~kiro_crew.messaging.display_safety.joins_to_a_credential` names are
+    kept, for the reasons it gives: canonicalising the join is the wider reading
+    for runs of delimiters, and canonicalising each side first is the wider one
+    wherever rendering DROPS text, as a link does to its target. Either one
+    finding something refuses the cut.
 
-    Every break is a candidate boundary, so the second scan reads them all
-    collapsed at once. That is wider than any single cut produces, which is the
-    safe direction: the answer needed is whether this text can be cut at all.
+    Scanning each reading ONCE is what keeps the search affordable, and it is
+    sound because the caller redacts the whole text before cutting it: that text
+    is a fixed point of this same scan, so anything found here is produced by
+    delivering it in pieces and by nothing else.
+    """
+    if len(chunks) < 2:
+        return False
+    rendered = [chunk.strip() for chunk in chunks]
+    readings = (
+        canonicalize_display("".join(rendered)),
+        "".join(canonicalize_display(part) for part in rendered),
+    )
+    return any(redactor(reading) != reading for reading in readings)
 
-    When the collapsed form holds a credential, the collapsed and redacted form
-    is what comes back, so the message loses its line breaks. That is the trade
-    :func:`~kiro_crew.messaging.display_safety.redact_for_display` already makes
-    when it gives up markup for the same reason -- formatting is worth less than
-    a key -- and it is one-directional: text whose collapsed form holds nothing
-    keeps its breaks, so the common case is byte-for-byte unchanged.
+
+def _collapses_to_a_key(text: str, redactor: Callable[[str], str]) -> bool:
+    """Does *text* read as a key once its whitespace goes?"""
+    bare = _WHITESPACE_RUN.sub("", text)
+    return redactor(bare) != bare
+
+
+def _collapse_reads_as_a_key(text: str, redactor: Callable[[str], str]) -> bool:
+    """Does *text* read as a key once RENDERED and then collapsed?
+
+    The reading a caller re-cutting this text is exposed to, and the one
+    :func:`_made_collapse_clean` guarantees against. Wider than
+    :func:`_collapses_to_a_key`, which asks about the characters as stored: a key
+    written inside code spans is assembled by the rendering first and only then by
+    removing the break, so a gate that skips the canonical step passes text whose
+    collapse still holds a key.
+    """
+    return _collapses_to_a_key(canonicalize_display(text), redactor)
+
+
+def _made_collapse_clean(text: str, redactor: Callable[[str], str]) -> str:
+    """*text*, or a form of it whose COLLAPSE holds no key.
+
+    The guarantee every caller that cuts this module's answer again depends on: a
+    text whose collapse reads clean cannot produce a key under any later cut,
+    because removing a boundary's whitespace is the most a cut can do to bring two
+    characters together, and no substring of a clean collapse holds a key either.
+    Establishing it HERE is what lets a caller re-cut without a second grade.
+
+    Three steps, least destructive first. Text whose collapse is already clean is
+    returned unchanged, which is every reply that holds no credential at all and
+    costs one scan. Next the canonical form is redacted, which is
+    :func:`~kiro_crew.messaging.display_safety.redact_for_display`'s own
+    one-directional trade and reaches a key that only the rendering assembles.
+
+    Only where that still collapses into a key is whitespace given up, and only the
+    whitespace of the SPAN that hides it: the canonical form's smallest span that
+    collapses into a key is found the same way the literal reading finds one, closed
+    up, and redacted. Everything outside that span keeps its breaks and its markup,
+    so a long reply carrying such a key is not flattened to protect one span of it.
+    """
+    if not _collapse_reads_as_a_key(text, redactor):
+        return text
+    canonical = redact_for_display(canonicalize_display(text), redactor)[0]
+    if not _collapse_reads_as_a_key(canonical, redactor):
+        return canonical
+    narrowed = _redact_only_the_rejoined_span(canonicalize_display(text), redactor)
+    if narrowed is not None and not _collapse_reads_as_a_key(narrowed, redactor):
+        return narrowed
+    return redact_for_display(_WHITESPACE_RUN.sub("", canonicalize_display(text)), redactor)[0]
+
+
+def _span_whose_whitespace_hides_a_key(
+    text: str, redactor: Callable[[str], str]
+) -> tuple[int, int] | None:
+    """The smallest span of *text* that still reads as a key once collapsed.
+
+    Found by SHRINKING, not by a window of characters guessed to be near a key.
+    A span known to collapse into a key is trimmed from each end by half its
+    width, the trim kept whenever what remains still collapses into one, and the
+    step halved when neither end can give ground. What that converges on is a span
+    no half-step shorter at either end, which holds one key and little else.
+
+    Shrinking is what keeps the repair honest when a message carries TWO keys. The
+    region between them collapses into a key only because the keys do, so a span
+    bracketing both also brackets the prose between them, and closing that up
+    would destroy paragraphs the credentials have nothing to do with. One key at a
+    time, each in its own span, leaves the text between untouched.
+
+    A span chosen from a hand-written character set instead would stop at the first
+    character the set does not know, which is the objection
+    :func:`~kiro_crew.messaging.display_safety.joins_to_a_credential` makes to
+    windows: the scan then runs on text the key's prefix was never inside.
+
+    ``None`` when nothing is hidden, which is the whole point of asking.
+    """
+    if not _collapses_to_a_key(text, redactor):
+        return None
+    low, high = 0, len(text)
+    step = (high - low) // 2
+    while step > 0:
+        if low + step < high and _collapses_to_a_key(text[low + step : high], redactor):
+            low += step
+        elif high - step > low and _collapses_to_a_key(text[low : high - step], redactor):
+            high -= step
+        else:
+            step //= 2
+    return low, high
+
+
+def _redact_only_the_rejoined_span(text: str, redactor: Callable[[str], str]) -> str | None:
+    """*text* with only the key-hiding spans closed up and redacted, or ``None``.
+
+    The least destructive repair: the whitespace INSIDE a span that reads as a key
+    is what gets removed, which makes that key contiguous and lets the ordinary
+    redaction take it. Every other space, every line break and all the markup of
+    the message survive, so a long reply keeps its shape and loses the credential
+    rather than its formatting.
+
+    It makes a promise to callers, and keeps it by test rather than by assertion:
+    the loop returns only once the form with EVERY run removed reads clean, so a
+    caller that cuts these chunks again under its own platform limit cannot
+    uncover a key at a boundary this module never chose. ``None`` says the repair
+    cannot make that promise -- the case being a key that only the canonical
+    reading sees, which collapsing whitespace does not assemble and so no span of
+    the literal text names.
+
+    One span per pass, so a message carrying two keys keeps the prose between
+    them: each pass closes up one key's own span and redacts, and the next pass
+    starts from the result.
+
+    The pass count is capped at :data:`_DENSE_PROBES`, for the same reason the
+    budget search is: each pass costs a logarithmic number of whole-text redaction
+    passes, so a reply whose every line break splits a key-shaped token would cost
+    thousands of them and the send would never finish. Past the cap the answer is
+    ``None``, which is not a failure -- the caller's own last resort is to decline
+    to cut, which gives up nothing at all.
+    """
+    repaired = text
+    for _ in range(min(len(_WHITESPACE_RUN.findall(text)) + 1, _DENSE_PROBES)):
+        span = _span_whose_whitespace_hides_a_key(repaired, redactor)
+        if span is None:
+            collapsed = _WHITESPACE_RUN.sub("", canonicalize_display(repaired))
+            return repaired if redactor(collapsed) == collapsed else None
+        start, end = span
+        closed = repaired[:start] + _WHITESPACE_RUN.sub("", repaired[start:end]) + repaired[end:]
+        if closed == repaired:
+            return None
+        repaired = redact_for_display(closed, redactor)[0]
+    return None
+
+
+def repaired_for_delivery(
+    source: str, pieces: list[str], redactor: Callable[[str], str]
+) -> str | None:
+    """``None`` when *pieces* are safe to deliver one message each, else a repair.
+
+    For a caller that cuts *source* into *pieces* AFTER this module graded it. A
+    fixed-width slice of an oversized chunk is a boundary nothing graded, and each
+    slice is posted as its own message, so the seam the splitter closed reopens at
+    the very last step. Grading the sequence here means the caller does not have to
+    know how the grade works, only that it has one to run.
+
+    ``source`` is the text the pieces were cut FROM, and the repair is made on it.
+    A repair rebuilt from ``"".join(pieces)`` would not be the reply: sealing a
+    chunk outside a fence trims the whitespace that ended it, so the join deletes a
+    break at every seam, and a fence spanning a seam contributes its synthetic
+    closer and the next piece's reopener, which meet as one longer delimiter run
+    that reads as a new fence. The pieces are therefore GRADED and never
+    reassembled -- every caller of this function still holds what it cut.
+
+    The returned text is safe to cut AGAIN by any rule the caller likes, and that
+    is a guarantee rather than a hope: what comes back is a collapse fixed point,
+    so no later cut can bring two characters together into a key.
+    :func:`_made_collapse_clean` establishes it, and the splitter establishes it on
+    its own answers too, so a caller re-cutting either needs no second grade.
+
+    When no span of the literal text names the key -- the case of one only the
+    rendering assembles -- the canonical form is what answers, giving up markup and
+    keeping every space and every break. That is
+    :func:`~kiro_crew.messaging.display_safety.redact_for_display`'s own
+    one-directional trade, not a wider one invented here: no valid span loses its
+    whitespace to protect a credential somewhere else in the message.
+    """
+    if not _rejoins_a_key(pieces, redactor):
+        return None
+    repaired = _redact_only_the_rejoined_span(source, redactor)
+    if repaired is not None:
+        return repaired
+    return _made_collapse_clean(source, redactor)
+
+
+def offset_clear_of_a_sent_tail(
+    sent_tail: str, remainder: str, redactor: Callable[[str], str]
+) -> int:
+    """Smallest offset into *remainder* whose suffix completes no key after *sent_tail*.
+
+    ``0`` when the pair is already clean, which is the common answer. Otherwise the
+    offset covers exactly the leading characters of *remainder* that finish a
+    credential begun in text ALREADY DELIVERED, and everything from it onward is
+    the reply as written.
+
+    A streaming caller cannot grade this at the moment it seals. It seals a chunk
+    whose tail is a credential PREFIX -- matching nothing, so every scan passes it
+    -- and the characters completing the key arrive afterwards. The sealed message
+    cannot be recalled, so the only side still open to repair is the one not yet
+    sent, and the honest repair is to give up the span that completes the key while
+    keeping every character after it.
+
+    Candidates step back EXPONENTIALLY, the same bound
+    :func:`~kiro_crew.messaging.display_safety.safe_split_offset` takes and for the
+    same reason: the smallest clearing offset is not needed, only a clearing one,
+    and each candidate costs a redaction pass over attacker-influenced text.
+    ``len(remainder)`` is the last candidate, which gives up the remainder rather
+    than delivering a key across the seam.
+    """
+    if not sent_tail or not remainder:
+        return 0
+    head = sent_tail.rstrip()
+    if not joins_to_a_credential(head, remainder.lstrip(), redactor):
+        return 0
+    offset = 1
+    while offset < len(remainder):
+        if not joins_to_a_credential(head, remainder[offset:].lstrip(), redactor):
+            return offset
+        offset *= 2
+    return len(remainder)
+
+
+def bounded_for_delivery(
+    chunks: list[str],
+    budget: int,
+    redactor: Callable[[str], str],
+    cut: Callable[[str, int], list[str]] | None = None,
+) -> list[str]:
+    """*chunks*, each graded once more and cut back inside *budget* if it repairs.
+
+    Every caller whose transport CAPS what it accepts needs this, and the reason is
+    :func:`_cut_where_no_key_rejoins`'s last step: when no budget cuts without
+    rejoining a key the splitter declines to cut and answers with the text whole,
+    which is fail-closed but is one chunk over the caller's budget. A transport that
+    truncates a larger payload would drop the tail of that answer with no notice,
+    and the truncation happens AFTER every scan, so nothing sees it.
+
+    Each chunk is bounded and graded ON ITS OWN, and a chunk that repairs is the
+    repair's subject, because a chunk is a string this function holds while the
+    sequence's concatenation is not the reply -- the seam whitespace is already
+    trimmed out of it. The boundaries BETWEEN the chunks handed in are the
+    splitter's own, graded where the whole source was still available; the ones
+    created here are the new slices inside a chunk, which is exactly what each
+    chunk's own grade sees.
+
+    Re-cutting the repair needs no redactor and must not take one: the repair is only
+    returned once the form with every whitespace run removed reads clean, so any cut
+    of it is safe, while a credential-aware cut could decline to cut again and leave
+    the budget unmet. ``cut`` defaults to the character splitter; a byte-capped
+    transport passes :func:`chunk_utf8_bytes`.
+
+    The budget is applied BEFORE the grade, not after, and that order is the whole
+    point. The splitter's fail-closed answer is a list of ONE chunk, and a
+    one-element list holds no boundary, so a grade asked about it answers that
+    nothing rejoins and the oversized chunk travels on unbounded -- the exact case
+    this function exists for. Cutting to the budget first makes the grade see the
+    sequence the transport will really deliver, so a key across one of those new
+    boundaries is found and repaired. A chunk already inside the budget is returned
+    unchanged by its own cutter, so the pass costs nothing.
+    """
+    cutter = cut if cut is not None else split_markdown_safe
+    delivered: list[str] = []
+    for chunk in chunks:
+        pieces = cutter(chunk, budget) or [chunk]
+        repaired = repaired_for_delivery(chunk, pieces, redactor)
+        if repaired is not None:
+            pieces = cutter(repaired, budget) or [repaired]
+        delivered.extend(pieces)
+    return delivered
+
+
+def _under_a_safe_budget(
+    cut: Callable[[str, int], list[str]],
+    text: str,
+    budget: int,
+    redactor: Callable[[str], str],
+    floor: int = 0,
+) -> list[str] | None:
+    """Chunks of *text* whose every boundary is clean, or ``None`` if no budget is.
+
+    Moves the CUT rather than the text, which costs nothing: every character is
+    still delivered, fences still reopen, and a key that straddles no boundary
+    travels whole inside one chunk -- where the space or newline between its
+    halves is on screen, which is the same reading the scanner already accepts
+    when it passes such text.
+
+    Budgets step back ONE AT A TIME for the first :data:`_DENSE_PROBES`, then
+    exponentially, and each candidate is verified rather than assumed. The dense
+    prefix is what stops a safe budget a few bytes below the caller's from being
+    stepped over: an exponential walk alone jumps from 4 to 8 to 16, so a budget
+    clean at 6950 sits unseen between samples at 6968 and 6936 and the text goes
+    to the last resort with a safe cut available. The exponential tail keeps the
+    reach, because text needing a much smaller budget must still be found without
+    a probe per byte -- a scan of every budget costs a redaction pass each, which
+    at this module's message sizes is minutes rather than milliseconds.
+
+    ``floor`` is the smallest budget worth trying -- below the caller's ``reserve``
+    the splitter returns the text whole, which is not a safe answer but an unsplit
+    one, and the caller would cut it again under its own limit.
+    """
+    room, step = budget, 0
+    while room > floor:
+        chunks = cut(text, room)
+        if not _rejoins_a_key(chunks, redactor):
+            return chunks
+        step = step + 1 if step < _DENSE_PROBES else step * 2
+        room = budget - step
+    return None
+
+
+def _cut_where_no_key_rejoins(
+    cut: Callable[[str, int], list[str]],
+    text: str,
+    budget: int,
+    redactor: Callable[[str], str],
+    floor: int = 0,
+) -> list[str]:
+    """Cut *text* so that no boundary hands the reader a key neither chunk holds.
+
+    Four steps, cheapest and least destructive first:
+
+    1. redact against the rendered form, which closes a cut landing mid-line, and
+       establish the COLLAPSE guarantee on that text through
+       :func:`_made_collapse_clean`, so every chunk returned below holds no key
+       under any later cut and a caller re-cutting one needs no second grade;
+    2. search for a budget whose boundaries are all clean, which keeps every
+       character and every break;
+    3. if none is, close up and redact only the span that reads as a key, which
+       keeps every other space, break and markup in the message;
+    4. if no span names it either, DO NOT CUT. The text goes back whole.
+
+    Each repair is graded by the same search that rejected the text, because a
+    repair returned without a grade is a repair nobody checked.
+
+    Step 4 is the honest answer to a budget this module cannot meet. A boundary is
+    the only thing that rejoins a key ACROSS messages, so declining to create one
+    is fail-closed, and it costs the caller a chunk over its limit rather than
+    costing the reader a message stripped of its whitespace and its markup. A key
+    the model wrote with a space or emphasis inside it then stays exactly as
+    written inside ONE message, which is the reading the whole-text pass already
+    accepts. What to do with an oversized chunk is the caller's own decision, and a
+    caller that bounds it again has :func:`repaired_for_delivery` to grade what it
+    produced.
     """
     safe = redact_for_display(text, redactor)[0]
-    flush = _BREAK_RUN.sub("", canonicalize_display(safe))
-    scrubbed = redactor(flush)
-    if scrubbed != flush:
-        return scrubbed
-    return safe
+    chunks = _under_a_safe_budget(cut, safe, budget, redactor, floor)
+    if chunks is not None:
+        return chunks
+    repaired = _redact_only_the_rejoined_span(safe, redactor)
+    if repaired is None:
+        return [_made_collapse_clean(safe, redactor)]
+    chunks = _under_a_safe_budget(cut, repaired, budget, redactor, floor)
+    return chunks if chunks is not None else [_made_collapse_clean(repaired, redactor)]
 
 
 def split_markdown_safe(
@@ -240,6 +593,7 @@ def split_markdown_safe(
     *,
     reserve: int = 0,
     redactor: Callable[[str], str] | None = None,
+    stable: bool = False,
 ) -> list[str]:
     """Split *text* into chunks of at most ``limit - reserve`` characters.
 
@@ -276,18 +630,40 @@ def split_markdown_safe(
     for a line longer than ``limit``.
 
     ``redactor`` makes the cut itself credential-aware, and a caller that
-    delivers each chunk as its own message passes one: the text is reduced by
-    :func:`_cut_safe_text` before any boundary is chosen, so no boundary can hand
-    the reader a key that neither chunk holds. It stays optional, because a
-    caller whose chunks land inside one message severs nothing a reader can
-    rejoin across messages, and it is idempotent, so a caller that already
-    redacted its text pays one scan and keeps its bytes.
+    delivers each chunk as its own message passes one. The text is redacted
+    against the rendered form first, which closes a cut landing mid-line; the
+    boundaries are then graded as the reader sees them, and a budget whose
+    boundaries are all clean is searched for before anything in the text is given
+    up, so ordinary content -- a long wrapped line in a fence, say -- comes back
+    exactly as written. The parameter stays optional, because a caller whose
+    chunks land inside one message severs nothing a reader can rejoin across
+    messages, and the redaction is idempotent, so a caller that already redacted
+    its text pays one scan and keeps its bytes.
     """
     if redactor is not None:
-        # Ahead of every early return below: a text that fits today's budget is
-        # still the text a smaller budget cuts tomorrow, and the reduction does
-        # not depend on where the boundary lands.
-        text = _cut_safe_text(text, redactor)
+        if stable:
+            # PREFIX-STABLE: redact the whole text, then cut at the caller's own
+            # budget and nowhere else. A streaming caller re-splits its growing
+            # body every frame and treats all but the last chunk as delivered, so
+            # it needs chunk i to be decided by the text before it and nothing
+            # later. Searching for a safer budget reads the WHOLE body, so text
+            # arriving later can move a boundary under a message already sent --
+            # which a count of delivered chunks cannot detect and no later frame
+            # can take back. Such a caller grades its own seam before it treats a
+            # chunk as final, and holds one it cannot yet vouch for.
+            return split_markdown_safe(
+                redact_for_display(text, redactor)[0], limit, reserve=reserve
+            )
+        # The recursive cut passes no redactor, so this runs one level deep.
+        # ``reserve`` travels with it, and is the floor of the budget search: a
+        # budget it consumes whole would return the text unsplit.
+        return _cut_where_no_key_rejoins(
+            lambda body, room: split_markdown_safe(body, room, reserve=reserve),
+            text,
+            limit,
+            redactor,
+            reserve,
+        )
     if not text:
         return []
     cap = limit - reserve
@@ -434,12 +810,14 @@ def chunk_utf8_bytes(
 
     ``redactor`` carries the same meaning as in :func:`split_markdown_safe`, for
     the same reason: a byte budget knows nothing about credentials either, so a
-    caller delivering each chunk as its own message passes one. Losslessness is
-    then against the reduced text rather than the argument, and the two differ
-    only for text holding a credential a cut could hand to the reader whole.
+    caller delivering each chunk as its own message passes one. This splitter
+    keeps the whitespace a cut lands on rather than trimming it, but the client
+    drops it when it renders the message, which is why the boundary grade reads
+    the stripped pair. Losslessness then holds whenever a budget cuts safely,
+    which is what the search tries before anything in the text is given up.
     """
     if redactor is not None:
-        text = _cut_safe_text(text, redactor)
+        return _cut_where_no_key_rejoins(chunk_utf8_bytes, text, max_bytes, redactor)
     if not text:
         return []
     if max_bytes <= 0:

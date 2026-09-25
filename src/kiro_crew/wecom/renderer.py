@@ -37,7 +37,7 @@ from kiro_crew.messaging.renderer import (
     redaction_notice,
     split_options_trailer,
 )
-from kiro_crew.messaging.split import split_markdown_safe
+from kiro_crew.messaging.split import bounded_for_delivery, split_markdown_safe
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.wecom.client import WECOM_SAFE_REPLY_CHARS, new_stream_id
 
@@ -302,12 +302,22 @@ class WeComRenderer(Renderer):
         # are then each scrubbed alone. Redacted first, the credential is one marker
         # before any cut can reach it.
         remainder = self.redact_for_target(remainder)
+        # Re-bound: the splitter declines to cut when no budget is clean and
+        # answers with the text whole, and this transport truncates a larger
+        # payload after every scan has run, so the tail would go unseen.
         chunks = await asyncio.to_thread(
             split_markdown_safe,
             remainder,
             WECOM_SAFE_REPLY_CHARS,
             redactor=_default_redactor,
+        )
+        chunks = await asyncio.to_thread(
+            bounded_for_delivery, chunks, WECOM_SAFE_REPLY_CHARS, _default_redactor
         ) or [remainder]
+        # Re-counted over the chunks that SHIP: the tally above read the pre-split
+        # answer, and a boundary repair can add a placeholder of its own, so a reply
+        # whose only redaction came from one would announce none.
+        self._notice_creds, self._notice_urls = count_redaction_tags("\n".join(chunks))
         # Tables convert per CHUNK, and only now that the turn has sealed: a table
         # whose last row was still arriving stayed raw in the streaming frames, so
         # ``final=True`` is the first point it can be rendered whole. Done once,
