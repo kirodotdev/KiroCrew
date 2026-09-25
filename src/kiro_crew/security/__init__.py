@@ -30,7 +30,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 from urllib.parse import parse_qs, unquote, unquote_plus, urlparse
 
 from kiro_crew.credential_patterns import AWS_KEY_ID, JWT_MULTI_SEGMENT
@@ -64,6 +64,7 @@ from . import (
     helpers,
     inline_payload,
     paths,
+    perm_verb_mention,
     redaction,
     shell_normalizer,
     vocabulary,
@@ -79,6 +80,7 @@ from . import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator
+    from typing import Any
 
     from kiro_crew.vector_memory import VectorMemoryStore
 
@@ -1749,7 +1751,7 @@ def _perm_verb_mechanism_for(pattern: str) -> str:
     fired.  The mention reading is the narrower of the two -- it applies only to
     the opted-in patterns -- so membership in that set decides the label.
     """
-    if pattern in _PERM_VERB_MENTION_PATTERNS:
+    if pattern in _submodule("denied_rules")._PERM_VERB_MENTION_PATTERNS:
         return _PERM_VERB_MENTION_MECHANISM
     return "_DENY_EXCEPTIONS"
 
@@ -1772,11 +1774,11 @@ def _perm_verb_mention_narrows(
     not written down here: it is derived from the catalog, so a count in prose
     goes stale the next time a row is added or renamed.
     """
-    if pattern not in _PERM_VERB_MENTION_PATTERNS:
+    if pattern not in _submodule("denied_rules")._PERM_VERB_MENTION_PATTERNS:
         return False
     verdict = cache.get(view)
     if verdict is None:
-        verdict = _perm_verb_mention_only(view)
+        verdict = _submodule("perm_verb_mention")._perm_verb_mention_only(view)
         cache[view] = verdict
     return verdict
 
@@ -2681,6 +2683,7 @@ _EXPORTS: dict[str, str] = {
     "_LEGACY_RULE_ID_BY_PATTERN": "denied_rules",
     "_LINEARIZED_AWS_FLAG_RUN": "denied_rules",
     "_LITERAL_CONCAT_RE": "denied_rules",
+    "_PERM_VERB_MENTION_PATTERNS": "denied_rules",
     "_PRINTENV_AWS_SECRET_PATTERN": "denied_rules",
     "_RULES_BY_ID": "denied_rules",
     "_RULE_ID_BY_PATTERN": "denied_rules",
@@ -2855,6 +2858,7 @@ _EXPORTS: dict[str, str] = {
     "_run_resolution_bounded": "paths",
     "_stall_prefix": "paths",
     "_wedged_workers": "paths",
+    "canonical_path_refusal": "paths",
     "crew_home_prefixes": "paths",
     "is_sensitive_bash_command": "paths",
     "is_sensitive_canonical_path": "paths",
@@ -2867,6 +2871,8 @@ _EXPORTS: dict[str, str] = {
     "sensitive_home_dirs": "paths",
     "sensitive_path_refusal": "paths",
     "write_protected_home_paths": "paths",
+    # perm_verb_mention
+    "_perm_verb_mention_only": "perm_verb_mention",
     # redaction
     "CREDENTIAL_REDACTION_TAGS": "redaction",
     "REDACTED_CREDENTIAL_TAG": "redaction",
@@ -3042,30 +3048,35 @@ _EXPORTS: dict[str, str] = {
 
 
 def _submodule(module: str) -> ModuleType:
-    """Return a submodule of this package, resolved through the import system.
+    """Return a submodule of this package, read from where modules are stored.
 
-    The read path this module's OWN code uses. A function defined here resolves a
-    bare global through this module's namespace directly, which ``__getattr__``
-    never sees, so it cannot read a re-exported name the way an outside caller
-    does. It asks for the owner instead and reads the name off it, which lands on
-    the same single storage location every other reader uses.
+    The single resolution site, used by the re-export protocol and by this
+    module's OWN code: a function defined here resolves a bare global through this
+    module's namespace directly, which ``__getattr__`` never sees, so it asks for
+    the owner and reads the name off it instead.
+
+    :data:`sys.modules` IS the one place a module is stored, so the read goes
+    there and a purged or replaced owner is seen at once. ``import_module`` is
+    what POPULATES that store, so it answers only the miss -- and keeping it off
+    the resolved path matters beyond speed: it is an attribute of a module any
+    caller can rebind, and a test that patches it for its own reasons
+    (``patch("importlib.import_module")``, three sites in this repository) would
+    otherwise reroute every read of every security gate here to that patch for as
+    long as it is installed.
+
+    A mapping of resolved owners kept in this module would be the second storage
+    location this package exists to remove.
     """
-    return importlib.import_module(f"{__name__}.{module}")
+    module_name = f"{__name__}.{module}"
+    try:
+        return sys.modules[module_name]
+    except KeyError:
+        return importlib.import_module(module_name)
 
 
 def _owner(name: str) -> ModuleType:
-    """Return the submodule that defines ``name``, importing it on first use.
-
-    ``importlib.import_module`` is the resolution rather than a mapping kept here.
-    It answers from :data:`sys.modules`, the one place a module is stored, so a
-    purged or replaced owner is seen at once; and it waits on that module's import
-    lock while its body is still running. A private mapping of resolved owners
-    would be a second storage location, and a bare ``sys.modules`` read would hand
-    a partially initialised module to a thread that asks for a name while another
-    thread is still importing its owner.
-    """
-    module_name = f"{__name__}.{_EXPORTS[name]}"
-    return importlib.import_module(module_name)
+    """Return the submodule that defines ``name``, resolved on each access."""
+    return _submodule(_EXPORTS[name])
 
 
 def __getattr__(name: str) -> Any:
@@ -3126,6 +3137,15 @@ class _ReExportModule(ModuleType):
 # Installed last, so the forwarding is live for every caller but never runs while
 # this module is still binding its own names.
 sys.modules[__name__].__class__ = _ReExportModule
+
+# ``from kiro_crew.security import *`` consults this list and never reaches
+# ``__getattr__``, so without it a star import would carry only the names this
+# module binds itself and every re-exported predicate would be missing -- a
+# ``NameError`` at the star-importer's first use. It is DERIVED from the two
+# authorities rather than written out, so it is a projection of them and not a
+# third list of names to keep in step: the table's keys, plus what this module
+# binds, minus the private names a star import never carried.
+__all__ = sorted(name for name in set(globals()) | set(_EXPORTS) if not name.startswith("_"))
 
 
 if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
@@ -3241,6 +3261,7 @@ if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
         _LEGACY_RULE_ID_BY_PATTERN,
         _LINEARIZED_AWS_FLAG_RUN,
         _LITERAL_CONCAT_RE,
+        _PERM_VERB_MENTION_PATTERNS,
         _PRINTENV_AWS_SECRET_PATTERN,
         _RULE_ID_BY_PATTERN,
         _RULES_BY_ID,
@@ -3427,6 +3448,7 @@ if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
         _run_resolution_bounded,
         _stall_prefix,
         _wedged_workers,
+        canonical_path_refusal,
         crew_home_prefixes,
         is_sensitive_bash_command,
         is_sensitive_canonical_path,
@@ -3439,6 +3461,9 @@ if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
         sensitive_home_dirs,
         sensitive_path_refusal,
         write_protected_home_paths,
+    )
+    from kiro_crew.security.perm_verb_mention import (  # noqa: F401
+        _perm_verb_mention_only,
     )
     from kiro_crew.security.redaction import (  # noqa: F401
         _B64_CHUNK_RE,
