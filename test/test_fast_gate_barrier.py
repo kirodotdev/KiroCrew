@@ -488,3 +488,107 @@ class TestTheSelectorBehavesOnRealPayloadShapes:
         # The caller treats null as "keep waiting", so a jq error here would turn a
         # transient empty page into a hard failure on the first poll.
         assert self._select(barrier_step["run"], payload) is None
+
+
+class TestTheConclusionArmsBehaveOnRealConclusions:
+    """The assertions above pin the case statement's TEXT. This one runs it.
+
+    ``action_required`` is what GitHub reports for a fork run that is still awaiting
+    maintainer approval, and it arrives with ``status=completed``. An arm order or a
+    glob that swallowed it back into the terminal ``*)`` branch would put the matrix
+    back at the mercy of which of the two pending runs a maintainer approves first,
+    so the extracted arms are executed rather than only read.
+    """
+
+    _POLLING = "__barrier_would_poll_again__"
+    _STATUS = "__barrier_status__="
+
+    @staticmethod
+    def _case(script: str) -> str:
+        start = script.find('case "$conclusion" in')
+        assert start != -1, "could not locate the conclusion case statement"
+        end = script.find("esac", start)
+        assert end != -1, "the conclusion case statement lost its esac"
+        return script[start : end + len("esac")]
+
+    def _exec(self, script: str, conclusion: str, cwd: Path) -> subprocess.CompletedProcess[str]:
+        if shutil.which("sh") is None:  # pragma: no cover - CI images ship sh
+            pytest.skip("no POSIX shell available")
+        program = (
+            "set -eu\n"
+            'conclusion="$1"\n'
+            'url="https://github.com/x/actions/runs/1"\n'
+            # The raw API value at this point in the loop, so a rename is visible.
+            'status="completed"\n'
+            f"{self._case(script)}\n"
+            # Reached only when no arm exited: the loop falls through to its
+            # TOTAL_BUDGET check and sleeps for another poll. $status is what the
+            # budget-spent message below the case interpolates, so it is reported
+            # too rather than inspected as source text.
+            f'printf "%s\\n" "{self._POLLING}"\n'
+            f'printf "{self._STATUS}%s\\n" "$status"\n'
+        )
+        return subprocess.run(
+            ["sh", "-c", program, "sh", conclusion],
+            capture_output=True,
+            # The program is shell text sliced out of ci.yml at runtime, so a
+            # future arm could carry a relative-path write. Spawning in the
+            # checkout would leave that file behind; tmp_path cannot.
+            cwd=cwd,
+            **UTF8_TEXT,
+        )
+
+    def _status_after(self, script: str, conclusion: str, cwd: Path) -> str:
+        proc = self._exec(script, conclusion, cwd)
+        assert proc.returncode == 0, proc.stderr
+        line = [ln for ln in proc.stdout.splitlines() if ln.startswith(self._STATUS)]
+        assert len(line) == 1, f"the case did not report a single $status: {proc.stdout!r}"
+        return line[0][len(self._STATUS) :]
+
+    def test_a_pending_fork_approval_keeps_polling_rather_than_failing(
+        self, barrier_step: dict, tmp_path: Path
+    ) -> None:
+        proc = self._exec(barrier_step["run"], "action_required", tmp_path)
+        assert proc.returncode == 0, proc.stderr
+        assert self._POLLING in proc.stdout, (
+            "action_required left the case with a non-zero exit instead of falling "
+            "through to the TOTAL_BUDGET check, so a fork PR still loses its whole "
+            "matrix to whichever of the two pending runs is approved first"
+        )
+        assert "::error::" not in proc.stdout
+
+    def test_a_pending_fork_approval_names_the_state_it_waits_on(
+        self, barrier_step: dict, tmp_path: Path
+    ) -> None:
+        # The fail-closed message below the case interpolates $status, whose raw API
+        # value here is "completed": left alone it reports a completed run as still
+        # waiting and names no pending approval for the reader to act on. Asserted on
+        # the value the shell actually leaves behind, not on the arm's source text,
+        # so re-assigning the same "completed" back cannot satisfy it.
+        status = self._status_after(barrier_step["run"], "action_required", tmp_path)
+        assert status != "completed", (
+            "the action_required arm no longer renames $status, so the budget-spent "
+            "error reads \"still 'completed'\" about a run nobody has judged"
+        )
+        assert "approval" in status.lower(), (
+            "the renamed state does not name the pending approval, which is the one "
+            f"thing the reader has to act on: {status!r}"
+        )
+
+    def test_success_still_releases_the_matrix(self, barrier_step: dict, tmp_path: Path) -> None:
+        proc = self._exec(barrier_step["run"], "success", tmp_path)
+        assert proc.returncode == 0, proc.stderr
+        assert self._POLLING not in proc.stdout, "success no longer leaves the loop"
+
+    @pytest.mark.parametrize(
+        "conclusion",
+        ["failure", "cancelled", "timed_out", "startup_failure", "neutral", "skipped"],
+    )
+    def test_every_other_conclusion_is_still_terminal(
+        self, barrier_step: dict, conclusion: str, tmp_path: Path
+    ) -> None:
+        proc = self._exec(barrier_step["run"], conclusion, tmp_path)
+        assert proc.returncode == 1, f"{conclusion} stopped failing closed"
+        assert "::error::" in proc.stdout
+        assert self._POLLING not in proc.stdout
+        assert self._STATUS not in proc.stdout
