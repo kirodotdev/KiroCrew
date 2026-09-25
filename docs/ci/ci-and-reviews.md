@@ -823,14 +823,20 @@ Details worth knowing:
     pages each — the API's reachable window, since a status-filtered runs listing
     stops at 1000 results — and each live classification sweep reads jobs for at
     most 50
-    runs: 40 to the classify slice and 10 reserved
-    for the newest, whose prompt CodeBuild starts are the dispatch evidence a
-    saturation hold is judged by. Spending the whole bound oldest first would
+    runs: up to 10 reserved for the newest runs that are themselves at least one
+    saturation wait old (a younger run cannot hold a served start that waited that
+    long and so could only ever report the fleet dispatching), falling back to the
+    newest runs when none qualifies, since an empty reserve reads as an outage; the
+    rest go to the classify slice, ranked actionable-shaped first (a `push` run of a
+    heal-safe workflow past the orphan threshold) then oldest. The split is dynamic —
+    a short reserve hands its unused reads to the classify slice instead of leaving
+    them unspent. Spending the whole bound oldest first would
     leave a backlogged sweep unable to tell a dead fleet from a busy one, so it
-    would heal nothing exactly when the watchdog is needed. The classify slice is
-    drawn heal-eligible first — a `push` run of a heal-safe workflow, the only
-    shape a heal can act on — and oldest first within each class, because age
-    alone hands those slots to runs no heal will ever touch: 220 watched live runs
+    would heal nothing exactly when the watchdog is needed. Ranking inside the classify
+    slice puts the heal-eligible shape first — a `push` run of a heal-safe workflow,
+    the only shape a heal can act on, AND past the orphan threshold — then oldest
+    within each class, because age alone hands those slots to runs no heal will ever
+    touch: 220 watched live runs
     sat past the orphan threshold on 2026-09-24 and 18 past a day, the oldest 36
     days, every one of them a pull-request run that stays listed and re-reads the
     same slot on every tick. The log names the
@@ -929,19 +935,36 @@ Details worth knowing:
     watchdog reads what the *other* routed jobs are doing, counting only starts
     after the orphaned job queued (a fleet that was fine before the orphan
     queued says nothing about the fleet it is waiting on) — if a CodeBuild job
-    that did get a runner started in that window after waiting five
-    minutes or more, CodeBuild is queueing, and the tick reports the runs as
+    that did get a runner started in that window after waiting a third of the
+    orphan threshold or more, CodeBuild is queueing, and the tick
+    reports the runs as
     `skipped-saturated` and heals nothing; if *nothing* has started on
     CodeBuild in that window (live runs, then the newest completed runs), the
     evidence is inconclusive — a fleet outage looks exactly like an orphan from
     the queued side — and the tick reports `skipped-no-dispatch-evidence`,
-    heals nothing, and points at the rollback above. If the listing exceeded the
-    per-tick job-read bound, the sweep reports `skipped-partial-dispatch-evidence`
-    instead of acting, because the band the bound drops is the middle of the sweep
-    and a slow start living there would have held: a "nothing slow was seen"
-    verdict is not established from a partial read. Guard rails: runs younger than
-    15 minutes are never actionable (their jobs are still read, since a slow
-    start inside one is saturation evidence); the verdict is re-derived from a fresh read
+    heals nothing, and points at the rollback above. If a run old enough to hold a
+    served start past the threshold went unread against the per-tick job-read bound,
+    the sweep reports `skipped-partial-dispatch-evidence` instead of acting, because
+    the completed-run sample cannot close that gap: it reads the newest completions,
+    and a fleet serving some jobs promptly while queueing others past the threshold
+    puts a prompt start there. The premise is the unread saturation-capable runs
+    rather than the bound being reached, so a sweep whose unread band is all too
+    young to have carried such a start may still act. The bound's reserved reads go
+    to the newest runs at least one saturation wait old, since a younger run cannot
+    contain a wait that long and so could only ever report the fleet dispatching. The
+    line is deliberately low because this evidence is label-blind: a start served
+    quickly on another label says nothing about the queue the orphaned job is in, so
+    raising it would widen the window in which a queued-but-alive job is cancelled.
+    A tick that observed any served CodeBuild start logs the slowest of them against
+    the line, which is the drift a raise has to be calibrated from (#13644); a tick
+    that saw none has nothing to measure and logs nothing. Guard rails: runs younger than
+    the orphan threshold are never actionable, and the two age bands differ -- a run at
+    least a third of that threshold old is what the evidence reserve is spent on, while
+    a younger one is not reserved a read while any run qualifies and is read only if a
+    classify slot remains after the actionable-shaped and older runs (a prompt start
+    inside one is dispatch evidence) -- the exception being the reserve's fallback,
+    where NO run can carry a slow start and the newest are reserved anyway because an
+    empty reserve reads as an outage; the verdict is re-derived from a fresh read
     immediately before the cancel and the cancel is sent only if the same
     attempt is still orphaned (a human who re-ran it by hand has moved it to a
     new attempt, which is left alone); fork runs are reported, never touched, and so
