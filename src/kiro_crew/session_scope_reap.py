@@ -26,7 +26,10 @@ Safety is a conjunction, per scope, before a single signal is sent
 1. no member PID is a tracked root/child (``session_pid`` readers) nor a live
    provider in ``SessionManager`` (the caller's ``active_pids``);
 2. at least one member has positive agent-runtime argv identity (the generated
-   launcher, a managed runtime, or a marked MCP launcher), authorizing the
+   launcher, a managed runtime, a marked MCP launcher, or the marked toolbox
+   sandbox credential helper -- the one member that routinely OUTLIVES the
+   runtime it served, leaving a scope whose only occupant holds tens of threads
+   and no client), authorizing the
    scope-wide stop; and EVERY member is this install's own: it carries the
    ``KIROCREW_SPAWNED`` marker, or its ``ppid`` chain reaches a marker-bearing
    member without leaving the scope (env-clearing grandchildren such as

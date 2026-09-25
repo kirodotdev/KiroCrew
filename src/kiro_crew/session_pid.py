@@ -3738,6 +3738,44 @@ def _work_orphan_basename(cmdline: bytes) -> bytes:
     return _basename_of(tokens[0])
 
 
+#: argv0 path SUFFIX of the credential helper the agent toolbox starts beside a
+#: managed runtime to vend that runtime's credentials. Matched as a suffix, and
+#: with the ``sandbox/`` parent component included, for two separate reasons: the
+#: parent component distinguishes the toolbox's helper from a same-named binary of
+#: the user's own somewhere else on PATH, and the toolbox VERSION sits in a path
+#: component above ``sandbox/``, so a version never appears here and one spelling
+#: covers every installed version at once.
+_SANDBOX_CREDENTIAL_HELPER_ARGV0_SUFFIX = b"/sandbox/creds_agent"
+
+#: The helper's own per-sandbox-session argument. Required alongside the argv0
+#: suffix so a bare binary placed at a path ending that way does not present the
+#: shape on argv0 alone.
+_SANDBOX_CREDENTIAL_HELPER_ARG = b"--session-id"
+
+
+def _is_marked_sandbox_credential_helper(cmdline: bytes) -> bool:
+    """True if *cmdline* is the toolbox's sandbox credential helper.
+
+    NOT sufficient on its own -- the caller MUST pair this with the
+    ``KIROCREW_SPAWNED`` marker, exactly as :func:`_is_marked_mcp_launcher` is
+    paired, because the helper is the agent toolbox's own binary rather than one
+    Kiro Crew spawns by name, and a user's own shell can start an identical one.
+
+    Recognised as a scope anchor because the helper serves exactly ONE runtime:
+    alone in an abandoned agent scope it has no client left, while a scope whose
+    runtime is still alive is held by that runtime's tracked PID and its live
+    process-group leader instead. Each helper also holds tens of threads, which
+    is what makes an unreclaimed scope cost pids headroom rather than just a
+    cgroup directory.
+    """
+    tokens = _argv_tokens(cmdline)
+    if not tokens:
+        return False
+    if not tokens[0].endswith(_SANDBOX_CREDENTIAL_HELPER_ARGV0_SUFFIX):
+        return False
+    return _SANDBOX_CREDENTIAL_HELPER_ARG in tokens[1:]
+
+
 def _is_agent_runtime_anchor(cmdline: bytes, *, has_kirocrew_marker: bool) -> bool:
     """True when *cmdline* positively identifies an agent-runtime tree member.
 
@@ -3745,9 +3783,16 @@ def _is_agent_runtime_anchor(cmdline: bytes, *, has_kirocrew_marker: bool) -> bo
     marker/descent ownership. It recognizes the generated sandbox launcher and
     fingerprinted MCP workers through :func:`_is_orphan_mcp`, direct managed
     runtimes (``kiro-cli`` / ``kiro-cli-chat`` / ``claude-agent-acp`` /
-    ``claude``) by exact argv0 basename, and the existing fingerprint-less MCP
-    launcher shapes only when that member itself carries the Kiro Crew spawn
-    marker. Peer gateway/CLI entrypoints are excluded.
+    ``claude``) by exact argv0 basename, and the fingerprint-less MCP launcher
+    shapes and the toolbox sandbox credential helper
+    (:func:`_is_marked_sandbox_credential_helper`) only when that member itself
+    carries the Kiro Crew spawn marker. Peer gateway/CLI entrypoints are
+    excluded.
+
+    The marker-gated arms cost the reaper nothing in safety: its ownership
+    condition already requires that same marker, on that same member, before any
+    scope is stopped, so an anchor that demands it cannot admit a scope ownership
+    would refuse. An unreadable ``environ`` therefore denies both.
     """
     if not cmdline:
         return False
@@ -3759,7 +3804,9 @@ def _is_agent_runtime_anchor(cmdline: bytes, *, has_kirocrew_marker: bool) -> bo
     basename = _work_orphan_basename(cmdline)
     if basename in _MANAGED_AGENT_RUNTIME_BASENAMES:
         return True
-    return has_kirocrew_marker and _is_marked_mcp_launcher(cmdline)
+    if not has_kirocrew_marker:
+        return False
+    return _is_marked_mcp_launcher(cmdline) or _is_marked_sandbox_credential_helper(cmdline)
 
 
 def _is_sweepable_orphan_work(pid: int, cmdline: bytes, age_seconds: float) -> bool:
