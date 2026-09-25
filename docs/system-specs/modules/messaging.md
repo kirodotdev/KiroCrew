@@ -694,6 +694,15 @@ A Slack key's scope segment is not always a thread timestamp: with `slack.dm_sin
 
 `ChannelLink(channel_type, channel_id=None, thread_id=None)` records the inbound channel a session belongs to (its **own** channel), with `to_dict()`/`from_dict()`. It is deliberately distinct from the dashboard→Slack *mirror* binding, which stays behind `SessionMap.get/set_slack_link` and is **not** modeled here (guardrail G3).
 
+The dashboard's `website/src/utils/channelOrigin.ts` mirrors the channel-session
+namespaces for origin labels. Both live `:` keys and persisted `_` keys identify
+`imessage` as **iMessage** and `feishu` as **Feishu**. These product names remain
+untranslated, including in `channelBrandLabel` lookups by channel type. Matching
+is case-sensitive and requires the namespace separator: user-titled keys such as
+`iMessage_thread_triage`, `Feishu_thread_triage`, and longer namespace lookalikes
+receive no channel-origin label. `website/src/utils/channelOrigin.test.ts` pins
+both key forms, exact brand spellings, and these negative cases.
+
 ## Config flag & routing
 
 `MessagingConfig.use_transport` (`config/loader.py`, default `True` in Kiro Crew; exposed in `config.json` under `messaging`) is the single switch. `slack/events.py::_route_message` checks `orch._cfg.messaging.use_transport`; when `True` it creates a task on `handle_message_transport` and skips the native `handle_message` monolith. (There is no challenge-redirect in this fork — Slack messages are processed inline.) Approval mode is resolved by `_resolve_approval_mode(orch)` (respects configured mode + operator YOLO/SafetyOverride TTL), and the per-channel `slack.channels.<id>.agent` override is passed through.

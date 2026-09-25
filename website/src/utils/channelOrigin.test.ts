@@ -1,5 +1,40 @@
 import { describe, it, expect } from 'vitest'
-import { slotChannelLabel, slotChannelNamespace } from './channelOrigin'
+import { channelBrandLabel, slotChannelLabel, slotChannelNamespace } from './channelOrigin'
+
+describe.each([
+  ['imessage', 'iMessage'],
+  ['feishu', 'Feishu'],
+])('%s channel origin', (namespace, brand) => {
+  it.each([':', '_'])('recognizes keys using %s and preserves the brand spelling', (separator) => {
+    const key = [namespace, 'kirocrew', 'direct', 'U1'].join(separator)
+    expect(slotChannelNamespace(key)).toBe(namespace)
+    expect(slotChannelLabel(key)).toBe(brand)
+  })
+
+  it('resolves the channel type to its brand label', () => {
+    expect(channelBrandLabel(namespace)).toBe(brand)
+  })
+
+  it.each([':', '_'])('rejects case and prefix lookalikes using %s', (separator) => {
+    for (const prefix of [brand, namespace.toUpperCase(), `${namespace}ish`, `other_${namespace}`]) {
+      const key = [prefix, 'thread', 'triage'].join(separator)
+      expect(slotChannelNamespace(key), key).toBe('')
+      expect(slotChannelLabel(key), key).toBe('')
+    }
+  })
+
+  it.each(['', '-thread'])('rejects keys without a namespace separator: %s', (suffix) => {
+    const key = `${namespace}${suffix}`
+    expect(slotChannelNamespace(key)).toBe('')
+    expect(slotChannelLabel(key)).toBe('')
+  })
+
+  it('requires an exact lowercase channel type for brand lookup', () => {
+    for (const type of [brand, namespace.toUpperCase(), `${namespace}ish`, `${namespace}:U1`, `${namespace}_U1`]) {
+      expect(channelBrandLabel(type), type).toBe('')
+    }
+  })
+})
 
 describe('slotChannelLabel', () => {
   it('labels every channel namespace', () => {
