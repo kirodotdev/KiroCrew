@@ -54,9 +54,16 @@ from kiro_crew.sandbox import (
     _AGENT_DENIED_ENV_KEYS,
     CANONICAL_TEMP_KEYS,
     CRON_SCRIPT_CHILD_ENV,
+    SandboxCeilingUnsealable,
     SandboxUnavailableError,
+    aliased_app_secret_ids,
+    app_data_window_targets,
     cgroup_scope_argv,
+    credential_mask_applies,
+    masked_dir_identity,
+    materialize_caller_masked_dir,
     popen_limited,
+    refuse_if_an_app_secret_is_linked,
     run_limited,
     wrap_argv,
 )
@@ -2014,6 +2021,20 @@ def run_script_sandboxed(
             if stdin_payload is not None
             else [sys.executable, launcher_path]
         )
+        # Every installed app's ``.app_secret`` lives under ``<config_dir>/apps``, and
+        # that file is a bearer credential rather than a marker:
+        # ``dashboard.token_auth.validate_app_secret`` compares it and issues that app's
+        # scoped token, so a child that can read one can act as the app. A script body
+        # is model-supplied, so it must not reach any of them.
+        #
+        # The containing DIRECTORY is masked, not a list of per-app leaves read out of
+        # it: a mask is applied to the paths named at spawn and is never recomputed for a
+        # live child, so an enumeration cannot name an app installed while this run is
+        # still executing, and that app's secret would stay readable for the rest of the
+        # child's life. Masking the directory covers whatever appears under it
+        # afterwards. Both branches get it -- a granted run's approved isolation is the
+        # stricter of the two, so it may not be the one that keeps the credentials.
+        apps_tree = str(config_dir() / "apps")
         # A granted child must never see the LIVE crons dir OR the script's
         # own parent directory: the launcher's empty-sys.path isolation stops
         # accidental sibling imports, but the verified script itself could
@@ -2032,11 +2053,12 @@ def run_script_sandboxed(
                     (
                         str(config_dir() / "crons"),
                         str(Path(file_path_str).resolve().parent),
+                        apps_tree,
                     )
                 )
             )
         else:
-            hidden = ()
+            hidden = (apps_tree,)
         # Same tier as ``run_command_sandboxed`` below: a script body is
         # agent-written, so it is the HIGHER-capability cron surface, and it
         # ran the WIDER profile — ``standard`` leaves ~/.aws/credentials, the
@@ -2054,8 +2076,56 @@ def run_script_sandboxed(
         # secret_env grant, which runs ``strict`` and injects the one approved
         # secret instead of exposing a store.
         sandbox_mode = "strict" if stdin_payload is not None else "cc"
+        # Create the mask target only when this spawn will actually CARRY the mask.
+        # The apps tree is created on first install, so on a home where no app has ever
+        # been installed the Linux mask loop finds the name absent, skips it, and the
+        # first-ever install appears inside this running child's view -- hence the
+        # create. But ``credential_mask_applies`` is false exactly where the child comes
+        # back unwrapped and every mask is dropped anyway, so creating a directory there
+        # buys no confinement while adding a way for this run to fail. It also keeps
+        # ``wrap_argv``'s own fail-closed refusal the FIRST thing a backend-less host
+        # hears: that refusal names the remedy an operator acts on, and a create error
+        # standing in front of it would replace an actionable message with an incidental
+        # one.
+        if credential_mask_applies(sandbox_mode):
+            try:
+                materialize_caller_masked_dir(apps_tree)
+                # The apps root is the one entry in ``hidden`` under a directory an agent
+                # can rename, so it is the one whose mask needs an identity and not just a
+                # name. Taken here, while this spawn settles which directory it means.
+                apps_mask_ids: tuple[tuple[str, int, int], ...] = (masked_dir_identity(apps_tree),)
+                # Before anything downstream: a LINKED credential puts its bytes outside
+                # this tree, where no mask, window or pre-exec scan reaches them.
+                refuse_if_an_app_secret_is_linked(apps_tree)
+            except SandboxCeilingUnsealable as exc:
+                return {"status": "error", "error": f"❌ {exc}"}
+            # The mask covers ``apps/<app>/data`` as well, which is an app's documented
+            # persistence root, and on Linux it is a WRITABLE empty bind -- so without a
+            # window an app script cron's writes there report success and are discarded.
+            # A window keeps the mask and every ``.app_secret`` denied and re-exposes
+            # only the data directories on their real inodes.
+            apps_windows = app_data_window_targets(apps_tree)
+        else:
+            apps_windows = ()
+            apps_mask_ids = ()
         sandboxed_argv, sandbox_cleanup = wrap_argv(
-            argv, mode=sandbox_mode, extra_hidden_dirs=hidden
+            argv,
+            mode=sandbox_mode,
+            extra_hidden_dirs=hidden,
+            extra_hidden_dir_ids=apps_mask_ids,
+            # An alias to a secret at a path NO mask covers is read through that path, not
+            # through the mask, so withholding windows cannot answer it. The launcher's
+            # pre-exec hardlink scan is what answers it, and it builds its match set one
+            # level deep, which is one level short of ``apps/<app>/.app_secret``. Naming the
+            # root lets those secrets into that set, and the refusal then fires only when an
+            # alias is actually FOUND where the child could read it -- not merely because a
+            # link count is above one, which would let one app's on-disk layout stop every
+            # cron on the host. Read HERE rather than in the child, which masks this tree in
+            # its own process and would stat an empty directory. Non-empty exactly when this
+            # spawn masks the tree.
+            extra_alias_credential_ids=(aliased_app_secret_ids(apps_tree) if apps_mask_ids else ()),
+            extra_private_dirs=tuple(window.path for window in apps_windows),
+            extra_private_dir_ids=tuple(apps_windows),
         )
         if stdin_payload is not None and sandboxed_argv == argv:
             # On a host with no OS sandbox backend, the unsandboxed-exec
@@ -2477,7 +2547,52 @@ def run_command_sandboxed(
                 "exit_code": -1,
             }
         argv = [shell, "-c", command]
-        sandboxed_argv, sandbox_cleanup = wrap_argv(argv, mode="cc")
+        # The same app-secret mask the script path applies, for the same reason and on
+        # the same trust reading: the comment above says this command string is fully
+        # model-supplied, so the two cron exec paths have one trust level between them
+        # and a control on only one of them is bypassable by choosing the other. The
+        # storage-time vet cannot substitute here -- it denies ``.ssh`` references in the
+        # command TEXT, and a shell can build a path this credential's name never
+        # appears in.
+        apps_tree = str(config_dir() / "apps")
+        # Gated and handled exactly as the script path does it, and for the same two
+        # reasons: a spawn that comes back unwrapped drops the mask, so materializing
+        # the target there adds a failure mode and buys no confinement; and letting a
+        # create error through ahead of ``wrap_argv`` would put an incidental message
+        # where this host needs the fail-closed remedy. The refusal is reported here
+        # rather than left to the generic handler below, which would label it "Command
+        # failed" -- no command runs, the spawn is refused before it happens.
+        if credential_mask_applies("cc"):
+            try:
+                materialize_caller_masked_dir(apps_tree)
+                # Same identity as the script path, for the same reason: this mask root
+                # sits under a directory an agent can rename, so the child gets the
+                # directory it was approved for and not whatever holds the name later.
+                apps_mask_ids: tuple[tuple[str, int, int], ...] = (masked_dir_identity(apps_tree),)
+                # Same as the script path.
+                refuse_if_an_app_secret_is_linked(apps_tree)
+            except SandboxCeilingUnsealable as exc:
+                return {"status": "error", "output": f"❌ {exc}", "exit_code": -1}
+            # Same window as the script path, for the same reason: the mask covers each
+            # app's documented ``data`` root with a writable empty bind, so a command
+            # writing there would be told it succeeded and lose the bytes.
+            apps_windows = app_data_window_targets(apps_tree)
+        else:
+            apps_windows = ()
+            apps_mask_ids = ()
+        sandboxed_argv, sandbox_cleanup = wrap_argv(
+            argv,
+            mode="cc",
+            extra_hidden_dirs=(apps_tree,),
+            extra_hidden_dir_ids=apps_mask_ids,
+            # Same as the script path: the scan, not the windows, is what answers an alias
+            # at a path no mask covers, its match set stops one level above this tree's
+            # per-app secrets, and the inodes are read here because the child cannot see
+            # them through its own mask.
+            extra_alias_credential_ids=(aliased_app_secret_ids(apps_tree) if apps_mask_ids else ()),
+            extra_private_dirs=tuple(window.path for window in apps_windows),
+            extra_private_dir_ids=tuple(apps_windows),
+        )
         sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling
         clean_env = _clean_cron_env()
         if _spawn_cancelled(job_id):

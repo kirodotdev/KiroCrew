@@ -35,6 +35,7 @@ _BLOCK_END = "os.execvp(argv[0], argv)"
 _SLICE_LANDMARKS = (
     "for _pd in SENSITIVE_DIRS:",   # the directory collection loop
     "for _pf in SENSITIVE_FILES:",  # the file collection loop
+    "for _acid in ALIAS_CREDENTIAL_IDS:",  # the parent-supplied credential inodes
     "_MAX_SCAN_PER_ROOT",           # the walk itself
     "sandbox: BLOCKED",             # the refusal
 )
@@ -104,9 +105,18 @@ class _CountingOs:
 
 
 def _run_scan(
-    *, dirs: list[str], files: list[str], tmp_path: Path
+    *,
+    dirs: list[str],
+    files: list[str],
+    tmp_path: Path,
+    alias_ids: list[tuple[int, int]] | None = None,
 ) -> tuple[int, str | None]:
     """Run the scan with *dirs*/*files* as the protected paths.
+
+    *alias_ids* are the ``(device, inode)`` pairs the PARENT collected, which is the
+    only form these credentials can reach the child in,
+    one level below the root -- the level the ``SENSITIVE_DIRS`` walk stops above. Empty
+    by default, which is what every caller outside the cron apps-tree mask supplies.
 
     Returns ``(files_walked, refusal)``; *refusal* is None when the scan let the
     exec proceed.
@@ -136,6 +146,10 @@ def _run_scan(
         "sys": fake_sys,
         "SENSITIVE_DIRS": dirs,
         "SENSITIVE_FILES": files,
+        # Launcher globals the scan block reads. Registered here because this harness
+        # builds the namespace by hand: a global the block references and the namespace
+        # omits is a NameError, not a skipped branch.
+        "ALIAS_CREDENTIAL_IDS": [list(pair) for pair in (alias_ids or ())],
     }
     block = tmp_path / "_scan_block.py"
     block.write_text(_scan_source(), encoding="utf-8")
@@ -243,3 +257,83 @@ class TestTheRefusalStillFires:
         assert walked > 0
         assert refusal is not None
         assert "BLOCKED" in refusal
+
+    def test_an_aliased_per_app_secret_one_level_down_is_refused(self, tmp_path: Path) -> None:
+        """The masked tree's own depth-1 walk stops ABOVE this credential.
+
+        ``apps/<app>/.app_secret`` is a bearer credential one directory below the tree a
+        cron spawn masks, so naming the tree as a protected DIR leaves it unseen -- the
+        collection walk there reads only the root's own files. An alias to it at a path no
+        mask covers is read through that path, so the scan is what has to answer it.
+
+        Break-arm: ``drop_the_alias_scan_root_loop``.
+        """
+        apps = tmp_path / "apps"
+        (apps / "alpha").mkdir(parents=True)
+        secret = apps / "alpha" / ".app_secret"
+        secret.write_text("bearer", encoding="utf-8")
+        os.link(secret, tmp_path / "leaked-secret")
+        assert secret.stat().st_nlink == 2
+
+        # The control FIRST: naming the tree the way the mask does finds nothing, which is
+        # why the inodes have to be supplied separately.
+        walked, refusal = _run_scan(dirs=[str(apps)], files=[], tmp_path=tmp_path)
+        assert walked == 0, "the depth-1 walk cannot reach one level down"
+        assert refusal is None
+
+        secret_st = secret.stat()
+        walked, refusal = _run_scan(
+            dirs=[str(apps)],
+            files=[],
+            tmp_path=tmp_path,
+            alias_ids=[(secret_st.st_dev, secret_st.st_ino)],
+        )
+        assert walked > 0
+        assert refusal is not None
+        assert "BLOCKED" in refusal
+
+    def test_the_credential_inodes_arm_the_walk_with_the_tree_unreadable(
+        self, tmp_path: Path
+    ) -> None:
+        """The case a tree-reading collection cannot pass: the tree is GONE by now.
+
+        In production this child masks the apps tree in its own process, binding an empty
+        directory over it, so anything it stats under that path reports ENOENT. A pass that
+        collected here would arm on nothing and the walk would never run, while a test that
+        pointed it at a readable directory still went green. Supplying inodes the parent read
+        is what survives the crossing, and removing the tree is how that is asserted.
+        """
+        apps = tmp_path / "apps"
+        (apps / "alpha").mkdir(parents=True)
+        secret = apps / "alpha" / ".app_secret"
+        secret.write_text("bearer", encoding="utf-8")
+        os.link(secret, tmp_path / "leaked-secret")
+        secret_st = secret.stat()
+        # Stand in for the mask: the path the child would read does not resolve, while the
+        # credential inode is untouched and keeps its second name -- which is exactly what
+        # an empty bind over the tree leaves behind.
+        (apps / "alpha").rename(tmp_path / "hidden-alpha")
+        assert not (apps / "alpha" / ".app_secret").exists()
+        assert (tmp_path / "leaked-secret").stat().st_nlink == 2
+
+        walked, refusal = _run_scan(
+            dirs=[],
+            files=[],
+            tmp_path=tmp_path,
+            alias_ids=[(secret_st.st_dev, secret_st.st_ino)],
+        )
+
+        assert walked > 0, "the walk still arms: the inode came from the parent"
+        assert refusal is not None
+        assert "BLOCKED" in refusal
+
+    def test_no_supplied_inode_leaves_the_walk_skipped(self, tmp_path: Path) -> None:
+        """A healthy host pays nothing: the parent found no second name, so nothing arms."""
+        apps = tmp_path / "apps"
+        (apps / "alpha").mkdir(parents=True)
+        (apps / "alpha" / ".app_secret").write_text("bearer", encoding="utf-8")
+
+        walked, refusal = _run_scan(dirs=[], files=[], tmp_path=tmp_path, alias_ids=[])
+
+        assert walked == 0
+        assert refusal is None

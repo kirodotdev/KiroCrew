@@ -1684,14 +1684,18 @@ class TestHardlinkScanBudget:
         # filesystem, so it must not enter the match set: when every
         # credential has nlink == 1 the CWD + /tmp walk is skipped and the
         # common healthy-host spawn pays nothing (and emits no truncation
-        # warning). Both collection loops (SENSITIVE_DIRS and
-        # SENSITIVE_FILES) carry the gate.
+        # warning). BOTH collection loops carry the gate: SENSITIVE_DIRS
+        # (depth 1) and SENSITIVE_FILES. The per-app credentials one level below
+        # a mask root reach the child as inodes the PARENT read -- it cannot stat
+        # them itself, because it masks that tree in this same process -- and the
+        # parent applies the same gate before sending one. The count is how this
+        # notices a third loop added without the gate.
         #
         # REGULAR FILES only, and that half is not cosmetic: every directory has
         # nlink >= 2, and SENSITIVE_FILES carries directories on purpose, so a bare
         # nlink test armed the walk on every spawn. Behaviour is covered in
-        # test_sandbox_hardlink_scan.py; this is the source-level pin that both
-        # collection loops still carry the gate.
+        # test_sandbox_hardlink_scan.py; this is the source-level pin that every
+        # collection loop still carries the gate.
         script = _build_launcher_script("strict")
         assert script.count("if stat.S_ISREG(_st.st_mode) and _st.st_nlink > 1:") == 2
 

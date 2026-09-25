@@ -97,6 +97,7 @@ class _FakeLibc:
         self.fail_at = fail_at
         self.err = err
         self.calls: list[tuple[object, object, int]] = []
+        self.unmounts: list[tuple[object, int]] = []
 
     def mount(self, source, target, fstype, flags, data):  # noqa: ANN001
         self.calls.append((source, target, flags))
@@ -105,6 +106,15 @@ class _FakeLibc:
 
             ctypes.set_errno(self.err)
             return -1
+        return 0
+
+    def umount2(self, target, flags):  # noqa: ANN001
+        """Retiring a private window's stage, recorded separately from the mounts.
+
+        Kept off ``calls`` on purpose: ``fail_at`` numbers the MOUNTS in source order,
+        and counting an unmount there would renumber every case below.
+        """
+        self.unmounts.append((target, flags))
         return 0
 
 
@@ -139,6 +149,7 @@ def _run(
     script: str | None = None,
     writable_dirs: list[str] | None = None,
     private_dirs: list[str] | None = None,
+    private_dir_ids: dict[str, list[int]] | None = None,
 ) -> tuple[_FakeLibc, str | None]:
     """Run the mount region. Returns ``(fake_libc, refusal_message_or_None)``.
 
@@ -151,7 +162,9 @@ def _run(
 
     home = tmp_path / "home"
     aws = home / ".aws"
-    aws.mkdir(parents=True)
+    # ``exist_ok``: a case that needs a private window inside this mask root creates the
+    # window first, because the staging loop resolves it before this setup would run.
+    aws.mkdir(parents=True, exist_ok=True)
     (aws / "credentials").write_text("[default]\n")
     ssh = home / ".ssh"
     ssh.mkdir()
@@ -177,6 +190,9 @@ def _run(
         "_MS_NOSUID": 2,
         "_MS_NODEV": 4,
         "_MS_NOEXEC": 8,
+        # Defined above the extracted slice, like the MS_ flags: the detach flag the
+        # stage-retirement helper passes to ``umount2``.
+        "_MNT_DETACH": 2,
         "ctypes": ctypes,
         "os": os,
         "sys": sys,
@@ -188,9 +204,16 @@ def _run(
         "expose_data": {},
         "EXPOSE_FILES": [],
         "SENSITIVE_DIRS": [str(aws)],
+        # Empty by default: these cases exercise a launcher whose caller vouched for no
+        # mask-root identity, so the child masks by name exactly as it always has. A
+        # populated map would make the loop refuse before reaching any mount.
+        "SENSITIVE_DIR_IDS": {},
         # Empty by default for the same reason as WRITABLE_DIRS: a private
         # window stages its own bind, which would shift the call numbering.
         "PRIVATE_DIRS": list(private_dirs or []),
+        # Read by the staging loop for every window that sits under a mask root. Empty
+        # here: these cases vouch for no window identity, so the child stages by name.
+        "PRIVATE_DIR_IDS": dict(private_dir_ids or {}),
         "READONLY_DIRS": [str(cache)],
         # Empty by default so the six-site call numbering above stays stable;
         # the carve-out tests inject their own entry.
@@ -299,6 +322,126 @@ def test_the_refusal_names_the_deliberate_opt_out(tmp_path: Path) -> None:
     assert "sandbox_level" in refusal
 
 
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="the private-window staging path pins with os.O_PATH and binds through "
+    "/proc/self/fd, neither of which exists outside Linux",
+)
+def test_a_private_windows_stage_does_not_outlive_the_mask(tmp_path: Path) -> None:
+    """The staging mount is a SECOND path to the window's real tree, and must not survive.
+
+    The stage carries the window's inode across the bind that hides its parent, so the
+    window can be bound back at its own path. What it leaves behind is the same tree
+    reachable under ``_tmpfs_src``, which nothing masks -- and a masked leaf INSIDE a
+    window is re-hidden at the window's path only, because a non-recursive bind carries no
+    submount. So the leaf would be readable through the stage with the mask otherwise
+    fully applied.
+
+    Break-arm: ``drop_stage_retirement``.
+    """
+    window = tmp_path / "home" / ".aws" / "alpha" / "data"
+    window.mkdir(parents=True)
+
+    libc, refusal = _run(tmp_path, fail_at=None, private_dirs=[str(window)])
+
+    assert refusal is None
+    # The staging mount is the one whose SOURCE is a descriptor path.
+    staged = [
+        t for s, t, _flags in libc.calls if isinstance(s, bytes) and s.startswith(b"/proc/self/fd/")
+    ]
+    assert len(staged) == 1, f"expected one staging mount, got {staged}"
+    assert libc.unmounts == [(staged[0], 2)], "the stage was not detached"
+    assert not os.path.exists(staged[0].decode()), "the stage directory survived"
+
+
+_LINUX_WINDOW_ONLY = pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="the private-window staging path pins with os.O_PATH and binds through "
+    "/proc/self/fd, neither of which exists outside Linux",
+)
+
+
+@_LINUX_WINDOW_ONLY
+def test_a_vouched_window_whose_identity_changed_refuses_the_spawn(tmp_path: Path) -> None:
+    """A pinned window that is not the approved directory must end the spawn.
+
+    Skipping it would leave the parent's mask over the path, and that mask is an empty
+    WRITABLE bind: the child's writes under it succeed and disappear with the namespace,
+    so the app loses exactly the data the window exists to keep durable.
+    """
+    window = tmp_path / "home" / ".aws" / "alpha" / "data"
+    window.mkdir(parents=True)
+    real = os.lstat(window)
+
+    libc, refusal = _run(
+        tmp_path,
+        fail_at=None,
+        private_dirs=[str(window)],
+        private_dir_ids={str(window): [real.st_dev, real.st_ino + 1]},
+    )
+
+    assert refusal is not None, "a mismatched window identity was accepted"
+    assert "approved as a data window" in refusal
+    staged = [
+        t for s, t, _flags in libc.calls if isinstance(s, bytes) and s.startswith(b"/proc/self/fd/")
+    ]
+    assert staged == [], f"the mismatched window was staged anyway: {staged}"
+
+
+@_LINUX_WINDOW_ONLY
+def test_a_vouched_window_that_cannot_be_opened_refuses_the_spawn(tmp_path: Path) -> None:
+    """The producer opened this window, so a child that cannot is in the same raced state."""
+    (tmp_path / "home" / ".aws").mkdir(parents=True, exist_ok=True)
+    window = tmp_path / "home" / ".aws" / "alpha" / "data"
+
+    _libc, refusal = _run(
+        tmp_path,
+        fail_at=None,
+        private_dirs=[str(window)],
+        private_dir_ids={str(window): [1, 2]},
+    )
+
+    assert refusal is not None, "an unopenable vouched window was skipped silently"
+    assert "cannot open" in refusal
+
+
+@_LINUX_WINDOW_ONLY
+def test_a_window_whose_identity_matches_is_staged(tmp_path: Path) -> None:
+    """The control: the ordinary case must still get its window."""
+    window = tmp_path / "home" / ".aws" / "alpha" / "data"
+    window.mkdir(parents=True)
+    real = os.lstat(window)
+
+    libc, refusal = _run(
+        tmp_path,
+        fail_at=None,
+        private_dirs=[str(window)],
+        private_dir_ids={str(window): [real.st_dev, real.st_ino]},
+    )
+
+    assert refusal is None, f"a matching window was refused: {refusal}"
+    staged = [
+        t for s, t, _flags in libc.calls if isinstance(s, bytes) and s.startswith(b"/proc/self/fd/")
+    ]
+    assert len(staged) == 1, f"expected one staging mount, got {staged}"
+
+
+@_LINUX_WINDOW_ONLY
+def test_a_window_no_one_vouched_for_is_skipped_not_refused(tmp_path: Path) -> None:
+    """The second control: absence of an identity is not a mismatch.
+
+    The three pre-existing window producers pass paths only, so an unopenable window of
+    theirs must stay a skip -- nothing vouched for it, and refusing would turn an ordinary
+    absent scratch directory into a dead spawn.
+    """
+    (tmp_path / "home" / ".aws").mkdir(parents=True, exist_ok=True)
+    window = tmp_path / "home" / ".aws" / "alpha" / "data"
+
+    _libc, refusal = _run(tmp_path, fail_at=None, private_dirs=[str(window)])
+
+    assert refusal is None, f"an unvouched window was refused: {refusal}"
+
+
 def test_every_tier_routes_all_eight_mounts_through_the_guard() -> None:
     """No tier may keep a raw, unchecked ``_libc.mount`` call site.
 
@@ -313,11 +456,13 @@ def test_every_tier_routes_all_eight_mounts_through_the_guard() -> None:
             if "_libc.mount(" in line and "source, target, None, flags, None" not in line
         ]
         assert raw == [], f"{level}: unchecked mount call(s): {raw}"
-        # 1 def + 8 call sites: propagation, credential dirs, the read-only
-        # bind and its sealing remount, sensitive files, ~/.ssh, and the private
+        # 1 def + 9 call sites: propagation, credential dirs, the read-only
+        # bind and its sealing remount, sensitive files, ~/.ssh, the private
         # window's two -- staging its real contents out before the parent is
-        # masked, then binding them onto the placeholder inside the stand-in.
-        assert script.count("_mount_or_die(") == 9
+        # masked, then binding them onto the placeholder inside the stand-in --
+        # and the nested re-mask that re-hides a masked leaf sitting INSIDE such
+        # a window, applied after the window is bound.
+        assert script.count("_mount_or_die(") == 10
 
 
 # --------------------------------------------------------------------------

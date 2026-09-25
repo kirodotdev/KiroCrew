@@ -217,7 +217,11 @@ class TestSubprocessRegistry:
             result.update(run_command_sandboxed("sleep 30", timeout=60, job_id="cancelme"))
 
         with patch(
-            "kiro_crew.cron_script.wrap_argv", side_effect=lambda argv, mode: (argv, None)
+            "kiro_crew.cron_script.wrap_argv",
+            # ``**k``, not a fixed ``mode``: this passthrough stands in for whatever
+            # keyword set the caller uses, so it pins the identity behaviour under test
+            # and not the wrap's signature.
+            side_effect=lambda argv, **k: (argv, None),
         ), patch(
             "kiro_crew.cron_script.cgroup_scope_argv", side_effect=lambda argv: argv
         ), patch(
@@ -266,7 +270,10 @@ class TestSubprocessRegistry:
         # don't need the sandbox.
         monkeypatch.chdir(tmp_path)  # the spawn inherits CWD; see the test above
         with patch(
-            "kiro_crew.cron_script.wrap_argv", side_effect=lambda argv, mode: (argv, None)
+            "kiro_crew.cron_script.wrap_argv",
+            # ``**k`` for the reason the test above gives: a passthrough pins the
+            # identity behaviour, not the keyword set the caller passes.
+            side_effect=lambda argv, **k: (argv, None),
         ), patch(
             "kiro_crew.cron_script.cgroup_scope_argv", side_effect=lambda argv: argv
         ), patch(

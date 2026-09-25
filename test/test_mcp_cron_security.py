@@ -917,7 +917,9 @@ def test_run_command_uses_cc_sandbox(monkeypatch):
 
     captured = {}
 
-    def fake_wrap_argv(argv, mode="standard"):
+    def fake_wrap_argv(argv, mode="standard", **kwargs):
+        # ``**kwargs`` so this stub pins the MODE, which is what the test is about,
+        # and not the exact keyword set the call site passes alongside it.
         captured["mode"] = mode
         return argv, None
 

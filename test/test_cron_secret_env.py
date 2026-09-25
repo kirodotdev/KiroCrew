@@ -51,9 +51,14 @@ def cron_home(monkeypatch, tmp_path):
 
     def _dir() -> Path:
         home = Path.home()
-        if home == real_home:
-            return fallback
-        return home / ".kirocrew"
+        root = fallback if home == real_home else home / ".kirocrew"
+        # The real ``config_dir`` resolves AND creates the home on every call
+        # (``mkdir(parents=True, exist_ok=True)``), so a stub that handed back a
+        # non-existent directory would model a state production cannot be in --
+        # and any caller deriving a path that must EXIST under the home would
+        # then fail for a reason the stub invented.
+        root.mkdir(parents=True, exist_ok=True)
+        return root
 
     monkeypatch.setattr("kiro_crew.cron_script.config_dir", _dir)
     return _dir
