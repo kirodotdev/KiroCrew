@@ -16,6 +16,7 @@ import { gcSessionStorage } from '../utils/storageGc'
 import type { RootState } from './index'
 import type { ChatMessage, ChatSlot, SessionInfo, SubagentActivity, ToolActivity, ToolPayloadCut, WorkflowRunSummary } from '../types'
 import { SOFT_STOP_DEBOUNCE_MS, SPAWN_LAUNCH_MARKER } from '../pages/chat/types'
+import { parseSubagentQueuedReason, type SubagentQueuedEvent, type SubagentQueuedReason } from '../pages/chat/subagentQueuedReason'
 import { mergePreservedPastes } from '../utils/pasteTokens'
 import { safeSetItem } from '../utils/safeStorage'
 import { errMessage, isMissingSlotError, type StatusRejection } from '../utils/thunkError'
@@ -421,7 +422,7 @@ const slotKeyedMaps = (state: ChatState) => [
   state.slotSide, state.slotSideClosed, state.slotStatusDetail,
   state.slotContextPct, state.slotContextTokens, state.stopPressedAt,
   state.followups, state.folderSuggestions,
-  state.pendingQuestions, state.subagentQueued,
+  state.pendingQuestions, state.subagentQueued, state.subagentQueuedReason,
   state.automations,
   // A surviving pane marker makes a recreated slot's hydrate early-return into
   // nothing, so these must die with the transcript they describe. The retained
@@ -1050,6 +1051,12 @@ interface ChatState {
    *  by slot name so it survives active-slot switches without the subagents
    *  map's active/non-active split. Populated by `subagent_queued` WS events. */
   subagentQueued: Record<string, number>
+  /** Why the slot's queued agents wait, from the same `subagent_queued` event:
+   *  the gate's `reason` kind plus the memory figures for the memory kinds.
+   *  Absent for a slot exactly when the gateway sent a bare count (an older
+   *  gateway, or nothing labelled), and the chips then keep their default
+   *  "queued behind the concurrency limit" text. Cleared with the count. */
+  subagentQueuedReason: Record<string, SubagentQueuedReason>
   /** The authoritative automation record for each bare slot key.
    *
    * Structured monitors remain here after reaching a terminal outcome so the
@@ -1272,6 +1279,7 @@ const initialState: ChatState = {
   voiceAudio: null,
   subagents: {},
   subagentQueued: {},
+  subagentQueuedReason: {},
   automations: {},
   selectedSubagentId: null,
   toolLog: [],
@@ -5098,20 +5106,32 @@ const chatSlice = createSlice({
       // avoid showing a stale "waiting" count for a wave that finished during
       // the disconnect (under-count self-heals on the next drain frame).
       state.subagentQueued = {}
+      state.subagentQueuedReason = {}
     },
     /** Aggregate "waiting to start" count for a slot. Agents queued behind the
      *  concurrency cap / stagger gate have no individual card; this count lets
      *  the chip appear immediately on spawn and show how many are pending
      *  start (issues: late chip, flicker, invisible queue). */
-    sseSubagentQueued(state, action: PayloadAction<{ slot: string; queued: number }>) {
+    sseSubagentQueued(state, action: PayloadAction<SubagentQueuedEvent>) {
       if (isUnsafeKey(action.payload.slot)) return
       const n = Math.max(0, Math.floor(Number(action.payload.queued) || 0))
       // Tolerate a store built from partial preloaded state (test fixtures and
       // any consumer that predates this key): indexing an absent map throws and
       // would drop the queue update entirely.
       state.subagentQueued ??= {}
-      if (n === 0) delete state.subagentQueued[safeKey(action.payload.slot)]
-      else state.subagentQueued[safeKey(action.payload.slot)] = n
+      state.subagentQueuedReason ??= {}
+      const key = safeKey(action.payload.slot)
+      if (n === 0) {
+        delete state.subagentQueued[key]
+        delete state.subagentQueuedReason[key]
+        return
+      }
+      state.subagentQueued[key] = n
+      // The reason travels with the count it explains. A frame without one is
+      // either an older gateway or a wait nothing labelled: the default text.
+      const reason = parseSubagentQueuedReason(action.payload)
+      if (reason) state.subagentQueuedReason[key] = reason
+      else delete state.subagentQueuedReason[key]
     },
     /** Reconcile whichever independent REST snapshots completed successfully.
      * A failed read is unknown, not an authoritative empty collection. */

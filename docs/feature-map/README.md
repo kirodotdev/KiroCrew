@@ -272,7 +272,7 @@ check cannot see it and the pages-dir half can.
 | Task Runner | Autonomous multi-step runs from a spec | `/projects` — **Apps** group rail row | `pages/ProjectsPage.tsx` | `handlers/taskrunner.py`, `handlers_project.py` | `GET,POST /api/projects`, `POST /api/taskrunner/plan`, `POST /api/taskrunner/from-chat` |
 | Task detail | One run's steps, gates and approvals | `/projects` → a project row | `pages/ProjectDetailPage.tsx` | `handlers_project.py` | `GET /api/projects/{id}`, `GET /api/activities`, `GET,POST /api/comments` |
 | Spec refinement | Interactive tightening of a task spec before running | Task Runner → refine | `pages/ProjectsPage.tsx` | `handlers/taskrunner.py` | `GET,POST /api/taskrunner/refine`, `POST /api/taskrunner/refine/answer` |
-| Subagents | Background agent runs spawned from a session | Chat activity viewer; rail badge | `pages/chat/ActivityViewer.tsx` | `handlers/messaging.py` | `GET,POST /api/spawn`, `POST /api/spawn/stop-all`, `GET /api/spawn/{agent_id}`, `POST /api/spawn/{agent_id}/steer` |
+| Subagents | Background agent runs spawned from a session. A wave that is accepted but waiting shows why (`pages/chat/subagentQueuedReason.ts` renders the gate's `reason` from `subagent_queued`: a memory floor, a critical posture or a paused adaptive cap; a bare count keeps the concurrency text) | Chat activity viewer; rail badge | `pages/chat/ActivityViewer.tsx`, `pages/chat/subagentQueuedReason.ts` | `handlers/messaging.py` | `GET,POST /api/spawn`, `POST /api/spawn/stop-all`, `GET /api/spawn/{agent_id}`, `POST /api/spawn/{agent_id}/steer` |
 | Worktrees | Create a git worktree for a follow-up session | Chat follow-up card → new worktree | `pages/ChatPage.tsx` | `handlers/worktree.py` | `POST /api/worktree/create` |
 
 ## Settings

@@ -295,6 +295,32 @@ class TestSpawnCli:
         assert "Spawned subagent ag1" in capsys.readouterr().out
         assert uo.call_count == 1
 
+    def test_run_fire_and_forget_says_queued_when_the_gate_deferred_it(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A deferred row is accepted under its id but not running; the CLI
+        relays the gateway's ``queued`` answer and reason instead of a start."""
+        with (
+            patch("kiro_crew.cli_commands._internal_secret", return_value=""),
+            patch(
+                "kiro_crew.cli_commands.loopback_urlopen",
+                return_value=_FakeResponse(
+                    {
+                        "id": "ag1",
+                        "task": "t",
+                        "status": "queued",
+                        "reason": "low_memory",
+                        "reason_detail": "low memory: 3.2 GB available, need 4 GB",
+                    }
+                ),
+            ),
+        ):
+            cc._spawn(_ns(spawn_action="run", port=1, task="t", fire_and_forget=True))
+        out = capsys.readouterr().out
+        assert "Queued subagent ag1" in out
+        assert "low memory: 3.2 GB available, need 4 GB" in out
+        assert "Spawned" not in out
+
     def test_run_blocking_polls_until_done_then_prints_result(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:

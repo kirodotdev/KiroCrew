@@ -21,6 +21,7 @@ import { openActivityToTab, selectSubagent, switchSlot, isAwaitingSpawnApproval 
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import type { ChatMessage, SubagentActivity } from '../../types'
 import { SPAWN_LAUNCH_MARKER } from './types'
+import { queuedWaitText } from './subagentQueuedReason'
 
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
@@ -29,7 +30,13 @@ import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
  *  spawn_run handler in mcp_core.py). Matching the header identifies the call
  *  as a launch; the per-agent lines carry the ids. Both live in the persisted
  *  `meta.output`, so historical messages render the card too. */
-const SPAWN_HEADER_RE = /^Spawned (\d+) subagent\(s\)\./m
+/** `spawn_run` prints one header per group: `Spawned N subagent(s).` for the
+ *  members that started and `Queued N subagent(s).` for the members the gate
+ *  deferred (memory floor, critical posture, paused cap). Both end in the same
+ *  `subagent(s).` marker and both are followed by `  <id> (<agent>): <task>`
+ *  lines, so a queued-only wave is a launch too — without this it rendered no
+ *  card at all, which is the wave whose waiting the card exists to show. */
+const SPAWN_HEADER_RE = /^(?:Spawned|Queued) (\d+) subagent\(s\)\./gm
 /** Agent ids are hex digests from SubagentManager; the agent name is optional
  *  (spawn_run omits the parenthetical when no agent was pinned). Non-hex ids are
  *  skipped, which is what excludes the `q<n>` queue sentinels in scrollback
@@ -107,14 +114,20 @@ export function extractSpawnRunLaunch(message: ChatMessage): SpawnRunLaunch | nu
 
 /** Pure parse of the already-unwrapped launch text. */
 function parseSpawnRunLaunch(text: string): SpawnRunLaunch | null {
-  const header = SPAWN_HEADER_RE.exec(text)
-  if (!header) return null
+  // Fresh lastIndex per call: both /g regexes are module-scoped and stateful.
+  SPAWN_HEADER_RE.lastIndex = 0
+  let announced = 0
+  let sawHeader = false
+  let h: RegExpExecArray | null
+  while ((h = SPAWN_HEADER_RE.exec(text)) !== null) {
+    sawHeader = true
+    announced += Number(h[1]) || 0
+  }
+  if (!sawHeader) return null
   const ids: string[] = []
-  // Fresh lastIndex per call: the /g regex is module-scoped and stateful.
   SPAWN_AGENT_LINE_RE.lastIndex = 0
   let m: RegExpExecArray | null
   while ((m = SPAWN_AGENT_LINE_RE.exec(text)) !== null) ids.push(m[1])
-  const announced = Number(header[1]) || 0
   // A header with no parseable agent lines still means a launch happened —
   // render the card in its neutral state rather than dropping the record.
   return { ids, announced }
@@ -166,6 +179,10 @@ const SubagentRunCard = memo(function SubagentRunCard({
   // gate) have no per-agent entry — without this the card reads as idle during
   // the exact window the user is most likely to be looking at it.
   const queued = useAppSelector(s => s.chat.subagentQueued?.[slot] ?? 0)
+  // Why they wait, when the gateway said; undefined keeps the concurrency text.
+  const queuedReason = useAppSelector(s => s.chat.subagentQueuedReason?.[slot])
+  // null for the ordinary capacity wait and for a count with no reason.
+  const waitText = queuedWaitText(queuedReason)
 
   const mine = launch.ids.map(id => subagents[id])
   const counts = tally(mine)
@@ -266,7 +283,7 @@ const SubagentRunCard = memo(function SubagentRunCard({
             <span
               className="shrink-0 inline-flex items-center gap-1 text-[10px] leading-4 px-1.5 py-0.5 rounded bg-muted/15 border border-border text-muted"
               data-testid="subagent-card-queued"
-              title={i18nT('pages.chat.subagentRunCard.waiting_to_start_queued_behind_the_concurrency_l')}
+              title={waitText ?? i18nT('pages.chat.subagentRunCard.waiting_to_start_queued_behind_the_concurrency_l')}
             >
               <Clock size={10} aria-hidden /> {queued} {i18nT('pages.chat.subagentRunCard.waiting')}
             </span>
@@ -296,6 +313,17 @@ const SubagentRunCard = memo(function SubagentRunCard({
             </span>
           )}
         </div>
+        {queued > 0 && settled < total && waitText && (
+          // A deferral can hold for hours; the tooltip above is invisible on
+          // touch and to a keyboard user, so the same sentence is also rendered,
+          // for as long as this card's wave still has members that have not
+          // finished (a finished wave must not wear a later wave's queue: the
+          // count is keyed by slot, not by launch). Absent for the ordinary
+          // capacity wait, which keeps the card as it was.
+          <div className="text-[11px] leading-4 text-warn mt-1" data-testid="subagent-card-wait-reason" role="status">
+            {waitText}
+          </div>
+        )}
         <div className="text-[10px] leading-4 text-muted font-mono truncate mt-1">
           {idPreview ? `${idPreview}${launch.ids.length > 4 ? ` +${launch.ids.length - 4}` : ''} · ` : ''}
           {i18nT('pages.chat.subagentRunCard.open_subagents_panel')}

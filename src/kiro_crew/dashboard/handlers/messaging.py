@@ -108,6 +108,7 @@ from kiro_crew.solo_spawn import (
 )
 from kiro_crew.spawn_warm import warm_project_agents_for_spawn
 from kiro_crew.subagent import (
+    DEFERRED_QUEUED_REASONS,
     effort_applied_note,
     effort_drop_reason,
     stage_boundary_owner_for_run,
@@ -787,6 +788,20 @@ async def api_spawn(request: web.Request) -> web.Response:
         "status": "spawned",
         "parent_work_supported": can_work,
     }
+    # A row the gate DEFERRED (memory floor, critical posture, adaptive cap at
+    # 0) is accepted and keyed like any other -- same ``id``, counted in its
+    # wave -- but it is not running and may not run for a long time: the pump
+    # re-checks it every admit wait for as long as the host stays below the
+    # bar. Saying ``spawned`` for it left the caller waiting on a completion
+    # event that was not coming. ``queued`` names the wait; ``reason`` is the
+    # kind, ``reason_detail`` the gate's own sentence. A row waiting only for a
+    # slot or the stagger tick (``concurrency_limit``) keeps ``spawned``: that
+    # wait is the ordinary wave shape and clears within seconds.
+    queued_reason = str(getattr(info, "queued_reason", "") or "")
+    if queued_reason in DEFERRED_QUEUED_REASONS:
+        resp["status"] = "queued"
+        resp["reason"] = queued_reason
+        resp["reason_detail"] = _redact(str(getattr(info, "queued_reason_detail", "") or ""))
     # Server-side effort verdict: only this side knows the model the factory's
     # effort gate will see (explicit per-call value, else the subagent role
     # pin, else the session chain for the effective agent — a crew's pin, else

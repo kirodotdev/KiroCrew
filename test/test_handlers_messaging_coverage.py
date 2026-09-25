@@ -273,6 +273,33 @@ class TestApiSpawn:
         assert _run(mod.api_spawn, req).status == 200
         assert mgr.spawn.call_args.kwargs["batch_total"] == 0
 
+    def test_a_deferred_row_answers_queued_with_the_gate_reason(self) -> None:
+        """The memory guard parked the row: the caller is told it WAITS and why,
+        under the same ``id`` (the wave reconcile and the run card key on it)."""
+        mgr = _mgr()
+        mgr.spawn.return_value = _info(
+            id="q1",
+            queued=True,
+            queued_reason="low_memory",
+            queued_reason_detail="low memory: 3.2 GB available, need 4 GB",
+        )
+        resp = _run(mod.api_spawn, _Req(_state(subagents=mgr), {"task": "x"}))
+        assert resp.status == 200
+        body = _payload(resp)
+        assert body["id"] == "q1"
+        assert body["status"] == "queued"
+        assert body["reason"] == "low_memory"
+        assert body["reason_detail"] == "low memory: 3.2 GB available, need 4 GB"
+
+    def test_a_capacity_queued_row_still_answers_spawned(self) -> None:
+        """Waiting behind the cap for a stagger tick is the ordinary wave shape;
+        its wire answer does not change."""
+        mgr = _mgr()
+        mgr.spawn.return_value = _info(id="q2", queued=True, queued_reason="concurrency_limit")
+        body = _payload(_run(mod.api_spawn, _Req(_state(subagents=mgr), {"task": "x"})))
+        assert body["status"] == "spawned"
+        assert "reason" not in body
+
     @pytest.mark.parametrize("source", ["crew", "subagent"])
     @pytest.mark.parametrize("unavailable", [False, True])
     def test_execution_record_lookup_runs_off_loop_before_spawn(

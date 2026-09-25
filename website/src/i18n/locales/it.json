@@ -10332,6 +10332,13 @@
         "stop_all_failed": "Impossibile arrestare i subagenti",
         "retry_failed_error": "Impossibile riprovare alcuni subagenti non riusciti"
       },
+      "subagentQueued": {
+        "adaptive_cap_zero": "in attesa di avvio — gli avvii sono in pausa finché questo computer ha poca memoria o è sovraccarico; riprendono da soli quando si ristabilisce",
+        "low_memory": "in attesa di avvio — richiede {{required}} di memoria libera, ora {{available}} liberi; libera memoria per continuare",
+        "low_memory_no_figures": "in attesa di avvio — memoria libera insufficiente; libera memoria per continuare",
+        "posture_critical": "in attesa di avvio — la memoria di questo computer è criticamente bassa ({{available}} liberi); libera memoria per continuare",
+        "posture_critical_no_figures": "in attesa di avvio — la memoria di questo computer è criticamente bassa; libera memoria per continuare"
+      },
       "subagentRunCard": {
         "agent_finished_many": "{{count}} agenti completati",
         "agent_finished_one": "{{count}} agente completato",

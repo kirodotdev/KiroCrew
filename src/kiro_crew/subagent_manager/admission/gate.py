@@ -8,8 +8,14 @@ from .._component import ManagerComponent
 from .types import ClaimPoint, PreparedSpawn
 
 if TYPE_CHECKING:
+    from typing import Any
+
     from ...execution_context import ExecutionContext
     from ...subagent import (
+        QUEUED_REASON_ADAPTIVE_CAP_ZERO,
+        QUEUED_REASON_CONCURRENCY_LIMIT,
+        QUEUED_REASON_LOW_MEMORY,
+        QUEUED_REASON_POSTURE_CRITICAL,
         KiroCrewConfig,
         SubagentInfo,
         _cost_bucket,
@@ -590,7 +596,9 @@ class _GateMixin(ManagerComponent):
         )
         admitted_memory_mode: str = _memory_mode
 
-        def _deferred(reason: str, refused: SubagentInfo) -> SubagentInfo | None:
+        def _deferred(
+            reason: str, refused: SubagentInfo, *, wait: dict[str, Any]
+        ) -> SubagentInfo | None:
             # Pressure is a scheduling fact, not a verdict on the task: the row
             # stays queued, holds nothing, and is re-checked after the admit
             # wait. None when the store holds no such row (a legacy in-memory
@@ -605,6 +613,14 @@ class _GateMixin(ManagerComponent):
             # loop to hand it to takes ``BEGIN IMMEDIATE`` here -- on the loop
             # that wait is the whole busy timeout, with chat and the heartbeat
             # behind it.
+            # ``wait`` is the same verdict as a label: it rides on the returned
+            # record and on the ``subagent_queued`` event, so the UI and
+            # ``POST /api/spawn`` can say a MEMORY deferral is one instead of
+            # rendering it as the capacity queue. It is published only by the
+            # emit that FOLLOWS a successful defer write (each branch below
+            # carries it to its own emit), so a row the store turned out not to
+            # hold -- refused, not queued -- leaves no label behind for the
+            # parent's other rows to wear.
             queued = SubagentInfo(
                 id=agent_id,
                 task=_redacted_task,
@@ -613,6 +629,8 @@ class _GateMixin(ManagerComponent):
                 app=app,
                 parent_session_key=parent_session_key,
                 queued=True,
+                queued_reason=str(wait.get("reason", "")),
+                queued_reason_detail=reason,
                 batch_id=batch_id,
                 batch_total=max(0, int(batch_total)),
                 delegation=dict(delegation or {}),
@@ -630,11 +648,12 @@ class _GateMixin(ManagerComponent):
                     batch_id=batch_id,
                     queued=queued,
                     refused=refused,
+                    wait=wait,
                 )
                 return queued
             elif not self._manager._admission.taskq_defer(agent_id, reason=reason):
                 return None
-            self._manager._emit_queue_depth(parent_session_key, batch_id)
+            self._manager._emit_queue_depth(parent_session_key, batch_id, wait=wait)
             return queued
 
         # --- Memory guard: defer (durable) or refuse (legacy) while host memory
@@ -747,6 +766,11 @@ class _GateMixin(ManagerComponent):
                     f"low memory: {avail_gb:.1f} GB available, need {min_mem:.0f} GB "
                     f"({next_start_price:.1f} GB per warming start, from the {price_source})",
                     info,
+                    wait={
+                        "reason": QUEUED_REASON_LOW_MEMORY,
+                        "available_gb": round(float(avail_gb), 2),
+                        "required_gb": round(float(min_mem), 2),
+                    },
                 )
                 if _durable
                 else None
@@ -827,7 +851,18 @@ class _GateMixin(ManagerComponent):
                 batch_id=batch_id,
                 batch_total=max(0, int(batch_total)),
             )
-            deferred = _deferred(str(admission.reason), info) if _durable else None
+            deferred = (
+                _deferred(
+                    str(admission.reason),
+                    info,
+                    wait={
+                        "reason": QUEUED_REASON_POSTURE_CRITICAL,
+                        "available_gb": round(float(admission.available_gb), 2),
+                    },
+                )
+                if _durable
+                else None
+            )
             if deferred is not None:
                 return deferred
             return self._manager._announce_rejection(info)
@@ -895,10 +930,35 @@ class _GateMixin(ManagerComponent):
                 len(self._manager._queue),
                 slot_free,
             )
+            # Which wait this is. A cap the adaptive controller has squeezed to 0
+            # is the one capacity queue "behind the concurrency limit" misreads:
+            # nothing runs, the configured cap still reads N, and the row waits
+            # for the controller's probe, not for a slot. The stagger tick and a
+            # genuinely full cap both clear on their own and keep the default.
+            # The paused kind is answered to callers as a DEFERRAL, so it carries
+            # the same human sentence the memory kinds do; the ordinary kind is
+            # never surfaced as prose and stays bare.
+            adaptive_paused = self._manager._max_concurrent <= 0
+            capacity_wait = {
+                "reason": (
+                    QUEUED_REASON_ADAPTIVE_CAP_ZERO
+                    if adaptive_paused
+                    else QUEUED_REASON_CONCURRENCY_LIMIT
+                )
+            }
+            capacity_detail = (
+                (
+                    "dispatch paused: the host is low on memory or overloaded, so no new "
+                    "subagent starts until it recovers (configured cap "
+                    f"{self._manager._user_max_concurrent}, effective cap 0)"
+                )
+                if adaptive_paused
+                else ""
+            )
             # Advisory UI signal: tell the chip how many agents are now waiting
             # to start for this parent so it can appear immediately and show a
             # "waiting" count instead of only running/completed ones.
-            self._manager._emit_queue_depth(parent_session_key, batch_id)
+            self._manager._emit_queue_depth(parent_session_key, batch_id, wait=capacity_wait)
             # If a slot is free, no running agent will trigger the drain on
             # completion — schedule the staggered pump at the interval boundary
             # so the queued spawn still launches.
@@ -917,6 +977,8 @@ class _GateMixin(ManagerComponent):
                 app=app,
                 parent_session_key=parent_session_key,
                 queued=True,
+                queued_reason=str(capacity_wait["reason"]),
+                queued_reason_detail=capacity_detail,
                 memory_mode=_memory_mode,
                 execution_context=execution,
                 batch_id=batch_id,

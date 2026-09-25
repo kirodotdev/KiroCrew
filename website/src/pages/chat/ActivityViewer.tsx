@@ -28,6 +28,7 @@ import { ContextBreakdownTab } from '../ContextBreakdownPanel'
 import { CrewLogTab } from './CrewLogPanel'
 import SessionSummaryTab from './SessionSummaryTab'
 import { i18nT } from '../../i18n/t'
+import { queuedWaitText } from './subagentQueuedReason'
 import GitPanel from '../../components/GitPanel'
 import { fmtDateFields } from '../../i18n/format'
 import { isModelDowngrade } from './subagentCompletion'
@@ -899,6 +900,9 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
   // freshly-accepted wave, which is flatly false and the single most confusing
   // state this panel had.
   const queuedCount = useAppSelector(s => s.chat.subagentQueued?.[slot] ?? 0)
+  // Why they wait, when the gateway said (memory floor, critical posture, a
+  // paused adaptive cap); undefined keeps the concurrency text below.
+  const queuedReason = useAppSelector(s => s.chat.subagentQueuedReason?.[slot])
   // Render cap: bounds DOM at 60-100 agents; exceptions are always within
   // the cap thanks to the ordering above.
   const [showAllSubagents, setShowAllSubagents] = useState(false)
@@ -1131,7 +1135,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
             >
               <Clock size={12} className="shrink-0" aria-hidden />
               <span>
-                {queuedCount} {i18nT('pages.chat.activityViewer.waiting_to_start_queued_behind_the_concurrency_l')}
+                {queuedCount} {queuedWaitText(queuedReason) ?? i18nT('pages.chat.activityViewer.waiting_to_start_queued_behind_the_concurrency_l')}
               </span>
             </div>
           )}

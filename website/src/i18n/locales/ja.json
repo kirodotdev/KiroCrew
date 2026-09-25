@@ -10052,6 +10052,13 @@
         "stop_all_failed": "サブエージェントを停止できませんでした",
         "retry_failed_error": "失敗したサブエージェントの一部を再試行できませんでした"
       },
+      "subagentQueued": {
+        "adaptive_cap_zero": "開始待ち — このコンピューターのメモリ不足または高負荷のため新しい開始を一時停止中です。回復すると自動的に再開します",
+        "low_memory": "開始待ち — {{required}} の空きメモリが必要です（現在の空き {{available}}）。続行するにはメモリを空けてください",
+        "low_memory_no_figures": "開始待ち — 空きメモリが不足しています。続行するにはメモリを空けてください",
+        "posture_critical": "開始待ち — このコンピューターのメモリが著しく不足しています（空き {{available}}）。続行するにはメモリを空けてください",
+        "posture_critical_no_figures": "開始待ち — このコンピューターのメモリが著しく不足しています。続行するにはメモリを空けてください"
+      },
       "subagentRunCard": {
         "agent_finished_other": "{{count}} 個のエージェントが完了",
         "agent_launched_other": "{{count}} 個のエージェントを起動",

@@ -18,6 +18,7 @@ import time
 import unittest.mock
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -580,6 +581,141 @@ class TestSpawnAdmissionGate:
         reason = str(deferred[-1].data.get("reason")) if deferred else ""
         assert "0.5 GB per warming start, from the configured agent.subagent_cost_gb" in reason
         assert "learned" not in reason
+
+    # ── the deferral reason reaches the UI event and the caller ──────────────
+    #
+    # ``subagent_queued`` carried only a count, so every UI reading it rendered
+    # "queued behind the concurrency limit" for a row the MEMORY guard parked,
+    # and ``POST /api/spawn`` answered ``spawned`` for it. The gate's verdict is
+    # unchanged here; only what it tells the caller is.
+
+    def _spawn_capturing_queued(
+        self, mgr, *, memory: tuple[bool, float], admission: rs.AdmissionDecision
+    ) -> tuple[Any, list[dict[str, Any]]]:
+        """Run ``spawn`` on a live loop and collect every ``subagent_queued`` extra."""
+        events: list[dict[str, Any]] = []
+
+        async def on_event(etype: str, info: Any, extra: dict[str, Any]) -> None:
+            if etype == "subagent_queued":
+                events.append(dict(extra))
+
+        async def run() -> Any:
+            mgr._on_event = on_event
+            with (
+                patch("kiro_crew.subagent.check_memory_available", return_value=memory),
+                patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
+                patch("kiro_crew.subagent.cached_admission_check", return_value=admission),
+                patch("kiro_crew.subagent.sel") as mock_sel,
+            ):
+                mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+                mock_cfg.load.return_value.agent.subagent_cost_gb = 0.5
+                mock_sel.return_value.log_tool_invocation = MagicMock()
+                info = mgr.spawn(task="test task", parent_session_key="sess-1")
+            deadline = time.monotonic() + 2.0
+            while not events and time.monotonic() < deadline:
+                await asyncio.sleep(0.01)
+            return info
+
+        info = asyncio.run(run())
+        return info, events
+
+    def test_low_memory_deferral_names_its_reason_on_the_queued_event(self) -> None:
+        mgr = self._mgr()
+        assert mgr._taskq is not None
+        info, events = self._spawn_capturing_queued(
+            mgr, memory=(False, 3.2), admission=_admitted()
+        )
+        assert info is not None and info.queued is True and info.done is False
+        assert info.queued_reason == "low_memory"
+        assert "3.2 GB available" in info.queued_reason_detail
+        assert events, "the deferral must still emit the advisory queued count"
+        last = events[-1]
+        assert last["queued"] == 1
+        assert last["reason"] == "low_memory"
+        assert last["available_gb"] == pytest.approx(3.2)
+        # spawn_min_memory_gb 4.0 + one warming start at the configured 0.5.
+        assert last["required_gb"] == pytest.approx(4.5)
+
+    def test_posture_critical_deferral_names_its_reason_on_the_queued_event(self) -> None:
+        mgr = self._mgr()
+        assert mgr._taskq is not None
+        info, events = self._spawn_capturing_queued(
+            mgr, memory=(True, 8.0), admission=_refused()
+        )
+        assert info is not None and info.queued is True
+        assert info.queued_reason == "posture_critical"
+        assert info.queued_reason_detail == _refused().reason
+        assert events and events[-1]["reason"] == "posture_critical"
+        assert events[-1]["available_gb"] == pytest.approx(_refused().available_gb)
+        assert "required_gb" not in events[-1]
+
+    def test_parked_defer_publishes_the_label_only_after_the_write_succeeds(self) -> None:
+        """The coroutine dispatcher writes the defer off the loop, after the gate
+        returned. The label must ride on THAT emit: published earlier, a row the
+        store turned out not to hold (refused, not queued) would leave a memory
+        label on the parent for its other, capacity-queued rows to wear."""
+        from kiro_crew.subagent import SubagentInfo
+
+        mgr = self._mgr()
+        store = mgr._taskq
+        assert store is not None
+        events: list[dict[str, Any]] = []
+
+        async def on_event(etype: str, info: Any, extra: dict[str, Any]) -> None:
+            if etype == "subagent_queued":
+                events.append(dict(extra))
+
+        mgr._on_event = on_event
+        wait = {"reason": "low_memory", "available_gb": 3.2, "required_gb": 4.5}
+
+        def _park(agent_id: str) -> SubagentInfo:
+            queued = SubagentInfo(
+                id=agent_id, task="t", parent_session_key="sess-1", queued=True
+            )
+            refused = SubagentInfo(
+                id=agent_id, task="t", parent_session_key="sess-1", done=True, error="refused"
+            )
+            mgr._admission.park_defer(
+                agent_id,
+                reason="low memory: 3.2 GB available, need 4 GB",
+                parent_session_key="sess-1",
+                batch_id="",
+                queued=queued,
+                refused=refused,
+                wait=wait,
+            )
+            return queued
+
+        async def run() -> tuple[Any, Any]:
+            with patch.object(type(mgr), "_announce_rejection", lambda self, info: info):
+                # No row behind this id: the write reports none and the row is
+                # refused -- no label may be left behind.
+                missing = await mgr._admission.finish_parked_defer(_park("ghost"))
+                no_label_after_refusal = dict(mgr._queue_wait)
+                # A real row: the write succeeds and the label rides the emit.
+                rec = mgr._admission.taskq_build_record(
+                    "row1",
+                    {"task": "t", "parent_session_key": "sess-1"},
+                    parent_session_key="sess-1",
+                    memory_store="",
+                    app="",
+                    model="",
+                    allowed_tools=None,
+                    approval_mode=None,
+                )
+                store.accept([rec])
+                held = await mgr._admission.finish_parked_defer(_park("row1"))
+            deadline = time.monotonic() + 2.0
+            while not events and time.monotonic() < deadline:
+                await asyncio.sleep(0.01)
+            return (missing, no_label_after_refusal), held
+
+        (missing, no_label_after_refusal), held = asyncio.run(run())
+        assert missing.done is True and missing.error == "refused"
+        assert no_label_after_refusal == {}
+        assert held.queued is True and held.done is False
+        assert mgr._queue_wait.get("sess-1", {}).get("reason") == "low_memory"
+        assert events and events[-1]["reason"] == "low_memory"
 
 
 # ── config key ───────────────────────────────────────────────────────────────

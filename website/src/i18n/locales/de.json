@@ -10192,6 +10192,13 @@
         "stop_all_failed": "Die Subagents konnten nicht gestoppt werden",
         "retry_failed_error": "Einige fehlgeschlagene Subagents konnten nicht wiederholt werden"
       },
+      "subagentQueued": {
+        "adaptive_cap_zero": "wartet auf den Start — Starts sind pausiert, solange dieser Computer wenig Speicher hat oder überlastet ist; sie laufen von selbst weiter, sobald er sich erholt",
+        "low_memory": "wartet auf den Start — benötigt {{required}} freien Speicher, aktuell {{available}} frei; gib Speicher frei, um fortzufahren",
+        "low_memory_no_figures": "wartet auf den Start — nicht genug freier Speicher; gib Speicher frei, um fortzufahren",
+        "posture_critical": "wartet auf den Start — der Speicher dieses Computers ist kritisch knapp ({{available}} frei); gib Speicher frei, um fortzufahren",
+        "posture_critical_no_figures": "wartet auf den Start — der Speicher dieses Computers ist kritisch knapp; gib Speicher frei, um fortzufahren"
+      },
       "subagentRunCard": {
         "agent_finished_one": "{{count}} Agent abgeschlossen",
         "agent_finished_other": "{{count}} Agenten abgeschlossen",

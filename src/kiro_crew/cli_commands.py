@@ -379,14 +379,31 @@ def _spawn_run(args: argparse.Namespace, base: str) -> None:
         sys.exit(1)
 
     agent_id = result["id"]
+    # A row the gate DEFERRED (memory floor, critical posture, paused cap) is
+    # accepted under this id but not running; the gateway says so with
+    # ``status: "queued"`` and its own sentence, and this reader must not
+    # claim a start the gateway did not make.
+    queued_note = ""
+    if result.get("status") == "queued":
+        queued_note = str(result.get("reason_detail") or result.get("reason") or "deferred")
 
     if args.fire_and_forget:
-        print(f"Spawned subagent {agent_id}: {result['task']}")
+        if queued_note:
+            print(f"Queued subagent {agent_id}: {result['task']} (not started yet: {queued_note})")
+        else:
+            print(f"Spawned subagent {agent_id}: {result['task']}")
         return
 
     # Block: poll until done
 
-    print(f"Spawned subagent {agent_id}, waiting for result...", file=sys.stderr)
+    if queued_note:
+        print(
+            f"Queued subagent {agent_id} (not started yet: {queued_note}); "
+            "waiting for it to start and finish...",
+            file=sys.stderr,
+        )
+    else:
+        print(f"Spawned subagent {agent_id}, waiting for result...", file=sys.stderr)
     poll_url = f"{base}/api/spawn/{agent_id}"
     secret = _internal_secret(args.port)
     told_awaiting = False

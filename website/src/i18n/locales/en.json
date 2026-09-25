@@ -6401,6 +6401,13 @@
         "waiting_for_your_approval_to_start": "Waiting for your approval to start",
         "waiting_to_start_queued_behind_the_concurrency_l": "Waiting to start — queued behind the concurrency limit"
       },
+      "subagentQueued": {
+        "adaptive_cap_zero": "waiting to start — starts are paused while this computer is low on memory or overloaded; they resume on their own once it recovers",
+        "low_memory": "waiting to start — needs {{required}} of free memory, {{available}} free now; free up memory to continue",
+        "low_memory_no_figures": "waiting to start — not enough free memory; free up memory to continue",
+        "posture_critical": "waiting to start — this computer's memory is critically low ({{available}} free); free up memory to continue",
+        "posture_critical_no_figures": "waiting to start — this computer's memory is critically low; free up memory to continue"
+      },
       "subagentRunCard": {
         "open_in_the_subagents_panel": "Open in the Subagents panel",
         "open_subagents_panel": "Open Subagents panel",

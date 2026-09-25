@@ -108,12 +108,60 @@ describe('sseSubagentQueued on partial preloaded state', () => {
     const store = configureStore({
       reducer: { chat: chatReducer, dashboard: dashboardReducer, notifications: notificationsReducer },
       preloadedState: {
-        chat: { ...chatReducer(undefined, { type: '@@INIT' }), subagentQueued: undefined },
+        chat: { ...chatReducer(undefined, { type: '@@INIT' }), subagentQueued: undefined, subagentQueuedReason: undefined },
       } as never,
     })
     store.dispatch(setActiveSlot('a'))
     expect(() => store.dispatch(sseSubagentQueued({ slot: 'a', queued: 2 }))).not.toThrow()
     expect(count(store)).toBe(2)
+  })
+})
+
+/**
+ * The gate's `reason` rides beside the count. The count alone made every chip
+ * say "queued behind the concurrency limit" for a wave the memory guard parked
+ * (F20); the label is what lets them say why. An event without one -- an older
+ * gateway -- must leave the store exactly as before.
+ */
+describe('sseSubagentQueued carries the wait reason', () => {
+  const reasonFor = (store: ReturnType<typeof makeStore>, slot: string) =>
+    (store.getState() as unknown as RootState).chat.subagentQueuedReason?.[slot]
+
+  it('stores a labelled wait beside its count', () => {
+    const store = makeStore()
+    store.dispatch(sseSubagentQueued({ slot: 'a', queued: 1, reason: 'low_memory', available_gb: 3.2, required_gb: 4.5 }))
+    expect(count(store)).toBe(1)
+    expect(reasonFor(store, 'a')).toEqual({ reason: 'low_memory', available_gb: 3.2, required_gb: 4.5 })
+  })
+
+  it('keeps no reason for a bare count, so an old gateway renders the old text', () => {
+    const store = makeStore()
+    store.dispatch(sseSubagentQueued({ slot: 'a', queued: 2 }))
+    expect(count(store)).toBe(2)
+    expect(reasonFor(store, 'a')).toBeUndefined()
+  })
+
+  it('replaces a stale reason when a later frame carries none', () => {
+    const store = makeStore()
+    store.dispatch(sseSubagentQueued({ slot: 'a', queued: 1, reason: 'posture_critical', available_gb: 1.2 }))
+    store.dispatch(sseSubagentQueued({ slot: 'a', queued: 1 }))
+    expect(reasonFor(store, 'a')).toBeUndefined()
+  })
+
+  it('drops the reason with the count at zero', () => {
+    const store = makeStore()
+    store.dispatch(sseSubagentQueued({ slot: 'a', queued: 1, reason: 'adaptive_cap_zero' }))
+    store.dispatch(sseSubagentQueued({ slot: 'a', queued: 0 }))
+    expect(count(store)).toBe(0)
+    expect(reasonFor(store, 'a')).toBeUndefined()
+  })
+
+  it('ignores a kind it cannot render and a non-numeric figure', () => {
+    const store = makeStore()
+    store.dispatch(sseSubagentQueued({ slot: 'a', queued: 1, reason: 'something_new' }))
+    expect(reasonFor(store, 'a')).toBeUndefined()
+    store.dispatch(sseSubagentQueued({ slot: 'a', queued: 1, reason: 'low_memory', available_gb: Number.NaN }))
+    expect(reasonFor(store, 'a')).toEqual({ reason: 'low_memory' })
   })
 })
 

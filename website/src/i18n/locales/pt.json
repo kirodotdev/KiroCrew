@@ -10332,6 +10332,13 @@
         "stop_all_failed": "Não foi possível parar os subagentes",
         "retry_failed_error": "Não foi possível repetir alguns subagentes com falha"
       },
+      "subagentQueued": {
+        "adaptive_cap_zero": "aguardando para iniciar — os inícios estão pausados enquanto este computador está com pouca memória ou sobrecarregado; eles retomam sozinhos quando ele se recupera",
+        "low_memory": "aguardando para iniciar — precisa de {{required}} de memória livre, {{available}} livres agora; libere memória para continuar",
+        "low_memory_no_figures": "aguardando para iniciar — memória livre insuficiente; libere memória para continuar",
+        "posture_critical": "aguardando para iniciar — a memória deste computador está criticamente baixa ({{available}} livres); libere memória para continuar",
+        "posture_critical_no_figures": "aguardando para iniciar — a memória deste computador está criticamente baixa; libere memória para continuar"
+      },
       "subagentRunCard": {
         "agent_finished_many": "{{count}} agentes concluídos",
         "agent_finished_one": "{{count}} agente concluído",

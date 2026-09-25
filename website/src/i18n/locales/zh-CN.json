@@ -10052,6 +10052,13 @@
         "stop_all_failed": "无法停止子代理",
         "retry_failed_error": "部分失败的子代理无法重试"
       },
+      "subagentQueued": {
+        "adaptive_cap_zero": "等待开始 — 本机内存不足或负载过高，暂停启动新任务；恢复后会自动继续",
+        "low_memory": "等待开始 — 需要 {{required}} 可用内存，当前可用 {{available}}；请释放内存以继续",
+        "low_memory_no_figures": "等待开始 — 可用内存不足；请释放内存以继续",
+        "posture_critical": "等待开始 — 本机内存严重不足（可用 {{available}}）；请释放内存以继续",
+        "posture_critical_no_figures": "等待开始 — 本机内存严重不足；请释放内存以继续"
+      },
       "subagentRunCard": {
         "agent_finished_other": "{{count}} 个代理已完成",
         "agent_launched_other": "{{count}} 个代理已启动",

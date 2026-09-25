@@ -10052,6 +10052,13 @@
         "stop_all_failed": "서브에이전트를 중지할 수 없습니다",
         "retry_failed_error": "실패한 서브에이전트 중 일부를 다시 시도할 수 없습니다"
       },
+      "subagentQueued": {
+        "adaptive_cap_zero": "시작 대기 중 — 이 컴퓨터의 메모리가 부족하거나 과부하 상태여서 새 시작이 일시 중지되었습니다. 회복되면 자동으로 다시 시작됩니다",
+        "low_memory": "시작 대기 중 — 여유 메모리 {{required}} 필요, 현재 {{available}} 여유. 계속하려면 메모리를 확보하세요",
+        "low_memory_no_figures": "시작 대기 중 — 여유 메모리가 부족합니다. 계속하려면 메모리를 확보하세요",
+        "posture_critical": "시작 대기 중 — 이 컴퓨터의 메모리가 심각하게 부족합니다(여유 {{available}}). 계속하려면 메모리를 확보하세요",
+        "posture_critical_no_figures": "시작 대기 중 — 이 컴퓨터의 메모리가 심각하게 부족합니다. 계속하려면 메모리를 확보하세요"
+      },
       "subagentRunCard": {
         "agent_finished_other": "에이전트 {{count}}개 완료",
         "agent_launched_other": "에이전트 {{count}}개 시작됨",

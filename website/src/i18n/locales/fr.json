@@ -10332,6 +10332,13 @@
         "stop_all_failed": "Impossible d’arrêter les sous-agents",
         "retry_failed_error": "Impossible de réessayer certains sous-agents en échec"
       },
+      "subagentQueued": {
+        "adaptive_cap_zero": "en attente de démarrage — les démarrages sont suspendus tant que cet ordinateur manque de mémoire ou est surchargé ; ils reprennent d’eux-mêmes une fois la situation rétablie",
+        "low_memory": "en attente de démarrage — nécessite {{required}} de mémoire libre, {{available}} libres actuellement ; libère de la mémoire pour continuer",
+        "low_memory_no_figures": "en attente de démarrage — mémoire libre insuffisante ; libère de la mémoire pour continuer",
+        "posture_critical": "en attente de démarrage — la mémoire de cet ordinateur est critiquement basse ({{available}} libres) ; libère de la mémoire pour continuer",
+        "posture_critical_no_figures": "en attente de démarrage — la mémoire de cet ordinateur est critiquement basse ; libère de la mémoire pour continuer"
+      },
       "subagentRunCard": {
         "agent_finished_many": "{{count}} agents terminés",
         "agent_finished_one": "{{count}} agent terminé",
