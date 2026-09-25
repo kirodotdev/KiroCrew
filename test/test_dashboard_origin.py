@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from kiro_crew.dashboard.origin import (
+    _host_without_port,
     bind_address_for,
     build_allowed_origins,
     build_dashboard_url,
@@ -518,9 +519,32 @@ class TestShouldCanonicalizeHost:
             sec_fetch_dest="document",
         )
 
-    def test_redirects_127_to_canonical(self) -> None:
+    def test_a_literal_address_converges_like_a_name(self) -> None:
+        # The gateway holds both loopback families on its port, so every spelling
+        # in the canonicalizable set reaches the same listener and converging them
+        # is a spelling change. What a redirect must never move is a CREDENTIAL,
+        # and that is gated separately -- see the credential case below, which does
+        # not depend on which families are bound.
         assert should_canonicalize_host(
             "127.0.0.1:7777", "localhost", method="GET", sec_fetch_dest="document"
+        )
+
+    def test_no_redirect_for_a_credential_bearing_navigation(self) -> None:
+        # The 302 preserves the query verbatim, so redirecting a ?token=
+        # navigation hands the bearer to whatever answers the canonical name.
+        # This holds even between the two names, which are otherwise converged.
+        assert should_canonicalize_host(
+            "kirocrew.localhost:7777",
+            "localhost",
+            method="GET",
+            sec_fetch_dest="document",
+        ), "control: without a credential these two names do converge"
+        assert not should_canonicalize_host(
+            "kirocrew.localhost:7777",
+            "localhost",
+            method="GET",
+            sec_fetch_dest="document",
+            carries_credential=True,
         )
 
     def test_no_redirect_when_already_canonical(self) -> None:
@@ -572,8 +596,12 @@ class TestShouldCanonicalizeHost:
             "localhost", "kirocrew.localhost", method="GET", sec_fetch_dest="document"
         )
 
-    def test_ipv6_loopback_bracket_host_redirected(self) -> None:
-        # [::1]:7777 must parse to ::1 (not "[") and converge like other loopbacks.
+    def test_ipv6_loopback_bracket_host_not_redirected(self) -> None:
+        # [::1]:7777 must PARSE to ::1 rather than "[" -- that is what the bracket
+        # handling is for, and it is the part of this case that no rule change can
+        # make irrelevant, because a host that parses to "[" would silently fail
+        # every loopback comparison in this module.
+        assert _host_without_port("[::1]:7777") == "::1"
         assert should_canonicalize_host(
             "[::1]:7777",
             "kirocrew.localhost",
@@ -582,6 +610,10 @@ class TestShouldCanonicalizeHost:
         )
 
     def test_ipv6_loopback_bracket_host_without_port(self) -> None:
+        # Same as above for a bracket host with no port. The bracket branch of
+        # _host_without_port stays load-bearing for origin.py's own loopback
+        # check, which is where it is pinned directly.
+        assert _host_without_port("[::1]") == "::1"
         assert should_canonicalize_host(
             "[::1]", "kirocrew.localhost", method="GET", sec_fetch_dest="document"
         )
@@ -622,7 +654,7 @@ class TestBuildHostCanonicalRedirect:
         async with TestClient(TestServer(app)) as client:
             resp = await client.get(
                 "/chat",
-                params={"token": "abc123"},
+                params={"view": "split"},
                 headers={"Host": "localhost:7777", "Sec-Fetch-Dest": "document"},
                 allow_redirects=False,
             )
@@ -631,7 +663,61 @@ class TestBuildHostCanonicalRedirect:
             assert loc.hostname == "kirocrew.localhost"  # host converged
             assert loc.port == 7777  # port preserved
             assert loc.path == "/chat"  # path preserved
-            assert "token=abc123" in loc.query  # ?token= preserved
+            assert "view=split" in loc.query  # query preserved
+
+    @pytest.mark.asyncio
+    async def test_credential_bearing_nav_is_served_not_redirected(self) -> None:
+        # A 302 preserves the query, so redirecting a ?token= navigation would put
+        # that bearer on a request to whatever answers the canonical host. The
+        # navigation is served where it was addressed instead, and the response
+        # body proves the handler ran rather than a redirect being followed.
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.dashboard.server import build_host_canonical_redirect
+
+        async def _ok(_request: web.Request) -> web.Response:
+            return web.Response(text="ok")
+
+        app = web.Application(middlewares=[build_host_canonical_redirect("kirocrew.localhost")])
+        app.router.add_get("/chat", _ok)
+
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get(
+                "/chat",
+                params={"token": "abc123"},
+                headers={"Host": "localhost:7777", "Sec-Fetch-Dest": "document"},
+                allow_redirects=False,
+            )
+            assert resp.status == 200
+            assert await resp.text() == "ok"
+            assert "Location" not in resp.headers
+
+    @pytest.mark.asyncio
+    async def test_literal_address_nav_is_redirected_when_it_carries_nothing(self) -> None:
+        # End to end through the middleware: a credential-free document navigation
+        # on a literal converges onto the canonical name, because both families
+        # reach this same gateway. The credential case next door is what proves a
+        # bearer is never moved this way.
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.dashboard.server import build_host_canonical_redirect
+
+        async def _ok(_request: web.Request) -> web.Response:
+            return web.Response(text="ok")
+
+        app = web.Application(middlewares=[build_host_canonical_redirect("localhost")])
+        app.router.add_get("/chat", _ok)
+
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get(
+                "/chat",
+                headers={"Host": "127.0.0.1:7777", "Sec-Fetch-Dest": "document"},
+                allow_redirects=False,
+            )
+            assert resp.status == 302
+            assert resp.headers["Location"].startswith("http://localhost:7777/chat")
 
     @pytest.mark.asyncio
     async def test_xhr_and_post_not_redirected(self) -> None:

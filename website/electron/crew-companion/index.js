@@ -51,7 +51,7 @@ const APP_NAME = "crew-companion";
 const TICK_MS = 5_000
 
 let backendUrl = "";
-let fetchLocalToken = null;
+let mintLocalToken = null;
 let log = () => {};
 let timer = null;
 let reconciling = false;
@@ -80,7 +80,19 @@ let suspended = false;
 let cachedToken = "";
 
 /**
- * The token to probe with, minting only when there is nothing usable cached.
+ * The origin the cached token was minted against, addressed by every request
+ * that carries it.
+ *
+ * The token is a bearer and it is cached for hours, so the destination cannot be
+ * re-derived per use from the configured URL: that URL spells the host
+ * `localhost`, which names both loopback families, and a v6 co-resident would
+ * then receive a credential a v4-bound gateway issued. Empty when the mint
+ * produced no origin, in which case the configured URL is used exactly as before.
+ */
+
+/**
+ * The token to probe with, and the origin to send it to, minting only when there
+ * is nothing usable cached.
  *
  * @param {boolean} forceMint Re-mint even if a token is cached — for the one
  *   retry after the gateway refused the cached one.
@@ -89,7 +101,7 @@ let cachedToken = "";
 async function tokenForProbe(forceMint) {
   if (!forceMint && cachedToken) return cachedToken;
   try {
-    cachedToken = (fetchLocalToken && (await fetchLocalToken())) || "";
+    cachedToken = (mintLocalToken && (await mintLocalToken())) || "";
   } catch {
     cachedToken = "";
   }
@@ -215,11 +227,11 @@ function showsForeignOrigin(wc) {
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") return false;
   if (!backendUrl) return true; // a web page with no backend to compare against
-  try {
-    return url.origin !== new URL(backendUrl).origin;
-  } catch {
-    return true;
-  }
+  // Same rule as the routing check above, and the same rule the mint dials by, so
+  // a window this app opened at the minted origin is never read as foreign while
+  // the configured URL still spells the host `localhost`. A v6 spelling is NOT
+  // covered: that is a different listener.
+  return url.origin !== new URL(backendUrl).origin;
 }
 
 /**
@@ -290,7 +302,7 @@ async function reconcileOnce() {
   if (reconciling) return;
   reconciling = true;
   try {
-    let token = await tokenForProbe(false);
+    const token = await tokenForProbe(false);
     if (!token) {
       // No credential means we cannot ask, which is unknown — not disabled.
       return;
@@ -306,12 +318,12 @@ async function reconcileOnce() {
       // is left as unknown rather than retried in a loop, so a genuinely broken
       // credential path cannot turn this poll back into a mint-per-tick.
       cachedToken = "";
-      token = await tokenForProbe(true);
-      if (!token) return;
-      setOverlayTarget(backendUrl, token);
-      setPanelTarget(backendUrl, token);
-      setGalleryTarget(backendUrl, token);
-      state = await probeEnabled(token);
+      const reminted = await tokenForProbe(true);
+      if (!reminted) return;
+      setOverlayTarget(backendUrl, reminted);
+      setPanelTarget(backendUrl, reminted);
+      setGalleryTarget(backendUrl, reminted);
+      state = await probeEnabled(reminted);
       if (state === "unauthorized") {
         cachedToken = "";
         return;
@@ -356,12 +368,14 @@ async function reconcileOnce() {
 /**
  * Start following the app's enabled state.
  *
- * @param {{backendUrl: string, fetchLocalToken: () => Promise<string>, glog: (m: string) => void,
+ * @param {{backendUrl: string,
+ *   mintLocalToken: () => Promise<string>,
+ *   glog: (m: string) => void,
  *   getDashboardWindow?: () => (object | null)}} deps
  */
 function initCrewCompanion(deps) {
   backendUrl = (deps && deps.backendUrl) || "";
-  fetchLocalToken = deps && deps.fetchLocalToken;
+  mintLocalToken = deps && deps.mintLocalToken;
   log = (deps && deps.glog) || (() => {});
   getDashboardWindow = (deps && deps.getDashboardWindow) || null;
   setOverlayLogger(log);
@@ -451,7 +465,9 @@ function shutdownCrewCompanion() {
   }
   // Drop the reused credential with the poll that reused it, so a later
   // initCrewCompanion starts from a fresh mint instead of a token that may have
-  // been minted against a gateway that is no longer the one we will talk to.
+  // been minted against a gateway that is no longer the one we will talk to. The
+  // origin goes with it: a destination without its credential addresses nothing,
+  // and a credential without its destination is what this pairing exists to stop.
   cachedToken = "";
   stopHitboxPoll();
   closePetWindow();

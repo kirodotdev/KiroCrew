@@ -3527,6 +3527,7 @@ class TestRunMethod:
         stall = threading.Event()
         original_write_marker = run_marker.write_marker
         original_clear_marker = run_marker.clear_marker
+        original_clear_late = run_marker.clear_late_marker_write
 
         def stalled_write_marker(port):
             events.append("write-start")
@@ -3538,8 +3539,13 @@ class TestRunMethod:
             events.append("clear")
             original_clear_marker(port)
 
+        def recording_clear_late(port):
+            events.append("late-clear")
+            return original_clear_late(port)
+
         monkeypatch.setattr(run_marker, "write_marker", stalled_write_marker)
         monkeypatch.setattr(run_marker, "clear_marker", recording_clear_marker)
+        monkeypatch.setattr(run_marker, "clear_late_marker_write", recording_clear_late)
         marker = run_marker.marker_path(orch._dashboard_port)
         pid_marker = run_marker.pid_path(orch._dashboard_port)
         assert marker.exists()
@@ -3582,7 +3588,7 @@ class TestRunMethod:
             # worker would wake later and write markers OUTSIDE tmp_path.
             stall.set()
             for _ in range(200):  # up to ~10s; normally a few ms
-                if "write-start" not in events or events.count("clear") >= 2:
+                if "write-start" not in events or "late-clear" in events:
                     break
                 await asyncio.sleep(0.05)
 
@@ -3596,9 +3602,17 @@ class TestRunMethod:
         # timed-out clear. The writer thread must then self-clear them
         # (same thread, no event-loop callback os._exit could beat),
         # otherwise a stopped gateway leaves stale runtime state behind.
+        #
+        # The thread's clear is ``clear_late_marker_write``, scoped to the
+        # generation: it may run after the listener is free, where a location
+        # does not identify its owner, so it removes only this process's own
+        # write and only while the pid record still names this process. The
+        # shutdown-side ``clear_marker`` runs once and holds the listener.
         assert "write-end" in events
         assert events.index("write-end") > events.index("clear")
-        assert events.count("clear") == 2  # timed-out clear + writer self-clear
+        assert events.count("clear") == 1  # the timed-out shutdown clear
+        assert events.count("late-clear") == 1  # the writer's own self-clear
+        assert events.index("late-clear") > events.index("write-end")
         assert not marker.exists()
         assert not pid_marker.exists()
 

@@ -122,10 +122,12 @@ function frameOk(permission, details) {
  *     signal when `wc` is null. Ignoring it is what denied the microphone.
  *
  * Both are parsed as URLs and compared on hostname; never substring-matched, so
- * `http://localhost.evil.example/` cannot pass. The shell always loads
- * `http://localhost:<port>` (main.js BACKEND_URL) and remote hosts are SSH
- * forwards onto that same loopback port, so hostname is a stable identity.
- *
+ * `http://localhost.evil.example/` cannot pass. The shell loads its dashboard
+ * under one of two spellings of the same loopback host: `localhost` from
+ * main.js BACKEND_URL, and the literal `127.0.0.1` when a locally minted token
+ * is carried, because that credential is addressed to the listener it was
+ * minted against rather than to a name that resolves to either loopback family.
+ * Remote hosts are SSH forwards onto that same loopback port, so hostname stays
  * @param {{ getURL?: () => string } | null | undefined} wc
  * @param {string} [origin] - securityOrigin string, when Electron supplies one
  * @returns {boolean}

@@ -24,7 +24,7 @@ function validOptions(overrides = {}) {
     store: { get: () => null },
     backendUrl: "http://localhost:5476",
     port: 5476,
-    fetchLocalToken: async () => "",
+    mintLocalToken: async () => "",
     fetchRemoteToken: async () => ({ token: "" }),
     requestQuit: () => {},
     connectWindow: async () => {},
@@ -33,6 +33,103 @@ function validOptions(overrides = {}) {
     ...overrides,
   };
 }
+
+describe("a minted token is only carried to the origin it was minted for", () => {
+  // The invariant, stated once: a value read from the mint and used to
+  // authenticate must be addressed to the listener the mint spoke to, never to
+  // a base re-derived from the configured URL. `localhost` names both loopback
+  // families on an ordinary host, so re-deriving can land a dashboard bearer on
+  // `[::1]:<port>` -- which a co-resident is free to hold while a v4-bound
+  // gateway supplies the credential. This scans the SOURCE rather than one call
+  // path, so a site added later reddens too.
+  const SUPERVISOR = fs
+    .readFileSync(path.join(__dirname, "..", "gateway-supervisor.js"), "utf8")
+    .replace(/\r\n/g, "\n");
+
+  /** Lines composing a credential onto a base, with the 4 lines before each. */
+  function credentialSites(text, isSite) {
+    const lines = text.split("\n");
+    return lines
+      .map((line, index) => ({ line, index, before: lines.slice(Math.max(0, index - 4), index + 1) }))
+      .filter(({ line }) => isSite(line));
+  }
+
+  it("never re-bases a token-bearing navigation onto a different origin", () => {
+    // B's rule, and it is the inverse of what this guard used to demand. The
+    // document must stay on the configured origin: browsers partition storage by
+    // origin, so moving it strands every existing user's unsent drafts, and the
+    // configured string is compared by exact equality in several places. A
+    // structural guard rather than a behavioural one because the failure mode is
+    // a NEW navigation site added later on a path no test drives.
+    const offenders = credentialSites(
+      SOURCE,
+      (line) => /\?token=\$\{/.test(line) || /searchParams\.set\(\s*"token"/.test(line),
+    )
+      .filter(({ line }) => /\$\{\s*\w*[Oo]rigin\s*\|\|/.test(line) || /loopbackOrigin/.test(line))
+      .map(({ line, index }) => `window-lifecycle.js:${index + 1}: ${line.trim()}`);
+
+    assert.deepEqual(
+      offenders,
+      [],
+      "each of these re-bases a token-bearing navigation onto a rewritten origin",
+    );
+  });
+
+  it("covers every navigation site rather than passing on an empty scan", () => {
+    // Control for the guard above: an empty offender list must mean the sites
+    // are right, not that the pattern matched nothing.
+    const sites = credentialSites(
+      SOURCE,
+      (line) => /\?token=\$\{/.test(line) || /searchParams\.set\(\s*"token"/.test(line),
+    );
+    assert.ok(sites.length >= 4, `expected at least 4 token-bearing sites, found ${sites.length}`);
+  });
+
+  it("never drops the origin on a fallback that still carries a credential", () => {
+    // The other side of the invariant, and the one a diff-reading sweep misses:
+    // an SSH-fetched token is a bearer on the same terms as a minted one, so a
+    // fallback that answered `tokenOrigin = ""` sent it to the configured
+    // `localhost` URL -- the ambiguity the whole change exists to remove. No site
+    // may zero the origin while a token is still in hand.
+    const offenders = [];
+    for (const [name, text] of [["window-lifecycle.js", SOURCE], ["gateway-supervisor.js", SUPERVISOR]]) {
+      text.split("\n").forEach((line, index) => {
+        if (/tokenOrigin\s*=\s*""/.test(line)) {
+          offenders.push(`${name}:${index + 1}: ${line.trim()}`);
+        }
+      });
+    }
+    assert.deepEqual(offenders, [], "a fallback here carries a token to a re-derived destination");
+  });
+
+  it("leaves every remote fallback addressing the URL it was given", () => {
+    // The remote-token fallbacks took a literal origin under A. Under B there is
+    // no second origin to take, so the absence of any origin plumbing in this
+    // module IS the property -- asserted positively so a reintroduction fails
+    // here rather than in review.
+    assert.equal(
+      /loopbackOrigin|tokenOrigin/.test(SOURCE),
+      false,
+      "window-lifecycle.js must not derive an origin for a navigation",
+    );
+  });
+
+  it("leaves the boot navigation on the configured backend URL", () => {
+    // The supervisor's boot navigation is the one site outside this module that
+    // carried the minted origin; under B it addresses the URL it was configured
+    // with, so the first document the user sees is already on the origin every
+    // later navigation uses.
+    const supervisor = fs.readFileSync(
+      path.join(__dirname, "..", "gateway-supervisor.js"),
+      "utf8",
+    );
+    assert.equal(
+      /loopbackOrigin|tokenOrigin/.test(supervisor),
+      false,
+      "gateway-supervisor.js must not derive an origin for the boot navigation",
+    );
+  });
+});
 
 describe("window lifecycle module boundary", () => {
   it("loads in plain Node and never requires Electron at module scope", () => {
@@ -50,7 +147,7 @@ describe("window lifecycle module boundary", () => {
       ["store", /store is required/],
       ["backendUrl", /backendUrl is required/],
       ["port", /port is required/],
-      ["fetchLocalToken", /fetchLocalToken is required/],
+      ["mintLocalToken", /mintLocalToken is required/],
       ["fetchRemoteToken", /fetchRemoteToken is required/],
       ["requestQuit", /requestQuit is required/],
       ["connectWindow", /connectWindow is required/],

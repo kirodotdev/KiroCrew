@@ -81,7 +81,7 @@ const {
   buildRemoteTokenCommand,
   parseTokenFromStdout,
 } = require("./remote-token");
-const { fetchLocalToken: fetchTokenFromHome } = require("./local-token");
+const { mintLocalToken: mintTokenFromHome } = require("./local-token");
 const { resolveHome, canonicalHome, secretCandidates } = require("./home-dir");
 const {
   isLocalGatewayEnabled,
@@ -789,7 +789,7 @@ function createGatewaySupervisor({
     // an unidentified payload, a same-family gateway, a dev-family one, and a
     // cross-family one whose LISTEN owner is not ours -- and a gateway reached
     // through `ssh -L` answers with a perfectly ordinary same-family payload, so
-    // a gate on one reason value misses four. `fetchLocalToken` then posts this
+    // a gate on one reason value misses four. `mintLocalToken` then posts this
     // machine's `.local_secret` to it, because the mint only requires a literal
     // loopback origin and a tunnel's local end is one. The header goes out before
     // any 403 is seen, so there is no recovery after the fact.
@@ -1376,7 +1376,19 @@ function createGatewaySupervisor({
     });
   }
 
-  async function fetchLocalToken(targetBackendUrl = BACKEND_URL) {
+  /**
+   * Mint a dashboard token for `targetBackendUrl`.
+   *
+   * The token is delivered to the URL it was minted for, unchanged: the mint only
+   * produces one after confirming this gateway holds every loopback family that
+   * URL's host resolves to (`listenerSecretsFor`), so the host as written can
+   * reach no other listener. Every refusal below answers with the same empty
+   * string a miss produces, so a refusal and an absent credential are one case
+   * for the caller.
+   *
+   * @returns {Promise<string>}
+   */
+  async function mintLocalToken(targetBackendUrl = BACKEND_URL) {
     // The secret is the thing that must not leave this machine, so the check
     // belongs here rather than on the adoption. `local-token.js` sends
     // `X-Local-Secret` to whatever answers a literal loopback origin, and an
@@ -1451,7 +1463,7 @@ function createGatewaySupervisor({
     }
     // Re-resolve the home at call time so a KIROCREW_HOME change after Electron
     // starts is honored. Mint only against the literal loopback endpoint.
-    return fetchTokenFromHome({
+    return mintTokenFromHome({
       backendUrl: targetBackendUrl,
       resolveHome,
       path,
@@ -2151,7 +2163,7 @@ function createGatewaySupervisor({
       // just before local mint accepts that secret, so retry only an own-gateway
       // 403; foreign/SSH gateways can never be minted from this machine.
       for (let attempt = 0; ; attempt += 1) {
-        let token = await fetchLocalToken(targetBackendUrl);
+        let token = await mintLocalToken(targetBackendUrl);
         if (!token) {
           ({ token } = await fetchRemoteToken(new URL(targetBackendUrl).port));
         }
@@ -2160,7 +2172,11 @@ function createGatewaySupervisor({
         if (token) {
           await fadeLoadingScreen(webContents);
           if (window.isDestroyed()) return;
-          webContents.loadURL(dashboardEntryUrl(targetBackendUrl, initialPath, token));
+          // A locally minted token is addressed to the listener it was minted
+          // against; anything else keeps the configured URL.
+          webContents.loadURL(
+            dashboardEntryUrl(targetBackendUrl, initialPath, token),
+          );
           if (targetBackendUrl === BACKEND_URL && window === mainWindow()) {
             startLivenessMonitor(window);
           }
@@ -2547,7 +2563,7 @@ function createGatewaySupervisor({
   return Object.freeze({
     start: startGateway,
     connect: showLoadingThenConnect,
-    fetchLocalToken,
+    mintLocalToken,
     fetchRemoteToken,
     entryUrl: dashboardEntryUrl,
     probePrimaryPortOwner,

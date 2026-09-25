@@ -52,6 +52,18 @@ describe("isAppOrigin — two sources", () => {
     assert.equal(isAppOrigin(null, "http://evil.example"), false);
   });
 
+  it("recognises ONLY the configured name, not any loopback spelling", () => {
+    // The dashboard document is always `http://localhost:<port>`, so the check
+    // stays an exact hostname match. Recognising other loopback spellings would
+    // widen an authorization surface for a document this app never opens: a
+    // scripted page served on a literal address by anything else on the machine
+    // would be treated as the app itself.
+    assert.equal(isAppOrigin(wcAt("http://localhost:5476/chat/x?token=abc"), undefined), true);
+    assert.equal(isAppOrigin(undefined, "http://localhost:5476/"), true);
+    assert.equal(isAppOrigin(wcAt("http://127.0.0.1:5476/chat"), undefined), false);
+    assert.equal(isAppOrigin(null, "http://[::1]:5476/"), false);
+  });
+
   it("compares hostname, never a substring (no localhost.evil bypass)", () => {
     assert.equal(isAppOrigin(null, "http://localhost.evil.example/"), false);
     assert.equal(isAppOrigin(wcAt("http://notlocalhost/"), undefined), false);

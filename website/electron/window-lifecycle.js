@@ -93,7 +93,7 @@ function createWindowLifecycle(options) {
     port,
     glog = () => {},
     readInternalSecret = () => "",
-    fetchLocalToken,
+    mintLocalToken,
     fetchRemoteToken,
     isQuitting = () => false,
     requestQuit,
@@ -106,8 +106,8 @@ function createWindowLifecycle(options) {
   if (!store) throw new Error("createWindowLifecycle: store is required");
   if (!backendUrl) throw new Error("createWindowLifecycle: backendUrl is required");
   if (!Number.isInteger(port)) throw new Error("createWindowLifecycle: port is required");
-  if (typeof fetchLocalToken !== "function") {
-    throw new Error("createWindowLifecycle: fetchLocalToken is required");
+  if (typeof mintLocalToken !== "function") {
+    throw new Error("createWindowLifecycle: mintLocalToken is required");
   }
   if (typeof fetchRemoteToken !== "function") {
     throw new Error("createWindowLifecycle: fetchRemoteToken is required");
@@ -1028,8 +1028,10 @@ function createWindowLifecycle(options) {
     // A 403 means the gateway secret may have rotated. Re-enter through the
     // same local-then-remote token order used at boot.
     const onNavigate = createTokenRetryHandler(async () => {
-      let tokenValue = await fetchLocalToken(backendUrl);
-      if (!tokenValue) ({ token: tokenValue } = await fetchRemoteToken(port));
+      let tokenValue = await mintLocalToken(backendUrl);
+      if (!tokenValue) {
+        ({ token: tokenValue } = await fetchRemoteToken(port));
+      }
       if (tokenValue && !mainWindow.isDestroyed()) {
         mainWindow.webContents.loadURL(`${backendUrl}?token=${tokenValue}`);
       }
@@ -1090,8 +1092,10 @@ function createWindowLifecycle(options) {
       reload: () => {
         if (mainWindow.isDestroyed()) return;
         (async () => {
-          let tokenValue = await fetchLocalToken(backendUrl);
-          if (!tokenValue) ({ token: tokenValue } = await fetchRemoteToken(port));
+          let tokenValue = await mintLocalToken(backendUrl);
+          if (!tokenValue) {
+            ({ token: tokenValue } = await fetchRemoteToken(port));
+          }
           if (mainWindow.isDestroyed()) return;
           mainWindow.webContents.loadURL(
             tokenValue ? `${backendUrl}?token=${tokenValue}` : backendUrl,
@@ -1342,7 +1346,7 @@ function createWindowLifecycle(options) {
     const targetUrl = win._mcBackendUrl;
     const targetPort = new URL(targetUrl).port;
 
-    let tokenValue = await fetchLocalToken(targetUrl);
+    let tokenValue = await mintLocalToken(targetUrl);
     let sshError = null;
     if (!tokenValue) {
       ({ token: tokenValue, error: sshError } = await fetchRemoteToken(targetPort));
@@ -1386,7 +1390,7 @@ function createWindowLifecycle(options) {
     // would replay the consumed intent and mint a second blank session.
     let retryTarget = initialPath;
     const onNavigate = createTokenRetryHandler(async () => {
-      let tokenValue = await fetchLocalToken(connectionBackendUrl);
+      let tokenValue = await mintLocalToken(connectionBackendUrl);
       if (!tokenValue) {
         ({ token: tokenValue } = await fetchRemoteToken(connectionPort));
       }

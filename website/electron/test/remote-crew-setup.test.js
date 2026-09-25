@@ -479,7 +479,7 @@ function lifecycleHarness(tabPort, savedFields) {
     store,
     backendUrl: "http://localhost:5476",
     port: 5476,
-    fetchLocalToken: async () => "",
+    mintLocalToken: async () => "",
     fetchRemoteToken: async () => ({ token: "" }),
     requestQuit() {},
     connectWindow: async () => {},

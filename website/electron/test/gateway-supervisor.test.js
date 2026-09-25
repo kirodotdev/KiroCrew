@@ -193,7 +193,7 @@ test("module has no top-level Electron dependency and its factory accepts fakes"
   assert.deepStrictEqual(Object.keys(supervisor), [
     "start",
     "connect",
-    "fetchLocalToken",
+    "mintLocalToken",
     "fetchRemoteToken",
     "entryUrl",
     "probePrimaryPortOwner",
@@ -249,7 +249,11 @@ test("no listener-probe outcome authorises the local secret", async () => {
     // No spawn has happened, so ownership is "none" whatever the port reports.
     const { supervisor } = harness({ httpMod: mintingHttp, execFileFn, fsMod: secretFs });
 
-    assert.strictEqual(await supervisor.fetchLocalToken(), "", `${owner}: no token`);
+    assert.strictEqual(
+      await supervisor.mintLocalToken(),
+      "",
+      `${owner}: no token`,
+    );
     assert.deepStrictEqual(attempts, [], `${owner}: the secret is not sent`);
   }
 });
@@ -293,14 +297,23 @@ test("the local secret is not sent to a port a remote crew is configured on", as
   assert.strictEqual(spawnCalls.length, 1, "this process started the gateway");
   // Control: with no crew recorded, the spawn DOES authorise the mint. Without
   // this the test cannot tell "refused for the crew" from "refused for everything".
-  await supervisor.fetchLocalToken();
-  assert.strictEqual(secretRequests.length, 1, "our own spawn mints while no crew is recorded");
+  await supervisor.mintLocalToken();
+  // How MANY requests the mint makes is not this control's subject: the mint
+  // reads every candidate address that can be the dialed listener, and that walk
+  // is pinned in local-token.test.js. What this needs is that the mint was
+  // authorised at all, which is what separates "refused for the crew" below from
+  // "refused for everything".
+  assert.ok(secretRequests.length > 0, "our own spawn mints while no crew is recorded");
 
   // Now the dialog's Add Remote Crew records a crew on this same port.
   secretRequests.length = 0;
   store.set("remoteHosts", { 5476: { host: "crew.example.com" } });
 
-  assert.strictEqual(await supervisor.fetchLocalToken(), "", "no token for a crew's port");
+  assert.strictEqual(
+    await supervisor.mintLocalToken(),
+    "",
+    "no token for a crew's port",
+  );
   assert.deepStrictEqual(secretRequests, [], "and no secret leaves the machine");
 });
 
@@ -351,7 +364,7 @@ test("the kernel must name our own child as the port's listener before the secre
 
     await supervisor.start();
     assert.strictEqual(spawnCalls.length, 1, `${label}: this process started the gateway`);
-    await supervisor.fetchLocalToken();
+    await supervisor.mintLocalToken();
     assert.strictEqual(
       secretRequests.length > 0,
       mints,
@@ -361,7 +374,7 @@ test("the kernel must name our own child as the port's listener before the secre
     // And the own-port half holds whatever the pid says: another port is not the
     // child we started, so it is refused even in the case that may mint.
     secretRequests.length = 0;
-    await supervisor.fetchLocalToken("http://127.0.0.1:9099");
+    await supervisor.mintLocalToken("http://127.0.0.1:9099");
     assert.deepStrictEqual(secretRequests, [], `${label}: another port is never ours`);
   }
 });
@@ -402,8 +415,8 @@ test("the secret stops the moment our gateway child dies, before anything replac
   assert.strictEqual(spawnCalls.length, 1, "this process started the gateway");
   // Control: while that child is alive the mint happens, so a refusal below is
   // attributable to its death and not to the gate refusing everything.
-  await supervisor.fetchLocalToken();
-  assert.strictEqual(secretRequests.length, 1, "a live child mints");
+  await supervisor.mintLocalToken();
+  assert.ok(secretRequests.length > 0, "a live child mints");
 
   // The child exits. Ownership deliberately survives this; the child does not.
   secretRequests.length = 0;
@@ -412,7 +425,11 @@ test("the secret stops the moment our gateway child dies, before anything replac
   child.emit("exit", 1, null);
   await flush();
 
-  assert.strictEqual(await supervisor.fetchLocalToken(), "", "a dead child mints nothing");
+  assert.strictEqual(
+    await supervisor.mintLocalToken(),
+    "",
+    "a dead child mints nothing",
+  );
   assert.deepStrictEqual(secretRequests, [], "and no secret reaches whatever took the port");
 });
 
