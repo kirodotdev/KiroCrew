@@ -230,37 +230,37 @@ describe("findKirocrewBin", () => {
 });
 
 describe("findSshBin", () => {
-  const existing = (...present) => ({
+  const executable = (...present) => ({
     accessSync: (p) => { if (!present.includes(p)) throw new Error("ENOENT"); },
-    constants: { F_OK: fs.constants.F_OK },
+    constants: { X_OK: fs.constants.X_OK },
   });
 
-  it("returns bare ssh on POSIX so execFile searches PATH", () => {
-    const touched = [];
-    const probe = { accessSync: (p) => touched.push(p), constants: { F_OK: 0 } };
-    assert.equal(findSshBin(probe, path.posix, { PATH: "/opt/homebrew/bin:/usr/bin" }, false), "ssh");
-    assert.deepStrictEqual(touched, []);
+  it("takes /usr/bin/ssh and never consults PATH on POSIX", () => {
+    const planted = executable("/home/u/.local/bin/ssh", "/usr/bin/ssh");
+    assert.equal(findSshBin(planted, path.posix, false), "/usr/bin/ssh");
   });
 
-  it("prefers the first ssh.exe on the Windows PATH", () => {
-    const gitSsh = "C:\\Program Files\\Git\\usr\\bin\\ssh.exe";
-    const inbox = "C:\\Windows\\System32\\OpenSSH\\ssh.exe";
-    const env = { PATH: "C:\\tools;C:\\Program Files\\Git\\usr\\bin", SystemRoot: "C:\\Windows" };
-    assert.equal(findSshBin(existing(gitSsh, inbox), path.win32, env, true), gitSsh);
+  it("finds a NixOS system ssh in the trusted system profile", () => {
+    const nix = "/run/current-system/sw/bin/ssh";
+    assert.equal(findSshBin(executable(nix), path.posix, false), nix);
   });
 
-  it("reads the Windows Path spelling when PATH is absent", () => {
-    const bin = "D:\\ssh\\ssh.exe";
-    assert.equal(findSshBin(existing(bin), path.win32, { Path: "D:\\ssh" }, true), bin);
+  it("ignores an ssh that exists only in a PATH-only directory", () => {
+    const result = findSshBin(executable("/opt/homebrew/bin/ssh"), path.posix, false);
+    assert.equal(result, "/usr/bin/ssh");
   });
 
-  it("falls back to the in-box OpenSSH client under SystemRoot", () => {
-    const inbox = "E:\\Win\\System32\\OpenSSH\\ssh.exe";
-    const env = { PATH: "C:\\tools", SystemRoot: "E:\\Win" };
-    assert.equal(findSshBin(existing(inbox), path.win32, env, true), inbox);
-  });
-
-  it("returns bare ssh.exe on Windows when no candidate exists", () => {
-    assert.equal(findSshBin(existing(), path.win32, { PATH: "C:\\tools" }, true), "ssh.exe");
+  it("uses the fixed in-box client on Windows, whatever SystemRoot says", () => {
+    const saved = process.env.SystemRoot;
+    process.env.SystemRoot = "D:\\Planted";
+    try {
+      assert.equal(
+        findSshBin(executable("D:\\Planted\\System32\\OpenSSH\\ssh.exe"), path.win32, true),
+        "C:\\Windows\\System32\\OpenSSH\\ssh.exe",
+      );
+    } finally {
+      if (saved === undefined) delete process.env.SystemRoot;
+      else process.env.SystemRoot = saved;
+    }
   });
 });

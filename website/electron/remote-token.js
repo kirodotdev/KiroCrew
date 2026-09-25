@@ -59,19 +59,20 @@ function buildRemoteTokenCommand(binPath, options = {}) {
   return `export PATH="${expandedPath}"${portExport}; "${expanded}" token`;
 }
 
-const SSH_CONNECT_TIMEOUT_SECS = 10;
-
 // Local ssh argv for the token fetch, matching the gateway's mint
 // (`instances/token_mint.py` `_build_ssh_argv`). `-n` reads ssh's stdin from
 // the null device: `execFile` never closes the child's stdin pipe, and through
 // a ProxyCommand ssh then waits after the remote command exits for an EOF that
 // never arrives, until the timeout kills it (#9380, the Node twin of #9360).
 // `BatchMode=yes` fails fast instead of waiting on a prompt nobody can answer.
-function buildRemoteTokenSshArgs(remoteHost, remoteCommand) {
+// `ConnectTimeout` takes the caller's whole budget, as the mint does: on
+// OpenSSH >= 8.6 it also bounds the banner/KEX a slow ProxyCommand spends it on,
+// so a fixed smaller value would fail hosts the user already raised it for.
+function buildRemoteTokenSshArgs(remoteHost, remoteCommand, { timeoutMs }) {
   return [
     "-n",
     "-o", "BatchMode=yes",
-    "-o", `ConnectTimeout=${SSH_CONNECT_TIMEOUT_SECS}`,
+    "-o", `ConnectTimeout=${Math.max(1, Math.round(timeoutMs / 1000))}`,
     remoteHost,
     remoteCommand,
   ];
@@ -81,9 +82,11 @@ function buildRemoteTokenSshArgs(remoteHost, remoteCommand) {
 // binary and a timeout kill used to surface as the same generic failure.
 function describeSshFailure(error, stderr, { sshBin, remoteHost, timeoutMs }) {
   const detail = (stderr || "").trim();
-  if (error.code === "ENOENT") return `ssh client not found: ${sshBin}`;
+  if (error.code === "ENOENT") {
+    return `ssh client not found: ${sshBin}. Install the OpenSSH client and retry.`;
+  }
   if (error.killed) {
-    const timedOut = `ssh ${remoteHost} timed out after ${timeoutMs} ms`;
+    const timedOut = `ssh ${remoteHost} timed out after ${Math.round(timeoutMs / 1000)} s`;
     return detail ? `${timedOut}: ${detail}` : timedOut;
   }
   return detail || error.message;

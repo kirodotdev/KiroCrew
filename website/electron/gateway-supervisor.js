@@ -1356,9 +1356,9 @@ function createGatewaySupervisor({
       port: effectivePort,
       remotePath: remotePath || undefined,
     });
-    const sshArgs = buildRemoteTokenSshArgs(remoteHost, remoteCommand);
-    const sshBin = findSshBin(fs, path, processObj.env, IS_WIN);
     const timeoutMs = Math.max(store.get("sshTimeoutMs") || 20000, 5000);
+    const sshArgs = buildRemoteTokenSshArgs(remoteHost, remoteCommand, { timeoutMs });
+    const sshBin = findSshBin(fs, path, IS_WIN);
 
     return new Promise((resolve) => {
       sendStatus("Fetching token from remote dev desktop…");

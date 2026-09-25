@@ -142,38 +142,43 @@ describe("parseTokenFromStdout", () => {
 });
 
 describe("buildRemoteTokenSshArgs", () => {
-  it("closes ssh's stdin and fails fast instead of prompting", () => {
+  it("closes ssh's stdin, fails fast, and connects within the whole budget", () => {
     assert.deepStrictEqual(
-      buildRemoteTokenSshArgs("devbox", "kirocrew token"),
-      ["-n", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "devbox", "kirocrew token"],
+      buildRemoteTokenSshArgs("devbox", "kirocrew token", { timeoutMs: 20000 }),
+      ["-n", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20", "devbox", "kirocrew token"],
     );
   });
 
+  it("never passes a ConnectTimeout below one second", () => {
+    const args = buildRemoteTokenSshArgs("devbox", "cmd", { timeoutMs: 200 });
+    assert.ok(args.includes("ConnectTimeout=1"));
+  });
+
   it("places the host and remote command last, after every option", () => {
-    const args = buildRemoteTokenSshArgs("user@host", "cmd");
+    const args = buildRemoteTokenSshArgs("user@host", "cmd", { timeoutMs: 5000 });
     assert.deepStrictEqual(args.slice(-2), ["user@host", "cmd"]);
   });
 });
 
 describe("describeSshFailure", () => {
-  const context = { sshBin: "ssh.exe", remoteHost: "devbox", timeoutMs: 20000 };
+  const context = { sshBin: "/usr/bin/ssh", remoteHost: "devbox", timeoutMs: 20000 };
   const failure = (fields) => Object.assign(new Error("Command failed"), fields);
 
-  it("names the missing ssh binary on a spawn ENOENT", () => {
+  it("names the missing ssh client and the next step on a spawn ENOENT", () => {
     assert.equal(
       describeSshFailure(failure({ code: "ENOENT" }), "", context),
-      "ssh client not found: ssh.exe",
+      "ssh client not found: /usr/bin/ssh. Install the OpenSSH client and retry.",
     );
   });
 
-  it("reports a timeout kill as a timeout, with any stderr", () => {
+  it("reports a timeout kill in seconds, with any stderr", () => {
     assert.equal(
       describeSshFailure(failure({ killed: true, signal: "SIGTERM" }), "", context),
-      "ssh devbox timed out after 20000 ms",
+      "ssh devbox timed out after 20 s",
     );
     assert.equal(
       describeSshFailure(failure({ killed: true }), "slow proxy\n", context),
-      "ssh devbox timed out after 20000 ms: slow proxy",
+      "ssh devbox timed out after 20 s: slow proxy",
     );
   });
 

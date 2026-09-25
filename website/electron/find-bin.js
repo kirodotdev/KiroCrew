@@ -138,44 +138,45 @@ function findKirocrewBin(
   return isWindows ? "kirocrew.exe" : "kirocrew"; // fall back to PATH
 }
 
+// Root-owned directories an ssh client may be taken from. Mirrors
+// `platform_compat._TRUSTED_SYSTEM_BIN_DIRS`: PATH can lead with agent-writable
+// directories (`~/.local/bin`, a worktree venv), and this binary runs in the
+// un-sandboxed main process with the remote command and returns the token.
+const TRUSTED_POSIX_SSH_DIRS = ["/usr/bin", "/bin", "/usr/sbin", "/sbin", "/run/current-system/sw/bin"];
+
+// The in-box Windows OpenSSH client, at a fixed path. Not derived from
+// `%SystemRoot%`: `HKCU\Environment` is writable without elevation, so a
+// restarted app would inherit a root naming a planted `ssh.exe`
+// (`platform_compat._windows_system_dirs` records this as measured). Node has
+// no `GetSystemDirectoryW`; a Windows installed off `C:` gets an ENOENT naming
+// this path instead, which is where `main` already fails on every Windows host.
+const WINDOWS_SSH_BIN = "C:\\Windows\\System32\\OpenSSH\\ssh.exe";
+
 /**
- * Resolve the local OpenSSH client for an `execFile` call.
+ * Resolve the local OpenSSH client for an `execFile` call from trusted,
+ * non-user-writable locations only: never PATH, never the environment.
  *
- * POSIX returns bare `"ssh"`: `execFile` searches PATH, as the gateway's own
- * ssh calls do (`instances/token_mint.py`), so a Nix or Homebrew ssh is found
- * and a GUI launch with the default launchd PATH still reaches `/usr/bin/ssh`.
- * Windows has no `/usr/bin/ssh`, so it takes the first `ssh.exe` on PATH, then
- * the in-box OpenSSH client, then bare `"ssh.exe"` so a miss surfaces as a
- * spawn ENOENT naming the binary.
+ * POSIX takes the first executable `ssh` in the trusted system directories
+ * (NixOS included), falling back to `/usr/bin/ssh` so a miss surfaces as a
+ * spawn ENOENT naming that path. Windows takes the fixed in-box client.
  *
- * @param {typeof import("fs")} fs - Node fs module (needs `accessSync`, `constants.F_OK`)
- * @param {typeof import("path")} path - Node path module for the host platform
- * @param {Record<string, string|undefined>} [env] - environment holding PATH and SystemRoot
+ * @param {typeof import("fs")} fs - Node fs module (needs `accessSync`, `constants.X_OK`)
+ * @param {typeof import("path")} path - Node path module
  * @param {boolean} [isWindows] - whether the host is Windows
- * @returns {string} Absolute `ssh.exe` path when one is found on Windows, else a bare name
+ * @returns {string} Absolute path to the ssh client
  */
-function findSshBin(
-  fs,
-  path,
-  env = process.env,
-  isWindows = process.platform === "win32"
-) {
-  if (!isWindows) return "ssh";
-  const pathVar = env.PATH || env.Path || "";
-  const candidates = pathVar
-    .split(path.delimiter)
-    .filter(Boolean)
-    .map((dir) => path.join(dir, "ssh.exe"));
-  candidates.push(path.join(env.SystemRoot || "C:\\Windows", "System32", "OpenSSH", "ssh.exe"));
-  for (const bin of candidates) {
+function findSshBin(fs, path, isWindows = process.platform === "win32") {
+  if (isWindows) return WINDOWS_SSH_BIN;
+  for (const dir of TRUSTED_POSIX_SSH_DIRS) {
+    const bin = path.join(dir, "ssh");
     try {
-      fs.accessSync(bin, fs.constants.F_OK);
+      fs.accessSync(bin, fs.constants.X_OK);
       return bin;
     } catch {
-      // not here; try the next candidate
+      // not here; try the next trusted directory
     }
   }
-  return "ssh.exe";
+  return "/usr/bin/ssh";
 }
 
 module.exports = { findKirocrewBin, findSshBin };

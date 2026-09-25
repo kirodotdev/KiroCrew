@@ -2105,7 +2105,7 @@ test("linux refuses the respawn too, where unverifiedIncumbent is false by desig
   assert.deepStrictEqual(quits, []);
 });
 
-test("fetchRemoteToken runs ssh from PATH with stdin closed and batch mode", async () => {
+test("fetchRemoteToken runs a trusted ssh with stdin closed and batch mode", async () => {
   const execCalls = [];
   const { supervisor } = harness({
     store: fakeStore({ remoteHosts: { 5476: { host: "devbox" } } }),
@@ -2117,15 +2117,16 @@ test("fetchRemoteToken runs ssh from PATH with stdin closed and batch mode", asy
 
   assert.deepStrictEqual(await supervisor.fetchRemoteToken(5476), { token: "abc", error: null });
   assert.strictEqual(execCalls.length, 1);
-  assert.strictEqual(execCalls[0].file, "ssh");
+  assert.strictEqual(execCalls[0].file, "/usr/bin/ssh");
   assert.deepStrictEqual(
     execCalls[0].args.slice(0, 5),
-    ["-n", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"],
+    ["-n", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20"],
   );
   assert.strictEqual(execCalls[0].args[5], "devbox");
+  assert.strictEqual(execCalls[0].options.timeout, 20000);
 });
 
-test("fetchRemoteToken reports a missing ssh client by name", async () => {
+test("fetchRemoteToken reports a missing ssh client by path", async () => {
   const { supervisor } = harness({
     store: fakeStore({ remoteHosts: { 5476: { host: "devbox" } } }),
     execFileFn(file, args, options, callback) {
@@ -2135,6 +2136,6 @@ test("fetchRemoteToken reports a missing ssh client by name", async () => {
 
   assert.deepStrictEqual(
     await supervisor.fetchRemoteToken(5476),
-    { token: "", error: "ssh client not found: ssh" },
+    { token: "", error: "ssh client not found: /usr/bin/ssh. Install the OpenSSH client and retry." },
   );
 });
