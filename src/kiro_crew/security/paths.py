@@ -659,6 +659,30 @@ _CREW_SECRET_LEAVES: list[str] = [
     # working; there is deliberately no CLI verb to fence.
     "file_delivery_consent.json",
     "ssh_auth_sock_consent.json",
+    # The operator's STANDING auto-approve declaration (``standing-approval/grant.json``):
+    # skip EVERY tool approval, in every future session, with no expiry. The widest
+    # authorization this product grants, so it belongs on the read+write floor for the
+    # reason ``computer_use.json`` above does -- a ceiling needs both halves, and reading
+    # it tells an agent whether it is currently running unprompted, which is
+    # reconnaissance the shared gate should not hand over.
+    #
+    # It is deliberately NOT ``agent.dangerously_skip_permissions`` in ``config.json``.
+    # That document is agent-READABLE by design (in-sandbox readers resolve the subagent
+    # cap, the quarantine threshold and the browser preference from it per call), and a
+    # readable inode the caller OWNS is a ``link(2)`` source: a second name in the
+    # writable data-home root takes a write the sealed name refuses, because a bind
+    # seals a MOUNT and not an inode. So the switch lives on a leaf no sandboxed process
+    # can open at all (``sandbox._CREW_HIDDEN_LEAVES``), which is the property a
+    # read-only seal cannot supply.
+    #
+    # A whole DIRECTORY, not the ``grant.json`` leaf, and that is load-bearing twice. A
+    # writable container is the same hole one level up -- the reasoning ``backup`` above
+    # gives -- and Linux refuses ``link(2)`` on a directory outright, so the alias shape
+    # has no source here even in principle. There is deliberately NO dashboard writer and
+    # NO CLI verb to fence: the operator hand-edits the document out-of-band, as for
+    # ``oauth_endpoints.json`` above, and ``standing_approval.is_declared`` is the only
+    # reader -- it opens the path directly, not through this gate.
+    "standing-approval",
     # The single-use step-up nonce that authorizes RECORDING a flagged-file
     # delivery grant. A whole DIRECTORY, not a leaf file, because arming writes a
     # sibling ``.tmp`` and renames it into place. It lives in its OWN top-level

@@ -1220,13 +1220,15 @@ class AgentConfig:
     dangerously_skip_permissions: bool = field(
         default=False,
         metadata=_meta(
-            "Dangerously Skip Permissions",
-            "Skip EVERY tool approval confirmation, permanently. Declaring it here "
-            "is a standing instruction: the grant does not expire and is "
-            "re-established on every startup. This is the advanced, "
-            "config-file-only escape hatch — there is deliberately no dashboard "
-            "toggle for it. An enterprise policy can forbid it, which falls back "
-            "to the ad-hoc duration below.",
+            "Dangerously Skip Permissions (RETIRED)",
+            "RETIRED and no longer a grant. The standing auto-approve declaration "
+            "moved to the operator-owned keystone standing-approval/grant.json, "
+            "which an agent sandbox cannot open at all — this document stays "
+            "agent-READABLE by design, and a readable inode the agent owns can be "
+            "given a second name in a writable directory, so a seal on this name "
+            "could not hold the switch. Still read here for ONE purpose: when it is "
+            "true and the keystone is absent, startup logs how to move it and grants "
+            "nothing. Set the keystone instead.",
             restart=True,
         ),
     )
@@ -1238,8 +1240,11 @@ class AgentConfig:
             "the dashboard picker, Slack, or the API. Every one of those surfaces "
             "uses this same duration. Accepts 30m / 1h / 6h / 12h / 24h, or "
             "until_shutdown to keep it on with no timed expiry until Kiro Crew "
-            "restarts. Timed values are capped at 24h. Does NOT apply to a grant "
-            "declared via 'dangerously_skip_permissions' above, which persists.",
+            "restarts. Timed values are capped at 24h. Does NOT apply to the "
+            "standing grant declared on the keystone standing-approval/grant.json, "
+            "which does not expire — and which is honoured only where Kiro Crew's "
+            "own sandbox masks that leaf away from the agent, so on a host without "
+            "that mask this ad-hoc duration is the only auto-approve available.",
             enum=["30m", "1h", "6h", "12h", "24h", "until_shutdown"],
         ),
     )

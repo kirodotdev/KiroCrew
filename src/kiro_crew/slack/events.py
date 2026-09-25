@@ -31,7 +31,7 @@ from slack_sdk.socket_mode.response import SocketModeResponse
 from slack_sdk.socket_mode.websockets import SocketModeClient as WSSocketModeClient
 from slack_sdk.web.async_client import AsyncWebClient
 
-from kiro_crew import __version__
+from kiro_crew import __version__, standing_approval
 from kiro_crew.agent_discovery import agent_spec_stems
 from kiro_crew.agent_spec_format import (
     is_markdown_spec,
@@ -896,9 +896,10 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
     ``WSSocketModeClient`` requires a current event loop in the constructing
     thread (its ``__init__`` ends in ``asyncio.ensure_future``), so running
     this function in a worker thread crashes every Slack-enabled boot with
-    ``RuntimeError: There is no current event loop``.  The two blocking calls
-    it contains — the YOLO grant's profiles-dir walk and the enterprise
-    ``auth.test`` network call — are offloaded individually below instead,
+    ``RuntimeError: There is no current event loop``.  The three blocking calls
+    it contains — the standing-approval keystone read, the YOLO grant's
+    profiles-dir walk and the enterprise ``auth.test`` network call — are
+    offloaded individually below instead,
     which keeps the security-relevant early-return ordering (owner check,
     then YOLO grant, then enterprise validation) intact.
     ``test_slack_events_coverage.py::TestInitSocketMode`` pins both halves.
@@ -920,9 +921,27 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
     set_tracking_channels(orch._tracking_channels)
     set_open_channels(orch._open_channels)
     set_owner_id(orch._owner_id)
-    if orch._cfg.agent.dangerously_skip_permissions:
+    # The STANDING grant is read from the operator-owned keystone, never from
+    # config.json: a standing skip of every approval must not be declarable by the
+    # population it governs, and config.json stays agent-READABLE by design, which
+    # leaves the inode behind its read-only seal a link(2) source. The retired
+    # config key grants nothing and says so once, rather than being honoured
+    # silently.
+    #
+    # Off-loop like the two calls below it: is_declared opens a file and establishes
+    # the sandbox mask, and this function runs ON the event loop by necessity (see the
+    # docstring), so a data home whose storage stalls must not be able to hold the loop.
+    if await asyncio.to_thread(standing_approval.is_declared, orch._cfg.agent.sandbox):
         # grant_declared_yolo walks the profiles dir — blocking, so off-loop.
         await asyncio.to_thread(set_yolo_mode, True)
+    elif orch._cfg.agent.dangerously_skip_permissions:
+        # Off-loop for the same reason as the call above: the notice establishes the
+        # sandbox mask to decide whether a remedy is worth printing, which reads the
+        # data home and probes the backend.
+        notice = await asyncio.to_thread(
+            standing_approval.migration_notice, orch._cfg.agent.sandbox
+        )
+        logger.warning("%s", notice)
     set_orch_cfg(orch._cfg)
     if orch.dashboard_state:
         set_dashboard_state(orch.dashboard_state)

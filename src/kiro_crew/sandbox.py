@@ -247,6 +247,12 @@ _CREW_HOME_PREFIXES: tuple[str, ...] = (".kiro/crew", ".kirocrew")
 #: rather than imported from ``service.live_target`` to keep this low-level module free of
 #: that import chain; ``test_sandbox_dev_fleet_live_target.py`` pins the spellings equal.
 _LIVE_TARGET_LEAF: str = "live_target.json"
+#: The operator's standing auto-approve keystone: a DIRECTORY holding ``grant.json``.
+#: Spelled here rather than imported from ``config.loader`` for the reason
+#: ``_LIVE_TARGET_LEAF`` is -- this low-level module stays free of the config-loader
+#: import chain -- and ``test_standing_approval_keystone.py`` pins the two spellings
+#: equal, so the mask and the reader cannot come to name different directories.
+_STANDING_APPROVAL_LEAF: str = "standing-approval"
 #: The masked DIRECTORY the pointer's absent-equivalent stub is staged in before it is
 #: linked into place. Staging beside the target — in the data-home root — would put the
 #: temp at a name every sandbox can see: a concurrent namespace could ``link(2)`` it and
@@ -455,6 +461,36 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     "agentcore-inbound",
     "routing",
     "webhooks",
+    # The operator's STANDING auto-approve declaration
+    # (``standing-approval/grant.json``): skip every tool approval, in every future
+    # session, with no expiry. The widest authorization the product grants, so the
+    # population it governs must not be able to author it -- and MASKED rather than
+    # sealed read-only, which is the whole point of the leaf existing.
+    #
+    # The switch is deliberately NOT ``agent.dangerously_skip_permissions`` in
+    # ``config.json``. That document is sealed read-only above but stays READABLE
+    # in-sandbox, because in-sandbox readers resolve the subagent cap, the quarantine
+    # threshold and the browser preference from it per call. A readable document is a
+    # ``link(2)`` source: the agent runs as the operator's uid and so OWNS the inode,
+    # ``link(2)`` needs no write permission on the file it names, and a bind seals a
+    # MOUNT and not an inode -- the same fact ``_require_sealable_ceiling`` states
+    # when it refuses a ceiling with ``st_nlink > 1``. So a second name in the
+    # writable data-home root, a write through it, and an unlink leave the next
+    # startup reading a poisoned document under a lone link, which no point-in-time
+    # ``st_nlink`` check can see.
+    #
+    # A DIRECTORY, and that is load-bearing twice over rather than a layout
+    # preference. Linux refuses ``link(2)`` on a directory outright, so the alias
+    # shape has no source here even in principle; and a directory bind covers every
+    # child name, so it escapes the inode-staleness a single-file bind carries. No
+    # in-sandbox reader exists -- ``standing_approval.is_declared`` is called from the
+    # GATEWAY's startup paths -- so HIDDEN rather than READONLY, and hiding it lands
+    # in the safe direction for the reason the READONLY note gives: this is a GRANT,
+    # so an empty bind reads as no standing authority and the session prompts.
+    # Listed in ``_CREW_PRECREATE_HIDDEN_DIR_LEAVES`` too: an operator who has never
+    # declared the grant has no directory for the isdir-guarded mask loop to bind
+    # over, and the data-home root is writable in every sandbox.
+    _STANDING_APPROVAL_LEAF,
     # The live-target pointer: it names the checkout the gateway ``execve``s into at
     # startup, so a sandboxed process that could write it would choose the code the
     # whole host runs next. Masked from Dev Fleet's OWN backend as well — that spawn's
@@ -1629,6 +1665,17 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # the spool's own ``restrict_to_owner=True`` writes already require of it; its
     # readers open the leaf inside, so an empty root reads exactly as an absent one.
     "inbound-spool",
+    # The standing auto-approve keystone, and the skip lands exactly where it hurts:
+    # an operator who has never declared the grant -- the default on every install --
+    # has no directory for the isdir-guarded mask loop to bind over. The data-home
+    # root is writable in every sandbox, so with the name absent a sandboxed process
+    # can simply CREATE the directory and write the grant document the gateway reads
+    # back at the next startup as the operator's own standing authority. Materialising
+    # it empty at 0700 gives the bind a name to cover before anything can write one.
+    # An empty directory is the reader's absent-equivalent by construction:
+    # ``standing_approval._read_all`` maps a missing ``grant.json`` and an unreadable
+    # one alike to ``{}``, and ``is_declared`` answers False for both.
+    _STANDING_APPROVAL_LEAF,
 )
 
 #: The masked md-notebook leaves materialised before a namespace spawn, and what each
