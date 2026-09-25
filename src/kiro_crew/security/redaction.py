@@ -35,6 +35,382 @@ from typing import NamedTuple
 from kiro_crew.credential_patterns import AWS_KEY_ID, JWT_MULTI_SEGMENT
 from kiro_crew.security.redaction_switch import credential_pass_bypassed
 
+# Standard replacement tag for a redacted credential. Shared between the batch
+# redactor (`redact_credentials`) and the streaming fail-closed path
+# (`StreamRedactor.feed`) so the on-the-wire marker is identical everywhere.
+# Defined ABOVE `_CREDENTIAL_PATTERNS` because the key-anchored branches embed
+# the registered tags as an atom of their value group (`_CREDENTIAL_TAG_ATOM`).
+_REDACTED_CREDENTIAL_TAG = "[REDACTED: credential]"
+
+# Public alias for modules that must emit the SAME tag rather than duplicate the
+# literal — e.g. the pptx-maker preview, which excises a credential-bearing bitmap
+# itself because this module's redactor recognises a narrower token set than that
+# scan matches.
+REDACTED_CREDENTIAL_TAG = _REDACTED_CREDENTIAL_TAG
+
+#: Replacement tag for pass 2 (a base64-encoded credential). DISTINCT from
+#: ``_REDACTED_CREDENTIAL_TAG`` and deliberately not a superstring of it, so a
+#: consumer counting one tag does not accidentally match the other. Kept PRIVATE:
+#: consumers should ask ``CREDENTIAL_REDACTION_TAGS`` below rather than name
+#: individual tags, which is the whole point of that registry.
+_REDACTED_ENCODED_CREDENTIAL_TAG = "[REDACTED: encoded credential]"
+
+#: EVERY tag :func:`redact_credentials` can substitute for a credential, owned
+#: HERE beside the passes that emit them rather than enumerated by each caller.
+#: A consumer that needs to answer "did the CREDENTIAL redactor replace something
+#: in this text" must check all of them: pass 1 (plaintext patterns) and pass 3
+#: (bare secret runs) write ``_REDACTED_CREDENTIAL_TAG``, pass 2 (base64-encoded)
+#: writes ``_REDACTED_ENCODED_CREDENTIAL_TAG``.
+#:
+#: Scope is deliberately CREDENTIALS ONLY, and a consumer must not read it as "was
+#: this text rewritten at all". :func:`redact_exfiltration_urls` is a separate
+#: rewriter that substitutes ``[REDACTED: suspicious URL to <domain>]`` -- a
+#: variable string, so it is prefix-matched rather than compared, which is why it
+#: is not a member here. Its stable prefix is exported as
+#: :data:`kiro_crew.security.exfil.EXFILTRATION_REDACTION_TAG_PREFIX` (beside
+#: the rewriter itself), and a consumer that needs the full "was this text
+#: rewritten" answer must check that constant by prefix ALONGSIDE this tuple --
+#: the dashboard chat notice does exactly that.
+#:
+#: This tuple exists so the enumeration lives beside the tags instead of at the
+#: call site, where it silently misses a tag and under-reports redactions on the
+#: dashboard chat notice. Co-locating it means a NEW tag is added next to the list
+#: that must name it; ``test_every_redaction_tag_constant_is_registered`` fails if
+#: one is added without registering it, so the drift cannot happen silently.
+#:
+#: Invariant relied on by callers that SUM per-tag counts: no tag is a substring
+#: of another, so one substitution cannot be counted twice.
+CREDENTIAL_REDACTION_TAGS = (_REDACTED_CREDENTIAL_TAG, _REDACTED_ENCODED_CREDENTIAL_TAG)
+
+#: The registered tags as one regex atom, for the value group of every pattern
+#: that redacts a VALUE and keeps the key that names it (the key-anchored
+#: branches of `_CREDENTIAL_PATTERNS`, the `token=` parameter of pass 4). Those
+#: value classes all stop at whitespace, and every tag carries an interior space,
+#: so without this atom a re-run over the redactor's own output would match the
+#: tag's `[REDACTED:` head as a new value. With it, the value is EITHER a whole
+#: tag plus whatever is glued to it (`TAG<class>*`) OR an ordinary run
+#: (`<class>+`), so `_value_is_credential_tag` can decide by byte identity of the
+#: ENTIRE value: a bare tag is left alone, a tag with bytes glued to its `]` is
+#: redacted whole (those bytes were never certified by anything), and a tag
+#: followed by the class's own boundary -- a space, a quote, `,`, `}` -- is a
+#: bare tag with an ordinary tail. Presence-only consumers
+#: (`_contains_fixed_credential`) are unchanged: wherever the atom matches, the
+#: plain class matched already; only the extent of the match differs. The atom
+#: is a RUN of one or more whole tags, so two adjacent tags -- two credentials
+#: that stood side by side inside one value -- are one value the predicate reads
+#: whole, never a tag plus a head cut at the second tag's interior space.
+_CREDENTIAL_TAG_ATOM = "(?:" + "|".join(re.escape(tag) for tag in CREDENTIAL_REDACTION_TAGS) + ")+"
+
+#: Every STRICT prefix of a registered tag (one byte short of the literal and
+#: shorter), longest first, for the streaming grammar only. A chunk boundary can
+#: fall anywhere inside a tag standing as a redacted value, and past the tag's
+#: interior space neither the tag atom (which needs the whole literal) nor the
+#: value class (which stops at the space) recognises the tail as the in-progress
+#: value it is. Generated from the registry, so a tag added there is held
+#: without a second edit; a prefix shared by two tags appears once.
+_CREDENTIAL_TAG_PREFIX_ATOM = (
+    "(?:"
+    + "|".join(
+        re.escape(prefix)
+        for prefix in sorted(
+            {tag[:k] for tag in CREDENTIAL_REDACTION_TAGS for k in range(1, len(tag))},
+            key=lambda p: (-len(p), p),
+        )
+    )
+    + ")"
+)
+
+#: The value class of the three AWS key-value branches: bounded, stopping at
+#: whitespace and at JSON structural delimiters (see the branch comment below),
+#: and at a backslash. No byte of an AWS secret, session token or key id is a
+#: backslash; in the text these branches anchor on it is the escape character of
+#: an ENCLOSING document -- a pair stored through ``json.dumps`` (a ledger line,
+#: persisted history, a serialized log) reads ``key=\"<v>\"`` -- and a class that
+#: admitted it read the ``\`` of that escaped quote as a one-byte value, so the
+#: redactor's own output embedded that way was live to every presence-only
+#: reader and was mangled by a second run (the quote un-escaped, the enclosing
+#: JSON document broken).
+_AWS_VALUE_CLASS = r"[^\s\"',}\\]"
+
+#: The optional quote of a key-anchored LABEL -- the one closing a JSON key and
+#: the one opening the value -- bare or ESCAPED (``\"``): the two spellings a
+#: quoted pair has, standing in its own document and embedded in an enclosing
+#: string literal. One atom for the four key-anchored branches and
+#: ``_AWS_LABEL_RULES``, so the label rule is one rule. ``_quoted_value_end``
+#: reads the opener's spelling and finds the close in the same one.
+_LABEL_QUOTE = r"(?:\\?[\"'])?"
+
+#: The key spellings of the three AWS key-anchored branches (the Bearer branch
+#: has its own hold anchor in the stream, `_BEARER_ANCHOR_PARTIAL_RE`).
+_KEY_ANCHORED_KEYS = (
+    "SecretAccessKey",
+    "aws_secret_access_key",
+    "SessionToken",
+    "aws_session_token",
+    "AccessKeyId",
+    "aws_access_key_id",
+)
+
+#: A key-anchored LABEL cut short at the text's end, every way the stream's
+#: natural cut can cut one: after the key, after the quote closing a JSON key,
+#: after the whitespace before the separator, after the separator and the
+#: whitespace after it, after the opening quote -- or at the lone backslash of
+#: an escaped quote still to come. The stream holds from the key
+#: (`_key_anchored_hold_start`). The Bearer header's key is here too, folded as
+#: its branch is: the stream's own Bearer anchor is STRONG and so requires the
+#: separator, and the tails before it are this WEAK hold's. The value, once a
+#: byte of it arrives, is a credential-class run the stream holds on its own.
+_LABEL_TAIL = r"(?:\\|" + _LABEL_QUOTE + r"\s*(?:[:=]\s*(?:\\?[\"']|\\)?)?)"
+_KEY_ANCHORED_LABEL_TAIL_RE = re.compile(
+    "(?:" + "|".join(_KEY_ANCHORED_KEYS) + "|(?i:Authorization))" + _LABEL_TAIL + r"\Z"
+)
+
+
+def _key_anchored_hold_start(text: str, cut: int) -> int | None:
+    """Where a stream must hold *text* from so a key-anchored pair reaches the
+    batch pass WHOLE when it would otherwise commit at *cut*, or ``None`` when
+    that cut bisects no pair.
+
+    The stream commits up to the last byte outside its credential class, and a
+    key-anchored pair has places where such a byte sits INSIDE the pair: the
+    whitespace after the separator (``"aws_secret_access_key": `` -- a committed
+    label leaves the value to arrive anchor-less in the next window and stream
+    raw, as it did on every head before this one) and a space or a backslash
+    inside a quoted value (``key="<v> tail"`` -- the batch pass over a head cut
+    at the space claims to the head's end and WRITES the close there, so the
+    wire reads ``key="[REDACTED: credential]"tail"``). So a cut that lands
+    inside a pair's extent is pulled back to the pair's start: the extent is
+    the label through the value's class run, through the closing quote when
+    the value is quoted (``_quoted_value_end``), and to the text's end while a
+    quote is still open; a label complete at the text's end with no value byte
+    yet (``_KEY_ANCHORED_LABEL_TAIL_RE``, the lone backslash of an escaped quote
+    included) is a pair whose value is still to come. A closing quote followed
+    by a terminator, a raw line break, or the stream's end releases the hold --
+    at the stream's end the batch pass is right to write the close. The hold is
+    WEAK in the stream's terms: it never raises the hold-back cap and never
+    authorizes a drop, and the stream drops a hold whose extent would exceed the
+    cap rather than flooring it -- the floor cuts wherever ``len - cap`` lands, a
+    token's run included, while the natural cut never bisects a credential-class
+    run -- so a quoted value that runs past the cap commits its label and token
+    whole and only its prose tail takes the close written at the cut.
+    """
+    if not any(
+        key in text for key in _KEY_ANCHORED_KEYS
+    ) and not _CREDENTIAL_PREFILTER_AUTHORIZATION_RE.search(text):
+        return None
+    held: int | None = None
+    label = _KEY_ANCHORED_LABEL_TAIL_RE.search(text)
+    if label is not None and label.start() < cut:
+        held = label.start()
+    for match in _CREDENTIAL_PATTERNS.finditer(text):
+        if match.start() >= cut:
+            break
+        if match.lastindex is None:
+            continue
+        start, end = _credential_value_span(match)
+        quoted = _quoted_value_end(text, match.start(), start, end)
+        if quoted is None:
+            pair_end = end
+        else:
+            claim_end, closes, opener = quoted
+            if closes:
+                pair_end = claim_end + len(opener)
+            elif claim_end >= len(text):
+                # Still open at the text's end: the close is to come, so a cut
+                # AT the end bisects the pair as surely as one inside it.
+                pair_end = len(text) + 1
+            else:
+                # The line ended the value (a raw break, or the enclosing
+                # literal's own quote): the pair's extent is known.
+                pair_end = claim_end
+        if cut < pair_end:
+            held = match.start() if held is None else min(held, match.start())
+    return held
+
+
+def _keyed_value_group(class_: str) -> str:
+    """The body of a key-anchored VALUE group over one-character class *class_*.
+
+    ``TAG<class>*|<class>+``: see ``_CREDENTIAL_TAG_ATOM``. Non-empty on both
+    alternatives, so a key with no value never matches (a presence-only consumer
+    would otherwise start flagging ``aws_secret_access_key=`` alone).
+    """
+    return f"{_CREDENTIAL_TAG_ATOM}{class_}*|{class_}+"
+
+
+def _value_is_credential_tag(text: str, start: int, end: int) -> bool:
+    """Whether the value at ``text[start:end]`` IS one of this module's own tags
+    -- the one value a value-redacting pass declines to claim.
+
+    Several surfaces run the redactor over its own output (the streaming path
+    re-redacts the persisted copy; :func:`redact_path_segments` requires its
+    candidate to be a fixed point), so a value that is a tag must stay a tag:
+    claiming it again would mangle ``key=[REDACTED: credential]`` into
+    ``key=[REDACTED: credential] credential]`` on the second run. Pass 1 (a
+    key-anchored branch's value group) and pass 4 (a ``token=`` parameter value)
+    share this one rule, and both embed ``_CREDENTIAL_TAG_ATOM`` in their value
+    group so the value they hand here is the whole tag, not its head.
+
+    Trust is BYTE IDENTITY of the ENTIRE value with a module-owned fixed literal,
+    never a shape and never a prefix: ``[``, ``]`` and ``:`` are ordinary value
+    bytes, so ``[REDACTED<secret>`` and ``[redacted:<secret>`` are values and are
+    redacted like any other, and ``[REDACTED: credential]<secret>`` -- a tag with
+    bytes glued to it -- is a value too and is redacted whole with a warning,
+    because a consumer that gates egress on the warning list (``decisions.gate``)
+    must not be told a key-anchored line was clean when uncertified bytes rode
+    behind its tag. ``CREDENTIAL_REDACTION_TAGS`` is the registry because it
+    holds ONLY fixed literals; the exfiltration tag's domain segment is
+    attacker-satisfiable and is deliberately not trusted.
+
+    A RUN of whole tags is a tag too: two credentials adjacent inside one value
+    (``?token=AKIA…AKIA…``) are two claims, and the pass that wrote them --
+    including the one this module shipped before pass 4 coalesced such a value
+    -- left ``[REDACTED: credential][REDACTED: credential]`` standing. Reading
+    that run as a value would claim its head up to the interior space and mangle
+    it on the next run, with a warning about text that holds no secret. The
+    registry's invariant (no tag is a substring of another) makes the parse of a
+    run unique, and a run with bytes glued to its last ``]`` is, as above, a value.
+    """
+    i = start
+    while i < end:
+        for tag in CREDENTIAL_REDACTION_TAGS:
+            if i + len(tag) <= end and text.startswith(tag, i):
+                i += len(tag)
+                break
+        else:
+            return False
+    return end > start
+
+
+def _quoted_value_end(
+    text: str, match_start: int, start: int, end: int
+) -> tuple[int, bool, str] | None:
+    """For a key-anchored value whose branch consumed an OPENING quote, where the
+    claim ends -- the matching closing quote, or the end of the line when the
+    quote never closes -- whether it closed, and the opener as written; ``None``
+    when the value is not quoted.
+
+    A value class stops at whitespace and at quotes, so inside ``"key": "<secret>
+    tail"`` the value group is ``<secret>`` alone. Quoted, the quoted string is ONE
+    value and the bytes after the class run are part of it, so the claim runs to
+    the closing quote and the pair reads ``"key": "[REDACTED: credential]"``. The
+    rule is applied on the FIRST claim, before the tag skip, and that is what
+    keeps redaction a fixed point of itself: the second run meets a tag that
+    FILLS its quoted value and ``_value_is_credential_tag`` -- judging the same
+    extended span -- skips it. Judging the quoted extent only for a value that was
+    already a tag is not a fixed point: the first run over ``"<secret> tail"``
+    claims the class run alone and emits exactly the tag-with-a-quoted-tail shape
+    the second run then claims through the quote, deleting `` tail`` and warning
+    afresh on text the first run had already cleaned -- on every surface that
+    re-redacts its own output (the streaming path re-redacts the persisted copy;
+    ``joins_to_a_credential`` compares a reading with its redaction). And a tag
+    heading a quoted value that continues (``"key": "[REDACTED: credential]
+    <secret>"``) is claimed through the quote and warned, never skipped: a skip
+    there leaves the secret standing with NO warning, and the warning list is what
+    ``decisions.gate.scrub_reason`` gates an external request on.
+
+    The opening quote is known to be the branch's own: every key-anchored branch
+    admits an optional quote right before its value group, and the value class
+    excludes quotes, so a quote at ``start - 1`` inside the match can only be
+    that one. The closing quote is the first UNESCAPED one: a backslash escapes
+    the byte after it, so ``"[REDACTED: credential] text\\"suffix"`` closes at its
+    last quote, not at the escaped one -- a claim cut at the escaped quote leaves
+    the backslash inside the span and a bare ``"`` behind it, and a JSON document
+    the Files view redacts in place comes back unparseable. Parity is scanned from the
+    value's FIRST byte, not from the class run's end, because the class admits a
+    backslash: ``"abc\\"more"`` has a run of ``abc\\`` that ends on the backslash
+    escaping the quote that stopped it.
+
+    A quote that never closes on its line ends the value at the LINE's end -- the
+    first raw line break, or the end of the text -- and the claim is warned like
+    any other. Nothing after an unterminated opening quote is certified by
+    anything: the bytes are inside a quoted value as far as every format this
+    anchors on can tell, and a raw line break is where a quoted string ends in
+    all of them, so the line is the widest the value can be. The alternative --
+    falling back to the class run as for an unquoted pair -- is a bypass of the
+    egress gate: ``key="[REDACTED: credential] <secret>`` with no closing quote
+    would leave ``<secret>`` standing with no warning, and the redactor's own
+    first pass over ``key="<s1> <s2>`` produces exactly that shape, so it is not
+    a rare one. The cost is over-redaction of one malformed line, never data
+    loss past it. A bare tag ending the line is a fixed point of the BYTES only:
+    the extended span IS the tag, so nothing is rewritten, but the skip needs a
+    closing quote to prove the tag fills its value, and a line that never closes
+    is warned on every run (the claim loop below).
+
+    Linear: a scan ends at the next same-kind quote, and a later quoted pair on
+    the line carries one, so at most one scan per quote kind per line runs to
+    the line's end; a match the claim's reach covers whole is skipped, and one
+    that straddles its end is clamped to the part past it.
+
+    A DOUBLED quote is an escaped interior quote, never the close: YAML and SQL
+    spell a quote inside a single-quoted scalar as ``''``, CSV one inside a
+    double-quoted field as ``""``, and no format this anchors on closes a string
+    and reopens another with nothing between them. Reading the first ``'`` of
+    ``''`` as the close is a bypass of the egress gate: the redactor's own first
+    pass over ``key='<s1>''<s2>'`` claimed ``<s1>`` and closed at the doubled
+    quote, emitting ``key='[REDACTED: credential]''<s2>'``, and the second run
+    then found a tag that FILLS a closed quoted value, skipped it in silence and
+    left ``<s2>`` standing with no warning for ``scrub_reason`` to refuse on. The
+    pair is consumed as two value bytes, so the close is the first quote NOT
+    followed by its twin and the whole scalar is one claim on the first run.
+    The whole scan is ONE bound, read in the OPENER'S ENCODING. A label quote is
+    bare (``key="<v>"``) or escaped (``key=\"<v>\"``, the pair as it reads inside
+    an enclosing string literal: a ledger line ``json.dumps`` wrote, persisted
+    history, a serialized log; ``_LABEL_QUOTE`` admits both). The value's bytes
+    are then read through the same encoding -- an inner token is one byte, or a
+    backslash and the byte it escapes -- and the rules above apply to the INNER
+    tokens unchanged: an inner backslash escapes the inner token after it, an
+    inner quote doubled is interior, the first other inner quote is the close
+    (``\\"`` for an escaped opener), and a raw line break ends the line. Two
+    tokens end the line only in the escaped encoding, because they do not exist
+    in the bare one: an escaped line break (``\n``, ``\r``) is the inner line's
+    end, and a BARE quote is the enclosing literal's own end. Read bare, the
+    same text was the one-byte value ``\\`` -- the redactor's own output embedded
+    in a JSON document was live to every presence-only reader and a second run
+    un-escaped the quote and broke the document, the very symptom this span rule
+    exists to fix, one level down.
+
+    Returns ``(claim_end, closes, opener)``: the index the claim runs to, whether
+    a closing quote stands there (``False`` at a line's end or the text's end),
+    and the opener token as written (``"`` or ``\"``), which is what a claim that
+    runs to an unterminated line's end writes as its close.
+    """
+    if start <= match_start or text[start - 1] not in "\"'":
+        return None
+    quote = text[start - 1]
+    escaped = start - 2 >= match_start and text[start - 2] == "\\"
+    opener = text[start - 2 : start] if escaped else quote
+    inner_backslash = "\\\\" if escaped else "\\"
+    line_ends = ("\r", "\n", "\\r", "\\n", quote) if escaped else ("\r", "\n")
+    n = len(text)
+
+    def token_end(at: int) -> int:
+        """The end of the inner token at *at*: a byte, or an escape and its byte."""
+        return at + 2 if escaped and text[at] == "\\" and at + 1 < n else at + 1
+
+    i = start
+    while i < n:
+        j = token_end(i)
+        inner = text[i:j]
+        if inner in line_ends:
+            return i, False, opener
+        if inner == inner_backslash:
+            # Escapes the inner token after it, unless a raw break follows.
+            if j < n and text[j] not in "\r\n":
+                j = token_end(j)
+            i = j
+            continue
+        if inner == opener:
+            k = token_end(j) if j < n else j
+            if text[j:k] == opener:
+                # A doubled quote is an escaped interior quote, never the close.
+                i = k
+                continue
+            return i, True, opener
+        i = j
+    return n, False, opener
+
+
 # ── Credential Output Redaction ──
 # Catches raw credential patterns in LLM output / tool results,
 # including base64-encoded variants.  Applied on all output paths
@@ -66,6 +442,25 @@ from kiro_crew.security.redaction_switch import credential_pass_bypassed
 #                            `(?i:…)` branch, and neither can `str.lower()` —
 #                            see `_CREDENTIAL_PREFILTER_AUTHORIZATION_RE` for the
 #                            bypass that cost.
+#
+# AND A BRANCH DECIDES ITS OWN REDACTION SPAN BY ITS GROUP SHAPE. A branch that
+# starts at the KEY naming a secret (`aws_secret_access_key = <v>`,
+# `Authorization: Bearer <v>`) wraps the VALUE in one named capturing group, and
+# `_credential_value_span` redacts that group alone: the key, the `:`/`=`
+# separator and the quotes around the value survive, so a JSON / YAML / INI /
+# `.env` / header-line document keeps its structure and JSON still parses.
+# Replacing the whole match there collapses `"Authorization": "Bearer <v>"` to
+# one bare string, and a file viewer then reports a valid file as invalid JSON.
+# A branch with NO capturing group IS the secret (`AKIA…`, a PEM block, a
+# fixed-prefix token, `scheme://user:pass@`) and is replaced whole. The two
+# shapes are therefore mutually exclusive: a capturing group on a whole-match
+# branch would narrow its span and leak the rest of the token, and a key-anchored
+# branch without one collapses the pair again. Capturing groups here are NAMED
+# and appear nowhere but as the value of a key-anchored branch;
+# `test_redaction_key_anchored_value_span.py` pins both directions. And because
+# the key now survives, a re-run over the output meets `key = [REDACTED: …]`
+# again: pass 1 declines a value that is one of this module's own tag literals
+# (`_value_is_credential_tag`), so redaction stays a fixed point of itself.
 _CREDENTIAL_PATTERNS = re.compile(
     r"(?:"
     # ── AWS ──
@@ -80,9 +475,34 @@ _CREDENTIAL_PATTERNS = re.compile(
     # fields and consuming a following credential key so it's never matched/counted.
     # Stopping at JSON structural delimiters bounds the value while still matching
     # bare key=value forms.
-    r'|(?:SecretAccessKey|aws_secret_access_key)["\']?\s*[:=]\s*["\']?[^\s"\',}]+'
-    r'|(?:SessionToken|aws_session_token)["\']?\s*[:=]\s*["\']?[^\s"\',}]+'
-    r'|(?:AccessKeyId|aws_access_key_id)["\']?\s*[:=]\s*["\']?[^\s"\',}]+'
+    # The value is the named group; the key, separator and opening quote before
+    # it are matched but not redacted (see `_credential_value_span`). Its body is
+    # `TAG<class>*|<class>+` (`_keyed_value_group`): a registered tag standing as
+    # the value is matched whole, so a re-run over redacted output hands the span
+    # rule the entire tag rather than its `[REDACTED:` head. Each label quote is
+    # `_LABEL_QUOTE`: bare, or escaped as it reads inside an enclosing string
+    # literal (`key=\"<v>\"`), where the value then ends at the escaped close.
+    r"|(?:SecretAccessKey|aws_secret_access_key)"
+    + _LABEL_QUOTE
+    + r"\s*[:=]\s*"
+    + _LABEL_QUOTE
+    + "(?P<aws_secret_value>"
+    + _keyed_value_group(_AWS_VALUE_CLASS)
+    + ")"
+    r"|(?:SessionToken|aws_session_token)"
+    + _LABEL_QUOTE
+    + r"\s*[:=]\s*"
+    + _LABEL_QUOTE
+    + "(?P<aws_session_value>"
+    + _keyed_value_group(_AWS_VALUE_CLASS)
+    + ")"
+    r"|(?:AccessKeyId|aws_access_key_id)"
+    + _LABEL_QUOTE
+    + r"\s*[:=]\s*"
+    + _LABEL_QUOTE
+    + "(?P<aws_key_id_value>"
+    + _keyed_value_group(_AWS_VALUE_CLASS)
+    + ")"
     # PEM private key: match the ENTIRE block (header + base64 body), not just
     # the header phrase. redact_credentials() replaces the matched SPAN, so a
     # header-only match (the original form) left the secret base64 body verbatim.
@@ -267,9 +687,18 @@ _CREDENTIAL_PATTERNS = re.compile(
     # 6750 `b64token`) stops at whitespace/quotes, so neither over-captures. A
     # Bearer header carrying a JWT redacts as one match (the Bearer class subsumes
     # the JWT); a bare JWT is still caught independently (defense in depth).
+    # The redacted VALUE is `Bearer <token>` — the header's credentials (RFC 6750
+    # §2.1: `credentials = "Bearer" 1*SP b64token`) — so the scheme goes with the
+    # token and `"Authorization": "Bearer <tok>"` reads back as
+    # `"Authorization": "[REDACTED: credential]"`: the header name, the separator
+    # and the quotes survive, and the document still parses.
     f"|{JWT_MULTI_SEGMENT}"  # JWS (3-seg) / JWE (5-seg incl. dir/ECDH-ES), shared spelling
     r"|(?<![A-Za-z0-9_.-])eyJ[A-Za-z0-9_-]{96,}\.[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])"  # 2-seg link token
-    r"|(?i:Authorization)[\"\']?\s*[:=]\s*[\"\']?(?i:Bearer)\s+[A-Za-z0-9._~+/-]+=*"  # HTTP/JSON bearer
+    r"|(?i:Authorization)"
+    + _LABEL_QUOTE
+    + r"\s*[:=]\s*"
+    + _LABEL_QUOTE
+    + r"(?P<bearer_value>(?i:Bearer)\s+[A-Za-z0-9._~+/-]+=*)"  # HTTP/JSON bearer
     r")",
 )
 
@@ -282,6 +711,12 @@ def get_credential_patterns() -> list[re.Pattern[str]]:
     so a future rename here can't silently turn a downstream scan into a no-op.
     Returns a list so callers can iterate uniformly; the fork keeps a single
     combined compiled regex, so the list has one element.
+
+    These are the RAW patterns: a key-anchored branch matches the redactor's own
+    output (``key=[REDACTED: credential]`` -- the key survives redaction) exactly
+    as it matches the secret it replaced. A reader asking whether text CARRIES a
+    credential uses :func:`contains_credential` or :func:`credential_matches`,
+    which apply pass 1's own skip for a tag standing as the value.
     """
     return [_CREDENTIAL_PATTERNS]
 
@@ -327,9 +762,66 @@ def _credential_matches(text: str) -> Iterator[re.Match[str]]:
         pos = max(m.end(), m.start() + 1)
 
 
+def _match_is_live_credential(text: str, match: "re.Match[str]") -> bool:
+    """Whether pass 1 claims or warns on *match* -- the one question a reader
+    that only asks "does the pattern match?" needs answered instead.
+
+    False for exactly the match pass 1 passes over in silence: a key-anchored
+    branch whose value is a registered tag, or a run of them, that demonstrably
+    FILLS its value -- unquoted, or quoted with the closing quote on its line.
+    The key survives redaction, so the redactor's own output
+    ``key=[REDACTED: credential]`` matches its key-anchored branch again, and a
+    presence-only reader of ``_CREDENTIAL_PATTERNS`` (the ledger push gate, the
+    deploy and preview scans, the exfil request gates) would otherwise refuse
+    text that holds no secret -- for the ledger, every push after the first
+    redacted entry. The rule is pass 1's own, judged on the same extended span,
+    so the two never disagree: a tag heading a quoted line whose quote never
+    closes is warned there and is live here.
+    """
+    start, end = _credential_value_span(match)
+    quote_closes = True
+    quoted = _quoted_value_end(text, match.start(), start, end)
+    if quoted is not None:
+        claim_end, quote_closes, _opener = quoted
+        if claim_end > end:
+            end = claim_end
+    if _value_is_credential_tag(text, start, end):
+        return not quote_closes
+    return True
+
+
+def credential_matches(text: str) -> Iterator["re.Match[str]"]:
+    """Pass 1's LIVE matches in *text*, in order: what :func:`redact_credentials`
+    would claim or warn on.
+
+    ``_CREDENTIAL_PATTERNS`` hits minus the two kinds pass 1 itself declines -- a
+    JWT-shaped run whose header is not a JSON object (:func:`_credential_matches`)
+    and a key-anchored match whose value is one of this module's own tags filling
+    its value (:func:`_match_is_live_credential`). A reader that reports per match
+    (a line number, a masked snippet) iterates this; a reader that needs a boolean
+    calls :func:`contains_credential`. Pass 1 only, like the raw patterns it
+    replaces: base64-encoded credentials stay with :func:`_contains_fixed_credential`
+    and the bare-entropy heuristic with :func:`_text_contains_bare_secret`.
+    """
+    for match in _credential_matches(text):
+        if _match_is_live_credential(text, match):
+            yield match
+
+
+def contains_credential(text: str) -> bool:
+    """Presence-only companion to :func:`redact_credentials`: whether pass 1
+    would claim or warn on *text*.
+
+    The raw :func:`get_credential_patterns` ``search`` reads the redactor's own
+    ``key=[REDACTED: credential]`` as a live credential; this does not, and is the
+    accessor a presence-only reader uses. See :func:`credential_matches`.
+    """
+    return next(credential_matches(text), None) is not None
+
+
 def _contains_credential_pattern(text: str) -> bool:
-    """Validated ``_CREDENTIAL_PATTERNS.search``: see :func:`_credential_matches`."""
-    return next(_credential_matches(text), None) is not None
+    """Validated, tag-aware ``_CREDENTIAL_PATTERNS.search``: see :func:`credential_matches`."""
+    return contains_credential(text)
 
 
 # ── Cheap pre-filter for `_CREDENTIAL_PATTERNS` (performance only) ──
@@ -1190,52 +1682,6 @@ def mask_baseline_symbol_tables(text: str) -> str:
     return "".join(pieces)
 
 
-# Standard replacement tag for a redacted credential. Shared between the batch
-# redactor (`redact_credentials`) and the streaming fail-closed path
-# (`StreamRedactor.feed`) so the on-the-wire marker is identical everywhere.
-_REDACTED_CREDENTIAL_TAG = "[REDACTED: credential]"
-
-# Public alias for modules that must emit the SAME tag rather than duplicate the
-# literal — e.g. the pptx-maker preview, which excises a credential-bearing bitmap
-# itself because this module's redactor recognises a narrower token set than that
-# scan matches.
-REDACTED_CREDENTIAL_TAG = _REDACTED_CREDENTIAL_TAG
-
-#: Replacement tag for pass 2 (a base64-encoded credential). DISTINCT from
-#: ``_REDACTED_CREDENTIAL_TAG`` and deliberately not a superstring of it, so a
-#: consumer counting one tag does not accidentally match the other. Kept PRIVATE:
-#: consumers should ask ``CREDENTIAL_REDACTION_TAGS`` below rather than name
-#: individual tags, which is the whole point of that registry.
-_REDACTED_ENCODED_CREDENTIAL_TAG = "[REDACTED: encoded credential]"
-
-#: EVERY tag :func:`redact_credentials` can substitute for a credential, owned
-#: HERE beside the passes that emit them rather than enumerated by each caller.
-#: A consumer that needs to answer "did the CREDENTIAL redactor replace something
-#: in this text" must check all of them: pass 1 (plaintext patterns) and pass 3
-#: (bare secret runs) write ``_REDACTED_CREDENTIAL_TAG``, pass 2 (base64-encoded)
-#: writes ``_REDACTED_ENCODED_CREDENTIAL_TAG``.
-#:
-#: Scope is deliberately CREDENTIALS ONLY, and a consumer must not read it as "was
-#: this text rewritten at all". :func:`redact_exfiltration_urls` is a separate
-#: rewriter that substitutes ``[REDACTED: suspicious URL to <domain>]`` -- a
-#: variable string, so it is prefix-matched rather than compared, which is why it
-#: is not a member here. Its stable prefix is exported as
-#: :data:`kiro_crew.security.exfil.EXFILTRATION_REDACTION_TAG_PREFIX` (beside
-#: the rewriter itself), and a consumer that needs the full "was this text
-#: rewritten" answer must check that constant by prefix ALONGSIDE this tuple --
-#: the dashboard chat notice does exactly that.
-#:
-#: This tuple exists so the enumeration lives beside the tags instead of at the
-#: call site, where it silently misses a tag and under-reports redactions on the
-#: dashboard chat notice. Co-locating it means a NEW tag is added next to the list
-#: that must name it; ``test_every_redaction_tag_constant_is_registered`` fails if
-#: one is added without registering it, so the drift cannot happen silently.
-#:
-#: Invariant relied on by callers that SUM per-tag counts: no tag is a substring
-#: of another, so one substitution cannot be counted twice.
-CREDENTIAL_REDACTION_TAGS = (_REDACTED_CREDENTIAL_TAG, _REDACTED_ENCODED_CREDENTIAL_TAG)
-
-
 # ── `?token=` / `&token=` URL parameter values (pass 4) ──
 # Keyed on the parameter NAME, not the value's shape, so an OPAQUE bearer value
 # -- one that looks nothing like a JWT -- is redacted where every shape-based
@@ -1271,18 +1717,17 @@ CREDENTIAL_REDACTION_TAGS = (_REDACTED_CREDENTIAL_TAG, _REDACTED_ENCODED_CREDENT
 # excludes only bytes no legal query can carry, and a shape test on the value
 # would reintroduce the false-negative lever this pass exists to avoid.
 #
-# Deliberately NOT a `_CREDENTIAL_PATTERNS` branch, for two reasons. A branch
-# replaces its WHOLE span, which would swallow the `token=` anchor this pass
-# exists to keep visible. And `_contains_fixed_credential` -- which gates
-# request-BLOCKING decisions in `exfil.py` -- searches `_CREDENTIAL_PATTERNS`,
-# so a branch would turn every `?token=` URL into a blocked request: a
-# behaviour change the issue explicitly excludes. This pass redacts output
-# only; the blocking surface is unchanged. The other credential-bearing
-# parameter names (`access_token`, `id_token`, `api_key`, `code`) are excluded
-# on the issue's own scoping ground -- each name wants its own false-positive
-# analysis (`code=` especially collides with OAuth authorization codes AND
-# ordinary prose) -- not because adding them HERE would change the blocking
-# surface; a pass-4 name never feeds `_contains_fixed_credential`.
+# Deliberately NOT a `_CREDENTIAL_PATTERNS` branch: `_contains_fixed_credential`
+# -- which gates request-BLOCKING decisions in `exfil.py` -- searches
+# `_CREDENTIAL_PATTERNS`, so a branch would turn every `?token=` URL into a
+# blocked request: a behaviour change the issue explicitly excludes. This pass
+# redacts output only; the blocking surface is unchanged. The other
+# credential-bearing parameter names (`access_token`, `id_token`, `api_key`,
+# `code`) are excluded on the issue's own scoping ground -- each name wants its
+# own false-positive analysis (`code=` especially collides with OAuth
+# authorization codes AND ordinary prose) -- not because adding them HERE would
+# change the blocking surface; a pass-4 name never feeds
+# `_contains_fixed_credential`.
 _TOKEN_PARAM_VALUE_CLASS = r"[^\s&\"'#<>{}|\\^`]"
 
 _HTML_REF_AMP = (
@@ -1421,7 +1866,10 @@ _TOKEN_PARAM_NAME_PREFIX_RE = (
     + ")"
 )
 _TOKEN_PARAM_RE = re.compile(
-    rf"{_TOKEN_PARAM_SEP_RE}(?ai:{_TOKEN_PARAM_NAME_RE}){_TOKEN_PARAM_EQ_RE}({_TOKEN_PARAM_VALUE_CLASS}+)"
+    rf"{_TOKEN_PARAM_SEP_RE}(?ai:{_TOKEN_PARAM_NAME_RE}){_TOKEN_PARAM_EQ_RE}"
+    + "("
+    + _keyed_value_group(_TOKEN_PARAM_VALUE_CLASS)
+    + ")"
 )
 
 # The in-progress form of the same anchor, for `StreamRedactor.feed`'s
@@ -1445,9 +1893,40 @@ _TOKEN_PARAM_RE = re.compile(
 # alternative: every byte of `&amp` / `&#x2` belongs to `_CRED_CLASS`, while the
 # terminating `;` does not. The explicit entity-only alternative holds the
 # completed spelling at buffer end before that semicolon can release it.
+#
+# The value alternation is the batch grammar's (`_keyed_value_group`, with `*`
+# on the plain run): a registered tag standing at the value's head, then any
+# value bytes. Without the tag atom, the tag's interior space ends the class
+# run and a tail such as `?token=[REDACTED: credential]` -- or the same tag
+# with `!` or a secret's first bytes glued to its `]` -- is not an in-progress
+# anchor at all: `StreamRedactor.feed` commits anchor and tag (the batch pass
+# leaves a whole tag standing) and the next chunk's glued bytes arrive
+# anchor-less, where nothing redacts them. With it, such a tail is held as a
+# STRONG anchor until a terminator, exactly like `?token=<opaque>`.
+#
+# A STRICT PREFIX of a tag is the third alternative, for the boundary that falls
+# INSIDE the tag. Before the interior space the prefix is a class run and the
+# second alternative already holds it; at or after that space (`?token=[REDACTED:
+# `, `?token=[REDACTED: cred`) neither of the other two reaches `\Z`, so the
+# tail was no anchor: the canonical-tag hold in `feed` pulled the cut back only
+# to the `[`, `?token=` was committed, and the next chunk's completed tag with
+# the secret glued to its `]` arrived anchor-less -- the shape the atom above
+# exists for, reached through a boundary one byte later. The prefix is a STRONG
+# anchor (the `eq` group matched) held from `token=`; a strict prefix is at most
+# one byte short of a tag, so the hold is bounded by the longest registered tag
+# and can neither raise a cap by itself nor leave a drop armed on text that
+# turns out to be a bare tag: the next chunk either completes the tag (released
+# with its ordinary tail by the batch pass, or redacted whole with glued bytes)
+# or breaks the prefix (an ordinary value, redacted as ever). The prefix may
+# follow a run of whole tags (`?token=[REDACTED: credential][REDACTED: `): the
+# tag atom is a run, so the boundary inside the SECOND tag of a value is held
+# exactly as the boundary inside the first.
 _TOKEN_PARAM_PARTIAL_RE = re.compile(
     rf"(?:{_TOKEN_PARAM_SEP_RE}(?:(?ai:{_TOKEN_PARAM_NAME_PREFIX_RE})"
-    rf"|(?ai:{_TOKEN_PARAM_NAME_RE})(?P<eq>{_TOKEN_PARAM_EQ_RE}){_TOKEN_PARAM_VALUE_CLASS}*)"
+    rf"|(?ai:{_TOKEN_PARAM_NAME_RE})(?P<eq>{_TOKEN_PARAM_EQ_RE})"
+    rf"(?:{_CREDENTIAL_TAG_ATOM}{_TOKEN_PARAM_VALUE_CLASS}*"
+    rf"|(?:{_CREDENTIAL_TAG_ATOM})?{_CREDENTIAL_TAG_PREFIX_ATOM}"
+    rf"|{_TOKEN_PARAM_VALUE_CLASS}*))"
     rf"|{_TOKEN_PARAM_SEP_ENTITY_RE})\Z"
 )
 
@@ -1484,6 +1963,18 @@ def _uncovered(start: int, end: int, taken: list[_RedactionSpan]) -> list[tuple[
     return gaps
 
 
+def _covering_claims(start: int, end: int, taken: list[_RedactionSpan]) -> int:
+    """How many spans in *taken* overlap ``[start, end)`` -- the same bisect as
+    :func:`_uncovered`, for a value with no gap: one claim means the value is
+    already one tag, two or more mean two adjacent tags that must coalesce."""
+    count = 0
+    i = bisect.bisect_right(taken, start, key=_span_end)
+    while i < len(taken) and taken[i][0] < end:
+        count += 1
+        i += 1
+    return count
+
+
 def _splice(text: str, spans: list[_RedactionSpan]) -> str:
     """Apply *spans* (sorted, disjoint) to *text* in one left-to-right pass."""
     parts: list[str] = []
@@ -1494,6 +1985,26 @@ def _splice(text: str, spans: list[_RedactionSpan]) -> str:
         cursor = end
     parts.append(text[cursor:])
     return "".join(parts)
+
+
+def _credential_value_span(match: "re.Match[str]") -> tuple[int, int]:
+    """The span pass 1 redacts for one ``_CREDENTIAL_PATTERNS`` match.
+
+    A key-anchored branch -- one that begins at the key naming the secret --
+    exposes the secret VALUE as its one capturing group, and only that group is
+    redacted: the key, the ``:``/``=`` separator and the quotes around the value
+    stay, so a redacted JSON / YAML / INI / ``.env`` / header-line document keeps
+    its structure and a JSON document still parses. A branch with no capturing
+    group IS the secret and is redacted whole.
+
+    ``Match.lastindex`` is the one group the matched branch closed (the
+    alternation's branches are mutually exclusive and each carries at most one
+    group, which ``test_redaction_key_anchored_value_span.py`` pins), so this is
+    one rule for every branch with no per-branch case.
+    """
+    if match.lastindex is None:
+        return match.span()
+    return match.span(match.lastindex)
 
 
 def redact_credentials(text: str) -> tuple[str, list[str]]:
@@ -1508,16 +2019,32 @@ def redact_credentials(text: str) -> tuple[str, list[str]]:
 
 
 #: Label forms of the key-value AWS branches: the key name, its separator and
-#: an optional opening quote. The redactor replaces the WHOLE match, label
-#: included, so a record keeps the label to let the reader see which field
-#: the removed value belonged to. A label is a fixed key name, never secret.
+#: an optional opening quote. The redactor keeps the label in the text and
+#: replaces only the value after it, so a record carries the label to let the
+#: reader see which field the removed value belonged to without re-reading the
+#: cleaned text. A label is a fixed key name, never secret.
 _AWS_LABEL_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (
-        re.compile(r"(?:SecretAccessKey|aws_secret_access_key)[\"']?\s*[:=]\s*[\"']?"),
+        re.compile(
+            r"(?:SecretAccessKey|aws_secret_access_key)"
+            + _LABEL_QUOTE
+            + r"\s*[:=]\s*"
+            + _LABEL_QUOTE
+        ),
         "aws_secret_access_key",
     ),
-    (re.compile(r"(?:SessionToken|aws_session_token)[\"']?\s*[:=]\s*[\"']?"), "aws_session_token"),
-    (re.compile(r"(?:AccessKeyId|aws_access_key_id)[\"']?\s*[:=]\s*[\"']?"), "aws_access_key_id"),
+    (
+        re.compile(
+            r"(?:SessionToken|aws_session_token)" + _LABEL_QUOTE + r"\s*[:=]\s*" + _LABEL_QUOTE
+        ),
+        "aws_session_token",
+    ),
+    (
+        re.compile(
+            r"(?:AccessKeyId|aws_access_key_id)" + _LABEL_QUOTE + r"\s*[:=]\s*" + _LABEL_QUOTE
+        ),
+        "aws_access_key_id",
+    ),
 )
 
 #: Unlabelled pass-1 branches, in the alternation's order, each with the rule
@@ -1592,7 +2119,9 @@ def redact_credentials_with_records(text: str) -> tuple[str, list[str], list[Cre
     for start, end, tag in spans:
         ordinal += sum(text.count(t, cursor, start) for t in CREDENTIAL_REDACTION_TAGS)
         rule, label = rules.get(start, ("credential_pattern", ""))
-        matches.append(CredentialMatch(ordinal, rule, label, text[start:end][len(label) :]))
+        # The span IS the removed plaintext: a key-anchored branch's label stays
+        # in the cleaned text ahead of the span, so none of it is inside.
+        matches.append(CredentialMatch(ordinal, rule, label, text[start:end]))
         ordinal += 1
         cursor = end
     return _splice(text, spans), warnings, matches
@@ -1645,6 +2174,10 @@ def _credential_redaction_plan(
     # `taken` is every span an earlier pass has claimed, kept sorted and
     # disjoint; it is what the later passes subtract from.
     taken: list[_RedactionSpan] = []
+    # End of the last pass-1 claim; only a quoted claim can reach past its own
+    # match. A later match that reach covers whole is skipped, and one that
+    # straddles its end is clamped to the part past it (see below).
+    claimed_until = 0
     if _might_contain_credential(text):
         for m in _credential_matches(text):
             # Emit ONLY non-sensitive metadata (length). Do NOT slice any part of
@@ -1655,9 +2188,104 @@ def _credential_redaction_plan(
             # redaction-subsystem output expected to be safe to log/surface, so it
             # must carry no secret bytes. The base64 / bare-secret passes below
             # likewise log length only.
-            warnings.append(f"Redacted credential pattern ({len(m.group())} chars)")
-            taken.append((m.start(), m.end(), _REDACTED_CREDENTIAL_TAG))
-            rules[m.start()] = _pass1_rule(m.group())
+            #
+            # The redacted span is the branch's VALUE group when it has one (a
+            # key-anchored branch keeps the key, separator and quotes), else the
+            # whole match; the length reported is the length redacted.
+            #
+            # Inside a QUOTED value the boundary is the closing quote, not the
+            # class's stop: the quoted string is one value, so the claim runs to
+            # the first unescaped closing quote on the line -- or to the line's
+            # end when the quote never closes (`_quoted_value_end`) -- on the
+            # FIRST claim.
+            #
+            # A value that is already one of this module's fixed credential tags
+            # is skipped, not re-redacted (`_value_is_credential_tag`): once
+            # the key survives, a second run over `key = [REDACTED: credential]`
+            # sees the pair again, and the value class stops at the tag's interior
+            # space, so claiming it would mangle the tag on every re-redacting
+            # surface. The skip judges the SAME extended span, so a tag that
+            # fills its quoted value is skipped while a tag heading a quoted
+            # value that continues is claimed through the quote and warned. Only
+            # a key-anchored branch can meet a tag here -- a whole-match branch
+            # IS its secret's shape and never matches one.
+            #
+            # The skip needs the tag to demonstrably FILL the value: unquoted,
+            # the class boundary after it says so; quoted, the closing quote
+            # does. A quote that never closes on its line certifies nothing (the
+            # scan ends at the raw break or the text's end), and a quoted string
+            # folds across a raw break in YAML and the shell, so a tag that ends
+            # such a line may head a value that goes on below it -- an author
+            # can write that tag, and a skip there silences the one signal
+            # `decisions.gate.scrub_reason` has for the pair while the
+            # continuation stands unwarned. The bytes ARE the tag, so nothing is
+            # rewritten and no record is written (`CredentialMatch` describes a
+            # tag the redactor wrote); the line is warned, on every run. The
+            # scan stays line-bounded: reaching into the next line would let one
+            # unterminated quote swallow the rest of a document into one tag.
+            #
+            # The redactor never leaves that shape behind itself: a claim that
+            # runs to the end of an unterminated line WRITES the closing quote
+            # the line never had (`key="<s1> <s2>` reads back as
+            # `key="[REDACTED: credential]"`), so its own output is a tag that
+            # fills a closed quoted value and a re-screen of persisted history,
+            # an artifact or an auto-nudge state is silent, where leaving the
+            # quote open would have every consumer that gates on the warning
+            # list refuse text the redactor itself wrote, with nothing in the
+            # product to clear it. The written quote is the one byte that tells
+            # a judged pair from an author-written tag: the pair was judged
+            # once, with everything this pass has, and the bytes past the line
+            # break were judged on their own in the same run.
+            start, end = _credential_value_span(m)
+            if end <= claimed_until:
+                # Covered whole by the quoted claim extended below: those bytes
+                # are already redacted, and a second span there would overlap it.
+                continue
+            quote_closes = True
+            closing_quote = ""
+            if start < claimed_until:
+                # Straddles the claim's end. A whole-match class admits a quote
+                # byte (a connection URI's userinfo, a PEM body), so a match can
+                # begin inside the claim and end past it; the part past the claim
+                # is still plaintext and is this match's claim. Skipping the
+                # whole match would leave that tail -- the URI's password, the
+                # PEM body -- standing with no warning. No quoted extension here:
+                # the clamped start is not the branch's own value start.
+                start = claimed_until
+            else:
+                # The quoted boundary only ever EXTENDS the claim: the branch's
+                # own match is the floor. The scan stops at a raw line break
+                # because that is where a quoted string ends, but the Bearer
+                # value class spans whitespace (`Bearer\s+<token>`), so a quoted
+                # scheme and token split across lines match past the break --
+                # assigning the scan's answer there shrank the claim to `Bearer`
+                # and left the token standing.
+                quoted = _quoted_value_end(text, m.start(), start, end)
+                if quoted is not None:
+                    claim_end, quote_closes, opener = quoted
+                    if claim_end > end:
+                        end = claim_end
+                    # The scan returns the closing quote's index, or the line's
+                    # end (a raw break, an escaped one, the enclosing literal's
+                    # own quote) or the text's length when none came. The close
+                    # written is the opener AS WRITTEN -- `"` or `\"` -- so an
+                    # embedded pair closes inside its enclosing literal.
+                    if not quote_closes and claim_end >= end:
+                        closing_quote = opener
+            if _value_is_credential_tag(text, start, end):
+                if quote_closes:
+                    continue
+                claimed_until = end
+                warnings.append(f"Redacted credential pattern ({end - start} chars)")
+                continue
+            claimed_until = end
+            warnings.append(f"Redacted credential pattern ({end - start} chars)")
+            taken.append((start, end, _REDACTED_CREDENTIAL_TAG + closing_quote))
+            # Keyed at the span the record describes -- the value's start, not
+            # the match's: a key-anchored branch's key is text the redactor
+            # keeps, so it is outside the span. The rule is still read from the
+            # whole match, which is where the label lives.
+            rules[start] = _pass1_rule(m.group())
 
     # Passes 2 and 3 both scan the ORIGINAL `text` for runs of the base64
     # alphabet, and they select the SAME spans: `[A-Za-z0-9+/]{40,}` is greedy and
@@ -1746,10 +2374,10 @@ def _credential_redaction_plan(
     # regex, not the 23-branch alternation pass 1's pre-filter exists for.
     #
     # A value that is already one of this module's fixed credential tags is
-    # skipped, not re-redacted: several surfaces run the redactor twice (the
-    # streaming path re-redacts the persisted copy; `redact_path_segments`
-    # requires its candidate to be a fixed point), and the value class stops at
-    # a tag's interior space. Matching a canonical tag again would mangle
+    # skipped, not re-redacted -- the same `_value_is_credential_tag` rule
+    # pass 1 applies to a key-anchored branch's value, and for the same reason:
+    # several surfaces run the redactor twice, and the value class stops at a
+    # tag's interior space, so matching a canonical tag again would mangle
     # `token=[REDACTED: credential]` into
     # `token=[REDACTED: credential] credential]` on the second run.
     #
@@ -1769,18 +2397,80 @@ def _credential_redaction_plan(
     # because the second pass sees the exact credential literal and skips, and
     # the bare domain tail cannot re-trigger the exfil pass (`_URL_RE` requires
     # a scheme). One notice count moves from exfil to credential.
+    #
+    # A value an earlier pass claimed only PARTLY is ONE tag, not a tag per
+    # gap. Since a key-anchored branch keeps its key, a value such as
+    # `aws_secret_access_key=<secret>` is claimed by pass 1 only from the
+    # secret on, and tagging the leftover `aws_secret_access_key=` gap on its
+    # own would write two adjacent tags -- which is not a fixed point: on the
+    # next run over that output the value `[REDACTED: credential][REDACTED:
+    # credential]` is not byte-identical to a tag, the class stops at the
+    # interior space, and the head `[REDACTED: credential][REDACTED:` is
+    # claimed as a value, leaving `?token=[REDACTED: credential] credential]`
+    # on every re-redacting surface. So the partly-covered value and every
+    # claim it overlaps are replaced by one span carrying this pass's tag, the
+    # same text a whole-match claim of the pair produced before the key
+    # survived. The merged span goes into `taken`, not `pass4`: a claim that
+    # reaches past the value (the AWS value class runs to whitespace, so it
+    # can swallow `&next=…`) may cover a later parameter's value, which must
+    # then read as claimed rather than be tagged a second time.
+    # `taken` is rebuilt in ONE forward sweep alongside the ordered matches:
+    # every earlier claim moves into `swept` exactly once, coalesced where a
+    # partly-covered value overlaps it. The bound is O(M log C + C) for M
+    # matches over C claims -- each match's `_uncovered` is a bisect into the
+    # sorted claims, and the sweep visits each claim once -- not the O(M * C)
+    # a per-match rescan and rebuild of `taken` costs, which would let N
+    # nested pairs in one text event take O(N^2) on the event loop that runs
+    # this function synchronously (measured 4x per doubling, 8.9 s at N = 12000).
     pass4: list[_RedactionSpan] = []
+    swept: list[_RedactionSpan] = []
+    t = 0
     for m in _TOKEN_PARAM_RE.finditer(text):
         value_start, value_end = m.start(1), m.end(1)
-        if any(text.startswith(tag, value_start) for tag in CREDENTIAL_REDACTION_TAGS):
+        if _value_is_credential_tag(text, value_start, value_end):
             continue
         gaps = _uncovered(value_start, value_end, taken)
-        if not gaps:
+        if not gaps and _covering_claims(value_start, value_end, taken) < 2:
+            # One earlier claim covers the value (or reaches past it): the
+            # output already reads as one tag there.
             continue
-        for start, end in gaps:
-            pass4.append((start, end, _REDACTED_CREDENTIAL_TAG))
+        # A value with NO gap but TWO or more claims across it -- two
+        # credentials adjacent inside one value (`?token=AKIA…AKIA…`) -- would
+        # otherwise come out as two adjacent tags, which the next run reads as
+        # one value whose head stops at the second tag's interior space and
+        # mangles, with a warning about text that holds no secret. It is
+        # coalesced like a partly-covered value, but silently: every byte of it
+        # was already claimed and warned for by the pass that found it.
+        while t < len(taken) and taken[t][1] <= value_start:
+            swept.append(taken[t])
+            t += 1
+        if gaps == [(value_start, value_end)]:
+            pass4.append((value_start, value_end, _REDACTED_CREDENTIAL_TAG))
+            rules[value_start] = ("token_parameter", "")
+        else:
+            start, end = value_start, value_end
+            # The span coalesced for the previous parameter reaches into this
+            # value when one claim runs through both (the AWS value class stops
+            # at `,` and `}`, where this class does not): it is extended, not
+            # duplicated.
+            if swept and swept[-1][1] > value_start:
+                previous = swept.pop()
+                rules.pop(previous[0], None)
+                start, end = min(start, previous[0]), max(end, previous[1])
+            # Every claim that begins before the growing end overlaps the
+            # merged span; a claim beginning past it would overlap the one that
+            # extended it, which disjointness rules out.
+            while t < len(taken) and taken[t][0] < end:
+                rules.pop(taken[t][0], None)
+                start, end = min(start, taken[t][0]), max(end, taken[t][1])
+                t += 1
+            swept.append((start, end, _REDACTED_CREDENTIAL_TAG))
+            # One span, one record: a claim the merged span absorbs is not a
+            # span of its own, so its rule goes with it.
             rules[start] = ("token_parameter", "")
-        warnings.append(f"Redacted token parameter value ({value_end - value_start} chars)")
+        if gaps:
+            warnings.append(f"Redacted token parameter value ({value_end - value_start} chars)")
+    taken = swept + taken[t:]
 
     return sorted(taken + pass4), warnings, rules
 

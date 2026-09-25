@@ -139,7 +139,7 @@ def _decode_unique(val: str) -> object:
     return json.loads(val, object_pairs_hook=unique)
 
 
-def _scrub_decoded(val: object, depth: int = 0) -> object:
+def _scrub_decoded(val: object, depth: int = 0, stored: object = None) -> object:
     """Scrub every string inside an already-decoded JSON value, shape preserved.
 
     An object's NAMES are scrubbed alongside its values, by the same path. A name is text
@@ -155,6 +155,13 @@ def _scrub_decoded(val: object, depth: int = 0) -> object:
     yields a string whose escapes are still printable text, where no control character
     exists to remove and no split credential matches. Descending again is what reaches it.
 
+    ``stored`` is the same value decoded from the STORED bytes, walked in step, so the
+    string a level is handed as its original is the one the store held -- not the one
+    the outer text scrub may already have rewritten (it reads a key-anchored pair through
+    one level of string-literal escaping, and an unquoted scalar it replaces inside a
+    carried document breaks that document before this walk reaches it). A level whose
+    stored twin is missing or of another shape is judged on the text in hand, as before.
+
     Scrubbing two different names can produce the same name, and a dict holds one value
     per name. Keeping either silently drops the other's value, so this raises instead and
     lets the caller withhold the whole document. Depth is bounded for the same reason it
@@ -165,9 +172,15 @@ def _scrub_decoded(val: object, depth: int = 0) -> object:
     if depth > _MAX_JSON_SCRUB_DEPTH:
         raise _UnscannableJSON
     if isinstance(val, str):
-        return _scrub_json_transport(_scrub_text(val), depth + 1, original=val)
+        original = stored if isinstance(stored, str) else val
+        return _scrub_json_transport(_scrub_text(val), depth + 1, original=original)
     if isinstance(val, list):
-        return [_scrub_decoded(item, depth + 1) for item in val]
+        twins: list[object] = (
+            list(stored)
+            if isinstance(stored, list) and len(stored) == len(val)
+            else [None] * len(val)
+        )
+        return [_scrub_decoded(item, depth + 1, twin) for item, twin in zip(val, twins)]
     if isinstance(val, dict):
         cleaned: dict[object, object] = {}
         for key, item in val.items():
@@ -178,7 +191,8 @@ def _scrub_decoded(val: object, depth: int = 0) -> object:
             )
             if name in cleaned:
                 raise _UnscannableJSON
-            cleaned[name] = _scrub_decoded(item, depth + 1)
+            twin = stored.get(key) if isinstance(stored, dict) else None
+            cleaned[name] = _scrub_decoded(item, depth + 1, twin)
         return cleaned
     return val
 
@@ -186,11 +200,12 @@ def _scrub_decoded(val: object, depth: int = 0) -> object:
 def _is_json_document(val: str) -> bool:
     """Whether the text is a JSON document, judged before any scrub has touched it.
 
-    The scan below runs on scrubbed text, and a redactor's replacement can span JSON
-    structure: the credential-assignment patterns match across a name, its colon and its
-    value, so splicing one out leaves text that does not parse. Judging JSON-ness on that
-    text would call a real document prose and hand it back unscanned. This answers for the
-    stored bytes instead, so the two questions stay separate.
+    The scan below runs on scrubbed text, and a redactor's replacement can break JSON
+    structure: a credential-assignment pattern replaces the VALUE after a key, so an unquoted
+    scalar in that position (`"aws_secret_access_key": 0`) becomes a bare tag the parser
+    rejects, and the control-character strip can break a document as well. Judging JSON-ness
+    on that text would call a real document prose and hand it back unscanned. This answers
+    for the stored bytes instead, so the two questions stay separate.
 
     A decode that fails for any reason OTHER than malformed syntax still means the text is
     JSON -- decoding merely could not finish -- so those count as a document here.
@@ -241,10 +256,10 @@ def _scrub_json_transport(val: str, depth: int = 0, *, original: str | None = No
 
     Two ways of failing are kept apart, because only one of them leaves a payload behind.
     The dividing line is the PARSER's own verdict on the STORED bytes, not on the text in
-    hand: the scan runs on scrubbed text, and a credential-assignment pattern spans a name,
-    its colon and its value, so splicing one out can leave text that fails to parse even
-    though the stored document parses fine. Text the parser rejects AND that was never a
-    document
+    hand: the scan runs on scrubbed text, and a credential-assignment pattern replaces the
+    value after a key, so an unquoted scalar value becomes a bare tag and the text fails to
+    parse even though the stored document parses fine. Text the parser rejects AND that was
+    never a document
     holds no JSON payload at all, so the text scrub already covered everything there was to
     cover and the field passes through. Every other failure means a payload existed and
     decoding could not finish -- nested past the cap, nested deeply enough to exhaust the
@@ -265,8 +280,22 @@ def _scrub_json_transport(val: str, depth: int = 0, *, original: str | None = No
         return json.dumps(_UNSCANNABLE_JSON)
     if not isinstance(decoded, (str, list, dict)):
         return val
+    # The stored bytes, decoded beside the scrubbed text, so every level below is
+    # judged on ITS OWN stored bytes. The text scrub above reads a pair through one
+    # level of string-literal escaping (`\"aws_secret_access_key\": 0` inside a
+    # JSON string), so it can break a document carried INSIDE this one before the
+    # walk reaches it; a level handed only the broken text would call it prose that
+    # never parsed and pass its payload through unwalked. Where the two decodes no
+    # longer line up (a renamed member, a changed shape), the level falls back to
+    # the text in hand, which is what it was judged on before.
+    stored: object = None
+    if original is not None and original != val:
+        try:
+            stored = _decode_unique(original)
+        except (_UnscannableJSON, ValueError, RecursionError):
+            stored = None
     try:
-        cleaned = _scrub_decoded(decoded, depth)
+        cleaned = _scrub_decoded(decoded, depth, stored)
     except (_UnscannableJSON, RecursionError):
         return json.dumps(_UNSCANNABLE_JSON)
     if cleaned == decoded:
