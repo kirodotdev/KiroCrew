@@ -1481,10 +1481,58 @@ jobs:
           # verdict is annotated, leaves the gate honestly red, and a re-run
           # fixes it. That is the rule the head-confirmation read above
           # follows -- the destructive half must not proceed on an unknown.
+
+          # A guarded comment read that exhausts its budget reports the fact and
+          # not the cause, and the causes do not share a remedy: installation
+          # throttling is cured by the re-run this step's annotation recommends,
+          # while an expired or rotated credential and a permissions change on this
+          # lane's token each spend another full model review to land in the same
+          # place. So the LAST attempt's exit status and error text are kept and
+          # reported once, inside the annotation a failed publish already writes.
+          # The per-attempt lines are left alone: a read that later succeeds says
+          # nothing new, so an ordinary flake does not fill the log with six copies
+          # of one sentence.
+          #
+          # What the note carries is an API error body, which can echo a token
+          # prefix, an Authorization or Cookie header, the request URL with its
+          # query string, an account id, or a path on the runner. So it is scrubbed
+          # before it is printed and then bounded to one short line. A URL and a
+          # path are each dropped WHOLE rather than trimmed, because the query
+          # string is the part that carries a credential and neither is needed to
+          # tell these causes apart.
+          #
+          # This reports; it does not decide. Whether anything reached the slot is
+          # still answered by the write path alone, so a read that failed cannot
+          # turn an unpublished verdict into a published one.
+          READ_ERR_FILE="${RUNNER_TEMP:-/tmp}/comment-read-stderr.txt"
+          READ_FAILURE_NOTE=""
+          note_read_failure() {
+            local rc="$1" subject="$2" errfile="$3" text=""
+            if [ -s "$errfile" ]; then
+              text="$(perl -0777 -pe '
+                s{\bhttps?://\S*}{[REDACTED-URL]}g;
+                s/\bgh[pousr]_[A-Za-z0-9]{16,}\b/[REDACTED-GH-TOKEN]/g;
+                s/\bgithub_pat_[A-Za-z0-9_]{16,}\b/[REDACTED-GH-TOKEN]/g;
+                s/\b(?:AKIA|ASIA)[A-Z2-7]{16}\b/[REDACTED-AWS-KEY-ID]/g;
+                s{arn:aws\S*}{[REDACTED-ARN]}g;
+                s/(?i)\bbearer\s+\S+/Bearer [REDACTED]/g;
+                s/(?i)\b(authorization|cookie|set-cookie|x-api-key|private-token)\b\s*:\s*\S+/$1: [REDACTED]/g;
+                s/(?i)\b(token|secret|password|passwd|api_key|apikey)\b\s*[:=]\s*\S+/$1=[REDACTED]/g;
+                s/(?i)(aws_secret_access_key|aws_session_token|x-amz-security-token)\s*[:=]\s*\S+/$1=[REDACTED]/g;
+                s/\b[0-9]{12}\b/[REDACTED-ACCT]/g;
+                s{(?:/[A-Za-z0-9._@+-]+){2,}/?}{[REDACTED-PATH]}g;
+                s/[^[:print:]]+/ /g;
+                s/\s+/ /g;
+                s/\A //;
+                s/ \z//;
+              ' "$errfile" | cut -c1-240)"
+            fi
+            READ_FAILURE_NOTE="$subject exited $rc and reported: ${text:-(nothing on stderr)}"
+          }
           retry_comment_write() {
             local slot="$1" needle="$2" body_file="$3" target="$4"
             local attempt landed head_now ov_body
-            local occupied slot_ok slot_id mine_id
+            local occupied slot_ok slot_id mine_id slot_rc
             shift 4
             # Two reads here answer two DIFFERENT questions, which is why they
             # match on two different needles.
@@ -1522,9 +1570,12 @@ jobs:
             if [ -n "$slot" ]; then
               occupied=""
               slot_ok=""
+              slot_rc=0
               for attempt in 1 2 3 4 5 6; do
-                if occupied="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-                  --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$slot\"))) | \"\(.id) \(if (.body | contains(\"$needle\")) then \"mine\" else \"other\" end)\"" 2>/dev/null)"; then
+                slot_rc=0
+                occupied="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+                  --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$slot\"))) | \"\(.id) \(if (.body | contains(\"$needle\")) then \"mine\" else \"other\" end)\"" 2>"$READ_ERR_FILE")" || slot_rc=$?
+                if [ "$slot_rc" -eq 0 ]; then
                   slot_ok=1
                   break
                 fi
@@ -1535,6 +1586,7 @@ jobs:
                 fi
               done
               if [ -z "$slot_ok" ]; then
+                note_read_failure "$slot_rc" "reading this PR's comments to find this lane's slot" "$READ_ERR_FILE"
                 echo "Whether this lane's slot is already taken is unreadable after 6 attempts, so nothing was posted: re-running this lane publishes the verdict, and a second comment in the slot does not come back out without a human."
                 return 1
               fi
@@ -1590,8 +1642,11 @@ jobs:
                 # published while this one waited. Reading only this needle made
                 # the second case invisible, and the retry then posted beside that
                 # verdict or overwrote it.
-                if ! landed="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-                  --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$slot\"))) | \"\(.id) \(if (.body | contains(\"$needle\")) then \"mine\" else \"other\" end)\"" 2>/dev/null)"; then
+                slot_rc=0
+                landed="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+                  --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$slot\"))) | \"\(.id) \(if (.body | contains(\"$needle\")) then \"mine\" else \"other\" end)\"" 2>"$READ_ERR_FILE")" || slot_rc=$?
+                if [ "$slot_rc" -ne 0 ]; then
+                  note_read_failure "$slot_rc" "re-reading this PR's comments to confirm whether the previous write landed" "$READ_ERR_FILE"
                   echo "Cannot confirm whether the previous attempt landed, so not posting again."
                   return 1
                 fi
@@ -1685,9 +1740,12 @@ jobs:
           # nothing for a head the PR then reads as unreviewed. So it gets the
           # widened budget every other gating read in this chain has.
           existing_json=""
+          verdict_read_rc=0
           for attempt in 1 2 3 4 5 6; do
-            if matches="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-              --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$MARKER\"))) | {id, body} | @json" 2>/dev/null)"; then
+            verdict_read_rc=0
+            matches="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+              --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$MARKER\"))) | {id, body} | @json" 2>"$READ_ERR_FILE")" || verdict_read_rc=$?
+            if [ "$verdict_read_rc" -eq 0 ]; then
               existing_json="$(printf '%s\n' "$matches" | awk 'NR == 1')"
               break
             fi
@@ -1696,6 +1754,9 @@ jobs:
               sleep "$(( attempt * 5 ))"
             fi
           done
+          if [ "$verdict_read_rc" -ne 0 ]; then
+            note_read_failure "$verdict_read_rc" "reading this PR's comments to find the GPT 5.6 comment" "$READ_ERR_FILE"
+          fi
           existing="$(printf '%s\n' "$existing_json" | jq -r '.id // empty' 2>/dev/null || true)"
           # GitHub stores comment bodies with CRLF line endings; normalize to LF
           # so the marker grep and the line-anchored cleanup below see the same
@@ -1802,10 +1863,10 @@ jobs:
             elif [ "$write_rc" -eq 4 ]; then
               echo "GPT 5.6 Review stopped publishing its $HEAD body because this PR has moved to a newer head; the run for that head publishes the verdict that counts, so nothing is missing for it."
             elif [ "$write_rc" -eq 2 ]; then
-              echo "::error::GPT 5.6 produced a verdict for $HEAD but this lane's slot is already taken, so nothing was written and nothing was overwritten. The PR carries no verdict for this head; re-run this lane once that comment is not the current one."
+              echo "::error::GPT 5.6 produced a verdict for $HEAD but this lane's slot is already taken, so nothing was written and nothing was overwritten. The PR carries no verdict for this head; re-run this lane once that comment is not the current one.${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
               exit 1
             else
-              echo "::error::GPT 5.6 Review produced a verdict for $HEAD but could not publish it, so this run's verdict is not in the slot."
+              echo "::error::GPT 5.6 Review produced a verdict for $HEAD but could not publish it, so this run's verdict is not in the slot.${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
               exit 1
             fi
           fi
