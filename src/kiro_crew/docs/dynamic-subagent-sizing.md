@@ -153,8 +153,102 @@ deliberate v1 simplification we may revisit.
 | `session.pool_size` | `0` | Warm-pool size; reserved in the memory term when > 0 |
 
 The cap interacts with `spawn_min_memory_gb` but does not replace it: the cap is
-a startup count limit, while `spawn_min_memory_gb` is a real-time per-spawn
-memory floor. They are independent guards.
+a bound on the RUNNING population, while `spawn_min_memory_gb` is a real-time
+per-spawn memory floor. They are independent guards.
+
+Three things bound a fan-out, and they bound different quantities. The cap
+bounds how many agents RUN at once. `subagent_spawn_stagger_secs` bounds the
+RATE at which starts are admitted -- one per interval -- and says nothing about
+how many are still starting. `SubagentManager._startup_cap` bounds how many
+admitted agents are IN STARTUP at once: past `_run_inner`'s first statement
+(`_exec_started` set) but with no runtime PID, no first provider stream and no
+turn -- the same shape the startup watchdog reaps on. A durable-store
+reservation not yet registered as an agent is counted in its place, since its
+re-entry skips the admission gate. An agent PARKED at the spawn-approval prompt
+is deliberately NOT counted: it is starting nothing, and counting it would let a
+handful of unanswered prompts hold every other spawn on the host, auto-approved
+ones from unrelated parents included. What has to be bounded is its RELEASE,
+because a bulk trust / yolo grant resolves every pending prompt in one pass: a
+released start re-enters through the pump (`_admit_released_start`, a resident
+`_startup_release` entry in the existing queue) and is metered into startup by
+the same stagger and in-startup checks a fresh spawn passes, one per pass,
+ahead of the capacity check (it already holds its slot) and of the fresh
+spawns behind it (it was admitted first). While it waits it is registered,
+holds its running slot and shows in its parent's queue depth; it joins
+`_startup_population` only when the pump releases it. Without the third bound, one start is admitted
+every interval however long each start takes; when each start is slow (a
+dedicated process per `model` / `reasoning_effort` override, a queue at the
+session-start gate, a throttled provider handshake) dozens sit in startup
+together, all contending for the same gate and all running down the same
+startup deadline. Measured on a 623-item fan-out: waves of 24-45
+items lost ~2%, waves of 50-60 lost 2-16%, and a wave of 120 lost ~50% -- every
+loss a healthy start reaped as `Failed to start within 120s`, and every retry of
+one deepening the crowd that caused it. The bound holds further spawns in the
+EXISTING queue (`_should_stagger_queue_impl` gains a third clause; the drain
+pump holds its pick under the same test) and the queue wakes on the edges that
+free a startup slot: a runtime PID or a first stream (`_note_startup_progress`)
+and a terminal, including the watchdog's reap of a wedged start (the
+slot-release drain), so a wedged population cannot hold the queue past the
+reap.
+
+The bound is tied to the session-start gate, not to the running cap:
+`2 × session_start_concurrency` (`_STARTUP_CAP_GATE_ROUNDS` rounds of the
+gate's width), clamped to `[1, cap]`, because the gate is the one resource
+every start in startup contends for: `session/new` runs under `G` permits, so
+at most `G` starts make progress at any moment, and every other admitted start
+is a spawned process (dedicated path) or a claimed slot holding nothing but a
+place in the gate's queue. Time in that queue is not charged to the startup
+deadline (next paragraph), so the queue's length is not what reaps a healthy
+start; what the bound decides is how much of the running cap may sit in
+startup contending for `G` permits at once. `2G` is the smallest value that
+never idles the gate -- one round holding permits and one round already
+admitted to take them the moment they free -- and admitting more buys no
+starts, since the gate serves `G` per round however many are queued: it only
+lengthens the queue and grows the population of admitted-but-idle starts. A
+cap-derived term -- `max(2 × G, ceil(cap / 4))`, say -- would do exactly that:
+at a cap of 64 it admits 16 into startup against a 2-permit gate, seven rounds
+queued for two permits; that is why the bound is tied to the gate and never to
+the cap. At the default gate width of 2 the bound is `4` at any cap of 4 or
+more (cap 8, 40 and 64 alike), `cap` below that, and `1` at a cap of `0` (the
+running cap, not this bound, pauses admission there). Admission throughput is
+unchanged by the bound: the gate serves `G` starts per round regardless of how
+many are queued behind it.
+
+There is no config key for this bound, on purpose. `2G` is both the floor and
+the ceiling of the useful range -- below it the gate idles, above it only a
+longer queue of idle admitted starts accrues -- so a knob could only move the
+value somewhere worse, and the operator's real lever already exists:
+`agent.session_start_concurrency` sizes the gate, and the bound tracks it.
+
+Time spent WAITING FOR A PERMIT is not charged to the startup deadline, on
+either start path. `runtime.create_session` runs under the ACP
+`SessionStartGate` (`agent.session_start_concurrency`, default 2) and fires two
+callbacks around the wait: `on_gate_queued` immediately before the wait for a
+permit begins, and `on_gate_acquired` at gate exit with the queue wait. The
+manager's `_gate_wait_mark` stamps `_gate_wait_started` on the first, and while
+that stamp is set the startup watchdog reads the start clock as frozen at that
+moment; `_gate_exit_reset` clears the stamp and restarts the clock on the
+second. So the deadline measures time spent STARTING -- before the gate (a
+process spawn on the dedicated path) and with a permit held (`session/new`) --
+and never time queued behind other starts, however long the queue. The wait is
+finite without a deadline of its own: every permit holder is on a running clock
+from acquisition and is reaped at the base deadline if its `session/new` has
+not returned, the request has its own budget (`agent.session_start_timeout_secs`),
+and the gate keeps a headroom of permits no late-start collector may hold. Both
+start paths install the same pair: the session-shared one hands them to the
+parent runtime's `create_session` directly, and the dedicated-process one
+(`model` / `reasoning_effort` spawns) threads them through `get_or_create` ->
+provider factory -> `AcpProvider` to its own process's `create_session`.
+
+The startup watchdog's deadline itself stays fixed (`120s`,
+`SubagentManager(startup_timeout=...)`) however many agents are in startup. It
+is deliberately not pressure-aware -- no term per other agent in startup --
+for two reasons. With queue time uncharged and the in-startup population
+bounded there is no evidence that a healthy start misses the base deadline, so
+a term would have nothing to correct. And a term sampled at sweep time against
+`now - _exec_started`, which spans the whole crowded period, would not be
+monotonic: it would shrink as the crowd drained and could reap at one sweep an
+agent the sweep before had left inside its window.
 When the memory floor is enabled, admission also reserves memory for the next
 start, for claimed starts awaiting registration, and for live dedicated workers.
 A start that has not settled yet -- fewer than two reaper sweeps have measured
