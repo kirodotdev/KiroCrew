@@ -7,6 +7,7 @@ import base64
 import bisect
 import fnmatch
 import hashlib as _hashlib
+import importlib
 import ipaddress
 import json
 import logging
@@ -29,7 +30,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 from urllib.parse import parse_qs, unquote, unquote_plus, urlparse
 
 from kiro_crew.credential_patterns import AWS_KEY_ID, JWT_MULTI_SEGMENT
@@ -66,494 +67,6 @@ from . import (
     redaction,
     shell_normalizer,
     vocabulary,
-)
-from .argv_floor import (
-    _AMBIGUOUS_REFS,
-    _AMBIGUOUS_REFSPEC_RE,
-    _DEV_MODE_CONFIRM_FLAG,
-    _EXPANSION_DEFAULT_RE,
-    _GIT_ARG_FLAGS,
-    _GIT_PUBLISH_DENY_LABEL,
-    _GIT_PUBLISH_GLUE_RE,
-    _GIT_PUBLISH_RE,
-    _GIT_PUBLISH_SUBST_PROGRAM_RE,
-    _HOSTNAME_SUBSTITUTION_HINTS,
-    _HOSTNAME_VARIABLE_FORMS,
-    _LOOPBACK_HOST_NAMES,
-    _PROCESS_SUBSTITUTION_SAFE_CHARS,
-    _PROTECTED_BRANCHES,
-    _PUSH_ALL_BRANCHES_OPTS,
-    _PUSH_NO_VALUE_OPTS,
-    _PUSH_NO_VALUE_SHORTS,
-    _PUSH_REPO_OPTS,
-    _PUSH_VALUE_OPTS,
-    _PUSH_VALUE_SHORTS,
-    _QUOTED_SEP_SENTINELS,
-    _RAW_ASSIGNMENT_RE,
-    _RSYNC_RSH_ASSIGN_RE,
-    _SELF_CLOUD_DESTRUCTIVE_VERBS,
-    _SELF_FLOOR_MACHINERY_RE,
-    _SELF_FLOOR_NAME_HINT_RE,
-    _SELF_FLOOR_QUOTE_JUNK_RE,
-    _SELF_IMPORT_RE,
-    _SELF_MODULE_SPELLINGS,
-    _SHELL_RESERVED_WORDS,
-    _SSH_COMMAND_OPTION_KEYS,
-    _SSH_FAMILY_VERBS,
-    _SSH_FORWARD_OPT_LETTERS,
-    _SSH_ROUTING_OPTION_KEYS,
-    _bare_kill_raw_bodies,
-    _git_publish_floor_tags,
-    _git_push_args,
-    _host_is_self,
-    _is_credential_mint,
-    _is_dev_mode_out_of_root_confirm,
-    _is_git_publish,
-    _is_git_push_via_normalizer,
-    _is_kill_by_name_program,
-    _is_push_to_protected_branch,
-    _is_self_cloud_destructive,
-    _is_self_file_delivery,
-    _is_self_gateway_restart,
-    _is_self_kill,
-    _is_self_module_flag,
-    _is_self_module_invocation,
-    _is_self_restart,
-    _is_self_update,
-    _is_ssh_to_self,
-    _kill_prefix_keeps_anchor,
-    _mask_quoted_separators,
-    _matches_self_subcommand,
-    _normalize_ref,
-    _operand_targets_self,
-    _operands_lead_with,
-    _own_host_names,
-    _own_host_seed,
-    _own_interface_addresses,
-    _process_substitution_word_is_opaque,
-    _proxyjump_value_targets_self,
-    _push_segment_targets_protected,
-    _resolve_own_host_names,
-    _resolve_own_host_names_into_cache,
-    _routing_option_key_value_targets_self,
-    _routing_option_value_targets_self,
-    _self_cli_operands,
-    _self_floor_can_fire,
-    _self_module_flag_scan,
-    _self_module_name_index,
-    _self_program_index,
-    _self_token_frames,
-    _SelfModuleScan,
-    _shell_payload_sources,
-    _ssh_family_verb,
-    _static_substitution_output,
-    _unmask_separators,
-)
-from .denied_rules import (
-    _AWS_SECRET_VAR_NAMES,
-    _AWS_SECRET_WORD_PREFIXES,
-    _AWS_SECRET_WORDS,
-    _AWS_VAR_SELECTOR,
-    _DANGEROUS_AWS_FLAG_RUN,
-    _DENY_EXCEPTIONS,
-    _DENY_FALLBACK_SCAN_MAX_CHARS,
-    _DENY_MATCHER_CACHE,
-    _ENV_CRED_DENIAL_REASON,
-    _ENV_CRED_PATTERNS,
-    _ENV_CRED_SHARED_RULE_IDS,
-    _ENV_CRED_SHARED_RULES,
-    _ENV_DUMP_GREP_AWS_PATTERN,
-    _ENV_DUMP_VERBS,
-    _FLOOR_ENFORCED_RULE_IDS,
-    _GIT_PUBLISH_FLOOR_BY_ID,
-    _GIT_PUBLISH_FLOOR_NOTES,
-    _GIT_PUBLISH_RULE_CATEGORY,
-    _GIT_PUBLISH_RULE_PATTERNS,
-    _GIT_PUBLISH_RULES,
-    _GIT_PUBLISH_UNGATED,
-    _GIT_PUBLISH_UNGATED_RULE_IDS,
-    _INERT_SEARCH_GLOBS,
-    _INERT_SEARCH_VERBS,
-    _INTERPRETER_RULE_IDS,
-    _INTERPRETER_RULE_PATTERNS,
-    _LEGACY_RULE_ID_BY_PATTERN,
-    _LINEARIZED_AWS_FLAG_RUN,
-    _LITERAL_CONCAT_RE,
-    _PERM_VERB_MENTION_PATTERNS,
-    _PRINTENV_AWS_SECRET_PATTERN,
-    _RULE_ID_BY_PATTERN,
-    _RULES_BY_ID,
-    _SELF_PROTECTION_FLOOR_BY_ID,
-    _SELF_PROTECTION_FLOOR_NOTES,
-    _SELF_PROTECTION_FLOOR_PATTERNS,
-    _SELF_PROTECTION_FLOOR_RULE_IDS,
-    _SELF_PROTECTION_UNGATED_FLOOR_IDS,
-    BUILTIN_DENIED_RULES,
-    BUILTIN_DENY_PATTERNS,
-    DENY_REASON_MATCH_PREFIX,
-    DENY_REASON_PREFIX,
-    SUSPICIOUS_BASH_PATTERNS,
-    DeniedCommandRule,
-    _aws_secret_word_prefix_alternation,
-    _check_env_credential_access,
-    _deny_matcher,
-    _deny_pattern_matches,
-    _deny_reason,
-    _DenyMatcher,
-    _exception_eligible,
-    _frags_can_underconsume,
-    _has_top_level_alternation,
-    _linearize_deny_pattern,
-    _matches_full_input,
-    _polynomial_backtracking_prone,
-    _redos_prone,
-    _resolved_pin_ids,
-    _rule_id_for_pattern,
-    _split_deny_frags,
-    builtin_denied_rules,
-    compute_effective_denied,
-    edition_denied_rules,
-    enabled_rule_ids,
-    floor_enforced_builtin_command_ids,
-    is_safe_user_regex,
-    pinned_builtin_command_ids,
-    pinned_builtin_command_ids_for_snapshot,
-)
-from .diagnostics import (
-    REFUSAL_DIAGNOSTIC_PREFIX,
-    RefusalDiagnostic,
-    RefusalSpanShape,
-    annotate_refusal,
-    refusal_diagnostic,
-    refusal_span_shape,
-)
-from .exfil import (
-    _BASH_EXFIL_PATTERNS,
-    _BASH_EXFIL_RES,
-    _BASH_EXFIL_ROW_DISCRIMINATORS,
-    _BASH_EXFIL_RULE_BY_LABEL,
-    _BASH_EXFIL_RULE_BY_PATTERN,
-    _CREDENTIAL_RE,
-    _ENDPOINT_EXTENSION_CAP,
-    _ENDPOINT_EXTENSION_ENTRIES_KEY,
-    _EXFIL_PATTERNS,
-    _EXFIL_PERCENT_RE,
-    _EXFIL_QUERY_MIN_LEN,
-    _HARD_CREDENTIAL_RE,
-    _IMDS_IP,
-    _IMDS_IPV6,
-    _IP_CANDIDATE_RE,
-    _IP_COMPONENT,
-    _MAX_URL_DECODE_PASSES,
-    _OAUTH_AUTHORIZATION_ENDPOINTS,
-    _OAUTH_DIAGNOSTIC_PARAMETER_RE,
-    _OAUTH_ENTROPY_QUERY_PARAMS,
-    _OAUTH_EXTENSION_AUDITED,
-    _OAUTH_EXTENSION_HOST_RE,
-    _OAUTH_EXTENSION_MEMO,
-    _OAUTH_EXTENSION_PATH_BAD,
-    _OAUTH_EXTENSION_PATH_MAX_LEN,
-    _OAUTH_QUERY_PARAMS,
-    _OAUTH_S256_CHALLENGE_RE,
-    _OAUTH_URL_SYMBOLS,
-    _S3_PRESIGNED_PARAMS,
-    _S3_PRESIGNED_RE,
-    _SIGNATURE_RE,
-    _SLACK_APP_CREATE_PARAMS,
-    _STRUCTURAL_VALIDATORS,
-    _STS_TOKEN_RE,
-    _URL_RE,
-    EXFILTRATION_REDACTION_TAG_PREFIX,
-    OAuthUrlCredentialDiagnostic,
-    OAuthUrlShapeProfile,
-    _approved_oauth_authorization_endpoint,
-    _check_imds_access,
-    _emit_oauth_extension_used_event,
-    _exempt_exact_hosts,
-    _exfil_exempt_hosts,
-    _exfil_rule_id_for_match,
-    _exfil_url_warning,
-    _is_safe_presigned,
-    _kirocrew_slack_app_link_alias,
-    _load_operator_oauth_endpoints,
-    _oauth_char_class,
-    _oauth_credential_scan_target,
-    _oauth_diagnostic,
-    _oauth_entropy_form_is_protocol_shaped,
-    _oauth_entropy_value_is_protocol_shaped,
-    _oauth_query_diagnostic,
-    _oauth_shape_profile,
-    _oauth_url_payload_diagnostic,
-    _safe_oauth_parameter_name,
-    _slack_manifest_payload_re,
-    _slack_manifest_re_slot,
-    _valid_oauth_extension_path,
-    _validate_operator_oauth_entries,
-    audit_bash_exfiltration,
-    canonicalize_ip,
-    diagnose_oauth_url_credential,
-    exfil_query_min_len,
-    oauth_rejection_is_endpoint_exemptible,
-    oauth_url_contains_credential,
-    redact_exfiltration_urls,
-    scan_exfiltration_urls,
-)
-from .helpers import (
-    _RLIMIT_DEFAULTS,
-    _bias_child_oom_score,
-    _contains_injection,
-    _resource,
-    apply_resource_limits,
-    contains_injection,
-    resource_limit_spec,
-)
-from .inline_payload import (
-    _INLINE_DYNAMIC_EXEC_RE,
-    _has_self_importing_inline_program,
-    _inline_payload_reaches_cli,
-)
-from .paths import (
-    _CREW_HOME_PREFIXES,
-    _CREW_SECRET_LEAVES,
-    _HOME_TARGETS_TTL_COST_RATIO,
-    _HOME_TARGETS_TTL_MAX_SECS,
-    _HOME_TARGETS_TTL_SECS,
-    _KEYSTONE_ARTIFACT_PARENTS,
-    _KEYSTONE_ARTIFACT_SUFFIXES,
-    _KIRO_AGENTS_DIR,
-    _ON_WINDOWS,
-    _OVERRIDE_ANCHORED_LEAVES,
-    _OVERRIDE_ROOT_ENVS,
-    _PATH_RESOLVE_COOLDOWN_MAX_SECS,
-    _PATH_RESOLVE_COOLDOWN_SECS,
-    _PATH_RESOLVE_TIMEOUT_SECS,
-    _SENSITIVE_HOME_DIRS,
-    _TTL_COST_RATIO_ENV,
-    _TTL_MAX_SECS_ENV,
-    _UNC_PREFIX_RE,
-    _WRITE_PROTECTED_HOME_PATHS,
-    DENIED_ROOT_PARTS,
-    MAX_SCANNABLE_COMMAND_CHARS,
-    MAX_SCANNABLE_SOURCE_BODY_CHARS,
-    UNVERIFIABLE_PATH_PREFIX,
-    PathResolutionStalled,
-    _BuiltTargets,
-    _candidate_forms,
-    _env_float,
-    _expanded_env_root,
-    _home_dir_targets,
-    _home_dir_targets_uncached,
-    _home_targets_cache,
-    _home_targets_ttl,
-    _is_keystone_publish_artifact,
-    _is_unc_path,
-    _lexical_root,
-    _mark_stalled,
-    _oversize_refusal,
-    _path_in_home_dirs,
-    _path_resolve_clock,
-    _path_resolve_degraded,
-    _path_resolve_lock,
-    _path_resolve_wedged,
-    _realpath_or_none,
-    _rebuild_targets_bounded,
-    _resolve_root_anchors,
-    _resolved_env_root,
-    _resolved_forms_bounded,
-    _resolved_root_key,
-    _resolved_spellings,
-    _ResolvedRoots,
-    _run_resolution_bounded,
-    _stall_prefix,
-    _wedged_workers,
-    canonical_path_refusal,
-    crew_home_prefixes,
-    is_sensitive_bash_command,
-    is_sensitive_canonical_path,
-    is_sensitive_path,
-    is_sensitive_resolved_path,
-    is_sensitive_write_path,
-    is_unverifiable_path_refusal,
-    path_contains_sensitive,
-    sandbox_credential_targets,
-    sensitive_home_dirs,
-    sensitive_path_refusal,
-    write_protected_home_paths,
-)
-from .perm_verb_mention import _perm_verb_mention_only
-from .redaction import (
-    _B64_CHUNK_RE,
-    _BARE_SECRET_RUN_RE,
-    _CREDENTIAL_PATTERNS,
-    _CREDENTIAL_PREFILTER_AUTHORIZATION_RE,
-    _CREDENTIAL_PREFILTER_DISCORD_RE,
-    _CREDENTIAL_PREFILTER_GH_RE,
-    _CREDENTIAL_PREFILTER_LITERALS,
-    _CREDENTIAL_PREFILTER_TELEGRAM_RE,
-    _CREDENTIAL_PREFILTER_URI_RE,
-    _ENTROPY_TERMS_KEY_LEN,
-    _HEX_ONLY_RE,
-    _LOCAL_PATH_PLACEHOLDER,
-    _LOCAL_PATH_RE,
-    _PREFILTER_MIN_LEN,
-    _PRINTABLE_BYTES,
-    _REDACTED_CREDENTIAL_TAG,
-    _REDACTED_ENCODED_CREDENTIAL_TAG,
-    _SECRET_ENTROPY_MIN,
-    _SECRET_KEY_LEN,
-    _SECRET_MAX_LOWER_RUN,
-    _SECRET_MAX_SLASHES,
-    _SECRET_MAX_VOWEL_RATIO,
-    _SECRET_PRINTABLE_DECODE_RATIO,
-    _TOKEN_PARAM_PARTIAL_RE,
-    _TOKEN_PARAM_RE,
-    _TOKEN_PARAM_VALUE_CLASS,
-    _VOWELS,
-    CREDENTIAL_REDACTION_TAGS,
-    REDACTED_CREDENTIAL_TAG,
-    _contains_bare_secret,
-    _contains_fixed_credential,
-    _decode_b64_chunk,
-    _decode_b64_safe,
-    _decodes_to_printable_text,
-    _has_all_three_char_classes,
-    _looks_like_secret_key,
-    _lowercase_run_exceeds,
-    _might_contain_credential,
-    _shannon_entropy,
-    _text_contains_bare_secret,
-    _vowel_ratio,
-    get_credential_patterns,
-    redact_credentials,
-    redact_local_paths,
-    redact_path_segments,
-)
-from .shell_normalizer import (
-    _AMBIGUOUS_EXPANSION_RE,
-    _ANSI_C_LITERAL_ESCAPES,
-    _ANSI_C_NUMERIC_ESCAPE_RE,
-    _ANSI_C_QUOTE_RE,
-    _ANSI_C_SPACE_ESCAPES,
-    _ARRAY_ASSIGN_RE,
-    _ARRAY_EXPAND_RE,
-    _CARRIER_SPLIT_WINDOW,
-    _CMD_SEPARATOR_RE,
-    _CMD_SPLIT_RE,
-    _COMPUTED_VALUE_RE,
-    _CONTROL_OPERATOR_RE,
-    _DATA_CONSUMER_PROGRAMS,
-    _EMPTY_QUOTE_RE,
-    _EMPTY_SUBST_RE,
-    _ENV_SPLIT_PROGRAMS,
-    _FUNC_DEF_RE,
-    _GLOB_CHARS_RE,
-    _HOME_VAR_RE,
-    _INDIRECT_VAR_USE_RE,
-    _LOCAL_ASSIGN_RE,
-    _NESTED_SHELL_PROGRAMS,
-    _NESTED_SHELL_VERBS,
-    _NUMERIC_ESCAPE_RE,
-    _ONE_CHAR_CLASS_RE,
-    _OUTPUT_REDIRECT_RE,
-    _PARAM_DEFAULT_RE,
-    _PARAM_TRANSFORM_RE,
-    _PRINTF_ESCAPES,
-    _PROCESS_SUBSTITUTION_OPENERS,
-    _PUSH_REDIRECTION_RE,
-    _PYTHON_INLINE_PROGRAM_FLAGS,
-    _PYTHON_OPERAND_FLAGS,
-    _PYTHON_PROGRAM_RE,
-    _REDIRECT_START_RE,
-    _SCRIPT_EXECUTES_RE,
-    _SHELL_ACTIVE_CHARS,
-    _SHELL_ASSIGN_RE,
-    _SHELL_COMMAND_FLAG_RE,
-    _SHELL_COMMAND_GLUED_RE,
-    _SHELL_LINE_CONTINUATION_RE,
-    _SHELL_OPERATOR_CHARS,
-    _SHELL_SEGMENT_SEPARATORS,
-    _SHELL_VAR_NAMES,
-    _SHELL_VAR_RE,
-    _SHELL_WRAPPER_CHARS,
-    _VAR_USE_RE,
-    _argv_programs,
-    _array_assignments,
-    _backtick_closer,
-    _continuation_width,
-    _cut_at_operator,
-    _data_consumer_command_disqualified,
-    _data_consumer_exempt,
-    _debracket,
-    _decode_ansi_c_body,
-    _decode_printf_escapes,
-    _decode_shell_quoted_literals,
-    _dequote_token,
-    _ends_argv,
-    _escape_code_is_inert,
-    _fold_line_continuations,
-    _glob_could_expand_to,
-    _glob_to_regex,
-    _glued_shell_command_payload,
-    _here_string_payload,
-    _heredoc_marker,
-    _is_computed_value,
-    _is_env_split_flag,
-    _is_glued_shell_command_token,
-    _is_herestring_token,
-    _is_mint_verb,
-    _is_not_double_dash,
-    _is_self_program,
-    _is_shell_command_flag,
-    _is_shell_variable_reference,
-    _iter_shell_chars,
-    _matching_close_paren,
-    _mint_verb_in_substitution,
-    _nested_shell_payloads,
-    _next_stop_indexes,
-    _normalize_operand,
-    _numeric_escape_char,
-    _numeric_escape_code,
-    _operand_span_end,
-    _output_redirect_scan,
-    _pipes_into_evaluator,
-    _program_basename,
-    _protected_name_in_substitution,
-    _push_option_matches,
-    _push_token_redirection,
-    _push_token_shell_read,
-    _python_reads_stdin,
-    _redirect_consumes_next,
-    _redirect_glue_point,
-    _resolve_function_aliases,
-    _resolve_local_assignments,
-    _resolve_param_defaults,
-    _sed_exec_replacement,
-    _self_tokens,
-    _shell_c_carrier_glued,
-    _shell_c_carrier_payloads,
-    _shell_join_continuations,
-    _shell_payload_walk,
-    _shell_quote_walk,
-    _shell_tokens,
-    _ShellChar,
-    _ShellWalk,
-    _split_glued_operators,
-    _split_push_command_segments,
-    _split_shell_words,
-    _stdin_program_text,
-    _stdin_redirect_carriers,
-    _strip_redirect,
-    _substitution_bodies,
-    _substitution_depth_delta,
-    _substitution_program,
-    _xargs_reconstructed_command,
-    normalize_shell_command,
-)
-from .vocabulary import (
-    _KILL_BY_NAME_PROGRAMS,
-    _SELF_NAME_RE,
-    _SELF_PROGRAM_RE,
-    _SELF_PROGRAM_SPELLINGS,
 )
 
 # NB: kiro_crew.vector_memory is imported lazily inside scan_memory() rather than
@@ -653,10 +166,15 @@ def _oauth_component_is_unsafe(text: str) -> bool:
     the budget runs out, or one carrying a heavy percent-encoded run, is unsafe
     even when no known pattern matched.
     """
-    if _EXFIL_PERCENT_RE.search(text):
+    # Owners of the re-exported names read below, resolved through the
+    # import system so the value is read from the one place it lives.
+    _exfil = _submodule("exfil")
+    _redaction = _submodule("redaction")
+
+    if _exfil._EXFIL_PERCENT_RE.search(text):
         return True
     candidate = text
-    for _ in range(_MAX_URL_DECODE_PASSES + 1):
+    for _ in range(_exfil._MAX_URL_DECODE_PASSES + 1):
         # Invisible format characters (category Cf) split a credential so no
         # substring pattern below can match it, while the browser renders the
         # fragments visually reassembled. No legitimate endpoint component
@@ -669,9 +187,9 @@ def _oauth_component_is_unsafe(text: str) -> bool:
         # SSH keys, token shapes) — a component must never be echoed when it
         # matches what the gate refused. Over-matching only redacts more.
         if (
-            _contains_fixed_credential(candidate)
-            or _text_contains_bare_secret(candidate)
-            or _EXFIL_PATTERNS.search(candidate)
+            _redaction._contains_fixed_credential(candidate)
+            or _redaction._text_contains_bare_secret(candidate)
+            or _exfil._EXFIL_PATTERNS.search(candidate)
         ):
             return True
         # unquote_plus, not unquote: form-encoded material delimits with "+"
@@ -712,6 +230,11 @@ def sanitized_oauth_endpoint(url: str) -> tuple[str, str] | None:
     back to their existing unnamed message. Deliberately independent of WHY the
     URL was rejected: it never re-runs the credential verdict.
     """
+    # Owners of the re-exported names read below, resolved through the
+    # import system so the value is read from the one place it lives.
+    _exfil = _submodule("exfil")
+    _redaction = _submodule("redaction")
+
     if not url:
         return None
     try:
@@ -728,7 +251,7 @@ def sanitized_oauth_endpoint(url: str) -> tuple[str, str] | None:
     # layer up to the gate's budget, and refuse to name an authority that is
     # still decodable when the budget runs out.
     netloc_candidate = parsed.netloc
-    for _ in range(_MAX_URL_DECODE_PASSES + 1):
+    for _ in range(_exfil._MAX_URL_DECODE_PASSES + 1):
         if "@" in netloc_candidate:
             return None
         decoded_netloc = unquote_plus(netloc_candidate)
@@ -763,7 +286,7 @@ def sanitized_oauth_endpoint(url: str) -> tuple[str, str] | None:
         host = host[:_SANITIZED_OAUTH_HOST_MAX_LEN] + "…"
     path = parsed.path or "/"
     if _oauth_component_is_unsafe(path):
-        path = _REDACTED_CREDENTIAL_TAG
+        path = _redaction._REDACTED_CREDENTIAL_TAG
     elif len(path) > _SANITIZED_OAUTH_PATH_MAX_LEN:
         path = path[:_SANITIZED_OAUTH_PATH_MAX_LEN] + "…"
     return host, path
@@ -797,17 +320,24 @@ def sanitized_oauth_endpoint_display(url: str) -> str | None:
     counterfactual re-runs the gate, this can stat the operator file (memoized),
     so callers treat it like the gate itself and run it off the event loop.
     """
+    # Owners of the re-exported names read below, resolved through the
+    # import system so the value is read from the one place it lives.
+    _exfil = _submodule("exfil")
+    _redaction = _submodule("redaction")
+
     endpoint = sanitized_oauth_endpoint(url)
     if endpoint is None:
         return None
     host, path = endpoint
     # A capped host needs no check of its own: the host rule below ends in a
     # letter TLD, which a trailing "…" can never satisfy.
-    if path == _REDACTED_CREDENTIAL_TAG or path.endswith("…"):
+    if path == _redaction._REDACTED_CREDENTIAL_TAG or path.endswith("…"):
         return None
-    if not _OAUTH_EXTENSION_HOST_RE.fullmatch(host) or not _valid_oauth_extension_path(path):
+    if not _exfil._OAUTH_EXTENSION_HOST_RE.fullmatch(
+        host
+    ) or not _exfil._valid_oauth_extension_path(path):
         return None
-    if not oauth_rejection_is_endpoint_exemptible(url):
+    if not _exfil.oauth_rejection_is_endpoint_exemptible(url):
         return None
     return f"{host}{path}"
 
@@ -864,8 +394,13 @@ def redact_with_findings(text: str) -> tuple[str, list[str], list[str]]:
     companion's extra patterns apply; use this one for the warnings, or where the
     baseline is deliberately the subject.
     """
-    text, urls = redact_exfiltration_urls(text)
-    text, credentials = redact_credentials(text)
+    # Owners of the re-exported names read below, resolved through the
+    # import system so the value is read from the one place it lives.
+    _exfil = _submodule("exfil")
+    _redaction = _submodule("redaction")
+
+    text, urls = _exfil.redact_exfiltration_urls(text)
+    text, credentials = _redaction.redact_credentials(text)
     return text, list(credentials), list(urls)
 
 
@@ -926,7 +461,11 @@ _STREAM_HOLDBACK_JWT_MAX = 4096
 _JWT_SEGMENT_VALUE_CLASS = r"[A-Za-z0-9_-]"
 _BEARER_VALUE_CLASS = r"[A-Za-z0-9._~+/=-]"
 _STREAM_DISCARD_RUN_RES = {
-    "token-param": re.compile(rf"{_TOKEN_PARAM_VALUE_CLASS}*"),
+    # Read off the owner at import: the class is baked into the compiled pattern
+    # here, so this is a one-shot build input rather than a stored re-export. The
+    # resolver below is not available yet -- it is defined with the rest of the
+    # facade machinery, after this module has finished binding its own names.
+    "token-param": re.compile(rf"{redaction._TOKEN_PARAM_VALUE_CLASS}*"),
     "jwt": re.compile(rf"(?:{_JWT_SEGMENT_VALUE_CLASS}|\.)*"),
     "bearer": re.compile(rf"{_BEARER_VALUE_CLASS}*"),
 }
@@ -1015,6 +554,10 @@ class StreamRedactor:
 
     def feed(self, chunk: str) -> str:
         """Accept a chunk; return the redacted prefix that is safe to emit now."""
+        # Owners of the re-exported names read below, resolved through the
+        # import system so the value is read from the one place it lives.
+        _redaction = _submodule("redaction")
+
         if not chunk:
             return ""
         self._buf += chunk
@@ -1036,7 +579,7 @@ class StreamRedactor:
                 if self._discarded < _STREAM_DISCARD_MAX:
                     return ""
                 self._discarded = 0
-                return _REDACTED_CREDENTIAL_TAG
+                return _redaction._REDACTED_CREDENTIAL_TAG
             self._discarding = False
             self._discard_kind = None
             self._buf = self._buf[run:]
@@ -1059,7 +602,7 @@ class StreamRedactor:
         # credential anchor and therefore cannot escalate a cap or authorize a
         # fail-closed drop.
         partial_tag_start: int | None = None
-        for tag in CREDENTIAL_REDACTION_TAGS:
+        for tag in _redaction.CREDENTIAL_REDACTION_TAGS:
             max_prefix = min(len(self._buf), len(tag) - 1)
             for prefix_len in range(max_prefix, 0, -1):
                 if self._buf.endswith(tag[:prefix_len]):
@@ -1086,7 +629,7 @@ class StreamRedactor:
         # A token-name prefix without '=' is WEAK. It still needs a short
         # holdback so a chunk boundary cannot split the name, but it is not yet a
         # credential and must never escalate the cap or authorize data loss.
-        token_anchor = _TOKEN_PARAM_PARTIAL_RE.search(self._buf)
+        token_anchor = _redaction._TOKEN_PARAM_PARTIAL_RE.search(self._buf)
         weak_token_anchor = None
         strong_token_anchor = False
         if token_anchor is not None:
@@ -1096,7 +639,7 @@ class StreamRedactor:
                 weak_token_anchor = token_anchor
 
         i = min(safety_cuts)
-        complete_token_matches = tuple(_TOKEN_PARAM_RE.finditer(self._buf))
+        complete_token_matches = tuple(_redaction._TOKEN_PARAM_RE.finditer(self._buf))
         # Invariant: the complete-match crossing predicate is re-evaluated after
         # every assignment to `i`; both Phase A and the Phase B floor call the
         # same helper rather than letting their predicate copies drift.
@@ -1174,7 +717,7 @@ class StreamRedactor:
                     drop_end = complete_token_crossing.end(1)
                 commit, self._buf = self._buf[:i], self._buf[drop_end:]
                 out = self._redact(commit) if commit else ""
-                return out + _REDACTED_CREDENTIAL_TAG
+                return out + _redaction._REDACTED_CREDENTIAL_TAG
 
             i = len(self._buf) - cap
 
@@ -1328,6 +871,10 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
     which is what ``_SELF_PROTECTION_FLOOR_PATTERNS`` already does for the six
     self-protection rules — and is why those are not fooled by either shape.
     """
+    # Owners of the re-exported names read below, resolved through the
+    # import system so the value is read from the one place it lives.
+    _shell_normalizer = _submodule("shell_normalizer")
+
     views: list[str] = [segment.lower()] if emit_self else []
     seen_views: set[str] = set(views)
     # Decode the case-sensitive escapes BEFORE folding case (see the docstring),
@@ -1336,7 +883,7 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
     # like the walk below: this is the permission gate, so a decoder that raises
     # must cost the extra view, never the decision.
     try:
-        start = _decode_shell_quoted_literals(segment).lower()
+        start = _shell_normalizer._decode_shell_quoted_literals(segment).lower()
     except Exception:
         logger.debug("deny-view quote decode failed; raw view only", exc_info=True)
         start = segment.lower()
@@ -1354,7 +901,7 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
     while pending:
         source, parent_len, is_root, allow_join = pending.pop()
         try:
-            tokens = _shell_tokens(source)
+            tokens = _shell_normalizer._shell_tokens(source)
             if not tokens:
                 continue
             # No expansion happens above, so an already-lowercased source stays
@@ -1397,8 +944,10 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
                     seen_views.add(candidate)
                     views.append(candidate)
             joined_here: set[str] = set()
-            payloads = _nested_shell_payloads(tokens, allow_join=allow_join, joined_out=joined_here)
-            programs = _argv_programs(tokens) if payloads else []
+            payloads = _shell_normalizer._nested_shell_payloads(
+                tokens, allow_join=allow_join, joined_out=joined_here
+            )
+            programs = _shell_normalizer._argv_programs(tokens) if payloads else []
             # Both values below read ONLY ``tokens``, which is fixed for this
             # whole walk, so they are charged ONCE here instead of once per
             # payload.  Asking per payload is what makes this loop quadratic in
@@ -1410,7 +959,7 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
             # are skipped when there are no payloads so an ordinary command --
             # the common case -- pays nothing new.
             command_disqualified = (
-                _data_consumer_command_disqualified(tokens) if payloads else False
+                _shell_normalizer._data_consumer_command_disqualified(tokens) if payloads else False
             )
             token_positions: dict[str, list[int]] = {}
             if payloads:
@@ -1452,7 +1001,7 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
                 # really executes.
                 occurrences = token_positions.get(payload, [])
                 if occurrences and all(
-                    _data_consumer_exempt(
+                    _shell_normalizer._data_consumer_exempt(
                         i,
                         payload,
                         programs,
@@ -1472,7 +1021,7 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
                 # walked — recording the payload itself would filter out the single
                 # piece that equals it.
                 child_may_join = payload not in joined_here
-                for piece in _split_segments(_fold_line_continuations(payload)):
+                for piece in _split_segments(_shell_normalizer._fold_line_continuations(payload)):
                     piece = piece.strip()
                     if piece and piece not in seen_sources:
                         seen_sources.add(piece)
@@ -1623,6 +1172,15 @@ def is_denied(
         Denial reason string (mentioning the matched pattern), or
         ``None`` if the input is allowed.
     """
+    # The owners of the names this function reads, resolved once per call. Reading
+    # a name through its owner is what keeps its value in one place; resolving the
+    # owner once rather than per read is what keeps this per-tool-call predicate's
+    # cost flat -- one import-system lookup per owner, not one per name read.
+    _rules = _submodule("denied_rules")
+    _argv = _submodule("argv_floor")
+    _shell = _submodule("shell_normalizer")
+    _diag = _submodule("diagnostics")
+
     lower = tool_name.lower()
 
     def _reason(
@@ -1646,25 +1204,29 @@ def is_denied(
         agent cannot diagnose at all. The span is the whole subject because a floor
         decides on the argv's SHAPE rather than at an offset.
         """
-        diagnostic = refusal_diagnostic(rule, component, tool_name) if rule and component else None
-        return _deny_reason(
+        diagnostic = (
+            _diag.refusal_diagnostic(rule, component, tool_name) if rule and component else None
+        )
+        return _rules._deny_reason(
             matched, reason_notes, note_override=note_override, diagnostic=diagnostic
         )
 
     glob_patterns = list(extra_patterns or [])
     if denied_regexes is None:
-        regex_patterns = compute_effective_denied(BUILTIN_DENIED_RULES, (), False, (), ())
+        regex_patterns = _rules.compute_effective_denied(
+            _rules.BUILTIN_DENIED_RULES, (), False, (), ()
+        )
     else:
         regex_patterns = list(denied_regexes)
     # Capture which git-publish rules are still ENABLED *before* the strip below
     # removes their patterns from the regex tier. Computing this afterwards would
     # always yield the empty set and the floor would never fire — a silent, total
     # loss of push protection.
-    git_publish_enabled = {p for p in regex_patterns if p in _GIT_PUBLISH_RULE_PATTERNS}
+    git_publish_enabled = {p for p in regex_patterns if p in _rules._GIT_PUBLISH_RULE_PATTERNS}
     # Never feed git-publish rule patterns to Python ``re`` — they are ReDoS-prone
     # under backtracking and are already enforced by the ``_is_git_publish`` floor
     # below (see ``_GIT_PUBLISH_RULE_PATTERNS``).
-    regex_patterns = [p for p in regex_patterns if p not in _GIT_PUBLISH_RULE_PATTERNS]
+    regex_patterns = [p for p in regex_patterns if p not in _rules._GIT_PUBLISH_RULE_PATTERNS]
     # The two self-protection rules get an ADDITIONAL argv-structural floor
     # below, for the reason documented on ``_SELF_PROTECTION_FLOOR_PATTERNS``:
     # only a tokenized view can tell ``kirocrew "token"`` from
@@ -1678,18 +1240,18 @@ def is_denied(
     #      REPLACED the regex would then fail OPEN.
     # A rule the operator has DISABLED must stay disabled, so the floor runs
     # only for patterns still present in the effective set.
-    floor_enabled = {p for p in regex_patterns if p in _SELF_PROTECTION_FLOOR_PATTERNS}
+    floor_enabled = {p for p in regex_patterns if p in _rules._SELF_PROTECTION_FLOOR_PATTERNS}
     # An interpreter CONCATENATES adjacent string literals, so ``'p'+'kill -f <name>'``
     # is one command by the time it reaches the sink.  The two interpreter rules are
     # therefore also matched against a copy with those joins collapsed.  Scoped to those
     # two patterns on purpose: collapsing text for all the other rules would change
     # inputs they were never measured against.
     joined = _inline_interpreter_bindings(
-        _collapse_percent_format(_LITERAL_CONCAT_RE.sub("", lower))
+        _collapse_percent_format(_rules._LITERAL_CONCAT_RE.sub("", lower))
     )
     if joined != lower:
         for interpreter_pattern in regex_patterns:
-            if interpreter_pattern not in _INTERPRETER_RULE_PATTERNS:
+            if interpreter_pattern not in _rules._INTERPRETER_RULE_PATTERNS:
                 continue
             try:
                 if re.search(interpreter_pattern, joined, re.IGNORECASE):
@@ -1727,7 +1289,7 @@ def is_denied(
     # wrapper cannot buy anything here either.
     push_allow_pending = False
     try:
-        payload_sources = _shell_payload_sources(lower)
+        payload_sources = _argv._shell_payload_sources(lower)
     except Exception:
         # This runs inside the PreToolUse gate, which must return a DECISION and
         # never raise. Degrade to the top-level reading -- precisely what this
@@ -1740,18 +1302,18 @@ def is_denied(
     # complete bypass of the sole enforcement pushes have; gating once at the end
     # keeps the per-rule opt-out semantics exactly as written -- a rule an operator
     # disabled stays disabled at whatever depth it fires.
-    publish_sources = [source for source in payload_sources if _is_git_publish(source)]
+    publish_sources = [source for source in payload_sources if _argv._is_git_publish(source)]
     if publish_sources:
         floor_tags: frozenset[str] = frozenset()
         for publish_source in publish_sources:
-            floor_tags |= _git_publish_floor_tags(publish_source)
+            floor_tags |= _argv._git_publish_floor_tags(publish_source)
         # The ungated tag denies regardless of opt-out: it marks a command whose
         # target could not be verified at all, which is what keeps the gated
         # rules below non-bypassable. Report it under the brace-expansion rule,
         # whose coverage this branch is, so the refusal still names a catalog row.
-        if _GIT_PUBLISH_UNGATED in floor_tags:
-            ungated_pattern = _GIT_PUBLISH_FLOOR_BY_ID.get(
-                "git-publish-push-brace-expansion-refspec", _GIT_PUBLISH_DENY_LABEL
+        if _rules._GIT_PUBLISH_UNGATED in floor_tags:
+            ungated_pattern = _rules._GIT_PUBLISH_FLOOR_BY_ID.get(
+                "git-publish-push-brace-expansion-refspec", _argv._GIT_PUBLISH_DENY_LABEL
             )
             _emit_deny_event(tool_name, ungated_pattern, lower)
             return _reason(
@@ -1763,7 +1325,7 @@ def is_denied(
                 component="git-publish-floor",
             )
         for tag in sorted(floor_tags):
-            gated_pattern = _GIT_PUBLISH_FLOOR_BY_ID.get(tag)
+            gated_pattern = _rules._GIT_PUBLISH_FLOOR_BY_ID.get(tag)
             if gated_pattern is None:
                 # A tag naming no catalog row is a MAINTENANCE error, not a policy
                 # choice, and the two must not share a branch: skipping here would
@@ -1773,8 +1335,8 @@ def is_denied(
                 # sentinel's row, so the mistake is loud and fail-closed. The
                 # structural guard in test_push_branch_gate.py still catches it at
                 # build time; this is what happens if that guard is ever removed.
-                fallback = _GIT_PUBLISH_FLOOR_BY_ID.get(
-                    "git-publish-push-brace-expansion-refspec", _GIT_PUBLISH_DENY_LABEL
+                fallback = _rules._GIT_PUBLISH_FLOOR_BY_ID.get(
+                    "git-publish-push-brace-expansion-refspec", _argv._GIT_PUBLISH_DENY_LABEL
                 )
                 logger.error(
                     "git-publish floor tag %r resolves to no catalog rule; denying "
@@ -1801,7 +1363,7 @@ def is_denied(
             # switch off; the regex stays available on the note line below, which
             # the chip parser deliberately ignores.
             _emit_deny_event(tool_name, gated_pattern, lower)
-            note = _GIT_PUBLISH_FLOOR_NOTES.get(tag, "")
+            note = _rules._GIT_PUBLISH_FLOOR_NOTES.get(tag, "")
             return _reason(
                 tag,
                 f"{note} (rule pattern: {gated_pattern})".strip(),
@@ -1817,20 +1379,20 @@ def is_denied(
     # catalog row is still in the effective set, so an operator-disabled rule
     # stays disabled.
     for rule_id, predicate in (
-        ("credential-exfil-kirocrew-token", _is_credential_mint),
-        ("self-protection-kill", _is_self_kill),
-        ("self-protection-dev-mode-out-of-root-confirm", _is_dev_mode_out_of_root_confirm),
-        ("sandbox-escape-ssh-self", _is_ssh_to_self),
+        ("credential-exfil-kirocrew-token", _argv._is_credential_mint),
+        ("self-protection-kill", _argv._is_self_kill),
+        ("self-protection-dev-mode-out-of-root-confirm", _argv._is_dev_mode_out_of_root_confirm),
+        ("sandbox-escape-ssh-self", _argv._is_ssh_to_self),
     ):
-        pattern = _SELF_PROTECTION_FLOOR_BY_ID.get(rule_id)
+        pattern = _rules._SELF_PROTECTION_FLOOR_BY_ID.get(rule_id)
         if pattern is None or pattern not in floor_enabled:
             continue
         # The mint predicate also gets the command AS SUBMITTED: it decodes base64
         # literals to read the name they hide, and base64 does not survive the
         # lower-casing every other predicate reads.
         hit = (
-            _is_credential_mint(lower, raw_text=tool_name)
-            if predicate is _is_credential_mint
+            _argv._is_credential_mint(lower, raw_text=tool_name)
+            if predicate is _argv._is_credential_mint
             else predicate(lower)
         )
         if hit:
@@ -1842,7 +1404,7 @@ def is_denied(
             _emit_deny_event(tool_name, pattern, lower)
             return _reason(
                 pattern,
-                _SELF_PROTECTION_FLOOR_NOTES.get(rule_id, ""),
+                _rules._SELF_PROTECTION_FLOOR_NOTES.get(rule_id, ""),
                 rule=rule_id,
                 component="argv-floor",
             )
@@ -1854,17 +1416,17 @@ def is_denied(
     # trap this replaces -- ``.get(rule_id)`` returning None fell through to
     # ``continue``, so deleting the row silently disabled the floor.
     for rule_id, predicate in (
-        ("self-protection-restart", _is_self_restart),
-        ("self-protection-update", _is_self_update),
-        ("self-protection-file-delivery", _is_self_file_delivery),
-        ("self-protection-gateway-restart", _is_self_gateway_restart),
-        ("self-protection-cloud", _is_self_cloud_destructive),
+        ("self-protection-restart", _argv._is_self_restart),
+        ("self-protection-update", _argv._is_self_update),
+        ("self-protection-file-delivery", _argv._is_self_file_delivery),
+        ("self-protection-gateway-restart", _argv._is_self_gateway_restart),
+        ("self-protection-cloud", _argv._is_self_cloud_destructive),
     ):
         if predicate(lower):
             _emit_deny_event(tool_name, rule_id, lower)
             return _reason(
                 rule_id,
-                _SELF_PROTECTION_FLOOR_NOTES.get(rule_id, ""),
+                _rules._SELF_PROTECTION_FLOOR_NOTES.get(rule_id, ""),
                 rule=rule_id,
                 component="argv-floor",
             )
@@ -1884,11 +1446,11 @@ def is_denied(
     # caught here.  ``_is_git_publish`` / the always-on floors also run on the
     # full string before this point.
     for pattern, is_regex in all_patterns:
-        if _deny_pattern_matches(pattern, lower, is_regex):
-            exceptions = _DENY_EXCEPTIONS.get(pattern, [])
+        if _rules._deny_pattern_matches(pattern, lower, is_regex):
+            exceptions = _rules._DENY_EXCEPTIONS.get(pattern, [])
             whole_string_exception_match = (
                 exceptions
-                and _exception_eligible(lower)
+                and _rules._exception_eligible(lower)
                 and any(fnmatch.fnmatch(lower, e.lower()) for e in exceptions)
             )
             if not whole_string_exception_match and _perm_verb_mention_narrows(
@@ -1941,7 +1503,7 @@ def is_denied(
     # ``bash -c 'r\`` and ``m -rf /'`` and the ``-c`` script is never seen.
     # Emitting no view for the command itself is what keeps
     # this from fabricating one across its separators.
-    folded = _fold_line_continuations(tool_name)
+    folded = _shell._fold_line_continuations(tool_name)
     segments = [seg.strip() for seg in _split_segments(folded)]
     segments = [seg for seg in segments if seg]
     work: list[tuple[str, tuple[str, ...]]] = []
@@ -1958,11 +1520,11 @@ def is_denied(
     for seg_lower, segment_views in work:
         for view in segment_views:
             for pattern, is_regex in all_patterns:
-                if _deny_pattern_matches(pattern, view, is_regex):
-                    exceptions = _DENY_EXCEPTIONS.get(pattern, [])
+                if _rules._deny_pattern_matches(pattern, view, is_regex):
+                    exceptions = _rules._DENY_EXCEPTIONS.get(pattern, [])
                     if (
                         exceptions
-                        and _exception_eligible(view)
+                        and _rules._exception_eligible(view)
                         and any(fnmatch.fnmatch(view, e.lower()) for e in exceptions)
                     ) or _perm_verb_mention_narrows(pattern, lower, mention_cache):
                         # ``lower``, not ``view``: the mention reading is a
@@ -2076,12 +1638,16 @@ def is_denied_synthesized_target(
     Returns:
         Denial reason string (mentioning the matched pattern), or ``None`` if allowed.
     """
+    # Owners of the re-exported names read below, resolved through the
+    # import system so the value is read from the one place it lives.
+    _denied_rules = _submodule("denied_rules")
+
     lower = target.lower()
     all_patterns: list[tuple[str, bool]] = [(p, True) for p in list(patterns or [])] + [
         (p, False) for p in list(extra_patterns or [])
     ]
     for pattern, is_regex in all_patterns:
-        if not _deny_pattern_matches(pattern, lower, is_regex):
+        if not _denied_rules._deny_pattern_matches(pattern, lower, is_regex):
             continue
         # No ``_DENY_EXCEPTIONS`` carve-out here.  That map ships EMPTY and its machinery
         # is retained in ``is_denied`` only for a future scoped exception, so replicating
@@ -2089,7 +1655,7 @@ def is_denied_synthesized_target(
         # revisited deliberately -- ``test_the_deny_exception_map_is_still_empty`` reddens
         # then, so the omission cannot become a silent gap.
         _emit_deny_event(target, pattern, lower)
-        return _deny_reason(pattern, reason_notes)
+        return _denied_rules._deny_reason(pattern, reason_notes)
     return None
 
 
@@ -2100,7 +1666,11 @@ def _split_segments(command_lower: str) -> list[str]:
     Returns the list of segments (which may include the empty string for
     adjacent separators; callers should skip empties).
     """
-    return _CMD_SPLIT_RE.split(command_lower)
+    # Owners of the re-exported names read below, resolved through the
+    # import system so the value is read from the one place it lives.
+    _shell_normalizer = _submodule("shell_normalizer")
+
+    return _shell_normalizer._CMD_SPLIT_RE.split(command_lower)
 
 
 def _emit_deny_event(
@@ -2259,8 +1829,12 @@ def audit_bash_command(command: str) -> str | None:
     Returns warning string, or None if clean.
     Patterns with ``*`` are matched as globs via fnmatch.
     """
+    # Owners of the re-exported names read below, resolved through the
+    # import system so the value is read from the one place it lives.
+    _denied_rules = _submodule("denied_rules")
+
     lower = command.lower()
-    for pattern in SUSPICIOUS_BASH_PATTERNS:
+    for pattern in _denied_rules.SUSPICIOUS_BASH_PATTERNS:
         pat = pattern.lower()
         if "*" in pat:
             if fnmatch.fnmatch(lower, f"*{pat}*"):
@@ -2556,6 +2130,10 @@ def _scan_store_lessons(store_name: str, path: Path, findings: list[dict]) -> No
     ``value_json`` and ``text`` as stored, and a report that redacted one tier but not
     another would read as though the tiers held different classes of content.
     """
+    # Owners of the re-exported names read below, resolved through the
+    # import system so the value is read from the one place it lives.
+    _helpers = _submodule("helpers")
+
     try:
         # ``errors="replace"`` so a file carrying a non-UTF-8 byte is still screened
         # rather than reported unauditable: the rows around the bad byte are exactly the
@@ -2589,7 +2167,7 @@ def _scan_store_lessons(store_name: str, path: Path, findings: list[dict]) -> No
             (
                 value
                 for value in (row.get("rule"), row.get("negative"))
-                if isinstance(value, str) and _contains_injection(value)
+                if isinstance(value, str) and _helpers._contains_injection(value)
             ),
             None,
         )
@@ -2610,6 +2188,10 @@ def _scan_store_lessons(store_name: str, path: Path, findings: list[dict]) -> No
 
 def _memory_audit_matches(value: object) -> Iterator[str]:
     """Inspect decoded JSON leaves, including JSON stored inside revision snapshots."""
+    # Owners of the re-exported names read below, resolved through the
+    # import system so the value is read from the one place it lives.
+    _helpers = _submodule("helpers")
+
     pending = [value]
     while pending:
         current = pending.pop()
@@ -2625,7 +2207,7 @@ def _memory_audit_matches(value: object) -> Iterator[str]:
                 decoded = None
             if isinstance(decoded, (dict, list, str)):
                 pending.append(decoded)
-            elif _contains_injection(current):
+            elif _helpers._contains_injection(current):
                 yield current
 
 
@@ -2935,7 +2517,14 @@ def redact_and_truncate(text: str, max_chars: int = 4000) -> str:
     would cut a secret in half, leaving a prefix that no longer matches the
     credential regex and therefore escapes redaction.
     """
-    return redact_credentials(redact_exfiltration_urls(text or "")[0])[0][:max_chars]
+    # Owners of the re-exported names read below, resolved through the
+    # import system so the value is read from the one place it lives.
+    _exfil = _submodule("exfil")
+    _redaction = _submodule("redaction")
+
+    return _redaction.redact_credentials(_exfil.redact_exfiltration_urls(text or "")[0])[0][
+        :max_chars
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -2946,78 +2535,1082 @@ def redact_and_truncate(text: str, max_chars: int = 4000) -> str:
 # submodule owns is re-exported here, private helpers included, because callers
 # and tests reach them as attributes of the package and patch them by dotted
 # string. Two properties have to hold for that to keep being true after a name
-# moves out of this file, and only the first is free.
+# moves out of this file.
 #
-# 1. The name resolves here, bound to the SAME object the owning submodule
-#    holds. The frozen list in ``_exports`` is what makes that checkable rather
-#    than remembered.
+# 1. A read here answers with the object the owning submodule holds. Resolving it
+#    through the owner on each access is what makes that true by construction
+#    rather than by a copy that agrees at import and can drift afterwards. The
+#    frozen list in ``_exports`` is what keeps the set of names checkable.
 # 2. Setting the attribute HERE reaches the owning submodule. A caller inside
 #    that submodule resolves the name through its own globals, so a patch
-#    applied only to the facade would leave it running the unpatched object --
-#    the test passes while testing nothing. ``_MirroringModule`` below is what
-#    closes that, so every existing patch site stays as written.
+#    applied only here would leave it running the unpatched object -- the test
+#    passes while testing nothing. ``_ReExportModule`` below is what closes that,
+#    so every existing patch site stays as written.
 #
-# ``_SUBMODULES`` is in dependency order, lowest layer first, and a name belongs
-# to the first submodule holding it. That ordering is what stops a name defined
-# in a lower layer from being attributed to a higher layer that merely imports
-# it. The three bottom entries import nothing from this package and so are peers;
-# their relative order settles which of them owns a stdlib name several of them
-# import, and nothing else.
+# Both halves resolve the owner with ``importlib.import_module``, which answers
+# from ``sys.modules``. That leaves one place a value lives (the owner's
+# namespace) and one place a module lives (``sys.modules``), so neither half has
+# a second copy to keep in step.
+#
+# The table below is in dependency order, lowest layer first, and a name belongs
+# to the submodule that DEFINES it. Names this module imports for its own use
+# from outside the package -- the standard library, and other ``kiro_crew``
+# modules -- are not in the table: no submodule of this package owns them, so
+# there is no owner to resolve them through, and they stay ordinary attributes of
+# this module.
 
-#: Submodules owning re-exported names, lowest dependency layer first.
-_SUBMODULES: tuple[ModuleType, ...] = (
-    vocabulary,
-    diagnostics,
-    helpers,
-    shell_normalizer,
-    paths,
-    denied_rules,
-    redaction,
-    exfil,
-    inline_payload,
-    argv_floor,
-)
+#: Re-exported name -> the submodule that DEFINES it, the one place its value
+#: lives. Read from here by ``__getattr__``, so the facade binds none of these
+#: names in its own namespace.
+_EXPORTS: dict[str, str] = {
+    # argv_floor
+    "_AMBIGUOUS_REFS": "argv_floor",
+    "_AMBIGUOUS_REFSPEC_RE": "argv_floor",
+    "_DEV_MODE_CONFIRM_FLAG": "argv_floor",
+    "_EXPANSION_DEFAULT_RE": "argv_floor",
+    "_GIT_ARG_FLAGS": "argv_floor",
+    "_GIT_PUBLISH_DENY_LABEL": "argv_floor",
+    "_GIT_PUBLISH_GLUE_RE": "argv_floor",
+    "_GIT_PUBLISH_RE": "argv_floor",
+    "_GIT_PUBLISH_SUBST_PROGRAM_RE": "argv_floor",
+    "_HOSTNAME_SUBSTITUTION_HINTS": "argv_floor",
+    "_HOSTNAME_VARIABLE_FORMS": "argv_floor",
+    "_LOOPBACK_HOST_NAMES": "argv_floor",
+    "_PROCESS_SUBSTITUTION_SAFE_CHARS": "argv_floor",
+    "_PROTECTED_BRANCHES": "argv_floor",
+    "_PUSH_ALL_BRANCHES_OPTS": "argv_floor",
+    "_PUSH_NO_VALUE_OPTS": "argv_floor",
+    "_PUSH_NO_VALUE_SHORTS": "argv_floor",
+    "_PUSH_REPO_OPTS": "argv_floor",
+    "_PUSH_VALUE_OPTS": "argv_floor",
+    "_PUSH_VALUE_SHORTS": "argv_floor",
+    "_QUOTED_SEP_SENTINELS": "argv_floor",
+    "_RAW_ASSIGNMENT_RE": "argv_floor",
+    "_RSYNC_RSH_ASSIGN_RE": "argv_floor",
+    "_SELF_CLOUD_DESTRUCTIVE_VERBS": "argv_floor",
+    "_SELF_FLOOR_MACHINERY_RE": "argv_floor",
+    "_SELF_FLOOR_NAME_HINT_RE": "argv_floor",
+    "_SELF_FLOOR_QUOTE_JUNK_RE": "argv_floor",
+    "_SELF_IMPORT_RE": "argv_floor",
+    "_SELF_MODULE_SPELLINGS": "argv_floor",
+    "_SHELL_RESERVED_WORDS": "argv_floor",
+    "_SSH_COMMAND_OPTION_KEYS": "argv_floor",
+    "_SSH_FAMILY_VERBS": "argv_floor",
+    "_SSH_FORWARD_OPT_LETTERS": "argv_floor",
+    "_SSH_ROUTING_OPTION_KEYS": "argv_floor",
+    "_SelfModuleScan": "argv_floor",
+    "_bare_kill_raw_bodies": "argv_floor",
+    "_git_publish_floor_tags": "argv_floor",
+    "_git_push_args": "argv_floor",
+    "_host_is_self": "argv_floor",
+    "_is_credential_mint": "argv_floor",
+    "_is_dev_mode_out_of_root_confirm": "argv_floor",
+    "_is_git_publish": "argv_floor",
+    "_is_git_push_via_normalizer": "argv_floor",
+    "_is_kill_by_name_program": "argv_floor",
+    "_is_push_to_protected_branch": "argv_floor",
+    "_is_self_cloud_destructive": "argv_floor",
+    "_is_self_file_delivery": "argv_floor",
+    "_is_self_gateway_restart": "argv_floor",
+    "_is_self_kill": "argv_floor",
+    "_is_self_module_flag": "argv_floor",
+    "_is_self_module_invocation": "argv_floor",
+    "_is_self_restart": "argv_floor",
+    "_is_self_update": "argv_floor",
+    "_is_ssh_to_self": "argv_floor",
+    "_kill_prefix_keeps_anchor": "argv_floor",
+    "_mask_quoted_separators": "argv_floor",
+    "_matches_self_subcommand": "argv_floor",
+    "_normalize_ref": "argv_floor",
+    "_operand_targets_self": "argv_floor",
+    "_operands_lead_with": "argv_floor",
+    "_own_host_names": "argv_floor",
+    "_own_host_seed": "argv_floor",
+    "_own_interface_addresses": "argv_floor",
+    "_process_substitution_word_is_opaque": "argv_floor",
+    "_proxyjump_value_targets_self": "argv_floor",
+    "_push_segment_targets_protected": "argv_floor",
+    "_resolve_own_host_names": "argv_floor",
+    "_resolve_own_host_names_into_cache": "argv_floor",
+    "_routing_option_key_value_targets_self": "argv_floor",
+    "_routing_option_value_targets_self": "argv_floor",
+    "_self_cli_operands": "argv_floor",
+    "_self_floor_can_fire": "argv_floor",
+    "_self_module_flag_scan": "argv_floor",
+    "_self_module_name_index": "argv_floor",
+    "_self_program_index": "argv_floor",
+    "_self_token_frames": "argv_floor",
+    "_shell_payload_sources": "argv_floor",
+    "_ssh_family_verb": "argv_floor",
+    "_static_substitution_output": "argv_floor",
+    "_unmask_separators": "argv_floor",
+    # denied_rules
+    "BUILTIN_DENIED_RULES": "denied_rules",
+    "BUILTIN_DENY_PATTERNS": "denied_rules",
+    "DENY_REASON_MATCH_PREFIX": "denied_rules",
+    "DENY_REASON_PREFIX": "denied_rules",
+    "DeniedCommandRule": "denied_rules",
+    "SUSPICIOUS_BASH_PATTERNS": "denied_rules",
+    "_AWS_SECRET_VAR_NAMES": "denied_rules",
+    "_AWS_SECRET_WORDS": "denied_rules",
+    "_AWS_SECRET_WORD_PREFIXES": "denied_rules",
+    "_AWS_VAR_SELECTOR": "denied_rules",
+    "_DANGEROUS_AWS_FLAG_RUN": "denied_rules",
+    "_DENY_EXCEPTIONS": "denied_rules",
+    "_DENY_FALLBACK_SCAN_MAX_CHARS": "denied_rules",
+    "_DENY_MATCHER_CACHE": "denied_rules",
+    "_DenyMatcher": "denied_rules",
+    "_ENV_CRED_DENIAL_REASON": "denied_rules",
+    "_ENV_CRED_PATTERNS": "denied_rules",
+    "_ENV_CRED_SHARED_RULES": "denied_rules",
+    "_ENV_CRED_SHARED_RULE_IDS": "denied_rules",
+    "_ENV_DUMP_GREP_AWS_PATTERN": "denied_rules",
+    "_ENV_DUMP_VERBS": "denied_rules",
+    "_FLOOR_ENFORCED_RULE_IDS": "denied_rules",
+    "_GIT_PUBLISH_FLOOR_BY_ID": "denied_rules",
+    "_GIT_PUBLISH_FLOOR_NOTES": "denied_rules",
+    "_GIT_PUBLISH_RULES": "denied_rules",
+    "_GIT_PUBLISH_RULE_CATEGORY": "denied_rules",
+    "_GIT_PUBLISH_RULE_PATTERNS": "denied_rules",
+    "_GIT_PUBLISH_UNGATED": "denied_rules",
+    "_GIT_PUBLISH_UNGATED_RULE_IDS": "denied_rules",
+    "_INERT_SEARCH_GLOBS": "denied_rules",
+    "_INERT_SEARCH_VERBS": "denied_rules",
+    "_INTERPRETER_RULE_IDS": "denied_rules",
+    "_INTERPRETER_RULE_PATTERNS": "denied_rules",
+    "_LEGACY_RULE_ID_BY_PATTERN": "denied_rules",
+    "_LINEARIZED_AWS_FLAG_RUN": "denied_rules",
+    "_LITERAL_CONCAT_RE": "denied_rules",
+    "_PRINTENV_AWS_SECRET_PATTERN": "denied_rules",
+    "_RULES_BY_ID": "denied_rules",
+    "_RULE_ID_BY_PATTERN": "denied_rules",
+    "_SELF_PROTECTION_FLOOR_BY_ID": "denied_rules",
+    "_SELF_PROTECTION_FLOOR_NOTES": "denied_rules",
+    "_SELF_PROTECTION_FLOOR_PATTERNS": "denied_rules",
+    "_SELF_PROTECTION_FLOOR_RULE_IDS": "denied_rules",
+    "_SELF_PROTECTION_UNGATED_FLOOR_IDS": "denied_rules",
+    "_aws_secret_word_prefix_alternation": "denied_rules",
+    "_check_env_credential_access": "denied_rules",
+    "_deny_matcher": "denied_rules",
+    "_deny_pattern_matches": "denied_rules",
+    "_deny_reason": "denied_rules",
+    "_exception_eligible": "denied_rules",
+    "_frags_can_underconsume": "denied_rules",
+    "_has_top_level_alternation": "denied_rules",
+    "_linearize_deny_pattern": "denied_rules",
+    "_matches_full_input": "denied_rules",
+    "_polynomial_backtracking_prone": "denied_rules",
+    "_redos_prone": "denied_rules",
+    "_resolved_pin_ids": "denied_rules",
+    "_rule_id_for_pattern": "denied_rules",
+    "_split_deny_frags": "denied_rules",
+    "builtin_denied_rules": "denied_rules",
+    "compute_effective_denied": "denied_rules",
+    "edition_denied_rules": "denied_rules",
+    "enabled_rule_ids": "denied_rules",
+    "floor_enforced_builtin_command_ids": "denied_rules",
+    "is_safe_user_regex": "denied_rules",
+    "pinned_builtin_command_ids": "denied_rules",
+    "pinned_builtin_command_ids_for_snapshot": "denied_rules",
+    # diagnostics
+    "REFUSAL_DIAGNOSTIC_PREFIX": "diagnostics",
+    "RefusalDiagnostic": "diagnostics",
+    "RefusalSpanShape": "diagnostics",
+    "annotate_refusal": "diagnostics",
+    "refusal_diagnostic": "diagnostics",
+    "refusal_span_shape": "diagnostics",
+    # exfil
+    "EXFILTRATION_REDACTION_TAG_PREFIX": "exfil",
+    "OAuthUrlCredentialDiagnostic": "exfil",
+    "OAuthUrlShapeProfile": "exfil",
+    "_BASH_EXFIL_PATTERNS": "exfil",
+    "_BASH_EXFIL_RES": "exfil",
+    "_BASH_EXFIL_ROW_DISCRIMINATORS": "exfil",
+    "_BASH_EXFIL_RULE_BY_LABEL": "exfil",
+    "_BASH_EXFIL_RULE_BY_PATTERN": "exfil",
+    "_CREDENTIAL_RE": "exfil",
+    "_ENDPOINT_EXTENSION_CAP": "exfil",
+    "_ENDPOINT_EXTENSION_ENTRIES_KEY": "exfil",
+    "_EXFIL_PATTERNS": "exfil",
+    "_EXFIL_PERCENT_RE": "exfil",
+    "_EXFIL_QUERY_MIN_LEN": "exfil",
+    "_HARD_CREDENTIAL_RE": "exfil",
+    "_IMDS_IP": "exfil",
+    "_IMDS_IPV6": "exfil",
+    "_IP_CANDIDATE_RE": "exfil",
+    "_IP_COMPONENT": "exfil",
+    "_MAX_URL_DECODE_PASSES": "exfil",
+    "_OAUTH_AUTHORIZATION_ENDPOINTS": "exfil",
+    "_OAUTH_DIAGNOSTIC_PARAMETER_RE": "exfil",
+    "_OAUTH_ENTROPY_QUERY_PARAMS": "exfil",
+    "_OAUTH_EXTENSION_AUDITED": "exfil",
+    "_OAUTH_EXTENSION_HOST_RE": "exfil",
+    "_OAUTH_EXTENSION_MEMO": "exfil",
+    "_OAUTH_EXTENSION_PATH_BAD": "exfil",
+    "_OAUTH_EXTENSION_PATH_MAX_LEN": "exfil",
+    "_OAUTH_QUERY_PARAMS": "exfil",
+    "_OAUTH_S256_CHALLENGE_RE": "exfil",
+    "_OAUTH_URL_SYMBOLS": "exfil",
+    "_S3_PRESIGNED_PARAMS": "exfil",
+    "_S3_PRESIGNED_RE": "exfil",
+    "_SIGNATURE_RE": "exfil",
+    "_SLACK_APP_CREATE_PARAMS": "exfil",
+    "_STRUCTURAL_VALIDATORS": "exfil",
+    "_STS_TOKEN_RE": "exfil",
+    "_URL_RE": "exfil",
+    "_approved_oauth_authorization_endpoint": "exfil",
+    "_check_imds_access": "exfil",
+    "_emit_oauth_extension_used_event": "exfil",
+    "_exempt_exact_hosts": "exfil",
+    "_exfil_exempt_hosts": "exfil",
+    "_exfil_rule_id_for_match": "exfil",
+    "_exfil_url_warning": "exfil",
+    "_is_safe_presigned": "exfil",
+    "_kirocrew_slack_app_link_alias": "exfil",
+    "_load_operator_oauth_endpoints": "exfil",
+    "_oauth_char_class": "exfil",
+    "_oauth_credential_scan_target": "exfil",
+    "_oauth_diagnostic": "exfil",
+    "_oauth_entropy_form_is_protocol_shaped": "exfil",
+    "_oauth_entropy_value_is_protocol_shaped": "exfil",
+    "_oauth_query_diagnostic": "exfil",
+    "_oauth_shape_profile": "exfil",
+    "_oauth_url_payload_diagnostic": "exfil",
+    "_safe_oauth_parameter_name": "exfil",
+    "_slack_manifest_payload_re": "exfil",
+    "_slack_manifest_re_slot": "exfil",
+    "_valid_oauth_extension_path": "exfil",
+    "_validate_operator_oauth_entries": "exfil",
+    "audit_bash_exfiltration": "exfil",
+    "canonicalize_ip": "exfil",
+    "diagnose_oauth_url_credential": "exfil",
+    "exfil_query_min_len": "exfil",
+    "oauth_rejection_is_endpoint_exemptible": "exfil",
+    "oauth_url_contains_credential": "exfil",
+    "redact_exfiltration_urls": "exfil",
+    "scan_exfiltration_urls": "exfil",
+    # helpers
+    "_RLIMIT_DEFAULTS": "helpers",
+    "_bias_child_oom_score": "helpers",
+    "_contains_injection": "helpers",
+    "_resource": "helpers",
+    "apply_resource_limits": "helpers",
+    "contains_injection": "helpers",
+    "resource_limit_spec": "helpers",
+    # inline_payload
+    "_INLINE_DYNAMIC_EXEC_RE": "inline_payload",
+    "_has_self_importing_inline_program": "inline_payload",
+    "_inline_payload_reaches_cli": "inline_payload",
+    # paths
+    "DENIED_ROOT_PARTS": "paths",
+    "MAX_SCANNABLE_COMMAND_CHARS": "paths",
+    "MAX_SCANNABLE_SOURCE_BODY_CHARS": "paths",
+    "PathResolutionStalled": "paths",
+    "UNVERIFIABLE_PATH_PREFIX": "paths",
+    "_BuiltTargets": "paths",
+    "_CREW_HOME_PREFIXES": "paths",
+    "_CREW_SECRET_LEAVES": "paths",
+    "_HOME_TARGETS_TTL_COST_RATIO": "paths",
+    "_HOME_TARGETS_TTL_MAX_SECS": "paths",
+    "_HOME_TARGETS_TTL_SECS": "paths",
+    "_KEYSTONE_ARTIFACT_PARENTS": "paths",
+    "_KEYSTONE_ARTIFACT_SUFFIXES": "paths",
+    "_KIRO_AGENTS_DIR": "paths",
+    "_ON_WINDOWS": "paths",
+    "_OVERRIDE_ANCHORED_LEAVES": "paths",
+    "_OVERRIDE_ROOT_ENVS": "paths",
+    "_PATH_RESOLVE_COOLDOWN_MAX_SECS": "paths",
+    "_PATH_RESOLVE_COOLDOWN_SECS": "paths",
+    "_PATH_RESOLVE_TIMEOUT_SECS": "paths",
+    "_ResolvedRoots": "paths",
+    "_SENSITIVE_HOME_DIRS": "paths",
+    "_TTL_COST_RATIO_ENV": "paths",
+    "_TTL_MAX_SECS_ENV": "paths",
+    "_UNC_PREFIX_RE": "paths",
+    "_WRITE_PROTECTED_HOME_PATHS": "paths",
+    "_candidate_forms": "paths",
+    "_env_float": "paths",
+    "_expanded_env_root": "paths",
+    "_home_dir_targets": "paths",
+    "_home_dir_targets_uncached": "paths",
+    "_home_targets_cache": "paths",
+    "_home_targets_ttl": "paths",
+    "_is_keystone_publish_artifact": "paths",
+    "_is_unc_path": "paths",
+    "_lexical_root": "paths",
+    "_mark_stalled": "paths",
+    "_oversize_refusal": "paths",
+    "_path_in_home_dirs": "paths",
+    "_path_resolve_clock": "paths",
+    "_path_resolve_degraded": "paths",
+    "_path_resolve_lock": "paths",
+    "_path_resolve_wedged": "paths",
+    "_realpath_or_none": "paths",
+    "_rebuild_targets_bounded": "paths",
+    "_resolve_root_anchors": "paths",
+    "_resolved_env_root": "paths",
+    "_resolved_forms_bounded": "paths",
+    "_resolved_root_key": "paths",
+    "_resolved_spellings": "paths",
+    "_run_resolution_bounded": "paths",
+    "_stall_prefix": "paths",
+    "_wedged_workers": "paths",
+    "crew_home_prefixes": "paths",
+    "is_sensitive_bash_command": "paths",
+    "is_sensitive_canonical_path": "paths",
+    "is_sensitive_path": "paths",
+    "is_sensitive_resolved_path": "paths",
+    "is_sensitive_write_path": "paths",
+    "is_unverifiable_path_refusal": "paths",
+    "path_contains_sensitive": "paths",
+    "sandbox_credential_targets": "paths",
+    "sensitive_home_dirs": "paths",
+    "sensitive_path_refusal": "paths",
+    "write_protected_home_paths": "paths",
+    # redaction
+    "CREDENTIAL_REDACTION_TAGS": "redaction",
+    "REDACTED_CREDENTIAL_TAG": "redaction",
+    "_B64_CHUNK_RE": "redaction",
+    "_BARE_SECRET_RUN_RE": "redaction",
+    "_CREDENTIAL_PATTERNS": "redaction",
+    "_CREDENTIAL_PREFILTER_AUTHORIZATION_RE": "redaction",
+    "_CREDENTIAL_PREFILTER_DISCORD_RE": "redaction",
+    "_CREDENTIAL_PREFILTER_GH_RE": "redaction",
+    "_CREDENTIAL_PREFILTER_LITERALS": "redaction",
+    "_CREDENTIAL_PREFILTER_TELEGRAM_RE": "redaction",
+    "_CREDENTIAL_PREFILTER_URI_RE": "redaction",
+    "_ENTROPY_TERMS_KEY_LEN": "redaction",
+    "_HEX_ONLY_RE": "redaction",
+    "_LOCAL_PATH_PLACEHOLDER": "redaction",
+    "_LOCAL_PATH_RE": "redaction",
+    "_PREFILTER_MIN_LEN": "redaction",
+    "_PRINTABLE_BYTES": "redaction",
+    "_REDACTED_CREDENTIAL_TAG": "redaction",
+    "_REDACTED_ENCODED_CREDENTIAL_TAG": "redaction",
+    "_SECRET_ENTROPY_MIN": "redaction",
+    "_SECRET_KEY_LEN": "redaction",
+    "_SECRET_MAX_LOWER_RUN": "redaction",
+    "_SECRET_MAX_SLASHES": "redaction",
+    "_SECRET_MAX_VOWEL_RATIO": "redaction",
+    "_SECRET_PRINTABLE_DECODE_RATIO": "redaction",
+    "_TOKEN_PARAM_PARTIAL_RE": "redaction",
+    "_TOKEN_PARAM_RE": "redaction",
+    "_TOKEN_PARAM_VALUE_CLASS": "redaction",
+    "_VOWELS": "redaction",
+    "_contains_bare_secret": "redaction",
+    "_contains_fixed_credential": "redaction",
+    "_decode_b64_chunk": "redaction",
+    "_decode_b64_safe": "redaction",
+    "_decodes_to_printable_text": "redaction",
+    "_has_all_three_char_classes": "redaction",
+    "_looks_like_secret_key": "redaction",
+    "_lowercase_run_exceeds": "redaction",
+    "_might_contain_credential": "redaction",
+    "_shannon_entropy": "redaction",
+    "_text_contains_bare_secret": "redaction",
+    "_vowel_ratio": "redaction",
+    "get_credential_patterns": "redaction",
+    "redact_credentials": "redaction",
+    "redact_local_paths": "redaction",
+    "redact_path_segments": "redaction",
+    # shell_normalizer
+    "_AMBIGUOUS_EXPANSION_RE": "shell_normalizer",
+    "_ANSI_C_LITERAL_ESCAPES": "shell_normalizer",
+    "_ANSI_C_NUMERIC_ESCAPE_RE": "shell_normalizer",
+    "_ANSI_C_QUOTE_RE": "shell_normalizer",
+    "_ANSI_C_SPACE_ESCAPES": "shell_normalizer",
+    "_ARRAY_ASSIGN_RE": "shell_normalizer",
+    "_ARRAY_EXPAND_RE": "shell_normalizer",
+    "_CARRIER_SPLIT_WINDOW": "shell_normalizer",
+    "_CMD_SEPARATOR_RE": "shell_normalizer",
+    "_CMD_SPLIT_RE": "shell_normalizer",
+    "_COMPUTED_VALUE_RE": "shell_normalizer",
+    "_CONTROL_OPERATOR_RE": "shell_normalizer",
+    "_DATA_CONSUMER_PROGRAMS": "shell_normalizer",
+    "_EMPTY_QUOTE_RE": "shell_normalizer",
+    "_EMPTY_SUBST_RE": "shell_normalizer",
+    "_ENV_SPLIT_PROGRAMS": "shell_normalizer",
+    "_FUNC_DEF_RE": "shell_normalizer",
+    "_GLOB_CHARS_RE": "shell_normalizer",
+    "_HOME_VAR_RE": "shell_normalizer",
+    "_INDIRECT_VAR_USE_RE": "shell_normalizer",
+    "_LOCAL_ASSIGN_RE": "shell_normalizer",
+    "_NESTED_SHELL_PROGRAMS": "shell_normalizer",
+    "_NESTED_SHELL_VERBS": "shell_normalizer",
+    "_NUMERIC_ESCAPE_RE": "shell_normalizer",
+    "_ONE_CHAR_CLASS_RE": "shell_normalizer",
+    "_OUTPUT_REDIRECT_RE": "shell_normalizer",
+    "_PARAM_DEFAULT_RE": "shell_normalizer",
+    "_PARAM_TRANSFORM_RE": "shell_normalizer",
+    "_PRINTF_ESCAPES": "shell_normalizer",
+    "_PROCESS_SUBSTITUTION_OPENERS": "shell_normalizer",
+    "_PUSH_REDIRECTION_RE": "shell_normalizer",
+    "_PYTHON_INLINE_PROGRAM_FLAGS": "shell_normalizer",
+    "_PYTHON_OPERAND_FLAGS": "shell_normalizer",
+    "_PYTHON_PROGRAM_RE": "shell_normalizer",
+    "_REDIRECT_START_RE": "shell_normalizer",
+    "_SCRIPT_EXECUTES_RE": "shell_normalizer",
+    "_SHELL_ACTIVE_CHARS": "shell_normalizer",
+    "_SHELL_ASSIGN_RE": "shell_normalizer",
+    "_SHELL_COMMAND_FLAG_RE": "shell_normalizer",
+    "_SHELL_COMMAND_GLUED_RE": "shell_normalizer",
+    "_SHELL_LINE_CONTINUATION_RE": "shell_normalizer",
+    "_SHELL_OPERATOR_CHARS": "shell_normalizer",
+    "_SHELL_SEGMENT_SEPARATORS": "shell_normalizer",
+    "_SHELL_VAR_NAMES": "shell_normalizer",
+    "_SHELL_VAR_RE": "shell_normalizer",
+    "_SHELL_WRAPPER_CHARS": "shell_normalizer",
+    "_ShellChar": "shell_normalizer",
+    "_ShellWalk": "shell_normalizer",
+    "_VAR_USE_RE": "shell_normalizer",
+    "_argv_programs": "shell_normalizer",
+    "_array_assignments": "shell_normalizer",
+    "_backtick_closer": "shell_normalizer",
+    "_continuation_width": "shell_normalizer",
+    "_cut_at_operator": "shell_normalizer",
+    "_data_consumer_command_disqualified": "shell_normalizer",
+    "_data_consumer_exempt": "shell_normalizer",
+    "_debracket": "shell_normalizer",
+    "_decode_ansi_c_body": "shell_normalizer",
+    "_decode_printf_escapes": "shell_normalizer",
+    "_decode_shell_quoted_literals": "shell_normalizer",
+    "_dequote_token": "shell_normalizer",
+    "_ends_argv": "shell_normalizer",
+    "_escape_code_is_inert": "shell_normalizer",
+    "_fold_line_continuations": "shell_normalizer",
+    "_glob_could_expand_to": "shell_normalizer",
+    "_glob_to_regex": "shell_normalizer",
+    "_glued_shell_command_payload": "shell_normalizer",
+    "_here_string_payload": "shell_normalizer",
+    "_heredoc_marker": "shell_normalizer",
+    "_is_computed_value": "shell_normalizer",
+    "_is_env_split_flag": "shell_normalizer",
+    "_is_glued_shell_command_token": "shell_normalizer",
+    "_is_herestring_token": "shell_normalizer",
+    "_is_mint_verb": "shell_normalizer",
+    "_is_not_double_dash": "shell_normalizer",
+    "_is_self_program": "shell_normalizer",
+    "_is_shell_command_flag": "shell_normalizer",
+    "_is_shell_variable_reference": "shell_normalizer",
+    "_iter_shell_chars": "shell_normalizer",
+    "_matching_close_paren": "shell_normalizer",
+    "_mint_verb_in_substitution": "shell_normalizer",
+    "_nested_shell_payloads": "shell_normalizer",
+    "_next_stop_indexes": "shell_normalizer",
+    "_normalize_operand": "shell_normalizer",
+    "_numeric_escape_char": "shell_normalizer",
+    "_numeric_escape_code": "shell_normalizer",
+    "_operand_span_end": "shell_normalizer",
+    "_output_redirect_scan": "shell_normalizer",
+    "_pipes_into_evaluator": "shell_normalizer",
+    "_program_basename": "shell_normalizer",
+    "_protected_name_in_substitution": "shell_normalizer",
+    "_push_option_matches": "shell_normalizer",
+    "_push_token_redirection": "shell_normalizer",
+    "_push_token_shell_read": "shell_normalizer",
+    "_python_reads_stdin": "shell_normalizer",
+    "_redirect_consumes_next": "shell_normalizer",
+    "_redirect_glue_point": "shell_normalizer",
+    "_resolve_function_aliases": "shell_normalizer",
+    "_resolve_local_assignments": "shell_normalizer",
+    "_resolve_param_defaults": "shell_normalizer",
+    "_sed_exec_replacement": "shell_normalizer",
+    "_self_tokens": "shell_normalizer",
+    "_shell_c_carrier_glued": "shell_normalizer",
+    "_shell_c_carrier_payloads": "shell_normalizer",
+    "_shell_join_continuations": "shell_normalizer",
+    "_shell_payload_walk": "shell_normalizer",
+    "_shell_quote_walk": "shell_normalizer",
+    "_shell_tokens": "shell_normalizer",
+    "_split_glued_operators": "shell_normalizer",
+    "_split_push_command_segments": "shell_normalizer",
+    "_split_shell_words": "shell_normalizer",
+    "_stdin_program_text": "shell_normalizer",
+    "_stdin_redirect_carriers": "shell_normalizer",
+    "_strip_redirect": "shell_normalizer",
+    "_substitution_bodies": "shell_normalizer",
+    "_substitution_depth_delta": "shell_normalizer",
+    "_substitution_program": "shell_normalizer",
+    "_xargs_reconstructed_command": "shell_normalizer",
+    "normalize_shell_command": "shell_normalizer",
+    # vocabulary
+    "_KILL_BY_NAME_PROGRAMS": "vocabulary",
+    "_SELF_NAME_RE": "vocabulary",
+    "_SELF_PROGRAM_RE": "vocabulary",
+    "_SELF_PROGRAM_SPELLINGS": "vocabulary",
+}
 
-_OWNER_PROBE_MISSING = object()
+
+def _submodule(module: str) -> ModuleType:
+    """Return a submodule of this package, resolved through the import system.
+
+    The read path this module's OWN code uses. A function defined here resolves a
+    bare global through this module's namespace directly, which ``__getattr__``
+    never sees, so it cannot read a re-exported name the way an outside caller
+    does. It asks for the owner instead and reads the name off it, which lands on
+    the same single storage location every other reader uses.
+    """
+    return importlib.import_module(f"{__name__}.{module}")
 
 
-def _export_owners() -> dict[str, ModuleType]:
-    """Map each re-exported name to the submodule that owns its object."""
-    owners: dict[str, ModuleType] = {}
-    for submodule in _SUBMODULES:
-        for name, value in vars(submodule).items():
-            if name.startswith("__") or name in owners:
-                continue
-            if globals().get(name, _OWNER_PROBE_MISSING) is value:
-                owners[name] = submodule
-    return owners
+def _owner(name: str) -> ModuleType:
+    """Return the submodule that defines ``name``, importing it on first use.
+
+    ``importlib.import_module`` is the resolution rather than a mapping kept here.
+    It answers from :data:`sys.modules`, the one place a module is stored, so a
+    purged or replaced owner is seen at once; and it waits on that module's import
+    lock while its body is still running. A private mapping of resolved owners
+    would be a second storage location, and a bare ``sys.modules`` read would hand
+    a partially initialised module to a thread that asks for a name while another
+    thread is still importing its owner.
+    """
+    module_name = f"{__name__}.{_EXPORTS[name]}"
+    return importlib.import_module(module_name)
 
 
-class _MirroringModule(ModuleType):
-    """Module type that mirrors an attribute write onto the name's owner.
+def __getattr__(name: str) -> Any:
+    """Read a re-exported name from the submodule that owns it (:pep:`562`).
 
-    ``setattr`` and ``delattr`` on the facade are applied to the owning
-    submodule as well, so a patch reaches the namespace the owning code actually
-    resolves through. Restoration mirrors the same way, which is what keeps the
-    undo half of a patch fixture symmetric.
+    A name this module does not hold reaches here, which is every re-exported
+    name: the value is read from its owner on each access, so the owner's
+    namespace is the only place it lives.
+
+    A name outside the table raises ``AttributeError``, the answer a caller and
+    ``getattr(..., default)`` both expect for a name that does not exist. A name
+    IN the table whose owner cannot be imported raises the ``ImportError`` from
+    that import instead, deliberately: these are security predicates, and
+    ``getattr(security, "is_sensitive_path", None)`` swallows ``AttributeError``
+    while letting ``ImportError`` through. Turning an unresolvable gate into a
+    ``None`` a caller reads as falsy would grant what the gate exists to refuse,
+    so the failure stays loud and the decision stays closed.
+    """
+    if name not in _EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return getattr(_owner(name), name)
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(_EXPORTS))
+
+
+class _ReExportModule(ModuleType):
+    """Send a write to a re-exported name to the submodule that owns it.
+
+    Binding the name in this package's own namespace instead would shadow the
+    owner permanently, because ``__getattr__`` runs only for a name the package
+    does not already hold: the shadow would win every later read, and the owner's
+    value would become unreachable through this package.
+
+    That makes such a write undoable, which matters for the restore-by-reassign
+    protocol a test harness uses (``pytest``'s ``monkeypatch`` reads the attribute
+    to remember it, then assigns the remembered value back). Against a shadowing
+    write, the value it reads is whatever the owner holds AT THAT MOMENT -- so a
+    harness that patches the owner first remembers the patched value, and its
+    restore installs that value in the package for the life of the process.
+    Forwarding the write leaves one value to remember and one to put back.
     """
 
-    def __setattr__(self, name: str, value: object) -> None:
-        owner = _EXPORT_OWNERS.get(name)
-        if owner is not None:
-            setattr(owner, name, value)
-        super().__setattr__(name, value)
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in _EXPORTS:
+            setattr(_owner(name), name, value)
+        else:
+            super().__setattr__(name, value)
 
     def __delattr__(self, name: str) -> None:
-        owner = _EXPORT_OWNERS.get(name)
-        if owner is not None and hasattr(owner, name):
-            delattr(owner, name)
-        super().__delattr__(name)
+        if name in _EXPORTS:
+            delattr(_owner(name), name)
+        else:
+            super().__delattr__(name)
 
 
-#: Name to owning submodule, resolved once at import.
-_EXPORT_OWNERS: dict[str, ModuleType] = _export_owners()
-
-# Installed last, so the mirroring is live for every caller but never runs while
+# Installed last, so the forwarding is live for every caller but never runs while
 # this module is still binding its own names.
-sys.modules[__name__].__class__ = _MirroringModule
+sys.modules[__name__].__class__ = _ReExportModule
+
+
+if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
+    from kiro_crew.security.argv_floor import (  # noqa: F401
+        _AMBIGUOUS_REFS,
+        _AMBIGUOUS_REFSPEC_RE,
+        _DEV_MODE_CONFIRM_FLAG,
+        _EXPANSION_DEFAULT_RE,
+        _GIT_ARG_FLAGS,
+        _GIT_PUBLISH_DENY_LABEL,
+        _GIT_PUBLISH_GLUE_RE,
+        _GIT_PUBLISH_RE,
+        _GIT_PUBLISH_SUBST_PROGRAM_RE,
+        _HOSTNAME_SUBSTITUTION_HINTS,
+        _HOSTNAME_VARIABLE_FORMS,
+        _LOOPBACK_HOST_NAMES,
+        _PROCESS_SUBSTITUTION_SAFE_CHARS,
+        _PROTECTED_BRANCHES,
+        _PUSH_ALL_BRANCHES_OPTS,
+        _PUSH_NO_VALUE_OPTS,
+        _PUSH_NO_VALUE_SHORTS,
+        _PUSH_REPO_OPTS,
+        _PUSH_VALUE_OPTS,
+        _PUSH_VALUE_SHORTS,
+        _QUOTED_SEP_SENTINELS,
+        _RAW_ASSIGNMENT_RE,
+        _RSYNC_RSH_ASSIGN_RE,
+        _SELF_CLOUD_DESTRUCTIVE_VERBS,
+        _SELF_FLOOR_MACHINERY_RE,
+        _SELF_FLOOR_NAME_HINT_RE,
+        _SELF_FLOOR_QUOTE_JUNK_RE,
+        _SELF_IMPORT_RE,
+        _SELF_MODULE_SPELLINGS,
+        _SHELL_RESERVED_WORDS,
+        _SSH_COMMAND_OPTION_KEYS,
+        _SSH_FAMILY_VERBS,
+        _SSH_FORWARD_OPT_LETTERS,
+        _SSH_ROUTING_OPTION_KEYS,
+        _bare_kill_raw_bodies,
+        _git_publish_floor_tags,
+        _git_push_args,
+        _host_is_self,
+        _is_credential_mint,
+        _is_dev_mode_out_of_root_confirm,
+        _is_git_publish,
+        _is_git_push_via_normalizer,
+        _is_kill_by_name_program,
+        _is_push_to_protected_branch,
+        _is_self_cloud_destructive,
+        _is_self_file_delivery,
+        _is_self_gateway_restart,
+        _is_self_kill,
+        _is_self_module_flag,
+        _is_self_module_invocation,
+        _is_self_restart,
+        _is_self_update,
+        _is_ssh_to_self,
+        _kill_prefix_keeps_anchor,
+        _mask_quoted_separators,
+        _matches_self_subcommand,
+        _normalize_ref,
+        _operand_targets_self,
+        _operands_lead_with,
+        _own_host_names,
+        _own_host_seed,
+        _own_interface_addresses,
+        _process_substitution_word_is_opaque,
+        _proxyjump_value_targets_self,
+        _push_segment_targets_protected,
+        _resolve_own_host_names,
+        _resolve_own_host_names_into_cache,
+        _routing_option_key_value_targets_self,
+        _routing_option_value_targets_self,
+        _self_cli_operands,
+        _self_floor_can_fire,
+        _self_module_flag_scan,
+        _self_module_name_index,
+        _self_program_index,
+        _self_token_frames,
+        _SelfModuleScan,
+        _shell_payload_sources,
+        _ssh_family_verb,
+        _static_substitution_output,
+        _unmask_separators,
+    )
+    from kiro_crew.security.denied_rules import (  # noqa: F401
+        _AWS_SECRET_VAR_NAMES,
+        _AWS_SECRET_WORD_PREFIXES,
+        _AWS_SECRET_WORDS,
+        _AWS_VAR_SELECTOR,
+        _DANGEROUS_AWS_FLAG_RUN,
+        _DENY_EXCEPTIONS,
+        _DENY_FALLBACK_SCAN_MAX_CHARS,
+        _DENY_MATCHER_CACHE,
+        _ENV_CRED_DENIAL_REASON,
+        _ENV_CRED_PATTERNS,
+        _ENV_CRED_SHARED_RULE_IDS,
+        _ENV_CRED_SHARED_RULES,
+        _ENV_DUMP_GREP_AWS_PATTERN,
+        _ENV_DUMP_VERBS,
+        _FLOOR_ENFORCED_RULE_IDS,
+        _GIT_PUBLISH_FLOOR_BY_ID,
+        _GIT_PUBLISH_FLOOR_NOTES,
+        _GIT_PUBLISH_RULE_CATEGORY,
+        _GIT_PUBLISH_RULE_PATTERNS,
+        _GIT_PUBLISH_RULES,
+        _GIT_PUBLISH_UNGATED,
+        _GIT_PUBLISH_UNGATED_RULE_IDS,
+        _INERT_SEARCH_GLOBS,
+        _INERT_SEARCH_VERBS,
+        _INTERPRETER_RULE_IDS,
+        _INTERPRETER_RULE_PATTERNS,
+        _LEGACY_RULE_ID_BY_PATTERN,
+        _LINEARIZED_AWS_FLAG_RUN,
+        _LITERAL_CONCAT_RE,
+        _PRINTENV_AWS_SECRET_PATTERN,
+        _RULE_ID_BY_PATTERN,
+        _RULES_BY_ID,
+        _SELF_PROTECTION_FLOOR_BY_ID,
+        _SELF_PROTECTION_FLOOR_NOTES,
+        _SELF_PROTECTION_FLOOR_PATTERNS,
+        _SELF_PROTECTION_FLOOR_RULE_IDS,
+        _SELF_PROTECTION_UNGATED_FLOOR_IDS,
+        BUILTIN_DENIED_RULES,
+        BUILTIN_DENY_PATTERNS,
+        DENY_REASON_MATCH_PREFIX,
+        DENY_REASON_PREFIX,
+        SUSPICIOUS_BASH_PATTERNS,
+        DeniedCommandRule,
+        _aws_secret_word_prefix_alternation,
+        _check_env_credential_access,
+        _deny_matcher,
+        _deny_pattern_matches,
+        _deny_reason,
+        _DenyMatcher,
+        _exception_eligible,
+        _frags_can_underconsume,
+        _has_top_level_alternation,
+        _linearize_deny_pattern,
+        _matches_full_input,
+        _polynomial_backtracking_prone,
+        _redos_prone,
+        _resolved_pin_ids,
+        _rule_id_for_pattern,
+        _split_deny_frags,
+        builtin_denied_rules,
+        compute_effective_denied,
+        edition_denied_rules,
+        enabled_rule_ids,
+        floor_enforced_builtin_command_ids,
+        is_safe_user_regex,
+        pinned_builtin_command_ids,
+        pinned_builtin_command_ids_for_snapshot,
+    )
+    from kiro_crew.security.diagnostics import (  # noqa: F401
+        REFUSAL_DIAGNOSTIC_PREFIX,
+        RefusalDiagnostic,
+        RefusalSpanShape,
+        annotate_refusal,
+        refusal_diagnostic,
+        refusal_span_shape,
+    )
+    from kiro_crew.security.exfil import (  # noqa: F401
+        _BASH_EXFIL_PATTERNS,
+        _BASH_EXFIL_RES,
+        _BASH_EXFIL_ROW_DISCRIMINATORS,
+        _BASH_EXFIL_RULE_BY_LABEL,
+        _BASH_EXFIL_RULE_BY_PATTERN,
+        _CREDENTIAL_RE,
+        _ENDPOINT_EXTENSION_CAP,
+        _ENDPOINT_EXTENSION_ENTRIES_KEY,
+        _EXFIL_PATTERNS,
+        _EXFIL_PERCENT_RE,
+        _EXFIL_QUERY_MIN_LEN,
+        _HARD_CREDENTIAL_RE,
+        _IMDS_IP,
+        _IMDS_IPV6,
+        _IP_CANDIDATE_RE,
+        _IP_COMPONENT,
+        _MAX_URL_DECODE_PASSES,
+        _OAUTH_AUTHORIZATION_ENDPOINTS,
+        _OAUTH_DIAGNOSTIC_PARAMETER_RE,
+        _OAUTH_ENTROPY_QUERY_PARAMS,
+        _OAUTH_EXTENSION_AUDITED,
+        _OAUTH_EXTENSION_HOST_RE,
+        _OAUTH_EXTENSION_MEMO,
+        _OAUTH_EXTENSION_PATH_BAD,
+        _OAUTH_EXTENSION_PATH_MAX_LEN,
+        _OAUTH_QUERY_PARAMS,
+        _OAUTH_S256_CHALLENGE_RE,
+        _OAUTH_URL_SYMBOLS,
+        _S3_PRESIGNED_PARAMS,
+        _S3_PRESIGNED_RE,
+        _SIGNATURE_RE,
+        _SLACK_APP_CREATE_PARAMS,
+        _STRUCTURAL_VALIDATORS,
+        _STS_TOKEN_RE,
+        _URL_RE,
+        EXFILTRATION_REDACTION_TAG_PREFIX,
+        OAuthUrlCredentialDiagnostic,
+        OAuthUrlShapeProfile,
+        _approved_oauth_authorization_endpoint,
+        _check_imds_access,
+        _emit_oauth_extension_used_event,
+        _exempt_exact_hosts,
+        _exfil_exempt_hosts,
+        _exfil_rule_id_for_match,
+        _exfil_url_warning,
+        _is_safe_presigned,
+        _kirocrew_slack_app_link_alias,
+        _load_operator_oauth_endpoints,
+        _oauth_char_class,
+        _oauth_credential_scan_target,
+        _oauth_diagnostic,
+        _oauth_entropy_form_is_protocol_shaped,
+        _oauth_entropy_value_is_protocol_shaped,
+        _oauth_query_diagnostic,
+        _oauth_shape_profile,
+        _oauth_url_payload_diagnostic,
+        _safe_oauth_parameter_name,
+        _slack_manifest_payload_re,
+        _slack_manifest_re_slot,
+        _valid_oauth_extension_path,
+        _validate_operator_oauth_entries,
+        audit_bash_exfiltration,
+        canonicalize_ip,
+        diagnose_oauth_url_credential,
+        exfil_query_min_len,
+        oauth_rejection_is_endpoint_exemptible,
+        oauth_url_contains_credential,
+        redact_exfiltration_urls,
+        scan_exfiltration_urls,
+    )
+    from kiro_crew.security.helpers import (  # noqa: F401
+        _RLIMIT_DEFAULTS,
+        _bias_child_oom_score,
+        _contains_injection,
+        _resource,
+        apply_resource_limits,
+        contains_injection,
+        resource_limit_spec,
+    )
+    from kiro_crew.security.inline_payload import (  # noqa: F401
+        _INLINE_DYNAMIC_EXEC_RE,
+        _has_self_importing_inline_program,
+        _inline_payload_reaches_cli,
+    )
+    from kiro_crew.security.paths import (  # noqa: F401
+        _CREW_HOME_PREFIXES,
+        _CREW_SECRET_LEAVES,
+        _HOME_TARGETS_TTL_COST_RATIO,
+        _HOME_TARGETS_TTL_MAX_SECS,
+        _HOME_TARGETS_TTL_SECS,
+        _KEYSTONE_ARTIFACT_PARENTS,
+        _KEYSTONE_ARTIFACT_SUFFIXES,
+        _KIRO_AGENTS_DIR,
+        _ON_WINDOWS,
+        _OVERRIDE_ANCHORED_LEAVES,
+        _OVERRIDE_ROOT_ENVS,
+        _PATH_RESOLVE_COOLDOWN_MAX_SECS,
+        _PATH_RESOLVE_COOLDOWN_SECS,
+        _PATH_RESOLVE_TIMEOUT_SECS,
+        _SENSITIVE_HOME_DIRS,
+        _TTL_COST_RATIO_ENV,
+        _TTL_MAX_SECS_ENV,
+        _UNC_PREFIX_RE,
+        _WRITE_PROTECTED_HOME_PATHS,
+        DENIED_ROOT_PARTS,
+        MAX_SCANNABLE_COMMAND_CHARS,
+        MAX_SCANNABLE_SOURCE_BODY_CHARS,
+        UNVERIFIABLE_PATH_PREFIX,
+        PathResolutionStalled,
+        _BuiltTargets,
+        _candidate_forms,
+        _env_float,
+        _expanded_env_root,
+        _home_dir_targets,
+        _home_dir_targets_uncached,
+        _home_targets_cache,
+        _home_targets_ttl,
+        _is_keystone_publish_artifact,
+        _is_unc_path,
+        _lexical_root,
+        _mark_stalled,
+        _oversize_refusal,
+        _path_in_home_dirs,
+        _path_resolve_clock,
+        _path_resolve_degraded,
+        _path_resolve_lock,
+        _path_resolve_wedged,
+        _realpath_or_none,
+        _rebuild_targets_bounded,
+        _resolve_root_anchors,
+        _resolved_env_root,
+        _resolved_forms_bounded,
+        _resolved_root_key,
+        _resolved_spellings,
+        _ResolvedRoots,
+        _run_resolution_bounded,
+        _stall_prefix,
+        _wedged_workers,
+        crew_home_prefixes,
+        is_sensitive_bash_command,
+        is_sensitive_canonical_path,
+        is_sensitive_path,
+        is_sensitive_resolved_path,
+        is_sensitive_write_path,
+        is_unverifiable_path_refusal,
+        path_contains_sensitive,
+        sandbox_credential_targets,
+        sensitive_home_dirs,
+        sensitive_path_refusal,
+        write_protected_home_paths,
+    )
+    from kiro_crew.security.redaction import (  # noqa: F401
+        _B64_CHUNK_RE,
+        _BARE_SECRET_RUN_RE,
+        _CREDENTIAL_PATTERNS,
+        _CREDENTIAL_PREFILTER_AUTHORIZATION_RE,
+        _CREDENTIAL_PREFILTER_DISCORD_RE,
+        _CREDENTIAL_PREFILTER_GH_RE,
+        _CREDENTIAL_PREFILTER_LITERALS,
+        _CREDENTIAL_PREFILTER_TELEGRAM_RE,
+        _CREDENTIAL_PREFILTER_URI_RE,
+        _ENTROPY_TERMS_KEY_LEN,
+        _HEX_ONLY_RE,
+        _LOCAL_PATH_PLACEHOLDER,
+        _LOCAL_PATH_RE,
+        _PREFILTER_MIN_LEN,
+        _PRINTABLE_BYTES,
+        _REDACTED_CREDENTIAL_TAG,
+        _REDACTED_ENCODED_CREDENTIAL_TAG,
+        _SECRET_ENTROPY_MIN,
+        _SECRET_KEY_LEN,
+        _SECRET_MAX_LOWER_RUN,
+        _SECRET_MAX_SLASHES,
+        _SECRET_MAX_VOWEL_RATIO,
+        _SECRET_PRINTABLE_DECODE_RATIO,
+        _TOKEN_PARAM_PARTIAL_RE,
+        _TOKEN_PARAM_RE,
+        _TOKEN_PARAM_VALUE_CLASS,
+        _VOWELS,
+        CREDENTIAL_REDACTION_TAGS,
+        REDACTED_CREDENTIAL_TAG,
+        _contains_bare_secret,
+        _contains_fixed_credential,
+        _decode_b64_chunk,
+        _decode_b64_safe,
+        _decodes_to_printable_text,
+        _has_all_three_char_classes,
+        _looks_like_secret_key,
+        _lowercase_run_exceeds,
+        _might_contain_credential,
+        _shannon_entropy,
+        _text_contains_bare_secret,
+        _vowel_ratio,
+        get_credential_patterns,
+        redact_credentials,
+        redact_local_paths,
+        redact_path_segments,
+    )
+    from kiro_crew.security.shell_normalizer import (  # noqa: F401
+        _AMBIGUOUS_EXPANSION_RE,
+        _ANSI_C_LITERAL_ESCAPES,
+        _ANSI_C_NUMERIC_ESCAPE_RE,
+        _ANSI_C_QUOTE_RE,
+        _ANSI_C_SPACE_ESCAPES,
+        _ARRAY_ASSIGN_RE,
+        _ARRAY_EXPAND_RE,
+        _CARRIER_SPLIT_WINDOW,
+        _CMD_SEPARATOR_RE,
+        _CMD_SPLIT_RE,
+        _COMPUTED_VALUE_RE,
+        _CONTROL_OPERATOR_RE,
+        _DATA_CONSUMER_PROGRAMS,
+        _EMPTY_QUOTE_RE,
+        _EMPTY_SUBST_RE,
+        _ENV_SPLIT_PROGRAMS,
+        _FUNC_DEF_RE,
+        _GLOB_CHARS_RE,
+        _HOME_VAR_RE,
+        _INDIRECT_VAR_USE_RE,
+        _LOCAL_ASSIGN_RE,
+        _NESTED_SHELL_PROGRAMS,
+        _NESTED_SHELL_VERBS,
+        _NUMERIC_ESCAPE_RE,
+        _ONE_CHAR_CLASS_RE,
+        _OUTPUT_REDIRECT_RE,
+        _PARAM_DEFAULT_RE,
+        _PARAM_TRANSFORM_RE,
+        _PRINTF_ESCAPES,
+        _PROCESS_SUBSTITUTION_OPENERS,
+        _PUSH_REDIRECTION_RE,
+        _PYTHON_INLINE_PROGRAM_FLAGS,
+        _PYTHON_OPERAND_FLAGS,
+        _PYTHON_PROGRAM_RE,
+        _REDIRECT_START_RE,
+        _SCRIPT_EXECUTES_RE,
+        _SHELL_ACTIVE_CHARS,
+        _SHELL_ASSIGN_RE,
+        _SHELL_COMMAND_FLAG_RE,
+        _SHELL_COMMAND_GLUED_RE,
+        _SHELL_LINE_CONTINUATION_RE,
+        _SHELL_OPERATOR_CHARS,
+        _SHELL_SEGMENT_SEPARATORS,
+        _SHELL_VAR_NAMES,
+        _SHELL_VAR_RE,
+        _SHELL_WRAPPER_CHARS,
+        _VAR_USE_RE,
+        _argv_programs,
+        _array_assignments,
+        _backtick_closer,
+        _continuation_width,
+        _cut_at_operator,
+        _data_consumer_command_disqualified,
+        _data_consumer_exempt,
+        _debracket,
+        _decode_ansi_c_body,
+        _decode_printf_escapes,
+        _decode_shell_quoted_literals,
+        _dequote_token,
+        _ends_argv,
+        _escape_code_is_inert,
+        _fold_line_continuations,
+        _glob_could_expand_to,
+        _glob_to_regex,
+        _glued_shell_command_payload,
+        _here_string_payload,
+        _heredoc_marker,
+        _is_computed_value,
+        _is_env_split_flag,
+        _is_glued_shell_command_token,
+        _is_herestring_token,
+        _is_mint_verb,
+        _is_not_double_dash,
+        _is_self_program,
+        _is_shell_command_flag,
+        _is_shell_variable_reference,
+        _iter_shell_chars,
+        _matching_close_paren,
+        _mint_verb_in_substitution,
+        _nested_shell_payloads,
+        _next_stop_indexes,
+        _normalize_operand,
+        _numeric_escape_char,
+        _numeric_escape_code,
+        _operand_span_end,
+        _output_redirect_scan,
+        _pipes_into_evaluator,
+        _program_basename,
+        _protected_name_in_substitution,
+        _push_option_matches,
+        _push_token_redirection,
+        _push_token_shell_read,
+        _python_reads_stdin,
+        _redirect_consumes_next,
+        _redirect_glue_point,
+        _resolve_function_aliases,
+        _resolve_local_assignments,
+        _resolve_param_defaults,
+        _sed_exec_replacement,
+        _self_tokens,
+        _shell_c_carrier_glued,
+        _shell_c_carrier_payloads,
+        _shell_join_continuations,
+        _shell_payload_walk,
+        _shell_quote_walk,
+        _shell_tokens,
+        _ShellChar,
+        _ShellWalk,
+        _split_glued_operators,
+        _split_push_command_segments,
+        _split_shell_words,
+        _stdin_program_text,
+        _stdin_redirect_carriers,
+        _strip_redirect,
+        _substitution_bodies,
+        _substitution_depth_delta,
+        _substitution_program,
+        _xargs_reconstructed_command,
+        normalize_shell_command,
+    )
+    from kiro_crew.security.vocabulary import (  # noqa: F401
+        _KILL_BY_NAME_PROGRAMS,
+        _SELF_NAME_RE,
+        _SELF_PROGRAM_RE,
+        _SELF_PROGRAM_SPELLINGS,
+    )

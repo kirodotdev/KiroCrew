@@ -213,7 +213,7 @@ def test_the_cooldown_is_scoped_to_the_stalled_prefix(monkeypatch, tmp_path) -> 
     clock = [1000.0]
     monkeypatch.setattr(security, "_path_resolve_clock", lambda: clock[0])
     real_resolver = security._resolved_spellings
-    real_executor = security.path_resolve_executor
+    real_executor = security.paths.path_resolve_executor
     stalled = _StalledResolver()
     monkeypatch.setattr(security, "_resolved_spellings", stalled)
     try:
@@ -235,7 +235,7 @@ def test_the_cooldown_is_scoped_to_the_stalled_prefix(monkeypatch, tmp_path) -> 
                 submissions.append(getattr(fn, "__name__", repr(fn)))
                 return real_executor().submit(fn, *args)
 
-        monkeypatch.setattr(security, "path_resolve_executor", lambda: _Counting())
+        monkeypatch.setattr(security.paths, "path_resolve_executor", lambda: _Counting())
         for token in ("/home/a/two", "/home/a/deeper/three"):
             with pytest.raises(security.PathResolutionStalled):
                 security._candidate_forms(token)
@@ -247,7 +247,7 @@ def test_the_cooldown_is_scoped_to_the_stalled_prefix(monkeypatch, tmp_path) -> 
     # A different prefix is untouched by the cooldown: resolution still runs,
     # and on a healthy filesystem a symlink there still resolves to its target.
     # That needs the live pool back, not the counting stand-in.
-    monkeypatch.setattr(security, "path_resolve_executor", real_executor)
+    monkeypatch.setattr(security.paths, "path_resolve_executor", real_executor)
     monkeypatch.setattr(security, "_resolved_spellings", real_resolver)
     target = tmp_path / "creds"
     target.write_text("k")
@@ -655,14 +655,14 @@ def test_a_known_stalled_prefix_is_not_reprobed_onto_the_last_free_worker(
         # so the assertion below it holds too.  A wall-clock ceiling would see
         # it, but only by reading a scheduler stall as the same regression.
         submissions: list[str] = []
-        real_executor = security.path_resolve_executor
+        real_executor = security.paths.path_resolve_executor
 
         class _Counting:
             def submit(self, fn, *args):
                 submissions.append(getattr(fn, "__name__", repr(fn)))
                 return real_executor().submit(fn, *args)
 
-        monkeypatch.setattr(security, "path_resolve_executor", lambda: _Counting())
+        monkeypatch.setattr(security.paths, "path_resolve_executor", lambda: _Counting())
         with pytest.raises(security.PathResolutionStalled):
             security._candidate_forms("/srv/fresh/w")
         assert submissions == [], "a saturated pool must be refused without a submit"
@@ -818,7 +818,7 @@ class _TimedResolutionPool:
         self.submissions: list[str] = []
         self.waits: list[float] = []
         monkeypatch.setattr(security, "_path_resolve_clock", lambda: self.clock[0])
-        monkeypatch.setattr(security, "path_resolve_executor", lambda: self)
+        monkeypatch.setattr(security.paths, "path_resolve_executor", lambda: self)
         # Creating these on an implementation without accounting lets the behavioural
         # assertions, rather than a missing attribute, demonstrate the missing bound.
         monkeypatch.setattr(security.paths, "_PATH_RESOLVE_WAIT_CAP_SECS", 1.0, raising=False)
@@ -1169,14 +1169,14 @@ def test_root_anchors_resolve_in_one_pool_hop(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("KIRO_HOME", str(tmp_path / "kiro"))
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
     submissions: list[str] = []
-    real_executor = security.path_resolve_executor
+    real_executor = security.paths.path_resolve_executor
 
     class _Counting:
         def submit(self, fn, *args):
             submissions.append(getattr(fn, "__name__", repr(fn)))
             return real_executor().submit(fn, *args)
 
-    monkeypatch.setattr(security, "path_resolve_executor", lambda: _Counting())
+    monkeypatch.setattr(security.paths, "path_resolve_executor", lambda: _Counting())
     security._home_targets_cache.clear()
     try:
         roots = security._resolved_root_key()
@@ -1233,14 +1233,14 @@ def test_the_rebuild_is_one_pool_job(monkeypatch, tmp_path) -> None:
     # a 9s gate into a 15s one.  Roots and rebuild are one submission apiece.
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "crew"))
     submissions: list[str] = []
-    real_executor = security.path_resolve_executor
+    real_executor = security.paths.path_resolve_executor
 
     class _Counting:
         def submit(self, fn, *args):
             submissions.append(getattr(fn, "__name__", repr(fn)))
             return real_executor().submit(fn, *args)
 
-    monkeypatch.setattr(security, "path_resolve_executor", lambda: _Counting())
+    monkeypatch.setattr(security.paths, "path_resolve_executor", lambda: _Counting())
     security._home_targets_cache.clear()
     try:
         targets = security._home_dir_targets(security._SENSITIVE_HOME_DIRS)
