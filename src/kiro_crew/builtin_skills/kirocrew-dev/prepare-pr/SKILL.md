@@ -220,9 +220,10 @@ run-exists-for-head assertion for a repo that does not use Actions.
 `--marker-authors` / `PREPARE_PR_MARKER_AUTHORS` and `--marker-bindings` /
 `PREPARE_PR_MARKER_BINDINGS` retarget which comment authors and which stamp names
 count, for a repo whose reviewer fleet is named differently.
-`--disposition-gate --repo OWNER/NAME --pr N --head SHA` evaluates ONLY the
-disposition rule and always exits 0 with one JSON object — that is the mode
-`pr-readiness.yml` calls, not a mode this loop uses.
+`--disposition-gate --repo OWNER/NAME --pr N --head SHA` evaluates the reviewer
+records the required status needs — the disposition rule, plus which whole-design
+lanes owe that head a verdict they never published — and always exits 0 with one
+JSON object; that is the mode `pr-readiness.yml` calls, not a mode this loop uses.
 
 `pr_status.py` drives the loop: **10** → hand the next poll to `monitor_start` and
 end the turn; **20** → drill in and fix; **0** → Phase 4; **2** → fix env or escalate.

@@ -1012,6 +1012,11 @@ def evaluate_reviewer_markers(comments, head_sha, bindings, only=None, authors=N
       findings  -- {name: advisory FINDING-line count} for fresh comments
       overridden -- {name: actor} for lanes a repository writer adjudicated at
                    this head instead of the model (see human_override_actors)
+      stampless -- sorted bound lane names whose own slot carries no stamp of
+                   its own: the "skipped" / "could not complete" notice the
+                   advisory lanes rewrite their slot to. Discovery mode leaves
+                   those unenrolled; a PINNED caller reads this to apply the
+                   same exemption without respelling it.
       pinned    -- whether ``only`` named the fleet. Empty ``stale`` means
                    "every REQUIRED lane stamped this head" only when pinned;
                    in discovery mode it means "every lane that POSTED is
@@ -1051,6 +1056,7 @@ def evaluate_reviewer_markers(comments, head_sha, bindings, only=None, authors=N
             "findings": {},
             "elided": [],
             "overridden": {},
+            "stampless": [],
             "verdicts": {},
             "pinned": only is not None,
         }
@@ -1068,12 +1074,26 @@ def evaluate_reviewer_markers(comments, head_sha, bindings, only=None, authors=N
     # handed. Reported as an advisory note, never as a blocking reason -- and
     # deliberately absent from progress_key, which a polling loop diffs.
     elided = set()
+    # Which bound lanes hold a slot at all, and which of those carry a stamp of
+    # their own. Their difference is the stampless notice the enrolment rule
+    # below exempts in discovery mode, reported as ``stampless`` so a PINNED
+    # caller can apply the SAME exemption instead of respelling it: under a pin
+    # absence must read as stale, and a lane that wrote "I did not review this
+    # head" into its own slot is an absence a re-run cannot fill. Recorded
+    # outside the ``only`` filter, so the answer describes the comment set
+    # rather than the pin.
+    slots_seen = set()
+    slots_stamped = set()
     for c in comments:
         body = c.get("body") or ""
         name = bindings.get(comment_key(body))
         stamps = REVIEWED_STAMP_RE.findall(body)
+        own_stamps = [sha for stamp_name, sha in stamps if stamp_name == name] if name else []
+        if name:
+            slots_seen.add(name)
+            if own_stamps:
+                slots_stamped.add(name)
         if name and (only is None or name in only):
-            own_stamps = [sha for stamp_name, sha in stamps if stamp_name == name]
             # A bound lane is held to freshness in DISCOVERY mode only when
             # its comment carries at least one of its own stamps: the UX and
             # Design workflows rewrite their keyed comment to a stampless
@@ -1125,6 +1145,7 @@ def evaluate_reviewer_markers(comments, head_sha, bindings, only=None, authors=N
         "findings": findings,
         "elided": sorted(elided),
         "overridden": dict(sorted(overridden.items())),
+        "stampless": sorted(slots_seen - slots_stamped),
         "verdicts": verdicts,
         "pinned": only is not None,
     }
@@ -1549,7 +1570,7 @@ def _flag_value(argv, name):
 
 
 def disposition_gate(argv, environ):
-    """Evaluate ONLY the disposition rule and print one JSON object; exit 0.
+    """Evaluate the reviewer-record rules the required status needs; exit 0.
 
     This is the server-side entry point: pr-readiness.yml calls
     it so a disposition record violating the one-lane / one-rationale-per-
@@ -1559,13 +1580,20 @@ def disposition_gate(argv, environ):
     single definition -- the same ``disposition_violations`` the local gate
     calls, over the same records the adjudication ledger admits.
 
+    TWO questions, one trusted comment read, because they are answered from the
+    same set: the disposition rule, and which whole-design lanes owe this head a
+    verdict they never published (``unpublished``). A lane that reports
+    ``success`` having failed to write its comment is otherwise indistinguishable
+    from a reviewed one on the server side, and scoring it as reviewed is what
+    let the required status read green while this script read BLOCKED.
+
     Usage: --disposition-gate --repo OWNER/NAME --pr N --head SHA
     (--marker-bindings / --marker-authors and their env forms apply as usual.)
 
-    Prints ``{"ok", "violations", "comments", "records", "unverified",
-    "error"}``. ``ok`` is False when the record set could not be established,
-    which the caller must treat as UNKNOWN (pending) rather than as a red: a
-    transient API failure red-lighting the required status is that class
+    Prints ``{"ok", "violations", "unpublished", "comments", "records",
+    "unverified", "error"}``. ``ok`` is False when the record set could not be
+    established, which the caller must treat as UNKNOWN (pending) rather than as
+    a red: a transient API failure red-lighting the required status is that class
     of bug. Exit status is 0 for both outcomes -- the JSON carries the verdict,
     so a non-zero exit means only that this script itself failed to run, and
     the caller can tell the two apart. Enforcement scope is deliberately
@@ -1583,6 +1611,7 @@ def disposition_gate(argv, environ):
         "comments": 0,
         "records": 0,
         "unverified": 0,
+        "unpublished": [],
         "error": "",
     }
     try:
@@ -1607,6 +1636,35 @@ def disposition_gate(argv, environ):
                     " ".join(sanitize(v).split())
                     for v in disposition_violations(records, bot_comments, head_sha, bindings)
                 ]
+                # The whole-design lanes that owe this head a verdict and have
+                # none. Free here: the trusted comment set is already read, and
+                # ``evaluate_reviewer_markers`` is the definition both gates
+                # answer from, so the required status and ``pr_status.py``
+                # cannot disagree about a head.
+                #
+                # PINNED on the lane set, not discovered from what posted: a
+                # lane whose FIRST publish fails leaves no slot at all, and
+                # discovery cannot see a lane that has not spoken, so the
+                # absence would score as reviewed -- the same fail-open one
+                # round later, reached by a PR's ordinary first round. Under a
+                # pin, absence reads as stale, which is the whole point.
+                #
+                # Two exemptions survive the pin, and neither is respelled
+                # here. A lane a writer adjudicated at this head is already out
+                # of ``stale`` (the override path does not re-run the model, so
+                # no stamp can exist). A lane holding a stampless notice is
+                # ``stampless`` -- it said it did not review this head, and a
+                # re-run produces the same notice, so holding it would strand a
+                # green PR on a lane nothing can fill.
+                markers = evaluate_reviewer_markers(
+                    bot_comments,
+                    head_sha,
+                    bindings,
+                    only=WHOLE_DESIGN_LANES,
+                    authors=resolve_marker_authors(argv, environ),
+                )
+                exempt = set(markers["stampless"])
+                result["unpublished"] = [name for name in markers["stale"] if name not in exempt]
                 result["ok"] = True
     except Exception as exc:  # noqa: BLE001 - any failure is "unknown", never red
         result["error"] = "{}: {}".format(type(exc).__name__, exc)

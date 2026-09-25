@@ -483,6 +483,7 @@ jobs:
 
           ok=false
           violations=""
+          unpublished=""
           if [ ! -f "$GATE" ]; then
             # The evaluator moved or the sparse checkout missed it. Report
             # UNKNOWN so readiness waits and says why, rather than reporting a
@@ -494,6 +495,7 @@ jobs:
             if [ "$(jq -r '.ok' <<<"$out" 2>/dev/null)" = "true" ]; then
               ok=true
               violations="$(jq -r '.violations[]' <<<"$out" 2>/dev/null || true)"
+              unpublished="$(jq -r '.unpublished[]' <<<"$out" 2>/dev/null || true)"
             else
               echo "pr-readiness: disposition gate could not evaluate: $(jq -r '.error' <<<"$out" 2>/dev/null)" >&2
             fi
@@ -513,6 +515,9 @@ jobs:
             echo "ok=$ok"
             echo "violations<<$delim"
             printf '%s\n' "$violations"
+            echo "$delim"
+            echo "unpublished<<$delim"
+            printf '%s\n' "$unpublished"
             echo "$delim"
           } >> "$GITHUB_OUTPUT"
 
@@ -547,6 +552,9 @@ jobs:
           # wiring so a rename cannot silently disable the gate.
           DISPOSITION_OK: ${{ steps.dispositions.outputs.ok }}
           DISPOSITION_VIOLATIONS: ${{ steps.dispositions.outputs.violations }}
+          # The whole-design lanes the same gate call found owing this head a
+          # verdict they never published -- see the advisory-slot note below.
+          ADVISORY_UNPUBLISHED: ${{ steps.dispositions.outputs.unpublished }}
         run: |
           set -euo pipefail
           source "$RUNNER_TEMP/gh-retry.sh"
@@ -725,6 +733,62 @@ jobs:
           # one that would otherwise drop the lane posted last.
           sha_check_runs=""
 
+          # The three whole-design lanes' comment slots, read ONCE here beside
+          # the runs read: both readers below score those lanes, and the
+          # same-repo lane and its fork counterpart share one slot each, so six
+          # lanes are answered by three rows.
+          #
+          # Why the slot is read at all: a lane that computed a verdict it could
+          # not publish still completes `success`. Every publish-failure arm of
+          # the lanes' shared upsert emits an `::error::` and then returns 0, so
+          # the run reports success while the slot still holds the PREVIOUS
+          # head's verdict. Counting that lane as passed states the design was
+          # reviewed for a head that carries no published review, and reporting
+          # it `failed` would publish a BLOCK verdict no reviewer reached. It is
+          # scored as a third outcome instead: a named pending that a re-run of
+          # that lane clears.
+          #
+          # Bound stamp names, never any `*-REVIEWED` match. A stamp for another
+          # lane's name inside this lane's body is model output, so only the
+          # slot's OWN name answers for it.
+          #
+          # NONE of those rules is spelled here. `$GATE`'s
+          # `evaluate_reviewer_markers` decides, per bound lane, whether that
+          # lane's own slot carries a stamp naming this head: the name binding,
+          # the abbreviated and elided stamp forms, the slots left alone for
+          # carrying no stamp of their own (the advisory lanes rewrite theirs to
+          # a stampless "skipped" notice by design, and a lane that published
+          # nothing at all is answered by its own conclusion), and the
+          # human-override record that stands in for a stamp on the path where
+          # the model is deliberately not re-run. That function is what
+          # `pr_status.py` reports BLOCKED from, so taking the answer from it is
+          # what makes the two gates unable to disagree about a head -- one
+          # definition, the same reason the disposition rule above is not
+          # restated in shell.
+          #
+          # It costs no extra request: that gate call already reads this PR's
+          # trusted comments for the disposition rule.
+          advisory_unpublished="${ADVISORY_UNPUBLISHED:-}"
+
+          # 1 when this advisory lane owes this head a verdict and has none,
+          # which is the state a `success` conclusion cannot express. All this
+          # adds to the gate's answer is which reviewer name the board's lane
+          # label belongs to.
+          advisory_slot_unpublished() {
+            local name
+            case "$1" in
+              "Design Review") name="DESIGN" ;;
+              "UX Review") name="UX" ;;
+              "First Principles Review") name="FIRST-PRINCIPLES" ;;
+              *) printf '0'; return 0 ;;
+            esac
+            if printf '%s\n' "$advisory_unpublished" | grep -Fqx -- "$name"; then
+              printf '1'
+            else
+              printf '0'
+            fi
+          }
+
           # `${arr[@]+"${arr[@]}"}` rather than `"${arr[@]}"`: on the transport
           # failure path above the array is EMPTY, and bash < 4.4 (macOS ships
           # 3.2) treats expanding an empty array under `set -u` as an unbound
@@ -893,7 +957,11 @@ jobs:
                 if [ "$fail" -gt 0 ]; then
                   failed+=("$label (BLOCK)")
                 elif [ "$pass" -gt 0 ]; then
-                  passed+=("$label")
+                  if [ "$(advisory_slot_unpublished "$label")" = "1" ]; then
+                    pending+=("$label (verdict not published, re-run this lane)")
+                  else
+                    passed+=("$label")
+                  fi
                 else
                   pending+=("$label (not started)")
                 fi
@@ -1037,7 +1105,17 @@ jobs:
                 # attachment download failed for a transport reason; every
                 # other fork hard error maps to NEUTRAL.)
                 case "$conclusion" in
-                  success|neutral|skipped) passed+=("$label") ;;
+                  # A workflow-level `skipped` is left alone: nothing ran, so no
+                  # verdict is owed for this head and there is no lane to
+                  # re-run. Only a lane that reports having reviewed the head
+                  # is held to having published that review.
+                  skipped) passed+=("$label") ;;
+                  success|neutral)
+                    if [ "$(advisory_slot_unpublished "$label")" = "1" ]; then
+                      pending+=("$label (verdict not published, re-run this lane)")
+                    else
+                      passed+=("$label")
+                    fi ;;
                   *) failed+=("$label (BLOCK)") ;;
                 esac
               # Security Scope Review is deliberately absent here too, for the

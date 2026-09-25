@@ -23,6 +23,7 @@ mirroring test_pr_readiness_sweep.py.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -33,12 +34,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-WORKFLOW = (
-    Path(__file__).resolve().parents[1]
-    / ".github"
-    / "workflows"
-    / "pr-readiness.yml"
-)
+WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "pr-readiness.yml"
 
 pytestmark = pytest.mark.skipif(
     not WORKFLOW.exists()
@@ -130,7 +126,7 @@ def _steps() -> list[dict]:
 
 def _helper_script() -> str:
     for step in _steps():
-        if "run" in step and "cat > \"$RUNNER_TEMP/gh-retry.sh\"" in step["run"]:
+        if "run" in step and 'cat > "$RUNNER_TEMP/gh-retry.sh"' in step["run"]:
             return step["run"]
     raise AssertionError("retry-helper install step not found")
 
@@ -230,6 +226,7 @@ def _lane_log(proc: subprocess.CompletedProcess[str]) -> str:
 
 class Runner:
     """Executes the evaluate step against one stubbed repository state."""
+
     def __init__(self, root: Path) -> None:
         self.fixtures = root / "fixtures"
         bindir = root / "bin"
@@ -307,6 +304,7 @@ class Runner:
         existing_status_state: str = "",
         disposition_ok: str = "",
         disposition_violations: str = "",
+        advisory_unpublished: str = "",
         wr_name: str = "",
         wr_status: str = "",
     ):
@@ -315,6 +313,8 @@ class Runner:
             env["DISPOSITION_OK"] = disposition_ok
         if disposition_violations:
             env["DISPOSITION_VIOLATIONS"] = disposition_violations
+        if advisory_unpublished:
+            env["ADVISORY_UNPUBLISHED"] = advisory_unpublished
         if fork:
             env["FORK"] = "true"
         if http_error:
@@ -423,9 +423,7 @@ class TestPendingLanesAreNamedInTheStatus:
         proc, outputs = runner.evaluate()
         assert proc.returncode == 0, proc.stderr
         assert outputs["status_state"] == "success"
-        assert outputs["description"] == (
-            "Eligible automated validation passed for this revision"
-        )
+        assert outputs["description"] == ("Eligible automated validation passed for this revision")
 
 
 class TestTransientFailureIsRetried:
@@ -433,9 +431,7 @@ class TestTransientFailureIsRetried:
         # The failure site this guards: the consolidated runs read. One
         # transient failure, then success -- the retry must absorb it and the
         # evaluation must land on the REAL verdict, not the fallback.
-        proc, outputs = runner.evaluate(
-            flaky_substr=RUNS_READ, flaky_fails=1
-        )
+        proc, outputs = runner.evaluate(flaky_substr=RUNS_READ, flaky_fails=1)
         assert proc.returncode == 0, proc.stderr
         assert outputs["status_state"] == "success"
         assert outputs["label"] == "readiness: passed"
@@ -447,9 +443,7 @@ class TestTransientFailureIsRetried:
         # streamed instead of buffering, the retry's good page would be
         # corrupted and jq would blow up. Reaching the real verdict proves
         # per-attempt buffering.
-        proc, outputs = runner.evaluate(
-            flaky_substr=RUNS_READ, flaky_fails=2
-        )
+        proc, outputs = runner.evaluate(flaky_substr=RUNS_READ, flaky_fails=2)
         assert proc.returncode == 0, proc.stderr
         assert outputs["status_state"] == "success"
 
@@ -458,9 +452,7 @@ class TestPersistentTransportFailureIsNonTerminal:
     def test_publishes_could_not_evaluate_and_exits_zero(self, runner: Runner):
         # Endpoint dead for all 3 attempts: the job must NOT go red. It exits
         # 0 with the explicit non-terminal verdict so the publish step runs.
-        proc, outputs = runner.evaluate(
-            flaky_substr=RUNS_READ, flaky_fails=99
-        )
+        proc, outputs = runner.evaluate(flaky_substr=RUNS_READ, flaky_fails=99)
         assert proc.returncode == 0, proc.stderr
         assert outputs["status_state"] == "pending"
         assert outputs["label"] == "readiness: checking"
@@ -475,9 +467,7 @@ class TestPersistentTransportFailureIsNonTerminal:
         assert "could not be evaluated" in summary
 
     def test_commit_status_description_fits_the_api_limit(self, runner: Runner):
-        proc, outputs = runner.evaluate(
-            flaky_substr=RUNS_READ, flaky_fails=99
-        )
+        proc, outputs = runner.evaluate(flaky_substr=RUNS_READ, flaky_fails=99)
         assert proc.returncode == 0, proc.stderr
         assert len(outputs["description"]) <= 140
 
@@ -487,17 +477,13 @@ class TestPersistentTransportFailureIsNonTerminal:
         # workflow-runs reads. A persistent transport failure there must take
         # the same non-terminal fallback, since fork PRs are the lane that
         # produced the documented frozen-verdict incidents.
-        proc, outputs = runner.evaluate(
-            flaky_substr="check-runs", flaky_fails=99, fork=True
-        )
+        proc, outputs = runner.evaluate(flaky_substr="check-runs", flaky_fails=99, fork=True)
         assert proc.returncode == 0, proc.stderr
         assert outputs["status_state"] == "pending"
         assert outputs["label"] == "readiness: checking"
         assert "could not be evaluated" in outputs["description"]
 
-    def test_a_truncated_run_defers_to_an_existing_blocking_verdict(
-        self, runner: Runner
-    ):
+    def test_a_truncated_run_defers_to_an_existing_blocking_verdict(self, runner: Runner):
         # The revision already carries a blocking verdict (failure/error):
         # the merge is already held, and overwriting the red with pending
         # would only discard its diagnostics and set the sweep re-firing.
@@ -513,9 +499,7 @@ class TestPersistentTransportFailureIsNonTerminal:
         summary = (runner.temp / "pr-readiness-summary.md").read_text()
         assert "deferred" in summary
 
-    def test_a_truncated_run_re_pends_an_existing_success(
-        self, runner: Runner
-    ):
+    def test_a_truncated_run_re_pends_an_existing_success(self, runner: Runner):
         # An existing SUCCESS must NOT be deferred to: a monitored rerun on
         # the same revision means validation state is unknown again, and
         # leaving the stale green in place would keep branch protection
@@ -531,9 +515,7 @@ class TestPersistentTransportFailureIsNonTerminal:
         assert outputs["status_state"] == "pending"
         assert outputs["label"] == "readiness: checking"
 
-    def test_a_truncated_run_still_publishes_over_a_pending_status(
-        self, runner: Runner
-    ):
+    def test_a_truncated_run_still_publishes_over_a_pending_status(self, runner: Runner):
         # An existing PENDING status is not a completed verdict -- it is this
         # same fallback from an earlier run. Pending-over-pending loses
         # nothing, and the refreshed timestamp keeps the self-heal sweep's
@@ -547,9 +529,7 @@ class TestPersistentTransportFailureIsNonTerminal:
         assert outputs["status_state"] == "pending"
         assert outputs["label"] == "readiness: checking"
 
-    def test_an_unreadable_verdict_state_publishes_pending(
-        self, runner: Runner
-    ):
+    def test_an_unreadable_verdict_state_publishes_pending(self, runner: Runner):
         # The defer-guard read failing leaves the verdict state unknown.
         # The worst a pending can do to an unseen verdict is block a merge
         # that re-evaluation will unblock, while deferring would leave a
@@ -665,9 +645,7 @@ class TestLaneReadsAreConsolidated:
 
     def test_fork_check_runs_are_read_once(self, runner: Runner):
         # Seven checkrun: specs on a fork; one check-runs request serves all.
-        proc, outputs = runner.evaluate(
-            flaky_substr="check-runs", flaky_fails=0, fork=True
-        )
+        proc, outputs = runner.evaluate(flaky_substr="check-runs", flaky_fails=0, fork=True)
         assert proc.returncode == 0, proc.stderr
         assert int((runner.fixtures / "flaky_count").read_text()) == 1
 
@@ -688,9 +666,7 @@ class TestLaneReadsAreConsolidated:
 
 
 class TestGenuineFailureStaysRed:
-    def test_real_failing_conclusion_is_still_action_required(
-        self, runner: Runner
-    ):
+    def test_real_failing_conclusion_is_still_action_required(self, runner: Runner):
         # The obvious misreading of this change is "transport resilience
         # softened real failures". It must not: a completed/failure CI run
         # still yields the terminal red verdict.
@@ -702,24 +678,18 @@ class TestGenuineFailureStaysRed:
         assert outputs["status_state"] == "failure"
         assert outputs["label"] == "readiness: action required"
 
-    def test_real_failure_plus_flake_on_another_lane_stays_red(
-        self, runner: Runner
-    ):
+    def test_real_failure_plus_flake_on_another_lane_stays_red(self, runner: Runner):
         # A transient blip elsewhere must not launder a genuine red into the
         # non-terminal pending fallback once the retry absorbs the blip.
         (runner.fixtures / "ci_runs.json").write_text(
             _run_json("ci.yml", status="completed", conclusion="failure")
         )
-        proc, outputs = runner.evaluate(
-            flaky_substr=RUNS_READ, flaky_fails=1
-        )
+        proc, outputs = runner.evaluate(flaky_substr=RUNS_READ, flaky_fails=1)
         assert proc.returncode == 0, proc.stderr
         assert outputs["status_state"] == "failure"
         assert outputs["label"] == "readiness: action required"
 
-    def test_observed_red_dominates_persistent_transport_failure(
-        self, runner: Runner
-    ):
+    def test_observed_red_dominates_persistent_transport_failure(self, runner: Runner):
         # Precedence when BOTH happen: CI already recorded a genuine failure,
         # then a later lane's read dies for all 3 attempts. The fallback must
         # NOT mask the known red behind "could not be evaluated" -- an
@@ -731,9 +701,7 @@ class TestGenuineFailureStaysRed:
         )
         # The consolidated runs read has already observed CI red; the read
         # that keeps failing is a LATER one -- CodeQL's `event=dynamic` runs.
-        proc, outputs = runner.evaluate(
-            flaky_substr="event=dynamic", flaky_fails=99
-        )
+        proc, outputs = runner.evaluate(flaky_substr="event=dynamic", flaky_fails=99)
         assert proc.returncode == 0, proc.stderr
         assert outputs["status_state"] == "failure"
         assert outputs["label"] == "readiness: action required"
@@ -794,9 +762,7 @@ class TestCodeQLSecurityResultIsPartOfTheVerdict:
 
     @staticmethod
     def _results(runner: Runner, rows: list[dict]) -> None:
-        (runner.fixtures / "check_runs.json").write_text(
-            json.dumps({"check_runs": rows})
-        )
+        (runner.fixtures / "check_runs.json").write_text(json.dumps({"check_runs": rows}))
 
     def test_a_failed_security_result_blocks_a_green_analysis(self, runner: Runner):
         self._results(
@@ -877,12 +843,8 @@ class TestCodeQLSecurityResultIsPartOfTheVerdict:
         assert outputs["status_state"] == "pending"
         assert "CodeQL (results not reported)" in _lane_log(proc)
 
-    def test_an_unreadable_security_result_uses_the_nonterminal_fallback(
-        self, runner: Runner
-    ):
-        proc, outputs = runner.evaluate(
-            flaky_substr="check-runs", flaky_fails=99
-        )
+    def test_an_unreadable_security_result_uses_the_nonterminal_fallback(self, runner: Runner):
+        proc, outputs = runner.evaluate(flaky_substr="check-runs", flaky_fails=99)
 
         assert proc.returncode == 0, proc.stderr
         assert outputs["status_state"] == "pending"
@@ -924,9 +886,7 @@ class TestSameSecondRunCollapse:
     concurrency-cancelled, a lane whose newest run succeeded published
     "failure: N blocking readiness item(s)" on a fully-green PR."""
 
-    def test_same_second_cancelled_twin_does_not_mask_a_success(
-        self, runner: Runner
-    ):
+    def test_same_second_cancelled_twin_does_not_mask_a_success(self, runner: Runner):
         # The observed shape: newest-first API order, the newer (higher-id)
         # run succeeded, its same-second concurrency-cancelled twin sits
         # after it. A created_at collapse selects the cancelled twin and
@@ -981,9 +941,7 @@ class TestSameSecondRunCollapse:
         assert outputs["status_state"] == "failure"
         assert outputs["label"] == "readiness: action required"
 
-    def test_all_runs_cancelled_still_reads_failure_class(
-        self, runner: Runner
-    ):
+    def test_all_runs_cancelled_still_reads_failure_class(self, runner: Runner):
         # When every run of the workflow was cancelled there is no verdict,
         # and the lane must stay a blocking red -- not report "(not started)"
         # and pend forever, and never read as green.
@@ -1009,9 +967,7 @@ class TestSameSecondRunCollapse:
         assert outputs["status_state"] == "failure"
         assert outputs["label"] == "readiness: action required"
 
-    def test_a_real_failure_with_a_cancelled_twin_stays_red(
-        self, runner: Runner
-    ):
+    def test_a_real_failure_with_a_cancelled_twin_stays_red(self, runner: Runner):
         # The cancelled-twin drop must never launder a genuine red: a
         # completed/failure run is a verdict, and it wins the collapse over
         # its cancelled sibling exactly like a success would.
@@ -1037,9 +993,7 @@ class TestSameSecondRunCollapse:
         assert outputs["status_state"] == "failure"
         assert outputs["label"] == "readiness: action required"
 
-    def test_codeql_collapse_breaks_the_same_tie_the_same_way(
-        self, runner: Runner
-    ):
+    def test_codeql_collapse_breaks_the_same_tie_the_same_way(self, runner: Runner):
         # The dynamic CodeQL resolution is a second, separately-written
         # collapse over the same API shape; it must break the same-second
         # tie identically or the defect just moves lanes.
@@ -1161,16 +1115,12 @@ class TestForkScanVerdictIsBoundToItsPullRequest:
         assert proc.returncode == 0, proc.stderr
         assert outputs["status_state"] == "pending"
 
-    def test_a_previous_attempts_clean_check_run_does_not_pass_a_rerun(
-        self, runner: Runner
-    ):
+    def test_a_previous_attempts_clean_check_run_does_not_pass_a_rerun(self, runner: Runner):
         # The trigger has been re-run: attempt 2 is current, and the only row on
         # the commit is attempt 1's clean verdict -- computed against whatever the
         # ruleset said last time. It must not answer for this attempt.
         self._trigger_attempt(runner, 2)
-        self._only_check_run(
-            runner, self._id_for(runner, pr=runner.env["PR"], attempt=1)
-        )
+        self._only_check_run(runner, self._id_for(runner, pr=runner.env["PR"], attempt=1))
 
         proc, outputs = runner.evaluate(fork=True)
 
@@ -1206,9 +1156,7 @@ class TestForkScanVerdictIsBoundToItsPullRequest:
         )
         (runner.fixtures / "green_runs.json").write_text(sibling_newer)
         # This PR's own row, stamped with THIS PR's trigger run.
-        self._only_check_run(
-            runner, self._id_for(runner, pr=runner.env["PR"], attempt=1)
-        )
+        self._only_check_run(runner, self._id_for(runner, pr=runner.env["PR"], attempt=1))
 
         proc, outputs = runner.evaluate(fork=True)
 
@@ -1223,9 +1171,7 @@ class TestForkScanVerdictIsBoundToItsPullRequest:
         # The binding must not blind the lane to the row that DOES belong to it --
         # otherwise every fork PR sits pending forever, which is the opposite
         # failure and just as bad.
-        self._only_check_run(
-            runner, self._id_for(runner, pr=runner.env["PR"], attempt=1)
-        )
+        self._only_check_run(runner, self._id_for(runner, pr=runner.env["PR"], attempt=1))
 
         proc, outputs = runner.evaluate(fork=True)
 
@@ -1280,9 +1226,7 @@ class _ForkLaneVerdictBinding:
 
     @staticmethod
     def _check_run_rows(runner: Runner, rows: list[dict]) -> None:
-        (runner.fixtures / "check_runs.json").write_text(
-            json.dumps({"check_runs": rows})
-        )
+        (runner.fixtures / "check_runs.json").write_text(json.dumps({"check_runs": rows}))
 
     @staticmethod
     def _trigger_attempt(runner: Runner, attempt: int) -> None:
@@ -1309,16 +1253,12 @@ class _ForkLaneVerdictBinding:
         assert proc.returncode == 0, proc.stderr
         assert outputs["status_state"] == "pending"
 
-    def test_a_previous_attempts_clean_check_run_does_not_pass_a_rerun(
-        self, runner: Runner
-    ):
+    def test_a_previous_attempts_clean_check_run_does_not_pass_a_rerun(self, runner: Runner):
         # The trigger has been re-run: attempt 2 is current, and the only row on
         # the commit is attempt 1's clean verdict -- computed on the previous
         # roll. It must not answer for this attempt.
         self._trigger_attempt(runner, 2)
-        self._only_check_run(
-            runner, self._id_for(runner, pr=runner.env["PR"], attempt=1)
-        )
+        self._only_check_run(runner, self._id_for(runner, pr=runner.env["PR"], attempt=1))
 
         proc, outputs = runner.evaluate(fork=True)
 
@@ -1354,9 +1294,7 @@ class _ForkLaneVerdictBinding:
         )
         (runner.fixtures / "green_runs.json").write_text(sibling_newer)
         # This PR's own row, stamped with THIS PR's trigger run.
-        self._only_check_run(
-            runner, self._id_for(runner, pr=runner.env["PR"], attempt=1)
-        )
+        self._only_check_run(runner, self._id_for(runner, pr=runner.env["PR"], attempt=1))
 
         proc, outputs = runner.evaluate(fork=True)
 
@@ -1371,9 +1309,7 @@ class _ForkLaneVerdictBinding:
         # The binding must not blind the lane to the row that DOES belong to it --
         # otherwise every fork PR sits pending forever, which is the opposite
         # failure and just as bad.
-        self._only_check_run(
-            runner, self._id_for(runner, pr=runner.env["PR"], attempt=1)
-        )
+        self._only_check_run(runner, self._id_for(runner, pr=runner.env["PR"], attempt=1))
 
         proc, outputs = runner.evaluate(fork=True)
 
@@ -1381,9 +1317,7 @@ class _ForkLaneVerdictBinding:
         summary = (runner.temp / "pr-readiness-summary.md").read_text()
         assert f"{self.CHECK_NAME} (not started)" not in summary
 
-    def test_a_rerun_starting_reads_pending_not_the_stale_check_run(
-        self, runner: Runner
-    ):
+    def test_a_rerun_starting_reads_pending_not_the_stale_check_run(self, runner: Runner):
         # This evaluation can BE the `in_progress` event a human-override
         # rerun of the lane fires the instant it starts (pr-readiness.yml is
         # wired to the fork workflow at both in_progress and completed), before
@@ -1392,9 +1326,7 @@ class _ForkLaneVerdictBinding:
         # moment; reading it would publish a stale success. The lane must read
         # pending instead, keyed off the triggering workflow_run's own name +
         # status, without ever calling the check-runs API.
-        self._only_check_run(
-            runner, self._id_for(runner, pr=runner.env["PR"], attempt=1)
-        )
+        self._only_check_run(runner, self._id_for(runner, pr=runner.env["PR"], attempt=1))
 
         proc, outputs = runner.evaluate(
             fork=True,
@@ -1413,9 +1345,7 @@ class _ForkLaneVerdictBinding:
         # The guard must be scoped to THIS lane's own fork workflow name --
         # another lane's rerun starting must not blind this one to its own
         # genuine, already-posted verdict.
-        self._only_check_run(
-            runner, self._id_for(runner, pr=runner.env["PR"], attempt=1)
-        )
+        self._only_check_run(runner, self._id_for(runner, pr=runner.env["PR"], attempt=1))
 
         proc, outputs = runner.evaluate(
             fork=True,
@@ -1428,9 +1358,7 @@ class _ForkLaneVerdictBinding:
         assert f"{self.CHECK_NAME} (not started)" not in summary
         assert f"{self.CHECK_NAME} (rerun starting)" not in summary
 
-    def test_a_stale_failure_does_not_outvote_a_human_override_rerun(
-        self, runner: Runner
-    ):
+    def test_a_stale_failure_does_not_outvote_a_human_override_rerun(self, runner: Runner):
         # A human-override rerun (`gh api .../runs/<id>/rerun`) re-executes the
         # LANE's own run directly, without Fast Gate re-running -- so the
         # trigger-bound id (PR + Fast Gate run id + Fast Gate attempt) is
@@ -1651,3 +1579,134 @@ class TestDispositionViolationsBlockTheVerdict:
         assert proc.returncode == 0, proc.stderr
         assert outputs["status_state"] == "failure"
         assert outputs["description"] == "1 blocking readiness item(s)"
+
+
+# The three whole-design lanes and the reviewer name each publishes under. A
+# same-repo lane and its fork counterpart share one name, so one row answers for
+# both readers.
+_ADVISORY_SLOTS = (
+    ("Design Review", "DESIGN"),
+    ("UX Review", "UX"),
+    ("First Principles Review", "FIRST-PRINCIPLES"),
+)
+
+_UNPUBLISHED = "(verdict not published, re-run this lane)"
+
+
+def _bucket(log: str, name: str) -> str:
+    return log.split(f"{name}=[", 1)[1].split("]", 1)[0]
+
+
+def _whole_design_lanes() -> tuple[str, ...]:
+    """The lane set the gate filters its answer to, read from the evaluator
+    itself so this file cannot hold a second opinion about which lanes these
+    are."""
+    contract = (
+        WORKFLOW.parents[2]
+        / "src"
+        / "kiro_crew"
+        / "builtin_skills"
+        / "kirocrew-dev"
+        / "prepare-pr"
+        / "scripts"
+        / "_review_contract.py"
+    )
+    spec = importlib.util.spec_from_file_location("_readiness_review_contract", contract)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.WHOLE_DESIGN_LANES
+
+
+class TestAnAdvisoryLaneThatPublishedNoVerdictIsNotPassed:
+    """An advisory lane that computed a verdict it could not publish completes
+    `success`, because every publish-failure arm of the lanes' shared upsert
+    emits an `::error::` and then returns 0. Scoring that as `passed` states the
+    design was reviewed for a head carrying no published review, and the client
+    gate reads the same slots and answers BLOCKED -- a green board with no lane
+    to point at.
+
+    Which lanes owe this head a verdict is the evaluator's answer, reached
+    through the gate call that already reads this PR's trusted comments (its own
+    tests own the stamp, elision, enrolment and override rules). What the step
+    does with that answer is this class's subject: a named pending that
+    re-running the lane clears, never `failed`, which would publish a BLOCK
+    verdict no reviewer reached.
+    """
+
+    @pytest.mark.parametrize("label,reviewer", _ADVISORY_SLOTS)
+    def test_a_lane_the_gate_reports_unpublished_is_not_a_pass(
+        self, runner: Runner, label: str, reviewer: str
+    ):
+        proc, outputs = runner.evaluate(advisory_unpublished=reviewer)
+
+        assert proc.returncode == 0, proc.stderr
+        log = _lane_log(proc)
+        assert f"{label} {_UNPUBLISHED}" in _bucket(log, "pending")
+        assert label not in _bucket(log, "passed")
+        assert label not in _bucket(log, "failed")
+        assert outputs["status_state"] == "pending"
+        assert outputs["label"] == "readiness: checking"
+
+    @pytest.mark.parametrize("label,reviewer", _ADVISORY_SLOTS)
+    def test_a_lane_the_gate_leaves_out_still_passes(
+        self, runner: Runner, label: str, reviewer: str
+    ):
+        """Every exemption -- a fresh stamp, an elided one, a slot carrying no
+        stamp of its own, a lane a writer adjudicated at this head -- reaches the
+        step the same way: the evaluator does not name that lane. So the step has
+        one rule, and no exemption can be lost in a second spelling of it."""
+        others = "\n".join(n for _, n in _ADVISORY_SLOTS if n != reviewer)
+
+        proc, outputs = runner.evaluate(advisory_unpublished=others)
+
+        assert proc.returncode == 0, proc.stderr
+        assert label in _bucket(_lane_log(proc), "passed")
+        assert outputs["status_state"] == "pending"
+
+    def test_no_lane_is_held_when_the_gate_names_none(self, runner: Runner):
+        proc, outputs = runner.evaluate()
+
+        assert proc.returncode == 0, proc.stderr
+        log = _lane_log(proc)
+        for label, _ in _ADVISORY_SLOTS:
+            assert label in _bucket(log, "passed")
+            assert _UNPUBLISHED not in _bucket(log, "pending")
+        assert outputs["status_state"] == "success"
+
+    def test_a_reviewer_name_that_is_not_a_lane_holds_nothing(self, runner: Runner):
+        """The evaluator binds OPUS and GPT too. Those are required lanes scored
+        by other branches, where a named pending would hold merge rather than
+        inform, so the gate filters them out -- and if one ever arrives here it
+        must not be matched to a lane by accident."""
+        proc, outputs = runner.evaluate(advisory_unpublished="OPUS\nGPT")
+
+        assert proc.returncode == 0, proc.stderr
+        assert _UNPUBLISHED not in _lane_log(proc)
+        assert outputs["status_state"] == "success"
+
+    def test_both_lane_readers_consult_the_gate(self):
+        """Two readers score these lanes -- the fork one from the head SHA's
+        check-runs, the same-repo one from the workflow run -- and each has its
+        own `passed` arm. Fixing one leaves the other folding an unpublished
+        verdict into `passed`, which is the whole defect."""
+        script = _evaluate_script()
+
+        assert script.count('advisory_slot_unpublished "$label"') == 2
+        assert script.count(f'$label {_UNPUBLISHED}"') == 2
+
+    def test_the_lane_branch_and_the_name_binding_agree(self):
+        """Two places name these lanes: the branch condition both readers share,
+        and the arms binding each board label to a reviewer name. A lane added to
+        the branch without an arm falls through the default and is scored as
+        published whatever its slot holds -- the same fail-open shape this fixes.
+        The names themselves are the evaluator's `WHOLE_DESIGN_LANES`, so the
+        workflow cannot drift from the set the gate filters on."""
+        script = _evaluate_script()
+        labels = {label for label, _ in _ADVISORY_SLOTS}
+
+        branch_labels = set(re.findall(r'\[ "\$label" = "([^"]+)" \]', script))
+        arms = dict(re.findall(r'"([^"]+)"\)\s+name="([A-Z-]+)"', script))
+
+        assert branch_labels == labels
+        assert set(arms) == labels
+        assert set(arms.values()) == set(_whole_design_lanes())

@@ -774,7 +774,6 @@ test/test_pptx_maker_library.py
 test/test_pptx_maker_paths.py
 test/test_pptx_maker_provision.py
 test/test_pptx_maker_routes.py
-test/test_pr_readiness_evaluate.py
 test/test_pr_readiness_publish.py
 test/test_prepare_pr_local_review.py
 test/test_prepare_pr_profiles.py

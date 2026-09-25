@@ -10397,10 +10397,23 @@ class TestConcernsIsVisibleInTheChecksUi:
     def test_pr_readiness_still_counts_neutral_as_a_pass(self) -> None:
         # This is what makes the change safe: `neutral` is visible to a human
         # and invisible to the gate, so an advisory CONCERNS cannot start
-        # blocking merges. Read-only assertion -- this PR does not edit the file.
+        # blocking merges.
         readiness = _workflow("pr-readiness.yml")
         assert 'IN("success","neutral")' in readiness
-        assert "success|neutral|skipped) passed+=" in readiness
+        # Bound to the SAME-REPO advisory case block -- the second of the two
+        # readers that name all three lanes -- so the arm scoring `neutral`
+        # cannot be confused with the generic lane reader's own arm below it.
+        # Whatever else that arm does, `neutral` reaches `passed` and never the
+        # BLOCK-only failing arm, which is the property this pins.
+        branch = (
+            '[ "$label" = "Design Review" ] || [ "$label" = "UX Review" ] '
+            '|| [ "$label" = "First Principles Review" ]'
+        )
+        region = readiness.split(branch)[2].split("esac", 1)[0]
+        arms = [arm for arm in region.split(";;") if "neutral" in arm]
+        assert len(arms) == 1, "exactly one arm may score a neutral conclusion"
+        assert 'passed+=("$label")' in arms[0]
+        assert "failed+=" not in arms[0]
 
     def test_same_repo_lanes_annotate_concerns_and_still_exit_zero(self) -> None:
         for name, _, status_step, lane in CONCERNS_SAME_LANES:

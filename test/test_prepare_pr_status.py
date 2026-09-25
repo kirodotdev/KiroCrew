@@ -2064,6 +2064,43 @@ def test_stampless_advisory_lane_comment_does_not_block_discovery_mode() -> None
     assert module.main(["pr_status.py", "42", "--reviewers", "GPT,UX"]) == 20
 
 
+def test_a_bound_slot_with_no_stamp_of_its_own_is_reported_stampless() -> None:
+    """The enrolment exemption above, published so a PINNED caller can reuse it.
+
+    Under a pin, absence must read as stale -- otherwise a lane that published
+    nothing scores as reviewed. But then the stampless notice reads as stale too,
+    and the two cannot be told apart from ``stale`` alone: one is a lane that
+    said it did not review this head, which a re-run reproduces rather than
+    fills. ``stampless`` is that distinction, from the function that already
+    makes it, so a caller applies the exemption instead of respelling it.
+    """
+    module = _load_script()
+    bindings = dict(module.DEFAULT_MARKER_BINDINGS)
+    notice = {
+        "user": {"type": "Bot", "login": "github-actions[bot]"},
+        "body": "<!-- ux-review -->\nThis review could not complete.\n",
+    }
+    stamped = {
+        "user": {"type": "Bot", "login": "github-actions[bot]"},
+        "body": ("<!-- design-review -->\nDesign-Verdict: PASS\n\n[DESIGN-REVIEWED] " + _HEAD),
+    }
+
+    # Independent of the pin: it describes the comment set, not what was asked.
+    discovered = module.evaluate_reviewer_markers([notice, stamped], _HEAD, bindings)
+    assert discovered["stampless"] == ["UX"], discovered
+
+    pinned = module.evaluate_reviewer_markers(
+        [notice, stamped], _HEAD, bindings, only=["DESIGN", "UX", "FIRST-PRINCIPLES"]
+    )
+    assert pinned["stale"] == ["FIRST-PRINCIPLES", "UX"], pinned
+    assert pinned["stampless"] == ["UX"], pinned
+
+    # Fail-closed reads carry the key too, so a caller deciding what to exempt
+    # never trips over its absence.
+    unreadable = module.evaluate_reviewer_markers(None, _HEAD, bindings)
+    assert unreadable["ok"] is False and unreadable["stampless"] == [], unreadable
+
+
 def test_checks_blind_token_degrades_softly_instead_of_aborting(capsys) -> None:
     """A token that cannot read Checks (any fine-grained PAT) fails EVERY gh
     request naming statusCheckRollup -- gh resolves a --json field set
@@ -2968,9 +3005,15 @@ def test_the_concerns_stop_never_reaches_the_server_side_gate(capsys) -> None:
     """--disposition-gate JSON is byte-identical whether or not the body
     carries a whole-design CONCERNS. The required status must keep treating
     CONCERNS as advisory -- turning it into a red for every writer is a policy
-    change this local loop does not get to make."""
+    change this local loop does not get to make.
+
+    Both arms carry the design slot and differ ONLY in its verdict word. The
+    slot's presence is a second variable the gate answers on purpose -- a lane
+    that published nothing owes this head a verdict -- so varying it here would
+    test that instead of the CONCERNS stop.
+    """
     reports = []
-    for extra in ([], [_design_comment()]):
+    for verdict in ("PASS", "CONCERNS"):
         module = _load_script()
         span = module.span_hash("src/x.py", "gpt/FINDING")
         ruling = {
@@ -2984,7 +3027,9 @@ def test_the_concerns_stop_never_reaches_the_server_side_gate(capsys) -> None:
         _install_fake_gh(
             module,
             _pr_payload(_GREEN_CHECKS),
-            comments=json.dumps([_gate_bot_comment(), ruling] + extra),
+            comments=json.dumps(
+                [_gate_bot_comment(), ruling, _design_comment(verdict=verdict)]
+            ),
             permissions={"alice": "write"},
         )
         assert module.main(_gate_argv()) == 0

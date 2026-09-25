@@ -2277,6 +2277,24 @@ status plus one `readiness:` label**.
   adjudication ledger downgrade a REPEATED finding on a later review round, and a
   later review round takes a push, which recomputes readiness and catches the
   violation.
+- **An advisory lane that published no verdict is neither passed nor failed.**
+  Design, UX and First Principles decide their conclusion from their own output
+  file, so a lane that computed a verdict and then failed to write its PR comment
+  still completes `success` — the publish-failure arms of the shared comment
+  upsert emit an `::error::` and return 0. Counting that as reviewed is what let
+  the required status read green while `pr_status.py` read BLOCKED off the same
+  slot. The same `--disposition-gate` call reports which of those lanes owe the
+  head a verdict they never published, from `evaluate_reviewer_markers` — so the
+  freshness, enrolment and human-override rules have one definition and the two
+  gates cannot disagree. The question is asked of every whole-design lane rather
+  than of the lanes that posted, because a lane whose FIRST publish fails leaves
+  no slot at all and a set built from what posted holds no row for it. Two
+  answers still exempt a lane: a writer's override record for this head (that
+  path does not re-run the model, so no stamp can exist), and a slot holding the
+  lanes' own stampless "skipped" notice (a re-run reproduces it rather than
+  filling it). Readiness lists an owing lane as a named **pending** that
+  re-running that lane clears, never a red: a `failed` there would publish a
+  BLOCK verdict no reviewer reached (#13363).
 - **Unapproved fork runs remain blocking but are attributed separately.** GitHub
   reports a fork workflow held behind *Approve and run* as `action_required`
   even though it has not executed. Readiness keeps the failure status and
