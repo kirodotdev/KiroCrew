@@ -13,9 +13,14 @@ upstream died).
 
 from __future__ import annotations
 
+import ast
 import contextlib
+import errno
+import inspect
+import pathlib
+import socket
 import time
-from typing import Any, AsyncIterator, Callable
+from typing import Any, AsyncIterator, Callable, Iterator
 
 import aiohttp
 import pytest
@@ -42,6 +47,46 @@ INDEX_HTML = (
 )
 CSS_BODY = "@font-face{src:url(/assets/codicon-xyz.ttf)}"
 BINARY_BODY = bytes(range(256)) * 4
+
+
+def _stub_authorize(outcome: str, port: int | None = None) -> Callable[..., tuple[str, int | None]]:
+    """A fixed-verdict ``relay_authorize`` double that honors the real signature.
+
+    Every double in this module comes from here (or declares the same keyword),
+    because the handler calls the real function TWICE per connection and the
+    second call — the post-connect re-proof — passes ``proof_not_before`` as a
+    keyword. A double that takes ``candidate`` alone raises ``TypeError``
+    there, which is neither ``ClientError`` nor ``OSError``, so it escapes the
+    relay's unreachable-upstream handler and the wire answer becomes a generic
+    500 instead of the status under test. That is only reachable when the
+    connect SUCCEEDS, so a stub whose verdict denies before connect hides the
+    drift until someone changes its verdict. ``_stubs_accept_the_fence`` pins
+    the whole module against it.
+    """
+
+    def _authorize(
+        candidate: str, *, proof_not_before: float | None = None
+    ) -> tuple[str, int | None]:
+        return outcome, port
+
+    return _authorize
+
+
+@contextlib.contextmanager
+def _dead_upstream_port() -> Iterator[int]:
+    """Yield a port that provably has no listener, and HOLD it for the caller.
+
+    Binding without ever calling ``listen`` is what makes this deterministic
+    under xdist: the address stays occupied for the whole ``with`` body, so no
+    concurrent worker can take it, while a connect to it is refused because
+    there is no accept queue. Binding and releasing — reading a free port and
+    closing it — only samples a port that was free a moment ago; on a loaded
+    shard another worker binds it before the request goes out and the relay
+    then reaches a live stranger instead of a dead address.
+    """
+    with socket.socket() as held:
+        held.bind(("127.0.0.1", 0))
+        yield int(held.getsockname()[1])
 
 
 def _stub_upstream(hits: list[str]) -> web.Application:
@@ -379,7 +424,7 @@ async def test_wrong_token_answers_404_without_touching_upstream(
 async def test_view_not_running_answers_the_same_404(monkeypatch: pytest.MonkeyPatch) -> None:
     # Indistinguishable from a wrong token: an unauthenticated probe must not
     # learn whether a logged-in browser is up.
-    monkeypatch.setattr(browser_cli_view, "relay_authorize", lambda candidate: ("view_down", None))
+    monkeypatch.setattr(browser_cli_view, "relay_authorize", _stub_authorize("view_down"))
     client = TestClient(TestServer(_relay_app(), host="127.0.0.1"))
     await client.start_server()
     try:
@@ -401,7 +446,7 @@ async def test_supervisor_busy_answers_retryable_503(monkeypatch: pytest.MonkeyP
     # turning a transient lock hold into a broken document.
     recorder = _AuditRecorder()
     monkeypatch.setattr(browser_view_relay, "sel", lambda: recorder)
-    monkeypatch.setattr(browser_cli_view, "relay_authorize", lambda candidate: ("busy", None))
+    monkeypatch.setattr(browser_cli_view, "relay_authorize", _stub_authorize("busy"))
     client = TestClient(TestServer(_relay_app(), host="127.0.0.1"))
     await client.start_server()
     try:
@@ -416,23 +461,127 @@ async def test_supervisor_busy_answers_retryable_503(monkeypatch: pytest.MonkeyP
 
 
 async def test_dead_upstream_answers_502(monkeypatch: pytest.MonkeyPatch) -> None:
-    # A port nothing listens on: bind-and-release to find one that is free.
-    # The caller HOLDS the valid token, so the run-state disclosure is fine.
-    import socket
+    # A port with no listener, HELD for the duration so no concurrent worker
+    # can take it: that is what makes the 502 a property of the address rather
+    # than of how busy the shard is. The caller HOLDS the valid token, so the
+    # run-state disclosure is fine.
+    with _dead_upstream_port() as dead_port:
+        monkeypatch.setattr(browser_cli_view, "relay_authorize", _stub_authorize("ok", dead_port))
+        client = TestClient(TestServer(_relay_app(), host="127.0.0.1"))
+        await client.start_server()
+        try:
+            resp = await client.get(f"/browser-view/{TOKEN}/")
+            assert resp.status == 502
+            payload: dict[str, Any] = await resp.json()
+            assert payload["code"] == "browser_view_unreachable"
+        finally:
+            await client.close()
 
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        dead_port = sock.getsockname()[1]
-    monkeypatch.setattr(browser_cli_view, "relay_authorize", lambda candidate: ("ok", dead_port))
-    client = TestClient(TestServer(_relay_app(), host="127.0.0.1"))
-    await client.start_server()
-    try:
-        resp = await client.get(f"/browser-view/{TOKEN}/")
-        assert resp.status == 502
-        payload: dict[str, Any] = await resp.json()
-        assert payload["code"] == "browser_view_unreachable"
-    finally:
-        await client.close()
+
+def test_dead_upstream_port_cannot_be_taken_by_a_concurrent_worker() -> None:
+    """The determinism the 502 above rests on: the address stays ours.
+
+    Bind-and-release samples a port that WAS free; between the release and the
+    request a concurrent xdist worker can bind it, and the relay then reaches a
+    live stranger rather than a dead address. Holding the socket bound (never
+    listening) removes the window: a rival bind is refused for as long as the
+    ``with`` body runs, and a connect still gets no accept queue.
+    """
+    with _dead_upstream_port() as dead_port:
+        with socket.socket() as rival:
+            with pytest.raises(OSError) as refused:
+                rival.bind(("127.0.0.1", dead_port))
+        assert refused.value.errno == errno.EADDRINUSE
+
+
+def test_every_relay_authorize_stub_accepts_the_post_connect_fence() -> None:
+    """Every double this module installs must take ``proof_not_before``.
+
+    The handler calls ``relay_authorize`` twice per connection and the second
+    call — the post-connect re-proof — passes the fence as a KEYWORD. A double
+    declaring ``candidate`` alone raises ``TypeError`` there; that is neither
+    ``ClientError`` nor ``OSError``, so it escapes the relay's
+    unreachable-upstream handler and the wire answer is a generic 500 instead
+    of the status the test asserts. A verdict that denies before the connect
+    hides the drift, which is why this walks EVERY installed double instead of
+    the ones whose current verdict happens to reach the re-proof.
+
+    Read from the source with ``ast`` rather than by calling the stubs: the
+    drifted forms are inline lambdas inside async test bodies, so there is no
+    runtime handle on them to introspect.
+    """
+    source = pathlib.Path(__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    fence = "proof_not_before"
+    named: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    def _declares_fence(node: ast.AST) -> bool:
+        args = getattr(node, "args", None)
+        if not isinstance(args, ast.arguments):
+            return False
+        return any(kwarg.arg == fence for kwarg in args.kwonlyargs)
+
+    installed: list[tuple[int, ast.expr]] = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "setattr"
+            and len(node.args) == 3
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value == "relay_authorize"
+        ):
+            installed.append((node.lineno, node.args[2]))
+
+    # The guard is only meaningful if it sees the module's real population.
+    assert len(installed) >= 8, [lineno for lineno, _ in installed]
+
+    offenders: list[int] = []
+    for lineno, double in installed:
+        if isinstance(double, ast.Lambda):
+            conforms = _declares_fence(double)
+        elif isinstance(double, ast.Name):
+            referenced = named.get(double.id)
+            conforms = referenced is None or _declares_fence(referenced)
+        elif isinstance(double, ast.Call) and isinstance(double.func, ast.Name):
+            # A factory: the callable it RETURNS carries the signature.
+            factory = named.get(double.func.id)
+            assert factory is not None, (lineno, double.func.id)
+            conforms = any(
+                _declares_fence(child)
+                for child in ast.walk(factory)
+                if isinstance(child, (ast.FunctionDef, ast.Lambda)) and child is not factory
+            )
+        else:  # pragma: no cover - an unrecognized shape must not pass silently
+            conforms = False
+        if not conforms:
+            offenders.append(lineno)
+
+    assert offenders == [], offenders
+
+
+def test_the_stub_factory_matches_the_real_relay_authorize_signature() -> None:
+    """``_stub_authorize``'s product is call-compatible with the real function.
+
+    Pins the factory to the source of truth, so widening or renaming the real
+    fence parameter fails here loudly instead of resurfacing as a load-dependent
+    500 on a shared runner.
+    """
+    real = inspect.signature(browser_cli_view.relay_authorize)
+    stub = inspect.signature(_stub_authorize("ok", 1))
+    assert [name for name, p in real.parameters.items() if p.kind is p.KEYWORD_ONLY] == [
+        name for name, p in stub.parameters.items() if p.kind is p.KEYWORD_ONLY
+    ]
+    # And it really is callable the way the handler calls it.
+    assert _stub_authorize("ok", 4321)("tok", proof_not_before=time.monotonic()) == (
+        "ok",
+        4321,
+    )
 
 
 def test_relay_prefix_bypasses_cookie_auth_by_design() -> None:
@@ -696,7 +845,7 @@ async def test_view_down_denial_is_audited_with_its_own_reason(
     # distinguish (SEL is not readable by the unauthenticated caller).
     recorder = _AuditRecorder()
     monkeypatch.setattr(browser_view_relay, "sel", lambda: recorder)
-    monkeypatch.setattr(browser_cli_view, "relay_authorize", lambda candidate: ("view_down", None))
+    monkeypatch.setattr(browser_cli_view, "relay_authorize", _stub_authorize("view_down"))
     client = TestClient(TestServer(_relay_app(), host="127.0.0.1"))
     await client.start_server()
     try:
@@ -713,7 +862,9 @@ async def test_no_token_request_never_reaches_the_supervisor(
     # The pre-auth cost finding, wire side: a request with no token segment is
     # refused before the view supervisor is consulted at all — its lock and
     # ownership probes are never a cost an unauthenticated caller can impose.
-    def _must_not_be_called(candidate: str) -> tuple[str, int | None]:
+    def _must_not_be_called(
+        candidate: str, *, proof_not_before: float | None = None
+    ) -> tuple[str, int | None]:
         raise AssertionError("supervisor consulted for a tokenless request")
 
     recorder = _AuditRecorder()
@@ -740,9 +891,7 @@ async def test_ownership_unproven_is_audited_with_its_own_reason(
     # proof: same uniform 404 on the wire, its own reason in the audit trail.
     recorder = _AuditRecorder()
     monkeypatch.setattr(browser_view_relay, "sel", lambda: recorder)
-    monkeypatch.setattr(
-        browser_cli_view, "relay_authorize", lambda candidate: ("ownership_unproven", None)
-    )
+    monkeypatch.setattr(browser_cli_view, "relay_authorize", _stub_authorize("ownership_unproven"))
     client = TestClient(TestServer(_relay_app(), host="127.0.0.1"))
     await client.start_server()
     try:
