@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { Bot, ScrollText, X, Lock, CheckCircle, AlertCircle, Loader as LoaderIcon, Ban, Wrench, MessageCircleQuestionMark, Workflow, BookmarkPlus, Component, GitPullRequest, CircleDot, Square, RotateCcw, Clock, Search, Link as LinkIcon, ExternalLink } from 'lucide-react'
 import { api } from '../../api/client'
+import { isTerminalApprovalRefusal } from '../../api/apiError'
 import { LogViewer } from '../LogsPage'
 import Clickable from '../../components/Clickable'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -122,6 +123,9 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
   // Redux flags only roll back the busy state, which left a refused decision
   // indistinguishable from one that never happened.
   const [actionError, setActionError] = useState<string | null>(null)
+  // WHICH approval is gone, not merely that one was: the id scopes the
+  // withdrawal, so a later live approval here is never suppressed by it.
+  const [goneFor, setGoneFor] = useState<string | null>(null)
   // 1-click transcript: chip selection expands the card, scrolls it into
   // view, and (via DiskLoader autoLoad) fetches the output — then clears the
   // selection so a later re-click re-triggers.
@@ -148,10 +152,14 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
       }
     }).catch((e: unknown) => {
       dispatch(markSubagentApproving({ id: a.id, approving: false }))
+      const gone = isTerminalApprovalRefusal(e)
+      setGoneFor(gone ? a.approval_id ?? null : null)
       const reason = e instanceof Error ? e.message : ''
-      setActionError(reason
-        ? i18nT('components.approvalCard.decision_not_recorded_error', { error: reason })
-        : i18nT('components.approvalCard.decision_failed'))
+      setActionError(gone
+        ? i18nT('components.approvalCard.approval_no_longer_pending')
+        : reason
+          ? i18nT('components.approvalCard.decision_not_recorded_error', { error: reason })
+          : i18nT('components.approvalCard.decision_failed'))
     })
   }, [a.approval_id, a.id, slot, dispatch])
 
@@ -289,7 +297,7 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
         </div>
       )}
       {/* Approval buttons for pending */}
-      {isPending && !a.approving && (
+      {isPending && !a.approving && goneFor !== a.approval_id && (
         <div className="px-3 pb-2 flex gap-1.5">
           <button className="px-2.5 py-1 rounded-md border border-border bg-transparent text-muted text-[12px] cursor-pointer hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all" onClick={e => onApprove(e, 'approve')}><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.activityViewer.approve')}</button>
           <button className="px-2.5 py-1 rounded-md border border-border bg-transparent text-muted text-[12px] cursor-pointer hover:text-danger hover:border-danger transition-all" onClick={e => onApprove(e, 'reject')}><Ban className="lucide-inline" /> {i18nT('pages.chat.activityViewer.reject')}</button>
@@ -341,6 +349,9 @@ function ApprovalEntry({ entry }: { entry: ToolActivity }) {
   const isResolved = resolved || !!localDecision
   const [acting, setActing] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
+  // WHICH approval is gone, not merely that one was: the id scopes the
+  // withdrawal, so a later live approval here is never suppressed by it.
+  const [goneFor, setGoneFor] = useState<string | null>(null)
   const onAction = useCallback(async (action: string) => {
     setActing(true)
     setActionError(null)
@@ -349,10 +360,14 @@ function ApprovalEntry({ entry }: { entry: ToolActivity }) {
       await api.resolveApproval(entry.approval_id!, toApiDecision(action))
     } catch (e: unknown) {
       setLocalDecision(null); setActing(false)
+      const gone = isTerminalApprovalRefusal(e)
+      setGoneFor(gone ? entry.approval_id ?? null : null)
       const reason = e instanceof Error ? e.message : ''
-      setActionError(reason
-        ? i18nT('components.approvalCard.decision_not_recorded_error', { error: reason })
-        : i18nT('components.approvalCard.decision_failed'))
+      setActionError(gone
+        ? i18nT('components.approvalCard.approval_no_longer_pending')
+        : reason
+          ? i18nT('components.approvalCard.decision_not_recorded_error', { error: reason })
+          : i18nT('components.approvalCard.decision_failed'))
     }
   }, [entry.approval_id])
 
@@ -380,7 +395,7 @@ function ApprovalEntry({ entry }: { entry: ToolActivity }) {
         <span className="text-[11px] text-muted/40 font-mono ml-auto shrink-0">{fmtTime(entry.ts)}</span>
       </div>
       {!isResolved && <div className="px-3 pb-2 text-[13px] text-muted/70">{entry.text}</div>}
-      {!isResolved && !acting && (
+      {!isResolved && !acting && goneFor !== entry.approval_id && (
         <div className="px-3 pb-2 flex gap-1.5">
           <button className={btnClass} onClick={() => onAction('approved')}><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.activityViewer.approve')}</button>
           <button className={btnClass + ' hover:!text-danger hover:!border-danger'} onClick={() => onAction('rejected')}><Ban className="lucide-inline" /> {i18nT('pages.chat.activityViewer.reject')}</button>
@@ -1118,7 +1133,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
           )}
           {/* Pending approvals */}
           {toolLog.filter(isSpawnApproval).map((entry, i) => (
-            <ApprovalEntry key={`a${i}`} entry={entry} />
+            <ApprovalEntry key={entry.approval_id || `a${i}`} entry={entry} />
           ))}
           {/* Accepted-but-not-started banner: the only signal for a wave still
               behind the concurrency cap. Shown alongside started agents too,

@@ -6,6 +6,7 @@ import { deriveToolCallTitle } from '../../utils/toolCallTitle'
 import { ToolInputText } from '../../components/ToolInputText'
 import ErrorNotice from '../../components/ErrorNotice'
 import { ApiError } from '../../api/client'
+import { isTerminalApprovalRefusal } from '../../api/apiError'
 import { useRowDisclosure } from './rowDisclosure'
 
 import { i18nT } from '../../i18n/t'
@@ -191,10 +192,8 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExp
         setLocalResolved(null)
         setSubmitting(false)
         const refusal = err instanceof ApiError ? err : null
-        const gone = !!refusal && !refusal.authRequired
-          && (refusal.status === 404 || (refusal.status === 400 && refusal.message === 'no pending approval'))
         setFailure({
-          terminal: gone,
+          terminal: isTerminalApprovalRefusal(err),
           message: refusal?.message ?? '',
           attempted: decision,
         })

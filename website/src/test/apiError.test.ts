@@ -1,4 +1,4 @@
-import { ApiError, friendlyErrText, toApiError } from '../api/apiError'
+import { ApiError, friendlyErrText, toApiError, isTerminalApprovalRefusal } from '../api/apiError'
 
 /** A minimal Response stand-in: only what toApiError reads. */
 const res = (status: number, body: string, headers: Record<string, string> = {}): Response =>
@@ -88,6 +88,20 @@ describe('toApiError', () => {
     const e = await toApiError(res(400, 'bad'))
     expect(e).toBeInstanceOf(Error)
     expect(e.name).toBe('ApiError')
+  })
+})
+
+describe('isTerminalApprovalRefusal', () => {
+  it.each([
+    ['a 404', new ApiError(404, 'not found or expired'), true],
+    ['the endpoint\'s own 400', new ApiError(400, 'no pending approval'), true],
+    ['a duck-typed 404 from a mocked client', Object.assign(new Error('gone'), { status: 404 }), true],
+    ['an auth-required 404', new ApiError(404, 'sign in again', '', true), false],
+    ['any other 400', new ApiError(400, 'unknown action'), false],
+    ['a transport failure', new Error('Failed to fetch'), false],
+    ['a non-object rejection', 'nope', false],
+  ])('classifies %s', (_label, err, terminal) => {
+    expect(isTerminalApprovalRefusal(err)).toBe(terminal)
   })
 })
 
