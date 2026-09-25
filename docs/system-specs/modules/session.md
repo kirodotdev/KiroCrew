@@ -1262,7 +1262,7 @@ applier — a raised turn budget is in force on the next prompt.
 
 ## Stop Orchestration
 
-`stop_turn()` is the shared orchestration layer for every stop surface (dashboard Stop button, Slack `/kirocrew stop`, transport stop verbs). Sequence:
+`stop_turn()` is the shared orchestration layer for every stop surface (dashboard Stop button, Slack `/<command> stop`, transport stop verbs). Sequence:
 
 1. Record the Stop: `stop_requests[key] += 1` (per folded key, on
    `SessionLifecycleState`). This runs BEFORE anything is awaited so the

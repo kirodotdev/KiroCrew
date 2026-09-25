@@ -388,7 +388,7 @@ Restricted to `KIROCREW_OWNER_ID`. Processed before keyword commands.
 | `!ta <name>` / `!ta off` | Switch agent for current thread only |
 | `!allowlist @user` | Grant/revoke user access |
 | `!allowlist #channel` | Add/remove tracking channel |
-| `!restart` | Restart the gateway. Bang alias intercepted in `events.py` before the LLM session; delegates to `/kirocrew restart` (`_handle_restart`) so owner-check + supervisor guard stay a single source of truth (`handler.py:_BANG_TO_SLASH`) |
+| `!restart` | Restart the gateway. Bang alias intercepted in `events.py` before the LLM session; delegates to `/<command> restart` (`_handle_restart`) so owner-check + supervisor guard stay a single source of truth (`handler.py:_BANG_TO_SLASH`) |
 
 #### Allowed-User `!` Commands (`handler.py`)
 
@@ -396,7 +396,7 @@ Available to any user on the allowlist (not just owner).
 
 | Command | Purpose |
 |---------|---------|
-| `!dashboard [duration]` | Get a presigned dashboard link (DM'd to you) — **deprecated, use `/kirocrew dashboard`** |
+| `!dashboard [duration]` | Get a presigned dashboard link (DM'd to you) — **deprecated, use `/<command> dashboard`** |
 | `!stop` | Force-halt the active agent execution in the current thread. Sends cooperative `session/cancel`; falls back to hard kill if not acked within `agent.soft_stop_budget_secs`. Posts ephemeral Block Kit stopping message with Kill Now button. If no execution is running, replies "Nothing running." |
 
 #### Keyword Commands (`handler.py`)
@@ -597,7 +597,7 @@ A channel-neutral dispatch path that replaces the native `handle_message` stream
 - **`TurnDriver`** (`messaging/driver.py`): channel-neutral turn loop converting provider `AcpEvent`s into abstract `OutputEvent`s. Approval ladder mirrors the native `APPROVAL_*` contract — `APPROVAL_AUTO` / `APPROVAL_TRUST` (approve all), `APPROVAL_TRUST_READS` (approve `tool_kind == "read"`), `APPROVAL_INTERACTIVE` (deny-by-default unless the injected decider approves). Two injected predicates keep the driver channel-neutral: `auto_approve_tool` (the `spawn_run` / `auto_approve_subagent_spawn` hook predicate) and `auto_approve_session` (per-session Trust). Interactive buttons are rendered only when a decider is present — without one, `_approve()` denies by default so posting buttons would leave dead controls.
 - **`SlackRenderer` + `SlackApprovalDecider`** (`slack/renderer.py`): renders abstract output onto a Slack thread and holds the underlying `SlackClientOps` so the dashboard→Slack mirror keeps working. Approval buttons use `mc_tool_approve_` / `mc_tool_trust_` (per-session Trust) / `mc_tool_deny_` action prefixes. `SlackApprovalDecider` maintains a process-global `_REGISTRY` keyed by request id so the module-level interaction handler can `resolve_global()` a click without a direct reference to the per-turn decider; `session_for()` maps a click back to its session for per-session Trust. The decider is **deny-by-default** — it `wait_for`s the button future and returns `False` on timeout.
 - **`handle_message_transport`** (`slack/transport_dispatch.py`): agent resolution order is thread override (`!agent`) → per-channel override (`slack.channels.<id>.agent`) → configured default → canonical `"kirocrew"` (`_DEFAULT_KIROCREW_AGENT`). The final fallback matters: without it an empty `agent.default_agent` makes kiro-cli launch its bare built-in default with no `kirocrew-core` server, so `spawn_run` would be missing. Fires the ack reaction + working status before the (cold-start) session acquisition, matching native ordering.
-- **`_resolve_approval_mode(orch)`** (`events.py`): the single per-message chokepoint that folds runtime YOLO (owner-toggled `/kirocrew yolo`, TTL-capped `safety_override`) into `APPROVAL_AUTO`, evaluated fresh each message. The transport `TurnDriver` only sees this resolved mode, so both the native and transport paths honor the runtime toggle consistently rather than an unconditional auto-approve. Deny-by-default unless auto-approve is explicitly active.
+- **`_resolve_approval_mode(orch)`** (`events.py`): the single per-message chokepoint that folds runtime YOLO (owner-toggled `/<command> yolo`, TTL-capped `safety_override`) into `APPROVAL_AUTO`, evaluated fresh each message. The transport `TurnDriver` only sees this resolved mode, so both the native and transport paths honor the runtime toggle consistently rather than an unconditional auto-approve. Deny-by-default unless auto-approve is explicitly active.
 
 ## Tool Approval Flow
 
@@ -913,7 +913,7 @@ Only the **bare tool name** (e.g. `ReadInternalWebsites`) is tested against the 
 
 ## Dashboard Token Authentication
 
-### `!dashboard [duration]` Command (deprecated → `/kirocrew dashboard`)
+### `!dashboard [duration]` Command (deprecated → `/<command> dashboard`)
 
 Owner command in `handler.py` that generates a time-limited token URL for dashboard access:
 
@@ -933,7 +933,7 @@ Owner command in `handler.py` that generates a time-limited token URL for dashbo
 - **Token sources**: `?token=` query param (first use) or `mc_token_{port}` cookie (subsequent requests)
 - **First query-param use**: binds token to client IP, marks consumed, sets `HttpOnly; SameSite=Strict; Path=/` cookie
 - **Cookie use**: validates token + IP binding, allows repeated access
-- **Rejection**: returns 403 HTML page with instructions to run `/kirocrew dashboard` in Slack; API paths get JSON error
+- **Rejection**: returns 403 HTML page with instructions to run `/<command> dashboard` in Slack; API paths get JSON error
 
 Token format: `base64url(payload).base64url(HMAC-SHA256-signature)` with per-process secret (`os.urandom(32)`).
 

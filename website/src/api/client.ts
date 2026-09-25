@@ -5506,7 +5506,7 @@ export const api = {
     post('/api/decisions/feedback', { turn_id: turnId, verdict, side }).then(j) as Promise<unknown>,
   // Slack integration config
   getSlackConfig: () => get('/api/slack/config').then(j) as Promise<SlackConfigData>,
-  getSlackManifest: () => get('/api/slack/manifest').then(j) as Promise<{ alias: string; manifest: string; create_url: string }>,
+  getSlackManifest: (alias: string) => get('/api/slack/manifest?alias=' + encodeURIComponent(alias)).then(j) as Promise<{ alias: string; manifest: string; create_url: string; command: string }>,
   saveSlackConfig: (body: Partial<SlackConfigSave>) => put('/api/slack/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,
   // Discord integration config
   getDiscordConfig: () => get('/api/discord/config').then(j) as Promise<DiscordConfigData>,

@@ -511,7 +511,7 @@ Slack messages are processed **inline** and reach the agent directly, gated by
 `is_allowed_user` and the workspace origin check. There is no challenge-and-
 redirect interception; `send_channel_challenge()` does not exist and must not be
 reintroduced on an upstream sync. The generic signed-token helpers remain and
-back the explicit `/kirocrew dashboard` link command.
+back the explicit `/<command> dashboard` link command.
 
 Enterprise Grid validation is a two-layer, **default-open** control: with no
 `slack.allowed_enterprise_ids` configured, every reachable workspace is allowed.

@@ -23,7 +23,7 @@ features:
     display_name: KiroCrew-{{ALIAS}}
     always_online: true
   slash_commands:
-    - command: /kirocrew
+    - command: /kirocrew-{{ALIAS}}
       description: Dashboard access, allowlist, and channel tracking
       usage_hint: "dashboard [duration] | @user | #channel"
       should_escape: true

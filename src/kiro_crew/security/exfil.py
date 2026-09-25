@@ -768,7 +768,7 @@ def _exfil_exempt_hosts() -> frozenset[str]:
 # ``_exfil_url_warning``) instead of zeroing the heuristic payload. Zeroing it was
 # a real bypass — the alias slot accepted 64 chars of ``[A-Za-z0-9_-]``, which is
 # wide enough for a 40-char alphanumeric secret, and ``_EXFIL_PATTERNS`` needs a
-# 40+ char run to fire. ``slack_manifest.ALIAS_MAX`` (32) now makes such a run
+# 40+ char run to fire. ``slack_manifest.ALIAS_MAX`` (23) now makes such a run
 # impossible AND the surviving span is still scanned, so an ``AKIA…`` id or an
 # ``xox…`` token short enough to fit is caught on the alias alone.
 #

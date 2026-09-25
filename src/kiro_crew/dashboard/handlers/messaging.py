@@ -4542,6 +4542,7 @@ async def api_slack_manifest(request: web.Request) -> web.Response:
             "alias": alias,
             "manifest": rendered,
             "create_url": create_url,
+            "command": slack_manifest.slash_command(alias),
         }
     )
 

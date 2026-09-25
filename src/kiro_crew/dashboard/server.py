@@ -2857,7 +2857,12 @@ def _override_expiry_dm_text(source: str) -> str:
             "Re-authorization is refused while the policy is in effect — contact "
             "your administrator if you believe this is unexpected."
         )
-    return "\U0001f512 Safety override expired. Tools now require approval. Reply `/kirocrew yolo` to re-authorize."
+    from kiro_crew.slack.handler import slack_cfg
+
+    return (
+        "\U0001f512 Safety override expired. Tools now require approval. "
+        f"Reply `/{slack_cfg().slack.command} yolo` to re-authorize."
+    )
 
 
 async def _notify_slack_override_expired(state: DashboardState, source: str) -> None:

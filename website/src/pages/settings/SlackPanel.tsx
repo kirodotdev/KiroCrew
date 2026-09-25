@@ -16,6 +16,10 @@ import { SchemaRestartBadge } from '../../components/settingRef/RestartRequiredB
 /** Brand name — do-not-translate, so it lives here rather than in the catalog. */
 const CHANNEL_NAME = "Slack"
 const SETUP_GUIDE = 'https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs/slack-integration.md'
+// Mirrors the server's alias shape: slack_manifest.ALIAS_MAX is what Slack's
+// 32-character command limit leaves after the `kirocrew-` prefix, and
+// test_slack_manifest_scopes.py pins this bound equal to it.
+const MANIFEST_ALIAS_RE = /^[A-Za-z0-9_-]{1,23}$/
 
 type Draft = {
   owner_id: string
@@ -173,10 +177,23 @@ export function SlackPanel() {
   // but only the failure needs a notice (same split as MobileLoginCard).
   const [manifestCopyFailed, setManifestCopyFailed] = useState(false)
 
+  // The alias names the app and its slash command `/kirocrew-<alias>`: a
+  // per-install name, because every install in an
+  // Enterprise Grid registering the same `/kirocrew` makes Slack dispatch to the
+  // wrong app (`invalid_service`). The server has no non-identifying default
+  // worth suggesting, so the user types it here.
+  const [alias, setAlias] = useState('')
+  const aliasValid = MANIFEST_ALIAS_RE.test(alias)
+  const aliasInvalid = alias !== '' && !aliasValid
+  // Set once the user types in the Slash command field: from then on the field
+  // is theirs, and no manifest response, however late, may overwrite it.
+  const commandTouched = useRef(false)
+
   // Public manifest template + one-click Slack create URL (no secrets).
   const manifestQ = useQuery({
-    queryKey: ['slack-manifest'],
-    queryFn: api.getSlackManifest,
+    queryKey: ['slack-manifest', alias],
+    queryFn: () => api.getSlackManifest(alias),
+    enabled: aliasValid,
     staleTime: Infinity,
     retry: false,
   })
@@ -215,6 +232,17 @@ export function SlackPanel() {
       setBotToken(''); setAppToken(''); setBotClear(false); setAppClear(false)
     }
   }, [data])
+
+  // Typing an alias is the user saying "this is the app I am creating", so the
+  // slash command follows the manifest that alias renders while the user has
+  // not edited that field themselves. No install-state heuristic: the field
+  // stays visible and editable, and nothing is saved until Save. The alias
+  // check drops a response for an alias the user has since typed over.
+  useEffect(() => {
+    const m = manifestQ.data
+    if (!m || m.alias !== alias || commandTouched.current) return
+    setDraft(d => (d ? { ...d, command: m.command } : d))
+  }, [alias, manifestQ.data])
 
   const saveMut = useMutation({
     mutationFn: (body: Partial<SlackConfigSave>) => api.saveSlackConfig(body),
@@ -319,14 +347,34 @@ export function SlackPanel() {
       <SettingsSection title={i18nT('pages.settings.slackPanel.get_your_credentials')}>
         <SettingsCard>
           <p className="text-[13px] text-text m-0">
-            {i18nT('pages.settings.slackPanel.create_the_slack_app_from_the_manifest', { alias: manifestQ.data?.alias ?? 'you' })}
+            {i18nT('pages.settings.slackPanel.create_the_slack_app_from_the_manifest', { alias: aliasValid ? alias : '<alias>' })}
           </p>
+          <div className="mt-2">
+            <SettingsInput
+              label={i18nT('pages.settings.slackPanel.alias')}
+              description={i18nT('pages.settings.slackPanel.alias_description')}
+              value={alias}
+              onChange={v => setAlias(v.trim())}
+              placeholder={i18nT('pages.settings.slackPanel.alias_placeholder')}
+              disabled={ro}
+            />
+            {aliasInvalid && (
+              <p className="text-[12px] text-muted mt-1">
+                {i18nT('pages.settings.slackPanel.alias_invalid')}
+              </p>
+            )}
+          </div>
           <div className="flex items-center gap-2 mt-2 flex-wrap">
             <a
               href={manifestQ.data?.create_url ?? '#'}
               target="_blank" rel="noopener noreferrer"
               aria-disabled={!manifestQ.data}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium border transition-all ${manifestQ.data ? 'bg-accent text-accent-fg border-accent hover:bg-accent-hover' : 'border-border text-muted pointer-events-none'}`}
+              tabIndex={manifestQ.data ? undefined : -1}
+              onClick={manifestQ.data ? undefined : e => e.preventDefault()}
+              // Disabled, it wears exactly what a disabled Btn wears (opacity-30 +
+              // cursor-not-allowed) so it reads as inert beside "Copy manifest YAML"
+              // instead of as a live link that swallows the click.
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium border transition-all ${manifestQ.data ? 'bg-accent text-accent-fg border-accent hover:bg-accent-hover' : 'border-border bg-transparent text-text opacity-30 cursor-not-allowed'}`}
             >
               {i18nT('pages.settings.slackPanel.create_slack_app')} <ExternalLink size={13} />
             </a>
@@ -338,9 +386,10 @@ export function SlackPanel() {
               {i18nT('pages.settings.slackPanel.setup_guide')} <ExternalLink size={13} />
             </a>
           </div>
-          {/* No hand-off for either: the token fields and the unsaved `draft`
-              share this panel, and navigating to the chat would discard them. The
-              setup-guide link beside them is the recovery path. */}
+          {/* No hand-off for any of these (nor the alias notice above): the token
+              fields and the unsaved `draft` share this panel, and navigating to the
+              chat would discard them. The setup-guide link beside them is the
+              recovery path. */}
           {manifestQ.isError && (
             <ErrorNotice variant="inline" className="mt-2" message={i18nT('pages.settings.slackPanel.manifest_unavailable')} />
           )}
@@ -414,7 +463,7 @@ export function SlackPanel() {
             label={i18nT('pages.settings.slackPanel.slash_command')}
             description={i18nT('pages.settings.slackPanel.trigger_word_for_the_slack_slash_command_without')}
             value={draft.command}
-            onChange={v => upd({ command: v })}
+            onChange={v => { commandTouched.current = true; upd({ command: v }) }}
             placeholder={i18nT('pages.settings.slackPanel.kirocrew')}
             disabled={ro}
           />

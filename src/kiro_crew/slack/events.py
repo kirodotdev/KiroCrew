@@ -1517,6 +1517,15 @@ async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
 
     slash_command = f"/{orch.slack_command}"
     if cmd != slash_command:
+        # Slack only delivers commands the app registered, so a mismatch means
+        # slack.command and the manifest disagree; say so rather than dropping
+        # the payload with nothing in the log to diagnose a dead command from.
+        logger.warning(
+            "Ignoring slash command %s: slack.command is configured as %s (caller=%s)",
+            cmd,
+            slash_command,
+            caller_id,
+        )
         return
 
     # Deny-by-default — only allowed users can invoke slash commands

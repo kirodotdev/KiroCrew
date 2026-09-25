@@ -164,6 +164,7 @@ class TestSetupSlashCommand:
     def test_an_illegal_character_falls_back_to_the_current_name(
         self, cfg_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
+        monkeypatch.setattr("kiro_crew.cli_setup._detect_alias", lambda: "")
         self._answer(monkeypatch, "has space")
         _setup_slash_command()
         assert self._saved(cfg_file) == "kirocrew"
@@ -172,10 +173,56 @@ class TestSetupSlashCommand:
     def test_an_over_long_name_falls_back_to_the_current_name(
         self, cfg_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
+        monkeypatch.setattr("kiro_crew.cli_setup._detect_alias", lambda: "")
         self._answer(monkeypatch, "z" * 33)
         _setup_slash_command()
         assert self._saved(cfg_file) == "kirocrew"
         assert "too long" in capsys.readouterr().out
+
+    def test_a_fresh_config_defaults_to_the_manifest_command(
+        self, cfg_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The manifest registers ``/kirocrew-<alias>``; setup must offer the same
+        name, or the gateway listens for a command Slack never sends it."""
+        monkeypatch.setattr("kiro_crew.cli_setup._detect_alias", lambda: "zed")
+        self._answer(monkeypatch, None)
+        _setup_slash_command(fresh_install=True)
+        assert self._saved(cfg_file) == "kirocrew-zed"
+
+    def test_a_tokened_install_with_the_default_name_is_offered_the_plain_name(
+        self, cfg_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Re-running setup to rotate tokens must not move an app that already
+        registered ``/kirocrew`` onto a command Slack never sends."""
+        monkeypatch.setattr("kiro_crew.cli_setup._detect_alias", lambda: "zed")
+        self._answer(monkeypatch, None)
+        _setup_slash_command(fresh_install=False)
+        assert self._saved(cfg_file) == "kirocrew"
+
+    def test_a_configured_name_is_not_replaced_by_the_alias_default(
+        self, cfg_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg_file.write_text(json.dumps({"slack": {"command": "quux"}}), encoding="utf-8")
+        monkeypatch.setattr("kiro_crew.cli_setup._detect_alias", lambda: "zed")
+        self._answer(monkeypatch, None)
+        _setup_slash_command(fresh_install=True)
+        assert self._saved(cfg_file) == "quux"
+
+    def test_an_unusable_alias_defaults_to_the_plain_name(
+        self, cfg_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("kiro_crew.cli_setup._detect_alias", lambda: "has space")
+        self._answer(monkeypatch, None)
+        _setup_slash_command(fresh_install=True)
+        assert self._saved(cfg_file) == "kirocrew"
+
+    def test_an_alias_too_long_for_slack_defaults_to_the_plain_name(
+        self, cfg_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("kiro_crew.cli_setup._detect_alias", lambda: "a" * 24)
+        self._answer(monkeypatch, None)
+        _setup_slash_command(fresh_install=True)
+        assert self._saved(cfg_file) == "kirocrew"
 
     def test_an_unreadable_config_aborts_the_step_without_writing(
         self, cfg_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

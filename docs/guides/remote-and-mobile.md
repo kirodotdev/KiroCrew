@@ -534,7 +534,9 @@ service installer such as `cloudflared service install`).
 
 ### Getting a link on your phone
 
-1. In your Kiro Crew DM, send `/kirocrew dashboard` (or `/kirocrew dashboard 6h`).
+1. In your Kiro Crew DM, send `/<command> dashboard` (or `/<command> dashboard 6h`),
+   where `<command>` is your Slack `slack.command` value; Telegram and Webex use
+   `/kirocrew dashboard`.
 2. The bot DMs you `https://<tunnel-url>/?token=...`.
 3. Tap it. The link exchanges the token for an access cookie **and** a 30-day
    refresh cookie, so this is not a daily ritual — see
@@ -560,7 +562,7 @@ Three clocks. The first two are signed into the access token payload
 | Access session TTL (`session_exp`) | 1 hour by default, 20 hours maximum (`MAX_SESSION_TTL_SECS = 20 * 3600`) | How long the access cookie the link mints stays valid |
 | Refresh TTL | 30 days (`MAX_REFRESH_TTL_SECS = 30 * 86400`) | How long the dashboard can silently mint a new access cookie without a new link |
 
-**You re-run `/kirocrew dashboard` or `kirocrew token` roughly once per 30 _idle_
+**You re-run `/<command> dashboard` or `kirocrew token` roughly once per 30 _idle_
 days — not every 20 hours.** Opening the link sets two cookies, not one: the
 access cookie plus an `mc_refresh_<port>` refresh cookie (HttpOnly,
 path-restricted to `/api/auth`). The dashboard schedules a
@@ -580,8 +582,8 @@ another link.
 
 The access-session numbers still govern the initial mint. The chat-command
 default is 1 hour (`ttl = 3600` in `slack/events.py` and `slack/handler.py`);
-pass a duration to raise it (`/kirocrew dashboard 6h`,
-`/kirocrew dashboard 20h`). `parse_duration` accepts `<N>h` or `<N>m` and clamps
+pass a duration to raise it (`/<command> dashboard 6h`,
+`/<command> dashboard 20h`). `parse_duration` accepts `<N>h` or `<N>m` and clamps
 to the 20-hour ceiling, so asking for more silently gets you 20 hours rather than
 an error. `kirocrew token` defaults straight to `20h`. The 5-minute click window
 is not the session length: it only means a link left sitting in a DM overnight is
@@ -959,7 +961,7 @@ servers and tool calls fail with ENOENT.
 | Dashboard loads over the tunnel but the live view flaps online/offline | The TLS-terminating proxy must forward `X-Forwarded-Proto: https`; without it the auth cookie is set without `Secure` and mobile browsers withhold it from the `wss://` upgrade. Refresh itself keeps working (the refresh cookie is `SameSite=Lax`, so it still rides ordinary HTTPS requests), but both cookies then lack `Secure` and could be sent over plain HTTP — fix the header rather than living with it |
 | Chat link still points at `localhost` | Set `dashboard.url` in `config.json` and restart the gateway |
 | Link opens to "token expired" | The presigned URL must be opened within 5 minutes. Request a fresh link |
-| Session drops sooner than you expect | You should be refreshed silently for 30 sliding days. If you are re-minting every ~20 hours instead, the refresh cookie is not reaching `/api/auth/refresh` — confirm the browser is sending an `mc_refresh_<port>` cookie whose port suffix matches the port the gateway resolved for the request, and check the browser console for `[refresh]` warnings. Raising the initial mint (`/kirocrew dashboard 20h`) only widens the access cookie; it does not repair a broken refresh |
+| Session drops sooner than you expect | You should be refreshed silently for 30 sliding days. If you are re-minting every ~20 hours instead, the refresh cookie is not reaching `/api/auth/refresh` — confirm the browser is sending an `mc_refresh_<port>` cookie whose port suffix matches the port the gateway resolved for the request, and check the browser console for `[refresh]` warnings. Raising the initial mint (`/<command> dashboard 20h`) only widens the access cookie; it does not repair a broken refresh |
 | Phone cannot reach the tunnel URL | Verify the tunnel process is running and connected on the gateway host |
 | Settings will not save over the tunnel | By design. Config-write and secret-reveal endpoints require a direct-local request, and forwarding headers mark a tunnelled request as remote. Change these over an SSH session on the host |
 | "Embeddings not ready" in the dashboard | The ~610MB model downloads in the background over HTTPS on gateway start. `kirocrew doctor` probes the resolved URL; set `KIROCREW_EMBED_MODEL_URL` for a mirror. Memory falls back to keyword search until it lands, and the agent keeps working |

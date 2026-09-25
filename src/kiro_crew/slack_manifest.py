@@ -23,15 +23,28 @@ import re
 from importlib.resources import files as _pkg_files
 from urllib.parse import quote
 
-#: Placeholder substituted with the operator's alias, in two places.
+#: Placeholder substituted with the operator's alias: app name, bot display
+#: name and slash command. The slash command carries it because Slack resolves
+#: command names org-wide in an Enterprise Grid — two workspaces both
+#: registering ``/kirocrew`` make Slack dispatch to the wrong app and fail with
+#: ``invalid_service`` before any payload reaches the gateway.
 ALIAS_PLACEHOLDER = "{{ALIAS}}"
 
-#: Longest accepted alias. Both emitters enforce this, and the validator's
-#: derived pattern is bounded by it. It is deliberately tight: the alias is the
-#: ONLY caller-controlled span inside an exempted deep link, so its width is the
-#: width of the channel the exemption opens. 32 also matches the Slack app-name
-#: budget the manifest spends it on.
-ALIAS_MAX = 32
+#: Prefix of the slash command the manifest registers; ``slash_command`` builds
+#: the full ``slack.command`` value from it.
+SLASH_COMMAND_PREFIX = "kirocrew-"
+
+#: Slack rejects a slash command name longer than this at manifest import.
+SLASH_COMMAND_MAX = 32
+
+#: Longest accepted alias: what is left of the slash-command budget once the
+#: prefix is spent, so every alias ``valid_alias`` admits renders a command Slack
+#: accepts. This is the ONE place the bound lives; the emitters and the
+#: validator's derived pattern all read it from here. It is also deliberately
+#: tight for a second reason: the alias is the ONLY caller-controlled span inside
+#: an exempted deep link, so its width is the width of the channel the exemption
+#: opens.
+ALIAS_MAX = SLASH_COMMAND_MAX - len(SLASH_COMMAND_PREFIX)
 
 #: Accepted alias shape, anchored. Kept in sync with ``ALIAS_MAX``.
 ALIAS_RE = re.compile(rf"\A[A-Za-z0-9_-]{{1,{ALIAS_MAX}}}\Z")
@@ -47,6 +60,11 @@ _APP_CREATE_BASE = f"https://{APP_CREATE_HOST}{APP_CREATE_PATH}"
 def valid_alias(alias: str) -> bool:
     """True when *alias* is a shape both emitters will substitute."""
     return ALIAS_RE.match(alias) is not None
+
+
+def slash_command(alias: str) -> str:
+    """The ``slack.command`` value matching the manifest rendered for *alias*."""
+    return f"{SLASH_COMMAND_PREFIX}{alias}"
 
 
 def raw_template() -> str:

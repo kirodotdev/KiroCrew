@@ -17,6 +17,9 @@ visible edit to this file rather than a one-line YAML addition.
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import yaml
 
 from kiro_crew import slack_manifest
@@ -125,3 +128,50 @@ class TestManifestGrantsNothingMore:
             "search:read",
             "users:read",
         ]
+
+
+class TestSlashCommandFollowsTheAlias:
+    """The slash command is named after the alias, like the app and bot user.
+
+    Slack resolves slash command names org-wide in an Enterprise Grid, so a
+    shared ``/kirocrew`` makes Slack dispatch to another workspace's app and
+    fail with ``invalid_service`` before the gateway sees anything. The name the
+    manifest registers and the ``slack.command`` value setup offers come from
+    two files; this pins them to one procedure.
+    """
+
+    def test_template_registers_the_alias_suffixed_command(self) -> None:
+        [cmd] = _manifest()["features"]["slash_commands"]
+        assert cmd["command"] == "/" + slack_manifest.slash_command(
+            slack_manifest.ALIAS_PLACEHOLDER
+        )
+
+    def test_render_substitutes_the_alias_into_the_command(self) -> None:
+        rendered = yaml.safe_load(slack_manifest.render("zed"))
+        [cmd] = rendered["features"]["slash_commands"]
+        assert cmd["command"] == "/kirocrew-zed"
+        assert slack_manifest.slash_command("zed") == "kirocrew-zed"
+
+    def test_the_alias_bound_is_what_the_command_budget_leaves(self) -> None:
+        """One derivation bounds the alias everywhere: the longest valid alias
+        renders a command exactly at Slack's limit and one more character fails
+        ``valid_alias`` itself, so no emitter carries a length check of its own."""
+        longest = "a" * slack_manifest.ALIAS_MAX
+        assert slack_manifest.valid_alias(longest)
+        assert len(slack_manifest.slash_command(longest)) == slack_manifest.SLASH_COMMAND_MAX
+        assert not slack_manifest.valid_alias(longest + "a")
+
+    def test_the_dashboard_alias_pattern_matches_the_backend_bound(self) -> None:
+        """Settings -> Slack validates the alias client-side before asking the
+        endpoint; its pattern must admit exactly what ``valid_alias`` admits."""
+        panel = (
+            Path(__file__).resolve().parents[1]
+            / "website"
+            / "src"
+            / "pages"
+            / "settings"
+            / "SlackPanel.tsx"
+        ).read_text(encoding="utf-8")
+        match = re.search(r"const MANIFEST_ALIAS_RE = /\^\[A-Za-z0-9_-\]\{1,(\d+)\}\$/", panel)
+        assert match is not None, "MANIFEST_ALIAS_RE not found in SlackPanel.tsx"
+        assert int(match.group(1)) == slack_manifest.ALIAS_MAX

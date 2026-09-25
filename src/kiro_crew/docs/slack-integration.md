@@ -72,18 +72,21 @@ Available to all allowed users (no `!` prefix needed):
 
 ## Slash Commands
 
+`<command>` is your `slack.command` value: `kirocrew-<alias>` for an app created
+from the manifest, as `kirocrew manifest` prints.
+
 | Command | Description |
 |---------|-------------|
-| `/kirocrew dashboard` | Same as `!dashboard` |
-| `/kirocrew agent` | Switch the active agent |
-| `/kirocrew voice` | Configure TTS voice settings |
-| `/kirocrew yolo` | Toggle auto-approve for all tool calls |
-| `/kirocrew config` | Edit the tracked-channel list (owner only); its user half is inert |
-| `/kirocrew users` | Always refuses — multi-user access is disabled |
-| `/kirocrew channels` | Manage tracked channels |
-| `/kirocrew sessions` | List recent sessions |
-| `/kirocrew status` | Show runtime stats |
-| `/kirocrew restart` | Restart the gateway (owner only) |
+| `/<command> dashboard` | Same as `!dashboard` |
+| `/<command> agent` | Switch the active agent |
+| `/<command> voice` | Configure TTS voice settings |
+| `/<command> yolo` | Toggle auto-approve for all tool calls |
+| `/<command> config` | Edit the tracked-channel list (owner only); its user half is inert |
+| `/<command> users` | Always refuses — multi-user access is disabled |
+| `/<command> channels` | Manage tracked channels |
+| `/<command> sessions` | List recent sessions |
+| `/<command> status` | Show runtime stats |
+| `/<command> restart` | Restart the gateway (owner only) |
 
 ## Tool Approval Flow
 

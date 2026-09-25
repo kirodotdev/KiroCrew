@@ -8669,12 +8669,12 @@ class TestKiroCrewSlackAppCreateLink:
 
         # Within ALIAS_MAX but a recognised credential shape — caught on the
         # alias itself, because the alias is what the heuristics still see.
-        for hostile in ("AKIAIOSFODNN7EXAMPLE", "xoxb-123456789012-abcdef"):
+        for hostile in ("AKIAIOSFODNN7EXAMPLE", "xoxb-1234567890-abcdef"):
             assert len(hostile) <= slack_manifest.ALIAS_MAX, hostile
             assert scan_exfiltration_urls(self._link(hostile)) != [], hostile
 
     def test_mismatched_aliases_redacted(self) -> None:
-        """The manifest names the alias twice; they must be the SAME alias."""
+        """The manifest names the alias in several places; all must be the SAME alias."""
         from kiro_crew import slack_manifest
         from kiro_crew.security import scan_exfiltration_urls
 

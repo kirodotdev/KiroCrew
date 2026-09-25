@@ -1726,7 +1726,7 @@ the destination's ordinary security checks and to the effective
 
 **Token authentication** (`token_auth.py`):
 - HMAC-SHA256 signed tokens with dual expiry: 5-minute link click window (`exp`) + session TTL up to 20 hours (`session_exp`)
-- `!dashboard` and `/kirocrew dashboard` available to owner and allowed users; link always sent via DM (never in channel)
+- `!dashboard` and `/<command> dashboard` available to owner and allowed users; link always sent via DM (never in channel)
 - First use: validates `exp` (5-min window), binds IP, marks consumed, sets `mc_token_{port}` cookie with `max_age` from `session_exp`
 - Subsequent requests: validates `session_exp` via cookie
 - `parse_duration()` caps at 20 hours max (MAX_SESSION_TTL_SECS = 72000)

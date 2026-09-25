@@ -1,6 +1,6 @@
 # Cooperative stop, with a hard-kill fallback
 
-A user-initiated Stop (the dashboard button, Slack `!stop`, `/kirocrew stop`)
+A user-initiated Stop (the dashboard button, Slack `!stop`, `/<command> stop`)
 first asks kiro-cli to cancel the turn cooperatively and escalates to a hard
 process kill only when it does not acknowledge within a budget. This note records
 why the escalation exists, why each surface behaves as it does, and the races the

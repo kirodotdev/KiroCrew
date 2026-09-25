@@ -72,7 +72,7 @@ At startup the bot publishes the menu commands from `COMMAND_SPEC` through `setM
   refused if `/new`, `/unlink`, or another binding change moved the chat before
   the press.
 - `/yolo [on|off|renew]` — report or change the auto-approve grant. This is the
-  SAME process-wide grant the dashboard toggle and Slack's `/kirocrew yolo`
+  SAME process-wide grant the dashboard toggle and Slack's `/<command> yolo`
   drive, so it expires on one clock everywhere. There is deliberately no
   `telegram.yolo` setting and no per-channel wrapper around it: an approval grant
   is global by nature, and an operator who turns auto-approve off expects it off

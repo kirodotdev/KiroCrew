@@ -96,7 +96,7 @@ link untouched, so mirroring would silently resume on the next turn.
 | Slack DM or @mention thread | Self-link. `handle_message` calls `set_slack_link(session_key, reply_ts, channel)` on a new session. `reply_ts` (`thread_ts or msg_ts`), never the namespaced key, is stored as `slack_thread_ts`: storing the namespaced form would corrupt reply routing. |
 | Dashboard, user action | `POST /api/chat/slots/{name}/slack-link`. Opens a DM (or uses a supplied channel), posts a thread anchor, links, and back-fills the last 5 messages as context. |
 | Dashboard, auto-link from a redirect | The same endpoint with `thread_ts` in the body. Links to THAT existing thread instead of posting a new one, which is what makes a thread reply route back bidirectionally. Context back-fill is skipped, since the thread already contains those messages. |
-| Slack thread imported to dashboard | `!link-to-dashboard` (`/kirocrew link-to-dashboard`) fetches the thread, redacts each message, imports up to the last 50 into a fresh slot, then `link_slack`. Idempotent: an already-linked thread returns its existing slot. |
+| Slack thread imported to dashboard | `!link-to-dashboard` (`/<command> link-to-dashboard`) fetches the thread, redacts each message, imports up to the last 50 into a fresh slot, then `link_slack`. Idempotent: an already-linked thread returns its existing slot. |
 | `/kirocrew sessions` resume | Posts a resume header in-thread or in a DM, then `set_slack_link` plus `dashboard_state.link_slack`. |
 
 The anchor message title never exposes a raw slot key. The chain is LLM title,

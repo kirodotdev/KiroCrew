@@ -1173,6 +1173,22 @@ class TestHandleSlash:
         _mock_sel.log_api_access.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_foreign_command_names_the_configured_one_in_the_log(self, _mock_sel, caplog):
+        """A delivered command that is not ``slack.command`` is the manifest and the
+        config disagreeing; the drop must say so, or a dead command has no trace."""
+        orch = _make_orch()
+        orch.slack_command = "kirocrew-zed"
+        with caplog.at_level("WARNING", logger="kiro_crew.slack.events"):
+            await ev._handle_slash(
+                orch, {"command": "/kirocrew", "user_id": "U_OWNER", "text": "status"}
+            )
+        [record] = [r for r in caplog.records if "Ignoring slash command" in r.message]
+        assert record.levelname == "WARNING"
+        assert "/kirocrew" in record.message
+        assert "/kirocrew-zed" in record.message
+        _mock_sel.log_api_access.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_unauthorized_caller_denied(self, _mock_sel):
         orch = _make_orch()
         payload = {"command": "/kirocrew", "user_id": "U_BAD", "text": "status"}
