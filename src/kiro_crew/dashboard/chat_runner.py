@@ -9891,6 +9891,19 @@ async def _run_chat(
     _is_cc_harness = _is_cc_provider or is_claude_backend_name(
         getattr(_cfg_agent, "acp_backend", "")
     )
+    # Config only names the backend a NEW session would get: a changed
+    # `agent.acp_backend` leaves live sessions on their old one, so the live
+    # provider is authoritative when one exists (peeked, never created) -- the
+    # same authority the /compact gate below uses. `is True` keeps a mock's
+    # truthy attribute from counting as the claude harness.
+    _todos_live_sessions = getattr(state.sessions, "_sessions", None)
+    _todos_live_provider = (
+        getattr(_todos_live_sessions.get(session_key), "provider", None)
+        if isinstance(_todos_live_sessions, dict)
+        else None
+    )
+    if _todos_live_provider is not None:
+        _is_cc_harness = getattr(_todos_live_provider, "is_claude_backend", None) is True
     # Named rather than inlined so the quick-prompt exception is one testable rule
     # instead of a condition only reachable by driving this whole function: a macro
     # must NOT be forwarded to the harness as a command.
