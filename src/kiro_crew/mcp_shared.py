@@ -32,6 +32,7 @@ from kiro_crew.mcp_caller import (
     set_current_tenant_nonce,
     tenant_nonce_from_meta,
 )
+from kiro_crew.mcp_cleanup import STALE_MANAGED_MCP_SERVERS
 from kiro_crew.port_resolution import resolve_client_port_src
 from kiro_crew.sel import sel
 from kiro_crew.session_directive import neutralize_markers
@@ -366,6 +367,91 @@ def _ambient_audit_session() -> str:
     except Exception:
         from_token = ""
     return from_token or os.environ.get("KIROCREW_SESSION_KEY", "mcp")
+
+
+def spawned_without_gateway_identity() -> bool:
+    """True when nothing in this process's environment says a gateway started it.
+
+    A server the gateway starts for a session carries the signed per-session
+    token on its MCP element (``KIROCREW_STUB_SESSION_TOKEN``), and a sandboxed
+    one additionally carries the launcher's ``KIROCREW_HOST_PID``. A process with
+    neither was started by something else -- an editor's own MCP config, a shell
+    -- and has no channel through which it could ever prove a session identity.
+    ``KIROCREW_SESSION_KEY`` is deliberately NOT consulted here: it is exactly the
+    variable a person copies into an editor config by hand, so its presence says
+    nothing about who spawned the process.
+
+    Read-only and env-only, so the answer is the same before and after a refusal
+    and never depends on the gateway being reachable.
+    """
+    # Deferred like session_token_sig's read of the same name: ``claim`` pulls in
+    # the executor and transport graph, and this runs inside every stdio server,
+    # which must not pay for it at import time.
+    from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
+
+    if os.environ.get(STUB_SESSION_TOKEN_ENV, ""):
+        return False
+    if os.environ.get("KIROCREW_HOST_PID", "").isdigit():
+        return False
+    return True
+
+
+def external_client_identity_note(server: str = "kirocrew-core") -> str:
+    """The one explanation every identity refusal appends for an unspawned server.
+
+    The same missing identity surfaces at three sites -- the tool-policy gate's
+    ``identity_unattested`` refusal, the strict-identity diagnosis behind
+    ``memory_recall`` and its siblings, and ``learn_add``'s pass-through of the
+    gateway's ``missing X-Session-Key`` -- and a reader who started ``kirocrew-core``
+    from an editor's MCP config sees a different sentence at each, none of which
+    says the one thing they need: that server has no identity channel by design,
+    and the env var they are tempted to set is not a credential. This text says
+    it once, and every site appends the SAME string, so the three refusals agree.
+    Refusal decisions are untouched: this decorates a denial, it never grants.
+
+    Callers gate it on :func:`spawned_without_gateway_identity`, so a server the
+    gateway did start (token on the element, or a launcher host pid) keeps its
+    existing wording -- its problem is a trust root or a spawn denial, and this
+    note would point it away from both.
+
+    Two clauses are per-server. The read-only tools named are kirocrew-core's,
+    so they appear only for it. The "leftover from an older install" clause
+    holds only for the names Kiro Crew itself once wrote into the shared config
+    (``mcp_cleanup.STALE_MANAGED_MCP_SERVERS``); an opt-in server found there
+    is the user's own wiring, and calling it residue would invite a deletion
+    ``clean_stale_managed_mcp`` itself refuses to make.
+    """
+    if server == "kirocrew-core":
+        read_only = (
+            " Remove it and the read-only tools (learn_list, local_knowledge_search) "
+            "work without a session; use a Kiro Crew session (dashboard or a "
+            "messaging channel) for the rest."
+        )
+    else:
+        read_only = (
+            " Remove it; use a Kiro Crew session (dashboard or a messaging channel) "
+            "for the tools that need one."
+        )
+    if server in STALE_MANAGED_MCP_SERVERS:
+        entry = (
+            f", and a {server} entry in ~/.kiro/settings/mcp.json is leftover from an "
+            f"older install (docs/architecture/mcp.md)."
+        )
+    else:
+        entry = " (docs/architecture/mcp.md)."
+    return (
+        f" If this {server} was not started by a Kiro Crew session -- for example "
+        f"it is listed in an editor's own MCP config such as ~/.kiro/settings/mcp.json "
+        f"-- the tools that need a session identity (memory writes, memory recall, "
+        f"session control) are not supported from it: only a server the gateway "
+        f"starts for a session receives the signed session token that proves which "
+        f"session is calling, and there is no user-settable substitute. "
+        f"KIROCREW_SESSION_KEY is a fallback the gateway injects into its own "
+        f"processes, not a credential: setting it by hand identifies nothing and makes "
+        f"the gateway refuse every tool call from this server (identity_unattested)."
+        f"{read_only} The supported direction for an editor is to connect INTO a "
+        f"Kiro Crew session, not to spawn {server} itself{entry}"
+    )
 
 
 def _policy_session_key() -> str | None:
@@ -1703,6 +1789,15 @@ def _run_stdio_dispatch_loop(
                             f"spawn, so a change takes "
                             f"effect at the gateway's next restart."
                         )
+                    elif _caller_ctx is None and spawned_without_gateway_identity():
+                        # No gateway caller, no token on the element, no launcher
+                        # pid: nothing the gateway does when it starts a server
+                        # happened to this one, so the declared key came from
+                        # whoever wrote its config. The generic text names the
+                        # missing token; this reader has nowhere to get one, and
+                        # the note says so. A server the gateway did spawn keeps
+                        # the wording above (token present, or the denial arm).
+                        _refusal += external_client_identity_note(server_name)
                 elif _policy.unresolved == "resolution_failed":
                     # A DIFFERENT diagnosis and a different remedy from the branch
                     # below, which is why it cannot share that text: the gateway was

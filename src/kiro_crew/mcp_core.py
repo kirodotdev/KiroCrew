@@ -56,8 +56,10 @@ from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.mcp_caller import CallerContext, current_caller, set_current_caller
 from kiro_crew.mcp_shared import (
     call_tool_with_logging,
+    external_client_identity_note,
     internal_caller,
     run_mcp_stdio_loop,
+    spawned_without_gateway_identity,
 )
 from kiro_crew.mcp_tools import build_tool_list, dispatch
 from kiro_crew.members import record_activity
@@ -956,7 +958,10 @@ def strict_identity_diagnosis(server: str = "kirocrew-core") -> str:
             f"not verify{suffix}. Check `kirocrew doctor` (trust root) — {server} "
             f"does not need routing when this channel works."
         )
-    return (
+    # Reaching here means no token on the element and no launcher pid, the same
+    # shape ``spawned_without_gateway_identity`` reads; the note is gated on it
+    # anyway so this branch and the tool-policy refusal agree by construction.
+    out = (
         f" No identity channel on this install: {server}'s MCP element carries "
         f"neither a session token nor a session key, {server} is not in "
         f"mcp_gateway.stub_servers, so the gateway injects no per-call caller, and "
@@ -967,6 +972,9 @@ def strict_identity_diagnosis(server: str = "kirocrew-core") -> str:
         f"mcp_gateway.stub_servers and restart) to give this session a verifiable "
         f"identity. `kirocrew doctor` reports the same check."
     )
+    if spawned_without_gateway_identity():
+        out += external_client_identity_note(server)
+    return out
 
 
 #: The REFLEXIVE tool surface: every module whose MCP tools embed "my session"

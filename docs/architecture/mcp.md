@@ -1112,6 +1112,25 @@ the caller block and the policy read sends it, so its calls do not land there. T
 for admitting a reason here is that it means ONE thing, because a refusal derived from an
 ambiguous reason is wrong for half the callers it hits.
 
+One missing identity reaches a reader through three refusals -- this
+`identity_unattested` text when a key is declared, the strict-identity diagnosis behind
+`memory_recall` and every other reflexive tool when none is, and the lesson writers'
+(`learn_add`, `learn_remove`) answer to the gateway's `400 missing_session_key` (mapped
+onto the same established-session refusal instead of echoing the header name). When the
+process carries neither the session token nor a launcher host pid
+(`mcp_shared.spawned_without_gateway_identity`), nothing the gateway does at spawn
+happened to it, and all three append the same `mcp_shared.external_client_identity_note`:
+a server started outside a Kiro Crew session (an editor's own MCP config) has no identity
+channel and its identity-bearing tools are not supported; `KIROCREW_SESSION_KEY` is a
+gateway-injected fallback, not a credential, and set by hand it turns the partial
+refusals into `identity_unattested` on every call; the read-only tools work without it;
+the supported editor direction is connecting into a Kiro Crew session rather than
+spawning the server, and that server's entry in `~/.kiro/settings/mcp.json` is the
+leftover state the design invariant at the top of this document names. The note
+decorates a denial and never grants: which calls are refused is unchanged, and a server
+the gateway did spawn keeps its existing wording (token present, or the quoted spawn
+denial below).
+
 `resolution_failed` -- no usable answer, meaning nothing came back, a `5xx` said the
 gateway is broken, or the resolve itself raised -- passes that test and refuses. Every
 `4xx` returns before that arm, decided by status class, so the reason means the policy

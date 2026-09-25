@@ -995,6 +995,66 @@ class TestStdioLoopCallerIdentity:
             assert kw["outcome"] == "rejected_policy_unresolved"
             assert kw["session_key"] == "dashboard:chat-11"
             assert kw["error"] == "managedToolPolicy.unresolved:identity_unattested"
+            # A gateway-stamped caller is a server the gateway spawned; the
+            # external-client explanation is not for it, so its text is unchanged.
+            assert mcp_shared.external_client_identity_note() not in body
+        finally:
+            harness.close()
+
+    def test_identity_unattested_explains_an_externally_spawned_server(self, monkeypatch):
+        """The editor-config report: ``KIROCREW_SESSION_KEY`` copied into an
+        editor's own MCP config, no token, no launcher pid, no gateway caller. The
+        decision is the same refusal; the text gains the one explanation the
+        reader can act on, shared verbatim with the strict-identity refusals."""
+        ran = []
+        harness = _LoopHarness(monkeypatch, lambda n, a: ran.append(n) or "ok")
+        monkeypatch.setattr(
+            mcp_shared,
+            "_resolve_tool_policy",
+            lambda *a, **k: mcp_shared.ToolPolicy(frozenset(), "identity_unattested"),
+        )
+        monkeypatch.delenv("KIROCREW_STUB_SESSION_TOKEN", raising=False)
+        monkeypatch.delenv("KIROCREW_HOST_PID", raising=False)
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "dashboard:chat-copied-by-hand")
+        try:
+            harness.send(_tools_call(54, "echo"))
+            assert harness.wait_for(lambda: len(harness.responses) >= 1)
+            assert ran == []
+            body = harness.responses[0][1]["content"][0]["text"]
+            assert "identity_unattested" in body
+            assert "could not prove which session it acts for" in body
+            assert body.endswith(mcp_shared.external_client_identity_note("test-server"))
+            assert harness.wait_for(
+                lambda: harness.sel_mock.log_tool_invocation.call_count >= 1
+            )
+            kw = harness.sel_mock.log_tool_invocation.call_args.kwargs
+            assert kw["outcome"] == "rejected_policy_unresolved"
+            assert kw["session_key"] == "dashboard:chat-copied-by-hand"
+        finally:
+            harness.close()
+
+    def test_identity_unattested_without_a_caller_keeps_its_text_for_a_spawned_server(
+        self, monkeypatch
+    ):
+        """No gateway caller but a token on the element: the non-pooled stdio
+        topology the gateway itself spawns. Its failure is the trust root, not an
+        editor config, so the note stays off and the wording is what it was."""
+        harness = _LoopHarness(monkeypatch, lambda n, a: "ok")
+        monkeypatch.setattr(
+            mcp_shared,
+            "_resolve_tool_policy",
+            lambda *a, **k: mcp_shared.ToolPolicy(frozenset(), "identity_unattested"),
+        )
+        monkeypatch.setenv("KIROCREW_STUB_SESSION_TOKEN", "tok")
+        monkeypatch.delenv("KIROCREW_HOST_PID", raising=False)
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "dashboard:chat-12")
+        try:
+            harness.send(_tools_call(55, "echo"))
+            assert harness.wait_for(lambda: len(harness.responses) >= 1)
+            body = harness.responses[0][1]["content"][0]["text"]
+            assert "identity_unattested" in body
+            assert body.endswith("operator's exclusion list.")
+            assert mcp_shared.external_client_identity_note("test-server") not in body
         finally:
             harness.close()
 
