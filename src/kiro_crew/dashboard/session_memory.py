@@ -147,13 +147,23 @@ def lineage_parents(
     recover from: neither view says which is right.
 
     The join is by SLOT, never by pid or title, and a row is reachable under
-    three spellings of its slot because three writers spell it differently. A
-    crew log names a slot the way ``session_create`` attributed it -- the bare
-    ``slot.key`` for a dashboard session -- while the row's key is the full
-    ``dashboard:`` session key. A slot bound to a channel or cron conversation
-    runs its turns under ``linked_session_key`` while its log still carries the
-    dashboard slot key, so *spend_slot_by_session* (the alias
-    :func:`_spend_for_session` already bridges for credits) is the third.
+    every spelling its own writers use, because they do not agree on one. A
+    crew log names a slot the way ``session_create`` attributed it -- the key the
+    creating caller authenticated as -- while the row's key is whatever its own
+    payload is keyed by: the full ``dashboard:`` session key on the Sessions
+    table, the bare ``slot.key`` on the slots payload. A slot bound to a channel
+    or cron conversation runs its turns under ``linked_session_key``, so its
+    session key and its slot key are unrelated strings and only one of them is in
+    any given payload.
+
+    *spend_slot_by_session* is that correspondence -- session key to slot key,
+    the alias :func:`_spend_for_session` already bridges for credits -- and it is
+    read in BOTH directions here, which is what lets one call serve both
+    payloads. A Sessions-table row keyed by session finds its slot spelling
+    through the map; a slots row keyed by slot finds its session spelling through
+    the same map inverted. Each caller therefore passes the SAME map and gets the
+    same edges, where a one-directional read left a channel-born conductor
+    nesting its workers on one surface and orphaning them on the other.
 
     *nodes* is the projection's fold, and each caller passes the one it reads: the
     memory payload takes :meth:`SessionMemorySampler._lineage` (whose companion flag
@@ -171,12 +181,28 @@ def lineage_parents(
         return {}
     from kiro_crew.crew_log.session_tree import parent_payload
 
+    # Session key -> slot key as given, and slot key -> session key inverted. Built
+    # once per call rather than per row: the map is the whole live registry, and the
+    # inverse is read for every row.
+    #
+    # Last writer wins in the inverse, matching the forward map's own documented rule
+    # for two slots claiming one session identity. A slot has exactly one effective
+    # session key, so the collision this can produce is the same one the forward map
+    # already carries rather than a new one.
+    forward: dict[str, str] = {}
+    inverse: dict[str, str] = {}
+    if isinstance(spend_slot_by_session, dict):
+        for session_key, slot_key in spend_slot_by_session.items():
+            if isinstance(session_key, str) and isinstance(slot_key, str):
+                if session_key and slot_key:
+                    forward[session_key] = slot_key
+                    inverse[slot_key] = session_key
+
     def slot_spellings(row_key: str) -> list[str]:
         spellings = [row_key, _bare_slot_key(row_key)]
-        if isinstance(spend_slot_by_session, dict):
-            aliased = spend_slot_by_session.get(row_key)
-            if isinstance(aliased, str) and aliased:
-                spellings.append(aliased)
+        for extra in (forward.get(row_key), inverse.get(row_key)):
+            if isinstance(extra, str) and extra:
+                spellings.append(extra)
         return spellings
 
     live_key_of: dict[str, str] = {}

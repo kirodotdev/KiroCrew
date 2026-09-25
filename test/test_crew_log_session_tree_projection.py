@@ -749,6 +749,62 @@ def test_a_moved_data_home_re_seeds_instead_of_serving_the_old_store(tmp_path, m
     assert "slot-z" in nodes
 
 
+def test_an_installed_fold_is_never_reported_as_the_wrong_store(monkeypatch):
+    """No reader may see the fold installed and be told the projection is unseeded.
+
+    ``_attach_slot_parents`` ships EVERY row's ``parent`` as null whenever
+    ``seeded_for_current_store`` is false, and the chat sidebar drops its conductor lane
+    when no row carries a creator. So a window where the records are installed and the
+    store identity is not yet stamped costs the sidebar the nesting it had already
+    earned -- it appears and vanishes, with nothing in the log to say why.
+
+    Sampled from ``_schedule_checkpoint``, which the cold seed calls immediately after
+    it installs the records and releases the lock: that call is inside the window if
+    there is one.
+    """
+    _write_unit("s-parent", "slot-a")
+    _write_unit("s-child", "slot-b", parent="slot-a")
+
+    proj = SessionTreeProjection()
+    seen: list[tuple[bool, int]] = []
+    real = proj._schedule_checkpoint
+
+    def sample() -> None:
+        seen.append((proj.seeded_for_current_store, len(proj.nodes())))
+        real()
+
+    monkeypatch.setattr(proj, "_schedule_checkpoint", sample)
+    proj.ensure_seeded()
+
+    assert seen, "the cold seed did not reach the checkpoint step"
+    for seeded, count in seen:
+        if count:
+            assert seeded is True, "the fold was installed while the store read as another"
+
+
+def test_a_store_root_that_cannot_be_read_keeps_the_fold(monkeypatch):
+    """An unreadable root is "cannot tell", never "a different store".
+
+    :func:`_current_root` is path arithmetic that CAN fail -- resolving the data home
+    touches the filesystem -- and it answers with an empty string when it does. Read as
+    a store identity that string matches nothing, so one transient fault reported the
+    projection unseeded and the next ``ensure_seeded`` discarded a correct fold to
+    re-scan for it. Every slots frame in between shipped no lineage at all.
+    """
+    _write_unit("s-parent", "slot-a")
+    _write_unit("s-child", "slot-b", parent="slot-a")
+
+    proj = SessionTreeProjection()
+    proj.ensure_seeded()
+    assert proj.nodes()["slot-b"].parent_slot == "slot-a"
+
+    monkeypatch.setattr(stp, "_current_root", lambda: "")
+
+    assert proj.seeded_for_current_store is True, "a failed root read reported another store"
+    proj.ensure_seeded()
+    assert proj.nodes()["slot-b"].parent_slot == "slot-a", "a correct fold was discarded"
+
+
 def test_no_checkpoint_seeds_from_one_cold_scan():
     _write_unit("s-parent", "slot-a")
     _write_unit("s-child", "slot-b", parent="slot-a")

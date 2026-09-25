@@ -156,6 +156,126 @@ def test_the_shape_is_the_same_two_keys_the_memory_payload_uses():
     assert memory_child["key"] == "dashboard:chat-1"
 
 
+def test_a_channel_born_conductor_nests_its_worker_on_the_wire(tmp_path, monkeypatch):
+    """A conductor whose turns run on a channel session is still a nestable creator.
+
+    ``session_create`` stamps ``_created_by`` with the key the caller authenticated as,
+    so a conductor bound to a channel conversation is cited by that CHANNEL key while
+    its slot row is keyed ``chat-N``. The Sessions table resolves it because its own
+    row key IS the channel key; the slots payload has to reach the same answer through
+    the slot alias, or every worker such a conductor opens renders as an orphan root
+    beside a System page that nests all of them.
+    """
+    from chat_test_helpers import _make_state
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "chan-home"))
+    stp.reset_for_tests()
+    channel = "discord:g1:c1:gen1"
+    _unit("s-1", "chat-conductor")
+    _unit("s-2", "chat-worker", parent=channel)
+    _seeded()
+
+    state = _make_state(tmp_path)
+    conductor = state.get_or_create_slot("chat-conductor")
+    conductor.linked_session_key = channel
+    state.get_or_create_slot("chat-worker")
+
+    by_key = {p["key"]: p for p in state.serialize_slots()}
+    assert by_key["chat-worker"]["parent"] == {"slot": channel, "key": "chat-conductor"}
+
+    # The control: the Sessions table already resolved this edge, which is what made
+    # the two surfaces disagree about the same gateway at the same moment.
+    memory_parents = lineage_parents(
+        [{"key": channel}, {"key": "dashboard:chat-worker"}],
+        stp.projection().nodes(),
+        state.spend_slot_by_session(),
+    )
+    assert memory_parents["dashboard:chat-worker"] == {"slot": channel, "key": channel}
+
+
+def test_a_member_conductor_nests_its_worker_on_the_wire(tmp_path, monkeypatch):
+    """A crew member's own DM slot is a creator like any other.
+
+    Its row is keyed ``member-<slug>`` and its session key is the ``dashboard:``
+    spelling of that, so a citation in EITHER spelling has to resolve to the one row.
+    """
+    from chat_test_helpers import _make_state
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "member-home"))
+    stp.reset_for_tests()
+    _unit("s-1", "member-pipeline")
+    _unit("s-2", "chat-worker", parent="dashboard:member-pipeline")
+    _seeded()
+
+    state = _make_state(tmp_path)
+    # ``mode="member"`` is the one path the slot registry admits a ``member-`` key on.
+    state.get_or_create_slot("member-pipeline", mode="member")
+    state.get_or_create_slot("chat-worker")
+
+    by_key = {p["key"]: p for p in state.serialize_slots()}
+    assert by_key["chat-worker"]["parent"] == {
+        "slot": "dashboard:member-pipeline",
+        "key": "member-pipeline",
+    }
+
+
+def test_both_joins_agree_on_every_creator_given_the_same_fold(tmp_path, monkeypatch):
+    """ONE join, so the sidebar and the Sessions table cannot nest a gateway differently.
+
+    Same fold, same alias map, both payloads: every child cites the same creator and
+    every citation resolves to a live row in the payload's OWN key space. A child that
+    resolves on one surface and not the other is the failure this asserts away, and
+    neither payload gets to be the one that is right.
+    """
+    from chat_test_helpers import _make_state
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "agree-home"))
+    stp.reset_for_tests()
+    channel = "discord:g1:c1:gen1"
+    _unit("s-1", "chat-plain")
+    _unit("s-2", "chat-channel")
+    _unit("s-3", "member-pipeline")
+    _unit("s-4", "chat-kid-plain", parent="chat-plain")
+    _unit("s-5", "chat-kid-channel", parent=channel)
+    _unit("s-6", "chat-kid-member", parent="dashboard:member-pipeline")
+    _seeded()
+
+    state = _make_state(tmp_path)
+    for key in ("chat-plain", "chat-channel"):
+        state.get_or_create_slot(key)
+    state.get_or_create_slot("member-pipeline", mode="member")
+    state.get_slot("chat-channel").linked_session_key = channel
+    for key in ("chat-kid-plain", "chat-kid-channel", "chat-kid-member"):
+        state.get_or_create_slot(key)
+
+    aliases = state.spend_slot_by_session()
+    slot_parents = {p["key"]: p["parent"] for p in state.serialize_slots()}
+    # The Sessions table's rows: one per live session, keyed by session identity.
+    memory_parents = lineage_parents(
+        [{"key": key} for key in aliases],
+        stp.projection().nodes(),
+        aliases,
+    )
+
+    # The citation is the child's own crew log entry, so it is the same fact on both.
+    slot_of_session = {key: slot for key, slot in aliases.items()}
+    for session_key, slot_key in slot_of_session.items():
+        wire = slot_parents[slot_key]
+        table = memory_parents[session_key]
+        assert (wire is None) == (table is None), slot_key
+        if wire is None:
+            continue
+        assert wire["slot"] == table["slot"], slot_key
+        # And each resolves within its own payload: a null key here means the row
+        # renders as an orphan root while the other surface nests it.
+        assert wire["key"] is not None, slot_key
+        assert table["key"] is not None, session_key
+
+    assert slot_parents["chat-kid-plain"]["key"] == "chat-plain"
+    assert slot_parents["chat-kid-channel"]["key"] == "chat-channel"
+    assert slot_parents["chat-kid-member"]["key"] == "member-pipeline"
+
+
 def test_a_creator_that_is_not_running_leaves_the_citation_but_no_key():
     """The child stays a root and still says who opened it."""
     _unit("s-1", "chat-1")
@@ -256,6 +376,77 @@ def test_a_lineage_failure_says_so_once_at_warning(monkeypatch, caplog):
     # The traceback is the payload of the report: without it the line says only that
     # something failed, which is what the rows already implied.
     assert warnings[0].exc_info is not None
+
+
+def test_a_broken_alias_read_degrades_the_nesting_and_says_so(tmp_path, monkeypatch, caplog):
+    """A fault resolving the aliases costs the NESTING, and is reported, not swallowed.
+
+    Two things are owed here and they pull against each other. The payload must still
+    paint, because a sidebar with no rows is a worse failure than a sidebar that does not
+    nest -- so the fault cannot propagate out of ``serialize_slots``. And it must not pass
+    silently, because rows with no lineage are byte-identical to a store that genuinely
+    holds none, which is the orphaned lane this argument exists to fix. The WARNING with
+    its traceback is what separates the two, so both are asserted here.
+
+    Resolving the aliases therefore happens INSIDE ``_attach_slot_parents``, where that
+    handler already lives; reading them at the call site put this one fault outside it.
+    """
+    from chat_test_helpers import _make_state
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "broken-alias-home"))
+    monkeypatch.setattr(st, "_lineage_failure_warned", False)
+    stp.reset_for_tests()
+    _unit("s-1", "chat-1-parent")
+    _unit("s-2", "chat-2-child", parent="chat-1-parent")
+    _seeded()
+
+    state = _make_state(tmp_path)
+    state.get_or_create_slot("chat-1-parent")
+    state.get_or_create_slot("chat-2-child")
+
+    def boom(*_a, **_k):
+        raise RuntimeError("slot registry is broken")
+
+    monkeypatch.setattr(type(state), "spend_slot_by_session", boom)
+
+    with caplog.at_level("DEBUG", logger=st.logger.name):
+        payloads = state.serialize_slots()
+
+    # Every row still ships, and none of them claims a creator.
+    by_key = {p["key"]: p for p in payloads}
+    assert set(by_key) == {"chat-1-parent", "chat-2-child"}
+    assert all("parent" in p for p in payloads)
+    assert by_key["chat-2-child"]["parent"] is None
+
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert warnings[0].exc_info is not None
+
+
+def test_a_state_double_without_the_alias_method_still_ships_every_slot(tmp_path, monkeypatch):
+    """The case the guard is really for: a stub state that never had the method.
+
+    Narrow, because ``hasattr`` answers exactly this and nothing else -- it is the same
+    check the Sessions table's handler makes on the same method, so the two surfaces
+    guard the one join the one way.
+    """
+    from chat_test_helpers import _make_state
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "no-method-home"))
+    stp.reset_for_tests()
+    _unit("s-1", "chat-1-parent")
+    _unit("s-2", "chat-2-child", parent="chat-1-parent")
+    _seeded()
+
+    state = _make_state(tmp_path)
+    state.get_or_create_slot("chat-1-parent")
+    state.get_or_create_slot("chat-2-child")
+    monkeypatch.delattr(type(state), "spend_slot_by_session")
+
+    by_key = {p["key"]: p for p in state.serialize_slots()}
+
+    # Every row still ships, and the citation that needs no alias still resolves.
+    assert by_key["chat-2-child"]["parent"] == {"slot": "chat-1-parent", "key": "chat-1-parent"}
 
 
 def test_a_healthy_read_says_nothing(caplog):
