@@ -7306,7 +7306,8 @@
       "close_editor": "Cerrar el editor",
       "copied": "¡Copiado!",
       "copy": "Copiar",
-      "edit_code_block": "Editar el bloque de código"
+      "edit_code_block": "Editar el bloque de código",
+      "not_saved_hint": "No se guarda en el chat. Al cerrar se descartan los cambios."
     },
     "notifications": {
       "notifMeta": {

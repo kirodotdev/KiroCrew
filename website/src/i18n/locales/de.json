@@ -7201,7 +7201,8 @@
       "close_editor": "Editor schließen",
       "copied": "Kopiert!",
       "copy": "Kopieren",
-      "edit_code_block": "Codeblock bearbeiten"
+      "edit_code_block": "Codeblock bearbeiten",
+      "not_saved_hint": "Wird nicht in den Chat zurückgeschrieben. Schließen verwirft die Änderungen."
     },
     "notifications": {
       "notifMeta": {

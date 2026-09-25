@@ -7096,7 +7096,8 @@
       "close_editor": "エディターを閉じる",
       "copied": "コピーしました！",
       "copy": "コピー",
-      "edit_code_block": "コードブロックを編集"
+      "edit_code_block": "コードブロックを編集",
+      "not_saved_hint": "チャットには保存されません。閉じると編集内容は破棄されます。"
     },
     "notifications": {
       "notifMeta": {

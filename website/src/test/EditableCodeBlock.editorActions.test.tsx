@@ -10,19 +10,25 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react'
 import { setTerminalEnabledFlag } from '../utils/terminalRegistry'
 
-const hoisted = vi.hoisted(() => ({ files: [] as { name: string; contents: string }[] }))
+const hoisted = vi.hoisted(() => ({
+  files: [] as { name: string; contents: string }[],
+  classNames: [] as (string | undefined)[],
+}))
 
 vi.mock('../pierre', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  PierreEditor: ({ file, onChange }: {
+  PierreEditor: ({ file, onChange, className }: {
     file: { name: string; contents: string }
     onChange?: (v: string) => void
+    className?: string
   }) => {
     hoisted.files.push(file)
+    hoisted.classNames.push(className)
     return (
       <textarea
         data-testid="pierre-editor"
         aria-label="scratch editor"
+        className={className}
         defaultValue={file.contents}
         onChange={e => onChange?.(e.target.value)}
       />
@@ -67,6 +73,7 @@ const copyButton = () => screen.getAllByRole('button')
 
 beforeEach(() => {
   hoisted.files.length = 0
+  hoisted.classNames.length = 0
   vi.mocked(copyCode).mockClear()
 })
 
@@ -105,6 +112,43 @@ describe('EditableCodeBlock editor chrome', () => {
     render(<EditableCodeBlock code="print(1)" lang="python" complete />)
     openEditor()
     expect(editorFile().name).toBe('snippet.python')
+  })
+
+  it('says up front that edits are not saved and that closing discards them', () => {
+    // Nothing in the editor is ever written to the message, and the X
+    // discards silently. Without saying both, the pencil reads as a broken
+    // save and the X as a gamble. The wording avoids "copy": the Copy button
+    // sits next to it.
+    render(<EditableCodeBlock code="const a = 1" lang="ts" complete />)
+    openEditor()
+    const hint = screen.getByText('Not saved back to the chat. Closing discards edits.')
+    expect(hint).toBeInTheDocument()
+    // The span wraps at narrow widths. A `truncate` would clip the second
+    // sentence first -- the discard warning -- and a hover-only title cannot
+    // recover it on touch.
+    expect(hint).not.toHaveClass('truncate')
+    expect(hint).not.toHaveAttribute('title')
+  })
+})
+
+describe('EditableCodeBlock editor height cap', () => {
+  it('puts the height cap on the editor scroller itself, not on a wrapper', () => {
+    // Pierre's editor scrolls inside its own `overflow-auto` surface, and that
+    // surface is sized `h-full`. A wrapper that only sets `max-height` has an
+    // indefinite height, so `h-full` inside it resolves to auto: the surface
+    // grows to its content, the wrapper clips it, and the wheel scrolls the
+    // transcript instead of the code (only the caret could move the view).
+    // The cap must therefore reach the scroller as its own class.
+    render(<EditableCodeBlock code="const a = 1" lang="ts" complete />)
+    openEditor()
+    expect(hoisted.classNames[hoisted.classNames.length - 1]).toContain('max-h-[480px]')
+
+    let el: HTMLElement | null = screen.getByTestId('pierre-editor').parentElement
+    const root = document.querySelector('.code-block')
+    while (el && el !== root) {
+      expect(el.className).not.toMatch(/max-h-/)
+      el = el.parentElement
+    }
   })
 })
 

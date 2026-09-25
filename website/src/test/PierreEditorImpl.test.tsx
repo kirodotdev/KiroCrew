@@ -461,6 +461,19 @@ it('keeps long recovery text vertically scrollable', () => {
   expect(fallback?.className).toContain('overflow-auto')
 })
 
+it('carries the caller className onto the recovery branch too', () => {
+  // The caller's className is the surface's size cap (a chat block caps it
+  // at 480px). Applying it only on the Virtualizer would leave the recovery
+  // grid unbounded whenever highlighting is down.
+  const mounted = mount({ className: 'max-h-[480px]' })
+  pierre.poolState.current = { phase: 'recovering', generation: 1 }
+  mounted.rerender()
+
+  const fallback = mounted.view.container.querySelector('.pierre-editor-fallback')
+  expect(fallback).not.toBeNull()
+  expect(fallback!.parentElement!.className).toContain('max-h-[480px]')
+})
+
 it('transfers focus through recovery and back to the replacement editor', () => {
   const mounted = mount()
   const surface = mounted.view.getByTestId('pierre-file')

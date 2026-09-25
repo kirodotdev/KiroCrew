@@ -7096,7 +7096,8 @@
       "close_editor": "편집기 닫기",
       "copied": "복사했습니다!",
       "copy": "복사",
-      "edit_code_block": "코드 블록 편집"
+      "edit_code_block": "코드 블록 편집",
+      "not_saved_hint": "채팅에는 저장되지 않습니다. 닫으면 편집 내용이 삭제됩니다."
     },
     "notifications": {
       "notifMeta": {

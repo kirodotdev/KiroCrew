@@ -2544,7 +2544,8 @@
     },
     "monacoCodeBlock": {
       "copied": "Copied!",
-      "copy": "Copy"
+      "copy": "Copy",
+      "not_saved_hint": "Not saved back to the chat. Closing discards edits."
     },
     "notifications": {
       "notifMeta": {

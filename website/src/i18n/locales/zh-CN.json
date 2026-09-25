@@ -7096,7 +7096,8 @@
       "close_editor": "关闭编辑器",
       "copied": "已复制！",
       "copy": "复制",
-      "edit_code_block": "编辑代码块"
+      "edit_code_block": "编辑代码块",
+      "not_saved_hint": "不会保存回聊天中。关闭即丢弃修改。"
     },
     "notifications": {
       "notifMeta": {

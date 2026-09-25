@@ -139,8 +139,11 @@ export const PierreEditor = memo(forwardRef<PierreEditorHandle, {
   diffExpandUnchanged?: boolean
   className?: string
 }>(function PierreEditor(props, ref) {
+  // The caller's `className` is the editor's sizing contract (a chat block
+  // caps it at 480px), so it must bound every render path: the plain
+  // fallback shown while the chunk loads as much as the Virtualizer after.
   return (
-    <Suspense fallback={<PlainCodeFallback text={props.file.contents} />}>
+    <Suspense fallback={<PlainCodeFallback text={props.file.contents} className={props.className} />}>
       <EditorImpl ref={ref} {...props} />
     </Suspense>
   )

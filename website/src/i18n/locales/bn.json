@@ -7201,7 +7201,8 @@
       "close_editor": "এডিটর বন্ধ করুন",
       "copied": "কপি হয়েছে!",
       "copy": "কপি",
-      "edit_code_block": "কোড ব্লক সম্পাদনা করুন"
+      "edit_code_block": "কোড ব্লক সম্পাদনা করুন",
+      "not_saved_hint": "চ্যাটে ফেরত সংরক্ষিত হয় না। বন্ধ করলে পরিবর্তন মুছে যায়।"
     },
     "notifications": {
       "notifMeta": {
