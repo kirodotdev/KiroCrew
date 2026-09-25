@@ -11,17 +11,30 @@ the mask hangs off the object that was there at spawn.
 
 These tests enumerate the protected names FROM SOURCE for every tier and pin
 which of the two holds each name has. They are static: no namespace, no mount,
-no privilege, so they run wherever the suite runs.
+no privilege.
+
+POSIX only, and the reason is the legitimate one rather than convenience: the
+launcher mask mechanism does not exist on Windows, where the wrap is skipped
+entirely, so the invariant asserted here has no subject on that platform. The
+skip would be hollow the other way round -- if Windows were itself the behaviour
+under test -- but here running on Windows would assert nothing and crash doing
+it, because the launcher builder reads ``os.getuid``.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import sys
 
 import pytest
 
 from kiro_crew import sandbox
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="_build_launcher_script uses POSIX-only os.getuid; Windows skips the wrap",
+)
 
 TIERS = ("standard", "cc", "strict")
 
@@ -115,11 +128,43 @@ class TestProtectedNamesAreEnumerable:
         )
 
     @pytest.mark.parametrize("tier", TIERS)
-    def test_the_two_holds_partition_the_population(self, tier: str) -> None:
-        held, leaf_only = _split(tier)
-        protected = _protected(tier)
-        assert len(held) + len(leaf_only) == len(protected)
-        assert not (set(held) & set(leaf_only))
+    def test_every_crew_home_leaf_reaches_the_launcher_payload(self, tier: str) -> None:
+        """Two independent derivations of the masked set have to agree.
+
+        The constants say which crew-home leaves are masked; the generated script
+        says which paths the child will actually mount over. Comparing one
+        against the other can fail: a leaf added to the constants that the
+        builder stops emitting is a mask silently dropped, which no assertion
+        computed from the script alone could see.
+        """
+        masked, _readonly = _launcher_sets(tier)
+        missing = sorted(
+            leaf
+            for leaf in sandbox._CREW_HIDDEN_LEAVES
+            if not any(path.endswith("/" + leaf) for path in masked)
+        )
+        assert not missing, (
+            f"on {tier} these crew-home leaves are declared masked but reach no path in "
+            f"the launcher payload, so nothing is mounted over them: {missing}"
+        )
+
+    @pytest.mark.parametrize("tier", TIERS)
+    def test_every_protected_name_is_absolute_and_normalized(self, tier: str) -> None:
+        """The child mounts by these exact strings.
+
+        A relative entry would resolve against the child's working directory and
+        a ``..`` component would resolve somewhere else again, so either one masks
+        a path nobody asked to mask and leaves the intended one open.
+        """
+        bad = sorted(
+            path
+            for path in _protected(tier)
+            if not os.path.isabs(path) or os.path.normpath(path) != path.rstrip("/")
+        )
+        assert not bad, (
+            f"on {tier} these protected paths are not absolute and normalized, so the "
+            f"child would mount over a path other than the one intended: {bad}"
+        )
 
 
 class TestEnclosingHoldsNeverRegress:
@@ -130,25 +175,45 @@ class TestEnclosingHoldsNeverRegress:
     object at one instant. Moving a name from the first class to the second
     reopens the window whatever else the diff says.
 
-    Asserted as EQUALITY rather than containment, so the constant cannot drift in
-    either direction unnoticed: a lost hold reddens, and a newly granted one has
-    to be recorded in the same diff that grants it.
+    Asserted in BOTH directions, because the two failures are different bugs and
+    one of them is silent. A recorded hold that goes missing is a protection lost.
+    A hold the launcher gives that nothing records is a protection nobody is
+    watching: its own later loss cannot redden either, so the ratchet goes quiet
+    in exactly the direction it exists for.
+
+    The second direction cannot be derived from the first. A set built by
+    iterating the recorded names is a subset of them by construction, so
+    subtracting it from the recorded names can only ever surface the first
+    failure. The unrecorded direction has to be computed from ``held``.
     """
 
     @pytest.mark.parametrize("tier", TIERS)
-    def test_held_set_matches_the_recorded_set(self, tier: str) -> None:
+    def test_no_recorded_hold_went_missing(self, tier: str) -> None:
         held, _ = _split(tier)
-        held_leaves = {
+        lost = sorted(
             leaf
             for leaf in HELD_BY_ENCLOSING_MASK
-            if any(path.endswith("/" + leaf) for path in held)
-        }
-        lost = sorted(HELD_BY_ENCLOSING_MASK - held_leaves)
+            if not any(path.endswith("/" + leaf) for path in held)
+        )
         assert not lost, (
             f"on {tier} these names lost their enclosing stand-in mask and are now held "
             f"only by their own leaf name: {lost}. A host-side atomic replace of such a "
             "name puts a writable object at a protected path for the rest of that "
             "namespace's life."
+        )
+
+    @pytest.mark.parametrize("tier", TIERS)
+    def test_no_hold_is_unrecorded(self, tier: str) -> None:
+        held, _ = _split(tier)
+        unrecorded = sorted(
+            path
+            for path in held
+            if not any(path.endswith("/" + leaf) for leaf in HELD_BY_ENCLOSING_MASK)
+        )
+        assert not unrecorded, (
+            f"on {tier} these names are held by an enclosing stand-in mask but are "
+            f"recorded nowhere in HELD_BY_ENCLOSING_MASK: {unrecorded}. Record each one "
+            "in the same diff that grants it, or its later loss cannot redden."
         )
 
     @pytest.mark.parametrize("tier", TIERS)
@@ -221,8 +286,3 @@ class TestLeafOnlyPopulationIsRecorded:
             "leave writable inside a live namespace; hold it with an enclosing directory "
             "mask instead of adding it here."
         )
-
-    @pytest.mark.parametrize("tier", TIERS)
-    def test_every_protected_name_is_accounted_for(self, tier: str) -> None:
-        held, leaf_only = _split(tier)
-        assert len(held) + len(leaf_only) == len(_protected(tier))
