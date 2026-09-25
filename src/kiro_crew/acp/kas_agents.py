@@ -162,7 +162,9 @@ _PSEUDO_FS_ROOTS = ("/proc", "/sys", "/dev")
 #: is what kept ``hooks`` written off as unsupported. KAS runs pre/post-tool-use
 #: hooks natively and loads them from an agent profile ON DISK (it even accepts
 #: Crew's object form), so what is lost here is a delivery path, not a feature:
-#: an agent injected over the wire cannot carry them.
+#: an agent injected over the wire cannot carry them. Crew's turn loop fires the
+#: spec's ``hooks`` for such a session instead (:mod:`kiro_crew.agent_sdk.spec_hooks`), so of
+#: these keys only :data:`SPEC_KEYS_WITHOUT_CARRIER` is actually lost.
 #:
 #: ``allowedTools`` is deliberately NOT in this set. It has no slot either, but
 #: :mod:`kiro_crew.acp.kas_permissions` translates it into ``permissions``, so
@@ -174,6 +176,16 @@ UNSUPPORTED_SPEC_KEYS = frozenset(
         "toolsSettings",
     }
 )
+
+
+#: The keys in :data:`UNSUPPORTED_SPEC_KEYS` that nothing carries to a KAS session,
+#: so an agent that sets one runs without it. The user is told once per session.
+SPEC_KEYS_WITHOUT_CARRIER = UNSUPPORTED_SPEC_KEYS - {"hooks"}
+
+
+def spec_keys_without_carrier(spec: dict[str, Any]) -> list[str]:
+    """The keys of :data:`SPEC_KEYS_WITHOUT_CARRIER` that *spec* sets, sorted."""
+    return sorted(k for k in SPEC_KEYS_WITHOUT_CARRIER if spec.get(k))
 
 
 class KasAgentTranslationError(ValueError):
@@ -752,11 +764,11 @@ def to_client_custom_agent(
 
     dropped = sorted(k for k in UNSUPPORTED_SPEC_KEYS if spec.get(k))
     if dropped:
-        # Says WHY the key is dropped, because the previous wording ("no KAS
-        # equivalent") reads as "KAS cannot do this" and sent readers looking for
-        # a missing feature instead of a missing wire field. Debug, not warning:
-        # this fires on every session/new with a constant payload, so at WARNING
-        # it drowns the log without ever telling anyone something new.
+        # Says WHY the key is dropped: a missing wire field, not a missing KAS
+        # feature. Debug, not warning: this fires on every session/new with a
+        # constant payload. The user learns of it from the session-start notice
+        # the turn loop posts for SPEC_KEYS_WITHOUT_CARRIER, and ``hooks`` still
+        # runs, fired by that loop.
         logger.debug(
             "agent %r: spec keys the customAgents wire schema cannot carry, "
             "so an injected agent runs without them: %s",

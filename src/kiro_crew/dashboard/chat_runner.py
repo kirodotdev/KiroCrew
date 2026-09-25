@@ -63,6 +63,7 @@ from kiro_crew.agent_discovery import (
 from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
 from kiro_crew.agent_sdk.capabilities import capabilities_of
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
+from kiro_crew.agent_sdk.spec_hooks import crew_fired_spec_hooks
 from kiro_crew.autonudge import get_instance
 from kiro_crew.autonudge_authz import normalize_banner
 from kiro_crew.config.loader import (
@@ -764,6 +765,62 @@ async def _surface_agent_welcome(
     if not text:
         return
     append_and_surface(state, slot, "notice", _redact_display_text(text), "msg msg-info")
+
+
+#: The block ``_fire`` returns for a PreToolUse when the agent spec's own hooks
+#: could not be read. A deny hook that was never loaded gave no verdict, and a
+#: PreToolUse gate with no verdict blocks, as it does for an uninitialized store.
+_SPEC_HOOKS_UNREADABLE_BLOCK = "BLOCKED:system:the agent spec's hooks could not be read"
+
+
+async def _prepare_spec_hooks(
+    state: "DashboardState",
+    slot: "_ChatSlot",
+    client: Any,
+    agent: str,
+    *,
+    is_new: bool,
+) -> tuple[list, bool, str | None]:
+    """This turn's spec hooks for ``_fire``, whether they could not be read, and
+    the session workspace they run in (``None`` for the gateway's own).
+
+    Only for a backend whose capabilities say Crew fires the spec's hooks: kiro-cli
+    runs the field itself, and firing it here too would run every hook twice, so
+    every other session gets ``([], False, None)`` without the spec being read.
+
+    On a new session, a spec that sets a key nothing carries to this backend gets
+    one notice row, so the agent does not run without it silently.
+    """
+    if not agent or not capabilities_of(client).crew_fires_spec_hooks:
+        return [], False, None
+    cwd = getattr(client, "cwd", "")
+    work_dir = cwd if isinstance(cwd, str) and cwd else None
+    try:
+        hooks, lost = await asyncio.to_thread(crew_fired_spec_hooks, agent)
+    except Exception:  # noqa: BLE001 - the caller fails PreToolUse closed
+        logger.warning(
+            "agent spec hooks for %r could not be read; tool calls are blocked",
+            agent,
+            exc_info=True,
+        )
+        return [], True, work_dir
+    if is_new and lost:
+        append_and_surface(
+            state,
+            slot,
+            "notice",
+            _redact_display_text(_spec_keys_notice(agent, lost)),
+            "msg msg-info",
+        )
+    return hooks, False, work_dir
+
+
+def _spec_keys_notice(agent: str, keys: list[str]) -> str:
+    """The session-start notice for spec keys this backend never receives."""
+    return (
+        f"ℹ️ Agent {agent} sets {' and '.join(keys)}, which this backend does not "
+        "receive, so they have no effect in this session."
+    )
 
 
 def _redacted_hook_block(event: Any, pre_hook_results: Any) -> tuple[str, str]:
@@ -8975,6 +9032,13 @@ async def _run_chat(
     # have served. The ACP attempt below is the authority and raises
     # AcpAuthRequired when the CLI is signed out.
 
+    # The agent spec's own hooks, when this session's backend never receives them
+    # (filled in once the session client exists; see _prepare_spec_hooks).
+    # Declared before _fire, which reads both at call time.
+    _spec_hooks: list = []
+    _spec_hooks_unreadable = False
+    _spec_hooks_cwd: str | None = None
+
     async def _fire(
         event: str,
         context: str = "",
@@ -8990,6 +9054,10 @@ async def _run_chat(
                 injected.append("BLOCKED:system:hook store not initialized")
                 logger.error("Hook store not initialized for PRE_TOOL_USE - blocking tool")
             return injected
+        if _spec_hooks_unreadable and event == HOOK_EVENT_PRE_TOOL_USE:
+            injected.append(_SPEC_HOOKS_UNREADABLE_BLOCK)
+            logger.error("Agent spec hooks unreadable for PRE_TOOL_USE - blocking tool")
+            return injected
         try:
             results = await state._hook_store.fire(
                 event,
@@ -8999,6 +9067,8 @@ async def _run_chat(
                 tool_response=tool_response,
                 parent_session_key=session_key,
                 hook_continuation_count=hook_continuation_count,
+                extra_hooks=_spec_hooks,
+                extra_hooks_cwd=_spec_hooks_cwd,
             )
             for r in results:
                 # Anchoring rule for the bounded hook excerpts below: text the
@@ -10612,6 +10682,12 @@ async def _run_chat(
         # or fallback from authorizing replay. KAS and every future backend fail
         # closed even if they populate a familiar ``tool_name``.
         _builtin_identity_trusted = client.is_kiro_backend is True
+        # The agent spec's own hooks, for a backend that never receives them. Read
+        # per turn, so an edit to the spec takes effect the way it does where
+        # kiro-cli reads it.
+        _spec_hooks, _spec_hooks_unreadable, _spec_hooks_cwd = await _prepare_spec_hooks(
+            state, slot, client, kiro_agent or slot.agent or "", is_new=is_new
+        )
         # A member DM's first turn carries the four-layer member section as
         # session-start context. Record that it is at stake HERE — the moment
         # the session client exists — not at the context build: every early
@@ -14920,6 +14996,13 @@ async def _run_chat(
                         await drained_to_thread(restore_agent_selection, session_key, switch_change)
                         raise
                     slot.agent = new_agent
+                    # The rest of this turn runs as the new agent, so its tool
+                    # calls meet the new agent's spec hooks, never the old one's.
+                    (
+                        _spec_hooks,
+                        _spec_hooks_unreadable,
+                        _spec_hooks_cwd,
+                    ) = await _prepare_spec_hooks(state, slot, client, new_agent, is_new=False)
                     selected_binding = _current_binding()
                     assistant_text = ""
                     _wsred.reset()

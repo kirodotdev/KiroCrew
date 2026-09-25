@@ -53,6 +53,7 @@ from dataclasses import dataclass
 from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
+    ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
     ACP_BACKENDS_INLINE_COMPACTION,
     model_registry_namespace,
@@ -133,6 +134,13 @@ class SessionCapabilities:
     #: full timeout.
     compacts_inline: bool
 
+    #: Whether Crew's turn loop must fire the agent spec's own ``hooks``.
+    #:
+    #: True where the harness never receives them (KAS takes its agent over a
+    #: wire schema with no slot for the field). False where the harness runs them
+    #: itself, and firing them here too would run each one twice.
+    crew_fires_spec_hooks: bool
+
 
 def capabilities_for(backend: str) -> SessionCapabilities:
     """The capabilities of *backend*, fail-closed for an id this build cannot name.
@@ -149,6 +157,7 @@ def capabilities_for(backend: str) -> SessionCapabilities:
         resolves_model_from_advertised_list=backend in ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
         effort_via_config_option=backend in ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
         compacts_inline=backend in ACP_BACKENDS_INLINE_COMPACTION,
+        crew_fires_spec_hooks=backend in ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
     )
 
 
@@ -172,6 +181,7 @@ UNKNOWN_BACKEND_CAPABILITIES = SessionCapabilities(
     resolves_model_from_advertised_list=False,
     effort_via_config_option=False,
     compacts_inline=False,
+    crew_fires_spec_hooks=False,
 )
 
 
