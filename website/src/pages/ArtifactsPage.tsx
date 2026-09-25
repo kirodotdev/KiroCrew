@@ -23,7 +23,7 @@ import { useIsMobile } from '../hooks/useIsMobile'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '../components/ui/dropdown-menu'
 import { timeAgo as _timeAgo } from '../utils/timeAgo'
 import ArtifactFolderDeleteDialog from '../components/ArtifactFolderDeleteDialog'
-import { DndDraggable, DndDroppable } from '../components/dnd'
+import { DndActiveProbe, DndDraggable, DndDroppable } from '../components/dnd'
 import { useArtifactFolders, useInvalidateArtifactFolders, useMoveArtifactToFolder, type MoveArtifactOptions } from '../hooks/useArtifactFolders'
 import useMoveUndo from '../hooks/useMoveUndo'
 import MoveUndoBar from '../components/MoveUndoBar'
@@ -1278,13 +1278,18 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
     const o = e.over?.data.current as { type?: string; folderId?: string } | undefined
     setOverFolderId(o?.type === 'folder-drop' ? (o.folderId ?? '') : null)
   }, [])
+  // The one place the drag mirror is torn down: end, cancel and the
+  // reconciler below all go through it so none can leave a piece behind.
+  const resetLibraryDrag = useCallback(() => {
+    setActiveDrag(null)
+    setOverFolderId(null)
+  }, [])
   const handleDragStart = useCallback((e: DragStartEvent) => {
     const d = e.active.data.current as LibraryDrag | undefined
     if (d?.type === 'artifact' || d?.type === 'folder') setActiveDrag(d)
   }, [])
   const handleDragEnd = useCallback((e: DragEndEvent) => {
-    setActiveDrag(null)
-    setOverFolderId(null)
+    resetLibraryDrag()
     const a = e.active.data.current as LibraryDrag | undefined
     const o = e.over?.data.current as { type?: string; folderId?: string } | undefined
     if (!a || o?.type !== 'folder-drop') return
@@ -1324,8 +1329,24 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
       toFolderColor: dest?.color,
       itemTitle: dragged.name,
     })
-  }, [folders, armArtifactMove, armFolderMove, dismissArtifactMove, dismissFolderMove])
-  const handleDragCancel = useCallback(() => { setActiveDrag(null); setOverFolderId(null) }, [])
+  }, [folders, armArtifactMove, armFolderMove, dismissArtifactMove, dismissFolderMove, resetLibraryDrag])
+  const handleDragCancel = resetLibraryDrag
+  // Which DndContexts hold an active drag, as reported by DndActiveProbe. A
+  // ref, not state: the probe writes it from a layout effect and the
+  // reconciler reads it from a passive effect in the same commit.
+  const dndActiveContexts = useRef(new Set<string>())
+  const reportDndActive = useCallback((id: string, active: boolean) => {
+    if (active) dndActiveContexts.current.add(id)
+    else dndActiveContexts.current.delete(id)
+  }, [])
+  // Reconcile the mirror with dnd-kit's store after every commit: a live
+  // mirror with no context reporting a drag is a gesture whose end dnd-kit
+  // never delivered. Deliberately dependency-free, and two ref reads wide.
+  useEffect(() => {
+    if (activeDrag === null && overFolderId === null) return
+    if (dndActiveContexts.current.size > 0) return
+    resetLibraryDrag()
+  })
 
   const allTags = useMemo(() => {
     const s = new Set<string>()
@@ -1901,6 +1922,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
             onDragEnd={handleDragEnd}
             onDragCancel={handleDragCancel}
           >
+            <DndActiveProbe report={reportDndActive} />
             {/* Everything between the chrome and the gallery is capped and
               * scrolls itself once the gallery owns the page's scroll axis.
               *

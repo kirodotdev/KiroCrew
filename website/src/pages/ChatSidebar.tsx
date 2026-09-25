@@ -9,7 +9,7 @@ import ErrorNotice, { ErrorNoticeMenuItem } from '../components/ErrorNotice'
 import JiraLogo from '../components/icons/JiraLogo'
 import { sourceProviderMeta } from '../utils/sourceProviderMeta'
 import FolderGlyph from '../components/FolderGlyph'
-import { DndContext, closestCenter, pointerWithin, useDroppable, useDndContext, DragOverlay, MeasuringStrategy, type DragEndEvent, type DragStartEvent, type DragOverEvent, type CollisionDetection, type Collision } from '@dnd-kit/core'
+import { DndContext, closestCenter, pointerWithin, useDroppable, DragOverlay, MeasuringStrategy, type DragEndEvent, type DragStartEvent, type DragOverEvent, type CollisionDetection, type Collision } from '@dnd-kit/core'
 import { SortableContext, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -77,7 +77,7 @@ import SessionActionsMenu from '../components/SessionActionsMenu'
 import { ChannelBrandIcon, hasChannelBrandIcon } from '../components/ChannelBrandIcon'
 import { RemoteCrewChip } from '../components/RemoteCrewChip'
 import TagManagerList from '../components/TagManagerList'
-import { DndDraggable, DndDroppable, pointerWithinDeepest, closestEdge } from '../components/dnd'
+import { DndActiveProbe, DndDraggable, DndDroppable, pointerWithinDeepest, closestEdge } from '../components/dnd'
 import { bySidebarOrder, collectFolderSubtreeIds, folderNameText } from '../utils/folderTree'
 import { normalizeRunSessionKey } from '../apps/workflows/runModel'
 import { sanitizeLlmOutput } from '../utils/sanitize'
@@ -577,37 +577,6 @@ function ChatPaneDropZone({ refusal }: { refusal: SessionRefBlockReason | null }
       )}
     </div>
   )
-}
-
-/**
- * Reports whether the enclosing DndContext has an active drag, so the sidebar
- * can reconcile its own drag mirror (`activeDrag`, `dragFrozen`) against the
- * store dnd-kit actually holds.
- *
- * The mirror is set from `onDragStart` and cleared from `onDragEnd` /
- * `onDragCancel`, but dnd-kit only fires the end callbacks when its
- * `sensorContext.active` is populated, and that ref is filled by a layout
- * effect on the commit AFTER the start. A press-move-release that finishes
- * before this component commits (the sidebar is heavy and the mouse sensor
- * arms at 5px) therefore leaves dnd-kit idle while the mirror still says a
- * drag is live: the row projection stays frozen (rows filtered before the
- * gesture never come back, the pinned divider repeats), and the chat-pane
- * drop zone stays on screen with nothing to drop.
- *
- * One probe per DndContext, keyed by a stable id: the tree/flat lanes have
- * one context and the board has one per column, and only a context that
- * hosted the gesture reports active — an idle neighbour must not be read as
- * "no drag anywhere".
- */
-function DndActiveProbe({ report }: { report: (id: string, active: boolean) => void }) {
-  const id = useId()
-  const { active } = useDndContext()
-  const isActive = active != null
-  useLayoutEffect(() => {
-    report(id, isActive)
-    return () => report(id, false)
-  }, [id, isActive, report])
-  return null
 }
 
 /** Approximate height (px) of a folder header row. For root folder drags the
