@@ -1246,7 +1246,94 @@ class TestQueueDepth:
         mgr._emit_queue_depth("dash:1", batch_id="w1")
         await asyncio.sleep(0)
         await asyncio.sleep(0)
-        assert seen == [{"queued": 1}]
+        assert seen == [{"queued": 1, "seq": 1}]
+
+    @pytest.mark.asyncio
+    async def test_emit_queue_depth_drops_an_older_count_that_finishes_last(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Out-of-order completion must not leave a stale non-zero count.
+
+        On the off-loop pump each emit awaits its store count before firing, so
+        an emit scheduled while a row still waited (depth 1) can finish AFTER
+        the one scheduled once it drained (depth 0). The UI keeps whichever
+        lands last, and a late 1 has nothing after it to correct it. The store
+        here parks every count until the test releases it, so the newer emit
+        is made to finish first on purpose.
+        """
+        from kiro_crew.subagent_manager.admission import SpawnAdmissionCoordinator
+
+        seen: list[dict] = []
+
+        async def _on_event(etype: str, _info: SubagentInfo, extra: dict) -> None:
+            if etype == "subagent_queued":
+                seen.append(extra)
+
+        class _ParkedStore:
+            """Every ``run`` waits on a future the test resolves, in its order."""
+
+            def __init__(self) -> None:
+                self.parked: list[asyncio.Future[int]] = []
+
+            async def run(self, _fn: object, *_a: object, **_k: object) -> int:
+                fut: asyncio.Future[int] = asyncio.get_running_loop().create_future()
+                self.parked.append(fut)
+                return await fut
+
+            def count_pending(self, *_a: object, **_k: object) -> int:  # pragma: no cover
+                raise AssertionError("counted through run(), never inline")
+
+        store = _ParkedStore()
+        mgr = _manager(on_event=_on_event)
+        monkeypatch.setattr(SpawnAdmissionCoordinator, "pump_off_loop", True)
+        monkeypatch.setattr(mgr, "_taskq", store)
+
+        mgr._queue = [{"parent_session_key": "dash:1", "_preassigned_id": "q1"}]
+        mgr._emit_queue_depth("dash:1")  # older: the row still waits -> 1
+        mgr._queue = []
+        mgr._emit_queue_depth("dash:1")  # newer: the row drained -> 0
+        for _ in range(3):
+            await asyncio.sleep(0)
+        older, newer = store.parked
+        newer.set_result(0)
+        for _ in range(3):
+            await asyncio.sleep(0)
+        older.set_result(0)
+        for _ in range(3):
+            await asyncio.sleep(0)
+
+        assert seen == [{"queued": 0, "seq": 2}]
+        # Nothing is left in flight, so the ordering marks are forgotten.
+        assert mgr._queue_depth_inflight == {} and mgr._queue_depth_fired == {}
+
+    @pytest.mark.asyncio
+    async def test_emit_queue_depth_seq_orders_parents_independently(self) -> None:
+        """One parent's newer emit never suppresses another parent's older one."""
+        seen: list[tuple[str, dict]] = []
+
+        async def _on_event(_etype: str, info: SubagentInfo, extra: dict) -> None:
+            seen.append((info.parent_session_key, extra))
+
+        mgr = _manager(on_event=_on_event)
+        mgr._queue = [{"parent_session_key": "dash:1"}, {"parent_session_key": "dash:2"}]
+        mgr._emit_queue_depth("dash:1")
+        mgr._emit_queue_depth("dash:2")
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert seen == [("dash:1", {"queued": 1, "seq": 1}), ("dash:2", {"queued": 1, "seq": 2})]
+        assert mgr.queue_depth_seq == 2
+
+    def test_resume_entry_is_not_a_queued_spawn(self) -> None:
+        """A ``_resume_id`` window entry is a resident run asking for its slot
+        back; it already has a card, and its grant emits no depth. Counting it
+        left the chip one high with nothing to correct it."""
+        mgr = _manager()
+        mgr._queue = [
+            {"_resume_id": "r1", "_preassigned_id": "r1", "parent_session_key": "dash:1"},
+            {"_preassigned_id": "q1", "parent_session_key": "dash:1"},
+        ]
+        assert mgr.queued_count_for("dash:1") == 1
+        assert asyncio.run(mgr.queued_count_for_async("dash:1")) == 1
 
 
 class TestStaggerGate:

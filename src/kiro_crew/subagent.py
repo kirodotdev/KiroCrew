@@ -2693,6 +2693,17 @@ class SubagentManager:
         # own, and without this memory each re-emit would flip a memory-deferred
         # wave back to the default (concurrency) text.
         self._queue_wait: dict[str, dict[str, Any]] = {}
+        # Ordering for ``subagent_queued``. Every emit takes the next value of
+        # ONE manager-wide counter at the moment it is scheduled, and rides it on
+        # the event as ``seq``. An emit whose count completes after a newer one
+        # for the same parent has already fired is dropped, so an older non-zero
+        # depth can never land last and pin the chip. ``_queue_depth_fired``
+        # holds the newest fired seq per parent only while an emit for that
+        # parent is still in flight (``_queue_depth_inflight``); both entries
+        # are forgotten when the last one settles, since nothing older remains.
+        self._queue_depth_seq: int = 0
+        self._queue_depth_fired: dict[str, int] = {}
+        self._queue_depth_inflight: dict[str, int] = {}
         # Batch ids whose spawn_batch_started event has already fired.
         self._seen_batches: set[str] = set()
         # Submission accounting per wave: batch_id -> (submitted, expected).
@@ -4512,6 +4523,16 @@ class SubagentManager:
 
     async def queued_count_for_async(self, parent_session_key: str) -> int:
         return await self._run_events.queued_count_for_async_impl(parent_session_key)
+
+    @property
+    def queue_depth_seq(self) -> int:
+        """The newest ``seq`` handed to a ``subagent_queued`` emit.
+
+        A reader that reports a queued count outside the event stream (the
+        dashboard's ``GET /api/spawn?parent=``) pairs it with this value, so a
+        client can order that answer against the events it also receives.
+        """
+        return self._queue_depth_seq
 
     def has_pending_work_for(self, parent_session_key: str) -> bool:
         return self._run_events.has_pending_work_for_impl(parent_session_key)

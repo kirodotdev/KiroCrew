@@ -776,6 +776,21 @@ class TestApiSpawnList:
         agents = _payload(_run(mod.api_spawn_list, _Req(_state(subagents=mgr))))["agents"]
         assert agents[0]["error"] == ""
 
+    def test_parent_query_reports_that_parents_queued_depth_and_seq(self) -> None:
+        """The wave chip's reconcile reads the authoritative depth from here, so
+        a count the ``subagent_queued`` stream left non-zero can be corrected."""
+        mgr = _mgr(queued_count_for_async=AsyncMock(return_value=0), queue_depth_seq=41)
+        req = _Req(_state(subagents=mgr), query={"parent": "dashboard:chat-1"})
+        body = _payload(_run(mod.api_spawn_list, req))
+        assert body["queued"] == 0 and body["queued_seq"] == 41
+        mgr.queued_count_for_async.assert_awaited_once_with("dashboard:chat-1")
+
+    def test_without_parent_query_the_payload_is_unchanged(self) -> None:
+        mgr = _mgr(queued_count_for_async=AsyncMock(return_value=3))
+        body = _payload(_run(mod.api_spawn_list, _Req(_state(subagents=mgr))))
+        assert body == {"agents": []}
+        mgr.queued_count_for_async.assert_not_awaited()
+
 
 class TestApiSpawnRetry:
     def _req(self, mgr: Any, agent_id: str = "a1") -> _Req:

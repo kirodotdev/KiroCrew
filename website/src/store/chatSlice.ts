@@ -417,12 +417,35 @@ const evictMcpApps = (state: { mcpApps: Record<string, McpAppRenderPayload> }, s
  *  `workflowRuns` (keyed by run id) are absent because a slot key never matches
  *  their entries; `mcpApps` carries the slot as a key PREFIX and is handled by
  *  `evictMcpApps`. */
+/** Shared front half of the two queued-count reducers: refuse an unsafe slot
+ *  key and a count OLDER than the newest one applied to the slot, record the
+ *  accepted seq, and hand back the safe key (null = drop the update). A count
+ *  with no seq (an older gateway) is always accepted and leaves the mark alone.
+ */
+function acceptQueuedCount(state: ChatState, payload: { slot: string; seq?: number }): string | null {
+  if (isUnsafeKey(payload.slot)) return null
+  // Tolerate a store built from partial preloaded state (test fixtures and
+  // any consumer that predates these keys): indexing an absent map throws and
+  // would drop the queue update entirely.
+  state.subagentQueued ??= {}
+  state.subagentQueuedReason ??= {}
+  state.subagentQueuedSeq ??= {}
+  const key = safeKey(payload.slot)
+  const seq = payload.seq
+  if (typeof seq === 'number' && Number.isFinite(seq)) {
+    const last = state.subagentQueuedSeq[key]
+    if (last !== undefined && seq < last) return null
+    state.subagentQueuedSeq[key] = seq
+  }
+  return key
+}
+
 const slotKeyedMaps = (state: ChatState) => [
   state.slotMessages, state.slotActivity, state.slotRun, state.slotHydrated,
   state.slotSide, state.slotSideClosed, state.slotStatusDetail,
   state.slotContextPct, state.slotContextTokens, state.stopPressedAt,
   state.followups, state.folderSuggestions,
-  state.pendingQuestions, state.subagentQueued, state.subagentQueuedReason,
+  state.pendingQuestions, state.subagentQueued, state.subagentQueuedReason, state.subagentQueuedSeq,
   state.automations,
   // A surviving pane marker makes a recreated slot's hydrate early-return into
   // nothing, so these must die with the transcript they describe. The retained
@@ -1057,6 +1080,13 @@ interface ChatState {
    *  gateway, or nothing labelled), and the chips then keep their default
    *  "queued behind the concurrency limit" text. Cleared with the count. */
   subagentQueuedReason: Record<string, SubagentQueuedReason>
+  /** Newest `seq` applied to a slot's queued count, from a `subagent_queued`
+   *  event or the chip's `GET /api/spawn?parent=` reconcile. A count carrying
+   *  an OLDER seq is ignored, so an out-of-order frame cannot put back a depth
+   *  a newer one already cleared. Kept when the count drops to 0 (that is when
+   *  a late older frame would do the damage); reset with the counts on a
+   *  reconnect snapshot, since a restarted gateway numbers from zero again. */
+  subagentQueuedSeq: Record<string, number>
   /** The authoritative automation record for each bare slot key.
    *
    * Structured monitors remain here after reaching a terminal outcome so the
@@ -1280,6 +1310,7 @@ const initialState: ChatState = {
   subagents: {},
   subagentQueued: {},
   subagentQueuedReason: {},
+  subagentQueuedSeq: {},
   automations: {},
   selectedSubagentId: null,
   toolLog: [],
@@ -5107,20 +5138,16 @@ const chatSlice = createSlice({
       // the disconnect (under-count self-heals on the next drain frame).
       state.subagentQueued = {}
       state.subagentQueuedReason = {}
+      state.subagentQueuedSeq = {}
     },
     /** Aggregate "waiting to start" count for a slot. Agents queued behind the
      *  concurrency cap / stagger gate have no individual card; this count lets
      *  the chip appear immediately on spawn and show how many are pending
      *  start (issues: late chip, flicker, invisible queue). */
     sseSubagentQueued(state, action: PayloadAction<SubagentQueuedEvent>) {
-      if (isUnsafeKey(action.payload.slot)) return
+      const key = acceptQueuedCount(state, action.payload)
+      if (key === null) return
       const n = Math.max(0, Math.floor(Number(action.payload.queued) || 0))
-      // Tolerate a store built from partial preloaded state (test fixtures and
-      // any consumer that predates this key): indexing an absent map throws and
-      // would drop the queue update entirely.
-      state.subagentQueued ??= {}
-      state.subagentQueuedReason ??= {}
-      const key = safeKey(action.payload.slot)
       if (n === 0) {
         delete state.subagentQueued[key]
         delete state.subagentQueuedReason[key]
@@ -5132,6 +5159,21 @@ const chatSlice = createSlice({
       const reason = parseSubagentQueuedReason(action.payload)
       if (reason) state.subagentQueuedReason[key] = reason
       else delete state.subagentQueuedReason[key]
+    },
+    /** The wave chip's reconcile: the gateway's own queued depth for a slot,
+     *  read over REST. It corrects a count the event stream left wrong (a lost
+     *  or reordered frame) within one poll. It carries no wait label, so a
+     *  still-waiting slot keeps the label its last event gave it. */
+    reconcileSubagentQueued(state, action: PayloadAction<{ slot: string; queued: number; seq?: number }>) {
+      const key = acceptQueuedCount(state, action.payload)
+      if (key === null) return
+      const n = Math.max(0, Math.floor(Number(action.payload.queued) || 0))
+      if (n === 0) {
+        delete state.subagentQueued[key]
+        delete state.subagentQueuedReason[key]
+        return
+      }
+      if (state.subagentQueued[key] !== n) state.subagentQueued[key] = n
     },
     /** Reconcile whichever independent REST snapshots completed successfully.
      * A failed read is unknown, not an authoritative empty collection. */
@@ -7321,7 +7363,7 @@ export const {
   setActiveSlot, clearSlotState, setPendingInput, setAgentSwitchNotice, clearSwitchSlotGone, clearUnresumableResume, clearUndeletableHistory, setQuestionCard, retireStatelessQuestion, clearQuestionCard, setQuestionDraft, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, ageFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
   removeThinking, confirmOptimisticSend, resolveOptimisticSteer, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, settleStopNotRunning, startLocalTurn, endLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, clearSlotCache, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
   sseContextUsage, setVoicePlaying, setVoiceAudio,
-  toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, requestSlotReveal, clearSlotReveal, requestFolderReveal, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,
+  toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, requestSlotReveal, clearSlotReveal, requestFolderReveal, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued, reconcileSubagentQueued,
   sseSubagentBatchUpdate, sseSubagentBatchChunks, selectSubagent, clearTerminalSubagents,
   setAutomations, sseAutomation, removeAutomation,
   sseSubagentSnapshot, sseToolActivity, sseToolResult, sseActivityEvent,

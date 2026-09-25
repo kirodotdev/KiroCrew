@@ -1372,7 +1372,18 @@ async def api_spawn_list(request: web.Request) -> web.Response:
         if withheld:
             entry["context_withheld"] = withheld
         agents.append(entry)
-    return web.json_response({"agents": agents})
+    body: dict[str, object] = {"agents": agents}
+    # ``?parent=<session key>`` adds that parent's authoritative queued depth.
+    # The wave chip otherwise knows it only from ``subagent_queued`` events, so
+    # a count left non-zero by a lost or reordered event stayed on screen until
+    # the next reconnect; the chip's reconcile poll corrects it from here.
+    # ``queued_seq`` orders this answer against those events. A scoped caller
+    # only learns the depth of its own session, the same rule as the list.
+    parent = request.query.get("parent", "")
+    if parent and (scope is None or parent == caller):
+        body["queued"] = await state.subagents.queued_count_for_async(parent)
+        body["queued_seq"] = state.subagents.queue_depth_seq
+    return web.json_response(body)
 
 
 async def api_spawn_retry(request: web.Request) -> web.Response:

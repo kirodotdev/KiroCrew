@@ -4778,7 +4778,10 @@ export const api = {
   // Autocomplete
   autocomplete: (q: string): Promise<{suggestions: string[]}> => fetch('/api/autocomplete?q=' + encodeURIComponent(q)).then(j),
   // Spawn
-  spawnList: (): Promise<{ agents?: SubagentInfo[] }> => fetch('/api/spawn').then(j),
+  // `parent` (a session key, e.g. `dashboard:<slot>`) adds that parent's
+  // authoritative queued depth and the event seq it is ordered against.
+  spawnList: (parent?: string): Promise<{ agents?: SubagentInfo[]; queued?: number; queued_seq?: number }> =>
+    fetch(parent ? '/api/spawn?parent=' + encodeURIComponent(parent) : '/api/spawn').then(j),
   spawn: (task: string) => post('/api/spawn', { task }).then(j),
   spawnStatus: (id: string, opts?: { signal?: AbortSignal }) => fetch('/api/spawn/' + encodeURIComponent(id), opts).then(j),
   spawnDelete: (id: string) => del('/api/spawn/' + encodeURIComponent(id)).then(j),

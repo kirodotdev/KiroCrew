@@ -2220,9 +2220,10 @@ export function useWebSocket() {
             dispatch(sseSubagentSpawn(data as { slot: string; id: string; task: string; agent: string; model?: string; requested_model?: string }))
             break
           case 'subagent_queued':
-            // The count plus the gate's optional `reason` label (absent from an
-            // older gateway); the reducer parses the label.
-            dispatch(sseSubagentQueued(data as { slot: string; queued: number; reason?: string; available_gb?: number; required_gb?: number }))
+            // The count plus the gate's optional `reason` label and emit `seq`
+            // (both absent from an older gateway); the reducer parses the label
+            // and drops a frame older than the newest one it applied.
+            dispatch(sseSubagentQueued(data as { slot: string; queued: number; seq?: number; reason?: string; available_gb?: number; required_gb?: number }))
             break
           case 'subagent_chunk': {
             // Buffer and flush per-frame, mirroring chat_chunk.

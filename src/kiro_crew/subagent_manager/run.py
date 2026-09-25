@@ -663,12 +663,24 @@ class RunEventCoordinator(ManagerComponent):
             except Exception:
                 logger.warning("on_event failed for %s/%s", etype, info.id, exc_info=True)
 
+    def _window_depth(self, parent_session_key: str) -> int:
+        """Spawns for *parent_session_key* waiting in the in-memory window.
+
+        A ``_resume_id`` entry is not one: it is a RESIDENT run asking for its
+        lane slot back after a wait, already on its own card, and its grant
+        emits no depth. Counted, it would make every emit during that wait read
+        one high, with no later emit to correct it.
+        """
+        return sum(
+            1
+            for q in self._manager._queue
+            if q.get("parent_session_key", "") == parent_session_key and not q.get("_resume_id")
+        )
+
     def _queued_depth_impl(self, parent_session_key: str) -> int:
         """Number of spawns currently queued for *parent_session_key* (waiting
         behind the concurrency cap / stagger gate, not yet started)."""
-        in_window = sum(
-            1 for q in self._manager._queue if q.get("parent_session_key", "") == parent_session_key
-        )
+        in_window = self._window_depth(parent_session_key)
         # Rows queued in the store but outside the in-memory window are still
         # this parent's waiting work; the chip and the reset-deferral guards
         # must see them.
@@ -676,9 +688,7 @@ class RunEventCoordinator(ManagerComponent):
 
     async def _queued_depth_async_impl(self, parent_session_key: str) -> int:
         """:meth:`_queued_depth_impl` with its store count on the writer thread."""
-        in_window = sum(
-            1 for q in self._manager._queue if q.get("parent_session_key", "") == parent_session_key
-        )
+        in_window = self._window_depth(parent_session_key)
         overflow = await self._manager._admission.taskq_overflow_async(parent_session_key)
         return in_window + overflow
 
@@ -788,6 +798,12 @@ class RunEventCoordinator(ManagerComponent):
 
         Fire-and-forget: scheduled on the running loop; a no-op in sync/test
         contexts without a loop (the count is advisory UI signal, not state).
+
+        Ordered per parent: the emit takes its ``seq`` here, synchronously, and
+        carries it on the event. The store half of the count completes later on
+        the writer thread, so two emits for one parent can finish out of order;
+        one that finishes after a NEWER emit for the same parent already fired
+        is dropped instead of overwriting it with an older depth.
         """
         manager = self._manager
         if wait is not None:
@@ -802,26 +818,45 @@ class RunEventCoordinator(ManagerComponent):
             parent_session_key=parent_session_key,
             batch_id=batch_id,
         )
+        manager._queue_depth_seq += 1
+        seq = manager._queue_depth_seq
+        inflight = manager._queue_depth_inflight
+        fired = manager._queue_depth_fired
+        inflight[parent_session_key] = inflight.get(parent_session_key, 0) + 1
 
         def _extra(depth: int) -> dict[str, Any]:
             if depth <= 0:
                 manager._queue_wait.pop(parent_session_key, None)
-                return {"queued": depth}
-            return {"queued": depth, **manager._queue_wait.get(parent_session_key, {})}
+                return {"queued": depth, "seq": seq}
+            return {"queued": depth, "seq": seq, **manager._queue_wait.get(parent_session_key, {})}
+
+        async def _fire(depth: int) -> None:
+            try:
+                if seq < fired.get(parent_session_key, 0):
+                    return  # a newer depth for this parent already reached the UI
+                fired[parent_session_key] = seq
+                await manager._fire_event("subagent_queued", info, _extra(depth))
+            finally:
+                left = inflight.get(parent_session_key, 0) - 1
+                if left > 0:
+                    inflight[parent_session_key] = left
+                else:
+                    # Nothing older is still counting: the next emit's seq is
+                    # higher than any fired one, so the mark has no reader left.
+                    inflight.pop(parent_session_key, None)
+                    fired.pop(parent_session_key, None)
 
         admission = manager._admission
         store = admission.taskq_store()
         if store is None or not type(admission).pump_off_loop:
             depth = manager._queued_depth(parent_session_key)
-            loop.create_task(manager._fire_event("subagent_queued", info, _extra(depth)))
+            loop.create_task(_fire(depth))
             return
         # The store half of the count (rows outside the window) runs on the
         # writer thread; the window half and the emit stay on the loop.
         from kiro_crew.taskq import KIND_SUBAGENT
 
-        in_window = sum(
-            1 for q in manager._queue if q.get("parent_session_key", "") == parent_session_key
-        )
+        in_window = self._window_depth(parent_session_key)
         exclude_ids = admission.taskq_excluded_ids()
         live_store = store
 
@@ -835,7 +870,7 @@ class RunEventCoordinator(ManagerComponent):
                 )
             except Exception:
                 overflow = 0
-            await manager._fire_event("subagent_queued", info, _extra(in_window + int(overflow)))
+            await _fire(in_window + int(overflow))
 
         loop.create_task(_emit())
 
