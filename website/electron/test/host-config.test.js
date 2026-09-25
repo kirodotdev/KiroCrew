@@ -5,8 +5,11 @@ const {
   migrateRemoteHostConfig,
   remoteHostPort,
   getRemoteHostConfig,
+  getRemoteHostConfigForUrl,
+  retireLegacyEmptyPortHost,
   setRemoteHostConfig,
 } = require("../host-config");
+const { saveRemoteCrewConfig } = require("../remote-crew-setup");
 
 // Minimal mock of electron-store (get/set/delete on a plain object)
 function mockStore(initial = {}) {
@@ -224,5 +227,107 @@ describe("isSelectablePort", () => {
     for (const value of [1, 443, 5476, 7778, 65535]) {
       assert.equal(isSelectablePort(value), true, String(value));
     }
+  });
+});
+
+describe("getRemoteHostConfigForUrl", () => {
+  it("resolves the scheme default and prefers a record under that key", () => {
+    const store = mockStore({ remoteHosts: { "80": { host: "eighty.example.test" }, "443": { host: "four43.example.test" } } });
+    assert.equal(getRemoteHostConfigForUrl(store, "http://localhost/")?.host, "eighty.example.test");
+    assert.equal(getRemoteHostConfigForUrl(store, "http://localhost:80/")?.host, "eighty.example.test");
+    assert.equal(getRemoteHostConfigForUrl(store, "https://localhost/")?.host, "four43.example.test");
+  });
+
+  it("falls back to a host under the empty key only for a scheme-default port", () => {
+    // That record can only have come from a URL whose port the URL API erased,
+    // so it is honoured for exactly that shape and for nothing else. Answering
+    // "no crew" would classify a tunnelled crew as this machine's own gateway.
+    const store = mockStore({ remoteHosts: { "": { host: "legacy.example.test" } } });
+    assert.equal(getRemoteHostConfigForUrl(store, "http://localhost/")?.host, "legacy.example.test");
+    assert.equal(getRemoteHostConfigForUrl(store, "https://localhost/")?.host, "legacy.example.test");
+    assert.equal(getRemoteHostConfigForUrl(store, "http://localhost:80/")?.host, "legacy.example.test");
+    assert.equal(getRemoteHostConfigForUrl(store, "http://localhost:5476/"), null);
+    assert.equal(getRemoteHostConfigForUrl(store, "http://localhost:7778/"), null);
+  });
+
+  it("does not read a defaultName-only empty-key entry as a crew", () => {
+    // Returns null rather than the entry. Asserting only that `.host` is absent
+    // would pass either way, and handing a hostless entry back would let a future
+    // consumer that checks truthiness read "a crew is configured here" -- the
+    // same shape of latent misread this whole normalization exists to remove.
+    const store = mockStore({ remoteHosts: { "": { defaultName: "Pinned" } } });
+    assert.equal(getRemoteHostConfigForUrl(store, "http://localhost/"), null);
+  });
+
+  it("lets a resolved-key record win over the legacy one", () => {
+    const store = mockStore({ remoteHosts: { "": { host: "legacy.example.test" }, "80": { host: "current.example.test" } } });
+    assert.equal(getRemoteHostConfigForUrl(store, "http://localhost/")?.host, "current.example.test");
+  });
+
+  it("answers null for an unparseable URL rather than reaching the empty key", () => {
+    const store = mockStore({ remoteHosts: { "": { host: "legacy.example.test" } } });
+    assert.equal(getRemoteHostConfigForUrl(store, "not a url"), null);
+  });
+});
+
+describe("retireLegacyEmptyPortHost", () => {
+  it("removes the whole empty-key record, window name included", () => {
+    // Nothing reads a window name under that key -- every name lookup is keyed by
+    // a resolved port -- so preserving one would keep a field no path can reach.
+    const store = mockStore({ remoteHosts: { "": { host: "legacy.example.test" }, "80": { host: "current.example.test" } } });
+    assert.equal(retireLegacyEmptyPortHost(store), true);
+    assert.deepEqual(store._data.remoteHosts, { "80": { host: "current.example.test" } });
+
+    const named = mockStore({ remoteHosts: { "": { host: "legacy.example.test", defaultName: "Pinned" } } });
+    assert.equal(retireLegacyEmptyPortHost(named), true);
+    assert.deepEqual(named._data.remoteHosts, {});
+  });
+
+  it("keeps the record when the replacement write is refused", () => {
+    // The sequence that makes the ORDER load-bearing. A legacy record on an http
+    // window resolving to :80, the user re-states the crew, and the save is
+    // refused because 80 is unselectable. Retiring before that write would leave
+    // no record at all, so the crew would read as this machine's own gateway --
+    // the exposure this change exists to close -- with no way back, since no
+    // later save on that port can ever succeed either.
+    const store = mockStore({ remoteHosts: { "": { host: "legacy.example.test" } } });
+    const fields = { host: "legacy.example.test", binPath: "~/.local/bin/kirocrew", remotePort: "", remotePath: "" };
+
+    const { saved } = saveRemoteCrewConfig(store, "80", fields);
+    assert.equal(saved, false, "80 is unselectable, so the replacement cannot be written");
+    // Retirement is gated on that write, so it has not run.
+    assert.equal(
+      getRemoteHostConfigForUrl(store, "http://localhost/")?.host,
+      "legacy.example.test",
+      "the only record marking this crew remote must survive a refused save",
+    );
+
+    // On :443 the same statement IS durable, so retirement is correct there.
+    const ok = mockStore({ remoteHosts: { "": { host: "legacy.example.test" } } });
+    assert.equal(saveRemoteCrewConfig(ok, "443", fields).saved, true);
+    retireLegacyEmptyPortHost(ok);
+    assert.deepEqual(Object.keys(ok._data.remoteHosts), ["443"]);
+    assert.equal(getRemoteHostConfigForUrl(ok, "https://localhost/")?.host, "legacy.example.test");
+  });
+
+  it("is a no-op when there is nothing to retire", () => {
+    const empty = mockStore({ remoteHosts: {} });
+    assert.equal(retireLegacyEmptyPortHost(empty), false);
+    const named = mockStore({ remoteHosts: { "": { defaultName: "Pinned" } } });
+    assert.equal(retireLegacyEmptyPortHost(named), false);
+    assert.deepEqual(named._data.remoteHosts, { "": { defaultName: "Pinned" } });
+    const blank = mockStore({ remoteHosts: { "": { host: "" } } });
+    assert.equal(retireLegacyEmptyPortHost(blank), false);
+  });
+
+  it("closes the clear loop: after a clear the URL no longer reads as remote", () => {
+    // The sequence that made this necessary. A legacy record on :80, the user
+    // clears the crew, and without retirement the resolver keeps falling back to
+    // the record the clear was meant to remove -- remote for ever.
+    const store = mockStore({ remoteHosts: { "": { host: "legacy.example.test" } } });
+    assert.equal(getRemoteHostConfigForUrl(store, "http://localhost/")?.host, "legacy.example.test");
+    retireLegacyEmptyPortHost(store);
+    setRemoteHostConfig(store, "80", {});
+    assert.equal(getRemoteHostConfigForUrl(store, "http://localhost/"), null);
   });
 });

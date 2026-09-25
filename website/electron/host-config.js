@@ -3,6 +3,7 @@
 // without spinning up Electron.
 
 const { DEFAULT_REMOTE_BIN } = require("./remote-token");
+const { defaultedPort, portIsSchemeDefault } = require("./gateway-auth-hint");
 
 // Migrate legacy single-host config (remoteHost + kirocrewBinPath) to the
 // per-port remoteHosts map. Returns true if migration occurred.
@@ -23,14 +24,14 @@ function migrateRemoteHostConfig(store, port) {
  *
  * The shell reaches its gateway over `http://localhost:<port>`, and
  * `new URL("http://localhost:80").port` is `""` -- the URL API strips a scheme's
- * default port. Every per-port lookup that derives its key from that URL then
- * misses: `isGatewayLocalForWindow` reads `remoteHosts[""]`, finds no host, and
- * reports a tunnelled crew as a gateway on this machine, after which the
- * host-presence heartbeat sends this machine's internal secret over the tunnel.
+ * default port. A per-port lookup keyed off that raw property therefore misses,
+ * which is why every such lookup normalizes through `defaultedPort` first.
  *
- * The classifier is where that belongs fixed, and it is wrong on port 80
- * independently of this module. Until it is, selecting 80 from stored config is
- * a target this app cannot classify, so it is not offered.
+ * The port stays unselectable because the erasure is a property of the URL API
+ * rather than of any one call site: a target whose port does not survive the
+ * round trip through the URL the shell builds is one more place for a future
+ * lookup to read the empty key, and the consequence there is a tunnelled crew
+ * classified as a gateway on this machine. So 80 is not offered.
  */
 const UNSELECTABLE_PORT = 80;
 
@@ -101,10 +102,70 @@ function setRemoteHostConfig(store, port, { host, binPath, remotePort, remotePat
   store.set("remoteHosts", hosts);
 }
 
+/**
+ * The remote-host entry for the gateway `url` names, honouring a record left
+ * under the empty key by an older version.
+ *
+ * `URL.port` is "" for a scheme default, and a version that keyed this map off
+ * that raw property wrote its crew under `remoteHosts[""]`. Such a record names
+ * a port that cannot be recovered from the record itself, so it is honoured for
+ * exactly the shape of URL that could have produced it -- one whose port is
+ * its scheme's default -- and ignored for every other. Reading "no crew" there would
+ * classify a tunnelled crew as a gateway on this machine, which is the answer
+ * that puts this machine's internal secret through the tunnel.
+ *
+ * Only a host-bearing legacy record counts. An entry holding just a
+ * `defaultName` is a window-title setting, and the same older versions wrote
+ * those under the empty key too.
+ *
+ * @param {{get: (key: string) => unknown}} store
+ * @param {string} url
+ * @returns {object|null}
+ */
+function getRemoteHostConfigForUrl(store, url) {
+  const port = defaultedPort(url);
+  // An unparseable URL names no port, and `defaultedPort` says so with "". Left
+  // unguarded that would read `remoteHosts[""]` through the ordinary path, which
+  // is the one key this function must reach only by the deliberate route below.
+  if (port === "") return null;
+  const resolved = getRemoteHostConfig(store, port);
+  if (resolved?.host) return resolved;
+  if (!portIsSchemeDefault(url)) return resolved;
+  const legacy = getRemoteHostConfig(store, "");
+  if (typeof legacy?.host === "string" && legacy.host !== "") return legacy;
+  return resolved;
+}
+
+/**
+ * Drop a host-bearing `remoteHosts[""]` record.
+ *
+ * Called once the user has DURABLY stated what the crew on a scheme-default port
+ * is, so the superseded record does not outlive its replacement: without this a
+ * user who CLEARS the crew still reads as remote forever, because the resolver
+ * above keeps falling back to the record the clear was meant to remove.
+ *
+ * The whole record goes, including any `defaultName` on it. Nothing reads a
+ * window name under that key -- every name lookup is keyed by a resolved port --
+ * so preserving one would keep a field no code path can reach.
+ *
+ * @param {{get: Function, set: Function}} store
+ * @returns {boolean} whether a record was retired
+ */
+function retireLegacyEmptyPortHost(store) {
+  const hosts = store.get("remoteHosts") || {};
+  const legacy = hosts[""];
+  if (!legacy || typeof legacy.host !== "string" || legacy.host === "") return false;
+  delete hosts[""];
+  store.set("remoteHosts", hosts);
+  return true;
+}
+
 module.exports = {
   isSelectablePort,
   migrateRemoteHostConfig,
   remoteHostPort,
   getRemoteHostConfig,
+  getRemoteHostConfigForUrl,
+  retireLegacyEmptyPortHost,
   setRemoteHostConfig,
 };

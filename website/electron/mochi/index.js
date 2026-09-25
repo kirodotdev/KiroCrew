@@ -128,6 +128,11 @@ async function gatewayToken() {
 function withGatewayAuth(url, auth) {
   if (!auth || !auth.value) return { url, headers: {} };
   if (auth.viaCookie) {
+    // The RAW port, matching mochi-session-token.js: this name has to be the one
+    // the GATEWAY chose, and on a scheme-default port that is its own listen
+    // port, which this process cannot know behind a tunnel. A borrowed
+    // credential only ever exists for a URL that stated its port, so resolving a
+    // default here could only ever name another gateway's cookie.
     const port = new URL(url).port;
     return { url, headers: { Cookie: `mc_token_${port}=${auth.value}` } };
   }

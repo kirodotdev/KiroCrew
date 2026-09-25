@@ -15,6 +15,7 @@ const os = require("os");
 const path = require("path");
 
 const { findConfiguredDashboardPort } = require("./data-home");
+const { defaultedPort } = require("./gateway-auth-hint");
 const {
   classifyBundleLocation,
   containingDirForBundle,
@@ -485,7 +486,7 @@ async function fetchMochiGatewayAuth(backendUrl = BACKEND_URL) {
   // SSH host, then a token borrowed from the already-authenticated session.
   const localValue = await gateway.fetchLocalToken(backendUrl);
   if (localValue) return { value: localValue, viaCookie: false };
-  const { token: remoteValue } = await gateway.fetchRemoteToken(new URL(backendUrl).port);
+  const { token: remoteValue } = await gateway.fetchRemoteToken(defaultedPort(backendUrl));
   if (remoteValue) return { value: remoteValue, viaCookie: false };
   const borrowed = await borrowSessionToken({
     electronSession: session.defaultSession,
