@@ -46,6 +46,7 @@ from typing import Any, Awaitable, Callable, TypeVar
 import aiohttp
 
 from kiro_crew.messaging.display_safety import redact_for_display
+from kiro_crew.messaging.identity import channel_inbound_permitted
 from kiro_crew.messaging.outbound_files import OutboundFile, upload_filename
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -266,6 +267,12 @@ _BREAKER_COOLOFF_SECS = 120.0
 #: (one entry per verb per channel), so the maps are capped least-recently-used.
 _MAX_TRACKED_ROUTES = 256
 
+#: ``DiscordApiResult.detail`` when authorization ended while the ladder was
+#: suspended in one of its own waits. Distinct from every other blocked reason so
+#: a caller, and an operator reading the log, can tell a withdrawn destination
+#: from a tripped breaker.
+_REVOKED_DETAIL = "destination authorization withdrawn mid-send"
+
 #: Path segments whose FOLLOWING id is one of Discord's "major parameters":
 #: those buckets are per-id, everything else shares one bucket across ids, so
 #: the route key keeps the majors and collapses the rest.
@@ -399,6 +406,34 @@ def _is_global_limit_exempt(path: str) -> bool:
     would leave the user's client spinning for nothing.
     """
     return path.startswith("/interactions/") or path.startswith("/webhooks/")
+
+
+def _guarded_destination(path: str) -> str:
+    """The channel id whose authorization a re-check must re-read, or ``""``.
+
+    A route is guarded when it names a channel as its major parameter, because
+    that channel IS the disclosure boundary: a message, an edit, an upload, a
+    reaction and a thread creation all become visible to whoever can read it.
+    The id is the segment after ``channels``, matched with the same rule the
+    rate-limit route key uses so the two cannot drift.
+
+    Two families answer ``""`` and are deliberately NOT guarded:
+
+    * ``/interactions/`` and ``/webhooks/`` -- a button press's own reply. It
+      names no channel in the path (the destination rides inside an opaque
+      token), it is already re-judged against the live rosters before it is
+      answered (``discord/transport_dispatch.py``), and it has a ~3 second
+      deadline that a governance read would eat into for a decision already
+      taken;
+    * every route that names no channel at all (the gateway URL, ``/users/@me``
+      and its DM-channel creation). Creating a DM channel discloses nothing to
+      anybody; the send INTO it is a ``/channels/`` route and is guarded.
+    """
+    segments = path.split(_ROUTE_SEP)
+    for index, segment in enumerate(segments):
+        if index and segments[index - 1] == "channels" and _ID_SEGMENT_RE.match(segment):
+            return segment
+    return ""
 
 
 @dataclass(frozen=True)
@@ -569,6 +604,14 @@ class DiscordClient:
         #: delivery hook so the host gate stops routing to a channel that is
         #: going away (see ``messaging/spawn_approval_delivery.py``).
         self.on_close: Callable[[], None] | None = None
+        #: Optional destination predicate, asked again after every wait the REST
+        #: ladder takes and before the attempt that follows it. The transport
+        #: installs its own roster check here (``DiscordTransport.__init__``); the
+        #: ladder additionally re-reads the operator's ``channels`` ceiling on its
+        #: own. Unwired (a bare client in a unit harness) the ceiling stands alone.
+        #: A raise is read as a REFUSAL: this is a network egress boundary, and a
+        #: predicate that cannot answer has not said yes.
+        self.still_permitted: Callable[[str], bool] | None = None
 
     async def wait_ready(self, timeout: float = 15.0) -> bool:
         """Wait for the Gateway handshake to reach READY. Returns False on
@@ -1000,6 +1043,24 @@ class DiscordClient:
         self._channel_types[channel_id] = channel_type
         return channel_type in _THREAD_CHANNEL_TYPES
 
+    def cached_channel_is_thread(self, channel_id: str) -> bool | None:
+        """Is this channel a thread, from the cache ALONE? ``None`` when unseen.
+
+        The synchronous, network-free half of :meth:`is_thread_channel`, for a
+        caller that must not issue a REST call: the transport's mid-send
+        revocation predicate runs INSIDE the REST ladder, so resolving a type
+        there would re-enter the ladder it is guarding and take that call's own
+        waits. ``None`` is an honest "not known here" and the caller decides what
+        an unknown type means, rather than being handed a False that reads as
+        "confirmed not a thread".
+
+        Discord channel types are immutable, so a cached answer never goes stale.
+        """
+        cached = self._channel_types.get(channel_id)
+        if cached is None:
+            return None
+        return cached in _THREAD_CHANNEL_TYPES
+
     async def edit_message_components(
         self, channel_id: str, message_id: str, components: list[dict]
     ) -> bool:
@@ -1345,8 +1406,12 @@ class DiscordClient:
             return
         self._set_hold(bucket or route, min(reset_after, _MAX_PREEMPT_SECS))
 
-    async def _await_capacity(self, route: str, *, exempt: bool) -> None:
+    async def _await_capacity(self, route: str, *, exempt: bool) -> float:
         """Wait out a known-spent bucket, and any global hold, before sending.
+
+        Returns the seconds actually slept, ``0.0`` when nothing was due, so the
+        caller can tell a suspended attempt from an immediate one and re-read
+        authorization only for the former.
 
         ``exempt`` routes skip the GLOBAL hold only: Discord does not charge
         interaction callbacks to the app's 50 requests/second allowance, so
@@ -1359,6 +1424,55 @@ class DiscordClient:
         wait = max(deadlines) - time.monotonic()
         if wait > 0:
             await asyncio.sleep(wait)
+            return wait
+        return 0.0
+
+    async def _destination_still_permitted(self, path: str) -> bool:
+        """May this route still reach its destination RIGHT NOW? Fails closed.
+
+        Asked again after each of the ladder's own waits, because a wait is time
+        during which an operator can withdraw the destination: the allow-list edit
+        and the ``channels`` governance flip both take effect on the next read, and
+        without this the next read is after the message has already landed.
+
+        Two authorities, both consulted, neither sufficient alone:
+
+        * the operator's ``channels`` ceiling for Discord, which the messaging seam
+          owns for every channel. Global to the channel, so it is answerable from
+          the client alone and is read even with no predicate wired;
+        * the transport's live rosters via :attr:`still_permitted`, which is where
+          the per-destination decision lives. The client holds no roster of its
+          own on purpose -- duplicating one here is how outbound and inbound drift
+          apart.
+
+        Only the ceiling is read for a route that names no channel, and neither is
+        read on the happy path: this runs solely after a wait was served, so a
+        send that never waits pays nothing for it.
+        """
+        if not await channel_inbound_permitted("discord"):
+            return False
+        destination = _guarded_destination(path)
+        if not destination or self.still_permitted is None:
+            return True
+        try:
+            return bool(self.still_permitted(destination))
+        except Exception:
+            logger.warning(
+                "Discord REST: the destination predicate raised while re-checking a "
+                "route after a wait; treating the destination as withdrawn",
+                exc_info=True,
+            )
+            return False
+
+    async def _wait_then_revalidate(self, path: str, delay: float) -> bool:
+        """Serve one of the ladder's back-offs, then re-ask authorization.
+
+        The two belong together: a back-off served without the re-check after it
+        is exactly the window this guards, so pairing them in one helper keeps a
+        new wait site from being added with only half of the pair.
+        """
+        await asyncio.sleep(delay)
+        return await self._destination_still_permitted(path)
 
     def _note_rate_limit(self, route: str, data: Any, headers: Mapping[str, str]) -> float:
         """Record a 429 and return the back-off this attempt must serve.
@@ -1506,6 +1620,12 @@ class DiscordClient:
         either answer or retry within the failure class's own budget. Every
         wait is an ``await`` so the event loop keeps running the turn's other
         work while a bucket refills.
+
+        Every one of those waits is also a window in which the destination can be
+        withdrawn, so each is paired with a re-read of authorization before the
+        attempt that follows it (:meth:`_destination_still_permitted`). An attempt
+        that waits nothing is unaffected: the caller's own pre-send check is still
+        the most recent reading when no time has passed.
         """
         session = await self._ensure_session()
         url = _API_BASE + path
@@ -1522,7 +1642,9 @@ class DiscordClient:
             if not self._breaker_allows():
                 return _failed(DISCORD_BLOCKED, detail="invalid-request breaker open")
             if not served_backoff:
-                await self._await_capacity(route, exempt=exempt)
+                if await self._await_capacity(route, exempt=exempt) > 0:
+                    if not await self._destination_still_permitted(path):
+                        return _failed(DISCORD_BLOCKED, detail=_REVOKED_DETAIL)
             served_backoff = False
             try:
                 async with session.request(
@@ -1565,7 +1687,8 @@ class DiscordClient:
                                 delay,
                             )
                             return _failed(DISCORD_TRANSIENT, status=429, detail="rate limited")
-                        await asyncio.sleep(delay)
+                        if not await self._wait_then_revalidate(path, delay):
+                            return _failed(DISCORD_BLOCKED, detail=_REVOKED_DETAIL)
                         served_backoff = True
                         continue
                     if resp.status >= 500:
@@ -1588,7 +1711,8 @@ class DiscordClient:
                             resp.status,
                             backoff,
                         )
-                        await asyncio.sleep(backoff)
+                        if not await self._wait_then_revalidate(path, backoff):
+                            return _failed(DISCORD_BLOCKED, detail=_REVOKED_DETAIL)
                         continue
                     # Anything else below 500 will fail identically forever: a
                     # retry cannot grant a permission or undelete a message, it
@@ -1617,7 +1741,8 @@ class DiscordClient:
                 )
                 if transient > _TRANSIENT_RETRIES:
                     return _failed(DISCORD_TRANSIENT, detail=type(exc).__name__)
-                await asyncio.sleep(_TRANSIENT_BACKOFF_SECS * transient)
+                if not await self._wait_then_revalidate(path, _TRANSIENT_BACKOFF_SECS * transient):
+                    return _failed(DISCORD_BLOCKED, detail=_REVOKED_DETAIL)
 
 
 def _safe_description(alt: str) -> str:

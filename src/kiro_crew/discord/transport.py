@@ -147,6 +147,11 @@ class DiscordTransport(MessagingTransport):
         self._on_thread_created = on_thread_created
         self._dispatch = dispatch
         self.capabilities = DISCORD_CAPABILITIES
+        # The rosters live here, and the REST ladder's waits live in the client, so
+        # the client is handed the predicate rather than a copy of the rosters.
+        # Installed here and not in the gateway so a transport built anywhere -- a
+        # unit harness included -- carries the same mid-send contract.
+        client.still_permitted = self._still_may_send_to
 
     @property
     def client(self) -> DiscordClient:
@@ -379,6 +384,43 @@ class DiscordTransport(MessagingTransport):
         if conversation_id in self._allowed_threads:
             return True
         return bool(principal) and principal in self._allowed
+
+    def _still_may_send_to(self, channel_id: str) -> bool:
+        """May a channel the REST ladder already started sending to still be
+        written to? Fails closed. Installed on the client as
+        ``still_permitted``.
+
+        The ladder asks this after each of its own waits, holding a channel id and
+        nothing else, so this answers strictly what a channel id can settle and
+        refuses when even that much is missing:
+
+        * an id on the thread roster passes -- the same set ``receive`` gates
+          inbound on and :meth:`may_send_to` consults, so a thread an operator
+          withdraws stops being written to mid-send;
+        * an id Discord has already told us is a thread, and which is NOT on the
+          roster, is refused. Only the client's CACHED channel types are read, so
+          this costs no REST call and cannot recurse into the ladder it is guarding;
+          a type never seen falls to the roster test below rather than guessing;
+        * any other id is a DM channel, and the DM roster is keyed by the peer's
+          user id while a DM link persists the channel id ``create_dm_channel``
+          returned. The pairing is not derivable here, exactly as
+          :meth:`may_send_to` documents, so what remains answerable is whether the
+          roster admits ANYBODY: an empty roster authorizes nobody, and a send in
+          flight to a DM is refused on it.
+
+        The narrower DM case -- one peer removed while others remain -- is the same
+        gap :meth:`may_send_to` carries and needs the same fix, a
+        ``dm_channel_id -> user_id`` pairing persisted when the DM is opened. It is
+        not widened here: this predicate only ever refuses sends the ladder would
+        otherwise have made.
+        """
+        if not channel_id:
+            return False
+        if channel_id in self._allowed_threads:
+            return True
+        if self._client.cached_channel_is_thread(channel_id) is True:
+            return False
+        return bool(self._allowed)
 
     # -- Lifecycle ----------------------------------------------------------
     async def connect(self) -> None:
