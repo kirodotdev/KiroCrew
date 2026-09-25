@@ -2716,6 +2716,33 @@ React 18 + TypeScript + Vite 8 + Redux Toolkit + React Router v7 + Tailwind CSS 
 - `DiffBlock.tsx` — dedicated diff renderer with a single colored line-number gutter (adds/context show the new number, deletions the old; the number carries the add/del color and changed rows get a 2px inset edge bar — no `+`/`-` sign column). Raw `@@` hunk headers are not rendered: between hunks a slim "N unchanged lines" separator appears instead — a pill-shaped count bubble flanked by zigzag rules (the zigzag is the `.zigzag-rule` CSS mask over `currentColor`, no SVG element in TSX). Per-file parse state resets at `---`/`+++`/`diff --git` headers so multi-file patches never fabricate a cross-file separator, and the first hunk renders nothing. Unified and split views with forced line wrap (`whitespace-pre-wrap break-words` — these surfaces are width-constrained, so no horizontal scroll; the Monaco editor diff is the full-width surface), file meta headers, "Copy patch" button (raw patch, signs intact), provisional "generating diff…" indicator for incomplete streaming blocks. Supports both standard unified diff and kiro-cli `+N:`/`-N:` format. The Changes panel's `PullRequestPanel.tsx` `DiffView` renders through the same `PierrePatch` component, so the gutter looks alike, but the two normalize their patch headers separately — `DiffBlock` through `basenamePatchHeaders` in `utils/diffUtils.ts`, `DiffView` through `withUnifiedPatchHeaders` in `components/unifiedPatchHeaders.ts`.
 - `TypewriterText.tsx` — animated title reveal
 
+**Chat table width**: top-level assistant Markdown tables use the transcript pane's
+available width minus the message row's 16px gutters. Prose and the composer keep
+the configured reading width. `TranscriptScrollShell` publishes the scroller's
+`clientWidth` as the inherited `--chat-pane-width` custom property
+(`PANE_WIDTH_PROPERTY`) from its own ResizeObserver, undebounced, and the table
+rules under `.chat-container` size against it. The scroller must not establish a
+containing block that can trap `position: fixed` descendants (no query container
+or `contain` on it): `McpAppFrame` promotes its full-screen sheet in place, and a
+containing scroller would centre it on the pane and clip it. Off-screen row measurement inherits the same property
+because the measure farm renders inside the scroller; a host that does not
+publish it falls back to ordinary sizing. Only the table-bearing message wrappers
+release horizontal clipping; `flow-root` preserves bubble margin containment and
+Raw-view height measurement. Tables inside quotations or lists, user-message
+tables, and standalone Markdown keep their local bounds. Wide tables scroll inside
+their own wrapper on narrow panes; code identifiers inside breakout tables do not
+wrap between characters. The main page and bare-session transcript height scope is
+`<slot>:tables1:w<bucket>`. `VirtualTranscript` recognizes only the shipped
+`pane:<slot>`, `side:<slot>` and `embed:<slot>` forms with a nonempty, colon-free
+slot, and uses `<slot>:tables1:<host>:w<bucket>` for their heights. The raw slot
+comes first so `storageGc` retains live caches and deletes every host partition
+for exactly that slot; the host still separates different surfaces' measurements.
+Other caller IDs remain opaque and keep `<sessionId>:tables1:w<bucket>` rather
+than guessing their owner. The `sessionId` passed to `useVirtualChat`, and thus
+saved scroll-anchor identity, never changes. The 16px width buckets are uncapped
+because table height can change above the prose-width cap; resize updates remain
+debounced by 200ms.
+
 **Syntax highlighting** — `highlight.js` (tree-shaken: js/ts/py/bash/json/yaml/html/css/sql/rust/java/md). Custom One Dark / One Light theme in `index.css` using design tokens. `hljs.highlight()` for known languages, `hljs.highlightAuto()` for unknown. Output sanitized via DOMPurify.
 
 **Pierre worker cache identity**: code and diff surfaces load the portable worker through Vite's `?worker&url` import in `website/src/pierre/PierreImpl.tsx`, then add the stable `csp=wasm-v1` query parameter before construction. An immutable HTTP cache retains response headers as well as bytes; a worker cached before the gateway allowed `wasm-unsafe-eval` still enforces that old CSP even after the page and gateway upgrade. The library bundle's bytes and hash need not change when the selected engine or server policy changes. The versioned request obtains the current headers without clearing cookies, drafts, or other cached assets, and every retry shares the same cache key. The gateway policy and bounded WASM engine are unchanged; JavaScript `unsafe-eval` remains disallowed.

@@ -17,9 +17,39 @@
  * fadeClearance geometry stays with the page, which supplies its clearance
  * padding via `scrollerStyle`.
  */
-import React from 'react'
+import React, { useLayoutEffect } from 'react'
 import { Loader } from 'lucide-react'
 import { i18nT } from '../../i18n/t'
+
+/** Inherited custom property carrying the scroller's usable width in px, so a
+ *  descendant that may outgrow the reading column (a top-level assistant table,
+ *  see `.markdown-table` in index.css) can size against the pane it is in.
+ *
+ *  Invariant: publish the width WITHOUT making the scroller a containing block
+ *  that can trap `position: fixed` descendants — so no query container or
+ *  `contain` on it. McpAppFrame promotes its full-screen sheet IN PLACE (it
+ *  must not portal: reparenting the iframe reloads the app), and a scroller
+ *  that contained it would centre the sheet on itself and clip its backdrop. */
+export const PANE_WIDTH_PROPERTY = '--chat-pane-width'
+
+/** Publish the scroller's `clientWidth` as PANE_WIDTH_PROPERTY on itself.
+ *  `clientWidth` nets out the reserved scrollbar gutter, so it is the width a
+ *  child can actually paint into. The measure farm renders inside this same
+ *  element, so off-screen rows inherit the identical width. Undebounced: the
+ *  tables must reflow with the pane, like the prose column does; the hosts'
+ *  own 200ms-settled width buckets scope the height cache, not layout. */
+function usePaneWidthProperty(scrollerRef: React.RefObject<HTMLDivElement | null>): void {
+  useLayoutEffect(() => {
+    const el = scrollerRef.current
+    if (!el) return
+    const publish = () => { el.style.setProperty(PANE_WIDTH_PROPERTY, `${el.clientWidth}px`) }
+    publish()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(publish)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [scrollerRef])
+}
 
 export interface TranscriptVirtWiring {
   topSentinelRef: React.MutableRefObject<HTMLDivElement | null>
@@ -63,6 +93,7 @@ export default function TranscriptScrollShell({
   belowRows?: React.ReactNode
   children: React.ReactNode
 }) {
+  usePaneWidthProperty(scrollerRef)
   return (
     <div
       ref={scrollerRef}
