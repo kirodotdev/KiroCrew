@@ -358,7 +358,7 @@ describe('SchedulePage empty-state preset cards', () => {
     // view is itself a dialog now, so a `queryByRole('dialog')` check here
     // would be satisfied only if the thing under test had failed to open.
     await waitFor(() => expect(screen.queryByRole('button', { name: `Use the ${preset.title} template` })).not.toBeInTheDocument())
-    const nameInput = (await screen.findByLabelText('Name')) as HTMLInputElement
+    const nameInput = (await screen.findByLabelText('Name', { selector: 'input' })) as HTMLInputElement
     expect(nameInput.value).toBe(preset.prefill.name)
     const msgInput = screen.getByLabelText('Message') as HTMLTextAreaElement
     expect(msgInput.value).toContain(preset.prefill.message)
@@ -396,7 +396,7 @@ describe('SchedulePage template gallery (non-empty state)', () => {
 
     fireEvent.click(screen.getByText('Error Digest'))
 
-    const nameInput = (await screen.findByLabelText('Name')) as HTMLInputElement
+    const nameInput = (await screen.findByLabelText('Name', { selector: 'input' })) as HTMLInputElement
     expect(nameInput.value).toBe('Error Digest')
     const msgInput = screen.getByLabelText('Message') as HTMLTextAreaElement
     expect(msgInput.value).toContain('production errors')

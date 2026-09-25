@@ -1,4 +1,7 @@
+import { useId, type CSSProperties } from 'react'
 import type { SortState } from '../hooks/useSortableTable'
+import type { ColumnResizerBinding } from '../hooks/useTableColumnWidths'
+import ColumnResizer from './ColumnResizer'
 import { TableHead } from './ui/table'
 
 /**
@@ -35,23 +38,58 @@ const TH_CLS = 'text-left text-muted text-[12px] uppercase tracking-[.04em] px-2
  * survive the build — both leave a sortable header visibly out of step with its
  * plain-`TableHead` neighbours (observed in the capture).
  * Keep these classes in sync with `TableHead` in `ui/table.tsx`.
+ *
+ * `resizer` + `style` make the column user-resizable (hooks/useTableColumnWidths).
+ * A resizable column's `className` must include `relative` (see ColumnResizer).
+ * The grip is a SIBLING of the sort button, never a child: a drag that ended
+ * over the label must not also toggle the sort.
+ *
+ * `aria-labelledby` is what keeps the grip out of the header's NAME. A cell is
+ * named from its content, and the grip is focusable content with a label of
+ * its own, so without it the column header is announced, for every cell in the
+ * column, as "Name Resize column: Name".
  */
-export function SortableTableHead({ label, sortKey, sort, onToggle, className = '' }: {
+export function SortableTableHead({ label, sortKey, sort, onToggle, className = '', style, resizer }: {
   label: string; sortKey: string; sort: SortState; onToggle: (key: string) => void; className?: string
+  style?: CSSProperties; resizer?: ColumnResizerBinding
 }) {
   const active = sort.key === sortKey
+  const labelId = useId()
   return (
     <TableHead
       className={className}
+      style={style}
+      aria-labelledby={resizer ? labelId : undefined}
       aria-sort={active ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none'}
     >
       <button
+        id={labelId}
         type="button"
         onClick={() => onToggle(sortKey)}
-        className="cursor-pointer border-none bg-transparent p-0 text-sm font-medium text-text-strong hover:text-accent"
+        className="block max-w-full cursor-pointer truncate border-none bg-transparent p-0 text-sm font-medium text-text-strong hover:text-accent"
       >
         {label}
       </button>
+      {resizer && <ColumnResizer column={label} {...resizer} />}
+    </TableHead>
+  )
+}
+
+/**
+ * A plain (non-sorting) `ui/table` header cell whose column the user can
+ * resize. Exists so the two things a resizable header must get right live in
+ * one place rather than at each call site: the positioning context the grip
+ * needs, and the `aria-labelledby` that keeps the grip out of the header's
+ * accessible name (see `SortableTableHead`).
+ */
+export function ResizableTableHead({ label, className = '', style, resizer }: {
+  label: string; className?: string; style?: CSSProperties; resizer: ColumnResizerBinding
+}) {
+  const labelId = useId()
+  return (
+    <TableHead className={className} style={style} aria-labelledby={labelId}>
+      <span id={labelId} className="block truncate">{label}</span>
+      <ColumnResizer column={label} {...resizer} />
     </TableHead>
   )
 }

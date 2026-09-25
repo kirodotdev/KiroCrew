@@ -6047,6 +6047,10 @@
       "copy": "복사",
       "generating": "생성 중…"
     },
+    "columnResizer": {
+      "resize_column": "열 너비 조절: {{column}}",
+      "resize_hint": "드래그하여 크기 조절 (더블클릭하면 초기화)"
+    },
     "commandPalette": {
       "clear_filter": "필터 지우기",
       "close": "닫기",

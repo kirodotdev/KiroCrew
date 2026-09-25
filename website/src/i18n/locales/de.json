@@ -6143,6 +6143,10 @@
       "copy": "Kopieren",
       "generating": "wird erstellt…"
     },
+    "columnResizer": {
+      "resize_column": "Spaltenbreite ändern: {{column}}",
+      "resize_hint": "Ziehen zum Ändern der Größe (Doppelklick zum Zurücksetzen)"
+    },
     "commandPalette": {
       "clear_filter": "Filter zurücksetzen",
       "close": "Schließen",

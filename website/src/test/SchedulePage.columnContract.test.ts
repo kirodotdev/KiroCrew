@@ -72,13 +72,14 @@ describe('SchedulePage jobs table column contract', () => {
 
   it('leaves exactly one column — Message — without a width', async () => {
     const { header } = await loadHeaderRow()
-    // Every header cell is either a TableHead or a SortableTableHead. Match
+    // Every header cell is a TableHead, a SortableTableHead or a
+    // ResizableTableHead. Match
     // the OPENING TAG (widths live in the className attribute) plus its
     // immediate text child (which names the column); matching into element
     // children would truncate at the first self-closing child (the Actions
     // seam div, the checkbox input) and silently couple the count to child
     // order.
-    const cells = header.match(/<(?:Sortable)?TableHead\b[^>]*>[^<]*/g) ?? []
+    const cells = header.match(/<(?:Sortable|Resizable)?TableHead\b[^>]*>[^<]*/g) ?? []
     expect(cells.length, 'expected the ten jobs columns').toBe(10)
     const unsized = cells.filter(c => !/\bw-\[\d+px\]/.test(c))
     expect(unsized).toHaveLength(1)
@@ -143,7 +144,9 @@ describe('SchedulePage jobs table sticky Actions column', () => {
     // shadcn Table wrapper is the table's parentElement — through a STABLE ref
     // (an inline arrow detaches/reattaches every render and loops edge-state).
     expect(src).toMatch(/attachJobsScroller\(el\?\.parentElement \?\? null\)/)
-    expect(src).toMatch(/<Table className="table-fixed[^"]*" ref=\{attachJobsTable\}>/)
+    // `[^>]*` admits the resize min-width `style` after the ref; the ref itself
+    // must stay the stable wrapper.
+    expect(src).toMatch(/<Table className="table-fixed[^"]*" ref=\{attachJobsTable\}[^>]*>/)
     // The cue is gated on the MEASURED right-overflow flag, never painted
     // unconditionally: a permanent seam lies on a full-width desktop table.
     const cue = src.match(/\{jobsTableEdges\.right && \(\s*<div aria-hidden="true" data-testid="jobs-table-cue-right" className="([^"]*)"/)
@@ -167,5 +170,81 @@ describe('SchedulePage jobs table sticky Actions column', () => {
     expect(cls).toContain('group-hover/jobrow:bg-bg-hover')
     expect(cls).toContain("selected?.id === j.id ? 'bg-accent-subtle' : ''")
     expect(cls).toContain("selectedIds.has(j.id) ? 'bg-accent-subtle/60' : ''")
+  })
+})
+
+/**
+ * The px columns are user-resizable (`useTableColumnWidths`). That adds two
+ * numbers which RESTATE what the classes above declare — each column's `base`,
+ * and the table's min-width as a constant the resize can add to — and a
+ * restated number is only safe while something holds it equal to its source.
+ * A drifted `base` is invisible until the first drag, which then starts from a
+ * width the column never had and moves min-width by the wrong amount: the
+ * difference comes out of Message, the exact defect the first suite exists for.
+ */
+describe('SchedulePage jobs table resizable columns', () => {
+  const loadSpecs = async () => {
+    const src = await loadSource()
+    const block = src.match(/const JOB_COLUMNS = \{([\s\S]*?)\} satisfies/)
+    expect(block, 'JOB_COLUMNS moved or changed shape').toBeTruthy()
+    return Object.fromEntries(
+      [...block![1].matchAll(/(\w+): \{ base: (\d+), min: (\d+), max: (\d+) \}/g)]
+        .map(m => [m[1], { base: Number(m[2]), min: Number(m[3]), max: Number(m[4]) }]),
+    )
+  }
+
+  it('keeps the min-width constant equal to the declared class', async () => {
+    const src = await loadSource()
+    const cls = src.match(/<Table className="table-fixed min-w-\[(\d+)px\]/)
+    const constant = src.match(/const JOBS_TABLE_MIN_WIDTH = (\d+)/)
+    expect(cls && constant, 'the min-width class or its constant is gone').toBeTruthy()
+    expect(Number(constant![1])).toBe(Number(cls![1]))
+  })
+
+  it('moves the table min-width by exactly the resized amount', async () => {
+    const src = await loadSource()
+    expect(src).toMatch(/style=\{jobCols\.extra \? \{ minWidth: JOBS_TABLE_MIN_WIDTH \+ jobCols\.extra \} : undefined\}/)
+  })
+
+  it("declares each resizable base equal to that column's width class", async () => {
+    const specs = await loadSpecs()
+    const { header } = await loadHeaderRow()
+    const keys = Object.keys(specs)
+    expect(keys.length, 'expected the seven resizable columns').toBe(7)
+    for (const key of keys) {
+      // A header cell is resizable iff it carries `jobCols.style('<key>')`;
+      // its width class is in the same opening tag.
+      const tag = header.match(new RegExp(`<(?:Sortable|Resizable)?TableHead\\b[^>]*jobCols\\.style\\('${key}'\\)[^>]*>`))
+      expect(tag, `no header cell is wired to the '${key}' column`).toBeTruthy()
+      const width = tag![0].match(/\bw-\[(\d+)px\]/)
+      expect(width, `the '${key}' header lost its width class`).toBeTruthy()
+      expect(specs[key].base, `'${key}' base drifted from its w-[Npx] class`).toBe(Number(width![1]))
+      // The grip is a prop on SortableTableHead and a child of a plain
+      // TableHead, so it is looked for in the row, not the opening tag.
+      expect(header, `the '${key}' header has a width override but no grip`).toContain(`jobCols.resizer('${key}')`)
+      // The grip is absolutely positioned, so its host cell must establish the
+      // positioning context. It is spelled literally at the call site (not
+      // concatenated by the header component) because
+      // `shadcn/require-static-classes` rejects a className a design-system
+      // component builds from an opaque value -- so this assertion, not the
+      // component, is what keeps a resizable header from losing it.
+      expect(tag![0], `the '${key}' header must carry 'relative' for its grip`).toMatch(/\brelative\b/)
+      expect(specs[key].min).toBeLessThanOrEqual(specs[key].base)
+      expect(specs[key].max).toBeGreaterThan(specs[key].base)
+    }
+  })
+
+  it('leaves the residual, the gutter and the pinned column fixed', async () => {
+    const { header } = await loadHeaderRow()
+    const wired = [...header.matchAll(/jobCols\.style\('(\w+)'\)/g)].map(m => m[1])
+    expect(wired.sort()).toEqual(['id', 'lastRun', 'name', 'nextRun', 'schedule', 'status', 'type'])
+    // Actions: the overflow cue anchors on its literal 176px.
+    const actions = header.match(/<TableHead className="[^"]*sticky[^"]*"[^>]*>/)
+    expect(actions![0]).not.toContain('jobCols')
+  })
+
+  it('re-measures the overflow cue when a resize moves the table width', async () => {
+    const src = await loadSource()
+    expect(src).toMatch(/useEffect\(\(\) => \{ remeasureJobsEdges\(\) \}, \[jobCols\.extra, remeasureJobsEdges\]\)/)
   })
 })

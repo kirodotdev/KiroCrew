@@ -78,6 +78,53 @@ Other shared modules:
   width, topbar height, log line cap)
 - `InfoTip.tsx`, `MarkdownRenderer.tsx` (highlight.js syntax highlighting),
   `TypewriterText.tsx`
+- `ResizeHandle.tsx` + `hooks/useColumnResize` (the drag grip between two PANES)
+- `ColumnResizer.tsx` + `hooks/useTableColumnWidths` (the drag grip on a TABLE
+  column) — see below
+
+### User-resizable table columns
+
+A data table whose values get truncated lets the user drag its column
+boundaries: `useTableColumnWidths(storageKey, specs)` holds the overrides (one
+`localStorage` key per table) and `<ColumnResizer>` is the grip. On a `ui/table`
+table, render the header cell as `ResizableTableHead`, or pass `style` and
+`resizer` to `SortableTableHead`; both live in `SortableHeader.tsx`.
+
+It assumes a **fixed-layout** table in the shape the Schedule jobs table
+documents: every resizable column declares a px width, exactly one column
+declares none and absorbs the spare, and the table's `min-width` is the px
+columns plus a floor for that residual. Three rules follow, and the first two
+are what a review should check:
+
+- **Move the table's `min-width` by `cols.extra`.** A fixed layout does not
+  shrink content to fit, so a column that grows while `min-width` stands still
+  takes its pixels out of the residual column and draws that column's content
+  over its neighbour. Widening a column must cost horizontal scroll, never
+  another column.
+- **Each `base` restates that column's `w-[Npx]` class, and a test holds them
+  equal** (`SchedulePage.columnContract.test.ts` is the model). The classes stay
+  the source of the defaults, so an untouched table renders exactly as it did
+  before it was resizable: `style()` returns `undefined` and `extra` is `0`.
+- **Leave the residual, a checkbox gutter and a pinned `sticky` column fixed.**
+  The residual has no width to drag, and a pinned column's overflow cue anchors
+  on its literal width.
+
+An **auto-layout** table cannot adopt this by adding grips: there a width is a
+hint the browser renegotiates against content, so a drag would not track the
+pointer. Migrate it to the fixed-layout shape first.
+
+A resizable header cell spells `relative` in its own class string, literally:
+the grip is absolutely positioned and resolves against the nearest positioned
+ancestor, and `shadcn/require-static-classes` rejects a className a
+design-system component builds from an opaque value -- so the header components
+pass `className` through untouched and the column-contract test holds every
+resizable header to it.
+
+The grip is the ARIA window-splitter widget (focusable, arrow keys, Enter or a
+double-click to reset one column). Because it is focusable content with its own
+label, a header cell that hosts one needs `aria-labelledby` pointing at its
+visible label, or the grip's name is appended to the column header and announced
+with every cell. The two header components above already do this.
 
 `src/kirocrew-ui/index.ts` re-exports the subset that apps may import as
 `@kirocrew/app-sdk/ui`. Adding a primitive there makes it app-facing API, so add
