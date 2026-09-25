@@ -3478,6 +3478,14 @@ def register_builtin_apps() -> int:
 _orphaned_builtins_cache: set[str] | None = None
 
 
+def shipped_builtin_names() -> set[str]:
+    """The three sources ``register_builtin_apps`` registers from, screened by the
+    same ``_validate_builtin_app`` it skips on. Wider sets belong to their callers.
+    """
+    candidates = list(_BUILTIN_APPS) + discover_builtin_apps() + _edition_builtin_apps()
+    return {app["name"] for app in candidates if not _validate_builtin_app(app)}
+
+
 def detect_orphaned_builtins(*, force_refresh: bool = False) -> set[str]:
     """Return set of orphaned builtin app names.
 

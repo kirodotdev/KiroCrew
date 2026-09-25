@@ -60,6 +60,7 @@ from kiro_crew.apps.manager import list_apps as list_installed_apps
 from kiro_crew.apps.manager import (
     registry_source_repository,
     set_app_provenance,
+    shipped_builtin_names,
     update_app,
 )
 from kiro_crew.apps.manifest import (
@@ -3918,6 +3919,8 @@ async def list_catalog_apps() -> list[dict[str, Any]]:
     snapshotted before the ``git``-installability filter below drops a
     not-yet-installable ``git`` row, so an external row can never shadow a name
     install resolves by (which would point install-by-name at the wrong repo).
+    A ``builtin`` row naming a builtin this build cannot register is dropped the
+    same way, and keeps its reservation the same way.
     """
     # Off the event loop: the first call after a cache expiry does network I/O.
     rows = await asyncio.to_thread(official_catalog.list_catalog_rows)
@@ -3957,6 +3960,15 @@ async def list_catalog_apps() -> list[dict[str, Any]]:
         for row in rows
         if row.get("source", {}).get("type") != "git" or row.get("name") in installable_names
     ]
+    # A `builtin` row is only installable when this build ships that builtin, so a
+    # catalog ahead of this gateway would otherwise render an Install that cannot work.
+    if any(row.get("source", {}).get("type") == "builtin" for row in rows):
+        shipped = await asyncio.to_thread(shipped_builtin_names)
+        rows = [
+            row
+            for row in rows
+            if row.get("source", {}).get("type") != "builtin" or row.get("name") in shipped
+        ]
 
     # Catalog display rows intentionally carry no clone URL. Resolve the
     # consent target from the same install coordinates name-only install uses:
