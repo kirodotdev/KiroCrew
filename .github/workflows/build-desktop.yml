@@ -225,10 +225,9 @@ jobs:
         # nicety that CI's setup-node already covers.
         shell: bash
         # KIRO_CLI_VERSION is passed EXPLICITLY, read from the one pin file, so
-        # the lane's log names the kiro-cli release it bundled and a manifest that
-        # moved past the pin fails this step instead of shipping an untested CLI
-        # inside the signed app (the same fail-closed gate publish-docker.yml
-        # drives through docker/Dockerfile's KIRO_CLI_VERSION).
+        # the lane's log names the release it bundled and the versioned download
+        # is verified against the committed sha. A moved latest manifest does not
+        # invalidate a pinned rebuild.
         run: |
           KIRO_CLI_VERSION="$(tr -d '[:space:]' < packaging/kiro-cli-version)"
           echo "Bundling kiro-cli ${KIRO_CLI_VERSION} (packaging/kiro-cli-version)"
@@ -278,6 +277,45 @@ jobs:
             website/electron/dist/*.rpm
             website/electron/dist/symbols-manifest.json
           if-no-files-found: error
+          retention-days: 14
+
+  # Install the macOS DMG for real and launch the app it carries.
+  #
+  # Mount, copy the .app out, run the installed launcher and the installed
+  # bundled kiro-cli, then start the REAL app from its executable and wait for
+  # the gateway its supervisor boots to answer /api/health. That launch is the
+  # only place the Electron shell's bundled-kiro-cli hand-off (gateway-env.js)
+  # runs against a shipped bundle, so the gateway child's environment is read
+  # back to prove it. Unsigned build by design: signing is a later stage, and the
+  # launch exercises the binary, not Gatekeeper. See scripts/smoke-macos-install.sh.
+  smoke-install-macos:
+    name: Smoke-install macOS DMG (launch + bundled kiro-cli)
+    needs: build-desktop
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download macOS universal build
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: unsigned-build-darwin-universal
+          path: dist
+
+      - name: Install the DMG, launch the app, prove the bundled kiro-cli
+        run: ./scripts/smoke-macos-install.sh dist
+
+      - name: Upload smoke evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: macos-install-smoke-evidence
+          path: |
+            ${{ runner.temp }}/kirocrew-smoke-*/logs/*
+            ~/Library/Logs/*/gateway-launch.log
+          if-no-files-found: warn
           retention-days: 14
 
   # Install the Linux packages for real, in the distros they target.

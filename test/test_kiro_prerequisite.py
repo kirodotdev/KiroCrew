@@ -7,6 +7,7 @@ import hashlib
 import inspect
 import json
 import os
+import shlex
 import sqlite3
 import stat
 import subprocess
@@ -237,6 +238,15 @@ class TestKiroPrerequisiteHelpers:
         # allowlist admitting the host PATH.
         assert version_env["PATH"] == "/probe/search/path"
         assert identity_env["PATH"] == "/probe/search/path"
+
+    def test_probe_env_keeps_the_cli_update_guard(self) -> None:
+        """Readiness probes must not update the bundled executable in place."""
+
+        version_env = prerequisite_module._probe_env(
+            {"KIRO_NO_AUTO_UPDATE": "1"}, "/probe/search/path"
+        )
+
+        assert version_env["KIRO_NO_AUTO_UPDATE"] == "1"
 
     def test_binary_digest_rejects_oversized_candidate(
         self,
@@ -642,13 +652,18 @@ class TestKiroPrerequisiteHelpers:
 
         assert resolved == str(forced)
 
-    def test_bundled_login_command_carries_the_absolute_path(self, tmp_path: Path) -> None:
+    def test_bundled_login_command_carries_the_absolute_path(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         """A bundled resolution serves sign-in commands the user can actually
         run: the bundled copy is not on their shell PATH, and the macOS
         resources path contains a space, so the path must be quoted."""
         bundled_dir = tmp_path / "Kiro Res" / "kiro-cli"
         binary = bundled_dir / BUNDLED_KIRO_CLI_ENTRY
         _make_executable(binary)
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
 
         login, sso, bundled = login_commands_for(
             str(binary), {"KIROCREW_BUNDLED_KIRO_DIR": str(bundled_dir)}
@@ -674,12 +689,14 @@ class TestKiroPrerequisiteHelpers:
         )
 
         quoted = str(binary).replace("'", "''")
+        # The typed command runs outside the gateway tree, so it must carry the
+        # self-update switch itself; ``Set-Item`` survives an interactive
+        # PowerShell's interpolation of the double-quoted -Command string.
+        head = 'powershell.exe -NoProfile -Command "Set-Item Env:KIRO_NO_AUTO_UPDATE 1; '
         assert bundled is True
-        assert login == f"powershell.exe -NoProfile -Command \"& '{quoted}' login\""
-        assert sso == (
-            f"powershell.exe -NoProfile -Command \"& '{quoted}' "
-            'login --use-device-flow --license pro"'
-        )
+        assert login == f"{head}& '{quoted}' login\""
+        assert sso == f"{head}& '{quoted}' login --use-device-flow --license pro\""
+        assert "$env:" not in login
 
     def test_system_resolution_keeps_the_bare_login_command(self, tmp_path: Path) -> None:
         bundled_dir = tmp_path / "resources" / "kiro-cli"
@@ -693,6 +710,38 @@ class TestKiroPrerequisiteHelpers:
         assert bundled is False
         assert login == KIRO_CLI_LOGIN_COMMAND
         assert sso == KIRO_CLI_SSO_LOGIN_COMMAND
+
+    def test_off_path_override_serves_its_absolute_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A ``KIROCREW_KIRO_BIN`` the user's shell would not find as ``kiro-cli``
+        gets the quoted absolute path, like the bundled copy: the bare command
+        would fail or sign in a different install."""
+        binary = tmp_path / "opt" / "kiro build" / "kiro-cli"
+        _make_executable(binary)
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+
+        login, sso, bundled = login_commands_for(
+            str(binary), {"KIROCREW_KIRO_BIN": str(binary), "PATH": "/nonexistent"}
+        )
+
+        assert bundled is False
+        assert login == f"{shlex.quote(str(binary))} login"
+        assert sso.startswith(shlex.quote(str(binary)))
+
+    def test_override_that_is_the_path_kiro_cli_keeps_the_bare_command(
+        self, tmp_path: Path
+    ) -> None:
+        bin_dir = tmp_path / "bin"
+        binary = bin_dir / "kiro-cli"
+        _make_executable(binary)
+
+        login, _sso, bundled = login_commands_for(
+            str(binary), {"KIROCREW_KIRO_BIN": str(binary), "PATH": str(bin_dir)}
+        )
+
+        assert bundled is False
+        assert login == KIRO_CLI_LOGIN_COMMAND
 
     def test_no_bundled_env_keeps_the_bare_login_command(self, tmp_path: Path) -> None:
         binary = tmp_path / "resources" / "kiro-cli" / "kiro-cli"

@@ -71,3 +71,10 @@ src/kiro_crew/agent_sdk/gate_extensions/**/*.mjs text eol=lf
 # the gate would report all of them as edited, there and only there. Entries
 # live flat in one directory, so no `**` is needed.
 docs/decisions/*.md text eol=lf
+
+# The kiro-cli pin files are read line-by-line and compared whole
+# (`pinned_kiro_cli_sha` in packaging/build-desktop.sh matches the exact name
+# tail), so a CRLF checkout on a Windows build host would make every lookup
+# miss and fail the staging step closed.
+packaging/kiro-cli-version text eol=lf
+packaging/kiro-cli-sha256 text eol=lf

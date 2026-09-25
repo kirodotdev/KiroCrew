@@ -137,7 +137,13 @@ environment, `main.js`, so a launchd-session variable reaches the resolver); on
 Linux the equivalent is `systemctl --user set-environment` for a
 desktop-session launcher. The same ranking feeds the pinned off-`PATH` spawns
 (`pin_kiro_cli`), so the version check, the readiness probe and every ACP
-session all run the bundled copy. Beside the directory, the shell sets
+session all run the bundled copy. The shell hands the directory over only after
+the staged entry has answered `--version` on the user's machine (one bounded
+`spawnSync` in `gateway-env.js`): a copy that is present but does not run there
+-- a glibc below the binary's floor, a quarantine flag, a truncated payload --
+is logged and NOT exported, so discovery falls through to the user's own
+kiro-cli exactly as an unbundled build does instead of every session failing
+on a binary the user never chose. Beside the directory, the shell sets
 `KIRO_NO_AUTO_UPDATE=1` once for the whole gateway process tree, so every child
 that runs the bundled copy — ACP sessions, the model listing, `whoami`, the
 usage scrape, `kirocrew doctor`, the readiness probes — inherits kiro-cli's
@@ -153,11 +159,16 @@ while running as a child of the app (its own terminal use is unaffected), and
 the user's `app.disableAutoupdates` setting is never written. The setup gate
 serves the copy's quoted absolute path as the click-to-copy sign-in command (it
 is not on the user's shell `PATH`) with a one-line hint that the path is the
-app's built-in kiro-cli (`bundled_cli` in the status payload), and refuses the
+app's built-in kiro-cli (`bundled_cli` in the status payload). On Windows that
+command also sets `KIRO_NO_AUTO_UPDATE` for itself (`Set-Item Env:…` inside the
+`powershell.exe -Command` string, which an interactive PowerShell would
+interpolate away if it were `$env:`): the user's terminal is outside the
+gateway tree, and it is the Windows copy that compiles the self-update. The
+gate refuses the
 in-place **Update** (and the gateway auto-update's `kiro-cli update`
 step, and `kirocrew update`'s) because the copy is replaced by the next app
 update. `kiro-cli login` is still the user's own step — bundling covers the
-binary, never the credential.
+binary, never the credential. The Windows install smoke (`scripts/smoke-windows-install.ps1`) then checks the INSTALLED tree: the staged `kiro-cli.exe` runs from where the installer put it and reports the pinned version, and the installed `kirocrew doctor` resolves that copy when `KIROCREW_BUNDLED_KIRO_DIR` names its directory. The macOS install smoke (`scripts/smoke-macos-install.sh`, job `smoke-install-macos` in `build-desktop.yml`) mounts the unsigned DMG, copies the app out, runs the installed launcher and the installed `kiro-cli-chat`, then launches the REAL app and reads the gateway child's environment back: `KIROCREW_BUNDLED_KIRO_DIR` and `KIRO_NO_AUTO_UPDATE=1` present, no probe fall-through line in `gateway-launch.log`, and the installed doctor resolving the bundled copy. That launch is the only place the shell's hand-off runs against a shipped bundle.
 
 The payload adds one Mach-O of a few hundred MB to the macOS signing zip (about
 1 GB in total), which is what `packaging/signing/sign.sh`'s poll window is sized
@@ -215,6 +226,9 @@ Two properties are load-bearing and worth knowing before you touch that lane:
   than assuming it equals the runner's glibc. The AppImage links against
   it, which is why both Linux legs stay on 22.04 (glibc 2.35) rather than moving
   to 24.04 (2.39) — the newer floor would exclude AL2023, Debian 12 and RHEL 9.
+  The bundled kiro-cli 2.24.0 stays inside that floor: `kiro-cli-chat` requires
+  `GLIBC_2.34` on x86_64 and `GLIBC_2.30` on aarch64, so it does not narrow the
+  supported distro set. Re-measure both pinned zips when updating the CLI pin.
 
 **Building your own package locally.** `make desktop` needs no arch flags: it
 detects the host and emits an AppImage for it, so running it on an ARM box

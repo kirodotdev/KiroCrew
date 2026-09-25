@@ -25,6 +25,17 @@ const GATEWAY_UTF8_ENV = Object.freeze({
 // (kiro_cli.known_kiro_cli_dirs, via the env var below) and the docs.
 const BUNDLED_KIRO_CLI_SUBDIR = ["backend-dist", "kiro-cli"];
 
+// The executable the build stages inside that directory, per platform. Mirrors
+// the backend's `kiro_cli.bundled_kiro_cli_entry`, which owns the spelling for
+// every resolver; this side needs it only to ask the copy whether it runs.
+const BUNDLED_KIRO_CLI_ENTRY = { win32: "kiro-cli.exe" };
+const BUNDLED_KIRO_CLI_POSIX_ENTRY = "kiro-cli-chat";
+
+// Ceiling for the one `--version` the shell asks of the bundled copy before
+// handing it to the gateway. Generous for a cold disk; a copy that cannot print
+// its version inside it is not one to build every session on.
+const BUNDLED_KIRO_CLI_PROBE_MS = 10_000;
+
 /**
  * Build a gateway child environment without mutating Electron's process.env.
  *
@@ -105,12 +116,17 @@ function gatewayBytecodeEnvironment(platform, cachePath, isPackaged) {
  * (`kiro_cli.known_kiro_cli_dirs`), so the app runs the exact agent runtime it
  * was built against while an operator can still force a different binary.
  *
- * Both variables are set ONLY when the directory actually shipped. A build without
- * the payload (`BUNDLE_KIRO_CLI=0` or a source checkout with no resources)
- * spreads nothing, so discovery falls through to the user's own
- * install exactly as an unbundled build does. A directory rather than a binary
- * path because this side only stats what it staged; the entry binary's name is
- * owned by the backend's `kiro_cli.bundled_kiro_cli_entry` helper.
+ * Both variables are set ONLY when the directory actually shipped AND its entry
+ * answers `--version` on THIS machine. A build without the payload
+ * (`BUNDLE_KIRO_CLI=0` or a source checkout with no resources) spreads nothing,
+ * and so does a copy that is present but does not run here (a glibc older than
+ * the binary's floor, a quarantine flag, a truncated payload): discovery then
+ * falls through to the user's own install exactly as an unbundled build does,
+ * and the reason is logged, instead of every session failing on a binary the
+ * user never chose. The gateway resolver ranks the bundled directory first
+ * without probing it, so this is the one place the fall-through can happen. A
+ * directory rather than a binary path because the backend owns the entry
+ * name; this side spells it only for the probe.
  *
  * `KIRO_NO_AUTO_UPDATE=1` rides along, set here ONCE for the whole gateway
  * process tree. Every child that runs the bundled copy -- ACP sessions, the
@@ -132,18 +148,48 @@ function gatewayBytecodeEnvironment(platform, cachePath, isPackaged) {
  * @param {Pick<typeof import("path"), "join">} path
  * @param {string | undefined} resourcesPath  `process.resourcesPath`, absent in a
  *   source checkout.
+ * @param {{
+ *   platform?: string,
+ *   spawnSync?: typeof import("child_process").spawnSync,
+ *   env?: NodeJS.ProcessEnv,
+ *   log?: (line: string) => void,
+ * }} [probe]  How to ask the staged entry for its version. Omitted (the unit
+ *   tests' shape) means "trust the directory", which is the pre-probe contract.
  * @returns {NodeJS.ProcessEnv}
  */
-function bundledKiroCliEnvironment(fs, path, resourcesPath) {
+function bundledKiroCliEnvironment(fs, path, resourcesPath, probe) {
   if (!resourcesPath) return {};
   const bundledDir = path.join(resourcesPath, ...BUNDLED_KIRO_CLI_SUBDIR);
   try {
-    return fs.statSync(bundledDir).isDirectory()
-      ? { KIROCREW_BUNDLED_KIRO_DIR: bundledDir, KIRO_NO_AUTO_UPDATE: "1" }
-      : {};
+    if (!fs.statSync(bundledDir).isDirectory()) return {};
   } catch {
     return {};
   }
+  if (probe && probe.spawnSync) {
+    const entry = path.join(
+      bundledDir,
+      BUNDLED_KIRO_CLI_ENTRY[probe.platform] || BUNDLED_KIRO_CLI_POSIX_ENTRY,
+    );
+    const result = probe.spawnSync(entry, ["--version"], {
+      env: { ...(probe.env || {}), KIRO_NO_AUTO_UPDATE: "1" },
+      timeout: BUNDLED_KIRO_CLI_PROBE_MS,
+      windowsHide: true,
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    if (result.error || result.status !== 0) {
+      const why = result.error
+        ? result.error.message
+        : `exit ${result.status}${result.signal ? ` signal ${result.signal}` : ""}`;
+      if (probe.log) {
+        probe.log(
+          `bundled kiro-cli at ${entry} does not run here (${why}); ` +
+            "falling through to the kiro-cli installed on this machine",
+        );
+      }
+      return {};
+    }
+  }
+  return { KIROCREW_BUNDLED_KIRO_DIR: bundledDir, KIRO_NO_AUTO_UPDATE: "1" };
 }
 
 module.exports = {
