@@ -699,9 +699,9 @@ async def test_a_press_after_a_generation_rotation_resolves_nothing() -> None:
 # explicit reject), the peer roster (checked first for EVERY press, no
 # exemption), and the thread roster (a guild press outside it is dropped). Once
 # any of them ends, no press can resolve the prompt, so its wait elapses -- and a
-# bare ``False`` there is a refusal the operator never made. The seam's reading
-# of that fact (``unpressed_wait_answer``) and the Telegram hook's adoption of it
-# landed in #13574; these pin the same contract on Discord's hook.
+# bare ``False`` there is a refusal the operator never made. The shared seam's
+# ``unpressed_wait_answer`` defines what an unpressed wait means, and the Telegram
+# hook follows it; these pin the same contract on Discord's hook.
 
 
 @pytest.fixture
