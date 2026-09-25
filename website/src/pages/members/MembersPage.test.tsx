@@ -135,6 +135,9 @@ import { __resetPanelTabs, VIEW_DATA_SOURCE } from '../../hooks/usePanelTabs'
 
 /** The page's own memory key (mirrors the constant in MembersPage.tsx). */
 const LAST_MEMBER_KEY = 'mc-members-last-member'
+// Spelled out rather than imported: the value IS the contract with a returning
+// browser, so a rename of the page's constant must fail here.
+const PANEL_OPEN_KEY = 'mc-members-panel-open'
 
 /** A window wide enough to dock the side panel BESIDE the thread (see
  *  panelSitsBeside): roster 264 + gaps 24 + shell reserve 560 + panel min 320
@@ -732,6 +735,21 @@ describe('MembersPage side panel (Notes / Work log / Dashboard) and edit jump', 
     fireEvent.click(close)
     await waitFor(() => expect(screen.queryByTestId('member-notes')).toBeNull())
     expect(screen.getByTestId('member-panel-toggle')).toBeInTheDocument()
+  })
+
+  it('the side-panel chord is inert on the empty pane, so it cannot hide the panel of the next member opened', async () => {
+    localStorage.setItem(LAST_MEMBER_KEY, 'ghost')
+    await renderPage([row({ name: 'oncall', bound: true, slot_key: 'member-oncall' })])
+    // No member open: the page draws neither the panel nor its opener, so the
+    // chord has no visible effect to give and must leave the shown choice
+    // standing. (The stored value is '1' from the hook's own mount write, not
+    // from the gesture.)
+    await screen.findByText(/Pick a member/i)
+    fireEvent(window, new Event('toggle-activity-panel'))
+    expect(localStorage.getItem(PANEL_OPEN_KEY)).toBe('1')
+    // Opening a member therefore still finds the panel shown.
+    fireEvent.click(await rosterRow('oncall'))
+    expect(await screen.findByTestId('member-notes')).toBeInTheDocument()
   })
 
   it('Notes is the FIRST tab, selected by default, and has no close control', async () => {

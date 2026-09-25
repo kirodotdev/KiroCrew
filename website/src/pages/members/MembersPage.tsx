@@ -8,7 +8,9 @@
  * The page realizes the B+C merged design: a member list on the left, the
  * selected member's pinned DM thread in the center (the real chat stack,
  * hosted the way split-view panes host it), and on the right the SAME tabbed
- * side panel the chat page docks — permanent, no close control — whose first
+ * side panel the chat page docks — shown by default, hidden and shown again by
+ * the header opener, the panel's own close control or the dashboard's
+ * side-panel chord, with the choice remembered — whose first
  * three tabs are the crewmate's own: Notes (what it learned — its standing
  * notes, read-only here), Work log (what it did) and Dashboard (how things
  * stand — the page it publishes itself), and whose + menu offers the chat
@@ -817,7 +819,16 @@ export default function MembersPage() {
   // way it reaches the chat page: App dispatches `toggle-activity-panel` on the
   // window and the page that owns a panel listens, which keeps one binding
   // across both surfaces instead of each inventing its own.
+  //
+  // Both the panel and its opener live behind an open member, so the gesture
+  // is gated on one too: the roster with no member open draws no panel, and a
+  // toggle there would move the persisted choice with nothing on screen
+  // changing, so the next member opened would come up hidden for no reason the
+  // user can see. `openMemberRef` is read rather than closed over so the
+  // listener binds once instead of re-binding per selection.
+  const openMemberRef = useRef(false)
   const togglePanel = useCallback(() => {
+    if (!openMemberRef.current) return
     if (beside) setDockedOpen((v) => !v)
     else setOverlayOpen((v) => !v)
   }, [beside, setDockedOpen])
@@ -865,6 +876,9 @@ export default function MembersPage() {
     () => members.find((m) => m.name === activeName),
     [members, activeName],
   )
+  // What the panel gesture reads: the panel and its opener are both drawn only
+  // while a member is open, so the toggle is inert otherwise.
+  useEffect(() => { openMemberRef.current = !!active }, [active])
   // The active member's projected roster view over its server row: the drawer
   // Configuration and header read config fields (kiro_agent/model/workspace/
   // memory_store) and last_active_ts from the projection when present, the row
@@ -2513,9 +2527,10 @@ export default function MembersPage() {
           panel's own (Files / Artifacts / Terminal / Browser / Side chat …),
           all against the member's DM slot, and the strip is bucketed per
           member so it follows the roster selection. Wide windows dock it as a
-          column with NO close control (it is part of the page, like the roster);
-          narrow ones make it an overlay the header button opens, with the
-          panel's own close control, on the chat page's dock motion. */}
+          column the strip's own close control hides, with the header opener
+          taking the gesture back while it is hidden; narrow ones make it an
+          overlay the header button opens, with the same close control, on the
+          chat page's dock motion. */}
       {active && (() => {
           const activeLiveSlot = liveSlots.find((slot) => slot.key === slotKeyOf(active))
           const delegatedOnly = activeLiveSlot?.subagents_running && !activeLiveSlot.running
@@ -3090,9 +3105,9 @@ export default function MembersPage() {
                   transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
                   className={beside
                     ? 'h-full overflow-visible flex justify-end shrink-0'
-                    /* The overlay MUST be dismissable, so it is the one placement
-                       that hands the panel an onClose — and the scrim is a second
-                       dismiss, the drawer convention. On a phone the panel is
+                    /* Both placements are dismissable, and the overlay carries a
+                       second dismiss on top of the strip's close: the scrim,
+                       the drawer convention. On a phone the panel is
                        handed the window width (`fillWidth`) so it fills the
                        scrim; on a tablet-width window the panel keeps its own
                        (resizable, persisted) width against the dimmed chat. */
