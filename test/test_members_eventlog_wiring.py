@@ -891,6 +891,115 @@ class TestStartupReconcile:
         assert eventlog_hooks.reconcile_members_at_startup(cfg, state, autonudge) == 0
         assert svc.last_seq(slug) == seq_after
 
+    def test_a_contended_patrol_closer_does_not_starve_the_slot_closers(self, monkeypatch):
+        """One closer losing its tail must not cost the same member's other closers.
+
+        The patrol closer is attempted before the slot closers, so an exhaustion that
+        propagated straight out of the member's sweep would skip every slot below it
+        -- in BOTH passes, because the retry re-enters at the same first closer. The
+        slot would then read open until the next boot even though nothing was
+        contending for it. Only the patrol closer is starved here; the slot's own
+        append is left alone, so a green run is the slot closer having been reached.
+        """
+        from kiro_crew.eventlog import service as svc_mod
+
+        cfg = _fake_config({CREW: _agent()})
+        slug = members.slug_for_name(CREW)
+        svc = get_service()
+        svc.ensure(slug, CREW)
+        eventlog_hooks.reconcile_member_config(
+            slug, CREW, cfg.agents[CREW], svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {})
+        )
+        svc.append(slug, types.PATROL_STARTED, {"slot_key": "member-code-reviewer"})
+        svc.append(slug, types.SLOT_OPENED, {"slot_key": "worker-1"})
+
+        real_closer = svc.append_closer_if_still_applies
+        attempted = []
+
+        def _patrol_always_loses_its_tail(target, type, data, **kwargs):
+            attempted.append(type)
+            if type == types.PATROL_STOPPED:
+                raise svc_mod.CloserTailContention(target, type)
+            return real_closer(target, type, data, **kwargs)
+
+        monkeypatch.setattr(svc, "append_closer_if_still_applies", _patrol_always_loses_its_tail)
+
+        wrote = eventlog_hooks.reconcile_members_at_startup(
+            cfg, SimpleNamespace(_slots={}), SimpleNamespace(get_by_slot=lambda key: None)
+        )
+
+        monkeypatch.setattr(svc, "append_closer_if_still_applies", real_closer)
+        assert types.PATROL_STOPPED in attempted, "the patrol closer was never attempted"
+        assert types.SLOT_CLOSED in attempted, (
+            "the slot closer was never attempted: the patrol closer's contention "
+            "propagated out of the member's sweep and skipped it"
+        )
+        events = svc.history(slug, before=None, limit=None)
+        assert (types.SLOT_CLOSED, "interrupted") in {
+            (e["type"], e["data"].get("reason")) for e in events
+        }, "the interrupted slot was left open by a closer that never ran"
+        driving = svc.snapshot(slug)["values"].get(types.PROJ_DRIVING, {}) or {}
+        assert "worker-1" not in (
+            driving.get("open", []) or []
+        ), "the slot still reads open after the sweep"
+        assert wrote == 1, f"the sweep reported {wrote} closer(s), not the one that landed"
+
+    def test_a_closer_refused_the_write_lease_also_leaves_its_siblings_alone(self, monkeypatch):
+        """Losing the lease is the closer's other contention, and costs the same.
+
+        A closer has two ways to come back empty-handed against a busy member: it
+        loses the tail on every attempt, or it never gets write ownership and the
+        store refuses it. Both are one member being written to by another process,
+        both leave the closer unplaced, and neither says anything about the closers
+        below it -- so containing only the first would starve the same slots through
+        the second door. A refusal is also the store's own guarantee that nothing was
+        written, which is what makes one more attempt safe.
+        """
+        from kiro_crew.crew_log.errors import CODE_ALREADY_OWNED, CrewLogError
+
+        cfg = _fake_config({CREW: _agent()})
+        slug = members.slug_for_name(CREW)
+        svc = get_service()
+        svc.ensure(slug, CREW)
+        eventlog_hooks.reconcile_member_config(
+            slug, CREW, cfg.agents[CREW], svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {})
+        )
+        svc.append(slug, types.PATROL_STARTED, {"slot_key": "member-code-reviewer"})
+        svc.append(slug, types.SLOT_OPENED, {"slot_key": "worker-1"})
+
+        real_closer = svc.append_closer_if_still_applies
+        attempted = []
+
+        def _patrol_never_gets_the_lease(target, type, data, **kwargs):
+            attempted.append(type)
+            if type == types.PATROL_STOPPED:
+                raise CrewLogError(
+                    f"another process owns the log for {target!r}", code=CODE_ALREADY_OWNED
+                )
+            return real_closer(target, type, data, **kwargs)
+
+        monkeypatch.setattr(svc, "append_closer_if_still_applies", _patrol_never_gets_the_lease)
+
+        wrote = eventlog_hooks.reconcile_members_at_startup(
+            cfg, SimpleNamespace(_slots={}), SimpleNamespace(get_by_slot=lambda key: None)
+        )
+
+        monkeypatch.setattr(svc, "append_closer_if_still_applies", real_closer)
+        assert types.PATROL_STOPPED in attempted, "the patrol closer was never attempted"
+        assert types.SLOT_CLOSED in attempted, (
+            "the slot closer was never attempted: the patrol closer's refused lease "
+            "propagated out of the member's sweep and skipped it"
+        )
+        driving = svc.snapshot(slug)["values"].get(types.PROJ_DRIVING, {}) or {}
+        assert "worker-1" not in (
+            driving.get("open", []) or []
+        ), "the slot still reads open after the sweep"
+        assert attempted.count(types.PATROL_STOPPED) == 2, (
+            f"the patrol closer was attempted {attempted.count(types.PATROL_STOPPED)} time(s): "
+            "a member whose closer was refused the lease must still reach the retry pass"
+        )
+        assert wrote == 1, f"the sweep reported {wrote} closer(s), not the one that landed"
+
     def test_a_contended_member_is_recovered_by_the_retry_pass(self, monkeypatch):
         """The sweep runs once per boot, so a lost closer must not be lost for good.
 

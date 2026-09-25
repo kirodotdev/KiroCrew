@@ -908,22 +908,23 @@ class TestALiveReopenSurvivesTheStartupReconcile:
         svc.ensure("ivy", "Ivy")
         svc.append("ivy", types.SLOT_OPENED, {"slot_key": "s1"})
 
-        real_get_log = svc._get_log
+        real_fold = svc._fold_gap_locked
         foreign = []
 
-        def _get_log_then_a_foreign_commit(slug):
-            log = real_get_log(slug)
-            if slug == "ivy" and not foreign:
+        def _fold_then_a_foreign_commit(slug, log, *, below=None):
+            real_fold(slug, log, below=below)
+            if slug == "ivy" and below is None and not foreign:
                 foreign.append(True)
                 # Another PROCESS closes the slot through its own handle, so this
-                # service's registry never learns of it. Written after our fold,
-                # which is the window the predicate has to see across.
+                # service's registry never learns of it. Committed AFTER our fold
+                # has already run, which is the window the tail bound exists for:
+                # our fold saw the slot open, so the predicate alone would say yes
+                # and only the store's tail read can still stop the write.
                 log_mod.MemberLog("ivy").append(
                     types.SLOT_CLOSED, {"slot_key": "s1", "reason": "finished"}
                 )
-            return log
 
-        monkeypatch.setattr(svc, "_get_log", _get_log_then_a_foreign_commit)
+        monkeypatch.setattr(svc, "_fold_gap_locked", _fold_then_a_foreign_commit)
 
         def _slot_is_still_open(values, _observed):
             driving = values.get(types.PROJ_DRIVING, {}) or {}
@@ -1039,6 +1040,61 @@ class TestALiveReopenSurvivesTheStartupReconcile:
             for e in svc.history("ivy", before=None, limit=None)
             if e.get("type") == types.SLOT_CLOSED
         ], "a closer landed despite never getting a clean window"
+
+    def test_every_tail_attempt_shares_one_contention_deadline(self, tmp_path, monkeypatch):
+        """The retries divide one contention budget; they do not each get their own.
+
+        Every attempt holds the per-slug lock while it waits out a busy lease, so a
+        budget started afresh per attempt multiplies the total wait by the number of
+        attempts and holds that lock for all of it. One absolute instant, decided
+        before the first attempt, is what keeps the whole retry loop inside the single
+        budget its caller is charged.
+        """
+        from kiro_crew.eventlog import log as log_mod
+        from kiro_crew.eventlog import service as svc_mod
+        from kiro_crew.eventlog import types
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        svc_mod.set_service(None)
+        svc = svc_mod.get_service()
+        svc.ensure("ivy", "Ivy")
+        svc.append("ivy", types.SLOT_OPENED, {"slot_key": "s1"})
+
+        real_fold = svc._fold_gap_locked
+        real_append_if = log_mod.MemberLog.append_if
+        deadlines = []
+
+        def _fold_then_a_foreign_commit(slug, log, *, below=None):
+            real_fold(slug, log, below=below)
+            if slug == "ivy" and below is None:
+                log_mod.MemberLog("ivy").append(types.SLOT_OPENED, {"slot_key": "other"})
+
+        def _record_deadline(self, type, data, *, max_tail_seq, deadline=None):
+            deadlines.append(deadline)
+            return real_append_if(self, type, data, max_tail_seq=max_tail_seq, deadline=deadline)
+
+        monkeypatch.setattr(svc, "_fold_gap_locked", _fold_then_a_foreign_commit)
+        monkeypatch.setattr(log_mod.MemberLog, "append_if", _record_deadline)
+
+        with pytest.raises(svc_mod.CloserTailContention):
+            svc.append_closer_if_still_applies(
+                "ivy",
+                types.SLOT_CLOSED,
+                {"slot_key": "s1", "reason": "interrupted"},
+                still_applies=lambda _values, _observed: True,
+            )
+
+        assert (
+            len(deadlines) == svc_mod._CLOSER_TAIL_ATTEMPTS
+        ), f"{len(deadlines)} attempt(s) were made, not {svc_mod._CLOSER_TAIL_ATTEMPTS}"
+        assert None not in deadlines, (
+            "an attempt was given no deadline, so it started a contention budget of "
+            "its own while the per-slug lock stayed held"
+        )
+        assert len(set(deadlines)) == 1, (
+            f"the attempts were given {len(set(deadlines))} different deadlines, so the "
+            "total wait is that multiple of one budget"
+        )
 
     def test_a_closer_survives_a_foreign_commit_it_does_not_care_about(self, tmp_path, monkeypatch):
         """Losing the tail once must re-decide, not decline for good.

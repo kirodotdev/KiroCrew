@@ -273,10 +273,12 @@ when the member has never spoken, so the stale line does not stand beside an emp
 chat — and a second read appends nothing. The correction is written through
 `append_closer_if_still_applies` with `_preview_is_still_at`: the roster's
 `last_message` and `last_active_ts` must still read as they did when `api_members`
-observed them BEFORE its transcript read, re-checked while this process OWNS the
-log, so a `member/message` the crewmate speaks while the read is in flight refuses
-the older answer instead of being overwritten by it (the fold is last-wins by append
-order, so a stale append would otherwise regress both fields durably).
+observed them BEFORE its transcript read, re-asked under the per-slug lock against
+the newest state the fold has made visible, and the append is then admitted only
+while the log's tail is still the seq that fold reached, so a `member/message` the
+crewmate speaks while the read is in flight refuses the older answer instead of
+being overwritten by it (the fold is last-wins by append order, so a stale append
+would otherwise regress both fields durably).
 
 That recheck is ordered by the store's own hold, not by the per-slug lock alone.
 The per-slug lock orders this process's writers, and for them it settles the
@@ -298,11 +300,16 @@ rather than a callback, since an int cannot parse or write.
 `append_closer_if_still_applies` folds and asks the caller's predicate first, then
 passes the seq that fold reached. A foreign commit makes the tail exceed it, the
 append declines without writing, and the loop folds that entry and asks the predicate
-again, up to `_CLOSER_TAIL_ATTEMPTS` times before declining for good and logging at
-warning -- declining is the safe direction, because a closer not written is re-decided
-by the next read while one written against a state that moved is permanent, and the
-warning is what keeps a floor that never reaches the tail from silently declining
-every closer for that member. Seqs only increase, so the comparison cannot be fooled
+again, up to `_CLOSER_TAIL_ATTEMPTS` times. Losing the tail on every attempt is NOT a
+decline: the helper logs at warning and raises `CloserTailContention`, which is a third
+outcome distinct from the `None` a live state returns. The two must not be conflated,
+because a `None` means the state closed itself and needs nothing further, while an
+exhaustion means the closer is still owed and the caller has to come back for it --
+which is what the startup sweep's retry pass over the contended members does. Declining
+itself is the safe direction, because a closer not written is re-decided by the next
+read while one written against a state that moved is permanent, and the warning is what
+keeps a floor that never reaches the tail from silently declining every closer for that
+member. Seqs only increase, so the comparison cannot be fooled
 by a tail that moved and came back.
 The correction is also gated on the read being TRUSTWORTHY: `last_speech_info`
 returns a fourth value, `exhaustive`, true only when the tail walk reached the
@@ -466,6 +473,22 @@ The closer therefore goes through an append that re-asks whether the state it cl
 is still there, handed the CURRENT projection rather than the caller's snapshot, and
 writes nothing when it is not. Declining is a normal outcome, not a failure: it means
 the state closed itself while the reconcile was deciding.
+
+Coming back unplaced is the outcome that is neither a write nor a decline, and it
+has two forms. Foreign writes can keep moving the tail out from under every attempt,
+and the append then raises `CloserTailContention`; or write ownership can stay held
+elsewhere for the whole contention budget, and the store refuses the append instead.
+Both report the same three facts -- the closer is unplaced, nothing was learned about
+whether it applied, and the closers below it are unaffected -- so the sweep treats
+them as one; a refusal also carries the store's guarantee that nothing was written,
+which is what makes another attempt safe. It answers them in two ways. Within one
+member, each closer's contention is contained and re-raised only after its siblings
+have been attempted, so one unlucky closer cannot suppress the rest -- without that, a
+contended patrol closer would leave the same member's interrupted slots untouched.
+Across members, the contended ones are collected and swept a second time, because each
+step re-decides from a fresh snapshot under its own predicate and so is safe to run
+twice. A member still contended after that pass keeps its interrupted state until the
+next boot re-decides, and the warning above says so.
 
 `emit` never PROPAGATES a failure, because a caller recording a transition must
 not be brought down by its own bookkeeping, but it does not discard the outcome
