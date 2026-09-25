@@ -59,6 +59,7 @@ REPO = "widget-service"
 HOST = "dev.azure.com"
 SHA = "a" * 40
 GUID = "11111111-2222-3333-4444-555555555555"
+REPO_GUID = "77777777-8888-9999-aaaa-bbbbbbbbbbbb"
 
 
 class _FakeAz:
@@ -432,7 +433,11 @@ class TestListPrWorkflowRuns(unittest.TestCase):
         return build
 
     def _rows(self, *builds: dict, sha: str = SHA) -> tuple[list[dict], _FakeAz]:
-        az = _FakeAz({"value": list(builds)})
+        # The repository GUID lookup answers first: build/builds is filtered by
+        # GUID, so it precedes the build page. Cleared per call because each call
+        # brings its own fake with its own answer queue.
+        azure_client._repo_id_cache.clear()
+        az = _FakeAz({"id": REPO_GUID}, {"value": list(builds)})
         with mock.patch.object(azure_client, "_az_invoke", side_effect=az):
             rows = azure_client.list_pr_workflow_runs(OWNER, REPO, sha, host=HOST)
         return rows, az
@@ -518,8 +523,8 @@ class TestListPrWorkflowRuns(unittest.TestCase):
         self.assertEqual([row["id"] for row in rows], [501])
         # And the list is scoped to this repository within the project, not to the
         # whole project's build history.
-        query = az.calls[0]["query"]
-        self.assertEqual(query["repositoryId"], "Widgets/widget-service")
+        query = az.calls[1]["query"]
+        self.assertEqual(query["repositoryId"], REPO_GUID)
         self.assertEqual(query["repositoryType"], "TfsGit")
 
     def test_the_commit_is_matched_case_insensitively(self):
