@@ -96,6 +96,39 @@ class LogCorrupt(Exception):
         super().__init__(f"{path}: line {line_no}: {detail}")
 
 
+#: Cumulative ceiling on ONE unit's log. The per-append size check bounds a single
+#: event and the per-app daily quota bounds a day's appends, but a quota renews, so
+#: neither bounds the total a contributor can accumulate in one log. This surface
+#: folds the whole ledger into memory on a cold load, so the total is the figure
+#: that decides what that fold costs.
+MAX_UNIT_LOG_BYTES = 64 * 1024 * 1024
+
+#: Headroom inside that ceiling which only the gateway's OWN events may use.
+#:
+#: A member's log has two kinds of writer and one ceiling. Without a reserve, an
+#: authorized contributor that fills the log to the cap does not merely stop
+#: contributing -- it stops the gateway from recording that member's activity and
+#: config changes at all, permanently, because those appends meet the same ceiling.
+#: A contributor is refused this much earlier so the gateway's own record of the
+#: member cannot be crowded out by an app the user installed.
+GATEWAY_RESERVE_BYTES = 8 * 1024 * 1024
+
+
+class UnitLogFull(Exception):
+    """One unit's log has reached its cumulative ceiling.
+
+    Its own type rather than a ValueError: a caller has to tell "this append is
+    malformed" from "this unit has no room left", because only the second is
+    answered by pruning or archiving rather than by fixing the request.
+    """
+
+    def __init__(self, path: Path, size: int, limit: int) -> None:
+        self.path = path
+        self.size = size
+        self.limit = limit
+        super().__init__(f"{path}: {size} bytes reaches the {limit}-byte ceiling for one unit")
+
+
 def _stored_type(type_: str) -> str:
     """The spelling the crew log stores for *type_*.
 
@@ -160,6 +193,14 @@ class MemberLog:
     def path(self) -> Path:
         """The file the crew log store keeps this member's entries in."""
         return crew_log_path(KIND_MEMBER, self.slug)
+
+    @property
+    def committed_bytes(self) -> int:
+        """Bytes durably committed, i.e. the size of the stored log."""
+        try:
+            return self.path.stat().st_size
+        except OSError:
+            return 0
 
     # ---- lifecycle --------------------------------------------------------
     def create(self, name: str) -> None:
@@ -297,6 +338,23 @@ class MemberLog:
         self._ensure_loaded()
         if self._crew_log is None:
             raise LogCorrupt(self.path, 0, "cannot append to a log with no header")
+        # A cumulative ceiling per unit, on top of the per-append size check and
+        # the per-app daily quota. Neither of those bounds the TOTAL: a quota is
+        # renewable, so a contributor appending within it every day grows one log
+        # without limit, and this surface folds the whole ledger into memory on
+        # every cold load. The ceiling is what makes that fold's cost finite.
+        #
+        # A CONTRIBUTED append meets it earlier, by the gateway's reserve. One log
+        # has two writers and one ceiling, so a contributor allowed all the way to
+        # the cap would silently stop the gateway from recording that member's own
+        # activity and config -- a user's record of their crew member lost to an app
+        # they installed. The reserve is refused to the contributor and kept for the
+        # writer that cannot be asked to prune.
+        ceiling = MAX_UNIT_LOG_BYTES
+        if is_contributed_event_type(type):
+            ceiling -= GATEWAY_RESERVE_BYTES
+        if self.committed_bytes > ceiling:
+            raise UnitLogFull(self.path, self.committed_bytes, ceiling)
         stored = _stored_type(type)
         entry = self._append_through_contention(stored, data)
         event = _as_event(entry)
@@ -371,6 +429,41 @@ class MemberLog:
                 # held by another process burns a core to no purpose. Capped so a
                 # long wait still makes several attempts.
                 delay = min(delay * 2, APPEND_CONTENTION_MAX_DELAY)
+
+    def events_after(self, after: int, limit: int) -> list[Event]:
+        """Oldest-first page of events with ``seq > after``, at most *limit*.
+
+        The catch-up read of the contribution protocol: a consumer that folded up
+        to ``after`` asks for what came next, in the order it must fold it.
+        Distinct from :meth:`history`, which pages BACKWARDS for a timeline view
+        -- folding a newest-first page would apply a later event before an
+        earlier one.
+
+        Reads from the STORE whenever the in-memory tail has a floor, the same way
+        :meth:`history` and :meth:`iter_events` do. The tail keeps only the newest
+        ``MAX_RETAINED_EVENTS``, so answering a cold cursor from it would return
+        the newest events and silently omit every durable one below the floor --
+        and a fold is exactly the reader that cannot survive a gap, because it
+        would apply later state over earlier state it never saw. An incomplete
+        answer here is worse than a slower one.
+        """
+        self._ensure_loaded()
+        if self.retained_from:
+            if self._crew_log is None:
+                return []
+            start = after + 1 if after >= 1 else 1
+            out: list[Event] = []
+            for entry in self._crew_log.iter_from(start):
+                if entry.seq <= after:
+                    continue
+                out.append(_as_event(entry))
+                if limit is not None and limit >= 0 and len(out) >= limit:
+                    break
+            return out
+        out = [e for e in self.events if e["seq"] > after]
+        if limit is not None and limit >= 0:
+            return out[:limit]
+        return out
 
     def history(self, before: int | None, limit: int | None) -> list[Event]:
         """Newest-first page of events with ``seq < before`` (or all).

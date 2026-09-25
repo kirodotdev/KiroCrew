@@ -14,6 +14,21 @@ export type ProjectionKey = 'roster' | 'activity' | 'wake' | 'driving'
 export interface ProjectionsBlock {
   asOfSeq: number
   values: { [key: string]: unknown }
+  /**
+   * Per-key generation for CONTRIBUTED rows, which orders ahead of the seq. The
+   * backend sends it only when an app has published to this member, and never for
+   * a built-in key, so it is optional and an absent entry reads as 0 — which
+   * collapses that row's ordering to plain higher-seq-wins.
+   */
+  stateVersions?: { [key: string]: number }
+  /**
+   * Per-key SEQ for CONTRIBUTED rows. A contributed row's seq is the contributor's
+   * own fold position, which trails this response's `asOfSeq`, so seeding the row at
+   * `asOfSeq` would make the ordering gate drop that contributor's next live push and
+   * freeze the card at its baseline. Absent for a built-in key, whose seq IS
+   * `asOfSeq`, and absent entirely when no app has published to this member.
+   */
+  seqs?: { [key: string]: number }
 }
 
 

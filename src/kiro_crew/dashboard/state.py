@@ -5147,6 +5147,17 @@ class DashboardState:
             get_service().attach_broadcast(self.broadcast_ws)
         except Exception:
             logger.debug("eventlog attach_broadcast failed", exc_info=True)
+        # The contribution protocol's per-subscription delta channel hangs off the
+        # same service, as its append sink. It is attached HERE rather than on first
+        # subscribe so an event appended before anyone has subscribed still advances
+        # the hub's view; a subscribe that raced an unattached sink would otherwise
+        # stream nothing until the next append after it.
+        try:
+            from kiro_crew.dashboard.eventlog_ws import attach_to_service
+
+            attach_to_service()
+        except Exception:
+            logger.debug("eventlog attach_to_service failed", exc_info=True)
         # Runtime services share the gateway's policy, never a model-supplied mode.
         from kiro_crew.dashboard.handlers._shared import (
             live_session_memory_mode,

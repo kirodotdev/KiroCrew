@@ -137,6 +137,24 @@ def build_subagent_snapshot(a: Any, *, now: float | None = None) -> dict:
     return data
 
 
+def _audit_contribution(
+    app: str, operation: str, outcome: str, resources: str, error: str = ""
+) -> None:
+    """Record one WebSocket contribution decision in the SEL stream.
+
+    Delegates to the HTTP handlers' own audit so a subscription decision is
+    indistinguishable in the trail from the read and append decisions it sits
+    beside. Imported inside the call because ``handlers.eventlog`` imports this
+    module's siblings, and never changes the outcome it is recording.
+    """
+    try:
+        from kiro_crew.dashboard.handlers.eventlog import _audit
+
+        _audit(app, operation, outcome, resources, error=error)
+    except Exception:  # pragma: no cover - audit must not change the answer
+        logger.debug("SEL audit for %s failed", operation, exc_info=True)
+
+
 def _audit_grant_quietly(app: str, event: str) -> None:
     """Record a WS grant made on a path that bypasses the broadcast chokepoint.
 
@@ -429,6 +447,122 @@ def _check_ws_origin(request: web.Request) -> None:
     """
     if not check_origin(request, require=True):
         raise web.HTTPForbidden(text="WebSocket origin not allowed")
+
+
+async def _handle_eventlog_frame(
+    ws: web.WebSocketResponse, ws_app: str, msg_type: str, data: dict
+) -> None:
+    """Serve one ``eventlog_subscribe`` / ``eventlog_unsubscribe`` frame (§3).
+
+    App tokens only, and only for a unit kind the caller's manifest
+    ``contributions.units`` grants. A refused subscribe answers with an
+    ``eventlog_subscribed`` carrying ``error`` and no ``lastSeq`` rather than
+    closing the socket: the socket multiplexes everything else this app uses, and
+    a contributor that asked for the wrong kind needs to be told, not dropped.
+
+    Order matters and is the reason this is one function: the hub registers the
+    socket for fan-out FIRST, so an append racing the handshake is queued; then
+    ``lastSeq`` is read and ``eventlog_subscribed`` is written to the socket; only
+    then is the pump allowed to run. That is how the contract's "subscribed
+    precedes any event" holds without dropping the racing append.
+    """
+    from kiro_crew.dashboard.eventlog_ws import (
+        WS_SUBSCRIBED,
+        SubscriptionLimit,
+        get_hub,
+    )
+    from kiro_crew.eventlog import grants
+    from kiro_crew.eventlog.contrib import ContribError, assert_grants_unchanged, resolve_unit
+
+    kind = str(data.get("data", {}).get("kind", "") or "")
+    unit_id = str(data.get("data", {}).get("id", "") or "")
+    hub = get_hub()
+
+    async def _refuse(code: str, message: str) -> None:
+        # Audited in the same stream as the HTTP contribution decisions, and from
+        # here so EVERY refusal code is covered rather than the grant check alone.
+        # A subscription is a contribution decision like the reads and appends are,
+        # and one that leaves no event is one no audit can account for.
+        _audit_contribution(ws_app, "eventlog.subscribe", "denied", f"{kind}/{unit_id}", code)
+        try:
+            await ws.send_json(
+                {
+                    "type": WS_SUBSCRIBED,
+                    "data": {"kind": kind, "id": unit_id, "code": code, "error": message},
+                }
+            )
+        except Exception:
+            logger.debug("eventlog: refusal could not be sent", exc_info=True)
+
+    if not ws_app:
+        await _refuse(
+            "unit_kind_not_granted",
+            "the event-log delta channel is for app tokens; a dashboard session "
+            "receives member_projection frames instead",
+        )
+        return
+    if msg_type == "eventlog_unsubscribe":
+        hub.unsubscribe(ws, kind, unit_id)
+        return
+    # Read BEFORE the grant check, as on the three HTTP mutation paths. The
+    # window here is the same shape: the grant is checked, the unit resolve is
+    # offloaded, and a disable landing in between would otherwise let a
+    # torn-down app register for fan-out on a grant teardown already revoked.
+    fence = grants.revocation_generation()
+    # Offloaded UNCONDITIONALLY. `may_use_kind` is sync because one of its callers
+    # is a sync frame filter, and on a cold cache it reads this app's metadata and
+    # manifest -- file IO, on the serving loop, which is what `resolve_unit` below
+    # is already offloaded to avoid. Branching on `is_cached` to keep the warm path
+    # inline does not work: a lifecycle event can land between that dict read and
+    # this call, so the branch chosen as "warm" is exactly the one that then reads
+    # the manifest on the loop.
+    kind_granted = await asyncio.to_thread(grants.may_use_kind, ws_app, kind)
+    if not kind_granted:
+        await _refuse("unit_kind_not_granted", f"this app may not subscribe to {kind!r} units")
+        return
+    try:
+        unit = await asyncio.to_thread(resolve_unit, kind, unit_id)
+    except ContribError as exc:
+        await _refuse(exc.code, str(exc))
+        return
+    except Exception:
+        logger.debug("eventlog: unit resolve failed for %s/%s", kind, unit_id, exc_info=True)
+        await _refuse("unit_not_found", f"no log for {kind}/{unit_id}")
+        return
+
+    # Adjacent to the registration with no await between: `hub.subscribe` runs
+    # loop-side, so this is the last point at which the answer can still be true
+    # when the commit happens.
+    try:
+        assert_grants_unchanged(fence)
+    except ContribError as exc:
+        await _refuse(exc.code, str(exc))
+        return
+
+    try:
+        hub.subscribe(ws, kind, unit_id)
+    except SubscriptionLimit as exc:
+        await _refuse("unit_kind_not_granted", str(exc))
+        return
+    _audit_contribution(ws_app, "eventlog.subscribe", "granted", f"{kind}/{unit_id}")
+    last_seq = await asyncio.to_thread(unit.service().last_seq, unit_id)
+    try:
+        await ws.send_json(
+            {
+                "type": WS_SUBSCRIBED,
+                "data": {
+                    "kind": kind,
+                    unit.id_field: unit_id,
+                    "id": unit_id,
+                    "lastSeq": last_seq,
+                },
+            }
+        )
+    except Exception:
+        # The socket died mid-handshake; do not leave it registered for fan-out.
+        hub.unsubscribe(ws, kind, unit_id)
+        return
+    hub.start_pump(ws)
 
 
 async def api_ws(request: web.Request) -> web.WebSocketResponse:
@@ -1003,6 +1137,8 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                             pass
                     elif msg_type == "unsubscribe_subagents":
                         state.unsubscribe_subagents(ws)
+                    elif msg_type in ("eventlog_subscribe", "eventlog_unsubscribe"):
+                        await _handle_eventlog_frame(ws, ws_app, msg_type, data)
                     elif msg_type == "slot_focused":
                         if not owner_request:
                             # SEL: the owner gate is a permission decision —
@@ -1064,5 +1200,15 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
             _focus_task.cancel()
         state.unsubscribe_logs(ws)
         state.unsubscribe_subagents(ws)
+        # Contribution-protocol subscriptions live in their own hub (per unit, not
+        # per app), so the generic registry cleanup above does not reach them; a
+        # surviving entry would keep queueing frames for a closed socket and hold
+        # its pump task alive.
+        try:
+            from kiro_crew.dashboard.eventlog_ws import get_hub
+
+            get_hub().drop(ws)
+        except Exception:
+            logger.debug("eventlog: subscription cleanup failed", exc_info=True)
         state.unregister_ws(ws)
     return ws

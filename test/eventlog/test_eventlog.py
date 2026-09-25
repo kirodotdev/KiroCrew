@@ -673,6 +673,38 @@ def test_redact_projection_value_scrubs_keys_not_just_values():
     assert "AKIAIOSFODNN7EXAMPLE" not in blob
 
 
+def test_push_projection_redacts_the_schema_not_only_the_value():
+    """The render schema crosses the same live WS boundary as the value and is
+    app-authored, so a credential in a schema ``title`` must be scrubbed too --
+    redacting only the value would leak it to the browser until a reload."""
+    from types import SimpleNamespace
+
+    from kiro_crew.dashboard.handlers.eventlog import _push_projection
+
+    sent: dict = {}
+    state = SimpleNamespace(
+        broadcast_ws=lambda frame, payload: sent.update(frame=frame, payload=payload)
+    )
+    request = SimpleNamespace(app={"state": state})
+    unit = SimpleNamespace(id_field="memberId", frame="member_projection")
+
+    secret = "https://evil.example/x?token=AKIAIOSFODNN7EXAMPLE"
+    _push_projection(
+        request,
+        unit,
+        "code-reviewer",
+        "demoapp/count",
+        value=1,
+        seq=1,
+        state_version=1,
+        schema={"kind": "badge", "title": secret},
+    )
+
+    blob = json.dumps(sent["payload"])
+    assert secret not in blob
+    assert "AKIAIOSFODNN7EXAMPLE" not in blob
+
+
 def test_service_broadcast_never_raises(tmp_path, monkeypatch):
     import kiro_crew.members as members
 

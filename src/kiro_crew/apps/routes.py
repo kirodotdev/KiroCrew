@@ -862,6 +862,35 @@ async def _refuse_while_startup_hook_runs(name: str, *, action: str) -> web.Resp
     )
 
 
+async def _close_event_log_sockets(name: str, *, operation: str) -> None:
+    """Close *name*'s event-log sockets after its permissions may have changed.
+
+    A subscription is authorized ONCE, at subscribe time. Invalidating the cached
+    grants stops the next subscribe and says nothing about a socket already
+    streaming, so an update that narrows ``permissions.contributions`` would leave
+    the old authorization live. The app reconnects and is re-authorized against
+    the manifest it now has.
+
+    This is a function rather than a block inside one branch because ``update_app``
+    has SEVERAL success paths (registry and local source), and a block in one of
+    them puts the burden on each future path to remember to close. Every path
+    calls this instead. Never raises: a fan-out fault must not turn a completed
+    update into a failed one, so a failure is audited and swallowed.
+    """
+    try:
+        from kiro_crew.dashboard.eventlog_ws import get_hub
+
+        await get_hub().close_app(name)
+    except Exception:
+        sel().log_api_access(
+            caller="dashboard",
+            operation=operation,
+            outcome="sockets_not_closed",
+            resources=name,
+            error="could not close the app's event-log sockets",
+        )
+
+
 async def handle_update_app(request: web.Request) -> web.Response:
     """POST /api/apps/{name}/update — update an installed app from its source path."""
     name = request.match_info["name"]
@@ -902,6 +931,17 @@ async def handle_update_app(request: web.Request) -> web.Response:
                     error=reg_install.get("error", ""),
                 )
                 return web.json_response(reg_install, status=400)
+            # The replacement manifest is durable from here, so this app's
+            # contribution authority may already have narrowed -- and a subscription
+            # is authorized ONCE, at subscribe time, so closing the socket is the
+            # only thing that enforces a narrowing. The close therefore belongs
+            # HERE: inside the lock, ahead of the resource swap. The backend stop,
+            # the deregister, the re-register and the backend start below can each
+            # raise, and a close placed after them is one that a raise skips --
+            # leaving a socket streaming a unit this app may not read. The
+            # local-source branch closes at its own equivalent point, right after
+            # `update_app` succeeds.
+            await _close_event_log_sockets(name, operation="app_update")
             # Install succeeded — now safe to swap resources. Stop the backend BEFORE
             # deregistering, matching uninstall and the disable rollback: stopping pops
             # the tracking record, which is what stops the health watch from
@@ -974,6 +1014,11 @@ async def handle_update_app(request: web.Request) -> web.Response:
             )
             return web.json_response(up_result.to_dict(), status=400)
 
+        # Close this app's event-log sockets, the way disabling it does. Shared
+        # with the registry branch through one helper, so a future success path
+        # cannot silently skip it.
+        await _close_event_log_sockets(name, operation="app_update")
+
         # Re-register with the new manifest only if the app is STILL enabled.
         # ``update_app`` drops ``enabled`` when the new version adds
         # ``permissions.sessionApproval``, so the pre-update ``info`` snapshot
@@ -1018,6 +1063,35 @@ async def handle_register_external(request: web.Request) -> web.Response:
             status=400,
         )
 
+    # An app token may register ITS OWN identity and nothing else. The subject is
+    # named in the BODY, and the new-registration branch of `register_external_app`
+    # mints a fresh app secret and snapshots the approved unit kinds for whatever
+    # name it is handed -- so an app permitted to reach this endpoint could name a
+    # DIFFERENT app, be handed that app's secret in the response, and be granted
+    # member-log authority under its name. Bound here, before the lock and before
+    # anything is minted or written, because a check after the mint has already
+    # created the secret it is trying to protect.
+    #
+    # An empty caller is a dashboard-user token: that is the operator path, and an
+    # operator may legitimately register any name.
+    caller_app = request.get("app", "")
+    if caller_app and caller_app != name:
+        sel().log_api_access(
+            caller=caller_app,
+            operation="app_register_external_forbidden",
+            outcome="denied",
+            source="app_routes",
+            resources=name,
+            error="app token cannot register another app's identity",
+        )
+        return web.json_response(
+            {
+                "error": "an app token may register only its own app identity",
+                "code": "app_token_identity_mismatch",
+            },
+            status=403,
+        )
+
     # Registry provenance is server-owned. A self-registering process may
     # refresh its display metadata, but it cannot mint the marker that makes a
     # later update resolve by registry name or claim a registry origin. Existing
@@ -1046,8 +1120,37 @@ async def handle_register_external(request: web.Request) -> web.Response:
                 origin="external",
                 resources=body.get("resources", "app"),
                 lifecycle=body.get("lifecycle", "app"),
+                self_registering=bool(caller_app),
             ),
         )
+        if result.ok:
+            # Inside the lock, immediately after the durable replacement. The
+            # manifest is on disk the moment that call returns, so anything that
+            # narrowed takes effect for the cached allowlist and the cached
+            # contributions declaration at that same moment rather than after the
+            # handler finishes -- otherwise an append carrying cached authority
+            # commits in between. The append path's own fence refuses a commit
+            # whose generation moved mid-request, so what this closes is the
+            # narrower case of a request that begins and ends inside the gap.
+            #
+            # And invalidating alone is not enough: a subscription is authorized
+            # once, at subscribe time, so a replacement that drops the app's unit
+            # grant has to close what it already authorized, the way disabling and
+            # updating the app do.
+            try:
+                from kiro_crew.eventlog.grants import invalidate as invalidate_grants
+
+                invalidate_grants(name)
+            except Exception:
+                sel().log_api_access(
+                    caller="dashboard",
+                    operation="app_register_external",
+                    outcome="grants_not_invalidated",
+                    resources=name,
+                    error="could not invalidate the app's cached grants after "
+                    "replacing its manifest",
+                )
+            await _close_event_log_sockets(name, operation="app_register_external")
     if not result.ok:
         sel().log_api_access(
             caller="dashboard",
@@ -1725,6 +1828,37 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
                             name,
                             exc_info=True,
                         )
+        if result.ok:
+            # Retract the app's contributions while this lock is STILL HELD.
+            # The teardown's own scheduled path cannot do it: it runs after the
+            # lock is released, and a same-name install blocked on that lock can
+            # win it first -- at which point the scheduled pass sees an installed
+            # app, skips retraction by design, and the REPLACEMENT inherits the
+            # previous app's projection rows. Doing it here removes both horns at
+            # once: no replacement can exist yet, so there is nothing to strip and
+            # nothing left to inherit.
+            #
+            # Never fatal. The rows are residue, not the uninstall: a failure here
+            # is audited and the uninstall still reports what it actually did.
+            from kiro_crew.apps.teardown import teardown_contributions
+
+            try:
+                for warning in await teardown_contributions(name):
+                    sel().log_api_access(
+                        caller="dashboard",
+                        operation="app_uninstall",
+                        outcome="contributions_partially_retracted",
+                        resources=name,
+                        error=warning,
+                    )
+            except Exception as exc:
+                sel().log_api_access(
+                    caller="dashboard",
+                    operation="app_uninstall",
+                    outcome="contributions_not_retracted",
+                    resources=name,
+                    error=str(exc),
+                )
     if not result.ok:
         sel().log_api_access(
             caller="dashboard",
@@ -2110,7 +2244,13 @@ async def handle_disable_app(request: web.Request) -> web.Response:
         # resources through the ONE shared teardown that revoking an app's
         # third-party execution grant also calls — see apps/teardown.py. Keeping a
         # second copy here is how the revoke path came to miss steps.
-        teardown = await teardown_app_runtime(name, info)
+        # `defer_projection_deletion`: the teardown retracts the app's contribution
+        # AUTHORITY here (grant tombstone + sockets closed), but its published rows
+        # are deleted only after `disable_app` below has made the disabled state
+        # durable. Deleting first means a failed metadata write returns 400 with the
+        # app still enabled and its rows irrecoverably gone -- the grant is already
+        # revoked at that point, so nothing can write in the meantime.
+        teardown = await teardown_app_runtime(name, info, defer_projection_deletion=True)
         # This handler's documented contract is that disable proceeds even when a
         # step fails, so both lists become user-visible warnings rather than an
         # abort. (Trust revocation treats `failures` as fatal instead — it must not
@@ -2120,6 +2260,24 @@ async def handle_disable_app(request: web.Request) -> web.Response:
 
         result = disable_app(name)
         if not result.ok:
+            # The teardown above set this app's grant TOMBSTONE, which denies every
+            # contribution regardless of the enabled flag -- and the persist that
+            # would have made "disabled" true just failed, so the app is still
+            # enabled. `_revoked` is a module global lifted only by a re-enable, a
+            # global invalidate, or a restart, so without this the operator sees an
+            # enabled app that can write nothing until one of those happens.
+            #
+            # Only this handler may compensate, and only on this branch: trust
+            # withdrawal sets the same tombstone, and there a tombstone outliving a
+            # failure is the SAFE direction and must stay. This branch knows it is an
+            # ordinary disable.
+            #
+            # The sockets the teardown closed are NOT restored and are not meant to
+            # be: a subscriber reconnects and is re-authorized against the manifest
+            # it has. Authority is what was taken wrongly; the connection is not.
+            from kiro_crew.eventlog.grants import unrevoke
+
+            unrevoke(name)
             sel().log_api_access(
                 caller="dashboard",
                 operation="app_disable",
@@ -2128,6 +2286,12 @@ async def handle_disable_app(request: web.Request) -> web.Response:
                 error=result.error,
             )
             return web.json_response(result.to_dict(), status=400)
+
+        # Durable now, so the destructive half is safe to run.
+        from kiro_crew.apps.teardown import delete_contribution_rows
+
+        for note in await delete_contribution_rows(name):
+            warnings.append(_redact_warning(note))
         _unregister_notification_channels(request, name)
 
         # Run builtin on_disable hook if available. `name` is the manifest name

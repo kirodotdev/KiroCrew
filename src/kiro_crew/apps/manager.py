@@ -17,6 +17,7 @@ import os
 import re
 import shutil
 import stat
+import threading
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -260,6 +261,48 @@ def _credential_free_source_metadata(value: str) -> str:
     return _strip_git_target_userinfo(candidate)
 
 
+def _bump_grant_generation(name: str, when: str) -> None:
+    """Advance the grant generation for *name*, reporting rather than raising.
+
+    The scope caches key on this generation and have NO expiry, so nothing but a
+    change to it can dislodge a warm entry. That makes WHEN it moves a correctness
+    question, not a performance one, and an update has to move it three times:
+
+    * BEFORE the tree is touched, because from the first move the manifest on disk
+      differs from what any cached declaration describes, and a request that
+      read its grant earlier is fenced on the generation it read. Bumping only at
+      the end leaves that request able to pass both its check and its commit fence
+      inside the window and persist a contribution the narrowed manifest does not
+      authorize. The window spans a tree copy and an ``rmtree``, so it is real
+      duration rather than a nanosecond.
+    * after the replacement is durable, so anything cached DURING the window -- read
+      from a tree that was mid-replacement -- is dropped and the new manifest is what
+      gets cached.
+    * after a rollback, for the same reason: the tree went back, and a cache filled
+      mid-window may describe neither the old tree nor the new one.
+
+    The cost of the extra bumps is discarding warm entries that were still valid, so
+    the next request re-reads a manifest. That is a cache miss. The cost of not
+    bumping first is an unauthorized write that persists.
+
+    A cache that cannot be invalidated must not strand the operation, but it MUST be
+    loud: the process would be serving grants from a manifest that is gone, which is
+    security-relevant rather than a debug detail.
+    """
+    try:
+        from kiro_crew.eventlog import grants as _grants
+
+        _grants.invalidate(name)
+    except Exception:
+        logger.error(
+            "app %r: could not invalidate cached grants %s; removed permissions may "
+            "stay authorized until restart",
+            name,
+            when,
+            exc_info=True,
+        )
+
+
 def _write_installed(name: str, meta: InstalledApp) -> None:
     """Write credential-free installed.json metadata for an app.
 
@@ -287,6 +330,42 @@ def _write_installed(name: str, meta: InstalledApp) -> None:
     atomic_write(meta_path, json.dumps(credential_free_meta.to_dict(), indent=2) + "\n")
 
 
+def _roll_back_install_records(name: str) -> None:
+    """Undo the records a failed install wrote, so the name stays retryable.
+
+    The METADATA file is removed, not the app tree: by this point the tree holds the
+    ``data/`` directory an update preserved, and deleting it would turn a failed
+    install into data loss. Removing the metadata is what matters anyway -- it is
+    what ``_read_installed`` refuses a second install on, so leaving it behind
+    strands the name behind that refusal with no secret and no way forward but a
+    hand uninstall.
+
+    Best effort throughout, and deliberately so: this runs on a path that is already
+    failing, and an exception raised here would replace a retryable state with an
+    unreportable one.
+    """
+    meta_path = app_dir(name) / INSTALLED_META_FILENAME
+    try:
+        meta_path.unlink(missing_ok=True)
+    except OSError:
+        logger.error(
+            "app %r: the install failed and its metadata at %s could not be removed, so "
+            "a retry is refused as already installed until that file is deleted by hand",
+            name,
+            meta_path,
+            exc_info=True,
+        )
+    try:
+        forget_unit_approvals(name)
+    except OSError:
+        logger.error(
+            "app %r: the install failed and its unit-kind approvals could not be dropped, "
+            "so an app later installed under this name would inherit them",
+            name,
+            exc_info=True,
+        )
+
+
 def _pending_session_approval_after_manifest_change(
     *,
     existing_pending: bool,
@@ -298,6 +377,259 @@ def _pending_session_approval_after_manifest_change(
     if not requested_session_approval:
         return False
     return existing_pending
+
+
+def _unit_kinds(values: object, *, strict: bool = False) -> tuple[str, ...]:
+    """Normalise a unit-kind list into an ordered, de-duplicated tuple of strings.
+
+    Anything that is not a non-empty string contributes nothing, and a value that
+    is not a list at all reads as no kinds.  This parses AUTHORITY, so the only
+    safe reading of something it cannot parse is "none": raising would abort a
+    lifecycle operation over a hand-edited record, and coercing would invent a
+    grant out of whatever was in the file.
+
+    ``strict`` raises instead, and exists for the MUTATION path only. Normalising to
+    "none" is a safe reading but a LOSSY one, and the record is rewritten whole: an
+    entry this reduced to nothing is then dropped by :func:`_write_unit_approvals`,
+    which deletes an operator's text while answering a request about some other app.
+    A writer therefore refuses what it cannot parse exactly, so the same reading
+    that is safe to act on is not also silently persisted. De-duplication is not a
+    refusal: repeating a kind means what writing it once means.
+    """
+    if not isinstance(values, (list, tuple)):
+        if strict:
+            raise ValueError(f"unit kinds must be a list, got {type(values).__name__}")
+        return ()
+    out: list[str] = []
+    for value in values:
+        if isinstance(value, str) and value:
+            if value not in out:
+                out.append(value)
+        elif strict:
+            raise ValueError(f"unit kind must be a non-empty string, got {value!r}")
+    return tuple(out)
+
+
+def declared_unit_kinds(manifest: AppManifest | None) -> tuple[str, ...]:
+    """The unit kinds *manifest* asks for, normalised. Empty when there is none."""
+    if manifest is None:
+        return ()
+    return _unit_kinds(list(manifest.contributions.units))
+
+
+def _declared_unit_kinds_in_data(manifest_data: dict[str, Any] | None) -> tuple[str, ...]:
+    """:func:`declared_unit_kinds` for a manifest still in dict form.
+
+    ``register_external_app`` is handed the manifest as JSON it is about to write
+    rather than as a parsed :class:`AppManifest`, and re-parsing it there just to
+    read one list would make the snapshot depend on a second parse succeeding.
+    """
+    if not isinstance(manifest_data, dict):
+        return ()
+    contributions = manifest_data.get("contributions")
+    if not isinstance(contributions, dict):
+        return ()
+    return _unit_kinds(contributions.get("units"))
+
+
+def _narrowed_unit_kinds(
+    *, approved: tuple[str, ...], declared: tuple[str, ...]
+) -> tuple[str, ...]:
+    """The approved kinds a new declaration still asks for -- never more.
+
+    ``register_external_app`` runs under the app's OWN token, so for an app that
+    is already installed it is the app's update path, not the operator's.
+    Dropping a kind there is the app narrowing itself and is always safe; ADDING
+    one is exactly the escalation the approval record exists to stop, so a
+    re-registration can only intersect.  Widening goes through ``install_app`` or
+    ``update_app``, and until it does :func:`units_pending_approval` names what is
+    waiting.
+    """
+    still_declared = set(declared)
+    return tuple(kind for kind in approved if kind in still_declared)
+
+
+#: Filename of the gateway-owned unit-kind approval record: a sibling of
+#: ``app_admission.json`` in the config directory, deliberately OUTSIDE every
+#: app's own tree.
+UNIT_APPROVALS_FILENAME = "app-unit-approvals.json"
+
+#: Serialises the read-modify-write of the shared approval record IN THIS PROCESS.
+#: One file holds every app's approvals, so two concurrent lifecycle operations
+#: would otherwise race and the loser's approval would vanish -- unlike
+#: ``installed.json``, which is per app and has no such contention. The
+#: cross-process half is :func:`_unit_approvals_update`'s file lock; this one is
+#: always taken FIRST, and only there.
+_unit_approvals_lock = threading.Lock()
+
+
+def _unit_approvals_path() -> Path:
+    """Path of the gateway-owned unit-kind approval record."""
+    return config_dir() / UNIT_APPROVALS_FILENAME
+
+
+def _read_unit_approvals(*, strict: bool = False) -> dict[str, tuple[str, ...]]:
+    """Every app's approved unit kinds, keyed by app name.
+
+    Empty on every failure -- absent file, unreadable file, wrong shape -- and an
+    empty answer denies every kind for every app, so a damaged record fails
+    closed instead of opening anything.
+
+    ``strict`` is for the MUTATION path, and the distinction it draws is between an
+    ABSENT record and one that cannot be parsed EXACTLY -- an unreadable file, a
+    root that is not an object, or a single entry whose value is malformed. A reader
+    may treat all of those as "no approvals", because that denies; a writer may not.
+    The record is rewritten whole, so persisting that reading is what destroys: an
+    unreadable file would come back empty, and an entry normalised to nothing is
+    dropped by :func:`_write_unit_approvals` -- erasing an operator's text, possibly
+    another app's, while answering a request about something else entirely. So a
+    writer refuses and leaves the file alone: the apps stay denied either way, which
+    is the same fail-closed state, minus the destruction.
+    """
+    path = _unit_approvals_path()
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError(f"{UNIT_APPROVALS_FILENAME} must be a JSON object")
+        # Decoded inside the try deliberately: one refusal for the whole record, so a
+        # malformed ENTRY reaches a caller as the same failure a malformed ROOT does.
+        # A second parse for validation would be a second reading of every field, and
+        # two readings drift.
+        decoded = {str(app): _unit_kinds(kinds, strict=strict) for app, kinds in data.items()}
+    except (OSError, ValueError) as exc:
+        logger.error("unit approvals at %s are unreadable; denying every kind: %s", path, exc)
+        if strict:
+            # OSError deliberately, not a bespoke type: every caller of the
+            # mutators already handles OSError -- the install and registration
+            # rollbacks catch it, the uninstall cleanup reports it -- so the refusal
+            # reaches each of them as the failure they were written for.
+            raise OSError(
+                f"{UNIT_APPROVALS_FILENAME} exists but cannot be parsed exactly ({exc}); "
+                "refusing to replace it, because rewriting it from a degraded reading would "
+                "erase an operator's text and every other app's approvals with it"
+            ) from exc
+        return {}
+    return decoded
+
+
+def _write_unit_approvals(approvals: dict[str, tuple[str, ...]]) -> None:
+    """Persist the approval record, omitting apps that approve nothing.
+
+    An absent entry and an empty one mean the same thing to every reader, so the
+    record holds only what an operator actually granted.
+    """
+    path = _unit_approvals_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = {app: list(kinds) for app, kinds in sorted(approvals.items()) if kinds}
+    atomic_write(path, json.dumps(body, indent=2) + "\n")
+
+
+@contextmanager
+def _unit_approvals_update() -> Iterator[dict[str, tuple[str, ...]]]:
+    """Hold the approval record across one complete read-modify-write.
+
+    The record holds EVERY app, so its read and its write are one transaction or
+    they are a lost update. A thread lock cannot say that: the CLI and the gateway
+    are routinely separate PROCESSES -- ``uninstall_app`` argues that case at length
+    a few hundred lines below -- and two lifecycle operations would otherwise each
+    write back a snapshot taken before the other's change. The loser's approval
+    disappears, and in the worse direction a stale snapshot RESTORES a kind an app
+    had just narrowed away, which is the widening :func:`_narrowed_unit_kinds`
+    exists to refuse.
+
+    The record is re-read INSIDE the lock, which is the half a lock around the write
+    alone would miss: a value read before acquiring describes a record another
+    writer may already have replaced.
+
+    Lock order is the in-process lock and THEN the file lock, and this function is
+    the only place either is taken for this record, so there is no second order to
+    form a cycle with. The critical section is a small read plus an atomic rename --
+    the sub-second shape :func:`platform_compat.file_lock` documents -- and it fails
+    closed: an unavailable lock raises rather than proceeding unserialized.
+
+    The lock lives in a dedicated sibling file because Windows locks by seeking to
+    byte 0 of the handle, which the record's own bytes cannot spare.
+    """
+    path = _unit_approvals_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(path.name + ".lock")
+    with _unit_approvals_lock:
+        with platform_compat.open_lock_file(lock_path) as fd:
+            with platform_compat.file_lock(fd, exclusive=True, required=True):
+                approvals = _read_unit_approvals(strict=True)
+                yield approvals
+                _write_unit_approvals(approvals)
+
+
+def approved_unit_kinds(name: str) -> frozenset[str]:
+    """Unit kinds an operator approved for *name*.
+
+    Read from the gateway-owned record, NEVER from the app's own tree. A unit kind
+    carries no namespace -- ``member`` is the gateway's -- so the ``<app>/`` prefix
+    rule that guards ``events`` and ``projections`` cannot guard it, and a file
+    inside the app's directory is one the app's own code writes. Holding the
+    approval outside every app tree is what makes it authority rather than a
+    claim the subject of the claim controls.
+
+    Read-only, and empty for an unknown app or any failure. Callers INTERSECT a
+    runtime declaration with this, so empty denies rather than opening anything.
+    """
+    return frozenset(_read_unit_approvals().get(name, ()))
+
+
+def record_unit_approvals(name: str, kinds: tuple[str, ...]) -> None:
+    """Record the kinds an operator approves for *name*, replacing any earlier set.
+
+    An install and a gateway-driven update are both an operator putting these
+    files in place while reading this manifest, so either may WIDEN. A
+    re-registration that runs under the app's OWN token may not: that path calls
+    :func:`narrow_unit_approvals` instead.
+    """
+    with _unit_approvals_update() as approvals:
+        approvals[name] = _unit_kinds(list(kinds))
+
+
+def narrow_unit_approvals(name: str, *, declared: tuple[str, ...]) -> None:
+    """Drop every approved kind *name* has stopped declaring. Never widens.
+
+    A no-op for an app with no approvals, so a first registration grants nothing
+    by arriving here.
+    """
+    with _unit_approvals_update() as approvals:
+        current = approvals.get(name)
+        if current is not None:
+            approvals[name] = _narrowed_unit_kinds(approved=current, declared=declared)
+
+
+def forget_unit_approvals(name: str) -> None:
+    """Drop *name*'s approvals so a later install under that name starts at none.
+
+    An uninstall removes the app's tree and leaves the config directory in place,
+    so without this a name reinstalled by anyone inherits the approval an operator
+    granted to a different set of files.
+    """
+    with _unit_approvals_update() as approvals:
+        approvals.pop(name, None)
+
+
+def units_pending_approval(
+    *, approved: tuple[str, ...], manifest: AppManifest | None
+) -> tuple[str, ...]:
+    """Declared unit kinds the approved snapshot does not cover.
+
+    What an operator has to act on.  An app whose declaration has grown since it
+    was installed -- including one installed before the snapshot existed -- keeps
+    running and keeps every other grant, but contributes to none of these kinds
+    until an install or update approves them.  Reported on the app's own record
+    rather than logged once, because from the app's side the denial is silent.
+
+    Takes the approved tuple rather than a name so a listing can answer for every
+    app without re-reading each record it already holds.
+    """
+    already = set(approved)
+    return tuple(kind for kind in declared_unit_kinds(manifest) if kind not in already)
 
 
 # ---------------------------------------------------------------------------
@@ -822,16 +1154,42 @@ def install_app(
         # runtime admission must still remain bound to what was installed.
         sourceUrl=source_repository.strip(),
     )
-    _write_installed(name, meta)
+    # Metadata, approvals and the secret are ONE transaction, because a failure
+    # between them leaves an installation that can neither be used nor retried: the
+    # metadata alone is what `_read_installed` above refuses a second install on, so
+    # a missing secret strands the name behind that refusal until an operator
+    # uninstalls by hand. An ordinary write failure reaches it -- a full filesystem,
+    # a read-only mount, EACCES -- which is why it is a rollback rather than a note.
+    try:
+        _write_installed(name, meta)
+        # The install IS the approval moment for the kinds this manifest declares: it
+        # is the operator putting these files in place, reading this manifest. Recorded
+        # in the gateway-owned record, so a later rewrite of the app's own manifest --
+        # or of anything inside the app's own tree -- cannot widen it.
+        record_unit_approvals(name, declared_unit_kinds(manifest))
 
-    # Create data directory
-    app_data_dir(name)
+        # Create data directory
+        app_data_dir(name)
 
-    # Generate and write app secret for token-based auth (App Kit §5.1)
-    # circular import: token_auth -> dashboard -> bridges -> manager
-    from kiro_crew.dashboard.token_auth import generate_app_secret, write_app_secret
+        # Generate and write app secret for token-based auth (App Kit §5.1)
+        # circular import: token_auth -> dashboard -> bridges -> manager
+        from kiro_crew.dashboard.token_auth import generate_app_secret, write_app_secret
 
-    write_app_secret(name, generate_app_secret())
+        write_app_secret(name, generate_app_secret())
+    except OSError as exc:
+        _roll_back_install_records(name)
+        sel().log_api_access(
+            caller="app_install",
+            operation="install",
+            outcome="failed",
+            resources=f"name={name!r}",
+            error=f"persistence failed: {exc}",
+        )
+        return AppResult(
+            ok=False,
+            name=name,
+            error=f"failed to record the installation of {name!r}: {exc}",
+        )
 
     # Audit successful install for all callers (CLI, registry, dashboard)
     sel().log_api_access(
@@ -978,6 +1336,11 @@ def update_app(
     if tmp_secret.is_file() and secret_file.is_file():
         tmp_secret.unlink()
 
+    # Close the window BEFORE anything moves. Past this point the tree on disk is
+    # mid-replacement and then new, so a declaration cached earlier describes
+    # authority this update may be removing. See _bump_grant_generation.
+    _bump_grant_generation(name, "before replacing its files")
+
     try:
         if data_dir.is_dir():
             shutil.move(str(data_dir), str(tmp_data))
@@ -1001,6 +1364,14 @@ def update_app(
             _remove_any_shape(restored_secret)
             shutil.move(str(tmp_secret), str(restored_secret))
         _write_installed(name, meta)
+        # An update re-approves, because an operator is installing this manifest
+        # the same way the first install did, so it may legitimately WIDEN the
+        # kinds. Written HERE, as the last step of the transaction, so a failure
+        # anywhere above leaves the earlier approval untouched and the rollback
+        # has nothing to undo -- a failed update cannot change what is approved.
+        # Inside the try on purpose: a record this write cannot persist must fail
+        # the update rather than leave the tree and the approval disagreeing.
+        record_unit_approvals(name, declared_unit_kinds(manifest))
     except (OSError, shutil.Error, ValueError) as exc:
         rollback_error = ""
         try:
@@ -1025,6 +1396,9 @@ def update_app(
         except (OSError, shutil.Error, ValueError) as rollback_exc:
             rollback_error = f"; rollback failed: {rollback_exc}"
             logger.error("Failed to restore app %s after update error", name, exc_info=True)
+        # Whether the rollback succeeded or not, an entry cached during the window
+        # may describe neither tree.
+        _bump_grant_generation(name, "after rolling back a failed update")
         return AppResult(
             ok=False,
             name=name,
@@ -1035,6 +1409,11 @@ def update_app(
         _remove_any_shape(retired)
     except OSError:
         logger.warning("Could not remove retired app tree for %s", name, exc_info=True)
+
+    # Second bump, now that the replacement is durable: an entry filled during the
+    # window above describes a tree that was mid-replacement, so it is dropped here
+    # and the next read caches the manifest that actually shipped.
+    _bump_grant_generation(name, "after replacing its files")
 
     # Ensure data directory exists
     app_data_dir(name)
@@ -1438,6 +1817,33 @@ def uninstall_app(name: str, *, keep_data: bool = True) -> AppResult:
 
     logger.info("Uninstalled app %s (keep_data=%s)", name, keep_data)
 
+    # The approval record is keyed on the NAME, like the execution grant above, so
+    # it is dropped here rather than left standing for whatever is installed under
+    # this name next. Every install path records approvals afresh, so this is the
+    # belt to that suspenders: it keeps the record to apps that exist, and it runs
+    # after the delete because an app still installed must keep its approval.
+    #
+    # Reported, never raised. The files are already gone, so refusing the uninstall
+    # here is not available and would be a lie -- and raising would skip the SECOND
+    # trust withdrawal below, which the argument there identifies as the only closure
+    # of the orphan-grant window. Losing a cleanup is a smaller harm than leaving a
+    # grant standing over a name no app occupies.
+    residual = ""
+    try:
+        forget_unit_approvals(name)
+    except Exception as exc:  # noqa: BLE001 - the app is already gone; report, never hide
+        logger.warning(
+            "app %r was uninstalled but its unit-kind approvals could not be dropped; "
+            "an app later installed under this name would inherit them",
+            name,
+            exc_info=True,
+        )
+        residual += (
+            f" WARNING: the unit-kind approvals for {name!r} are still recorded and "
+            f"could not be removed ({exc}). Remove them before installing anything "
+            f"under this name, or that app inherits this one's approved kinds."
+        )
+
     # Withdraw the grant a SECOND time, now that the files are actually gone.
     #
     # The first withdrawal above deliberately runs BEFORE the delete so that a
@@ -1462,7 +1868,6 @@ def uninstall_app(name: str, *, keep_data: bool = True) -> AppResult:
     # completes first, so the check finds nothing and rolls its own write back).
     # Between them the two guards leave no window, without either side blocking on
     # the other.
-    residual = ""
     try:
         _drop_trust_grant(name)
     except Exception as exc:  # noqa: BLE001 - the app is already gone; report, never hide
@@ -1477,7 +1882,7 @@ def uninstall_app(name: str, *, keep_data: bool = True) -> AppResult:
             name,
             exc_info=True,
         )
-        residual = (
+        residual += (
             f" WARNING: a third-party execution grant for {name!r} is still in "
             f"agent.apps_trusted and could not be removed ({exc}). Remove it in "
             f"Settings -> Security before installing anything under this name."
@@ -1993,6 +2398,9 @@ def list_apps() -> list[dict[str, Any]]:
     if not root.is_dir():
         return []
     orphaned_set = detect_orphaned_builtins()
+    # One read for the whole listing: the approval record holds every app, so
+    # asking per app would re-read the same file once per directory entry.
+    approvals = _read_unit_approvals()
     result: list[dict[str, Any]] = []
     for entry in sorted(root.iterdir()):
         if not entry.is_dir():
@@ -2003,9 +2411,11 @@ def list_apps() -> list[dict[str, Any]]:
         # Also load manifest for full info
         manifest_path = entry / APP_MANIFEST_FILENAME
         manifest_data: dict[str, Any] = {}
+        parsed_manifest: AppManifest | None = None
         if manifest_path.is_file():
             try:
                 manifest = AppManifest.from_json_file(manifest_path)
+                parsed_manifest = manifest
                 manifest_data = manifest.to_dict()
                 # For self-managed apps, the app may update its own
                 # app.json without going through update_app().  Reflect
@@ -2033,6 +2443,13 @@ def list_apps() -> list[dict[str, Any]]:
         # Include migratedTo if non-empty
         if meta.migratedTo:
             app_info["migratedTo"] = meta.migratedTo
+        # Unit kinds this app declares but has no approval for. Computed, never
+        # persisted: nothing here writes, because list_apps() must stay read-only.
+        pending_units = units_pending_approval(
+            approved=approvals.get(entry.name, ()), manifest=parsed_manifest
+        )
+        if pending_units:
+            app_info["unitsPendingApproval"] = list(pending_units)
         # Mark orphaned builtins
         if entry.name in orphaned_set:
             app_info["orphaned"] = True
@@ -2161,9 +2578,11 @@ def get_app(name: str) -> dict[str, Any] | None:
         return None
     manifest_path = app_dir(name) / APP_MANIFEST_FILENAME
     manifest_data: dict[str, Any] = {}
+    parsed_manifest: AppManifest | None = None
     if manifest_path.is_file():
         try:
             manifest = AppManifest.from_json_file(manifest_path)
+            parsed_manifest = manifest
             manifest_data = manifest.to_dict()
             # Sync version for self-managed apps (same as list_apps)
             if meta.lifecycle == "app" and manifest.version and manifest.version != meta.version:
@@ -2172,7 +2591,13 @@ def get_app(name: str) -> dict[str, Any] | None:
                 _write_installed(name, meta)
         except Exception:
             pass
-    return {**meta.to_dict(), "manifest": manifest_data}
+    info: dict[str, Any] = {**meta.to_dict(), "manifest": manifest_data}
+    pending_units = units_pending_approval(
+        approved=tuple(sorted(approved_unit_kinds(name))), manifest=parsed_manifest
+    )
+    if pending_units:
+        info["unitsPendingApproval"] = list(pending_units)
+    return info
 
 
 def get_app_manifest(name: str) -> AppManifest | None:
@@ -2382,6 +2807,7 @@ def register_external_app(
     resources: str = "app",
     lifecycle: str = "app",
     source_repository: str = "",
+    self_registering: bool = False,
 ) -> AppResult:
     """Register a self-managed app with KiroCrew's app system.
 
@@ -2402,6 +2828,10 @@ def register_external_app(
         source_repository: Server-resolved repository coordinate for a registry
             install/update. An empty value on an existing repository-owned record
             is a metadata refresh, not permission to erase its provenance.
+        self_registering: True when the caller authenticated as this app rather
+            than as the operator. Such a caller cannot take the first-install
+            branch, because that branch records the approved unit kinds from the
+            app's own manifest and only absent metadata sends it there.
 
     Returns:
         AppResult indicating success or failure.
@@ -2463,6 +2893,35 @@ def register_external_app(
         return AppResult(ok=False, name=name, error=f"blocked by admission policy: {denied}")
 
     existing = _read_installed(name)
+    # A registration MINTS the app secret, so a caller presenting an app token has
+    # been registered before and its metadata should already be on disk. Missing
+    # metadata therefore does not mean "first install" for a self-registering
+    # caller: it means the metadata is gone while the secret survives, and
+    # `validate_app_secret` reads only `.app_secret` with no installed or enabled
+    # check, so the token still authenticates. Both files sit in the app's own
+    # directory, which a self-managed app process can write -- so the app itself can
+    # produce that state, and the new-registration branch below would then snapshot
+    # its OWN declared kinds into the approval record, the widening
+    # `record_unit_approvals` documents as reserved to the operator. Refused before
+    # anything is read for the write or written: an app whose metadata is gone is
+    # re-registered by the operator, not by itself.
+    if self_registering and existing is None:
+        sel().log_api_access(
+            caller=name,
+            operation="app_register_external_no_metadata",
+            outcome="denied",
+            source="app_manager",
+            resources=name,
+            error="self-registration cannot create a first install",
+        )
+        return AppResult(
+            ok=False,
+            name=name,
+            error=(
+                "this app has no installed metadata, so its own token cannot "
+                "register it: ask the operator to install it again"
+            ),
+        )
     requested_repository = source_repository.strip()
     preserve_server_provenance = bool(
         existing and not requested_repository and existing.sourceUrl.strip()
@@ -2572,6 +3031,13 @@ def register_external_app(
             manifest_path.read_text(encoding="utf-8") if manifest_path.is_file() else None
         )
         manifest_text = json.dumps(manifest_data, indent=2) + "\n" if manifest_data else ""
+        # Same fence as update_app, and for the same reason: the manifest is about
+        # to be replaced, so a declaration cached from the old one has to stop being
+        # answerable BEFORE the write rather than after the handler returns. This
+        # This path also narrows -- the approval record is intersected once the
+        # write is durable -- so the window it would otherwise leave is a window
+        # on removed authority.
+        _bump_grant_generation(name, "before replacing its manifest")
         try:
             if manifest_data and widened_session_approval:
                 # Disable first when adding the grant so the new manifest is
@@ -2583,6 +3049,20 @@ def register_external_app(
                 if manifest_data:
                     atomic_write(manifest_path, manifest_text)
                 _write_installed(name, meta)
+            # Narrowing belongs to the SAME transaction as those writes, and it
+            # runs last within it: the record is intersected against the manifest
+            # that is now durable, and a failure here rolls the manifest and the
+            # metadata back rather than leaving a record wider than the manifest
+            # it must be intersected against. This path runs under the app's OWN
+            # token, so it may only intersect -- letting it re-snapshot would let
+            # an app grant itself a kind by re-registering, the same escalation as
+            # rewriting its manifest, one call further out. See
+            # `_narrowed_unit_kinds`. A call carrying no manifest declares nothing
+            # and must not be read as declaring none.
+            if manifest_data:
+                narrow_unit_approvals(
+                    name, declared=_declared_unit_kinds_in_data(manifest_data)
+                )
         except (OSError, ValueError) as exc:
             rollback_errors: list[str] = []
             try:
@@ -2600,7 +3080,13 @@ def register_external_app(
             detail = f"failed to persist external registration: {exc}"
             if rollback_errors:
                 detail += f" ({'; '.join(rollback_errors)})"
+            _bump_grant_generation(name, "after rolling back a failed registration")
             return AppResult(ok=False, name=name, error=detail)
+
+        # Durable now, so drop anything cached while the write was in flight. The
+        # narrowing already landed inside the transaction above, so the next read
+        # caches the smaller set.
+        _bump_grant_generation(name, "after replacing its manifest")
     else:
         # New registration
         dest.mkdir(parents=True, exist_ok=True)
@@ -2620,27 +3106,93 @@ def register_external_app(
             resources=resources,
             lifecycle=lifecycle,
         )
-        _write_installed(name, meta)
-        # Persist manifest if provided (so dashboard can show full info).
-        if manifest_data:
-            manifest_path = dest / APP_MANIFEST_FILENAME
-            atomic_write(manifest_path, json.dumps(manifest_data, indent=2) + "\n")
-
+        # Metadata, approvals and the manifest are ONE transaction for a FIRST
+        # registration, for the reason install_app states plus one specific to this
+        # path: the metadata alone is what makes a retry take the EXISTING-app
+        # branch above, whose narrowing is a no-op when there is no prior entry --
+        # so the grant this registration declared could never be established, and
+        # the app would run without the unit kinds it asked for. Rolled back
+        # together, the name is simply unregistered again and the retry is a first
+        # registration once more.
+        try:
+            _write_installed(name, meta)
+            # A FIRST registration is this app's install: it is choosing its own name
+            # and its own manifest either way, so recording what it declares grants
+            # nothing it could not have declared a moment earlier. What the record
+            # exists to stop is a LATER widening, which the existing-app branch above
+            # intersects away.
+            record_unit_approvals(name, _declared_unit_kinds_in_data(manifest_data))
+            # Persist manifest if provided (so dashboard can show full info).
+            if manifest_data:
+                manifest_path = dest / APP_MANIFEST_FILENAME
+                atomic_write(manifest_path, json.dumps(manifest_data, indent=2) + "\n")
+        except OSError as exc:
+            _roll_back_install_records(name)
+            sel().log_api_access(
+                caller="app_register_external",
+                operation="register",
+                outcome="failed",
+                resources=f"name={name!r}",
+                error=f"persistence failed: {exc}",
+            )
+            return AppResult(
+                ok=False,
+                name=name,
+                error=f"failed to record the registration of {name!r}: {exc}",
+            )
     # Ensure data directory exists
-    app_data_dir(name)
+    #
+    # Rolled back on failure for a FIRST registration only, for the same reason as
+    # the block above: an update that fails here leaves an app that was already
+    # installed and still is, while a first registration would otherwise leave the
+    # name half-registered with no secret.
+    try:
+        app_data_dir(name)
 
-    # Generate app secret only for new registrations — preserve existing secrets
-    from kiro_crew.dashboard.token_auth import generate_app_secret, write_app_secret
+        # Generate app secret only for new registrations — preserve existing secrets
+        from kiro_crew.dashboard.token_auth import generate_app_secret, write_app_secret
 
-    secret_path = dest / ".app_secret"
-    is_new_secret = not (existing and secret_path.is_file())
-    if is_new_secret:
-        secret = generate_app_secret()
-        write_app_secret(name, secret)
-    else:
-        secret = ""
+        secret_path = dest / ".app_secret"
+        is_new_secret = not (existing and secret_path.is_file())
+        if is_new_secret:
+            secret = generate_app_secret()
+            write_app_secret(name, secret)
+        else:
+            secret = ""
+    except OSError as exc:
+        if not existing:
+            _roll_back_install_records(name)
+        sel().log_api_access(
+            caller="app_register_external",
+            operation="register",
+            outcome="failed",
+            resources=f"name={name!r}",
+            error=f"persistence failed: {exc}",
+        )
+        return AppResult(
+            ok=False,
+            name=name,
+            error=f"failed to record the registration of {name!r}: {exc}",
+        )
 
     action = "updated" if existing else "registered"
+    # Every durable write has landed, so the name is occupied and grantable. A
+    # teardown of whatever held it before hard-denies its contributions with a
+    # process-global tombstone: the declaration reader answers the empty triple
+    # while it stands, regardless of the enabled flag, nothing in an uninstall
+    # lifts it, and the cache reports the app as resolved the whole time. This
+    # path is where that matters, because it writes an ENABLED app and answers a
+    # request directly rather than going through the enable hook, which is the
+    # only other place a tombstone is lifted. Only a departing occupant's teardown
+    # sets it, so nothing an operator withheld is restored here -- withdrawn trust
+    # is a durable config fact and is untouched. Never fatal: a tombstone left
+    # standing denies rather than over-grants.
+    try:
+        from kiro_crew.eventlog.grants import unrevoke
+
+        unrevoke(name)
+    except Exception:  # pragma: no cover - defensive; never fail a sound registration
+        logger.debug("App %s: could not lift the contribution tombstone", name, exc_info=True)
     logger.info(
         "External app %s %s: v%s (origin=%s, resources=%s, lifecycle=%s)",
         name,

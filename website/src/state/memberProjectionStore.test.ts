@@ -56,8 +56,9 @@ describe('MemberProjectionStore', () => {
     })
 
     it('does not remove rows above asOfSeq (no truncation)', () => {
+      const issued = store.revision()
       store.apply('a', 'activity', { today: 3 }, 10)
-      store.seed('a', { roster: { name: 'A' } }, 4)
+      store.seed('a', { roster: { name: 'A' } }, 4, {}, {}, issued)
       expect(store.get('a', 'activity')).toEqual({ today: 3 })
     })
 
@@ -72,9 +73,12 @@ describe('MemberProjectionStore', () => {
 
     it('an empty block still keeps a row a live frame carried past asOfSeq', () => {
       // CONTROL. Without this, clearing the slug unconditionally would satisfy the
-      // test above while throwing away a value newer than the baseline.
+      // test above while throwing away a value newer than the baseline. Newer is
+      // measured on the store's revision: the read is issued, then the frame
+      // lands, so the frame is the later statement about the key.
+      const issued = store.revision()
       store.apply('a', 'roster', { name: 'LIVE' }, 9)
-      store.seed('a', {}, 4)
+      store.seed('a', {}, 4, {}, {}, issued)
       expect(store.get('a', 'roster')).toEqual({ name: 'LIVE' })
     })
 
@@ -144,8 +148,9 @@ describe('MemberProjectionStore', () => {
       // CONTROL for the other direction: the unconditional clear must be reached
       // only by the sentinel, or an empty-but-real baseline would start throwing
       // away a live frame that legitimately raced past it.
+      const issued = store.revision()
       store.apply('a', 'roster', { name: 'LIVE' }, 9)
-      store.seed('a', {}, 0)
+      store.seed('a', {}, 0, {}, {}, issued)
       expect(store.get('a', 'roster')).toEqual({ name: 'LIVE' })
     })
   })
@@ -276,6 +281,235 @@ describe('MemberProjectionStore', () => {
       store.clear()
       expect(store.has('a')).toBe(false)
       expect(store.get('a', 'roster')).toBeUndefined()
+    })
+  })
+
+  describe('deletion: ordered by generation, and it leaves nothing behind', () => {
+    it('a deletion at a newer generation beats a row sitting at a huge seq', () => {
+      const s = new MemberProjectionStore()
+      // A contributor folding at a large position -- e.g. one using a nanosecond
+      // clock as its seq. Under plain higher-seq-wins no deletion could ever
+      // outrank this.
+      s.apply('alice', 'demo/card', { n: 1 }, 1e15, 3)
+      expect(s.get('alice', 'demo/card')).toEqual({ n: 1 })
+
+      // The deletion carries an ORDINARY seq and the next generation.
+      s.apply('alice', 'demo/card', null, 7, 4)
+      expect(s.get('alice', 'demo/card')).toBeUndefined()
+    })
+
+    it('a deletion retains NO generation, which is what lets a re-enable win', () => {
+      const s = new MemberProjectionStore()
+      s.apply('alice', 'demo/card', { n: 1 }, 5, 3)
+      s.apply('alice', 'demo/card', null, 5, 4)
+
+      // Nothing is held for the key, so nothing can outrank what comes next. A
+      // tombstone at generation 4 would be the mirror defect: the app picks its
+      // own stateVersion and cannot know the server advanced to 4, so its real
+      // updates would be discarded until a reload.
+      expect(s.has('alice')).toBe(false)
+
+      // Deliberately NOT pinned here: refusing a publish from the retired
+      // generation. Teardown revokes the grant BEFORE deleting rows
+      // (delete_contribution_rows requires it) and the publish path commits
+      // behind assert_grants_unchanged, so the server does not send that frame.
+      // The fence is pinned in test/test_contrib_fence.py.
+    })
+
+    it('a re-enabled app publishing at ANY generation is not suppressed', () => {
+      const s = new MemberProjectionStore()
+      s.apply('alice', 'demo/card', { n: 1 }, 5, 3)
+      s.apply('alice', 'demo/card', null, 5, 4)
+
+      // The app cannot know the server advanced to 4 -- it supplies its own
+      // version, and after a re-enable that may be anything, including 1. No
+      // tombstone is held, so there is nothing for it to lose against.
+      s.apply('alice', 'demo/card', { n: 2 }, 1, 1)
+      expect(s.get('alice', 'demo/card')).toEqual({ n: 2 })
+    })
+
+    it('within one generation the seq still decides, so replays still drop', () => {
+      const s = new MemberProjectionStore()
+      s.apply('alice', 'demo/card', { n: 1 }, 5, 3)
+      s.apply('alice', 'demo/card', { n: 2 }, 5, 3)
+      expect(s.get('alice', 'demo/card')).toEqual({ n: 1 })
+      s.apply('alice', 'demo/card', { n: 3 }, 6, 3)
+      expect(s.get('alice', 'demo/card')).toEqual({ n: 3 })
+    })
+
+    it('a deletion notifies the face, so the card actually clears', () => {
+      const s = new MemberProjectionStore()
+      s.apply('alice', 'demo/card', { n: 1 }, 5, 3)
+      const face = s.faceOf('alice', 'demo/card')
+      let notified = 0
+      const stop = face.subscribe(() => {
+        notified += 1
+      })
+      s.apply('alice', 'demo/card', null, 5, 4)
+      stop()
+      expect(notified).toBe(1)
+      expect(face.getSnapshot()).toBeUndefined()
+    })
+  })
+
+  describe("a contributed row seeds at its own seq, not the response's", () => {
+    it('a live push BELOW asOfSeq still lands after a roster seed', () => {
+      const s = new MemberProjectionStore()
+      // The roster read is at asOfSeq 12 while this contributor has only folded to
+      // 7. Seeding the row at 12 is what froze the card: the app's next push carries
+      // ITS seq, which is below 12, so the gate dropped it.
+      s.seed('alice', { 'demo/card': { n: 1 } }, 12, { 'demo/card': 2 }, { 'demo/card': 7 })
+      expect(s.get('alice', 'demo/card')).toEqual({ n: 1 })
+
+      // The contributor's next fold: same generation, a seq above its own 7 but
+      // still below the response's 12.
+      s.apply('alice', 'demo/card', { n: 2 }, 8, 2)
+      expect(s.get('alice', 'demo/card')).toEqual({ n: 2 })
+    })
+
+    it('a built-in key with no entry still seeds at asOfSeq', () => {
+      const s = new MemberProjectionStore()
+      s.seed('alice', { roster: { name: 'A' } }, 12)
+      // For a built-in key asOfSeq IS the row's seq, so the fallback must not weaken
+      // the ordering that key already had.
+      s.apply('alice', 'roster', { name: 'STALE' }, 11)
+      expect(s.get('alice', 'roster')).toEqual({ name: 'A' })
+    })
+
+    it("a replay at or below the row's own seq is still dropped", () => {
+      const s = new MemberProjectionStore()
+      s.seed('alice', { 'demo/card': { n: 1 } }, 12, { 'demo/card': 2 }, { 'demo/card': 7 })
+      // Seeding lower must not turn into accepting anything: 7 is the bar now, and a
+      // replay at 7 loses to it.
+      s.apply('alice', 'demo/card', { n: 99 }, 7, 2)
+      expect(s.get('alice', 'demo/card')).toEqual({ n: 1 })
+    })
+
+    it('the generation still outranks the seq when both maps are present', () => {
+      const s = new MemberProjectionStore()
+      s.seed('alice', { 'demo/card': { n: 1 } }, 12, { 'demo/card': 2 }, { 'demo/card': 7 })
+      // A newer generation wins even at a seq below the seeded 7 -- the two maps must
+      // not collapse into one comparison.
+      s.apply('alice', 'demo/card', { n: 2 }, 1, 3)
+      expect(s.get('alice', 'demo/card')).toEqual({ n: 2 })
+    })
+  })
+
+  describe('a non-empty baseline is authoritative about what it omits', () => {
+    it('drops a contributed key the baseline no longer carries', () => {
+      const s = new MemberProjectionStore()
+      s.seed(
+        'alice',
+        { roster: { name: 'A' }, 'demo/card': { n: 1 } },
+        12,
+        { 'demo/card': 2 },
+        { 'demo/card': 7 },
+      )
+      expect(s.get('alice', 'demo/card')).toEqual({ n: 1 })
+
+      // The app was uninstalled and its row deleted, so the next roster read
+      // carries the built-in keys and no contributed one. An empty block already
+      // truncates at asOfSeq; a block that still holds built-ins must reach the
+      // same verdict about the key it dropped, or the card outlives the app.
+      s.seed('alice', { roster: { name: 'A' } }, 20)
+      expect(s.get('alice', 'demo/card')).toBeUndefined()
+    })
+
+    it('notifies the dropped key so the card actually clears', () => {
+      const s = new MemberProjectionStore()
+      s.seed('alice', { roster: { name: 'A' }, 'demo/card': { n: 1 } }, 12, {}, { 'demo/card': 7 })
+      let hits = 0
+      s.faceOf('alice', 'demo/card').subscribe(() => {
+        hits += 1
+      })
+
+      s.seed('alice', { roster: { name: 'A' } }, 20)
+      expect(hits).toBe(1)
+      expect(s.faceOf('alice', 'demo/card').getSnapshot()).toBeUndefined()
+    })
+
+    it('keeps a row a live frame carried PAST the baseline', () => {
+      const s = new MemberProjectionStore()
+      s.seed('alice', { roster: { name: 'A' }, 'demo/card': { n: 1 } }, 12, {}, { 'demo/card': 7 })
+      // A push that landed after the roster read was taken. Removing it would
+      // discard a value newer than the baseline that omits it. Newer is measured
+      // on the store's own revision, which is the one axis a baseline and a frame
+      // can both be placed on -- a contributed row's seq belongs to its app.
+      const issued = s.revision()
+      s.apply('alice', 'demo/card', { n: 2 }, 25)
+      s.seed('alice', { roster: { name: 'A' } }, 20, {}, {}, issued)
+      expect(s.get('alice', 'demo/card')).toEqual({ n: 2 })
+    })
+
+    it('keeps a contributed row newer than the read even though its seq trails asOfSeq', () => {
+      // The case the two counters differ on, and the reason the revision is the
+      // only axis that answers: a contributed row's seq is its app's fold
+      // position, which TRAILS the response's asOfSeq. Here 8 is below 20 and
+      // still newer than this read, so a seq-versus-asOfSeq bound evicts exactly
+      // the row it exists to protect.
+      const s = new MemberProjectionStore()
+      s.seed('alice', { roster: { name: 'A' }, 'demo/card': { n: 1 } }, 12, {}, { 'demo/card': 7 })
+      const issued = s.revision()
+      s.apply('alice', 'demo/card', { n: 2 }, 8)
+      s.seed('alice', { roster: { name: 'A' } }, 20, {}, {}, issued)
+      expect(s.get('alice', 'demo/card')).toEqual({ n: 2 })
+    })
+  })
+
+  describe('a baseline older than a deletion cannot put the row back', () => {
+    it('a read issued before the deletion leaves the key gone', () => {
+      const s = new MemberProjectionStore()
+      s.seed('alice', { roster: { name: 'A' }, 'demo/card': { n: 1 } }, 12, {}, { 'demo/card': 7 })
+      // The roster read is issued HERE and is still in flight.
+      const issued = s.revision()
+      // The app deletes the key while that read is on the wire. A deletion keeps
+      // no row, so the answer below has nothing to lose a comparison against.
+      s.apply('alice', 'demo/card', null, 8)
+      expect(s.get('alice', 'demo/card')).toBeUndefined()
+
+      // The read answers, still carrying the value it saw before the deletion.
+      s.seed(
+        'alice',
+        { roster: { name: 'A' }, 'demo/card': { n: 1 } },
+        12,
+        {},
+        { 'demo/card': 7 },
+        issued,
+      )
+      expect(s.get('alice', 'demo/card')).toBeUndefined()
+    })
+
+    it('a read issued after the deletion does carry the key back', () => {
+      // CONTROL for the other direction: a deletion must not become permanent, or
+      // a re-enabled app's key would never render again from a roster read.
+      const s = new MemberProjectionStore()
+      s.seed('alice', { 'demo/card': { n: 1 } }, 12, {}, { 'demo/card': 7 })
+      s.apply('alice', 'demo/card', null, 8)
+      const issued = s.revision()
+      s.seed('alice', { 'demo/card': { n: 5 } }, 12, {}, { 'demo/card': 9 }, issued)
+      expect(s.get('alice', 'demo/card')).toEqual({ n: 5 })
+    })
+
+    it('a truncation is protected the same way a deletion is', () => {
+      // truncateAll drops a row that ran ahead of the server's own cursor. A
+      // baseline older than that drop would restore exactly what was rolled back.
+      const s = new MemberProjectionStore()
+      s.seed('alice', { 'demo/card': { n: 1 } }, 12, {}, { 'demo/card': 7 })
+      const issued = s.revision()
+      expect(s.truncateAll({ alice: 3 })).toBe(true)
+      s.seed('alice', { 'demo/card': { n: 1 } }, 12, {}, { 'demo/card': 7 }, issued)
+      expect(s.get('alice', 'demo/card')).toBeUndefined()
+    })
+
+    it("a drop never refuses the app's own later publish", () => {
+      // CONTROL. The record of a drop is read by the baseline path alone. A live
+      // publish is the app speaking now, so it always lands -- otherwise a
+      // re-enabled app would be silenced by the teardown that removed its row.
+      const s = new MemberProjectionStore()
+      s.seed('alice', { 'demo/card': { n: 1 } }, 12, {}, { 'demo/card': 7 })
+      s.apply('alice', 'demo/card', null, 8)
+      s.apply('alice', 'demo/card', { n: 3 }, 9)
+      expect(s.get('alice', 'demo/card')).toEqual({ n: 3 })
     })
   })
 })

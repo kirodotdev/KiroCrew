@@ -74,6 +74,14 @@ ALL_EVENT_TYPES = frozenset(
 #: and a typo must be refused, not written as a foreign event nothing folds.
 RESERVED_EVENT_NAMESPACES = frozenset({"member", "activity", "slot", "patrol"})
 
+#: Maximum nesting depth accepted in a contributed event ``data`` object or a
+#: contributed projection value. A bound is needed because both are folded and
+#: rendered, and an unbounded structure is a cheap way to make a reader
+#: expensive. ``eventlog.contrib`` re-exports this rather than defining its own,
+#: so the value the door enforces and the value the reader tolerates cannot
+#: drift apart.
+MAX_VALUE_DEPTH = 32
+
 
 def is_contributed_event_type(type_: str) -> bool:
     """Whether *type_* is a well-formed contributor event type.

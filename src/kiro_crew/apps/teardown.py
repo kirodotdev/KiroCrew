@@ -83,8 +83,213 @@ class TeardownResult:
         return not self.failures
 
 
+async def retract_contribution_authority(name: str) -> list[str]:
+    """Take away *name*'s power to write contributions, keeping its rows.
+
+    The first two steps of contribution retraction (contribution protocol §6):
+
+    1. Invalidate the cached grant, so an append already in flight is refused
+       rather than landing after the rows it would have folded into are gone.
+    2. Close the app's event-log subscriptions. The socket itself is closed, not
+       just unsubscribed: the app's code is being stopped, so an authenticated
+       socket held open for it is a connection to a process that should not run.
+
+    Split from the row deletion because the two have opposite failure costs. This
+    half is safe to run as early as possible -- it only ever REMOVES authority, and
+    running it late leaves a window an in-flight append can drive. Deleting rows is
+    destructive and unrecoverable, so it waits until the caller has made the app's
+    disabled state durable; a disable that deletes first and then fails to persist
+    leaves the app enabled with its data gone.
+
+    Returns warning strings, never raises: this runs inside a teardown that must
+    push through a failing step rather than abort halfway.
+    """
+    warnings: list[str] = []
+    try:
+        from kiro_crew.eventlog.grants import revoke
+
+        # revoke, not invalidate: `is_app_enabled` still answers true until the
+        # config write later in the disable flow, so a plain cache-invalidate
+        # would be re-populated with a live grant by any concurrent request in
+        # that window. The tombstone denies regardless of enabled state.
+        #
+        # OFF the loop, because revoke does not merely bump a counter: it drains
+        # the commits already past the grant fence, and that wait is bounded in
+        # seconds rather than microseconds. Run here it would freeze every request
+        # and the heartbeat for the whole drain, which this module's own docstring
+        # forbids. Same hop, same shared executor, as the backend-port reads below.
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(subprocess_executor(), revoke, name)
+    except Exception as exc:
+        warnings.append(f"contribution grant cache not invalidated: {redact(str(exc))}")
+
+    try:
+        from kiro_crew.dashboard.eventlog_ws import get_hub
+
+        closed = await get_hub().close_app(name)
+        if closed:
+            logger.info("teardown: closed %d event-log subscription socket(s) for %s", closed, name)
+    except Exception as exc:
+        warnings.append(f"event-log subscriptions not closed: {redact(str(exc))}")
+
+    return warnings
+
+
+async def delete_contribution_rows(name: str) -> list[str]:
+    """Delete every projection row *name* published and push ``value: null`` for each.
+
+    The third and DESTRUCTIVE step of contribution retraction. Separate from
+    :func:`retract_contribution_authority` so a caller can order it after the point
+    where the app's removal is certain: these rows cannot be reconstructed, so
+    deleting them before a step that can still fail and leave the app installed and
+    enabled trades durable data for nothing.
+
+    Events the app appended STAY in the log. They are history, and the log is
+    never rewritten -- so a re-enable folds the same past it left behind.
+
+    Call :func:`retract_contribution_authority` FIRST. Deleting while the grant still
+    answers yes lets an in-flight append land behind the deletion and leave a row
+    whose publisher is gone.
+
+    DECLINES to delete anything while a commit authorized before the retraction is
+    still unwritten. That state is reachable because the drain in ``grants.revoke``
+    is bounded, and deleting under it is the one ordering that turns a late write
+    into permanent residue. Keeping the rows is recoverable; the next retraction
+    takes them and whatever that commit wrote.
+
+    Returns warning strings, never raises.
+    """
+    warnings: list[str] = []
+    try:
+        from kiro_crew.eventlog.contrib import (
+            ProjectionDeleteIncomplete,
+            get_store,
+            get_unit,
+        )
+        from kiro_crew.eventlog.grants import outstanding_commits
+
+        loop = asyncio.get_running_loop()
+        # The drain in `grants.revoke` is BOUNDED, so it can return with a commit
+        # still past the fence and unwritten. Deleting now is what would make that
+        # write permanent: it lands after the rows are gone, and no publisher
+        # remains to correct it. So the destructive step does not run at all while
+        # one is outstanding -- the rows stay, which is recoverable, and the next
+        # retraction removes them together with whatever that commit wrote.
+        #
+        # The check cannot be raced by a NEW commit: the grant is already revoked,
+        # so the generation moved and `commit_barrier` refuses at entry. What is
+        # counted is exactly the set authorized under the retired grant.
+        still_writing = await loop.run_in_executor(subprocess_executor(), outstanding_commits, name)
+        if still_writing:
+            warnings.append(
+                f"contributed projections kept: {still_writing} commit(s) authorized before "
+                "the grant was retracted are still being written, and deleting now would "
+                "leave whatever they write behind with no publisher to correct it"
+            )
+            return warnings
+        try:
+            removed = await loop.run_in_executor(
+                subprocess_executor(), get_store().delete_app_rows, name
+            )
+        except ProjectionDeleteIncomplete as incomplete:
+            # Some units could not be rewritten, so their rows are STILL on disk
+            # and will reload. Push frames for the deletions that did land, and
+            # report the rest instead of letting teardown read as complete.
+            removed = incomplete.removed
+            warnings.append(
+                "contributed projections still on disk for: "
+                f"{redact(', '.join(incomplete.failed))}"
+            )
+        if removed:
+            _push_projection_deletions(removed, get_unit)
+            logger.info(
+                "teardown: deleted %d contributed projection row(s) for %s", len(removed), name
+            )
+    except Exception as exc:
+        warnings.append(f"contributed projections not deleted: {redact(str(exc))}")
+    return warnings
+
+
+async def teardown_contributions(name: str) -> list[str]:
+    """Retract *name*'s log contributions in full (contribution protocol §6).
+
+    Authority first, then the rows -- the order is the point, and
+    :func:`retract_contribution_authority` explains why.
+
+    For a caller whose own next step can still fail and leave the app installed and
+    enabled, call the two halves separately and delete only once that step has
+    succeeded. This combined form is for the paths where the app is going away
+    whatever happens: uninstall, and withdrawal of its execution trust.
+    """
+    warnings = await retract_contribution_authority(name)
+    warnings.extend(await delete_contribution_rows(name))
+    return warnings
+
+
+def _push_projection_deletions(removed: list[tuple[str, str, str, int, int]], get_unit) -> None:
+    """Push ``value: null`` on each deleted row's own kind frame.
+
+    The frame sink is read off the unit's own log service, which is where the
+    dashboard attached ``broadcast_ws`` at startup (``attach_broadcast``). Reading
+    it there rather than importing the dashboard state keeps this kind-generic and
+    keeps ``apps.teardown`` free of a dashboard import it has no other need for.
+
+    Best-effort and deliberately quiet: the rows are already gone, so a failed
+    push costs a connected dashboard one stale card until it reloads, and a
+    teardown must not fail on it.
+    """
+    # Function-scoped rather than module-scoped: `eventlog.service` pulls the
+    # crew-log store in with it, and `apps.teardown` is imported on every app
+    # lifecycle path including launches that never touch a log. This function only
+    # runs when contributed rows actually existed, so the cost is already paid.
+    from kiro_crew.eventlog.service import redact_projection_identifier
+
+    for kind, unit_id, key, state_version, seq in removed:
+        unit = get_unit(kind)
+        if unit is None:
+            continue
+        try:
+            broadcast = getattr(unit.service(), "broadcast", None)
+            if broadcast is None:
+                continue
+            broadcast(
+                unit.frame,
+                # A deletion orders against whatever the client holds the SAME way
+                # a publish does -- stateVersion first, then seq -- so advancing
+                # the row's own stateVersion is all it takes to win, and no
+                # sequence number has to be invented. The seq is the row's real
+                # one, carried out of the delete.
+                #
+                # Winning is only half of it: the client DROPS the row on a null
+                # rather than holding a tombstone at the advanced version. A
+                # retained tombstone is what would suppress a re-enabled app's
+                # real updates, and a re-enabled app cannot know what version to
+                # publish past. With the row gone there is nothing to lose against.
+                {
+                    unit.id_field: unit_id,
+                    "key": redact_projection_identifier(key),
+                    "value": None,
+                    "seq": seq,
+                    "stateVersion": state_version + 1,
+                },
+            )
+        except Exception:
+            # NO app-chosen value goes into this line, not even a redacted one. The
+            # key is the app's own string, so every path from it into a log is an
+            # egress, and a helper call on the way is not a barrier -- the value
+            # still reaches the sink, which is what code scanning flags. The rows
+            # are already gone and this push is best-effort, so a constant line plus
+            # the traceback is what a reader needs; the caller has already logged
+            # how many rows were deleted and for which app.
+            logger.debug("contributed projection deletion push failed", exc_info=True)
+
+
 async def teardown_app_runtime(
-    name: str, record: dict[str, Any], *, withdrawing_trust: bool = False
+    name: str,
+    record: dict[str, Any],
+    *,
+    withdrawing_trust: bool = False,
+    defer_projection_deletion: bool = False,
 ) -> TeardownResult:
     """Stop *name*'s running code.
 
@@ -123,9 +328,7 @@ async def teardown_app_runtime(
     # and refuses BEFORE any teardown mutation. Ordinary disable keeps its existing
     # unbounded wait contract. The proven result is passed into on_app_disable so
     # ownership cannot be checked a second time after teardown has begun.
-    startup_stopped = await stop_app_startup_hooks(
-        name, bounded=withdrawing_trust
-    )
+    startup_stopped = await stop_app_startup_hooks(name, bounded=withdrawing_trust)
     if not startup_stopped:
         return TeardownResult(
             warnings=[],
@@ -234,12 +437,8 @@ async def teardown_app_runtime(
     # (a)'s benefit is kept where it is free: on an ORDINARY disable there is no
     # security urgency, so an app that is off and has no observed port still does
     # not get its code launched.
-    live_port = await loop.run_in_executor(
-        subprocess_executor(), recorded_backend_port, name
-    )
-    app_may_be_running = (
-        withdrawing_trust or record.get("enabled") is True or live_port is not None
-    )
+    live_port = await loop.run_in_executor(subprocess_executor(), recorded_backend_port, name)
+    app_may_be_running = withdrawing_trust or record.get("enabled") is True or live_port is not None
     if not app_may_be_running:
         logger.info(
             "skipping %r's own shutdown code: not enabled and no backend port observed",
@@ -261,6 +460,25 @@ async def teardown_app_runtime(
         except Exception as exc:  # noqa: BLE001 - never abort a teardown on the app's script
             _warn(f"onDisable script could not be run: {exc}")
             logger.warning("onDisable could not be run for %s", name, exc_info=True)
+
+    # Log contributions come off FIRST, before the app's own shutdown hooks run.
+    # A contributor appends and publishes through the HTTP surface, so as long as
+    # the grant answers yes an in-flight request can still write -- and a write
+    # landing after the rows it folds into are deleted leaves a card that no
+    # dashboard can explain. Invalidating the grant and closing the subscriptions
+    # ahead of everything else closes that window; the deletions that follow
+    # cannot be re-created behind us.
+    #
+    # The two halves separate here because they fail differently. Retracting
+    # AUTHORITY only ever removes power, so the earliest point is the best one.
+    # DELETING the rows is unrecoverable, so a caller whose own remaining steps can
+    # still fail and leave the app enabled passes ``defer_projection_deletion`` and
+    # calls :func:`delete_contribution_rows` once its disabled state is durable.
+    for _warning in await retract_contribution_authority(name):
+        _warn(_warning)
+    if not defer_projection_deletion:
+        for _warning in await delete_contribution_rows(name):
+            _warn(_warning)
 
     try:
         hooks_result = await on_app_disable(
@@ -331,9 +549,7 @@ async def teardown_app_runtime(
         # Captured BEFORE the stop: `stop_app_backend` drops both the live tracking
         # entry and the pidfile record, and those are the only gateway-owned
         # evidence of which port this backend actually used.
-        port_hint = await loop.run_in_executor(
-            subprocess_executor(), recorded_backend_port, name
-        )
+        port_hint = await loop.run_in_executor(subprocess_executor(), recorded_backend_port, name)
         await loop.run_in_executor(subprocess_executor(), stop_app_backend, name)
         live_port = await loop.run_in_executor(
             subprocess_executor(), lambda: unstopped_backend_port(name, port_hint=port_hint)
@@ -341,7 +557,8 @@ async def teardown_app_runtime(
         if live_port is not None:
             logger.warning(
                 "backend for app %r is still listening on port %s after stop",
-                name, live_port,
+                name,
+                live_port,
             )
             _fail(
                 f"backend still running on port {live_port} — the gateway stopped "
@@ -493,9 +710,7 @@ async def notify_slot_close_undone(app: str, slot_key: str) -> bool:
     try:
         await hook(slot_key)
     except Exception:  # noqa: BLE001 - reported to the caller, never raised
-        logger.warning(
-            "slot-close UNDO hook for app %r failed on %r", app, slot_key, exc_info=True
-        )
+        logger.warning("slot-close UNDO hook for app %r failed on %r", app, slot_key, exc_info=True)
         return False
     return True
 
@@ -527,9 +742,7 @@ async def notify_slot_closed(app: str, slot_key: str) -> bool:
     try:
         await hook(slot_key)
     except Exception:  # noqa: BLE001 - reported to the caller, never raised
-        logger.warning(
-            "slot-close hook for app %r failed on %r", app, slot_key, exc_info=True
-        )
+        logger.warning("slot-close hook for app %r failed on %r", app, slot_key, exc_info=True)
         return False
     return True
 
@@ -565,3 +778,63 @@ def forget_app_hooks(app: str) -> None:
     unregister_app_disable_hook(app)
     unregister_slot_close_hook(app)
     unregister_slot_close_undo_hook(app)
+    # Contributed projection rows are the same shape of residue this function
+    # exists to clear: process state (and a small file) keyed by an app name whose
+    # package is being deleted. Unlike the registries above, uninstall reaches here
+    # through a path that may not have called ``teardown_app_runtime``, so the
+    # retraction is repeated rather than assumed. Both are idempotent -- a second
+    # pass finds no rows and pushes nothing.
+    #
+    # This scheduled pass is a BACKSTOP, not the primary route. The dashboard's own
+    # uninstall awaits the retraction while it still holds the app lifecycle lock,
+    # which is the only moment at which a same-name reinstall cannot already have
+    # started. What remains here covers the callers that do not hold that lock, and
+    # on the normal path it finds nothing left to retract.
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop is not None:
+        task = loop.create_task(_retract_contributions_if_still_gone(app))
+        # Fire-and-forget with a retained reference: this function is sync (it is
+        # called from a sync uninstall step), and awaiting would change its
+        # signature for every caller. A strong reference keeps the task from being
+        # garbage-collected mid-flight.
+        _uninstall_tasks.add(task)
+        task.add_done_callback(_uninstall_tasks.discard)
+
+
+async def _retract_contributions_if_still_gone(app: str) -> None:
+    """Retract *app*'s contributions, unless a same-name app is installed again.
+
+    This runs AFTER the uninstall step that scheduled it has returned, which is
+    also when that step releases the app lifecycle lock -- so a same-name install
+    blocked on that lock can be fully live by the time this starts. Retracting
+    then strips the REPLACEMENT's grant and deletes the projection rows it has
+    just published, which reads to its owner as a fresh install losing its own
+    data. Taking the lock and re-checking the app's presence is what confines the
+    retraction to an app that is genuinely still gone; the lock alone does not,
+    because the install may simply win it first.
+
+    Never raises: it runs detached, so the only place a failure can be seen is a
+    log line.
+    """
+    try:
+        from kiro_crew.apps.manager import app_lifecycle_lock, get_app_manifest
+
+        async with app_lifecycle_lock(app):
+            if get_app_manifest(app) is not None:
+                logger.info(
+                    "teardown: %s is installed again, so its contribution "
+                    "retraction is skipped -- the rows belong to the new app",
+                    app,
+                )
+                return
+            await teardown_contributions(app)
+    except Exception:
+        logger.warning("deferred contribution retraction failed for %s", app, exc_info=True)
+
+
+#: Strong references to in-flight uninstall retractions, so the event loop does
+#: not collect a task nothing else holds.
+_uninstall_tasks: set[asyncio.Task[Any]] = set()

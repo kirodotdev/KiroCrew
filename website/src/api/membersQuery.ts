@@ -28,20 +28,60 @@ export const MEMBERS_ROSTER_QUERY_KEY = ['kirocrew-agents', 'members-roster'] as
  *  the other registry projections (`default-agent`). */
 const MEMBERS_ROSTER_STALE_MS = 30_000
 
+/**
+ * When each roster array's read was ISSUED, on the projection store's own
+ * revision counter.
+ *
+ * Written before the request is awaited and read when the answer is seeded,
+ * because those are different moments and the socket is live between them. A
+ * deletion frame landing in that gap removes a row the in-flight baseline still
+ * carries, and a baseline that cannot say how old it is puts the row back. The
+ * store's counter is the one axis both can be placed on: a contributed key's
+ * `seq` is its app's fold position, a different counter from the response's
+ * `asOfSeq`, so neither answers this.
+ *
+ * Keyed by the array itself, so the age belongs to that exact answer. An array
+ * this map does not know — an optimistic `setQueryData` edit builds a new one —
+ * reads as {@link UNKNOWN_ISSUE_REV}.
+ */
+const ISSUED_AT_REV = new WeakMap<readonly MemberRosterRow[], number>()
+
+/** Older than any drop the store can hold, so a baseline of unknown age
+ *  restores nothing that was dropped and evicts nothing either. Both
+ *  directions are safe: a real baseline follows and answers for the slug. */
+const UNKNOWN_ISSUE_REV = -1
+
 export const membersRosterQuery = {
   queryKey: MEMBERS_ROSTER_QUERY_KEY,
-  queryFn: async (): Promise<MemberRosterRow[]> => (await api.members()).members,
+  queryFn: async (): Promise<MemberRosterRow[]> => {
+    // Before the await, not after: every projection frame the socket delivers
+    // while this request is in flight lands at a higher revision than this, and
+    // that difference is what ranks this baseline against a deletion.
+    const issuedAtRev = memberProjectionStore.revision()
+    const rows = (await api.members()).members
+    ISSUED_AT_REV.set(rows, issuedAtRev)
+    return rows
+  },
   staleTime: MEMBERS_ROSTER_STALE_MS,
   // Seed the per-member projection store from each row's baseline block BEFORE
   // the page renders rows — `select` runs synchronously on the query result,
   // so the first paint already reads pushed values via useMemberProjection.
   // seed() applies at asOfSeq through the store's higher-seq-wins rule, so a
-  // live frame that raced ahead of this baseline keeps winning. Rows pass
-  // through unchanged.
+  // live frame that raced ahead of this baseline keeps winning, and it ranks
+  // the whole block against drops by the revision above. Rows pass through
+  // unchanged.
   select: (rows: MemberRosterRow[]): MemberRosterRow[] => {
+    const issuedAtRev = ISSUED_AT_REV.get(rows) ?? UNKNOWN_ISSUE_REV
     for (const row of rows) {
       if (row.projections) {
-        memberProjectionStore.seed(row.slug, row.projections.values, row.projections.asOfSeq)
+        memberProjectionStore.seed(
+          row.slug,
+          row.projections.values,
+          row.projections.asOfSeq,
+          row.projections.stateVersions,
+          row.projections.seqs,
+          issuedAtRev,
+        )
       }
     }
     return rows

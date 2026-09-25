@@ -176,6 +176,17 @@ def now_ms() -> int:
 # --------------------------------------------------------------------------- #
 
 
+def crew_log_tree_root() -> Path:
+    """The one fenced tree every crew log and its sidecars live under.
+
+    Both fences name this leaf and nothing else: the file-tool gate
+    (``security.paths``) and the sandbox mask (``sandbox._CREW_HIDDEN_LEAVES``).
+    Anything that is AUTHORITY for what a dashboard renders belongs beneath it,
+    so it inherits both without a third entry to keep in step.
+    """
+    return data_home() / _ROOT_LEAF
+
+
 def crew_log_root(kind: str) -> Path:
     """Root directory holding every crew log of *kind*."""
     return data_home() / _ROOT_LEAF / _ROOT_DIR[require_kind(kind)]

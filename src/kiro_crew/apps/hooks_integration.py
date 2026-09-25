@@ -360,6 +360,15 @@ async def on_app_enable(
 
     Returns dict with hook results to include in the enable response.
     """
+    # Lift any teardown tombstone: a disable set one to hard-deny the app's grant
+    # during the disable window, and a re-enable re-registers trust, so the app
+    # must be grantable again.
+    try:
+        from kiro_crew.eventlog.grants import unrevoke
+
+        unrevoke(app_name)
+    except Exception:  # pragma: no cover - defensive; never block enable
+        logger.debug("App %s: could not lift contribution tombstone", app_name, exc_info=True)
     result: dict[str, Any] = {}
     denied = app_execution_denied(
         app_name,

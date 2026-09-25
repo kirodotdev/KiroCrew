@@ -521,6 +521,18 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     "admission_policy.json",
     "profiles",
     "app_admission.json",
+    # The operator's per-app unit-kind approvals. A ceiling like the ones above:
+    # the runtime intersects an app's own declaration with this file, so a writable
+    # copy in-sandbox would let a confined agent grant an app read and append over
+    # a crew member's whole log. Readable, because that intersection is the whole
+    # point of the file; sealed, because only a lifecycle operation may change it.
+    "app-unit-approvals.json",
+    # Its advisory lock, sealed for the same reason the sidecar lock beside
+    # ``agent_model_state.json`` is: the lock IS an inode, so a process that can
+    # unlink and recreate the file leaves two writers locking DIFFERENT inodes, and
+    # the loser's read-modify-write then erases the approval the winner just
+    # recorded. Every locker is a lifecycle operation, which runs unsandboxed.
+    "app-unit-approvals.json.lock",
     # Opt-out and consent ceilings the config loader reads in-sandbox. A writable
     # ``denied_commands.json`` lets an auto-approved agent set ``disable_all`` and
     # defeat the deny gate after a restart; a writable ``computer_use.json`` lets it
@@ -782,6 +794,14 @@ _CREW_CHILD_WITHHELD_LEAVES: tuple[str, ...] = (
     # refuses to compose, so an app is turned away rather than admitted unchecked.
     "admission_policy.json",
     "app_admission.json",
+    # The operator's unit-kind approvals. It holds no secret, so its reason is the
+    # governance one below rather than the credential one above: it is an INPUT TO AN
+    # AUTHORIZATION DECISION -- ``approved_unit_kinds`` intersects an app's runtime
+    # declaration with it -- and an enforced harness's child reads it through a
+    # channel that reaches no gate and leaves no record. Withholding costs in-sandbox
+    # approval resolution, and costs it CLOSED: an empty record approves nothing, so a
+    # unit kind is denied rather than granted unchecked.
+    "app-unit-approvals.json",
     # Every other readable leaf can name the in-sandbox reader that breaks without it.
     # This one cannot: the gateway owns both the writes and the reads, so nothing in a
     # sandbox needs it. The seal beside it answers a WRITE ("not a cross-member
@@ -861,6 +881,10 @@ _CREW_CHILD_READABLE_LEAVES: tuple[str, ...] = (
     "settings_seeds.json",
     "agent_model_state.json",
     "agent_model_state.json.lock",
+    # The approvals lock, classified with the sibling above and for the same reason:
+    # its CONTENT is never read, only its identity is locked, so there is nothing in
+    # it to withhold. The record it guards is withheld separately.
+    "app-unit-approvals.json.lock",
     # Gateway-owned run records, read to restore app authorization on a cold
     # continuation. The risk they carry is a rewritten app owner, not a read, and the
     # read-only seal is what answers it. Classified for completeness rather than for
@@ -1472,6 +1496,18 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     # stays frozen at "no consent", which is narrower than the truth
     # (criterion 2).
     "file_delivery_consent.json",
+    # The operator's unit-kind approvals, and the lock that guards them. Criterion 1
+    # holds: ``_read_unit_approvals`` answers ``{}`` for absent, empty and unreadable
+    # alike, and ``approved_unit_kinds`` then approves no kind for any app, so an empty
+    # document means what an absent one means. Criterion 2 holds for the same reason --
+    # the writer publishes through ``atomic_write`` (new inode), so a sandboxed reader
+    # stays frozen at "no app has any approved kind", narrower than the truth. Unlike
+    # ``app_admission.json``, excluded above because absent means ADMIT there, absent
+    # already denies here. Without the stub the seal skips an absent file on a default
+    # install and leaves the data home writable at exactly the name that decides which
+    # unit kinds an app may use.
+    "app-unit-approvals.json",
+    "app-unit-approvals.json.lock",
     # Consent to forward SSH_AUTH_SOCK satisfies both criteria the way
     # ``file_delivery_consent.json`` does: ``ssh_auth_sock_consent.is_granted``
     # reports no consent for an absent, empty, AND unreadable store alike, so a

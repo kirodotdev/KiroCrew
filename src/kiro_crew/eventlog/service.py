@@ -53,6 +53,12 @@ Broadcast = Callable[[str, object], None]
 #: already handles for free. Matches the crew log's own ``MIN_ADVANCE_ENTRIES``.
 _SAVEPOINT_MIN_ADVANCE = 256
 
+#: Called after every successful append with ``(kind, id, event)``. The kind is
+#: passed even though this service only serves ``member``, so the hub it feeds
+#: stays kind-generic and a second kind's service is a registration rather than
+#: a second fan-out path.
+EventSink = Callable[[str, str, Event], None]
+
 
 def _redact_projection_value(value: object) -> object:
     """Redact every string in a projection view before it leaves over the WS.
@@ -82,6 +88,23 @@ def _redact_projection_value(value: object) -> object:
     if isinstance(value, list):
         return [_redact_projection_value(v) for v in value]
     return value
+
+
+def redact_projection_identifier(value: str) -> str:
+    """Redact a single app-chosen IDENTIFIER -- a string in, a string out.
+
+    Same chain as :func:`_redact_projection_value`, narrowed to the one shape an
+    identifier has. It exists because a projection ``key`` and an event ``type`` are
+    typed ``str`` at their egress sites (``Event`` is a ``TypedDict``), while the
+    recursive redactor is typed ``object -> object`` for the nested payload it walks.
+    Passing the broad one straight into a ``str`` field type-checks nowhere, and the
+    honest fix is a narrow signature rather than a cast that silences the checker.
+
+    A non-string somehow arriving here is returned unchanged rather than coerced: a
+    caller's type error must not turn into a silently different stored identifier.
+    """
+    out = _redact_projection_value(value)
+    return out if isinstance(out, str) else value
 
 
 #: Suffix the legacy activity file is renamed to once the fold has run. Hygiene
@@ -142,6 +165,8 @@ def _legacy_fold_completed(slug: str) -> bool:
 #: agent-writable and the fold runs on every ``ensure``, which the roster
 #: projection calls, so an unbounded read sits on a request path.
 MAX_LEGACY_ACTIVITY_BYTES = 8 * 1024 * 1024
+
+UNIT_KIND = "member"
 
 _singleton: "MemberEventLogService | None" = None
 _singleton_lock = threading.Lock()
@@ -402,6 +427,9 @@ class MemberEventLogService:
         self._slug_locks: dict[str, threading.Lock] = {}
         self._map_lock = threading.Lock()
         self._registry = ProjectionRegistry()
+        #: Per-append sink that fans events to log subscribers; attached once
+        #: at dashboard startup by the contribution protocol's WS hub.
+        self._event_sink: EventSink | None = None
         for unit in all_units():
             self._registry.register(unit)
         self._registry.set_on_change(self._on_change)
@@ -501,6 +529,21 @@ class MemberEventLogService:
         from kiro_crew.crew_log.store import crew_log_path
 
         return crew_log_path(KIND_MEMBER, slug)
+
+    def attach_event_sink(self, sink: "EventSink | None") -> None:
+        """Set the per-append sink that fans events to log subscribers.
+
+        Called once at dashboard startup with the eventlog WebSocket hub. The
+        sink runs INSIDE the per-slug lock, on whatever thread appended, so it
+        must only enqueue -- see ``dashboard.eventlog_ws.EventLogHub.publish``,
+        which does exactly that and never blocks or raises.
+        """
+        self._event_sink = sink
+
+    @property
+    def event_sink(self) -> "EventSink | None":
+        """The attached sink, so a service rebuild can carry it over."""
+        return self._event_sink
 
     def _slug_lock(self, slug: str) -> threading.Lock:
         with self._map_lock:
@@ -1043,7 +1086,33 @@ class MemberEventLogService:
         # so replaying the range costs a cell nothing it has seen.
         self._fold_gap_locked(slug, log, below=event["seq"])
         self._registry.drive(slug, event)
+        sink = self._event_sink
+        if sink is not None:
+            try:
+                sink(UNIT_KIND, slug, event)
+            except Exception:
+                # The event is already durable and folded; a subscriber fan-out
+                # fault must not turn a committed append into a failed one. The
+                # subscriber detects the gap on its next seq check and heals with
+                # a catch-up read, which is the contract's own recovery path.
+                logger.debug("eventlog sink failed for %r/%r", slug, type, exc_info=True)
         return event
+
+    def events_after(self, slug: str, *, after: int = -1, limit: int = 200) -> list[Event]:
+        """Oldest-first page of events with ``seq > after`` (contribution protocol).
+
+        The catch-up half of the delta channel: a subscriber that lost frames, or
+        one starting cold, folds this page in order and then streams. Returns an
+        empty list for a slug with no log rather than raising -- a caller asking
+        about a unit that does not exist has already been answered 404 by the
+        route's own existence check.
+        """
+        lock = self._slug_lock(slug)
+        with lock:
+            log = self._get_log(slug)
+            if log is None:
+                return []
+            return log.events_after(after, limit)
 
     # ---- read -------------------------------------------------------------
     def snapshot(self, slug: str) -> dict:
@@ -1137,6 +1206,11 @@ def get_service() -> MemberEventLogService:
         if _singleton is None or _singleton.root != root:
             previous = _singleton
             _singleton = MemberEventLogService(root, previous.broadcast if previous else None)
+            if previous is not None and previous.event_sink is not None:
+                # The hub is attached once at startup and is not rebound when
+                # the data home moves, so a rebuild that dropped the sink
+                # would leave every later append invisible to its subscribers.
+                _singleton.attach_event_sink(previous.event_sink)
         return _singleton
 
 

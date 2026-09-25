@@ -1443,13 +1443,45 @@ def _cookie_port_from_host(request: web.Request, fallback: int) -> str:
 # rejected. Dashboard-user tokens (empty ``app`` claim) are never subject to
 # this — the gate is a no-op for them.
 
-# Short-TTL cache of each app's declared ``permissions.api`` allowlist so the
-# hot auth path doesn't read app.json on every request. Permissions change
-# rarely; a 30s TTL self-heals after enable/disable/update without any
-# invalidation wiring.
-_APP_PERMS_TTL = 30.0
-_app_perms_cache: dict[str, tuple[float, tuple[str, ...]]] = {}
+# Cache of each app's declared ``permissions.api`` allowlist so the hot auth path
+# does not read app.json on every request. Keyed on the grant generation (see
+# ``_scope_generation``), so an enable, disable or update invalidates it at the
+# moment it happens rather than after a delay.
+_app_perms_cache: dict[str, tuple[int, tuple[str, ...]]] = {}
 _app_perms_lock = threading.Lock()
+
+
+def _scope_generation() -> int | None:
+    """The grant generation both scope caches are keyed on, or None if unreadable.
+
+    Shared with ``eventlog.grants`` deliberately: an app's ``permissions.api``
+    and its contributions declaration come out of the SAME manifest, so one
+    lifecycle counter invalidates both and the two cannot drift apart. Keying on
+    it rather than on a clock is what removes the periodic re-read that put this
+    manifest I/O on the serving loop every 30 seconds per app.
+
+    None means the counter could not be read. The caller then neither trusts nor
+    writes the cache, which costs a read but never serves a value it cannot
+    prove current.
+    """
+    try:
+        # Function-local for the cycle reason the reader below documents:
+        # eventlog.grants reaches apps.manager, which imports this module.
+        from kiro_crew.eventlog.grants import revocation_generation
+
+        return revocation_generation()
+    except Exception:
+        logger.debug("app scope: grant generation unreadable; not caching", exc_info=True)
+        return None
+
+
+#: Manifest loads an allowlist resolve will make before it gives up and denies. A
+#: lifecycle event landing mid-load means the value describes grants that have
+#: already been replaced, so it is resolved again rather than returned; the bound
+#: is what stops an app whose grants are churning from holding a request open.
+#: Exhausting it denies the app's DECLARED prefixes only -- it keeps its own
+#: namespace -- so the failure mode is a narrowed app, never an open one.
+_ALLOWLIST_RESOLVE_ATTEMPTS = 3
 
 
 def _app_api_allowlist(app_name: str) -> tuple[str, ...]:
@@ -1457,32 +1489,138 @@ def _app_api_allowlist(app_name: str) -> tuple[str, ...]:
 
     On any failure (app not installed, manifest unreadable) returns an empty
     tuple — i.e. deny-by-default: the app is confined to its own namespace only.
+
+    Reads the manifest on the calling thread, so it MUST NOT be reached cold from
+    the event loop; :func:`warm_app_scope` resolves it in an executor first, the
+    same way :func:`warm_auth_singletons` primes the signing secret.
+
+    The generation is re-read AFTER the load and the value is discarded if it
+    moved, because an allowlist resolved against grants that have since been
+    replaced must not authorize this request -- see
+    :data:`_ALLOWLIST_RESOLVE_ATTEMPTS`.
     """
-    now = time.time()
+    for _ in range(_ALLOWLIST_RESOLVE_ATTEMPTS):
+        generation = _scope_generation()
+        if generation is not None:
+            with _app_perms_lock:
+                entry = _app_perms_cache.get(app_name)
+                if entry is not None and entry[0] == generation:
+                    return entry[1]
+        allow: tuple[str, ...] = ()
+        try:
+            # circular import: apps.manager imports generate_app_secret/
+            # write_app_secret from this module (token_auth), so a top-level
+            # `import` here would form a cycle. Kept function-local deliberately.
+            from kiro_crew.apps.manager import get_app_manifest
+
+            manifest = get_app_manifest(app_name)
+            if manifest is not None:
+                allow = tuple(p for p in manifest.permissions.api if p)
+        except Exception:
+            logger.warning(
+                "app scope: could not load permissions for %r; denying by default",
+                app_name,
+                exc_info=True,
+            )
+            allow = ()
+        if generation is None:
+            # Nothing to compare against, so this value cannot be shown to
+            # describe the current grants. Answer the request, cache nothing.
+            return allow
+        if _scope_generation() != generation:
+            # A lifecycle event -- a revoke, an update -- landed while the
+            # manifest was being read, so `allow` describes grants that have
+            # already been replaced. Handing it to the scope check would let a
+            # withdrawn prefix authorize this request, so resolve again against
+            # the world that exists now.
+            continue
+        with _app_perms_lock:
+            _app_perms_cache[app_name] = (generation, allow)
+        return allow
+    logger.warning(
+        "app scope: the grant generation moved during every one of %d allowlist "
+        "reads for %r; denying its declared prefixes for this request",
+        _ALLOWLIST_RESOLVE_ATTEMPTS,
+        app_name,
+    )
+    return ()
+
+
+#: Off-loop warm attempts before a request proceeds with a cold cache. Three
+#: covers a lifecycle event landing during a hop, and a second landing during the
+#: retry, without turning grant churn into an open request.
+_SCOPE_WARM_ATTEMPTS = 3
+
+
+def _app_scope_is_cold(app_name: str) -> bool:
+    """Whether answering a scope question for *app_name* would read a manifest.
+
+    A dict read plus one counter read, no filesystem access, so it is safe on the
+    loop -- which is the point: it lets the middleware pay an executor hop only
+    when there is I/O to move off the loop, instead of on every app request.
+    """
+    generation = _scope_generation()
+    if generation is None:
+        return True
     with _app_perms_lock:
         entry = _app_perms_cache.get(app_name)
-        if entry is not None and now - entry[0] < _APP_PERMS_TTL:
-            return entry[1]
-    allow: tuple[str, ...] = ()
+    if entry is None or entry[0] != generation:
+        return True
     try:
-        # circular import: apps.manager imports generate_app_secret/
-        # write_app_secret from this module (token_auth), so a top-level
-        # `import` here would form a cycle. Kept function-local deliberately.
-        from kiro_crew.apps.manager import get_app_manifest
+        from kiro_crew.eventlog.grants import is_cached
 
-        manifest = get_app_manifest(app_name)
-        if manifest is not None:
-            allow = tuple(p for p in manifest.permissions.api if p)
+        return not is_cached(app_name)
     except Exception:
+        logger.debug("app scope: contributions cache state unreadable", exc_info=True)
+        return True
+
+
+async def warm_app_scope(app_name: str) -> None:
+    """Resolve both manifest-backed scope inputs for *app_name* OFF the loop.
+
+    ``permissions.api`` and the contributions declaration are read from the same
+    manifest, which has no cache of its own, so a cold entry made the auth
+    middleware do file I/O on the event loop
+    (no-blocking-call-on-event-loop). Both are resolved in ONE executor hop here,
+    before the sync scope check asks either question.
+
+    Same shape and reason as :func:`warm_auth_singletons`, and idempotent for the
+    same reason: each callee memoizes under its own lock. Deny-safe throughout --
+    every failure inside either resolver already resolves to "no grant".
+    """
+    if not app_name:
+        return
+
+    def _resolve() -> None:
+        _app_api_allowlist(app_name)
+        try:
+            from kiro_crew.eventlog.grants import warm
+
+            warm(app_name)
+        except Exception:
+            logger.debug("app scope: could not warm contributions for %r", app_name, exc_info=True)
+
+    # Re-check AFTER each hop. A lifecycle event -- an app update, a revoke --
+    # advances the grant generation, which is what makes both caches cold again,
+    # and it can land while this hop is in flight. Warming once and returning
+    # then leaves the sync scope check to read the manifest itself, on the event
+    # loop, which is the exact I/O this function exists to move off it.
+    #
+    # Bounded, because the generation is not ours to wait on: a lifecycle event
+    # arriving on every attempt would otherwise hold the request open forever.
+    # Exhausting the attempts leaves one request reading on the loop, a latency
+    # spike rather than a hang, and it self-corrects once the churn stops.
+    for _ in range(_SCOPE_WARM_ATTEMPTS):
+        if not _app_scope_is_cold(app_name):
+            return
+        await asyncio.to_thread(_resolve)
+    if _app_scope_is_cold(app_name):
         logger.warning(
-            "app scope: could not load permissions for %r; denying by default",
+            "app scope: %r still cold after %d warm attempts; the grant generation "
+            "is moving faster than the resolve",
             app_name,
-            exc_info=True,
+            _SCOPE_WARM_ATTEMPTS,
         )
-        allow = ()
-    with _app_perms_lock:
-        _app_perms_cache[app_name] = (now, allow)
-    return allow
 
 
 # Literal first path segments registered under ``/api/apps/`` that are NOT the
@@ -1624,17 +1762,67 @@ def app_token_path_allowed(app_name: str, path: str) -> bool:
     # GET (read history) and DELETE, which app tokens must not reach.
     if path == "/api/notifications/push":
         return True
+    # Contribution protocol §2: declaring `contributions` grants these paths, with
+    # no separate `permissions.api` entry. Same shape as the push endpoint above --
+    # the grant is the PREFIX, and every handler under it re-derives authority from
+    # the same manifest declaration (which unit kind, which event type, which
+    # projection key), so reaching the prefix confers nothing over another app's
+    # namespace. Withheld entirely from an app that declared no contributions, so
+    # the surface does not exist for an app that never asked for it.
+    if path.startswith("/api/eventlog/") and _app_declares_contributions(app_name):
+        return True
     return any(_api_pattern_matches(p, path) for p in _app_api_allowlist(app_name))
 
 
-def _enforce_app_scope(request: web.Request, app_name: str, path: str) -> web.Response | None:
+def _app_declares_contributions(app_name: str) -> bool:
+    """Whether *app_name*'s manifest declares any log contribution.
+
+    Function-local import for the same cycle reason as ``_app_api_allowlist``
+    above, and deny-safe: an unreadable manifest answers False, which sends the
+    caller to the ``permissions.api`` allowlist it would have needed anyway.
+    """
+    try:
+        from kiro_crew.eventlog.grants import declares_contributions
+
+        return declares_contributions(app_name)
+    except Exception:
+        logger.warning(
+            "app scope: could not read contributions for %r; denying by default",
+            app_name,
+            exc_info=True,
+        )
+        return False
+
+
+async def _enforce_app_scope(request: web.Request, app_name: str, path: str) -> web.Response | None:
     """Return a 403 response if an app token is out of scope, else None.
 
     No-op for dashboard-user tokens (empty *app_name*).
+
+    Async so the manifest-backed inputs can be resolved in an executor before the
+    sync decision asks for them: ``app_token_path_allowed`` reads
+    ``permissions.api`` and the contributions declaration, both of which come from
+    the app's manifest, and a cold cache would otherwise read it on the serving
+    loop (no-blocking-call-on-event-loop).
     """
     if not app_name:
         return None
-    if app_token_path_allowed(app_name, path):
+    await warm_app_scope(app_name)
+    # Resolved in an executor UNCONDITIONALLY, warm cache or not.
+    #
+    # A probe cannot bind its own answer: warming is bounded and a grant
+    # generation can land between "the cache is warm" and the decision that
+    # trusted it, and the decision then reads ``permissions.api`` and the
+    # contributions declaration from the manifest -- file IO, on the serving loop,
+    # which ``no-blocking-call-on-event-loop`` forbids outright. The warm case
+    # cannot be told apart from that race at the moment the branch is taken, so
+    # there is no branch: the hop is the price of the decision.
+    #
+    # Warming above is kept as an optimisation, not a safety property -- it makes
+    # this hop a pair of dict reads instead of a manifest parse, and primes the
+    # same declaration the contribution handlers ask for next.
+    allowed = await asyncio.to_thread(app_token_path_allowed, app_name, path)
+    if allowed:
         return None
     # SEL audit for the permission decision (matches the sibling deny paths in
     # the middleware, which log_api_access in addition to _log_auth).
@@ -2722,7 +2910,7 @@ def token_auth_middleware(
             # paths (e.g. /api/chat, /api/spawn are mixed_internal) — otherwise
             # an app token would reach them on loopback with NO app identity set
             # and be treated as the dashboard user (privilege escalation).
-            _scope_deny = _enforce_app_scope(request, _app, path)
+            _scope_deny = await _enforce_app_scope(request, _app, path)
             if _scope_deny is not None:
                 return _scope_deny
             _sel = _sel_fn()
@@ -2804,7 +2992,7 @@ def token_auth_middleware(
                 # POSITIVE dashboard-user signal for the WS scope gate (see
                 # the loopback branch above).
                 request["is_dashboard_user"] = not _app
-                _scope_deny = _enforce_app_scope(request, _app, path)
+                _scope_deny = await _enforce_app_scope(request, _app, path)
                 if _scope_deny is not None:
                     return _scope_deny
                 _sel = _sel_fn()
@@ -3179,7 +3367,7 @@ def token_auth_middleware(
         # its own namespace + its manifest ``permissions.api`` allowlist. This
         # is the primary enforcement point for the normal cookie/query-param
         # flow (e.g. /api/sessions, /api/config/*, the /apps/<other>/api proxy).
-        _scope_deny = _enforce_app_scope(request, app_name, path)
+        _scope_deny = await _enforce_app_scope(request, app_name, path)
         if _scope_deny is not None:
             return _scope_deny
 

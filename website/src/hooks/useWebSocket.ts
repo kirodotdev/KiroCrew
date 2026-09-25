@@ -1796,12 +1796,29 @@ export function useWebSocket() {
           case 'member_projection': {
             // One member's projected value moved. The server wraps every
             // broadcast as { type, data }, so the fields ride under `data`.
-            // Apply only a well-formed frame: the store's higher-seq-wins drops
-            // a stale or replayed seq, but a missing slug/key/seq is a malformed
-            // frame that must not touch the store at all.
-            const pf = (data ?? {}) as { slug?: unknown; key?: unknown; seq?: unknown; value?: unknown }
+            // Apply only a well-formed frame: the store's ordering drops a stale
+            // or replayed frame, but a missing slug/key/seq is a malformed frame
+            // that must not touch the store at all.
+            //
+            // `stateVersion` is read but NOT required: it orders ahead of seq, and
+            // a frame without it (a built-in key, or a gateway older than the
+            // field) reads as 0, which collapses the comparison to plain
+            // higher-seq-wins for that row. Requiring it would drop those frames.
+            const pf = (data ?? {}) as {
+              slug?: unknown
+              key?: unknown
+              seq?: unknown
+              value?: unknown
+              stateVersion?: unknown
+            }
             if (typeof pf.slug === 'string' && pf.slug && typeof pf.key === 'string' && pf.key && typeof pf.seq === 'number') {
-              memberProjectionStore.apply(pf.slug, pf.key, pf.value, pf.seq)
+              memberProjectionStore.apply(
+                pf.slug,
+                pf.key,
+                pf.value,
+                pf.seq,
+                typeof pf.stateVersion === 'number' ? pf.stateVersion : 0,
+              )
             }
             break
           }

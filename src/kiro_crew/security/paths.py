@@ -171,6 +171,9 @@ _SENSITIVE_HOME_DIRS: list[str] = [
 #                                 (owner-only dir OUTSIDE the log's directory);
 #                                 the bare leaf covers pre-migration installs
 #   app_admission.json            App Kit admission ceiling (apps/admission.py)
+#   app-unit-approvals.json       per-app unit-kind approvals (apps/manager.py);
+#                                 intersected with an app's own declaration, so
+#                                 a writable copy widens app authority
 #   security_policy.json          governance ceiling (KEYSTONE, governance.py)
 #   profiles                      per-surface governance profiles
 #   admission_policy.json         signed-plugin admission trust root
@@ -453,6 +456,15 @@ _CREW_SECRET_LEAVES: list[str] = [
     # directly, not through this gate.
     "security_events.d",
     "app_admission.json",
+    # The operator's per-app unit-kind approvals (apps/manager.py). It is the ONLY
+    # thing standing between an app's own declaration and read/append access to a
+    # crew member's whole log: the runtime intersects what the app declares with
+    # what this file approves, so an agent able to write it could widen any app's
+    # authority to a kind the operator never granted. It lives out here rather than
+    # in the app's directory for exactly that reason, and fencing it is the other
+    # half of that decision. ``apps.manager`` opens it directly, not through this
+    # gate, so every lifecycle operation keeps working.
+    "app-unit-approvals.json",
     "security_policy.json",
     "profiles",
     # The centrally-distributed ceiling's last-known-good cache

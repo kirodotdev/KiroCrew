@@ -789,6 +789,46 @@ class TestRegisterExternal:
         assert data["secret"]
 
     @pytest.mark.asyncio
+    async def test_an_app_token_cannot_register_itself_without_metadata(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The route must hand the caller's identity to the manager.
+
+        The manager refuses a self-registering caller whose metadata is absent, but
+        it can only tell operator from app by what this route passes. Left unwired,
+        the guard is inert and this POST mints an approval from the app's own
+        manifest -- so this asserts the wiring, not just the manager's branch.
+        """
+        from kiro_crew.apps.manager import approved_unit_kinds
+
+        _setup_env(tmp_path, monkeypatch)
+        async with TestClient(
+            TestServer(_make_app(app_identity="ext-self"))
+        ) as client:
+            resp = await client.post(
+                "/api/apps/register",
+                json={
+                    "name": "ext-self",
+                    "version": "1.0.0",
+                    "displayName": "Ext Self",
+                    "lifecycle": "app",
+                    "resources": "app",
+                    "manifest": {
+                        "name": "ext-self",
+                        "version": "1.0.0",
+                        "displayName": "Ext Self",
+                        "description": "d",
+                        "contributions": {
+                            "events": ["ext-self/*"],
+                            "units": ["member"],
+                        },
+                    },
+                },
+            )
+            assert resp.status != 201
+        assert approved_unit_kinds("ext-self") == frozenset()
+
+    @pytest.mark.asyncio
     async def test_public_registration_cannot_mint_registry_provenance(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

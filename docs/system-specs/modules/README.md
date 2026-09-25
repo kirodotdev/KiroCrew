@@ -23,6 +23,7 @@ agent loads only the one it needs.
 | [history.md](history.md) | Conversation persistence, JSONL rotation, and transcript search. |
 | [session-summary.md](session-summary.md) | Intent-level session summaries: the sidecar cache, extraction, and the turn-end pass. |
 | [member-event-log.md](member-event-log.md) | Per-member append-only event log, its four projections, the whole-value push frames, and load-time closers behind the Members page. |
+| [contribution-protocol.md](contribution-protocol.md) | How an installed app contributes to a member's event log: the `contributions` manifest declaration that grants it, the single write door, the fenced root its projection rows live under, the per-unit ceiling, and the subscribe/catch-up delta channel. |
 | [session-work-ledger.md](session-work-ledger.md) | Per-session durable work state (goal, phase, tried, artifacts) on disk, its MCP tools, and monitor-loop snapshot injection. |
 | [crew-log-core.md](crew-log-core.md) | Append-only per-crew and per-session crew logs: the wire format, type ownership and guest namespacing, the torn-tail rule, and the pre-release status of the session vocabulary. |
 | [crew-log-emitter.md](crew-log-emitter.md) | The flag-gated writer that turns the ACP turn lifecycle into an append-only per-session `log.jsonl`: which facts are recorded, from which call site, and which are deliberately not. |

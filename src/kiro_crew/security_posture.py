@@ -1517,6 +1517,33 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "environment map is those four named keys and no others, and is omitted "
         "entirely unless a caller asks for it.",
     ),
+    (
+        "Contributor catch-up read",
+        "dashboard/handlers/eventlog.py",
+        "Event envelopes served by `GET /api/eventlog/{kind}/{id}/events`, the "
+        "contribution-protocol catch-up read a granted contributor uses to fold "
+        "the log. `events_after` returns each envelope raw, and an event's `data` "
+        "carries agent-authored free-text (an activity `project`, message "
+        "previews) of the same class the sibling member `/history` and "
+        "`/activity` reads redact. Each event's `data` passes the shared "
+        "exfiltration-URL then credential chain (`_redact_projection_value`) "
+        "before egress, so a credential or presigned URL smuggled into an event "
+        "does not reach the browser.",
+    ),
+    (
+        "Live event-log frame broadcast",
+        "dashboard/eventlog_ws.py",
+        "The `eventlog_event` WS frame `EventLogHub.publish` fans out to every "
+        "subscriber the instant an event is appended -- the live counterpart of "
+        "the `GET .../events` catch-up read. The event's `data` carries "
+        "agent-authored free-text (an activity `project`, message previews) of "
+        "the same class the sibling reads redact, so `data` passes the shared "
+        "exfiltration-URL then credential chain (`_redact_projection_value`) "
+        "before serialization. Runs on the appending thread inside the log lock, "
+        "so the pure-string redactor cannot block; a redactor fault FAILS CLOSED -- "
+        "the frame is dropped and the unit's subscribers are closed, each resuming "
+        "by catch-up, whose read redacts on this same path.",
+    ),
 )
 
 # Modules that call a redactor but are NOT an output egress boundary, so they do

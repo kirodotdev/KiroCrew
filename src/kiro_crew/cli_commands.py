@@ -810,6 +810,36 @@ def _run_app_action_through_gateway(
     return True
 
 
+def _retract_app_contributions(app_name: str) -> None:
+    """Delete *app_name*'s contributed projection rows from this process.
+
+    A contributed row is AUTHORITY for what the Members drawer renders --
+    ``store.values`` trusts what is on disk -- so an app removed without this
+    leaves cards rendering for something that is gone, and no later operation
+    cleans them up. The dashboard's disable and uninstall already run this
+    teardown; these paths reach the same files without a gateway.
+
+    Closing sockets and pushing ``value: null``, the teardown's other two steps,
+    are no-ops out here: there is no hub and nobody to push to. Row deletion is
+    what this call is for. Never fatal -- an operator at a terminal reads the
+    warning, and a failure here must not leave the app half-removed.
+    """
+    try:
+        import asyncio
+
+        from kiro_crew.apps.teardown import teardown_contributions
+
+        for warning in asyncio.run(teardown_contributions(app_name)):
+            print(f"warning: {warning}", file=sys.stderr)
+    except Exception as exc:
+        print(
+            f"warning: could not retract {app_name!r}'s contributed projection "
+            f"rows: {exc}. They stay on disk and the Members drawer keeps "
+            f"rendering them until they are removed.",
+            file=sys.stderr,
+        )
+
+
 def _print_file_only_app_result(app_name: str, *, enabled: bool) -> None:
     """Report a persisted lifecycle change without claiming it is live."""
     state = "enabled" if enabled else "disabled"
@@ -1207,6 +1237,11 @@ def _handle_app(args: argparse.Namespace) -> None:
         result = disable_app(args.name)
         deregister_app(args.name)
         if result.ok:
+            # Only after the disable SUCCEEDED. Deleting the rows is not
+            # reversible -- a contributor republishes them or they are gone -- so
+            # doing it before the flag flip is confirmed would strip an app's cards
+            # off the page while the app is still enabled and running.
+            _retract_app_contributions(args.name)
             _print_file_only_app_result(args.name, enabled=False)
         else:
             print(f"❌ {result.error}", file=sys.stderr)
@@ -1266,6 +1301,10 @@ def _handle_app(args: argparse.Namespace) -> None:
             # failed uninstall leaves nothing changed, so a still-installed app
             # keeps the pointers its slots are still entitled to resume.
             cleanup = discard_app_session_pointers(args.name)
+            # After the uninstall SUCCEEDED, for the same reason as the disable
+            # path above: an uninstall that fails leaves the app installed, and
+            # its cards must not already be gone.
+            _retract_app_contributions(args.name)
             print(f"✅ {result.message}")
             _print_pointer_cleanup(args.name, cleanup)
             if declares_backend or recorded_port is not None:

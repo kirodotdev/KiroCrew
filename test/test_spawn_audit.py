@@ -1129,6 +1129,13 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # ``_cleanup_app_crons_from_scheduler`` above. No child process is
         # created; the sole input is the operator-typed app name.
         "cli_commands.py::_register_app_crons_to_scheduler",
+        # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
+        # ``run`` on base ``asyncio``) driving the async ``teardown_contributions``
+        # coroutine from the loop-less CLI disable/uninstall path, so an app
+        # removed outside the dashboard does not leave its contributed projection
+        # rows rendering. Same classification as the two entries above; no child
+        # process is created, and the sole input is the operator-typed app name.
+        "cli_commands.py::_retract_app_contributions",
         "cli_doctor.py::_doctor",
         # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
         # ``run`` on base ``asyncio``) driving the async Discord
