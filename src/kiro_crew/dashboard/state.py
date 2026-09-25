@@ -2581,6 +2581,7 @@ class _ChatSlot:
         "_frozen_prefix_cache",
         "_pending_rewrite",
         "_file_changes",
+        "_write_tool_outcomes",
         "linked_session_key",
         # Remote-execution binding: this slot lives in the LOCAL list and local
         # history, but its turns run on a connected peer crew. See
@@ -3473,9 +3474,12 @@ class _ChatSlot:
         # overwriting (the default save skips archiving). Cleared on a
         # successful rewrite save.
         self._pending_rewrite: bool = False
-        self._file_changes: list[dict[str, str]] = (
+        self._file_changes: list[dict[str, Any]] = (
             []
-        )  # [{path, content}] before-snapshots accumulated per turn for file-chip diffs
+        )  # [{path, content, pending_str_replace?}] before-snapshots accumulated per turn for file-chip diffs
+        # tool_call_id -> write completed; lets a pending snapshot bound after
+        # its tool's terminal frame still learn the outcome.
+        self._write_tool_outcomes: dict[str, bool] = {}
         self.linked_session_key: str = ""  # when set, _run_chat uses this as session key
         # Where the turn CURRENTLY in flight actually started, as opposed to
         # where the slot would route a new one. The two diverge whenever the
