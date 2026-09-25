@@ -1622,10 +1622,12 @@ KIRO_CLI_LOGS_SCHEMA = ToolSchema(
     ],
 )
 
-# Absolute filesystem path. Empty string is allowed (clears the project) —
-# the validator skips the pattern check on empty values, so the regex only
-# needs to cover the non-empty case.
-_ABSOLUTE_PATH_RE = re.compile(r"^/")
+# Absolute filesystem path: POSIX "/x" and the Windows drive root "C:\x" /
+# "C:/x". Root PREFIX only, so a POSIX body may carry ":" and drive-relative
+# "C:foo" is refused. Two-backslash roots stay out: "\\host\share" resolves by
+# contacting the named host, and "\\?\D:\" carries a prefix the sensitive-path
+# fence does not fold -- see the PR. An empty string (clear) skips this check.
+_ABSOLUTE_PATH_RE = re.compile(r"^(?:/|[A-Za-z]:[\\/])")
 
 # 4096 = Linux PATH_MAX. The gateway endpoint enforces realpath and
 # sensitive-path checks; this schema is the MCP-layer shape gate.
