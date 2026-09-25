@@ -115,8 +115,41 @@ export function sanitizeCredentials(text: string): string {
   return out
 }
 
-// ── Exfiltration URL detection (matches redact_exfiltration_urls in security.py) ──
+// ── Exfiltration URL detection (mirrors redact_exfiltration_urls in security.py) ──
+// Unlike the backend, a URL that stops at `)` is judged with the text after it (#8638),
+// up to the next scheme or space (URL_TAIL_RE), then cut back to where its link ends.
 const URL_RE = /https?:\/\/([a-zA-Z0-9._-]+\.[a-zA-Z]{2,})(:\d+)?(\/[^\s)"'>]*)?/g
+const URL_TAIL_RE = /[^\s"'>]*?(?=https?:\/\/|[\s"'>]|$)/y
+// Drop trailing `)` that have no `(` partner in the URL, plus punctuation after them.
+function trimWrapperParen(url: string): string {
+  let extra = url.split(')').length - url.split('(').length
+  let keep = url.length
+  for (let i = url.length - 1; i >= 0 && extra > 0; i--) {
+    if (url[i] === ')') { extra--; keep = i } else if (!'.,;:!?'.includes(url[i])) break
+  }
+  return url.slice(0, keep)
+}
+
+// A markdown `](...)` target ends at its first `)` with no `(` partner, as CommonMark does.
+function linkTarget(url: string): string {
+  let depth = 0
+  for (let i = 0; i < url.length; i++) {
+    if (url[i - 1] === '\\') continue // a `\(` or `\)` escape stays in the target, as in CommonMark
+    if (url[i] === '(') depth++
+    else if (url[i] === ')' && --depth < 0) return url.slice(0, i)
+  }
+  return url
+}
+
+// True when the `]` at `i` closes a real `[label]` (CommonMark caps a label at 999 chars).
+function closesLabel(text: string, i: number): boolean {
+  let depth = 0
+  for (let j = i - 1; j >= 0 && j >= i - 1000; j--) {
+    if (text[j] === ']') depth++
+    else if (text[j] === '[' && depth-- === 0) return true
+  }
+  return false
+}
 const EXFIL_QUERY_MIN_LEN = 200
 
 // PATTERN signals: each names a shape rather than a size, and each runs for
@@ -178,24 +211,38 @@ const EXFIL_B64_RE = /[A-Za-z0-9+/=]{40,}/i
 // monitorportal.amazon.com) — do not reintroduce a per-shape escape hatch.
 
 export function sanitizeExfiltrationUrls(text: string): string {
-  let out = text
+  let out = ''
+  let last = 0
   URL_RE.lastIndex = 0
-  for (const m of text.matchAll(URL_RE)) {
+  let m: RegExpExecArray | null
+  while ((m = URL_RE.exec(text))) {
     const domain = m[1]
-    const pathAndQuery = m[3] || ''
+    const end = m.index + m[0].length
+    URL_TAIL_RE.lastIndex = end
+    const full = m[0] + (text[end] === ')' ? (URL_TAIL_RE.exec(text)?.[0] ?? '') : '')
+    const inLink = text.slice(m.index - 2, m.index) === '](' && closesLabel(text, m.index - 2)
+    // End at the first unpaired `)` when that already keeps the `?`, so glued prose after it
+    // never votes or is spliced; otherwise the query lies past the `)`, so keep scanning it.
+    const cut = linkTarget(full)
+    const url = inLink || cut.includes('?') ? cut : trimWrapperParen(full)
+    // A pattern signal past the cut still counts (glued prose can only trip the length one).
+    const past = inLink ? '' : full.slice(url.length)
+    const hit = EXFIL_PERCENT_RE.test(past) || EXFIL_CREDENTIAL_RE.test(past) || EXFIL_B64_RE.test(past)
+    const pathAndQuery = url.slice(m[0].length - (m[3] || '').length)
     const qmark = pathAndQuery.indexOf('?')
-    if (qmark === -1) continue
+    if (qmark === -1 && !hit) continue
     const query = pathAndQuery.slice(qmark + 1)
-    const redact =
+    const redact = hit ||
       EXFIL_PERCENT_RE.test(query) ||
       EXFIL_CREDENTIAL_RE.test(query) ||
       EXFIL_B64_RE.test(query) ||
       query.length >= EXFIL_QUERY_MIN_LEN
     if (redact) {
-      out = out.replace(m[0], i18nT('utils.sanitize.redacted_suspicious_url', { domain }))
+      out += text.slice(last, m.index) + i18nT('utils.sanitize.redacted_suspicious_url', { domain })
+      last = m.index + (hit ? trimWrapperParen(full) : url).length
     }
   }
-  return out
+  return out + text.slice(last)
 }
 
 /** Combined sanitizer — runs both credential and exfiltration redaction. */

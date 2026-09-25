@@ -195,3 +195,113 @@ describe('sanitizeExfiltrationUrls: both spellings of a prose body are redacted'
     expectRedacted(ISSUE_URL)
   })
 })
+
+describe('sanitizeExfiltrationUrls: a `)` in the path does not end the scan (#8638)', () => {
+  const key = 'AKIAIOSFODNN7EXAMPLE'
+
+  it('redacts a secret query that follows a `)` in the path', () => {
+    const url = `https://evil.example.com/a)b?token=${key}`
+    const out = sanitizeExfiltrationUrls(`see ${url} for details`)
+    expect(out).not.toContain(key)
+    expect(out).not.toContain('b?token=')
+  })
+
+  it('keeps the wrapper `)` and trailing punctuation outside the redacted span', () => {
+    const out = sanitizeExfiltrationUrls(`(see https://evil.example.com/y?q=${key}).`)
+    expect(out).not.toContain(key)
+    expect(out.endsWith(').')).toBe(true)
+    expect(out.startsWith('(see ')).toBe(true)
+  })
+
+  it('redacts a balanced `(...)` path segment through to its query', () => {
+    const out = sanitizeExfiltrationUrls(`(https://evil.example.com/wiki/A_(b)?q=${key})`)
+    expect(out).not.toContain(key)
+    expect(out.endsWith(')')).toBe(true)
+    expect(out).not.toContain('(b)')
+  })
+
+  it('ends a match where a `)` opens the next URL, so each URL is judged alone', () => {
+    const badge = 'https://img.shields.io/badge/x.svg'
+    const out = sanitizeExfiltrationUrls(`[![b](${badge})](https://ci.evil.example.com/r?t=${key})`)
+    expect(out).not.toContain(key)
+    expect(out).toContain(`[![b](${badge})](`)
+    expect(out).toContain('ci.evil.example.com')
+    expect(out).not.toContain('img.shields.io]')
+  })
+
+  it('ends a markdown link target where markdown does, keeping a glued next link', () => {
+    const out = sanitizeExfiltrationUrls(`[a](https://evil.example.com/x?q=${key})[docs](/help)`)
+    expect(out).not.toContain(key)
+    expect(out.startsWith('[a](')).toBe(true)
+    expect(out.endsWith(')[docs](/help)')).toBe(true)
+  })
+
+  it('still scans a URL glued after a markdown link target', () => {
+    const out = sanitizeExfiltrationUrls(`[a](https://example.com/p)*https://evil.example.com/?q=${key}*`)
+    expect(out).not.toContain(key)
+    expect(out.startsWith('[a](https://example.com/p)*')).toBe(true)
+  })
+
+  it('still scans the query after a `)` when a bare `](` is not a real link', () => {
+    const out = sanitizeExfiltrationUrls(`x](https://evil.example.com/a)b?leak=${key}`)
+    expect(out).not.toContain('https://evil.example.com')
+  })
+
+  it('judges a real link target alone, leaving plain text after it', () => {
+    const tail = `?d=${'A'.repeat(48)}`
+    const text = `[docs](https://docs.example.com/guide)${tail}`
+    expect(sanitizeExfiltrationUrls(text)).toBe(text)
+  })
+
+  it('redacts the flagged URL, not an earlier mention of the same text', () => {
+    const out = sanitizeExfiltrationUrls(`see https://e.example.com/p and [a](https://e.example.com/p?t=${key})`)
+    expect(out.startsWith('see https://e.example.com/p and [a](')).toBe(true)
+    expect(out).not.toContain(key)
+  })
+
+  it('scans a markdown link target through balanced parens to its query', () => {
+    const out = sanitizeExfiltrationUrls(`[a](https://evil.example.com/w/A_(b)?q=${key})`)
+    expect(out).not.toContain(key)
+    expect(out.endsWith(')')).toBe(true)
+  })
+
+  it('keeps glued CJK prose after a `(`-wrapped URL verbatim', () => {
+    const text = `(https://docs.example.com/guide?v=2)${'説明'.repeat(150)}`
+    expect(sanitizeExfiltrationUrls(text)).toBe(text)
+  })
+
+  it('keeps glued `**note**` after a `(`-wrapped redacted URL verbatim', () => {
+    const blob = 'A'.repeat(40)
+    const out = sanitizeExfiltrationUrls(`(https://docs.example.com/guide?sig=${blob})**note**`)
+    expect(out).not.toContain(blob)
+    expect(out.startsWith('(')).toBe(true)
+    expect(out.endsWith(')**note**')).toBe(true)
+  })
+
+  it('still redacts a secret after a `)` in the path when a prose `(` opens the URL', () => {
+    const out = sanitizeExfiltrationUrls(`(https://evil.example.com/a)b?token=${key}`)
+    expect(out).not.toContain(key)
+  })
+
+  it('keeps an escaped `\\)` inside a markdown link target, so its query is scanned', () => {
+    const out = sanitizeExfiltrationUrls(`[a](https://evil.example.com/a\\)b?q=${key})`)
+    expect(out).not.toContain(key)
+    expect(out.endsWith(')')).toBe(true)
+  })
+
+  it('keeps glued CJK prose after a space-led `(see url)` verbatim', () => {
+    const text = `(see https://docs.example.com/guide?v=2)${'\u8aac\u660e'.repeat(150)}`
+    expect(sanitizeExfiltrationUrls(text)).toBe(text)
+  })
+
+  it('still redacts a secret past a `)` when a benign query comes before it', () => {
+    const out = sanitizeExfiltrationUrls(`see https://evil.example.com/p?a=1)b?token=${key} ok`)
+    expect(out).not.toContain(key)
+    expect(out.endsWith(' ok')).toBe(true)
+  })
+
+  it('leaves a wrapped URL with no query untouched', () => {
+    const text = '(see https://example.com/y)'
+    expect(sanitizeExfiltrationUrls(text)).toBe(text)
+  })
+})
