@@ -8312,8 +8312,29 @@ def _wire_model_id(provider: AcpProvider, model_name: str) -> str:
     namespace = capabilities_of(provider).model_id_namespace
     if namespace != MODEL_NAMESPACE_ACP:
         # No id on this namespace means "let the server choose", so returning to
-        # default needs a reset.
-        return "" if is_default else model_registry.to_provider_id(model_name, namespace)
+        # default needs a reset. If this backend advertises its selectable ids
+        # (Claude ACP does), prefer that exact spelling over the static registry:
+        # the registry can lag behind short aliases such as ``sonnet`` and expand
+        # them to Bedrock-style ids the adapter now rejects.
+        if is_default:
+            return ""
+        try:
+            from kiro_crew.acp.client import (
+                advertised_model_ids,
+                resolve_advertised_model_spelling,
+            )
+
+            advertised = advertised_model_ids(provider.available_models())
+        except Exception:
+            advertised = []
+        resolved = resolve_advertised_model_spelling(
+            model_name,
+            advertised,
+            namespace=namespace,
+        )
+        if resolved:
+            return resolved
+        return model_registry.to_provider_id(model_name, namespace)
     if is_default:
         # kiro DOES express Auto as a real model id — but only switch to it when
         # this session's backend actually advertised it.
