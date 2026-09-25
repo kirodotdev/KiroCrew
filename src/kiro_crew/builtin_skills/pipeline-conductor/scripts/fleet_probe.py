@@ -67,6 +67,7 @@ so no private session content crosses into the caller's context whatever keys
 the config watches. Content, when a ruling needs it, is read through the
 workspace-authorized session tools.
     BANNED pid=<pid> rule=<regex> cwd=fleet|unknown age=<secs|?>s scope=suite|paths|unknown
+       cmd=<program,flags,+withheld>
     OK <n> watched, <m> fired | load/cpu <x> (<posture>) | mem <G>G
        | banned <k> | foreign <k> | deliver init-timeout <a>, watchdog <b>
 
@@ -267,6 +268,35 @@ DEFAULT_ERR_RES = (
 #: carrying no numeric ``-n`` -- including a targeted single-file run -- do not.
 #: ``-n0`` is the repo's own documented override and is genuinely in-process, so
 #: the safest form a worker can run is also a passing one.
+#:
+#: The pytest rule matches an INVOCATION rather than a mention, and two guards are
+#: what make that distinction; each one answers a false ``BANNED`` against a run
+#: that IS capped.
+#:
+#: * The token has to be the runner's own name, optionally path-qualified
+#:   (``pytest``, ``/x/.venv/bin/pytest``, ``-m pytest``). A filename that merely
+#:   CONTAINS the word names no command, and a bare ``\bpytest\b`` cannot tell the
+#:   two apart: ``.`` and ``-`` are non-word characters, so ``pytest.log``,
+#:   ``pytest.ini``, ``.pytest_cache`` and ``pytest-cov`` all satisfy it. A worker's
+#:   test step runs the capped pytest and then greps the log it wrote, which is
+#:   exactly that shape.
+#: * The cap is read from the SAME command. One cmdline can carry a whole shell
+#:   script in a single argument, where the capped run and a bare one are different
+#:   lines, so the lookahead stops at a command separator (``;``, ``&``, ``|``, a
+#:   newline) instead of scanning the rest of the script. Letting it span the whole
+#:   script text is the opposite trade and a worse one: one line's ``-n0`` would
+#:   then excuse every uncapped run beside it.
+#:
+#: The cap's own flag must start a token too, so a target like ``test-n1.py`` cannot
+#: be read as ``-n 1`` and quietly pass an unbounded run.
+#:
+#: What the pair does NOT separate: a runner name standing alone as some other
+#: program's argument (``grep -rn pytest src``) still matches. Telling that from a
+#: launcher that really does run the runner (``poetry run pytest``, ``uv run
+#: pytest``, an unknown wrapper) needs a list of every launcher rather than a
+#: shape, and a list is what silently loses the launcher nobody added. So the
+#: residual error stays on the reporting side, like the rest of this scan, and the
+#: ``cmd=`` field on the line shows which program the match sat in.
 #: The vitest rule's pattern, bound to a name so the scan can recognise the rule
 #: it belongs to without depending on where it sits in ``DEFAULT_BANNED_RES``.
 #: The pattern SELECTS a candidate out of the joined cmdline; ``argv`` decides
@@ -274,7 +304,8 @@ DEFAULT_ERR_RES = (
 _VITEST_BANNED_RE = r"\bvitest\b\s+run\s*$"
 
 DEFAULT_BANNED_RES = (
-    r"\bpytest\b(?!.*(?:-n|--numprocesses)\s*=?\s*\d)",
+    r"(?<![\w./+=-])(?:[^\s;&|<>()]*/)?pytest(?![\w.+-])"
+    r"(?![^;&|\n]*(?<![\w./-])(?:-n|--numprocesses)[ \t]*=?[ \t]*\d)",
     _VITEST_BANNED_RE,
 )
 
@@ -447,6 +478,87 @@ def _invokes_bare_vitest_run(argv: list[str]) -> bool:
     reporting side, where a line names a pid an operator can dismiss.
     """
     return len(argv) >= 2 and argv[-1] == "run" and _basename(argv[-2]) == "vitest"
+
+
+#: Characters that END a shell command. A cmdline that carries a script holds many
+#: commands in one string, and only the one the rule matched inside is worth
+#: printing -- the run of text between two of these.
+_COMMAND_SEPARATORS = ";&|\n"
+
+#: A program name, once its directory is dropped: letters, digits and the joiners
+#: real executables use (``python3.12``, ``py.test``, ``g++``, ``run-tests``). An
+#: environment assignment in front of a command (``GITHUB_TOKEN=…  pytest``) carries
+#: ``=`` and so is not a program name by this shape, which is the point: the leading
+#: token is the one place a secret sits without looking like an option value.
+_SAFE_PROGRAM_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
+
+#: An option NAME: what is safe to echo out of a flag. Values are dropped whatever
+#: they hold, so ``--token=…`` prints as ``--token``.
+_SAFE_FLAG_RE = re.compile(r"^--?[A-Za-z][A-Za-z0-9-]*$")
+
+#: A flag whose value is entirely digits, kept WITH the value because that is the
+#: field the rule just judged: ``-n0``, ``-n=4``, ``--numprocesses=4``. Without it
+#: ``-n auto`` and ``-n0`` both print as ``-n`` on a line that says the run is
+#: unbounded, which reads as a contradiction. A digit run can hold no path, no URL
+#: and no token text; a purely numeric secret is the residual, and no test runner
+#: takes one as a flag value.
+_SAFE_NUMERIC_FLAG_RE = re.compile(r"^(?:-[A-Za-z]|--[A-Za-z][A-Za-z0-9-]*)=?\d+$")
+
+#: How many tokens of a command may be printed. A script line can be arbitrarily
+#: long and this lands in a conductor's model context one line per match.
+_MAX_CMD_TOKENS = 8
+
+
+def _redacted_command(cmd: str, hit: re.Match[str]) -> str:
+    """The command that matched, reduced to names and flags that can hold no secret.
+
+    A pid alone cannot say whether a match is a real run or a filename that reads
+    like one: answering that means opening ``ps`` by hand, and by then the process
+    is often gone. So the line carries the command -- but a command line is exactly
+    where a credential or a presigned URL rides, which is why the rest of this
+    scan derives words from the argv and never echoes it.
+
+    Both are satisfied by printing only shapes that cannot carry a secret:
+
+    * the leading token and any runner token, as a BASENAME -- the program's name
+      is what identifies the command, while its directory is the part that leaks a
+      checkout layout, and a name that is not program-shaped is withheld instead;
+    * option NAMES, with the value dropped at the ``=``, and the value kept only
+      when it is entirely digits;
+    * nothing else. Targets, option values and bare words are counted, not shown,
+      and the count is printed as ``+<n>`` so a truncated command cannot read as a
+      complete one.
+
+    The text comes from the same ``cmdline`` read the rule matched, so it cannot
+    disagree with ``rule=`` about what was seen. Splitting on whitespace means an
+    argument containing a space arrives as several tokens; that costs nothing,
+    because the pieces are judged by the same shapes and an unrecognised piece is
+    withheld like any other.
+    """
+    before = [cmd.rfind(sep, 0, hit.start()) for sep in _COMMAND_SEPARATORS]
+    after = [idx for idx in (cmd.find(sep, hit.end()) for sep in _COMMAND_SEPARATORS) if idx != -1]
+    segment = cmd[max(before) + 1 : min(after) if after else len(cmd)]
+    kept: list[str] = []
+    withheld = 0
+    for index, token in enumerate(segment.split()):
+        bare = token.strip("\"'")
+        base = bare.replace("\\", "/").rpartition("/")[2]
+        name = bare.split("=", 1)[0]
+        if len(kept) >= _MAX_CMD_TOKENS:
+            withheld += 1
+        elif base.lower() in _RUNNER_BASES or (index == 0 and _SAFE_PROGRAM_RE.match(base)):
+            kept.append(base)
+        elif _SAFE_NUMERIC_FLAG_RE.match(bare):
+            kept.append(bare)
+        elif _SAFE_FLAG_RE.match(name):
+            kept.append(name)
+        else:
+            withheld += 1
+    if withheld:
+        kept.append(f"+{withheld}")
+    # Commas, not spaces: the line is read as whitespace-separated fields, and a
+    # field that holds spaces stops being one field.
+    return ",".join(kept) or "?"
 
 
 #: An initialize-timeout tail: the session never got a live backend, so nothing
@@ -1407,9 +1519,17 @@ def _host_lines(cfg: dict[str, Any]) -> tuple[list[str], str]:
             except OSError:
                 continue
             if cmd:
-                matched = next((rx.pattern for rx in banned_res if rx.search(cmd)), None)
-                if matched is None:
+                hit = None
+                for rx in banned_res:
+                    hit = rx.search(cmd)
+                    if hit is not None:
+                        break
+                if hit is None:
                     continue
+                # The rule's own text, so a reader can see WHICH shape fired, and the
+                # match position, so the line can name the one command it fired on
+                # rather than the whole script that command sits in.
+                matched = hit.re.pattern
                 # The rule matched somewhere in the joined cmdline, which for a
                 # shell running a command string is the shell's ARGUMENT and not
                 # the program this pid is running. See ``_is_shell_command_wrapper``
@@ -1507,13 +1627,18 @@ def _host_lines(cfg: dict[str, Any]) -> tuple[list[str], str]:
                 # ``cwd=fleet``. It is the one thing derived FROM the argv rather
                 # than dropped with it, and it is three fixed words, so it carries
                 # severity without carrying content.
+                # ``cmd=`` is what makes a match judgeable without opening ``ps``:
+                # which program the rule fired on, and which of its flags. It is
+                # reduced to shapes that can hold no credential -- see
+                # ``_redacted_command`` -- so it answers "is this a run or a
+                # filename that reads like one" without echoing the argv.
                 age = (
                     _proc_age_secs(proc_root, entry.name, start_tok) if incarnation_stable else None
                 )
                 age_field = "?" if age is None else str(age)
                 lines.append(
                     f"BANNED pid={entry.name} rule={matched} cwd={cwd_class} "
-                    f"age={age_field}s scope={_run_scope(argv)}"
+                    f"age={age_field}s scope={_run_scope(argv)} cmd={_redacted_command(cmd, hit)}"
                 )
     per_cpu = None
     if hasattr(os, "getloadavg"):

@@ -828,9 +828,130 @@ def test_host_lines_reports_a_fleet_owned_unbounded_run(mod, tmp_path, monkeypat
     make_dir_link(entry / "cwd", fleet / "src")
     lines, host = mod._host_lines({"fleet_worktrees": [str(fleet)]})
     assert lines == [
-        f"BANNED pid=101 rule={mod.DEFAULT_BANNED_RES[0]} cwd=fleet age=500s scope=suite"
+        f"BANNED pid=101 rule={mod.DEFAULT_BANNED_RES[0]} cwd=fleet age=500s scope=suite "
+        f"cmd=pytest,-q"
     ]
     assert "banned 1 | foreign 0" in host
+
+
+#: A worker's test step, as the one multi-line script a single ``cmdline`` carries:
+#: a capped run, then a read of the log that run wrote. Both lines name ``pytest``
+#: and only one of them is a command.
+CAPPED_STEP = (
+    "set -euo pipefail\n"
+    'timeout 900 "$PY" -m pytest -n0 test/test_x.py -q > /wt/pytest.log 2>&1\n'
+    'grep -E "^(FAILED|ERROR)| passed|failed" /wt/pytest.log | tail -2\n'
+)
+
+
+def test_a_pytest_filename_is_not_a_pytest_command(mod, tmp_path, monkeypatch):
+    """A mention of the runner is not a run of it, in either of the two shapes.
+
+    Both quiet rows here were reported as violations by a rule that looked for the
+    word alone: ``.`` and ``-`` are non-word characters, so ``\\bpytest\\b`` holds
+    inside ``pytest.log`` and ``pytest-cov``, and the reading of a log a capped run
+    just wrote is the commonest command in a worker's test step. The cost of that
+    is entirely in the signal -- a conductor gates intake on a zero banned count,
+    so a false row withholds work while nothing is wrong, and it teaches whoever
+    reads the probe to discount the counter.
+
+    The loud rows are the reason this cannot be fixed by matching less: a bare run
+    and a run capped on a DIFFERENT line of the same script must still be told
+    apart, which is what the last row pins.
+    """
+    root = host_proc(tmp_path, monkeypatch)
+    fleet = tmp_path / "wt"
+    fleet.mkdir()
+    quiet = {
+        # The capped run itself, both spellings.
+        "201": ["python", "-m", "pytest", "-n0", "test/test_x.py", "-q"],
+        "202": ["pytest", "-n0", "test/test_x.py"],
+        # A filename that merely carries the word.
+        "203": ["grep", "-E", "^(FAILED|ERROR)| passed|failed", "/wt/pytest.log"],
+        "204": ["tail", "-2", "/wt/pytest.log"],
+        "205": ["pip", "install", "pytest-cov"],
+        # The whole step: a capped run and a log read in one argument.
+        "206": ["bash", "-c", CAPPED_STEP],
+    }
+    loud = {
+        # A run whose worker count nobody chose.
+        "207": ["pytest", "test/test_x.py"],
+        # The same step with an UNCAPPED run beside it, in both orders. A cap
+        # belongs to the command that carries it and can excuse no other, which is
+        # what a lookahead widened to the whole script text would break: scanning
+        # forward past the command's own end reaches the cap on the line BELOW,
+        # and scanning backward would reach the one above.
+        "208": ["bash", "-c", "pytest -q test/test_y.py\n" + CAPPED_STEP],
+        "209": ["bash", "-c", CAPPED_STEP + "pytest -q test/test_y.py\n"],
+    }
+    for pid, argv in {**quiet, **loud}.items():
+        entry = proc_pid(root, pid, argv, starttime=50_000)
+        make_dir_link(entry / "cwd", fleet)
+    lines, host = mod._host_lines({"fleet_worktrees": [str(fleet)]})
+    reported = {line.split("pid=")[1].split()[0] for line in lines}
+    assert reported == set(loud), lines
+    assert f"banned {len(loud)} | foreign 0" in host
+
+
+def test_the_banned_line_names_the_command_without_echoing_its_arguments(
+    mod, tmp_path, monkeypatch
+):
+    """``cmd=`` has to make a match judgeable, and carry nothing that can be secret.
+
+    A pid alone cannot separate a real uncapped run from a command that only names
+    one, and by the time anybody opens ``ps`` the process is usually gone. The
+    field answers that -- but a command line is where a credential and a checkout
+    layout ride, so only shapes that cannot hold either are printed: program and
+    runner NAMES, option names with the value dropped, a digits-only value kept
+    because that is the cap the rule just judged, and a count for the rest.
+    """
+    root = host_proc(tmp_path, monkeypatch)
+    fleet = tmp_path / "wt"
+    fleet.mkdir()
+    cases = {
+        # A path-qualified interpreter, a secret as an option VALUE, a private path
+        # glued to an option with `=`, and a target.
+        "301": [
+            "/wt/private-checkout/.venv/bin/python",
+            "-m",
+            "pytest",
+            "--token",
+            "s3cr3t-value",
+            "--cov=/wt/private-checkout/src",
+            "test/test_x.py",
+        ],
+        # An environment assignment in front of the command: the one place a secret
+        # sits in the LEADING token, where a program name would otherwise print.
+        "302": ["GITHUB_TOKEN=ghp-not-a-real-secret", "pytest", "test/test_x.py"],
+        # A numeric value belongs to the decision and stays; `-n auto` is the cap
+        # flag WITHOUT a number, so the flag prints and the word does not.
+        "303": ["pytest", "--maxfail=2", "-n", "auto", "test/test_x.py"],
+        # More flags than the field prints: the remainder is counted, never cut
+        # silently.
+        "304": ["pytest", *(f"-{letter}" for letter in "abcdefghij")],
+    }
+    for pid, argv in cases.items():
+        entry = proc_pid(root, pid, argv, starttime=50_000)
+        make_dir_link(entry / "cwd", fleet)
+    lines, _host = mod._host_lines({"fleet_worktrees": [str(fleet)]})
+    line = {ln.split("pid=")[1].split()[0]: ln for ln in lines}
+    assert set(line) == set(cases), lines
+
+    assert "cmd=python,-m,pytest,--token,--cov,+2" in line["301"]
+    assert "cmd=pytest,+2" in line["302"]
+    assert "cmd=pytest,--maxfail=2,-n,+2" in line["303"]
+    assert "cmd=pytest,-a,-b,-c,-d,-e,-f,-g,+3" in line["304"]
+
+    whole = "\n".join(lines)
+    for secret in (
+        "s3cr3t-value",
+        "ghp-not-a-real-secret",
+        "private-checkout",
+        ".venv",
+        "test/test_x.py",
+        "auto",
+    ):
+        assert secret not in whole, secret
 
 
 def test_host_lines_counts_someone_elses_run_without_printing_it(mod, tmp_path, monkeypatch):

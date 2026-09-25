@@ -961,7 +961,7 @@ carry **metadata only** — the probe never emits transcript text:
 
 ```
 🔔 <key>  <age>s <TAG> i=<index> d=<digest12>
-BANNED pid=<pid> rule=<regex> cwd=fleet|unknown age=<secs|?>s scope=suite|paths|unknown
+BANNED pid=<pid> rule=<regex> cwd=fleet|unknown age=<secs|?>s scope=suite|paths|unknown cmd=<program,flags,+withheld>
 OK <n> watched, <m> fired | load/cpu <x> (ok|hot) | mem <n>G | banned <n> | foreign <n> | deliver init-timeout <a>, watchdog <b>
 ```
 
@@ -969,6 +969,12 @@ A tail with no protocol tag reads as `-` and never fires on its own, and a
 protocol word inside a tool card is quoted text rather than a report — so a worker
 whose only "status" is in a tool call is silent as far as the probe is concerned,
 and ages into `IDLE`.
+
+`cmd=` on a `BANNED` line is the matched command reduced to what cannot hold a
+secret: the program name, the runner name, option names with their values dropped
+(a digits-only value is kept, since that is the cap the rule judged), and `+<n>`
+for the arguments withheld. Read it before stopping anyone — it is what separates
+a real uncapped run from a command that merely names one, and no argv is echoed.
 
 The handled set keeps the last dispositioned PAYLOAD report as `settled`, so a
 later `IDLE` or `NOPROGRESS` mark on the same session cannot resurrect a ruling
