@@ -788,6 +788,133 @@ class TestMemberChildExecutionContext:
         assert read_session_execution(slot_history_key(child)).member_id == "peer"
         assert read_session_execution(slot_history_key(caller)) == before
 
+    def _template_resolver(self, monkeypatch, name, kiro_agent):
+        """Resolve *name* as a TEMPLATE on the global store; every other name as today."""
+        from pathlib import Path
+
+        from kiro_crew.config.sections import ResolvedBindings
+
+        member_resolve = sc.resolve_agent_bindings
+
+        def resolve(_cfg, requested, *args, **kwargs):
+            if requested != name:
+                return member_resolve(_cfg, requested, *args, **kwargs)
+            return ResolvedBindings(
+                workspace_dir=Path("workspace"),
+                memory_store_name="default",
+                effective_memory_config={},
+                kiro_agent=kiro_agent,
+                selection_kind="template",
+                resolved_alias=name,
+            )
+
+        monkeypatch.setattr(sc, "resolve_agent_bindings", resolve)
+
+    def test_explicit_template_child_keeps_the_store_and_takes_the_template_persona(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        # A member-bound caller names a TEMPLATE. Memory identity and persona are
+        # two fields of one record and the arm splits them: the store, and the
+        # member id bound to it, stay the caller's -- so the private-binding
+        # authorization's same-store reasoning keeps holding and nothing of the
+        # member's work moves onto the template's global store -- while the
+        # selection namespace becomes the template's, which is what
+        # ContextBuilder reads to withhold the member operating protocol from a
+        # delegate that was picked to do the work itself.
+        from kiro_crew.execution_context import read_session_execution
+
+        state, caller, execution = self._prepare(tmp_path, monkeypatch)
+        self._template_resolver(monkeypatch, "kirocrew-worker", "worker-template")
+
+        result = asyncio.run(
+            sc.create_session(
+                state, caller_session_key=slot_history_key(caller), agent="kirocrew-worker"
+            )
+        )
+        child = state.get_slot(result["target"])
+        actual = read_session_execution(slot_history_key(child), required=True)
+        assert actual.selection_kind == "template"
+        assert actual.template_id == "worker-template"
+        assert actual.selection_name == "kirocrew-worker"
+        assert actual.member_id == execution.member_id
+        assert actual.store == execution.store
+        assert actual.memory_mode == getattr(caller, "memory_mode", "persistent")
+        assert state.conversation_log.get_metadata(slot_history_key(child))["agent"] == (
+            "kirocrew-worker"
+        )
+
+    def test_explicit_template_child_of_an_unbound_caller_names_the_template_it_selected(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        # Same arm, member-less caller: the selection namespace names the template
+        # the caller picked, not the caller's own template, and the store stays
+        # global with no member identity minted.
+        from kiro_crew.execution_context import (
+            ExecutionContext,
+            MemoryStoreRef,
+            bind_session_execution,
+            read_session_execution,
+        )
+
+        state, caller, _execution = self._prepare(tmp_path, monkeypatch, member=False)
+        bind_session_execution(
+            slot_history_key(caller),
+            ExecutionContext(
+                None, MemoryStoreRef("default"), "template", "conductor-template", "persistent"
+            ),
+        )
+        self._template_resolver(monkeypatch, "kirocrew-worker", "worker-template")
+
+        result = asyncio.run(
+            sc.create_session(
+                state, caller_session_key=slot_history_key(caller), agent="kirocrew-worker"
+            )
+        )
+        child = state.get_slot(result["target"])
+        actual = read_session_execution(slot_history_key(child), required=True)
+        assert actual.selection_kind == "template"
+        assert actual.template_id == "worker-template"
+        assert actual.selection_name == "kirocrew-worker"
+        assert actual.member_id is None
+        assert actual.store == MemoryStoreRef("default")
+
+    def test_explicit_template_child_of_a_member_with_no_persisted_id_keeps_its_selection(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        # Same arm, a member caller whose record predates persisted identity:
+        # `member_id` is None and the member is named by `selection_kind ==
+        # "member"` plus `selection_name` ALONE. The template split would rewrite
+        # exactly those two fields, leaving a record ContextBuilder attributes to
+        # no member -- no identity, and no `[PERMANENT RULES]`. Such a caller's
+        # child keeps the selection and takes only the template.
+        from kiro_crew.execution_context import (
+            ExecutionContext,
+            MemoryStoreRef,
+            bind_session_execution,
+            read_session_execution,
+        )
+
+        state, caller, _execution = self._prepare(tmp_path, monkeypatch, member=False)
+        legacy = ExecutionContext(
+            None, MemoryStoreRef("default"), "member", "radar-template", selection_name="radar"
+        )
+        bind_session_execution(slot_history_key(caller), legacy)
+        self._template_resolver(monkeypatch, "kirocrew-worker", "worker-template")
+
+        result = asyncio.run(
+            sc.create_session(
+                state, caller_session_key=slot_history_key(caller), agent="kirocrew-worker"
+            )
+        )
+        child = state.get_slot(result["target"])
+        actual = read_session_execution(slot_history_key(child), required=True)
+        assert actual.selection_kind == "member"
+        assert actual.selection_name == "radar"
+        assert actual.template_id == "worker-template"
+        assert actual.member_id is None
+        assert actual.store == legacy.store
+        assert actual.memory_mode == getattr(caller, "memory_mode", "persistent")
+
     def test_malformed_caller_refuses_without_publishing_child(
         self, tmp_path, monkeypatch, _fresh_create_budget
     ):
@@ -1208,6 +1335,47 @@ class TestPrivateStoreCallerIsolation:
         )
         child = state.get_slot(result["target"])
         assert read_session_execution(slot_history_key(child)).member_id == "radar"
+
+    def test_a_member_still_creates_a_same_store_template_child(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        # The explicit-TEMPLATE selection reaches the same admission as the
+        # inherited and the explicit-member routes: the child is on the caller's
+        # OWN store with the caller's member id, so the own-store agreement admits
+        # a fenced member caller exactly as it does for its same-store worker. Only
+        # the selection namespace differs.
+        from pathlib import Path
+
+        from kiro_crew.config.sections import ResolvedBindings
+        from kiro_crew.execution_context import read_session_execution
+
+        state, cfg = self._prepare(tmp_path, monkeypatch)
+        caller, execution = self._member_caller(state, cfg)
+        member_resolve = sc.resolve_agent_bindings
+
+        def resolve(_cfg, name, *args, **kwargs):
+            if name != "kirocrew-worker":
+                return member_resolve(_cfg, name, *args, **kwargs)
+            return ResolvedBindings(
+                workspace_dir=Path("workspace"),
+                memory_store_name="default",
+                effective_memory_config={},
+                kiro_agent="worker-template",
+                selection_kind="template",
+                resolved_alias=name,
+            )
+
+        monkeypatch.setattr(sc, "resolve_agent_bindings", resolve)
+        result = asyncio.run(
+            sc.create_session(
+                state, caller_session_key=slot_history_key(caller), agent="kirocrew-worker"
+            )
+        )
+        child = state.get_slot(result["target"])
+        actual = read_session_execution(slot_history_key(child))
+        assert actual.store == execution.store
+        assert actual.member_id == execution.member_id
+        assert actual.selection_kind == "template"
 
     def test_a_member_still_creates_a_same_store_worker(
         self, tmp_path, monkeypatch, _fresh_create_budget

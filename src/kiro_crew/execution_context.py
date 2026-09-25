@@ -286,6 +286,23 @@ class ExecutionContext:
     def with_mode(self, mode: str) -> ExecutionContext:
         return replace(self, memory_mode=stricter_memory_mode(self.memory_mode, mode))
 
+    def with_template(self, template_id: str, selection_name: str) -> ExecutionContext:
+        """Run this record's store under an explicitly selected TEMPLATE.
+
+        The store, the identity bound to it and the memory mode stay; the selection
+        namespace becomes the template's. A member with no persisted ``member_id``
+        is named by ``selection_kind == "member"`` and ``selection_name`` alone, so
+        this rewrite leaves such a record attributed to no member -- the shape the
+        spawn gate mints for that caller. A caller that must keep that member
+        instead (the ``session_create`` arm) does not call this.
+        """
+        return replace(
+            self,
+            selection_kind="template",
+            template_id=template_id,
+            selection_name=selection_name,
+        )
+
 
 @overload
 def execution_from_record(

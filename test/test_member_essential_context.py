@@ -386,6 +386,282 @@ def test_execution_namespace_controls_member_prompt_identity(env, entrypoint, se
     env.forbidden.assert_not_called()
 
 
+def _delegate_expectations(prompt: str, store: str) -> None:
+    """The subset a template-selected delegate on a member's store receives.
+
+    Identity, `[PERMANENT RULES]`, the store's anchors and the selected template's
+    own instructions stay; the desk protocol and the briefing do not, in any of
+    their spellings (the full layer, the platform placeholder, the scope
+    placeholder), and neither does the rules header's reference to a protocol
+    that is not there.
+    """
+    assert "You are writer." in prompt
+    assert "A careful bilingual writer" in prompt
+    assert "[PERMANENT RULES" in prompt
+    assert "Do not publish drafts." in prompt
+    assert "Preference anchor" in prompt
+    assert "Execution task instructions." in prompt
+    assert "[HOW YOU WORK]" not in prompt
+    assert "Front desk vs workshop" not in prompt
+    assert "[CURRENT ASSIGNMENT" not in prompt
+    assert "working protocol above" not in prompt
+    assert prompt.count("[V2 ESSENTIAL CONTEXT") == 1
+    assert store in prompt or "memory_recall" in prompt
+
+
+def _template_delegate(config):
+    """The execution both delegate paths mint for a member caller naming a template.
+
+    `session_create(agent=<template>)` and the subagent admission gate agree on it:
+    the member's store and id stay, the selection namespace is the template's.
+    """
+    from dataclasses import replace
+
+    from kiro_crew.execution_context import resolve_member_execution
+
+    return replace(
+        resolve_member_execution(config, "writer"),
+        selection_kind="template",
+        selection_name="task-template",
+        template_id="task-template",
+    )
+
+
+@pytest.mark.parametrize(
+    "fresh, options",
+    [
+        (True, {}),
+        (False, {}),
+        (False, {"needs_reinjection": True}),
+        (True, {"resumed": True}),
+        (True, {"minimal_context": True}),
+    ],
+)
+def test_template_selected_delegate_keeps_identity_and_rules_but_not_the_desk_protocol(
+    env, fresh, options
+):
+    """The member's store under a selected template is the member's DELEGATE.
+
+    It reads and writes the member's memory, so it is that member and runs under
+    that member's rules; it was picked to do the work, so the desk protocol whose
+    second item hands substantial work to a separate session -- and the working
+    briefing that protocol maintains -- are withheld on every lifecycle the
+    envelope is rebuilt for.
+    """
+    delegate = _template_delegate(KiroCrewConfig.load())
+    prompt, _ = env.builder.build_message(
+        "Do the task",
+        fresh,
+        "dashboard:delegate",
+        execution_context=delegate,
+        agent="task-template",
+        project=str(env.project),
+        **options,
+    )
+    _delegate_expectations(prompt, env.store)
+    assert delegate.store.store_id == env.store
+    env.forbidden.assert_not_called()
+
+
+def test_template_selected_delegate_session_start_withholds_the_desk_protocol(env):
+    prompt = env.builder.build_session_context(
+        execution_context=_template_delegate(KiroCrewConfig.load()),
+        agent="task-template",
+        project=str(env.project),
+    )
+    _delegate_expectations(prompt, env.store)
+    env.forbidden.assert_not_called()
+
+
+@pytest.mark.parametrize("entrypoint", ["message", "session"])
+def test_member_selected_by_name_still_gets_its_whole_desk(env, entrypoint):
+    """The counterpart: a MEMBER selection keeps all four layers, protocol included."""
+    from kiro_crew.execution_context import resolve_member_execution
+
+    execution = resolve_member_execution(KiroCrewConfig.load(), "writer")
+    options = dict(execution_context=execution, project=str(env.project))
+    if entrypoint == "message":
+        prompt, _ = env.builder.build_message("Continue", True, **options)
+    else:
+        prompt = env.builder.build_session_context(**options)
+    assert "You are writer." in prompt
+    assert "[HOW YOU WORK]" in prompt
+    assert "Front desk vs workshop" in prompt
+    assert "[PERMANENT RULES" in prompt
+    assert "working protocol above included" in prompt
+    assert "[CURRENT ASSIGNMENT" in prompt
+    env.forbidden.assert_not_called()
+
+
+def test_a_delegate_with_memory_withheld_gets_no_layer_four_placeholder_either(env):
+    """The scope notice explains a member's missing layer 4; a delegate has none.
+
+    With the memory group withheld, the member selected by name is told why its
+    briefing is missing and not to fill the gap; the delegate on the same store
+    keeps identity and rules and gets no `[CURRENT ASSIGNMENT` line of any kind.
+    """
+    from kiro_crew.context import CONTEXT_GROUP_PROJECT
+    from kiro_crew.execution_context import resolve_member_execution
+
+    config = KiroCrewConfig.load()
+    options = dict(project=str(env.project), context_groups=frozenset({CONTEXT_GROUP_PROJECT}))
+    member_prompt, _ = env.builder.build_message(
+        "Continue", True, execution_context=resolve_member_execution(config, "writer"), **options
+    )
+    assert "withheld by this turn's memory/privacy scope]" in member_prompt
+    delegate_prompt, _ = env.builder.build_message(
+        "Do the task",
+        True,
+        execution_context=_template_delegate(config),
+        agent="task-template",
+        **options,
+    )
+    assert "You are writer." in delegate_prompt
+    assert "[PERMANENT RULES" in delegate_prompt
+    assert "[CURRENT ASSIGNMENT" not in delegate_prompt
+    assert "[HOW YOU WORK]" not in delegate_prompt
+    env.forbidden.assert_not_called()
+
+
+def test_spawn_agent_delegate_of_a_member_is_the_same_delegate(env):
+    """`spawn_run(agent=<template>)` from a member parent mints the same record
+    shape the session arm does, so the sub-agent's prompt withholds the same
+    layers -- one predicate, both delegate paths."""
+    from unittest.mock import MagicMock
+
+    from kiro_crew.execution_context import resolve_member_execution
+    from kiro_crew.subagent import SubagentManager
+
+    config = KiroCrewConfig.load()
+    parent = resolve_member_execution(config, "writer")
+    manager = SubagentManager(sessions=MagicMock(), ctx_builder=MagicMock())
+    admitted = manager._admission.resolve_spawn_execution(
+        parent_session_key="dashboard:writer", agent="task-template", _record=parent
+    )
+    assert admitted.selection_kind == "template"
+    assert admitted.member_id == parent.member_id
+    assert admitted.store == parent.store
+    prompt, _ = env.builder.build_message(
+        "Do the task",
+        True,
+        "subagent:delegate",
+        execution_context=admitted,
+        agent="task-template",
+        project=str(env.project),
+    )
+    _delegate_expectations(prompt, env.store)
+    env.forbidden.assert_not_called()
+
+
+def test_a_member_with_no_persisted_id_keeps_its_rules_when_session_create_names_a_template(
+    env,
+):
+    """The record shape the split cannot express, on the `session_create` arm.
+
+    A member whose record predates persisted identity is named by `selection_kind
+    == "member"` and `selection_name` alone. Rewriting those to the template's
+    namespace would leave a record ContextBuilder attributes to no member -- no
+    identity and, the part that matters, no `[PERMANENT RULES]`. The arm keeps the
+    selection and changes only the template (the record
+    `test_explicit_template_child_of_a_member_with_no_persisted_id_keeps_its_selection`
+    pins through the arm itself), so the child stays that member with its rules
+    and, the limit this states, its whole desk.
+    """
+    from dataclasses import replace
+
+    from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
+
+    config = KiroCrewConfig.load()
+    config.agents["scribe"] = KiroCrewAgentConfig(
+        kiro_agent="critic-runtime", description="A scribe with no persisted identity"
+    )
+    config.save()
+    write_member_rules(slug_for_name("scribe"), member="scribe", text="Scribe: keep every draft.")
+    legacy = ExecutionContext(
+        None, MemoryStoreRef("default"), "member", "critic-runtime", selection_name="scribe"
+    )
+    child = replace(legacy, template_id="task-template")
+    prompt, _ = env.builder.build_message(
+        "Do the task",
+        True,
+        "session_create:delegate",
+        execution_context=child,
+        agent="task-template",
+        project=str(env.project),
+    )
+    assert "You are scribe." in prompt
+    assert "A scribe with no persisted identity" in prompt
+    assert "[PERMANENT RULES" in prompt
+    assert "Scribe: keep every draft." in prompt
+    assert "Execution task instructions." in prompt
+    assert "[HOW YOU WORK]" in prompt
+    env.forbidden.assert_not_called()
+
+
+def test_a_member_with_no_persisted_id_spawns_a_plain_template_child(env):
+    """The spawn gate's `agent=` child of such a member is a template run.
+
+    `with_template` flips the selection namespace for every record, and a member
+    with no persisted id has no identity field to survive that, so its
+    `spawn_run(agent=...)` child is a plain template run on the parent's store
+    with no member section -- neither the desk protocol nor the rules (the record
+    cannot say "this member, under that template"; a record-shape change for the
+    memory model). A continuation of
+    that child is a template turn: `run.py` takes the kind from the record, the
+    member refresh is skipped, the spawn template is kept, and no member is
+    looked up, so a renamed alias is not an error.
+    """
+    from unittest.mock import MagicMock
+
+    from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
+    from kiro_crew.subagent import SubagentManager
+
+    config = KiroCrewConfig.load()
+    config.agents["scribe"] = KiroCrewAgentConfig(
+        kiro_agent="critic-runtime", description="A scribe with no persisted identity"
+    )
+    config.save()
+    write_member_rules(slug_for_name("scribe"), member="scribe", text="Scribe: keep every draft.")
+    legacy = ExecutionContext(
+        None, MemoryStoreRef("default"), "member", "critic-runtime", selection_name="scribe"
+    )
+    manager = SubagentManager(sessions=MagicMock(), ctx_builder=MagicMock())
+    child = manager._admission.resolve_spawn_execution(
+        parent_session_key="dashboard:scribe", agent="task-template", _record=legacy
+    )
+    assert (child.member_id, child.selection_kind, child.selection_name) == (
+        None,
+        "template",
+        "task-template",
+    )
+    assert child.template_id == "task-template"
+    assert child.store == legacy.store
+    prompt, _ = env.builder.build_message(
+        "Do the task",
+        True,
+        "subagent:delegate",
+        execution_context=child,
+        agent="task-template",
+        project=str(env.project),
+    )
+    assert "Execution task instructions." in prompt
+    assert "You are scribe." not in prompt
+    assert "[PERMANENT RULES" not in prompt
+    assert "[HOW YOU WORK]" not in prompt
+    continued = manager._admission.resolve_spawn_execution(
+        conversation_key="subagent:child", _record=child
+    )
+    assert continued.template_id == "task-template"
+    assert continued == child
+    config.agents["scribe-renamed"] = config.agents.pop("scribe")
+    config.save()
+    renamed = manager._admission.resolve_spawn_execution(
+        conversation_key="subagent:child", _record=child
+    )
+    assert renamed == child
+    env.forbidden.assert_not_called()
+
+
 @pytest.mark.parametrize("other_v2", [False, True])
 def test_captured_member_id_wins_over_another_members_alias(env, other_v2):
     from kiro_crew.execution_context import resolve_member_execution

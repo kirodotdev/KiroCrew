@@ -1244,7 +1244,23 @@ complete snapshot is submitted only when the conversation needs it.
 bound custom-template persona on fresh, warm, resumed, post-compaction and
 minimal turns, including delegated and cron turns with no DM member argument.
 An execution-template override supplies task instructions; it does not replace
-the memory owner's persona. The generic product prompt retains its existing
+the memory owner's persona. The member OPERATING protocol and working briefing
+are the one exception, and they follow the selection rather than the store: an
+execution whose record carries the owner's `member_id` and store with
+`selection_kind == "template"` — the shape `session_create(agent=…)` and
+`spawn_run(agent=…)` mint for a member caller naming a template — is the owner's
+delegate, and its member section is identity and permanent rules only. The desk
+protocol, whose second item hands substantial work to a separate session, and the
+briefing that protocol maintains are withheld with no placeholder, so a delegate
+picked to do the work is not told to hand it on again. A member selected by name
+receives the whole section, and so does the `session_create` child of a member whose
+record carries no persisted `member_id`: that member is named by `selection_kind
+== "member"` and `selection_name` alone, and no record field can carry "this
+member, under that template", so that arm keeps its selection and changes only the
+template, because a record that does not name the member would lose its rules along
+with its persona. The spawn gate's `spawn_run(agent=…)` child of such a member is a
+plain template run on the parent's store — `ExecutionContext.with_template` flips
+the namespace for every record — and receives no member section at all. The generic product prompt retains its existing
 provider/session-start path, including when a member's fork inherits it. The
 loader recognizes the exact current `file://` URI selected by `_prompt_path()`,
 not a template name or file basename. Package installs outside the user home,

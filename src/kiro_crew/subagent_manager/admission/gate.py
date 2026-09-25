@@ -139,9 +139,16 @@ class _GateMixin(ManagerComponent):
             )
         execution = execution.with_mode(_memory_mode)
         if agent and not conversation_key:
-            execution = replace(execution, template_id=agent)
             if not crew and not target_member:
-                execution = replace(execution, selection_kind="template", selection_name=agent)
+                # The delegate split: the parent's store and identity, the selected
+                # template's namespace. A member with no persisted id has no
+                # identity field, so its child is a plain template run on the
+                # parent's store (the `session_create` arm keeps that member's
+                # selection instead; the record cannot say "this member, under
+                # that template" on either path).
+                execution = execution.with_template(agent, agent)
+            else:
+                execution = replace(execution, template_id=agent)
         if execution.app and app and execution.app != app:
             raise ValueError("subagent app ownership does not match its parent")
         app = execution.app or app

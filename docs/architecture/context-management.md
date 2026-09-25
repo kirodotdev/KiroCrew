@@ -428,6 +428,27 @@ The exception: layer 3's own header claims precedence over the whole section,
 protocol included, so the user's safety boundary is never formally outranked by
 product prose.
 
+Layers 2 and 4 describe how the member runs its own desk, and only a member
+selected BY NAME gets them. When the member's store runs under an explicitly
+selected **template** — the execution record carries the member's `member_id` and
+store with `selection_kind == "template"`, the shape `session_create(agent=…)`
+and `spawn_run(agent=…)` both mint for a member caller — the session is that
+member's *delegate*, sent to do the work: `_template_selected_on_member_store`
+is the one predicate, every builder call site passes its verdict, and the section
+is layers 1 and 3 only. The delegate keeps the member's identity because the
+memory it reads and writes is that member's, and keeps `[PERMANENT RULES]`
+because the user's bounds on a member follow its memory, not its template. It is
+not handed the desk protocol — whose second item hands substantial work to a
+separate session, the loop a delegate must not enter — nor the briefing that
+protocol maintains, and no placeholder stands in for either. A member whose record
+carries no persisted `member_id` is never a delegate in this sense: it is named by
+`selection_kind == "member"` and `selection_name` alone, and no record field can
+carry "this member, under that template". The `session_create` arm keeps that
+selection and changes only the template, so its child keeps all four layers —
+losing the member would lose layer 3 with layer 1 — while the spawn gate's
+`spawn_run(agent=…)` child of such a member is a plain template run on the parent's
+store with no member section.
+
 Two failure behaviours are deliberate and opposite. A **missing** rules file reads
 as `""` (the normal unbounded-by-choice state). An **existing but unreadable** one
 raises `MemberRulesUnreadable` and **aborts the turn** — a member the user bounded
@@ -478,7 +499,10 @@ new session's agent as `agent.strip() or caller_slot.agent` — an omitted `agen
 makes the child inherit the **caller's** agent, so a session created from a
 conductor is born a conductor, with no file-writing tools and unable to do the
 work. Pass `agent="kirocrew-worker"` (or the intended implementer) explicitly, and
-a self-contained brief with `session_send`.
+a self-contained brief with `session_send`. For a member-bound caller that explicit
+template selects the child's persona, not its memory: the child keeps the caller's
+store and member identity and takes `selection_kind == "template"`, which is what
+makes it the member's delegate of §5 — identity and rules, no desk protocol.
 
 ## 6. Crew-member private files: implemented vs planned
 

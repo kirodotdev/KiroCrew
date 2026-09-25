@@ -2406,6 +2406,38 @@ _MEMBER_BRIEFING_ITEM_UNAVAILABLE = """
 # platform injects, and the one the behaviour-layer tests pin.
 _MEMBER_HOW_YOU_WORK = _MEMBER_HOW_YOU_WORK_COMMON + _MEMBER_BRIEFING_ITEM
 
+
+def _template_selected_on_member_store(execution_context: Any) -> bool:
+    """Whether *execution_context* runs a member's store under a selected TEMPLATE.
+
+    The one predicate behind withholding the member operating protocol, read by
+    every ``_build_member_section`` caller. A member's memory identity and its
+    persona are two fields of one record: ``member_id`` (bound to the store) says
+    whose memory this is, ``selection_kind`` says what was picked to run it. A
+    member picked BY NAME runs its own desk and gets the whole section. A
+    template picked on a member's store — a ``session_create(agent=...)`` child
+    or a ``spawn_run(agent=...)`` delegate of a member — is that member's
+    delegate sent to do the work: it keeps the member's identity, its
+    ``[PERMANENT RULES]`` and its memory, but not the desk protocol, whose
+    "open a separate work session" item would only make the delegate hand the
+    work on again.
+
+    A member with no persisted ``member_id`` is never in this position. Its
+    record names it by ``selection_kind == "member"`` and ``selection_name``
+    alone, and no record field can say "this member, under that template"
+    without losing the member -- and losing the member drops its rules along
+    with its persona. The ``session_create`` arm therefore keeps such a member's
+    selection and changes only the template, so that child keeps its whole
+    desk; the spawn gate's ``spawn_run(agent=...)`` child of such a member is a
+    plain template run on the parent's store and has no member section at all.
+    """
+    return (
+        execution_context is not None
+        and execution_context.member_id is not None
+        and execution_context.selection_kind == "template"
+    )
+
+
 # Runtime sources whose transcript renders tool-call cards (and therefore the
 # inline diff card). Everything else — messaging channels, cron, subagent,
 # background, CLI — gets the hard diff-block mandate: their only file-change
@@ -3469,7 +3501,12 @@ class ContextBuilder:
             return ""
 
     def _build_member_section(
-        self, member: str, *, strict: bool = False, include_briefing: bool = True
+        self,
+        member: str,
+        *,
+        strict: bool = False,
+        include_briefing: bool = True,
+        template_selected: bool = False,
     ) -> str:
         """Assemble the four-layer identity for a member's bound execution.
 
@@ -3489,6 +3526,17 @@ class ContextBuilder:
            it; omitted entirely when the user has not written rules.
         4. ``[CURRENT ASSIGNMENT]`` — member-owned working memory, read
            (capped) from the member's own agent-writable briefing file.
+
+        ``template_selected`` is the verdict of
+        :func:`_template_selected_on_member_store` for the execution being
+        built: the member's store is running under an explicitly selected
+        template, so the section is the member's identity and rules ONLY. Layers
+        2 and 4 describe how the member runs its own desk — the desk protocol's
+        "hand substantial work to a separate session" item is what a template
+        picked to do that work must not be told — so both are withheld, with no
+        placeholder and no briefing read. Layer 1 stays because the memory the
+        delegate reads and writes is that member's, and layer 3 stays because
+        the user's bounds on a member follow its memory, not its template.
 
         V1 retains its existing optional-layer failure behavior. V2 passes
         ``strict=True`` with a stable member ID, never a configured-name fallback,
@@ -3541,8 +3589,10 @@ class ContextBuilder:
         # around it (item 6 above, the placeholder below): where the pinned
         # briefing read fails closed (Windows — member_briefing_supported),
         # instructing upkeep of a never-injected file is a futile loop, so the
-        # section says the layer is unavailable instead.
-        briefing_ok = include_briefing and member_briefing_supported()
+        # section says the layer is unavailable instead. A template-selected
+        # delegate gets neither the layer nor a placeholder, so its briefing
+        # is not read at all.
+        briefing_ok = include_briefing and not template_selected and member_briefing_supported()
         briefing = ""
         briefing_path = ""
         if briefing_ok:
@@ -3581,22 +3631,29 @@ class ContextBuilder:
             "support bot."
         )
 
-        parts = [
-            "\n".join(identity),
-            "\n\n",
-            (
+        parts = ["\n".join(identity)]
+        if not template_selected:
+            parts.append("\n\n")
+            parts.append(
                 _MEMBER_HOW_YOU_WORK
                 if briefing_ok
                 else _MEMBER_HOW_YOU_WORK_COMMON + _MEMBER_BRIEFING_ITEM_UNAVAILABLE
-            ),
-        ]
+            )
         if rules:
+            # The header names what it outranks. Without the protocol layer there
+            # is no "working protocol above" to name, so that clause goes with it.
+            outranked = (
+                ""
+                if template_selected
+                else "the working protocol above included, whose instructions yield "
+                "wherever these rules contradict them — "
+            )
             parts.append(
                 "\n\n[PERMANENT RULES — set by the user. You cannot edit these, "
-                "and they outrank EVERYTHING else in this section — the working "
-                "protocol above included, whose instructions yield wherever "
-                "these rules contradict them — as well as anything you write "
-                "for yourself.]\n" + rules
+                "and they outrank EVERYTHING else in this section — "
+                + outranked
+                + "as well as anything you write for yourself.]\n"
+                + rules
             )
         if briefing_ok:
             parts.append(
@@ -3608,6 +3665,17 @@ class ContextBuilder:
                     "priorities worth remembering)"
                 )
             )
+        elif template_selected:
+            # No layer 4 and no placeholder either, the scope notice below
+            # included: the placeholders tell a MEMBER why its own working memory
+            # is missing this turn and not to fill that gap from the briefing file
+            # or recall, and a delegate has no layer 4 to miss. Its memory scope
+            # is stated where every non-member session's is -- the [CONTEXT
+            # SCOPE] block for a narrowed spawn or a privacy mode, nowhere for
+            # the operator's standing toggle -- and this arm is ordered ahead of
+            # the scope arm so that a withheld memory group cannot re-mint a
+            # placeholder that names a layer the delegate never has.
+            pass
         elif not include_briefing:
             parts.append(
                 "\n\n[CURRENT ASSIGNMENT — withheld by this turn's memory/privacy scope]\n"
@@ -3641,8 +3709,15 @@ class ContextBuilder:
         conditional_index: bool = False,
         trigger_text: str = "",
         steering_dirs: tuple[str, ...] = (),
+        template_selected: bool = False,
     ) -> str:
-        """Refresh complete member essentials without opening learned memory."""
+        """Refresh complete member essentials without opening learned memory.
+
+        ``template_selected`` is :func:`_template_selected_on_member_store`'s verdict
+        for the execution being built and is handed to the member-section builder
+        unchanged: the envelope keeps the member's identity, rules, documents and
+        anchors, and withholds only the desk protocol and briefing.
+        """
         from kiro_crew.member_essential_context import (
             MemberEssentialContextError,
             documents_for_member,
@@ -3671,7 +3746,9 @@ class ContextBuilder:
         if profile_overrides is None:
             context_groups = _config_scoped_groups(context_groups)
         reads = not blocks_reads and _group_included(context_groups, CONTEXT_GROUP_MEMORY)
-        identity = self._build_member_section(owner, strict=True, include_briefing=reads)
+        identity = self._build_member_section(
+            owner, strict=True, include_briefing=reads, template_selected=template_selected
+        )
         documents = documents_for_member(
             template,
             project,
@@ -3886,6 +3963,7 @@ class ContextBuilder:
                 context_groups=context_groups,
                 member_template=execution_context.template_id if execution_context else "",
                 steering_dirs=steering_dirs,
+                template_selected=_template_selected_on_member_store(execution_context),
             )
 
         # Minimal V1 stays date/time + agent identity. Private V2 also carries
@@ -4060,7 +4138,9 @@ class ContextBuilder:
         # Delivery enforces the rules gate: the section builder reads
         # [PERMANENT RULES] fresh and fails closed on an unreadable file.
         if member_turn_context(member, MemberLifecycle.FRESH).deliver_section and not essentials:
-            _member_section = self._build_member_section(member)
+            _member_section = self._build_member_section(
+                member, template_selected=_template_selected_on_member_store(execution_context)
+            )
             if _member_section:
                 append_required(_member_section)
         _mark("member")
@@ -4840,6 +4920,7 @@ class ContextBuilder:
                 and delivery is not None
                 and not context_provider.native_steering,
                 steering_dirs=steering_dirs,
+                template_selected=_template_selected_on_member_store(execution_context),
             )
         if _essentials and not is_new_session:
             parts.append(_essentials)
@@ -4970,7 +5051,10 @@ class ContextBuilder:
                     # scrubbed above, but this section is appended separately.
                     _resume_member = ""
                     if _member_turn.deliver_section:
-                        _member_section = self._build_member_section(member)
+                        _member_section = self._build_member_section(
+                            member,
+                            template_selected=_template_selected_on_member_store(execution_context),
+                        )
                         if _member_section:
                             _resume_member = (
                                 "[Refreshed member identity — supersedes the "
@@ -5198,7 +5282,9 @@ class ContextBuilder:
             # WARM_REINJECTION leg of the member lifecycle (see the
             # chokepoint consult above).
             if _member_turn.deliver_section:
-                _member_section = self._build_member_section(member)
+                _member_section = self._build_member_section(
+                    member, template_selected=_template_selected_on_member_store(execution_context)
+                )
                 if _member_section:
                     parts.append(_neutralize_structural_markers(_member_section))
 
