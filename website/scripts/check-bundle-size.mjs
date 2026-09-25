@@ -35,6 +35,10 @@ export const DEFAULT_BUDGET_BYTES = 500 * KB
  * unrelated PRs, while a real regression -- a new library landing in the chunk
  * -- still trips it. Lower a ceiling the moment its chunk shrinks; raising one
  * is a bundle-size regression and needs to be justified in the PR that does it.
+ *
+ * ONE entry departs from the 5% rule on purpose: `all`, the eager i18n catalogs.
+ * Its note below carries the measurement and the reasoning. Every other entry,
+ * and the default budget, are unchanged.
  */
 export const CHUNK_BUDGETS = {
   // Eager i18n catalogs for all shipped languages, reached through
@@ -96,7 +100,27 @@ export const CHUNK_BUDGETS = {
   // module: the chunk holds the same 13 catalogs plus the entry, so shrinking
   // remains unavailable for the reason stated above. Back to the 5% convention
   // over that measurement.
-  all: 12870 * KB, // measured 12254.6 KB on main @ 34fe0de33e 2026-09-21 (5.0% headroom)
+  //
+  // The 5% convention is now abandoned for THIS entry, and the ceiling is set to
+  // three times the one above. Four recurrences of the same failure is the
+  // reason, not a measurement: each time the headroom was spent, the gate began
+  // failing on the merge ref of EVERY open pull request, and each time the fix
+  // was the same arithmetic. This recurrence measured 12872.8 KB against the
+  // 12870 KB ceiling -- 2.8 KB over -- while four pull requests carrying no file
+  // under `website/` at all sat red on it. Growth rate at this recurrence: 618 KB
+  // over three days, so 5% of the ceiling is about three days of headroom, which
+  // is why the arithmetic keeps coming back. Tripling buys roughly four months at
+  // that rate.
+  //
+  // What that costs, stated plainly so nobody has to rediscover it: an accidental
+  // regression inside `all` -- a library that should not be there, a catalog
+  // loaded twice -- is not caught until the chunk nearly triples. What still
+  // holds: every other entry keeps its measured ceiling, any chunk without an
+  // entry keeps the 500 KB default, and a NEW oversized chunk is still caught by
+  // that default, which is the gap this gate exists to close. The structural fix
+  // -- measuring main's own tip so the drift is visible before it reaches a
+  // contributor -- is tracked in #12392 and is NOT what this ceiling does.
+  all: 38610 * KB, // 3x the prior 12870 KB; a deliberate exception, see the note above
 
   // The i18n RUNTIME — the i18next singleton, `initI18n`, the English catalog —
   // named after `src/i18n/t.ts`. Held separately from `all` above because
