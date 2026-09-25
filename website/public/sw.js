@@ -133,6 +133,16 @@ self.addEventListener('fetch', e => {
   // as a broken image until the tab reloads. Let the browser fetch them natively.
   if (url.pathname === '/logo.png') return
   if (url.pathname.startsWith('/static/')) return
+  // The AudioContext worklet module for dictation / streaming STT, fetched by
+  // `audioWorklet.addModule('/pcm-worklet.js')` when a voice session mounts (a new
+  // chat, meetings transcription). It is a top-level path, so without this rule it
+  // falls through to the shell-navigation handler below, whose non-navigation
+  // fallback resolves a transient fetch failure to `Response.error()` (no shell
+  // cache entry for it) — which `addModule` throws, surfacing as the misleading
+  // "audio worklet unavailable" toast. New-session churn (503s on /api/chat/slots,
+  // session rotation) is exactly when that race is lost, hence the intermittent
+  // toast on every new chat. Let the browser fetch it natively, like /static/.
+  if (url.pathname === '/pcm-worklet.js') return
 
   // ── Shell navigation: network-first, fall back to cached shell ──────
   e.respondWith(
