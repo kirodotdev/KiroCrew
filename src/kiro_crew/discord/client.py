@@ -850,6 +850,39 @@ class DiscordClient:
         )
         return result is not None
 
+    async def edit_message_visibility(
+        self,
+        channel_id: str,
+        message_id: str,
+        text: str,
+        files: Sequence[OutboundFile] = (),
+        *,
+        components: list[dict] | None = None,
+    ) -> str:
+        """Edit a streamed message, reporting whether it is still THERE when it fails.
+
+        ``ok`` -- it landed. ``gone`` -- Discord answered 404, so the message is not
+        on the reader's screen. ``failed`` -- anything else (a 429, a 5xx, a network
+        blip), so it still is.
+
+        Separating those two is why this exists, and it is the reason this verb calls
+        the outcome-reporting primitives rather than the "did it land" reductions. A
+        caller that grades later deliveries against the screen must keep a bubble that
+        survived and drop one that did not: a message kept in that window when it is
+        gone stands between two messages the reader sees as NEIGHBOURS, and the
+        credential predicate then reads the pair it separates as no pair at all.
+        """
+        payload = _message_payload(text, components, keep_empty_components=True)
+        path = f"/channels/{channel_id}/messages/{message_id}"
+        result = (
+            await self.api_files("PATCH", path, payload, files)
+            if files
+            else await self.api_json("PATCH", path, payload)
+        )
+        if result:
+            return "ok"
+        return "gone" if result.status == 404 else "failed"
+
     async def send_typing(self, channel_id: str) -> None:
         """Trigger the 'typing...' indicator (Discord shows it ~10s)."""
         await self._api("POST", f"/channels/{channel_id}/typing", {})

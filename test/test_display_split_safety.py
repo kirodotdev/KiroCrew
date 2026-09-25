@@ -14,11 +14,91 @@ import pytest
 from conftest import CREDENTIAL_STRADDLE_SHAPES
 from kiro_crew.messaging.display_safety import (
     canonicalize_display,
+    delivered_window,
     joins_to_a_credential,
+    redact_across_delivery,
     redact_for_display,
     safe_split_offset,
+    severs_a_credential,
 )
 from kiro_crew.messaging.renderer import _default_redactor
+
+
+class TestTheGradingWindowEvictsByVisibleDistanceOnly:
+    """What may be evicted is decided by distance from the pending text, not by count.
+
+    A message-count cap evicts while the visible-distance budget is unspent, and the
+    shape that reaches it first is a run of deliveries whose markup canonicalises to
+    nothing -- which is both the construction this module defends against and one the
+    model on the other side can drive. Every message is charged at least one character
+    so the count stays bounded as a consequence of the distance rule.
+    """
+
+    HEAD = "the note above ends AKIAIOSF"
+    PENDING = "ODNN7EXAMPLE and more prose"
+
+    def _pads(self, count: int) -> list[str]:
+        pads = [f"[](https://example.com/pad{index})" for index in range(count)]
+        assert all(
+            canonicalize_display(pad) == "" for pad in pads
+        ), "fixture pads are not invisible, so they do not exercise eviction"
+        return pads
+
+    def test_a_run_of_invisible_deliveries_does_not_evict_a_visible_head(self) -> None:
+        delivered = [self.HEAD, *self._pads(12)]
+        window: list[str] = []
+        for piece in delivered:
+            window = delivered_window(window, piece)
+
+        out = redact_across_delivery(window, self.PENDING, _default_redactor)
+
+        # The screen is every message DELIVERED plus what goes out, never the retained
+        # window: reading the field under test would drop the evicted head from the
+        # assertion too, and the leak would pass by agreeing with the defect.
+        screen = [*delivered, out]
+        for reading in (
+            canonicalize_display("".join(screen)),
+            "".join(canonicalize_display(f) for f in screen),
+        ):
+            assert _default_redactor(reading) == reading, f"key readable across frames: {screen}"
+        assert self.HEAD in window, "a visible head was evicted by invisible deliveries"
+
+    def test_older_messages_are_merged_rather_than_dropped(self) -> None:
+        """The bound is met by MERGING, so a message's characters stay within reach.
+
+        Dropping would throw away the fragment a run of near-invisible deliveries pushes
+        out. Merging gives up only the boundaries inside the merged block -- the ones
+        furthest from the pending text -- and keeps the characters in every reading.
+        """
+        window = delivered_window([self.HEAD, *self._pads(3000)], "the newest message")
+
+        assert len(window) <= 5, f"the window grew to {len(window)} pieces"
+        assert window[-1] == "the newest message", "the nearest message was lost"
+        assert "AKIAIOSF" in "".join(window), "the head's characters were dropped, not merged"
+
+    def test_two_byte_identical_deliveries_are_two_messages(self) -> None:
+        """A repeat is two messages on screen, and its boundary is as real as any other.
+
+        An edit pair that returns not-modified falls through to a duplicate send, and a
+        degraded segment can repeat a header row. Collapsing equal text understates the
+        screen, and the cost is MEASURED here rather than argued: two 15-character copies
+        plus a 15-character pending message reach the 40-character bare-secret-run floor
+        while ONE copy plus that message does not, so the collapse loses the detection
+        outright -- and nothing recalls a message already sent.
+        """
+        piece = "Ab3Cd4Ef5Gh6Jk7"
+        pending = "Mn8Pq9Rs0Tu1Vw2"
+        assert not severs_a_credential(
+            [piece, pending], _default_redactor
+        ), "one copy already severs, so this fixture does not exercise the repeat"
+
+        window = delivered_window(delivered_window([], piece), piece)
+        out = redact_across_delivery(window, pending, _default_redactor)
+
+        screen = [piece, piece, out]
+        reading = canonicalize_display("".join(screen))
+        assert _default_redactor(reading) == reading, f"secret readable across frames: {screen}"
+        assert window == [piece, piece], "a repeat was collapsed into one message"
 
 
 class TestTheOracleIsAsStrongAsTheSendPath:

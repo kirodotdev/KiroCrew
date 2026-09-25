@@ -64,7 +64,7 @@ legacy metadata do not override a canonical execution.
 | `messaging/approval.py` | Two channel-neutral approval styles behind one INTERACTIVE `decider`, both deny-by-default on timeout (recording `last_deny_cause = approval_timeout` for the driver, below) and keyed `session_key`+`request_id`. **Typed reply** (`TEXT_APPROVAL_TIMEOUT_S`, the verdict vocabulary, `TextReplyApprovalDecider`) for a `max_buttons=0` channel, with Trust recorded as the session's own approval policy rather than a second trust store. **Widget awaiter** (`PendingApprovals` + `SessionApprovalDecider`) for a press whose correlation id and per-prompt nonce travel a round trip this module cannot see (a Webex Adaptive Card over the device websocket); a typed answer has no nonce, a press has no free text. Also `adoptable_reservation(pending, loop)`, the one rule for whether a stored future may be adopted as a reservation: a channel's registry is process-global and outlives any one event loop, so an entry a closed loop left behind is reachable by key, and awaiting it raises `attached to a different loop` while its lack of a result is not a decision either. Foreign-loop entries are refused whether or not they carry a result, because a verdict recorded on a loop that has ended cannot answer a later request. It lives here, not in each channel, because three copies of an adoption rule is how the per-channel registries diverged in the first place |
 | `messaging/driver.py` deny cause | A decider MAY carry `last_deny_cause` (`""` for a human's own answer, `constants.DENY_CAUSE_APPROVAL_TIMEOUT` when its prompt expired). After a denial the driver reads it and, for the timeout cause, awaits `deny_notice.steer_refusal_notice` BEFORE `reject_tool` (capability-gated on `provider.supports_steer`, bounded by `STEER_NOTICE_BOUND_SECS`, best-effort), so the model is told the prompt expired unanswered instead of reading kiro-cli's generic "User denied tool execution" as a human refusal. Cancellation mid-steer still answers the wire through a shielded, strongly referenced orphan reject. Every shipped decider records the cause: `TextReplyApprovalDecider`, `SessionApprovalDecider` (via `PendingApprovals.decide_with_cause`), `DiscordApprovalDecider`, `SlackApprovalDecider`, `TelegramApprovalDecider`, `TeamsApprovalDecider`. A plain callable without the attribute is a causeless denial, as before |
 | `messaging/driver.py` `deny_all_tools` | Rejects EVERY permission request ahead of every approve path. The approval ladder cannot express "this sender is not the operator" on its own: the PreToolUse hook may answer `auto_approve` and the Trust/YOLO predicates approve and short-circuit, both BEFORE the ladder is consulted, so setting the mode to `interactive` without a decider is not sufficient. Defaults False |
-| `messaging/display_safety.py` | `strip_ansi` / `canonicalize_display` / `redact_for_display` — credential redaction against the form a platform RENDERS, not the bytes sent. Hoisted out of `slack/format.py` when the shared overflow sink began writing choice text into the parsed body on every widget channel |
+| `messaging/display_safety.py` | `strip_ansi` / `canonicalize_display` / `redact_for_display` -- credential redaction against the form a platform RENDERS, not the bytes sent. Hoisted out of `slack/format.py` when the shared overflow sink began writing choice text into the parsed body on every widget channel. `joins_to_a_credential` / `severs_a_credential` / `safe_split_offset` answer the cut question a cap forces: would the reader rejoin a key across this boundary |
 | `messaging/markup.py` | `strip_thinking_tags` / `flatten_pipe_tables` / `flatten_mermaid_body`: Markdown reductions for a surface that renders none of the source form (a `<thinking>` block, a pipe table needing a monospace grid, a `mermaid` fence needing an image). Emits Markdown, never a channel dialect, so each channel's own inline converter finishes the job. Stdlib-only leaf |
 | `messaging/split.py` | `split_markdown_safe` — the shared fence-safe markdown splitter (stdlib-only, pure). Prefix-stable so streaming callers can send sealed chunks and keep only the last as a live buffer. `split_markdown_bytes` wraps it for a byte-capped platform, measuring the produced chunks and shrinking the character budget until they fit, with the `chunk_utf8_bytes` primitive as the floor. Also exports `iter_fence_spans`, the same fence machine viewed as character spans over a whole message |
 | `messaging/outbound_files.py` | `extract_local_refs` (+ `extract_local_refs_off_loop`) — pulls local markdown image references out of an outbound reply into `OutboundFile` payloads carrying the validated bytes, with `Rejection` reasons for everything refused. Also `iter_local_refs` / `hide_local_refs`, the text-only scan a streaming channel uses to keep the markup off live frames. Channel-neutral; the upload stays per-transport |
@@ -1941,6 +1941,245 @@ before the split. Discord gets that from the shared `split_markdown_safe`, whose
 final chunk is deliberately left open as the live buffer; Telegram still carries
 its own splitter. Raw markers never reach posted text; each renderer keeps a
 defensive raw-marker parser only for callers that bypass `TurnDriver`.
+
+**A length rotation may not sever a credential the reader's client will rejoin.**
+The cut is chosen on the RAW buffer's budget while each rotated message is redacted
+ALONE, so a key the model wrote with markup through the cut matches nothing in any one
+message -- and the reader's client renders the markup away and reads the pieces as one
+key, one message under the other. It needs no markup at all on either channel: a
+plain unmarked key crossing the cut leaks the same way, because the pieces are only
+ever scanned apart. This is the same hazard WeCom's `_push` answers with
+`safe_split_offset`, at the other shape a cap takes.
+
+So the whole delivery sequence is graded before anything is sent.
+`display_safety.severs_a_credential` takes the ordered pieces -- the splitter's chunks,
+plus the held image tail where one is retained -- redacts each alone, and then asks
+whether a key appears anyway. It reads the sequence two ways, because neither
+subsumes the other: the WHOLE sequence put together, and each boundary against
+everything after it. The first is what catches a key whose MARKUP spans an entire
+piece rather than whose characters do -- `AKIA[KEYTAIL](http://host/<long>)` cut into
+three reveals nothing in any neighbouring pair, since the link needs the closing
+bracket that sits in the third piece, while the full join collapses the url to its
+label and puts that label against `AKIA`. Piece length is therefore no defence:
+canonicalising DROPS a link's target, so a piece of any size can vanish entirely. The
+second reading survives a pattern needing a trailing boundary, where the reader sees a
+message break that the whole-sequence join does not.
+
+Pieces are graded AS DELIVERED, not as the splitter produced them. Telegram's seal
+sends `_segment_text().strip()`, and `_strip_steering` and `_strip_hr` each end in a
+strip of their own, so `_delivered_form` applies that chain before grading: two chunks
+whose facing edges are whitespace, a steering marker or a horizontal rule are held
+apart in the raw text and sit flush together on screen, where `AKIAIOSF` and
+`    ODNN7EXAMPLE` read as one key that no credential pattern tolerating no whitespace
+would have matched. Discord grades through `_strip_steering` for the same reason, and
+its table-card branch grades the chunks unchanged, because a presentation snapshot is
+delivered verbatim.
+
+When the sequence is unsafe the cut moves rather than the budget: `safe_split_offset`
+picks an offset that severs nothing, that head goes out alone, and the remainder is
+retained. Both are SOURCE slices, never rejoined chunks -- `split_markdown_safe` does
+not concatenate back to its input, since a chunk is rstripped and a fence is closed at
+the seal and reopened in the next chunk, so rejoining would glue one paragraph's last
+word onto the next or invent a fence run the model never wrote, and that corrupted
+buffer is what the user is eventually sent. Three answers mean **deliver nothing this
+rotation**: an offset of `0` (every sampled candidate unsafe), a safe head that still
+grades unsafe once the retained remainder is in view, and, on Telegram, a safe head
+that renders past the HTML cap. Telegram's upload-hold branch has no source-slice cut
+to fall back on and so simply holds the whole buffer. Withholding is always available
+and is the safe direction: the text rides the next rotation, and the final seal
+redacts the whole segment intact.
+
+**A seam's safety cannot be decided once.** The grade above runs where the cut is
+made, over the text present THEN, and canonicalising is non-local: characters arriving
+later change how earlier ones render. A message ending `...AKIA` beside a live tail of
+`[KEYTAIL` grades clean, because the link has no closing bracket yet, and once that
+message is sent it is beyond recall -- then the bracket and url arrive, the url
+collapses onto the label, and the reader reads one key down the screen. Streaming
+growth reaches this without any writer replacing anything.
+
+So every delivery is graded again, against the message already on screen.
+`display_safety.redact_across_delivery` takes the closed message and the pending text,
+and everything it returns is built from the PENDING side ALONE -- that is the design,
+not a detail. The pending text is redacted on its own terms first, and when the join is
+still unsafe the key's completion is what sits at the front of it, so leading WORDS are
+dropped until the predicate agrees. Redacting the JOIN and slicing at the point where
+it stops matching the delivered side cannot work: the redaction may emit the canonical
+form, which differs from the delivered side from the first piece of markup onward --
+before the match, not at it -- so the slice falls at a representation boundary and
+carries a re-rendered copy of prose the reader can already see. Duplicated prose and a
+truncated placeholder are the two shapes that produces. Words rather than characters,
+because a character-at-a-time cut stops at the first length the pattern fails to match,
+which for a twenty-character key leaves nineteen of its characters on screen -- safe by
+the regex and plainly readable by a human. A credential does not straddle a space, so
+the completion lies inside the first word and removing whole words removes it outright;
+the empty string is always safe, so the walk terminates. Nothing is replaced by a
+placeholder, so this remedy is not counted as a redaction notice. The predicate
+throughout is the one that fired, `severs_a_credential`, because `redact_for_display`
+scans a strictly smaller set of readings and its rewrite alone can leave a match only
+the wider reading sees. Withholding is not an alternative: the text must go out
+eventually, and a later seal redacts only its own segment, so deferring would ship the
+completion untouched.
+
+The text graded against is the last message beyond EDITING -- while a message is still
+the live frame an edit replaces it, and grading it against its own earlier content would
+compare it with itself. So the promotion belongs at every point a message stops being
+editable, not at one call a caller can omit: opening the next message is one such point,
+and SEALING is the other, because a sealed segment is final by definition. Telegram
+promotes in the seal's own `finally`, which every one of its exits passes through, and
+Discord in `_land_sealed` beside each confirmed delivery. Both read the last text that
+actually LANDED rather than the text they tried to send, so a failed send leaves the real
+neighbour in place instead of pointing the next grade at a message nobody can see.
+
+Leaving either point to the caller is what breaks it, and both channels show the same
+shape: Telegram's `on_done` seals the answer and posts the reasoning bubble with nothing
+in between, and Discord's chunk loop opens a new message only for a chunk that is not the
+last one. On both paths a promotion that lives only in `_open_new_message` skips the
+delivery that matters most -- the final one, whose neighbour is whatever the turn sends
+next.
+
+Enumerate the points by the SENDS, not by the state. A site that maintains part of the
+state is found by searching for the state's own names; a site that touches none of it is
+not, and those are the ones left open. Two Telegram sends carry model-authored text and
+belong to neither seal nor rotation. The approval prompt is a permanent bubble whose tags
+render away, so the reader's last characters of it are the tool input's tail and the next
+delivery sits flush under that; its fixed label severs a join from the message above, so
+grading the detail alone is the conservative reading. The failed-upload notice restores
+LLM-authored alt text and cuts it by a UTF-16 budget that knows nothing about credentials,
+so its own chunk boundaries are rotation seams by another name. Both grade against the
+predecessor and both record on confirmed delivery.
+
+Not every send is one of these points. A send whose text is the product's own -- a typing
+indicator, a compaction notice, a redaction notice, an error placeholder -- has a fixed tail
+that cannot complete a key, so nothing is lost by grading past it. That property of the TEXT
+is the whole justification, not the omission itself: leaving a message out of the window is
+a miss like any other when its tail could have completed a key.
+
+**A grade is only as good as the form it grades.** Every boundary decision runs through
+the channel's own delivered form, because a cut placed just after trailing whitespace
+leaves each RAW half safe -- the spaces sit between them -- while the delivered halves sit
+flush and read as one key. The splitter already rstrips its chunks and a trailing space is
+invisible at the end of a message either way, so the raw slice is never what the reader
+gets. Two rules follow. The transform a renderer passes has to model the trimming, not
+only the marker stripping. And the GATE that decides whether the boundary search runs at
+all must use the SAME transform as the search: a gate reading a weaker form hides exactly
+the boundaries the search exists to move, and the search then never runs. Modelling more
+trimming than a path performs only makes the grade stricter, which is why one transform
+across the sites beats a per-site judgement.
+
+**The graded window is a sequence, not one message.** Two separate cases need more than a
+single predecessor, and they are the same case. A key can span THREE messages -- a head, a
+message holding only a link target, and the closing bracket -- where every adjacent PAIR
+reads clean and the join does not. And a live frame whose edit FAILED is still on screen:
+both clients return False on ANY api failure, so a 429, a 5xx or a network blip leaves the
+bubble there while the payload is SENT instead of edited. On that path the frame is a
+neighbour sitting between the last closed message and the text going out, which the grade
+made before the edit was attempted could not have included, so the fallback re-grades with
+the frame in the window.
+
+**A renderer keeps that window, and meets its bound by MERGING rather than dropping.**
+Holding one predecessor is what makes the three-message span invisible: the head is simply
+not there, and no amount of care at the boundary recovers it. So each renderer retains the
+recent messages rather than the last one. A bound is still needed, because
+`severs_a_credential` builds a reading per boundary and each spans the whole join, so the
+work is quadratic in the piece count -- an unbounded window made a pathological rotation
+time out outright. But nothing is DROPPED to meet it: a dropped message is one the reader
+can still see and a key can still finish against. The recent messages stay whole, each its
+own piece with its own boundary, and everything older is folded into a single piece holding
+the trailing characters of what those messages put on screen. Merging gives up only the
+boundaries INSIDE the merged block, the ones furthest from the pending text, while their
+characters stay in every reading. A message-count cap that evicted instead would throw away
+exactly the fragment a run of near-invisible deliveries pushes out -- the construction this
+machinery defends against, and one the model on the other side can drive through steer
+rotation. The merged piece is stored in canonical form, which is what makes it a rolling
+tail: canonicalising is idempotent, so folding the next message in and trimming to the
+budget repeats without the representation drifting. The budget counts those canonical
+characters rather than raw ones because canonicalising DROPS a link's target, so a raw
+budget would trim away the short visible text actually adjacent to the pending message. The
+bound is also a limit, stated rather than implied: a credential whose canonical form spans
+more screen characters than the budget reaches is not caught, and no finite budget closes
+that -- the bare-secret-run pattern has no upper length. What it takes is for the retained
+screen tail to be a property of the transport rather than of one renderer's field.
+
+**A repeat is two messages, and the window says so.** Two consecutive deliveries can be
+byte-identical -- an edit pair that returns not-modified falls through to a duplicate send,
+and a degraded segment can repeat a header row -- and the boundary between them is as real
+as any other. Collapsing equal text would understate the screen, and the cost is a lost
+detection rather than a tidier list: two fifteen-character copies plus a fifteen-character
+pending message reach the forty-character bare-secret-run floor while one copy plus that
+message does not, and nothing recalls a message already sent. So the window counts one
+entry per delivery. Not entering the same message twice is the caller's job, where message
+identity is known, and every delivery path clears the live frame's recorded text once that
+message has entered.
+
+**What is on screen is what the api confirmed, never what was attempted.** The live frame's
+recorded text is read as a message the reader can see, so an edit that returned False must
+not enter it: the frame still shows the text of the last edit that LANDED, and recording the
+attempt points the next grade at something nobody sees while leaving what they do see
+ungraded -- which is the neighbour a key completes against. The same rule decides when a
+frame joins the window: a frame this renderer will not edit again is a delivered message,
+so it enters ahead of anything sent after it. Where a seal edited the frame, the frame IS
+that sealed text and it enters once. Where the edit failed and the seal sent instead, the
+two are separate messages on screen and both enter. And where the frame is retired by a
+DELETE, whether it stays in the window depends on whether the delete CONFIRMED -- and an
+extra piece is not the safe direction here, which is worth stating because the opposite
+reads plausible. `severs_a_credential` reads the whole join and each piece against
+everything after it, so a piece standing between two messages the reader sees as NEIGHBOURS
+destroys that pair's adjacency in every reading: the grade then answers about a screen
+nobody has, and a key straddling the real pair ships unredacted. Keeping a bubble that is
+gone makes the predicate WEAKER, not stricter. So `deleteMessage` reports whether the
+message left, a confirmed delete takes it out of the window, and only an unconfirmed one
+leaves it in, where it may genuinely still be visible.
+
+**A failed edit is two conditions, not one, and they call for opposite handling.** A bare
+"did it land" cannot tell a rate limit from a message someone removed -- and removing one is
+ordinary, a single tap on Telegram's "delete for everyone" in a private chat. So both clients
+report which: `ok`, `gone`, or `failed`. A `failed` edit leaves the bubble on screen, so it
+becomes a delivered message and joins the window; a `gone` edit means it is not there, and
+entering it would be the phantom the rule above forbids. The same distinction governs the
+DELETE paths, where the answer is simply whether the delete confirmed. And an edit that
+SUCCEEDS replaces the draft, so the draft's recorded text is cleared at every such exit: the
+seal, the chunk seal, and the live frame. Leaving it set is how a superseded draft becomes a
+phantom one delivery later.
+
+**Neither direction of disagreement with the screen is generically safe**, and it is worth
+saying so because each one reads plausible on its own. KEEPING a message the screen does not
+have separates a pair the reader sees together, so the grade misses the only join that
+matters. OMITTING one the screen does have leaves the pending text graded against something
+further up, so a key completing across the omitted message is missed too. Both are misses,
+so the rule is not "prefer more pieces" or "prefer fewer" -- it is that the window MODELS the
+screen, and any deliberate deviation carries its own justification. The product-text sends
+above are the one such deviation, and their justification is a property of the TEXT, not of
+the omission: a typing indicator or compaction notice has a fixed tail that cannot complete
+a key, so nothing is lost by grading past it.
+
+**When a frame joins the window is decided by the screen, not by whether the next send
+worked.** An orphaned frame enters the moment the edit that would have replaced it failed --
+before the send, unconditionally -- because that is when it stops being editable, and it
+stays on screen whatever happens next. Entering it only where the following send lands loses
+it outright on a second api failure, which a 429 burst makes ordinary rather than exotic: the
+chunk loop carries on and grades against a window missing a message the reader is still
+looking at, and no later path puts it back.
+
+**A retire enters only what THAT operation landed.** The window is ordered by screen
+position, so what goes in last is what the reader sees nearest, and a seal that landed
+nothing has nothing to add but the live bubble. Reading a renderer-wide last-landed field
+there instead would append an EARLIER segment in the nearest position and stand that stale
+message between the bubble and the pending text in every reading the next grade makes -- so
+the one adjacency that matters is the one it cannot see. Every message that lands enters at
+its own confirmed-delivery exit, which is what makes the retire's job this small.
+
+An over-cap segment is graded twice for the same reason. The caller grades the whole
+segment against the message above it, then `_seal_without_rich` ships every chunk but the
+last, so the retained tail's neighbour becomes the chunk just delivered rather than the
+message the caller compared it with. That boundary is graded where the split happens and
+nowhere else.
+
+The chunk seal keeps the SAME fallback contract as the tail seal, not a weaker one. Its
+edits failing is ordinary transport behaviour, and it then sends while the bubble those
+edits could not replace is still on screen -- so that bubble becomes a delivered message
+there and the chunk is graded again with it in the window. An unguarded instance of a
+contract kept everywhere else is the shape to look for: the condition is the same, the
+recovery is the same absence, and only the site differs.
 
 ## Session privacy modes (`privacy_mode.py`)
 

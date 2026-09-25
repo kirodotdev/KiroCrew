@@ -68,7 +68,13 @@ from kiro_crew.discord.client import (
     DISCORD_MAX_TOTAL_UPLOAD_BYTES,
 )
 from kiro_crew.messaging.approval import APPROVAL_TIMEOUT_S
-from kiro_crew.messaging.display_safety import redact_for_display
+from kiro_crew.messaging.display_safety import (
+    delivered_window,
+    redact_across_delivery,
+    redact_for_display,
+    safe_split_offset,
+    severs_a_credential,
+)
 from kiro_crew.messaging.outbound_files import (
     ExtractLimits,
     OutboundFile,
@@ -79,6 +85,7 @@ from kiro_crew.messaging.outbound_files import (
 )
 from kiro_crew.messaging.renderer import (
     Renderer,
+    _default_redactor,
     apply_options_cap,
     chunk_text,
     count_redaction_tags,
@@ -218,6 +225,20 @@ def _strip_steering(text: str) -> str:
     cleaned = re.sub(r"\[STEERING\b[^\]\r\n]*$", "", cleaned)  # unclosed, streaming
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned
+
+
+def _delivered_form(source: str) -> str:
+    """*source* as the reader will actually see it, for grading a cut.
+
+    ``safe_split_offset`` grades both sides of a candidate boundary through this,
+    and its contract names surrounding whitespace as one of the things a renderer
+    removes on the way out. Trimming matters more than it looks: a cut placed just
+    after a trailing space leaves each raw half safe while the delivered halves sit
+    flush together, and Discord shows the reader the trimmed form. Modelling MORE
+    trimming than a path happens to perform only makes the grade stricter, which is
+    the safe direction; modelling less is what lets a boundary through.
+    """
+    return _strip_steering(source).strip()
 
 
 def _transform_buries_refs(canonical: str, presented: str) -> bool:
@@ -655,6 +676,12 @@ class DiscordRenderer(Renderer):
         # Delivery transforms never enter the canonical protocol buffer. A
         # snapshot exists only when outbound presentation differs from source.
         self._delivery_text: str | None = None
+        #: The bounded window of messages that are beyond editing -- the reader's
+        #: screen tail, nearest last.
+        #: Every delivery is graded against the window, because a seam graded once at
+        #: the cut was graded over a tail that has since grown, and because a key can
+        #: span three messages whose every adjacent pair reads clean.
+        self._delivered_window: list[str] = []
         self._last_tool = ""
         # Transient tool-activity footer ("🔧 {tool}…") shown ONLY on live
         # streaming frames — never stored in _buf, so seals/finals stay clean.
@@ -663,8 +690,10 @@ class DiscordRenderer(Renderer):
         self._closed = False
         self._typing_task: "asyncio.Task[None] | None" = None
         # Live edit-streaming state (mirrors the Telegram renderer): the
-        # message being edited (None -> next render sends a new one), the last
-        # text pushed (skip no-op edits), and the edit throttle timestamp.
+        # message being edited (None -> next render sends a new one), the text
+        # CONFIRMED on that message (skip no-op edits), and the edit throttle
+        # timestamp. Confirmed, not attempted: the grading window treats it as a
+        # neighbour the reader can see, so a text the api refused must not enter it.
         self._stream_mid: str | None = None
         self._shown = ""
         # Delivery accounting for `delivery_failed`: how many seals were tried
@@ -939,6 +968,21 @@ class DiscordRenderer(Renderer):
                 if await asyncio.to_thread(protected_ref_spans, candidate):
                     return
             chunks = await asyncio.to_thread(split_markdown_safe, candidate, limit)
+            # Card text is model text, and this branch cuts it on the same length
+            # budget, so its boundaries carry the same hazard as the source path's.
+            # A presentation snapshot reaches the reader without protocol handling,
+            # but the splitter still rstrips each chunk and the sink trims what it
+            # sends, so the boundary is graded through the same delivered form the
+            # source path uses. Modelling trimming a path may not perform only makes
+            # the grade stricter, and ONE rule across the sites is what stops the
+            # next one being added with a weaker transform.
+            if await asyncio.to_thread(severs_a_credential, chunks, _default_redactor):
+                offset = await asyncio.to_thread(
+                    safe_split_offset, candidate, limit, _default_redactor, _delivered_form
+                )
+                if not offset:
+                    return
+                chunks = [candidate[:offset], candidate[offset:]]
             for chunk in chunks[:-1]:
                 self._buf = []
                 self._delivery_text = chunk
@@ -972,6 +1016,35 @@ class DiscordRenderer(Renderer):
             dirty_cut = any(len(line) > limit for line in split_source.splitlines(True))
             if dirty_cut or lost:
                 self._segment_uploads_safe = False
+        # The splitter cuts the RAW buffer on a length budget and each chunk is
+        # redacted alone, so a key written with markup through the cut matches
+        # nothing in any one chunk while the reader's client renders the markup away
+        # and reads them as one key down the screen. Grade what would actually be
+        # DELIVERED, through the SAME transform the offset search below uses: this
+        # gate decides whether that search runs at all, so a gate reading a weaker
+        # form than the search hides exactly the boundaries the search exists to
+        # move. Trimming can only reveal more severs, never fewer.
+        graded = [_delivered_form(piece) for piece in (*sealed, tail)]
+        if await asyncio.to_thread(severs_a_credential, graded, _default_redactor):
+            # Cut where the reader cannot rejoin rather than where the budget lands.
+            # The head and the retained remainder are SOURCE slices: splitter output
+            # does not concatenate back to its input (a chunk is rstripped, a fence
+            # is closed and reopened), so rejoining chunks would hand the user text
+            # the model never wrote. The search grades the DELIVERED form, so its
+            # answer is one this caller can take -- grading raw and re-checking after
+            # would deadlock the segment, since a deterministic search returns the
+            # same rejected answer every rotation.
+            offset = await asyncio.to_thread(
+                safe_split_offset, split_source, limit, _default_redactor, _delivered_form
+            )
+            if not offset:
+                # Deliver NOTHING: withheld text rides the next rotation, and the
+                # final seal redacts the whole segment as one string.
+                self._buf = [raw + protocol_suffix]
+                self._delivery_text = None
+                return
+            sealed = [split_source[:offset]]
+            tail = split_source[offset:] + raw[len(split_source) :]
         for ch in sealed:
             self._buf = [ch]
             self._delivery_text = None
@@ -980,8 +1053,33 @@ class DiscordRenderer(Renderer):
         self._buf = [tail + protocol_suffix]
         self._delivery_text = None
 
+    def _enter_delivered(self, *texts: str) -> None:
+        """Enter messages the reader sees and this renderer holds beyond editing.
+
+        In screen order, nearest last. Entering the message already nearest is a
+        no-op, so a path that lands a message and then retires the frame that
+        message became does not enter it twice.
+        """
+        for text in texts:
+            self._delivered_window = delivered_window(self._delivered_window, text)
+
     def _open_new_message(self) -> None:
-        """Next render creates a fresh message instead of editing the old one."""
+        """Next render creates a fresh message instead of editing the old one.
+
+        This is also where the message just written stops being editable, so it
+        enters the window every later delivery is graded against: while it is still
+        the live frame an edit REPLACES it, and grading a message against its own
+        earlier content would compare it with itself.
+
+        A live frame this renderer will not edit again is itself a delivered message
+        -- the reader still sees it -- so it enters the window, and it is the ONLY
+        thing this enters. Every message that landed entered at its own
+        confirmed-delivery exit, so reading the last-landed field here would add
+        nothing on the path where that field is current and, on the path where a seal
+        landed nothing, would append an earlier segment's text as the reader's nearest
+        message and mis-order every reading the next grade makes.
+        """
+        self._enter_delivered(self._shown)
         self._stream_mid = None
         self._shown = ""
 
@@ -1032,6 +1130,16 @@ class DiscordRenderer(Renderer):
         # ``TurnDriver`` applies — and the display pass exists precisely for the
         # credential that is invisible until Discord renders the markdown away.
         body = _redact_transformed(body)
+        # The message ABOVE this frame is beyond editing, so the frame is graded
+        # against it as well as on its own. A frame carries the live tail, and a tail
+        # is what grows into a key whose head sits at the end of the closed message:
+        # each frame alone reads clean while the reader sees one intact credential
+        # down the screen for the whole streaming window. The frame is the side still
+        # in hand, so it is the side that gives characters up. Off the loop for the
+        # same reason as the redaction above.
+        body = await asyncio.to_thread(
+            redact_across_delivery, self._delivered_window, body, _default_redactor
+        )
         footer = f"-# 🔧 {self._tool}…" if self._tool else ""
         if footer:
             room = self._limit() - len(footer) - 2
@@ -1041,13 +1149,19 @@ class DiscordRenderer(Renderer):
         if not text or text == self._shown:
             return
         self._last_edit = now
-        self._shown = text
+        # Recorded only where the api CONFIRMED it. `_shown` is read as a message the
+        # reader can see -- the seal's fallback grades the next payload against it --
+        # and an edit that returned False left the frame showing its previous text, so
+        # recording the attempt would point the next grade at something nobody sees
+        # and leave what they do see ungraded. It also makes the suppression check
+        # above retry a refused frame instead of skipping it as already shown.
         if self._stream_mid is None:
             mid = await self._client.send_message(self._channel_id, text)
             if mid is not None:
                 self._stream_mid = mid
-        else:
-            await self._client.edit_message(self._channel_id, self._stream_mid, text)
+                self._shown = text
+        elif await self._client.edit_message(self._channel_id, self._stream_mid, text):
+            self._shown = text
 
     def authorize_upload_root(self, root: str) -> None:
         """Authorize the provider's resolved cwd; invalid roots disable uploads."""
@@ -1140,17 +1254,56 @@ class DiscordRenderer(Renderer):
         components: list[dict] | None,
     ) -> bool:
         """Edit first, then send; fail softly so recovery can restore markup."""
+        # The message ABOVE this one is already on screen and cannot be recalled, so
+        # its boundary with this text is graded here rather than once at the cut: a
+        # seam graded when the cut was made was graded over a tail that has since
+        # grown, and canonicalising is non-local.
+        text = await asyncio.to_thread(
+            redact_across_delivery, self._delivered_window, text, _default_redactor
+        )
         self._seals_attempted += 1
         try:
             if self._stream_mid is not None:
-                if await self._client.edit_message_with_files(
+                visibility = await self._client.edit_message_visibility(
                     self._channel_id, self._stream_mid, text, files, components=components
-                ):
+                )
+                if visibility == "ok":
                     self._seals_landed += 1
                     self._tally_redactions(text)
+                    # Sealing is what makes this message final, so it enters the window
+                    # later deliveries are graded against right here. The caller only
+                    # opens a new message for a chunk that is NOT the last one, so a
+                    # promotion left to the caller skips the final chunk, and anything
+                    # delivered after the segment is then graded against a message
+                    # sitting one further up the screen instead of against its own
+                    # neighbour.
+                    #
+                    # The frame's recorded text is cleared because this message has now
+                    # entered: the window counts one entry per delivery and does not
+                    # collapse equal text, so leaving it set would have the retire enter
+                    # the same message a second time and invent a boundary.
+                    self._enter_delivered(text)
+                    self._shown = ""
                     return True
-                # A missing live message falls through to a fresh send.
+                # The edit did not land, and what follows depends on WHY. A 429, a 5xx
+                # or a network blip leaves the bubble on screen; a 404 means the user
+                # or a moderator removed it, which is one tap away and not exotic. So
+                # the frame becomes a delivered message only in the first case, and
+                # unconditionally within it -- entering it only where the following
+                # send lands would lose it outright on a second api failure, and no
+                # later path puts it back. In the second case it must NOT be entered:
+                # a message that is not on screen standing between two that are
+                # destroys that pair's adjacency in every reading the predicate makes.
+                if visibility == "failed":
+                    self._enter_delivered(self._shown)
+                self._shown = ""
                 self._stream_mid = None
+                # Re-graded against the window it just joined, which the first grade
+                # could not include -- at that point the edit was still expected to
+                # replace it.
+                text = await asyncio.to_thread(
+                    redact_across_delivery, self._delivered_window, text, _default_redactor
+                )
             landed = (
                 await self._client.send_message_with_files(
                     self._channel_id, text, files, components=components
@@ -1160,6 +1313,7 @@ class DiscordRenderer(Renderer):
             if landed:
                 self._seals_landed += 1
                 self._tally_redactions(text)
+                self._enter_delivered(text)
             return landed
         except Exception:
             logger.warning("discord: sealing the segment failed", exc_info=True)
@@ -1245,6 +1399,13 @@ class DiscordRenderer(Renderer):
             recovery = [part for chunk in recovery for part in _fit_platform_cap(chunk)]
             landed_any = False
             for index, chunk in enumerate(recovery):
+                # A recovery send IS a delivery, so it is graded against the message
+                # above it and becomes the predecessor for the next one, exactly as
+                # `_land_sealed` does. Skipping it here would leave an on-screen
+                # message that no later seam is ever graded against.
+                chunk = await asyncio.to_thread(
+                    redact_across_delivery, self._delivered_window, chunk, _default_redactor
+                )
                 if await self._client.send_message(
                     self._channel_id,
                     chunk,
@@ -1252,6 +1413,7 @@ class DiscordRenderer(Renderer):
                 ):
                     landed_any = True
                     self._tally_redactions(chunk)
+                    self._enter_delivered(chunk)
             if landed_any:
                 # This recovery IS a delivery, so it has to answer to
                 # `delivery_failed`. Only the LANDED count moves: the seal that
@@ -1295,9 +1457,24 @@ class DiscordRenderer(Renderer):
         body = _redact_transformed(reasoning)
         if len(body) > _THINKING_PREVIEW_CHARS:
             body = body[:_THINKING_PREVIEW_CHARS].rstrip() + "…"
+        # A reasoning post is a message on screen like any other, so it is graded
+        # against the message above it and, once it lands, becomes the message the
+        # answer below is graded against. It lands on the FIRST chunk, so the answer's
+        # opening message sits flush under it with no scaffold between them.
+        #
+        # Graded AFTER the preview cut, because the cut decides the tail the answer
+        # joins onto, and with the decoration read as absent: a marker that separates
+        # the two on screen can only make the grade fire less often.
+        body = await asyncio.to_thread(
+            redact_across_delivery, self._delivered_window, body, _default_redactor
+        )
+        if not body:
+            return
         try:
-            await self._client.send_message(self._channel_id, _as_subtext(f"💭 {body}"))
+            mid = await self._client.send_message(self._channel_id, _as_subtext(f"💭 {body}"))
             self._tally_redactions(body)
+            if mid is not None:
+                self._enter_delivered(body)
         except Exception:
             logger.debug("discord: thinking note send failed", exc_info=True)
 

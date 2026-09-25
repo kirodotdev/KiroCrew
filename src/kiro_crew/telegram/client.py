@@ -929,11 +929,17 @@ class TelegramClient:
         parse_mode: str | None = None,
         reply_markup: dict | None = None,
         retry_plain: bool = True,
+        err_out: dict | None = None,
     ) -> bool:
         """Edit an existing message in-place (for streaming). Returns True on success.
 
         Plaintext by default (see ``send_message``) so streaming edits carrying
         markdown/code never 400 and burn the ~30/min/chat edit budget on retries.
+
+        ``err_out``, when supplied, carries Telegram's own ``error_code`` and
+        ``description`` for the LAST attempt. A caller that grades later deliveries
+        against what the reader can see needs it: "did it land" cannot tell a message
+        the user deleted from a rate limit, and the two call for opposite handling.
         """
         params: dict[str, Any] = {
             "chat_id": chat_id,
@@ -944,13 +950,55 @@ class TelegramClient:
             params["parse_mode"] = parse_mode
         if reply_markup:
             params["reply_markup"] = reply_markup
-        result = await self._api("editMessageText", params)
+        result = await self._api("editMessageText", params, err_out=err_out)
         if result is not None:
             return True
         if parse_mode and retry_plain:
             params.pop("parse_mode", None)
-            result = await self._api("editMessageText", params)
+            result = await self._api("editMessageText", params, err_out=err_out)
         return result is not None
+
+    async def edit_message_visibility(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        *,
+        parse_mode: str | None = None,
+        reply_markup: dict | None = None,
+        retry_plain: bool = True,
+    ) -> str:
+        """Edit a message, reporting whether it is still THERE when the edit fails.
+
+        ``ok`` -- it landed. ``gone`` -- Telegram says the message is not there to
+        edit, so it is not on the reader's screen. ``failed`` -- anything else (a
+        429, a 5xx, a network blip), so it still is.
+
+        Separating those two is why this exists. A caller that grades later
+        deliveries against the screen must keep a bubble that survived and drop one
+        that did not: a message kept in that window when it is gone stands between
+        two messages the reader sees as NEIGHBOURS, and the credential predicate then
+        reads the pair it separates as no pair at all. "Delete for everyone" is one
+        tap in a private chat, so this is an ordinary outcome rather than an exotic
+        one.
+        """
+        err: dict = {}
+        landed = await self.edit_message(
+            chat_id,
+            message_id,
+            text,
+            parse_mode=parse_mode,
+            reply_markup=reply_markup,
+            retry_plain=retry_plain,
+            err_out=err,
+        )
+        if landed:
+            return "ok"
+        description = str(err.get("description", "")).lower()
+        absent = (
+            "message to edit not found" in description or "message can't be edited" in description
+        )
+        return "gone" if absent else "failed"
 
     async def edit_message_reply_markup(
         self, chat_id: int, message_id: int, reply_markup: dict | None = None
@@ -982,9 +1030,19 @@ class TelegramClient:
             params["text"] = text[:200]
         await self._api("answerCallbackQuery", params)
 
-    async def delete_message(self, chat_id: int, message_id: int) -> None:
-        """Delete a message (e.g. remove stale inline keyboards)."""
-        await self._api("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+    async def delete_message(self, chat_id: int, message_id: int) -> bool:
+        """Delete a message (e.g. remove stale inline keyboards). True when it went.
+
+        The answer is load-bearing rather than informational: a caller that grades
+        later deliveries against what is on screen needs to know whether this bubble
+        left it. Keeping a bubble in that window when it is gone inserts a piece
+        between two messages the reader sees as neighbours, and the credential
+        predicate reads the pair it separates as no pair at all.
+        """
+        return (
+            await self._api("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+            is not None
+        )
 
     async def set_message_reaction(self, chat_id: int, message_id: int, emoji: str) -> bool:
         """Set a single emoji reaction on a message (Bot API 7.0+ ``setMessageReaction``).

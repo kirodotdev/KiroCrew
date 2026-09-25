@@ -23,7 +23,7 @@ keeps its own (possibly session-scoped) redactor.
 from __future__ import annotations
 
 import re
-from typing import Callable
+from typing import Callable, Sequence
 
 from kiro_crew.preview_text import drop_format_chars
 
@@ -54,6 +54,28 @@ _EMPHASIS_RUN = re.compile(r"(?:[*_~`]|\|\|)+")
 # safe, since the fallback is to scan the text as written.
 _MD_LINK = re.compile(r"\[([^\[\]\n]*)\]\(([^()\n]*)\)")
 _SLACK_LINK = re.compile(r"<([^<>|\n]*)\|([^<>\n]*)>")
+
+#: One run of whitespace -- the granularity at which a credential completion is cut
+#: off the front of a pending message. A credential never straddles a space, so a
+#: whole word is the smallest unit that removes a completion OUTRIGHT rather than
+#: trimming it until a pattern stops matching and leaving the rest readable.
+_WORD_BREAK = re.compile(r"\s+")
+
+#: How many of the most recent delivered messages the grading window keeps WHOLE, each
+#: its own piece with its own boundary. Small on purpose: ``severs_a_credential`` builds
+#: a reading per boundary and each spans the whole join, so the work is quadratic in the
+#: piece count. Four covers the shapes that need separate boundaries -- a head, a message
+#: carrying only a link target, the closing bracket, and the text going out.
+_WINDOW_RECENT = 4
+
+#: How far back the MERGED tail reaches, in characters of what the reader actually SEES.
+#: Everything older than the recent messages is folded into one canonical piece trimmed
+#: to this, so no message is dropped while its characters are still within reach -- only
+#: the boundaries inside the merged block are given up, and those are the ones furthest
+#: from the pending text. Canonical characters rather than raw ones: canonicalising DROPS
+#: a link's target, so a raw budget would trim away the short visible text actually
+#: adjacent to the pending message while keeping a long invisible one.
+_WINDOW_CANON_CHARS = 2048
 
 
 def strip_ansi(text: str) -> str:
@@ -169,43 +191,238 @@ def joins_to_a_credential(head: str, tail: str, redactor: Callable[[str], str]) 
     return any(redactor(reading) != reading for reading in readings)
 
 
-def safe_split_offset(text: str, limit: int, redactor: Callable[[str], str]) -> int:
+def safe_split_offset(
+    text: str,
+    limit: int,
+    redactor: Callable[[str], str],
+    present: Callable[[str], str] | None = None,
+) -> int:
     """The largest SAMPLED offset at or below *limit* that severs no credential.
 
-    Not the largest safe offset: the candidates are sampled, so a safe offset
-    between two samples is passed over. Those characters are not lost, only
-    deferred to the next delivery.
+    *present* maps a side to the form the platform will actually DELIVER, and both
+    sides go through it before grading. It has to be the caller's own, because a
+    renderer that strips steering markers, horizontal rules or surrounding whitespace
+    on the way out delivers something shorter than the raw slice: grading the raw
+    slice then accepts an offset whose delivered halves sit flush together. Worse than
+    accepting it once -- the search is deterministic, so a caller that re-grades the
+    answer in delivered form and rejects it gets the SAME answer every time and the
+    segment never goes out at all. Default is identity, for a caller that delivers
+    its text verbatim.
 
-    Used by a renderer whose message cap forces *text* into two deliveries: cut
-    here and :func:`joins_to_a_credential` is false, so the reader cannot rejoin a
-    key across the boundary.
+    Not the largest safe offset: the candidates are sampled, so a safe offset between
+    two samples is passed over. Those characters are not lost, only deferred to the
+    next delivery.
+
+    Used by a renderer whose message cap forces *text* into two deliveries: cut here
+    and :func:`joins_to_a_credential` is false of the delivered halves, so the reader
+    cannot rejoin a key across the boundary.
 
     Candidates step back EXPONENTIALLY (``limit``, then 1, 2, 4, 8 ... characters
-    before it), for a cost bound: the nearest safe boundary is not needed, only a
-    safe one, and stepping past it merely defers a few more characters to the next
+    before it), for a cost bound: the nearest safe boundary is not needed, only a safe
+    one, and stepping past it merely defers a few more characters to the next
     delivery. A linear walk would be O(*limit*) redaction passes over
     attacker-influenced text on every frame; this is O(log *limit*), and the common
-    case -- prose, where any cut is safe -- costs one pass, or none at all when
-    *text* already fits.
+    case -- prose, where any cut is safe -- costs one pass, or none at all when *text*
+    already fits.
 
-    ``0`` means every SAMPLED candidate was unsafe -- one matched region covers all
-    of them. A safe offset between two samples may still exist; the search does not
-    look for it, because the answer it needs is only "is there a safe cut I can take
-    now". Callers treat ``0`` as "deliver nothing yet", which is always available to
-    them: text withheld now is text the next delivery carries.
+    ``0`` means every SAMPLED candidate was unsafe -- one matched region covers all of
+    them. A safe offset between two samples may still exist; the search does not look
+    for it, because the answer it needs is only "is there a safe cut I can take now".
+    Callers treat ``0`` as "deliver nothing yet", which is always available to them:
+    text withheld now is text the next delivery carries.
     """
     if limit <= 0:
         return 0
     if limit >= len(text):
         # Nothing is severed, so there is no boundary to check.
         return len(text)
+    shown = present or (lambda piece: piece)
     offset, step = limit, 0
     while offset > 0:
-        if not joins_to_a_credential(text[:offset], text[offset:], redactor):
+        if not joins_to_a_credential(shown(text[:offset]), shown(text[offset:]), redactor):
             return offset
         step = 1 if step == 0 else step * 2
         offset = limit - step
     return 0
+
+
+def severs_a_credential(pieces: Sequence[str], redactor: Callable[[str], str]) -> bool:
+    """Would a reader shown *pieces* in order see a key that none of them holds?
+
+    A renderer whose cap forces one buffer into several messages redacts each message
+    ALONE, so a credential the split severed matches nothing in any single message --
+    and the reader's client renders the markup away and reads the pieces one under
+    the other, in order, as one text.
+
+    Two readings, because neither subsumes the other:
+
+    * **the whole sequence**, every piece redacted alone and then put together. This
+      is what catches a key whose MARKUP spans an entire piece rather than whose
+      characters do: cut ``AKIA[KEYTAIL](http://host/<long>)`` into three and no
+      neighbouring pair canonicalises to anything (the link needs its closing
+      bracket, which is in the third piece), while the full join collapses the url
+      to the label and puts the label against ``AKIA``. Piece length is no defence
+      here -- canonicalising DROPS a link's target, so a piece of any size can
+      vanish entirely.
+    * **each boundary against everything after it**, which is the reading that
+      survives a pattern needing a trailing boundary: the reader sees a message
+      break where the whole-sequence join sees the next character, so a key
+      completed at the end of one piece must be caught even when later text would
+      spoil the match.
+
+    Every piece is put through the same redaction the sender will apply and then
+    reduced to what the platform SHOWS, exactly as :func:`joins_to_a_credential`
+    does for a single cut -- of which this is the n-piece case. Soundness rests on
+    the same property: ``redact_for_display`` is already a fixed point for one
+    string, so whatever either reading finds is produced by putting pieces together
+    and by nothing else. One piece therefore answers False: there is no boundary.
+
+    Callers must pass the pieces AS DELIVERED, not as the splitter produced them. A
+    renderer that strips steering markers, horizontal rules or surrounding
+    whitespace on the way out delivers something shorter than it graded, and two
+    pieces whose facing edges are whitespace become adjacent on screen -- where
+    ``AKIAIOSF`` and ``    ODNN7EXAMPLE`` read as one key that no credential pattern
+    tolerating no whitespace would have matched.
+
+    True means the split is unusable and the caller must cut somewhere else (see
+    :func:`safe_split_offset`) or deliver nothing at all.
+    """
+    safe = [redact_for_display(piece, redactor)[0] for piece in pieces]
+    readings = [
+        canonicalize_display("".join(safe)),
+        "".join(canonicalize_display(piece) for piece in safe),
+    ]
+    for index in range(len(safe) - 1):
+        rest = "".join(safe[index + 1 :])
+        readings.append(canonicalize_display(safe[index] + rest))
+        readings.append(canonicalize_display(safe[index]) + canonicalize_display(rest))
+    return any(redactor(reading) != reading for reading in readings)
+
+
+def delivered_window(window: Sequence[str], landed: str) -> list[str]:
+    """*window* with *landed* added as the reader's nearest message, bounded.
+
+    The screen tail a later delivery is graded against. One predecessor is not
+    enough: canonicalising is non-local, so a key can span a head, a message
+    holding only a link target and a message holding only the closing bracket,
+    and every adjacent PAIR of those reads clean (see
+    :func:`severs_a_credential`). Only a window that holds all of them at once
+    sees it.
+
+    Bounded, because the alternative is a renderer that accumulates every message
+    of a long turn and a predicate whose cost grows with it -- each reading in
+    ``severs_a_credential`` spans the whole join, and there is one per boundary, so
+    the work is quadratic in the number of pieces.
+
+    Nothing is DROPPED to meet that bound, because a dropped message is one the reader
+    can still see and a key can still finish against. The recent messages are kept
+    whole, each its own piece with its own boundary, and everything older is MERGED
+    into a single piece holding the trailing characters of what those messages put on
+    screen. Merging costs only the boundaries INSIDE the merged block, which are the
+    ones furthest from the pending text; the characters themselves stay in every
+    reading. A message-count cap that evicted instead would throw away exactly the
+    fragment a run of near-invisible deliveries pushes out -- the construction this
+    module defends against, and one the model on the other side can drive.
+
+    The merged piece is stored in canonical form, which is what makes it a rolling
+    tail: canonicalising is idempotent, so folding the next message into it and
+    trimming to the budget can be repeated without the representation drifting. The
+    budget counts those canonical characters rather than raw ones because
+    canonicalising DROPS a link's target, so a message of any raw size can contribute
+    almost nothing to what the reader reads, and a raw budget would trim away the
+    short text actually adjacent to the pending message.
+
+    Every message entered is counted once per delivery and never collapsed against its
+    neighbour. Two consecutive deliveries CAN be byte-identical -- an edit pair that
+    returns not-modified falls through to a duplicate send, and a degraded segment can
+    repeat a header row -- and the boundary between those two is as real as any other:
+    a message whose tail ends a key's head and whose own head completes it hands the
+    reader that key across its own repeat. Not entering the same message twice is the
+    caller's job, where message identity is known.
+
+    The bound is a bound, so it is also a limit: a credential whose canonical form
+    spans more characters of screen than the budget reaches is not caught here, and
+    no finite budget closes that -- the bare-secret-run pattern has no upper length.
+    What it takes is for the retained screen tail to be a property of the transport
+    rather than of one renderer's field, and that is tracked separately.
+    """
+    pieces = [piece for piece in window if piece]
+    if landed:
+        pieces.append(landed)
+    if len(pieces) <= _WINDOW_RECENT:
+        return pieces
+    older, recent = pieces[:-_WINDOW_RECENT], pieces[-_WINDOW_RECENT:]
+    tail = canonicalize_display("".join(older))[-_WINDOW_CANON_CHARS:]
+    return [tail, *recent] if tail else recent
+
+
+def redact_across_delivery(
+    delivered: str | Sequence[str], pending: str, redactor: Callable[[str], str]
+) -> str:
+    """*pending*, with whatever completes a key against *delivered* taken out.
+
+    *delivered* is the message ALREADY on screen, or several of them in delivery
+    order with the reader's nearest last. A window rather than a single message,
+    for two reasons that are the same reason. Canonicalising is non-local, so a
+    key can span THREE messages -- a head, a message holding only a link target,
+    and the closing bracket -- and every adjacent PAIR of those reads clean while
+    the join does not; one predecessor cannot see that. And a live frame whose
+    edit FAILED is still on the reader's screen even though the next payload is
+    sent rather than edited, so on that path the frame is a neighbour too, sitting
+    between the last closed message and the text going out.
+
+    A seam is graded when the cut is made, over the text present THEN. That is not a
+    decision that keeps: characters arriving later can change how earlier ones
+    render. A message ending ``...AKIA`` beside a live tail of ``[KEYTAIL`` grades
+    clean -- the link has no closing bracket yet -- and once it is sent it cannot be
+    recalled; the bracket then arrives and the reader reads one key down the screen.
+
+    So the boundary is graded again at every delivery, against what is already on
+    screen. When the join reveals a key, the remedy has to act on the PENDING side,
+    because that is the only side still in hand.
+
+    Everything this returns is built from *pending* ALONE, and that is the whole
+    design rather than a detail. Redacting the JOIN and slicing the result at the
+    point where it stops matching *delivered* cannot work: the redaction of a join
+    may emit its canonical form, which differs from *delivered* from the first piece
+    of markup onward -- before the match, not at it -- so the slice falls at a
+    representation boundary and carries a re-rendered copy of prose the reader can
+    already see. Duplicated prose and a truncated placeholder are the two shapes
+    that produces.
+
+    Withholding is NOT an alternative either. The text must be delivered eventually,
+    and a later seal redacts only its own segment -- it cannot see the half that is
+    already gone -- so deferring would ship the completion untouched.
+
+    So *pending* is redacted on its own terms first. When that is still not enough,
+    the key's completion is what sits at the front of it, and leading WORDS are
+    dropped until the predicate agrees.
+
+    Words, not characters, and that is the point. A character-at-a-time cut stops at
+    the first length the pattern fails to match, which for a twenty-character key
+    means nineteen of its characters stay on screen -- safe by the regex and plainly
+    readable by a human. A credential does not straddle a space, so the completion
+    lies inside the first word; removing whole words removes it outright. The empty
+    string is always safe -- *delivered* alone is already a fixed point -- so the walk
+    terminates.
+
+    The predicate throughout is the one that fired, :func:`severs_a_credential`, and
+    that matters: :func:`redact_for_display` scans a strictly SMALLER set of readings
+    -- it has no per-piece canonical reading -- so its rewrite alone can leave a
+    match that only the wider reading sees, and a cut inside a link's target is
+    exactly such a match.
+    """
+    pieces = [delivered] if isinstance(delivered, str) else list(delivered)
+    window = [piece for piece in pieces if piece]
+    if not window or not severs_a_credential([*window, pending], redactor):
+        return pending
+    candidate = redact_for_display(pending, redactor)[0]
+    while candidate and severs_a_credential([*window, candidate], redactor):
+        head = candidate.lstrip()
+        gap = len(candidate) - len(head)
+        cut = _WORD_BREAK.search(candidate, gap + 1)
+        candidate = candidate[cut.end() :] if cut else ""
+    return candidate
 
 
 def redact_for_display(text: str, redactor: Callable[[str], str]) -> tuple[str, bool]:
