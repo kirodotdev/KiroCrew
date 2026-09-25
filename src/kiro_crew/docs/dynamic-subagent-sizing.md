@@ -161,8 +161,8 @@ bounds how many agents RUN at once. `subagent_spawn_stagger_secs` bounds the
 RATE at which starts are admitted -- one per interval -- and says nothing about
 how many are still starting. `SubagentManager._startup_cap` bounds how many
 admitted agents are IN STARTUP at once: past `_run_inner`'s first statement
-(`_exec_started` set) but with no runtime PID, no first provider stream and no
-turn -- the same shape the startup watchdog reaps on. A durable-store
+(`_exec_started` set) but with no runtime PID, no answer on its own session
+yet and no turn -- the same shape the startup watchdog reaps on. A durable-store
 reservation not yet registered as an agent is counted in its place, since its
 re-entry skips the admission gate. An agent PARKED at the spawn-approval prompt
 is deliberately NOT counted: it is starting nothing, and counting it would let a
@@ -186,7 +186,7 @@ loss a healthy start reaped as `Failed to start within 120s`, and every retry of
 one deepening the crowd that caused it. The bound holds further spawns in the
 EXISTING queue (`_should_stagger_queue_impl` gains a third clause; the drain
 pump holds its pick under the same test) and the queue wakes on the edges that
-free a startup slot: a runtime PID or a first stream (`_note_startup_progress`)
+free a startup slot: a runtime PID or the first answer on the run's own session (`_note_startup_progress`)
 and a terminal, including the watchdog's reap of a wedged start (the
 slot-release drain), so a wedged population cannot hold the queue past the
 reap.
@@ -229,8 +229,9 @@ manager's `_gate_wait_mark` stamps `_gate_wait_started` on the first, and while
 that stamp is set the startup watchdog reads the start clock as frozen at that
 moment; `_gate_exit_reset` clears the stamp and restarts the clock on the
 second. So the deadline measures time spent STARTING -- before the gate (a
-process spawn on the dedicated path) and with a permit held (`session/new`) --
-and never time queued behind other starts, however long the queue. The wait is
+process spawn on the dedicated path) and from gate exit until the start's exit
+(a runtime PID, or for a start that publishes none its first answer) -- and
+never time queued behind other starts, however long the queue. The wait is
 finite without a deadline of its own: every permit holder is on a running clock
 from acquisition and is reaped at the base deadline if its `session/new` has
 not returned, the request has its own budget (`agent.session_start_timeout_secs`),

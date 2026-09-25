@@ -93,10 +93,11 @@ class _WaitsMixin(ManagerComponent):
             # only FROM ``running``, the run's own ``running`` mark is itself
             # posted (``taskq_mark``), and a posted write is not ordered against
             # an inline one. Written inline here, a wait carried by the run's
-            # FIRST stream frame reaches the row while it is still ``starting``,
-            # is refused, and the late ``running`` write then leaves the row
-            # ``running`` with no durable wait reason at all. On the store's one
-            # writer thread the two land in submission order instead.
+            # first stream frame on its own session reaches the row while it is
+            # still ``starting``, is refused, and the late ``running`` write
+            # then leaves the row ``running`` with no durable wait reason at
+            # all. On the store's one writer thread the two land in submission
+            # order instead.
             self._post_store_write(
                 store,
                 f"wait write {info.id}",

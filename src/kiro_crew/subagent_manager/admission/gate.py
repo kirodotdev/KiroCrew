@@ -1291,7 +1291,7 @@ class _GateMixin(ManagerComponent):
         else:
             # Registered and handed to a run (or to the approval prompt, which
             # is part of starting): admitted -> starting. ``running`` is written
-            # by the run itself at its first stream event.
+            # by the run itself at its first stream event addressed to its session.
             self._manager._admission.taskq_mark(info, "starting")
             # Nested: a parent blocked in spawn_sub_agents yields its lane slot
             # for this child (taskq.waits, W3); an event-loop caller awaits the

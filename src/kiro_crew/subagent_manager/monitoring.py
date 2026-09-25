@@ -946,11 +946,12 @@ class OrphanStallMonitor(ManagerComponent):
                     # crowd, measured from gate exit (``_gate_exit_reset``).
                     logger.warning(
                         "Reaper: subagent %s failed to start within %ds "
-                        "(turn 0, no runtime launched; %d other agent(s) in startup), "
-                        "force-killing",
+                        "(turn 0, no runtime launched; %d other agent(s) in startup; "
+                        "%d co-tenant frame(s) received), force-killing",
                         agent_id,
                         self._stamped_startup_deadline(info),
                         self._manager._startup_population(exclude=info),
+                        info._startup_cotenant_frames,
                     )
                     try:
                         await self._manager._force_reap(
@@ -999,11 +1000,13 @@ class OrphanStallMonitor(ManagerComponent):
         """True if a subagent is wedged in startup and should be reaped early.
 
         A subagent qualifies only once it has actually entered execution
-        (``_exec_started`` set by ``_run_inner``) yet has not begun its first
-        provider stream, launched no runtime (``_pid is None``), and produced
-        no turn (``turns == 0``) within ``_startup_deadline`` seconds. A
-        provider can create its child lazily from ``stream()``, so a missing PID
-        alone is not evidence that startup has not progressed. Keying on
+        (``_exec_started`` set by ``_run_inner``) yet has launched no runtime
+        (``_pid is None``), had no answer on its own session
+        (``_first_stream_started``, see ``_leave_startup``) and produced no turn
+        (``turns == 0``) within ``_startup_deadline`` seconds. A provider can
+        create its child lazily from ``stream()``, so a missing PID alone is not
+        evidence that startup has not progressed; an opened stream is not
+        evidence that it has. Keying on
         ``_exec_started`` — not the registration timestamp ``started`` — means
         an agent merely awaiting spawn approval (never entered ``_run_inner``)
         is never caught here.
@@ -1014,7 +1017,8 @@ class OrphanStallMonitor(ManagerComponent):
         freezes at gate entry (``_gate_wait_mark`` stamps
         ``_gate_wait_started``, which stands in for *now* here) and restarts at
         acquisition (``_gate_exit_reset``). So the clock measures time spent
-        STARTING -- before the gate and with a permit held -- never time queued
+        STARTING -- before the gate, and from gate exit until the start's exit
+        (a runtime PID, or its first answer) -- never time queued
         behind other starts, on both start paths, and the in-startup population
         is bounded separately by ``_startup_cap`` at admission. The deadline does not grow with the
         population: a term sampled at sweep time against a clock spanning the

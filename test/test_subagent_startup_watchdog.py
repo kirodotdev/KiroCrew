@@ -164,6 +164,23 @@ async def test_force_reap_startup_timeout_error_and_tombstone_cause():
 
 
 @pytest.mark.asyncio
+async def test_startup_reap_names_the_co_tenant_frames_it_received():
+    """A start that received only another tenant's fanned-out traffic reads
+    apart, in its reap record, from one whose stream stayed silent."""
+    mgr = _make_manager(startup_timeout=120)
+    _neuter_force_reap_collaborators(mgr)
+    silent = _info(_exec_started=1.0, _pid=None, turns=0)
+    crowded = _info(_exec_started=1.0, _pid=None, turns=0)
+    crowded._startup_cotenant_frames = 7
+
+    await mgr._force_reap("a1b2c3d4", silent, 130.0, reason="startup_timeout")
+    await mgr._force_reap("e5f6a7b8", crowded, 130.0, reason="startup_timeout")
+
+    assert "0 co-tenant frame(s) received, none addressed to this session" in silent.error
+    assert "7 co-tenant frame(s) received, none addressed to this session" in crowded.error
+
+
+@pytest.mark.asyncio
 async def test_force_reap_default_reason_keeps_deadline_message():
     """Regression: the default (no-reason) reap message/cause are unchanged."""
     mgr = _make_manager(startup_timeout=120)

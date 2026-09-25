@@ -491,6 +491,21 @@ class TerminalCoordinator(ManagerComponent):
         # woken by our own session reset skip its error synthesis and report a
         # false SUCCESS before we own the record. See `_reap_started`.
         info._reap_started = True
+        # Snapshot what the reap is interrupting BEFORE the first await below.
+        # Both flags are cleared by their owners' ``finally`` -- the approval
+        # prompt's, and the admission wait's once the pump resolves its future --
+        # and the session teardown below yields long enough for either to run
+        # (``sessions.reset`` waits on the registry lock under fan-out). Both
+        # only ever go True -> False from here, so an early read is the reading
+        # of what was interrupted; a late one would drop the "never started"
+        # record for the deadline text. Both conjuncts are load-bearing: run.py
+        # also sets ``_awaiting_approval`` for mid-run TOOL prompts, where
+        # ``_exec_started`` is already set, so ``_exec_started is None`` is what
+        # distinguishes "never started" from "was running".
+        approval_parked = info._awaiting_approval and info._exec_started is None
+        # Same capture for the state right after: approved, and waiting for the
+        # pump to meter the start into startup (``_admit_released_start``).
+        release_parked = info._start_release is not None and info._exec_started is None
         # Written next to the marker, for the run loop: the session teardown
         # below poisons the run's stream, which raises ``AcpProcessDied`` inside
         # ``_run`` before this method's own record is written. ``_run`` reads
@@ -562,20 +577,6 @@ class TerminalCoordinator(ManagerComponent):
             except Exception:
                 logger.exception("Reaper: reset failed for %s", agent_id)
 
-        # Snapshot "parked on a never-answered spawn approval" BEFORE the
-        # intentional cancel below, because the flag's owner clears it in a
-        # `finally` that the cancel schedules. Reading it at the record site
-        # instead would be correct only while no `await` sits between the cancel
-        # and that site — an invariant nothing enforces, and breaking it would
-        # silently restore the misleading deadline message. Both conjuncts are
-        # load-bearing: run.py also sets `_awaiting_approval` for mid-run TOOL
-        # prompts, where `_exec_started` is already set, so `_exec_started is
-        # None` is what distinguishes "never started" from "was running".
-        approval_parked = info._awaiting_approval and info._exec_started is None
-        # Same capture for the state right after: approved, and waiting for the
-        # pump to meter the start into startup (``_admit_released_start``).
-        release_parked = info._start_release is not None and info._exec_started is None
-
         task = self._manager._tasks.pop(agent_id, None)
         if task and not task.done():
             # `reaped` is set HERE — late, immediately before the intentional
@@ -613,7 +614,7 @@ class TerminalCoordinator(ManagerComponent):
                 elif release_parked:
                     info.error = f"Reaped after {int(elapsed)}s while still waiting to be admitted into startup after spawn approval (never started) [{_timeout_context(info, include_elapsed=False, turn_limit=self._manager._effective_turn_limit(info))}]"
                 elif reason == "startup_timeout":
-                    info.error = f"Failed to start within {self._manager._startup_deadline}s (no runtime launched, no turn produced) [{_timeout_context(info, include_elapsed=False, turn_limit=self._manager._effective_turn_limit(info))}]"
+                    info.error = f"Failed to start within {self._manager._startup_deadline}s (no runtime launched, no turn produced; {info._startup_cotenant_frames} co-tenant frame(s) received, none addressed to this session) [{_timeout_context(info, include_elapsed=False, turn_limit=self._manager._effective_turn_limit(info))}]"
                 else:
                     info.error = f"Reaped after {int(elapsed)}s (exceeded {self._manager._default_timeout}s deadline) [{_timeout_context(info, include_elapsed=False, turn_limit=self._manager._effective_turn_limit(info))}]"
             if not info.user_stopped:
