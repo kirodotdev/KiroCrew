@@ -923,9 +923,10 @@ async def on_gateway_shutdown() -> None:
     Stop targets come from the runtime tracking table
     (:func:`spawned_backend_names`), never from persisted ``enabled`` metadata:
     the metadata filter is wrong in both directions here (it would signal an
-    ADOPTED externally-managed backend whose contract is to survive gateway
-    exit, and it would miss a still-running child whose app was disabled
-    cross-process, metadata-only). It also keeps :func:`stop_app_backend` — and
+    ADOPTED backend — a survivor of a prior gateway generation this gateway
+    re-attributed to the spawn it had recorded — which this shutdown has no
+    live handle to stop, and it would miss a still-running child whose app was
+    disabled cross-process, metadata-only). It also keeps :func:`stop_app_backend` — and
     its pidfile-record erasure — away from apps with nothing running, so a
     retained prior-generation orphan record stays recoverable by the next
     boot's stale-reap.

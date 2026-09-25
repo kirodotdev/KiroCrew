@@ -598,9 +598,7 @@ def _copy_app_tree(source: Path, dest: Path) -> None:
         # prefix: an app-owned name that merely shares the prefix (e.g.
         # ".kirocrew-deps-staging-assets") is the app's data and must copy.
         skip = {
-            n
-            for n in names
-            if n in _COPY_IGNORE or _DEPS_STAGING_SWEEP_RE.fullmatch(n) is not None
+            n for n in names if n in _COPY_IGNORE or _DEPS_STAGING_SWEEP_RE.fullmatch(n) is not None
         }
         for n in names:
             if n in skip:
@@ -621,9 +619,7 @@ def _copy_app_tree(source: Path, dest: Path) -> None:
                     # (Windows) or mixed abs/rel — treat as escaping.
                     escapes = True
                 if escapes:
-                    logger.warning(
-                        "Omitting symlink escaping app source root: %s", p
-                    )
+                    logger.warning("Omitting symlink escaping app source root: %s", p)
                     skip.add(n)
         return skip
 
@@ -649,9 +645,7 @@ def _copy_app_tree(source: Path, dest: Path) -> None:
                 continue
             rel_to_src = os.path.relpath(os.path.realpath(p), src_root)
             os.remove(p)
-            os.symlink(
-                os.path.relpath(os.path.join(dest, rel_to_src), os.path.dirname(p)), p
-            )
+            os.symlink(os.path.relpath(os.path.join(dest, rel_to_src), os.path.dirname(p)), p)
 
 
 def preserved_data_awaits(name: str) -> bool:
@@ -821,8 +815,7 @@ def install_app(
     name = manifest.name
     if expected_name is not None and name != expected_name:
         detail = (
-            f"app identity changed during install: expected {expected_name!r}, "
-            f"found {name!r}"
+            f"app identity changed during install: expected {expected_name!r}, " f"found {name!r}"
         )
         sel().log_api_access(
             caller="app_install",
@@ -1088,9 +1081,7 @@ def install_app(
         ok=True,
         name=name,
         message=f"installed {name} v{manifest.version}",
-        notice=(
-            "session_approval_reconsent" if manifest.permissions.sessionApproval else ""
-        ),
+        notice=("session_approval_reconsent" if manifest.permissions.sessionApproval else ""),
     )
 
 
@@ -1441,6 +1432,49 @@ def uninstall_app(name: str, *, keep_data: bool = True) -> AppResult:
             error_code="trust_grant_not_removed",
         )
 
+    # Revoke the backend spawn provenance BEFORE the destructive step, and abort the
+    # uninstall if the revocation cannot be made durable.
+    #
+    # The spawn row keyed on this app NAME vouches for whatever still holds the
+    # backend port — including a child that survived the pre-uninstall SIGTERM and
+    # forked a replacement. Left standing, that row lets a SAME-NAME reinstall adopt
+    # the old-code survivor as the new app's backend (the exact misattribution the
+    # provenance gate exists to stop). Both uninstall entry points run through this
+    # one function, so revoking HERE closes the CLI path too — `kirocrew app
+    # uninstall` reached `uninstall_app` directly and never revoked, so an offline
+    # uninstall left the row valid for a replacement installation.
+    #
+    # DURABLE and confirmed, ordered like the trust-grant withdrawal above: a failure
+    # is retryable with nothing destroyed. The in-memory quarantine set does not
+    # survive a restart, so the guarantee rests on the `revoked` stamp being re-read
+    # off disk; when a full disk (ENOSPC/EDQUOT) cannot persist it we refuse the
+    # uninstall rather than delete the files and leave a live-vouching row behind.
+    # Captured for the except-arm restore below, exactly like the grant.
+    from kiro_crew.apps.backend_runtime.pidfile import (  # deferred: layering, see below
+        PidfileRevokeFailed,
+        _unrevoke_app_pid,
+        revoke_backend_provenance,
+    )
+
+    try:
+        revoked_row = revoke_backend_provenance(name)
+    except PidfileRevokeFailed as exc:
+        _restore_trust_grant(
+            name, had_grant, granted_repository, local=granted_local, expected_app=meta
+        )
+        return AppResult(
+            ok=False,
+            name=name,
+            error=(
+                f"not uninstalling {name!r}: its backend spawn record could not be "
+                f"durably revoked ({exc}). The record vouches for whatever holds the "
+                f"backend port, so removing the app while it stands would let a "
+                f"same-name reinstall adopt a surviving old-code process. Free disk "
+                f"space and retry."
+            ),
+            error_code="provenance_not_revoked",
+        )
+
     from kiro_crew.apps.backend import _pinned_ancestors  # deferred: see below
 
     quarantined: list[tuple[Path, Path]] = []
@@ -1503,13 +1537,17 @@ def uninstall_app(name: str, *, keep_data: bool = True) -> AppResult:
                 # the provisioner's own open.
                 _lflags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
                 _lock_name = (
-                    ".kirocrew-deps.lock" if _data_pin.fd is not None
+                    ".kirocrew-deps.lock"
+                    if _data_pin.fd is not None
                     else str(data / ".kirocrew-deps.lock")
                 )
                 # Same creator election as the provisioner: uninstall can race
                 # its first open before either caller holds the dependency lock.
                 _lfd = platform_compat.open_create_or_existing(
-                    _lock_name, _lflags, 0o644, dir_fd=_data_pin.fd,
+                    _lock_name,
+                    _lflags,
+                    0o644,
+                    dir_fd=_data_pin.fd,
                 )
                 _deps_lock = contextlib.ExitStack()
                 _lf = _deps_lock.enter_context(os.fdopen(_lfd, "r+"))
@@ -1658,8 +1696,7 @@ def uninstall_app(name: str, *, keep_data: bool = True) -> AppResult:
                     shutil.move(str(_tmp_restore), str(_data_restore))
             except OSError as restore_exc:
                 logger.warning(
-                    "Could not restore preserved data for app %s after a "
-                    "failed uninstall: %s",
+                    "Could not restore preserved data for app %s after a " "failed uninstall: %s",
                     name,
                     restore_exc,
                 )
@@ -1698,6 +1735,26 @@ def uninstall_app(name: str, *, keep_data: bool = True) -> AppResult:
         # but silently punitive. Restoring keeps the withdrawal-first ordering (so a
         # withdrawal failure stays retryable with nothing destroyed) AND leaves a
         # failed uninstall with no side effect on trust.
+        #
+        # Restore the spawn provenance too: the app is still installed, so its backend
+        # (if any) is legitimately the app's again and must stay attributable. The
+        # revoke above was the pre-destruction guard; the destruction did not happen,
+        # so the guard is lifted the same way the grant is. _unrevoke_app_pid (not
+        # _restore_app_pid, which is setdefault and would see the revoked row still
+        # present and refuse) clears the stamp when the live row is this spawn's revoked
+        # incarnation, while leaving any successor a fresh spawn recorded untouched.
+        # Best-effort — a restore that cannot persist only costs an extra adoption
+        # refusal on the still-installed app, never a wrong adoption.
+        if revoked_row is not None:
+            try:
+                _unrevoke_app_pid(name, revoked_row)
+            except Exception:  # noqa: BLE001 - report, never mask the real error
+                logger.warning(
+                    "could not restore %r's backend spawn record after a failed "
+                    "uninstall; a later start may refuse to adopt its live backend",
+                    name,
+                    exc_info=True,
+                )
         restore_note = ""
         try:
             _restore_trust_grant(
@@ -1718,11 +1775,23 @@ def uninstall_app(name: str, *, keep_data: bool = True) -> AppResult:
                 f"({restore_exc}). Review the current installed app, then re-grant "
                 f"it in Settings only if you still trust that occupant."
             )
-        return AppResult(
-            ok=False, name=name, error=f"failed to remove app: {exc}{restore_note}"
-        )
+        return AppResult(ok=False, name=name, error=f"failed to remove app: {exc}{restore_note}")
 
     logger.info("Uninstalled app %s (keep_data=%s)", name, keep_data)
+
+    # Commit boundary: the files are gone. The pre-destruction revoke left the spawn
+    # row stamped ``revoked``, and that tombstone is DELIBERATELY NOT DELETED here —
+    # it is the durable fence a committed uninstall needs. Deleting it would reopen a
+    # race: a gateway stop of this same app, running concurrently, forgets the row and
+    # (when a detached child still serves) RESTORES it via _restore_app_pid, whose
+    # only guard is name-absence; a delete here makes the name absent, so that restore
+    # resurrects a NON-revoked row and a same-name reinstall adopts the removed app's
+    # listener. Keeping the revoked tombstone makes both guards hold: _restore_app_pid
+    # refuses (the name is present) and _adoption_provenance refuses (the row is
+    # revoked). A fresh install's _record_app_pid overwrites the tombstone with its own
+    # un-revoked identity (the new installation generation), and the stale-reap drops a
+    # tombstone whose leader is dead and whose group has no survivor — so the fence
+    # neither leaks adoption nor accumulates. Nothing to do when there was no row.
 
     # Withdraw the grant a SECOND time, now that the files are actually gone.
     #
@@ -1913,6 +1982,7 @@ def _drop_trust_grant(name: str) -> None:
         if isinstance(local_locked, list):
             agent_locked["apps_trusted_local"] = [a for a in local_locked if a != name]
         return raw_locked
+
     # Concurrency: this is the repo's standard config read-modify-write, and it
     # inherits that model exactly — no cross-process lock, atomic (tmp+rename) on
     # the way out so no reader can see a torn file. `read_config_for_update`'s own
@@ -2097,8 +2167,7 @@ def _restore_trust_grant(
                 "in Settings before installing or running this name"
             ) from rollback_exc
         raise RuntimeError(
-            "the installed app changed while its grant was restored; the grant "
-            "was withdrawn"
+            "the installed app changed while its grant was restored; the grant " "was withdrawn"
         )
     logger.info("Restored %s's trust grant after a failed uninstall", name)
     try:
@@ -2150,9 +2219,13 @@ def _app_activation_denied(name: str, *, fail_closed: bool = False) -> str | Non
                 from kiro_crew.sel import sel
 
                 sel().log_governance_decision(
-                    session_key=HOST_SESSION_KEY, tool_name=f"enable_app:{name}", scope="apps",
-                    item=name, outcome="denied",
-                    rule=getattr(decision, "rule", ""), layer=getattr(decision, "layer", ""),
+                    session_key=HOST_SESSION_KEY,
+                    tool_name=f"enable_app:{name}",
+                    scope="apps",
+                    item=name,
+                    outcome="denied",
+                    rule=getattr(decision, "rule", ""),
+                    layer=getattr(decision, "layer", ""),
                     reason=getattr(decision, "reason", ""),
                 )
             except Exception:
@@ -2210,9 +2283,7 @@ def enable_app(name: str, *, session_approval_consent: bool = False) -> AppResul
                 resources=f"name={name!r}",
                 error=denied,
             )
-            return AppResult(
-                ok=False, name=name, error=f"blocked by admission policy: {denied}"
-            )
+            return AppResult(ok=False, name=name, error=f"blocked by admission policy: {denied}")
 
     # Deny before enabled metadata or any route-level registration, dependency,
     # lifecycle-script, hook, or backend side effect can occur.
@@ -2567,8 +2638,7 @@ def app_enabled_state(name: str) -> bool | None:
             # platform, so it cannot decide the verdict on its own.
             if not _absence_is_genuine(meta_path):
                 logger.warning(
-                    "Metadata path %s cannot exist: a component of it is not a "
-                    "directory",
+                    "Metadata path %s cannot exist: a component of it is not a " "directory",
                     meta_path,
                 )
                 return None
@@ -2735,9 +2805,7 @@ def register_external_app(
     admission_manifest = None
     if manifest_data:
         admission_manifest = AppManifest.from_dict(manifest_data)
-    denied = app_admission_denied(
-        name, manifest=admission_manifest, action="register_external"
-    )
+    denied = app_admission_denied(name, manifest=admission_manifest, action="register_external")
     if denied:
         sel().log_api_access(
             caller="app_register_external",
@@ -3461,9 +3529,7 @@ def register_builtin_apps() -> int:
         # link target and delete data OUTSIDE the apps tree. Also require the
         # resolved path to stay contained under apps_dir().
         if esc_dir.is_symlink():
-            logger.warning(
-                "Skipping escalation cleanup for %r: app dir is a symlink", esc_name
-            )
+            logger.warning("Skipping escalation cleanup for %r: app dir is a symlink", esc_name)
             continue
         if not esc_dir.is_dir():
             continue
@@ -3495,7 +3561,8 @@ def register_builtin_apps() -> int:
             logger.info(
                 "Skipping escalation cleanup for %r: platform lacks dir_fd "
                 "primitives to pin validation to deletion — remove the "
-                "directory manually if no longer needed", esc_name,
+                "directory manually if no longer needed",
+                esc_name,
             )
             continue
         parent_fd = -1
@@ -3564,7 +3631,8 @@ def register_builtin_apps() -> int:
                 # Symlinked data/ (ELOOP) or unreadable — fail closed: keep.
                 logger.warning(
                     "Skipping escalation cleanup for %r: cannot inspect data/: %s",
-                    esc_name, exc,
+                    esc_name,
+                    exc,
                 )
                 continue
             if has_data:
@@ -3572,7 +3640,8 @@ def register_builtin_apps() -> int:
                 # the operator.
                 logger.info(
                     "Keeping escalated builtin %r: data/ is non-empty — remove "
-                    "the directory manually if no longer needed", esc_name,
+                    "the directory manually if no longer needed",
+                    esc_name,
                 )
                 continue
 
@@ -3593,7 +3662,8 @@ def register_builtin_apps() -> int:
                 else:
                     logger.warning(
                         "Escalation cleanup for %r: directory entry changed "
-                        "after pin — leaving the new entry in place", esc_name,
+                        "after pin — leaving the new entry in place",
+                        esc_name,
                     )
             except FileNotFoundError:
                 pass
@@ -3655,7 +3725,10 @@ def register_builtin_apps() -> int:
                 "Not registering builtin %r: a user-installed app already occupies "
                 "%s (source=%r, origin=%r). Leaving its manifest and metadata "
                 "untouched; the builtin is not registered on this host.",
-                name, app_dir(name), existing.source, existing.origin,
+                name,
+                app_dir(name),
+                existing.source,
+                existing.origin,
             )
             continue
 

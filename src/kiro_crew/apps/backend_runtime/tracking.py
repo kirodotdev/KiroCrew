@@ -227,12 +227,16 @@ def spawned_backend_names() -> list[str]:
     """App names whose backend THIS gateway process spawned (``proc`` set).
 
     The gateway-shutdown sweep stops exactly these. Adopted records
-    (``proc is None``) are deliberately excluded: an adopted backend is an
-    externally managed instance whose contract is to SURVIVE gateway exit and
-    be re-probed and re-adopted on the next start (see the adoption comment in
-    ``_start_app_backend_body``) — signalling it from shutdown would take down
-    an independent service. Deriving the sweep from this tracking table rather
-    than from persisted ``enabled`` metadata also keeps it honest in both
+    (``proc is None``) are deliberately excluded: an adopted backend holds no
+    handle of ours, so signalling it from shutdown would take down a service this
+    process did not start. What happens to it after that is the stale-reap's
+    decision, not a re-adoption: :func:`_reap_stale_app_backends` runs at the next
+    boot BEFORE anything spawns, and it terminates a recorded leader that is still
+    alive with a matching start instant. Re-adoption is what serves the cases the
+    reap deliberately leaves standing -- a dead leader whose group member still
+    holds the port with the row retained, and a listener met by an enable rather
+    than a boot. Deriving the sweep from this tracking table
+    rather than from persisted ``enabled`` metadata also keeps it honest in both
     directions: a child whose app was disabled cross-process (metadata-only)
     is still stopped, and an app with nothing running is never passed to
     :func:`stop_app_backend`, whose ``_forget_app_pid`` would otherwise erase
