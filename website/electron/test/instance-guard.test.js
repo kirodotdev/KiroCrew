@@ -190,3 +190,30 @@ test("only a POSITIVE boolean marker refuses — truthy junk does not", () => {
   assert.equal(classifyGatewayReadiness(503, { shutting_down: "false" }), "starting");
   assert.equal(classifyGatewayReadiness(503, { shutting_down: 1 }), "starting");
 });
+
+test("older current-bundle gateways restart and retain local recovery ownership", () => {
+  const { classifyAdoptedGateway, chooseRecoveryStrategy } = require("../gateway-recovery");
+  for (const localOwner of ["kirocrew", "service"]) {
+    const decision = decideGatewayAction("0.7.1", { app: "kirocrew", version: "0.7.0" }, {
+      localOwner, bundledGateway: true,
+    });
+    assert.equal(decision.action, "restart-stale");
+    assert.equal(decision.oldVersion, "0.7.0");
+    const gatewayOwnership = classifyAdoptedGateway({ reason: decision.reason, localOwner });
+    assert.equal(chooseRecoveryStrategy({ gatewayOwnership }), "reconnect-bounded");
+  }
+});
+
+test("stale restart requires a proven local bundle and a strictly newer same-family app", () => {
+  const cases = [
+    ["foreign", true, "0.7.0"], ["none", true, "0.7.0"], ["unknown", true, "0.7.0"],
+    ["service", false, "0.7.0"], ["kirocrew", false, "0.7.0"],
+    ["kirocrew", true, "0.7.1"], ["kirocrew", true, "0.8.0"],
+    ["kirocrew", true, ""], ["kirocrew", true, "dev"],
+  ];
+  for (const [localOwner, bundledGateway, version] of cases) {
+    assert.equal(decideGatewayAction("0.7.1", { app: "kirocrew", version }, {
+      localOwner, bundledGateway,
+    }).action, "reuse", JSON.stringify({ localOwner, bundledGateway, version }));
+  }
+});

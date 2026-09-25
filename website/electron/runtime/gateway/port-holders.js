@@ -192,6 +192,7 @@ function createPortHolders({
     lsofListenPids,
     psCommand,
     psPpid,
+    pidAlive,
     snapshotGatewayPortPids,
     unverifiedIncumbent,
     waitForIncumbentExit,

@@ -31,6 +31,25 @@
 const GATEWAY_OWNERSHIP_STATES = Object.freeze(["none", "spawned", "reused-local", "reused-service"]);
 
 /**
+ * A graceful restart can exec in place, preserving the incumbent PID while its
+ * socket is unbound. Observe the installed version, not PID death, as success.
+ * Only a dead incumbent AND a free port permit the caller to spawn a replacement.
+ */
+async function waitForBundledGatewayRestart({
+  installedVersion, fetchHealth, incumbentAlive, portFree, sleep,
+  waitMs = 30_000, pollMs = 500, now = Date.now,
+}) {
+  const deadline = now() + waitMs;
+  for (;;) {
+    const health = await fetchHealth();
+    if (health?.app === "kirocrew" && health.version === installedVersion) return "updated";
+    if (!incumbentAlive() && await portFree()) return "exited";
+    if (now() >= deadline) return "timeout";
+    await sleep(pollMs);
+  }
+}
+
+/**
  * Classify an adopted (reuse-path) gateway into the ownership vocabulary.
  * Positive identification requires BOTH a same-family health answer and a
  * local LISTEN owner ("kirocrew"/"service"); anything less (tunnel, no visible
@@ -345,6 +364,7 @@ function isStaleBundleSignal({ exitCode = null, spawnErrorCode = "" }) {
 }
 
 module.exports = {
+  waitForBundledGatewayRestart,
   chooseRecoveryStrategy,
   classifyAdoptedGateway,
   revealWindowForConnect,

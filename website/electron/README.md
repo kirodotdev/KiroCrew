@@ -16,7 +16,24 @@ The app will:
 1. Reuse an existing gateway if one is already reachable and actually serving
    (`/api/ready` 200) — a gateway draining after `/api/shutdown` still answers
    `/api/status`, so it is never adopted; the app waits for the port to clear
-   and spawns fresh instead
+   and spawns fresh instead. If an older local gateway is running from this
+   app's current bundled backend path on a fixed-path POSIX install, request
+   one graceful restart and poll for the installed version before connecting.
+   The restart wait loads the splash before sending its progress status, including
+   on cold startup.
+   An exec may preserve its PID during the socket gap; a lost restart response
+   also gets the bounded version wait. An explicit HTTP refusal skips that wait.
+   A timeout rechecks readiness, waits for any drain and retains local
+   ownership for bounded recovery. After a requested restart, including a
+   refused request, an unconfirmed update shows a warning with the known
+   versions and a gateway stop command. A PPID-1 owner may be a detached orphan
+   or a managed service; only that branch adds instructions
+   to stop/update the service if the gateway starts again automatically. It explains
+   that continuing tries the existing gateway and updated features may be
+   unavailable. Dismissing the warning continues with the existing gateway.
+   A gateway independently reaching the installed version or completing its
+   drain does not show the warning. Windows and changed
+   AppImage mount paths retain the existing reuse behavior
 2. Launch `kirocrew gateway` when needed
 3. Show a loading screen while the backend boots. A live bundled backend gets an
    extended Windows cold-start window; a child that actually exits still fails
