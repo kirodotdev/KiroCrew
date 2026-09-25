@@ -4780,6 +4780,255 @@ def _handle_secrets(args: argparse.Namespace) -> None:
             )
             sys.exit(1)
         print(format_report(report))
+    elif action == "authorize":
+        _handle_secrets_authorize(args)
     else:
-        print("Usage: kirocrew secrets import [--apply]", file=sys.stderr)
+        print(
+            "Usage: kirocrew secrets [import [--apply] | authorize <name> <origin>]",
+            file=sys.stderr,
+        )
         sys.exit(1)
+
+
+def _handle_secrets_authorize(args: argparse.Namespace) -> None:
+    """Owner authorizes (or removes) a Custom secret's mediated egress origin and
+    re-signs the policy so trusted host code can confirm owner provenance.
+
+    Runs host-side under the owner: it reads/writes ``secret_request_policy.json``
+    directly (the file the agent sandbox masks) and signs the authorizations map
+    with the gateway-owned member key. An agent shell cannot reproduce this — the
+    signing key is unreadable inside the sandbox — which is exactly what lets the
+    loader distinguish an owner-authored policy from an agent-planted one.
+    """
+    from kiro_crew import platform_compat
+    from kiro_crew.config.loader import config_dir
+    from kiro_crew.secrets_mediation.policy import POLICY_FILENAME
+
+    cfg_dir = config_dir()
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    path = cfg_dir / POLICY_FILENAME
+    # Serialize the ENTIRE read-verify-modify-sign-write across processes: two
+    # concurrent `authorize` runs would otherwise each read the same policy,
+    # update their own copy, and have the last atomic write silently drop the
+    # other's entry. A lockfile beside the policy (owner-only) is the mutex.
+    lock_path = cfg_dir / f".{POLICY_FILENAME}.lock"
+    # Open the lock NO-FOLLOW as an alias-free regular file. If a sandboxed agent
+    # swapped the lock path for a symlink or a fresh inode between two concurrent
+    # authorizations, the two runs could lock DIFFERENT inodes and the last write
+    # would silently drop an authorization. O_NOFOLLOW refuses a link (POSIX-only,
+    # a no-op flag on Windows), so a path-level lstat first refuses a symlink on
+    # every platform; the regular-file + single-link fstat then rejects a swapped
+    # alias by inode.
+    try:
+        try:
+            if stat.S_ISLNK(os.lstat(lock_path).st_mode):
+                raise RuntimeError(
+                    "the secrets authorize lock path is a symlink; refusing to proceed "
+                    "so a swapped lock inode cannot drop an authorization."
+                )
+        except FileNotFoundError:
+            pass  # not yet created — os.open below creates a fresh regular file
+        lock_flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+        lock_fd = os.open(lock_path, lock_flags, 0o600)
+    except (RuntimeError, OSError) as exc:
+        # A planted symlink/hardlink/special file or an O_NOFOLLOW link race at
+        # the owner-only lock path fails safe (nothing is read or written yet),
+        # but must surface as a concise CLI error, not an uncaught traceback.
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    try:
+        st = os.fstat(lock_fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+            raise RuntimeError(
+                "the secrets authorize lock file is not an alias-free regular file; "
+                "refusing to proceed so a swapped lock inode cannot drop an authorization."
+            )
+        with platform_compat.file_lock(lock_fd, exclusive=True, required=True):
+            _authorize_txn(args, cfg_dir, path)
+    except (RuntimeError, OSError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        os.close(lock_fd)
+
+
+def _authorize_txn(args: "argparse.Namespace", cfg_dir, path) -> None:
+    """The locked read-verify-modify-sign-write body of ``secrets authorize``."""
+    import json
+
+    from kiro_crew.secrets_mediation.policy import (
+        PolicyError,
+        _parse_placement,
+        normalize_origin,
+    )
+    from kiro_crew.secrets_mediation.provenance import (
+        SIGNATURE_FIELD,
+        sign_authorizations,
+        verify_authorizations,
+    )
+
+    try:
+        raw_existing = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, ValueError) as exc:
+        # A present-but-unreadable/unparseable policy is NOT silently replaced:
+        # overwriting it could drop owner authorizations we simply failed to read.
+        # Abort without writing; the owner fixes the file and re-runs.
+        raise SystemExit(
+            f"error: {path} could not be read as JSON ({exc}); "
+            "refusing to overwrite it. Fix or remove the file and re-run."
+        )
+    if not isinstance(raw_existing, dict):
+        # Valid JSON but not an object (e.g. a list or scalar). Calling .get() on
+        # it would raise AttributeError; overwriting it could drop owner data.
+        # Abort without writing rather than crash or clobber.
+        raise SystemExit(
+            f"error: {path} is not a JSON object; refusing to overwrite it. "
+            "Fix or remove the file and re-run."
+        )
+    existing = raw_existing
+    existing_auth = existing.get("authorizations")
+    # When the signing key is ABSENT, verification is impossible — we cannot tell
+    # a legitimately owner-signed policy from a tampered one. Discarding here
+    # would silently ERASE existing owner authorizations just because the key is
+    # missing/unreadable. Refuse to overwrite a nonempty policy in that case; the
+    # owner restores the key (or removes the file) and re-runs. (A missing key is
+    # distinct from a present key that yields an invalid signature — the latter is
+    # an agent-plant/tamper and IS safe to discard below.)
+    from kiro_crew.secrets_mediation.provenance import _member_key
+
+    if (
+        isinstance(existing_auth, dict)
+        and existing_auth
+        and _member_key(cfg_dir, create=False) is None
+    ):
+        raise SystemExit(
+            f"error: the owner signing key (memory_stores/.member-api-key) is missing, so "
+            f"{path} cannot be verified; refusing to overwrite its existing authorizations. "
+            "Restore the key (or remove the policy file) and re-run."
+        )
+    # Carry forward existing authorizations ONLY if the file is already validly
+    # owner-signed. An unsigned/tampered map (what an agent could plant before the
+    # owner ever ran this command, or before the sandbox mask applied on upgrade)
+    # must NOT be preserved-and-re-signed — that would launder the agent's
+    # destination into an owner signature. Start from an empty map in that case.
+    if (
+        isinstance(existing_auth, dict)
+        and existing_auth
+        and verify_authorizations(existing_auth, existing.get(SIGNATURE_FIELD), cfg_dir)
+    ):
+        authorizations = existing_auth
+    elif isinstance(existing_auth, dict) and existing_auth:
+        # A nonempty policy whose signature does NOT verify (tampered, agent-planted,
+        # or signed under a different key). Do NOT silently discard it — that would
+        # erase whatever it holds, including a legitimate policy we merely can't
+        # confirm. Refuse unless the owner EXPLICITLY resets, which is the audited
+        # way to say "I know this file is not mine, throw it away and start over".
+        if not getattr(args, "reset", False):
+            raise SystemExit(
+                f"error: {path} exists but is not validly owner-signed (tampered or "
+                "not signed by this install's key); refusing to overwrite it. Re-run with "
+                "--reset to intentionally discard it and start a fresh signed policy."
+            )
+        print(
+            "warning: --reset given; discarding the existing unverifiable "
+            "secret_request_policy.json and starting a fresh owner-signed policy.",
+            file=sys.stderr,
+        )
+        authorizations = {}
+    else:
+        authorizations = {}
+
+    name = args.secret_name
+    if args.remove:
+        authorizations.pop(name, None)
+    else:
+        try:
+            origin = normalize_origin(args.origin)
+            placement = (
+                {"type": "header", "header": args.header} if args.header else {"type": "bearer"}
+            )
+            # Validate the placement the same way the loader will, up front.
+            _parse_placement(placement, name)
+        except PolicyError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        authorizations[name] = {"origin": origin, "placement": placement}
+        if getattr(args, "return_body", False):
+            # Owner opt-in, per origin: return this origin's (scrubbed) response
+            # body to the agent. Off by default so an unenumerable credential
+            # reflection has no arbitrary body to ride out on.
+            authorizations[name]["return_body"] = True
+
+    doc = {"version": 1, "authorizations": authorizations, SIGNATURE_FIELD: ""}
+    try:
+        doc[SIGNATURE_FIELD] = sign_authorizations(authorizations, cfg_dir)
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    # Owner-only atomic write beside config.json via the repo's atomic_write:
+    # random staged name (not a predictable PID path an agent could pre-create as
+    # a symlink), owner-only ACL applied before any bytes, fsynced, no-follow.
+    from kiro_crew.atomic_write import atomic_write
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Audit the authorization change BEFORE publishing the policy: granting or
+    # removing a credential egress is a security-relevant control edit, so it must
+    # never land unaudited. Emit the secret-free SEL event first (the NAME, the
+    # action, and on grant the authorized ORIGIN only; never a secret value) and
+    # ABORT the write if the PRE-write audit cannot be recorded — a durable
+    # egress-permission change with no audit trail is exactly what this record
+    # exists to prevent. The pre-write event is recorded as ``attempted``, not
+    # ``ok``: the write below can still fail (full disk, EIO, read-only fs), and
+    # recording success before publication would leave SEL permanently asserting
+    # a change that never landed. Success is recorded only AFTER atomic_write
+    # returns.
+    if args.remove:
+        _resources = f"secret={name} action=remove"
+    else:
+        _resources = f"secret={name} action=authorize origin={authorizations[name]['origin']}"
+    try:
+        sel().log_api_access(
+            caller="owner",
+            operation="mediated_secret_authorize",
+            outcome="attempted",
+            source="cli",
+            resources=_resources,
+            critical=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"error: could not record the required audit event for this "
+            f"authorization change ({type(exc).__name__}); refusing to change a "
+            f"credential-egress permission without an audit trail.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    atomic_write(
+        path,
+        json.dumps(doc, indent=2) + "\n",
+        fsync=True,
+        restrict_to_owner=True,
+    )
+    # Publication succeeded: record the terminal ``ok`` outcome. A best-effort
+    # log here (the change is already durable, so a missing success row must not
+    # undo it); the ``attempted`` row above is the guaranteed trail.
+    try:
+        sel().log_api_access(
+            caller="owner",
+            operation="mediated_secret_authorize",
+            outcome="ok",
+            source="cli",
+            resources=_resources,
+            critical=True,
+        )
+    except Exception:  # noqa: BLE001 — the change is durable; a missing ok row is not fatal
+        logging.getLogger(__name__).warning(
+            "mediated_secret_authorize succeeded but its success audit could not be recorded"
+        )
+    if args.remove:
+        print(f"Removed mediated-request authorization for {name!r}.")
+    else:
+        print(f"Authorized {name!r} for {authorizations[name]['origin']} (policy signed).")

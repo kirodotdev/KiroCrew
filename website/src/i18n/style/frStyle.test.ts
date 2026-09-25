@@ -138,14 +138,19 @@ describe('fr spacing (style/fr.md §1)', () => {
     }
     const bad = Object.entries(changed)
       .filter(([, value]) => {
-        if (/https?:\/\//.test(value)) return false
-        if (/\d:\d/.test(value)) return false
-        // A Windows drive-letter path (`D:\`, `D:\chemin\vers\projet`) is a
-        // literal the user types, not a French colon. Strip the token and test
-        // the REST of the value, so prose beside a path is still held to §1 —
-        // an early return here would let a malformed sentence ride in on a path.
-        const withoutDrivePaths = value.replace(/\b[A-Za-z]:[\\/]\S*/g, '')
-        return WRONG_DOUBLE_SPACE.test(withoutDrivePaths)
+        // Mask code tokens rather than skip the whole value, so a real §1
+        // colon-spacing error elsewhere in the same value is still caught.
+        // Strip any URI-scheme token (https://…, secret://…) and a d:d time —
+        // the `:` inside a URI scheme or a time is a code token, not French
+        // punctuation. A Windows drive-letter path (`D:\`, `D:\chemin\vers`)
+        // is likewise a literal the user types, not a French colon: strip that
+        // token too and test the REST of the value, so prose beside a path or
+        // URL is still held to §1 rather than riding in on the code token.
+        const masked = value
+          .replace(/[a-z][a-z0-9+.-]*:\/\/\S*/gi, ' ')
+          .replace(/\b[A-Za-z]:[\\/]\S*/g, ' ')
+          .replace(/\d:\d/g, ' ')
+        return WRONG_DOUBLE_SPACE.test(masked)
       })
       .map(([key, value]) => `${key}: ${JSON.stringify(value.slice(0, 60))}`)
     expect(bad, `${report(bad)}\n\nThere is no ceiling to raise for these — the value is yours.`)

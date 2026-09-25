@@ -144,8 +144,8 @@ app agent). Plain kiro-cli agents outside Kiro Crew keep kiro-cli's own default.
 ### Managed servers
 
 `agent._MANAGED_MCP_SERVERS` holds the eight servers the gateway owns end to
-end: the always-on `kirocrew-cron` and `kirocrew-core`, the gated
-`kirocrew-computer`, and the opt-in `kirocrew-dashboard`, `kirocrew-work`,
+end: the always-on `kirocrew-cron`, `kirocrew-core` and `kirocrew-secrets`, the
+gated `kirocrew-computer`, and the opt-in `kirocrew-dashboard`, `kirocrew-work`,
 `kirocrew-crew-log`, `kirocrew-debug` and `kirocrew-panel`. Every emitted or
 explicitly granted entry is refreshed on every rebuild by
 `_refresh_dynamic_fields()`, which rewrites `command`/`args` from the live
@@ -1250,6 +1250,7 @@ Managed servers, registered by `agent._MANAGED_MCP_SERVERS` and installed into
 | `kirocrew-crew-log` | `kirocrew mcp-crew-log` (`mcp_crew_log.py`) | `crew_log_list`, `crew_log_read`, `crew_log_projection` |
 | `kirocrew-debug` | `kirocrew mcp-debug` (`mcp_debug.py`) | `debug_gateway`, `debug_refusals`, `debug_threads`, `debug_processes`, `debug_snapshots` |
 | `kirocrew-panel` | `kirocrew mcp-panel` (`mcp_panel.py`) | `panel_publish`, `panel_templates` |
+| `kirocrew-secrets` | `kirocrew mcp-secrets` (`mcp_secrets.py`) | `call_api_with_secret` |
 
 `kirocrew-panel` is opt-in and reaches a crew member's DM session the way
 `kirocrew-dashboard` does: as a session-level `mcpServers` entry carrying that

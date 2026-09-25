@@ -4433,6 +4433,169 @@ async def api_session_tool_policy(request: web.Request) -> web.Response:
     return web.json_response(policy)
 
 
+async def api_mediated_secret_request(request: web.Request) -> web.Response:
+    """POST /api/mediated-secret-request — perform an owner-authorized outbound
+    HTTPS request that carries a Custom secret, WITHOUT the secret ever leaving
+    this host process.
+
+    The in-sandbox ``kirocrew-secrets`` MCP tool cannot read the vault: managed
+    MCP servers share the agent's mount namespace, where ``.vault`` is
+    bind-mount-hidden. So the tool forwards the non-secret request intent here,
+    to the unsandboxed dashboard process, which is the same trust boundary that
+    already resolves ``secret://`` env references. Only here is the vault
+    readable and ``secret_request_policy.json`` protected by the OS sandbox from
+    the agent. The response body returned to the caller is sanitized by
+    :func:`perform_mediated_request` and never contains the secret.
+
+    Authenticated via X-Internal-Secret + X-Session-Key, exactly like
+    ``/api/session-tool-policy``: only a same-host MCP subprocess can reach it.
+    """
+    # Machines only. A credential-bearing egress must never be reachable through
+    # the browser cookie fall-through: require the proven internal-secret
+    # authority (``request["internal_auth"]``) before doing any work, so a
+    # dashboard bearer that slipped past the strict-path routing still cannot
+    # drive a mediated request that skips the MCP approval gate.
+    if request.get("internal_auth") is not True:
+        _sel().log_api_access(
+            caller=request.headers.get("X-Session-Key", "unknown"),
+            operation="mediated_secret_request",
+            outcome="denied",
+            source="dashboard",
+            resources="not an internal-secret caller",
+        )
+        return web.json_response(
+            {"error": "internal authority required", "code": "internal_auth_required"},
+            status=403,
+        )
+    session_key = request.headers.get("X-Session-Key", "").strip()
+    if not session_key:
+        _sel().log_api_access(
+            caller="unknown",
+            operation="mediated_secret_request",
+            outcome="denied",
+            source="dashboard",
+            resources="missing X-Session-Key",
+        )
+        return web.json_response(
+            {"error": "X-Session-Key required", "code": "session_key_required"}, status=400
+        )
+
+    # Bind this credential-bearing egress to an ATTESTED member session, not
+    # merely "some same-host process holding the loopback secret". The gateway's
+    # internal-auth middleware sets ``internal_auth`` (a header a sandboxed
+    # process cannot forge), and ``member_request_scope`` reads the caller's
+    # attested execution identity the same way the member-memory routes do:
+    # the X-Session-Key is honoured only behind a transport attestation
+    # (``session_key_is_attested`` — the Unix-socket kernel peer attestation, or
+    # the launcher's signed per-session token), and the canonical execution
+    # record is read before the scope is trusted. A raw in-sandbox `python -c`
+    # that reads the loopback secret and a session key off a transcript has
+    # neither attestation, so its scope is unverified and this endpoint refuses
+    # it. There is no relayable token in this model — the caller authenticates
+    # per request directly to this endpoint over the owner-only socket — so the
+    # old cross-server "audience" relay surface does not exist to defend.
+    #
+    # This member-scope check is the SOLE gate: it is not preceded by an
+    # ``internal_memory_scope`` call, so an unattested caller receives this
+    # endpoint's documented 403 ``member_scope_required`` rather than the memory
+    # route's 409 ``member_identity_unavailable``.
+    from kiro_crew.dashboard.handlers._shared import member_request_scope
+
+    scope = await member_request_scope(request)
+    if not scope.verified or scope.session != session_key or not scope.store:
+        _sel().log_api_access(
+            caller=session_key,
+            operation="mediated_secret_request",
+            outcome="denied",
+            source="dashboard",
+            resources="unverified or non-member session scope",
+        )
+        return web.json_response(
+            {
+                "error": (
+                    "This request must come from an approved kirocrew-secrets tool call in a "
+                    "member session; the session identity is unverified or is not a member "
+                    "session."
+                ),
+                "code": "member_scope_required",
+            },
+            status=403,
+        )
+
+    try:
+        payload = await request.json()
+    except ValueError:
+        return web.json_response({"error": "invalid JSON body", "code": "invalid_json"}, status=400)
+    if not isinstance(payload, dict):
+        return web.json_response(
+            {"error": "invalid request shape", "code": "invalid_request_shape"}, status=400
+        )
+
+    secret_name = payload.get("secret_name")
+    if not isinstance(secret_name, str) or not secret_name:
+        return web.json_response(
+            {"error": "secret_name is required", "code": "secret_name_required"}, status=400
+        )
+
+    # The mediation stack pulls ``requests`` and the vault, whose import is
+    # synchronous and heavy — importing it on the event loop would BLOCK it. Do
+    # the import, the request build, AND the dispatch inside the worker thread
+    # (asyncio.to_thread) so nothing synchronous touches the loop; importlib also
+    # keeps the reference out of module scope (top-level-imports gate) and off the
+    # gateway boot path (this handler module loads at startup).
+    def _run_mediation() -> tuple[str, Any]:
+        import importlib
+
+        _dispatch = importlib.import_module("kiro_crew.secrets_mediation.dispatch")
+        _policy = importlib.import_module("kiro_crew.secrets_mediation.policy")
+        _ssrf = importlib.import_module("kiro_crew.secrets_mediation.ssrf")
+        from kiro_crew.config.loader import config_dir as _config_dir
+
+        req = _dispatch.MediatedRequest(
+            secret_name=secret_name,
+            method=str(payload.get("method", "")),
+            url=str(payload.get("url", "")),
+            headers=payload.get("headers") or {},
+            query=payload.get("query") or {},
+            json_body=payload.get("json_body"),
+            timeout_s=float(payload.get("timeout_s") or 20.0),
+        )
+        try:
+            return "ok", _dispatch.perform_mediated_request(req, _config_dir())
+        except (_policy.PolicyError, _ssrf.SsrfError, _dispatch.MediationError) as exc:
+            # Safe, secret-free message; the value never appears in these.
+            return "refused", str(exc)
+
+    outcome, result = await asyncio.to_thread(_run_mediation)
+    if outcome == "refused":
+        # Fail-closed outcomes are audited by the secret NAME only, never the value.
+        _sel().log_api_access(
+            caller=session_key,
+            operation="mediated_secret_request",
+            outcome="denied",
+            source="dashboard",
+            resources=f"secret={secret_name}",
+        )
+        return web.json_response({"error": result, "code": "mediation_refused"}, status=400)
+
+    _sel().log_api_access(
+        caller=session_key,
+        operation="mediated_secret_request",
+        outcome="ok",
+        source="dashboard",
+        resources=f"secret={secret_name} status={result.status}",
+    )
+    return web.json_response(
+        {
+            "status": result.status,
+            "headers": result.headers,
+            "body": result.body,
+            "truncated": result.truncated,
+            "final_url_origin": result.final_url_origin,
+        }
+    )
+
+
 async def _reset_all_sessions(request: web.Request) -> int:
     """Reset all active sessions so they pick up config changes.
 

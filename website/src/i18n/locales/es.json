@@ -16585,7 +16585,7 @@
       "wakatime_api_key_label": "Clave de API de WakaTime",
       "wakatime_api_key_description": "Autentica la sincronización de actividad de programación cuando WakaTime está habilitado.",
       "custom_title": "Secretos personalizados",
-      "custom_description": "Los secretos personalizados se almacenan cifrados para que los usen los servidores MCP y los ajustes de credenciales .env. Haz referencia a uno como secret://YOUR_KEY desde el entorno de un servidor MCP o un ajuste de credenciales .env y la puerta de enlace inyecta el valor al iniciarse: nunca se expone en el chat.",
+      "custom_description": "Secretos cifrados que nunca se muestran en el chat. Haz referencia a uno como secret://YOUR_KEY en el entorno de un servidor MCP o en un ajuste .env (inyectado al iniciarse). O autoriza un secreto para un origen https exacto con kirocrew secrets authorize, y el agente puede llamar a esa API desde una conversación de miembro mediada por la puerta de enlace: {{productName}} inyecta el valor del lado del host y devuelve solo un resultado saneado (un chat global predeterminado se rechaza).",
       "custom_empty": "Todavía no hay secretos personalizados almacenados. Añade uno para hacerle referencia desde un servidor MCP como secret://YOUR_KEY.",
       "managed_config_error": "Algunas credenciales automáticas están ocultas porque no se pudo leer $KIROCREW_HOME/config.json (predeterminado: ~/.kiro/crew/config.json).",
       "managed_name_hint": "Al guardar aquí se actualiza {{name}} en la sección de credenciales automáticas. — {{productName}}",

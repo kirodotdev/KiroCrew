@@ -6082,7 +6082,11 @@ class TestAcpRuntimeLoadSession:
 
         load_params = sent[0][1]
         servers = load_params["mcpServers"]
-        assert [entry["name"] for entry in servers] == ["kirocrew-core", "kirocrew-cron"]
+        assert [entry["name"] for entry in servers] == [
+            "kirocrew-core",
+            "kirocrew-cron",
+            "kirocrew-secrets",
+        ]
         assert all(_identity_tokens(servers))
         assert load_params == {
             "sessionId": "sid-123",
@@ -6355,7 +6359,11 @@ class TestAcpRuntimeLoadSession:
         # Direct managed tools retain per-session caller attribution on resume;
         # the pooled case is covered by test_load_session_redeclares_pooled_stubs.
         servers = captured["mcpServers"]
-        assert [entry["name"] for entry in servers] == ["kirocrew-core", "kirocrew-cron"]
+        assert [entry["name"] for entry in servers] == [
+            "kirocrew-core",
+            "kirocrew-cron",
+            "kirocrew-secrets",
+        ]
         assert all(_identity_tokens(servers))
         expected = {
             "sessionId": "sid",
@@ -6444,6 +6452,7 @@ class TestAcpRuntimeLoadSession:
             "builder-mcp",
             "kirocrew-core",
             "kirocrew-cron",
+            "kirocrew-secrets",
         ]
 
         # Parity with create_session for the same agent + overlay: the two

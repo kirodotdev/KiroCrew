@@ -262,6 +262,7 @@ ALWAYS_ON_BIN_MCP_SERVERS = (
     "kirocrew-cron",
     "kirocrew-core",
     "kirocrew-computer",
+    "kirocrew-secrets",
 )
 OPT_IN_BIN_MCP_SERVERS = (
     "kirocrew-dashboard",
@@ -292,7 +293,7 @@ KIROCREW_BIN_MCP_SERVERS = ALWAYS_ON_BIN_MCP_SERVERS + OPT_IN_BIN_MCP_SERVERS
 # ceiling. It lives in this leaf because the gateway reaches it without putting
 # ``kiro_crew.agent`` on the daemon's boot path, the same reason
 # ``gatewayd.CONTROL_PLANE_BACKENDS`` reads its set from here.
-CONTROL_PLANE_SERVERS = ("kirocrew-core", "kirocrew-cron")
+CONTROL_PLANE_SERVERS = ("kirocrew-core", "kirocrew-cron", "kirocrew-secrets")
 
 # Every managed-binary server name KiroCrew is responsible for removing from
 # the user's global mcp.json (Kiro Crew never legitimately writes these there).
