@@ -33,6 +33,7 @@ import math
 import os
 import re
 import secrets
+import stat
 import threading
 import time
 from collections.abc import Iterator, Mapping
@@ -271,8 +272,29 @@ def _validated_ttl_hours(value: Any) -> int | None:
 # ── paths ───────────────────────────────────────────────────────────────────
 
 
+def _crews_path(owner: str, repo: str, root: Path | None = None) -> Path:
+    """Where :func:`crews_dir` lives, without creating or probing any component of it.
+
+    :func:`store.repo_data_dir`'s layout without its ``mkdir``. A caller that must hold
+    every component of a chain open before anything resolves its name needs the path
+    first and holds what is already there: ``mkdir(parents=True)`` resolves a missing tail
+    by name, and where a component may be a junction aimed at a remote share, resolving
+    one is itself an outbound authentication as this process. This module's tests assert
+    the result equals :func:`store.repo_data_dir`'s location, which is the layout restated
+    here, so the two cannot drift apart.
+
+    The claim covers the chain this function names -- ``repos/<owner>/<repo>/crews`` --
+    and not the data root it hangs from. With no *root* the base comes from
+    :func:`store.app_data_dir`, which creates the app's own data directory exactly as
+    every other call in this app does; that directory is the store itself, so a hold
+    below it cannot be the thing that brings it into being.
+    """
+    base = root if root is not None else store.app_data_dir(store.APP_NAME)
+    return base / "repos" / owner / repo / "crews"
+
+
 def crews_dir(owner: str, repo: str, root: Path | None = None) -> Path:
-    d = store.repo_data_dir(owner, repo, root) / "crews"
+    d = _crews_path(owner, repo, root)
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -931,7 +953,14 @@ _MAX_ORDER_READ_BYTES = _MAX_ORDERED_UNITS * 2 * 256
 
 
 def _unit_order_path(owner: str, repo: str, crew_id: str, root: Path | None) -> Path:
-    return crews_dir(owner, repo, root) / f"{_require_crew_id(crew_id)}{_UNIT_ORDER_SUFFIX}"
+    """The order file's path: no component below the app's data root is created or probed.
+
+    Built from :func:`_crews_path`, not :func:`crews_dir`, because the hold its callers
+    take must be what FIRST resolves this chain. Creating it by name a line earlier is
+    the unheld resolution the hold exists to prevent, and it would also make a read
+    create the store it reads.
+    """
+    return _crews_path(owner, repo, root) / f"{_require_crew_id(crew_id)}{_UNIT_ORDER_SUFFIX}"
 
 
 def _recorded_unit_order(owner: str, repo: str, crew_id: str, root: Path | None) -> tuple[str, ...]:
@@ -947,11 +976,80 @@ def _recorded_unit_order(owner: str, repo: str, crew_id: str, root: Path | None)
     """
     try:
         path = _unit_order_path(owner, repo, crew_id, root)
-        if not path.is_file():
-            return ()
-        fd = platform_compat.open_file_no_reparse(path)
-        with os.fdopen(fd, "r", encoding="utf-8") as fh:
-            text = fh.read(_MAX_ORDER_READ_BYTES)
+    except (OSError, ValueError):
+        return ()
+    return _read_unit_order_held(path)
+
+
+def _read_unit_order_held(path: Path) -> tuple[str, ...]:
+    """:func:`_recorded_unit_order_at` with *path*'s parent chain held while it reads.
+
+    The read names the whole path, so where the write cannot go through a descriptor its
+    ANCESTORS carry the same exposure as the write's: resolving a junction aimed at a UNC
+    share is itself an outbound authentication as this process, to a host whoever planted
+    the link chose. The leaf differs -- the write screens it with an ``lstat``-based
+    predicate and the read settles it inside the open -- so what this hold adds is the
+    ancestors, which neither of those touches. The chain is held first and the name resolved under it,
+    by :func:`_hold_chain_for_by_name_use`, which creates nothing -- an absent component
+    means no order file can exist, and a read must not create the store it reads.
+
+    An absent or unholdable component answers ``()``, as an unreadable file does: the
+    caller falls back to header order.
+    """
+    try:
+        held = _hold_chain_for_by_name_use(path.parent)
+    except OSError:
+        return ()
+    try:
+        return _recorded_unit_order_at(path)
+    finally:
+        _release_held(held)
+
+
+def _recorded_unit_order_at(path: Path) -> tuple[str, ...]:
+    """The units recorded in *path*, oldest first; ``()`` when it holds none.
+
+    Takes the path its caller already derived, so a caller holding the parent chain
+    reads the object it holds instead of resolving the same name a second time.
+    Whatever protection that name needs belongs to the caller: this is the parse.
+
+    The leaf is settled OFF ITS OWN DESCRIPTOR, never by a name. An ``is_file`` probe
+    would be an ``os.stat``, which FOLLOWS a reparse point: a junction at the order
+    file's own name aimed at a remote share would be traversed by the probe -- the
+    outbound authentication this module screens for -- before the open could refuse it.
+    So the open comes first and the kind is read from the descriptor it returns.
+
+    Three properties the descriptor route has to carry itself, because a name probe is
+    not there to carry them:
+
+    * The open is NON-BLOCKING. ``O_RDONLY`` on a FIFO waits for a writer that a planted
+      FIFO never has, and this runs on a crew's every read -- and inside the write lock
+      on the recording path, so one FIFO would stop every update of that crew.
+    * Only a REGULAR file is read. A directory opens successfully on POSIX, and a FIFO
+      or device opened non-blocking does too, so ``S_ISREG`` off the descriptor is what
+      refuses them.
+    * The descriptor is closed exactly once on every path. ``os.fdopen`` TAKES the
+      descriptor on entry and closes it itself on its own failure as well as on success,
+      so ownership passes at the call and not at its return: closing here after it
+      raised would close a number another thread may already have reopened.
+
+    Every refusal answers ``()``, which the caller reads as "no order recorded".
+    """
+    try:
+        fd = platform_compat.open_file_no_reparse(path, nonblocking=True)
+    except (OSError, ValueError):
+        return ()
+    try:
+        regular = stat.S_ISREG(os.fstat(fd).st_mode)
+    except OSError:
+        os.close(fd)
+        return ()
+    if not regular:
+        os.close(fd)
+        return ()
+    try:
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            text = handle.read(_MAX_ORDER_READ_BYTES)
     except (OSError, ValueError):
         return ()
     seen: list[str] = []
@@ -976,16 +1074,29 @@ def _record_unit_order(
     end, not appended twice, so the fold never folds a unit twice. The file is
     compacted to the bound once it outgrows it. Best-effort: a crew whose order
     cannot be written folds its units in header order instead.
+
+    The path is derived without resolving any component the hold covers, and every
+    component of its parent is then held (:func:`_hold_chain_for_by_name_use`) for as
+    long as the read AND the write take. The read names the whole path too, so a chain
+    held only for the write would leave that resolution -- and, where junctions exist, an
+    outbound authentication through one -- outside every screen. The write walks the chain again
+    under this hold; that walk cannot reach other objects, because nothing a hold
+    covers can be renamed or deleted while it lives, so it re-proves the chain rather
+    than opening a second window onto it.
     """
     if not session_id:
         return
     try:
         path = _unit_order_path(owner, repo, crew_id, root)
-        known = _recorded_unit_order(owner, repo, crew_id, root)
-        if known and known[-1] == session_id:
-            return
-        ordered = tuple(u for u in known if u != session_id) + (session_id,)
-        _write_unit_order(path, ordered[-_MAX_ORDERED_UNITS:])
+        held = _hold_chain_for_by_name_use(path.parent)
+        try:
+            known = _recorded_unit_order_at(path)
+            if known and known[-1] == session_id:
+                return
+            ordered = tuple(u for u in known if u != session_id) + (session_id,)
+            _write_unit_order(path, ordered[-_MAX_ORDERED_UNITS:])
+        finally:
+            _release_held(held)
     except (OSError, ValueError):
         logger.warning("crew ledger: could not record crew %s's unit order", crew_id, exc_info=True)
 
@@ -1032,11 +1143,7 @@ def _write_unit_order(path: Path, lines: tuple[str, ...]) -> None:
             )
         atomic_write(path, content, fsync=True, newline="")
     finally:
-        for fd in reversed(held):
-            try:
-                os.close(fd)
-            except OSError:
-                logger.debug("crew ledger: a held unit-order component would not close")
+        _release_held(held)
 
 
 def _hold_chain_no_follow(directory: Path) -> list[int]:
@@ -1060,67 +1167,99 @@ def _hold_chain_no_follow(directory: Path) -> list[int]:
     What the hold buys differs by platform, and the caller relies on both halves:
 
     * Windows: the handle omits ``FILE_SHARE_DELETE``, so while it lives that
-      directory can be neither renamed nor deleted -- nor can anything above it. A
-      by-name write underneath therefore cannot be re-pointed after the walk.
+      directory can be neither renamed nor deleted -- nor can anything above it -- so
+      the name a by-name write below resolves stays bound to the object this walk
+      proved. What it does not cover is reparse data set IN PLACE on a component,
+      which the platform accepts only while that directory holds no children --
+      which is why this walk creates nothing, as the note below records.
     * POSIX: the descriptor pins the inode the walk verified. A rename is not blocked
       (POSIX has no such lock), which is why the POSIX callers write through the
       descriptor instead; this branch exists for the platform that cannot.
 
-    A component that does not exist yet is CREATED, one component at a time, while
-    everything above it is held -- the routine case for a store whose directory a
-    reader may have taken away, and a whole ``mkdir(parents=True)`` would resolve the
-    missing tail by name outside any hold. A component that EXISTS and cannot be
-    opened refuses rather than becoming the boundary: treating it as one would leave a
-    resolution passing through an object nothing proved.
+    NOTHING is created here, on the read path or the write path. A component that is
+    absent raises ``FileNotFoundError`` and a component that exists and cannot be opened
+    refuses: becoming the boundary the walk stops at would leave a resolution passing
+    through an object nothing proved, and CREATING it would open a window this hold
+    cannot close. A directory just created is empty, Windows accepts reparse data only
+    on a directory that holds no children, and the child is opened BY NAME on the next
+    step -- so between the two an outside writer can re-point it, and the child open
+    resolves through whatever it points at. Withholding WRITE sharing on the hold cannot
+    close that either: setting reparse data on a directory and adding a child to it need
+    the same write access, so a share mode that denies it to another handle denies it to
+    this process as well, and held that way on a Windows runner the write's own rename
+    fails with a sharing violation on every attempt of the retry budget in
+    :func:`atomic_write.replace_with_retry`. Refusing is the fail-closed answer, and it
+    costs little: the caller's contract is best-effort, so a crew whose chain is absent
+    folds its units in header order until an ordinary crew-record write puts the
+    directory back.
 
     The walk starts at *directory*'s own root, so a caller must not hand it a UNC
     path -- the first open would then be the outbound authentication this exists to
     prevent. :func:`_unit_order_path` builds from :func:`data_home`, which is local.
+
+    Root-first also decides the failure shape: a failure part-way releases what it took,
+    because a half-held chain protects nothing and its descriptors would leak.
     """
     held: list[int] = []
     try:
         for component in [*reversed(directory.parents), directory]:
-            held.append(_pin_or_create(component))
+            held.append(_pin_held(component))
     except BaseException:
-        for fd in reversed(held):
-            try:
-                os.close(fd)
-            except OSError:
-                logger.debug("crew ledger: a held unit-order component would not close")
+        _release_held(held)
         raise
     return held
 
 
-def _pin_or_create(component: Path) -> int:
-    """Hold *component* open without following a link, creating it if it is absent.
+def _hold_chain_for_by_name_use(directory: Path) -> list[int]:
+    """The hold a BY-NAME read or write of the unit order needs under *directory*.
 
-    ``FileNotFoundError`` is the ONLY outcome that creates: every other ``OSError``
-    refuses. A link at the name reports something else on each platform -- POSIX
-    ``O_NOFOLLOW`` fails a symlink with ``ELOOP`` and a file with ``ENOTDIR``, and on
-    Windows the open succeeds and the reparse-point attribute read off the descriptor
-    raises -- so refusing everything but absence is what keeps both of them out.
+    ``[]`` where :func:`atomic_write.pinned_parent_replace_supported` answers yes: the
+    write there goes through a pinned descriptor and the hold would buy nothing it does
+    not already have, while changing what that platform does -- POSIX cannot block a
+    rename, and refusing a component on the walk is behaviour of its own.
 
-    A second writer creating the same component first is not an error: the retry pins
-    whatever is now at the name, and the pin is what decides whether it is admissible.
+    Elsewhere the chain is walked and held, because that is the platform with junctions
+    and a by-name resolution through one is an outbound authentication.
+    """
+    if atomic_write_module.pinned_parent_replace_supported():
+        return []
+    return _hold_chain_no_follow(directory)
+
+
+def _pin_held(component: Path) -> int:
+    """Hold *component* open without following a link, and create nothing.
+
+    The pin withholds DELETE sharing, so while it lives the component can be neither
+    renamed nor deleted, and the name the next step resolves stays bound to the object
+    this open proved. It deliberately does not withhold WRITE sharing, and it creates
+    nothing: :func:`_hold_chain_no_follow` carries the measurement behind both.
+
+    Two refusal shapes, because the callers read them differently. ABSENCE passes through
+    as ``FileNotFoundError``: it is the expected answer for a store that holds no order
+    yet, and the walk's own tests turn on telling it apart. Every other ``OSError`` --
+    a link at the name, a component that cannot be opened -- is re-raised naming the
+    component, because that one reaches a log where the name is the whole diagnosis. A
+    link reports something different on each platform, POSIX ``O_NOFOLLOW`` failing a
+    symlink with ``ELOOP`` and a file with ``ENOTDIR`` while Windows opens the reparse
+    point and raises off the descriptor, so the wrapping is what gives them one shape.
     """
     try:
         return platform_compat.pin_directory(component)
     except FileNotFoundError:
-        pass
+        raise
     except OSError as exc:
         raise OSError(
             f"{component} could not be held open; the unit order is not written under it"
         ) from exc
-    try:
-        os.mkdir(component)
-    except FileExistsError:
-        pass
-    try:
-        return platform_compat.pin_directory(component)
-    except OSError as exc:
-        raise OSError(
-            f"{component} could not be held open; the unit order is not written under it"
-        ) from exc
+
+
+def _release_held(held: list[int]) -> None:
+    """Close a held chain, innermost first, and keep going when one will not close."""
+    for fd in reversed(held):
+        try:
+            os.close(fd)
+        except OSError:
+            logger.debug("crew ledger: a held unit-order component would not close")
 
 
 def crew_log_units(

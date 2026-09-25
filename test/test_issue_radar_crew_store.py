@@ -38,6 +38,8 @@ import itertools
 import json
 import math
 import os
+import shutil
+import signal
 import time
 from pathlib import Path
 
@@ -3591,11 +3593,13 @@ def test_a_write_that_does_not_move_the_item_leaves_phase_off_the_event_line(tmp
 #
 # What a POSIX host can prove is here: the walk opens each component no-follow,
 # refuses a real link on disk rather than consulting a stubbed verdict, holds every
-# descriptor across the write, and each held descriptor is the component the walk
-# screened. The other half -- that a Windows handle without FILE_SHARE_DELETE blocks
-# a rename of that directory and of everything above it -- is a property of
-# ``platform_compat.pin_directory`` and is not observable on a POSIX host, so none of
-# these claims it.
+# descriptor across the write, each held descriptor is the component the walk
+# screened, and every pin the walk takes asks for the share mode that withholds write
+# access. What that share mode then makes the kernel do -- a handle without
+# FILE_SHARE_DELETE blocks a rename of that directory and of everything above it, and
+# one without FILE_SHARE_WRITE keeps every other handle on it from carrying write
+# access, so its reparse data cannot be set -- belongs to the Windows kernel and is
+# not observable on a POSIX host, so none of these claims it.
 
 
 def _fallback_only(monkeypatch):
@@ -3690,21 +3694,16 @@ def test_the_unit_order_fallback_refuses_a_real_link_at_a_component(tmp_path, mo
         keep.rename(crews)
 
 
-def test_the_unit_order_fallback_creates_a_missing_tail_one_component_at_a_time(
-    tmp_path, monkeypatch
-):
-    """A parent that is not there yet is created and written, and the components are
-    created OUTERMOST FIRST, one per step.
+def test_the_unit_order_fallback_refuses_a_missing_tail_and_creates_nothing(tmp_path, monkeypatch):
+    """A parent that is not there refuses the write, and no component is created.
 
-    The routine case: a reader may have taken the store's directory away between the
-    call that built the path and this write. A whole ``mkdir(parents=True)`` would
-    resolve the missing tail by name outside any hold, so the walk creates one
-    component per step and pins each before descending -- pinned here by removing TWO
-    levels and reading the order they come back in. Only the distinct set is asserted
-    beyond that, because :func:`atomic_write` ensures its own parent idempotently and
-    that call is not the walk's."""
-    import shutil
-
+    Creating one would open a window the hold cannot close: a directory just created is
+    empty, Windows accepts reparse data only on a directory with no children, and the
+    child is opened BY NAME on the next step, so an outside writer can re-point it in
+    between and that open resolves through whatever it points at. Refusing is the
+    fail-closed answer. Asserted with TWO levels missing and with ``os.mkdir`` recorded,
+    because a walk that created only the innermost component would still look like a
+    refusal from the outside."""
     crew, sid = _live_crew(tmp_path)
     cid = crew["id"]
     order = cs._unit_order_path(OWNER, REPO, cid, tmp_path)
@@ -3723,14 +3722,34 @@ def test_the_unit_order_fallback_creates_a_missing_tail_one_component_at_a_time(
         return real_mkdir(path, *a, **kw)
 
     monkeypatch.setattr(cs.os, "mkdir", record)
-    cs._write_unit_order(order, (sid,))
+    with pytest.raises(FileNotFoundError):
+        cs._write_unit_order(order, (sid,))
 
-    assert created[:2] == [
-        str(repo_dir),
-        str(crews),
-    ], f"outermost first, one per step; got {created}"
-    assert set(created) == {str(repo_dir), str(crews)}, "no other component was created"
-    assert order.read_text(encoding="utf-8").split() == [sid], "and the write landed"
+    assert created == [], f"the walk created something: {created}"
+    assert not repo_dir.exists(), "and nothing is on disk"
+    assert not order.exists(), "so no order file landed either"
+
+
+def test_a_crew_whose_chain_is_absent_folds_in_header_order_without_raising(tmp_path, monkeypatch):
+    """The refusal reaches the caller as header order, not as an exception.
+
+    `_record_unit_order` is called under the crew's write lock on a real recording path,
+    so a refusal escaping it would fail the recording itself rather than degrade the
+    fold. Its contract is best-effort: a crew whose chain is gone folds its units by
+    header clock until an ordinary crew-record write puts the directory back."""
+    crew, sid = _live_crew(tmp_path)
+    cid = crew["id"]
+    order = cs._unit_order_path(OWNER, REPO, cid, tmp_path)
+    _fallback_only(monkeypatch)
+
+    crews = order.parent
+    shutil.rmtree(crews)
+    assert not crews.exists(), "the chain really is absent"
+
+    cs._record_unit_order(OWNER, REPO, cid, sid, tmp_path)
+
+    assert not crews.exists(), "recording created nothing"
+    assert cs._recorded_unit_order(OWNER, REPO, cid, tmp_path) == (), "the fold reads header order"
 
 
 def test_the_unit_order_fallback_refuses_a_component_it_cannot_open(tmp_path, monkeypatch):
@@ -3751,10 +3770,10 @@ def test_the_unit_order_fallback_refuses_a_component_it_cannot_open(tmp_path, mo
     order.parent.mkdir(parents=True, exist_ok=True)
     real_pin = cs.platform_compat.pin_directory
 
-    def refuse_that_one(component):
+    def refuse_that_one(component, **kwargs):
         if Path(component) == crews:
             raise PermissionError(13, "permission denied", os.fspath(component))
-        return real_pin(component)
+        return real_pin(component, **kwargs)
 
     monkeypatch.setattr(cs.platform_compat, "pin_directory", refuse_that_one)
     with pytest.raises(OSError, match="could not be held open"):
@@ -3838,3 +3857,418 @@ def test_the_pinned_parent_branch_is_unchanged_on_a_posix_host(tmp_path):
         cs._hold_chain_no_follow = real_walk
     assert walked == [], "the pinned-parent branch must not take the by-name walk"
     assert order.read_text(encoding="utf-8").split() == [sid]
+
+
+def test_the_unit_order_record_holds_the_chain_before_it_reads_the_name(tmp_path, monkeypatch):
+    """Recording holds every component of the parent BEFORE the read resolves the name,
+    and is still holding them when the write runs.
+
+    The read names the whole path, exactly as the write does, so a hold that began only
+    at the write would leave that resolution unscreened -- and on the platform with
+    junctions, resolving one aimed at a UNC share is itself an outbound authentication.
+    Asserted from inside the read, because a hold taken and released around the walk
+    would satisfy an after-the-fact check. The write walks the chain a second time under
+    the hold, which is why ``hold`` appears again between the read and the write."""
+    crew, sid = _live_crew(tmp_path)
+    cid = crew["id"]
+    order = cs._unit_order_path(OWNER, REPO, cid, tmp_path)
+    _fallback_only(monkeypatch)
+    order.parent.mkdir(parents=True, exist_ok=True)
+    order.write_text(f"{_unit(cid)}\n", encoding="utf-8")
+
+    parent = order.parent
+    components = [*reversed(parent.parents), parent]
+    trace: list[str] = []
+    handed: list[int] = []
+
+    real_walk = cs._hold_chain_no_follow
+
+    def walk(directory):
+        fds = real_walk(directory)
+        handed.extend(fds)
+        trace.append("hold")
+        return fds
+
+    real_read = cs._recorded_unit_order_at
+
+    def read(path):
+        trace.append("read")
+        assert len(handed) == len(components), "the whole chain is held before the read"
+        for component, fd in zip(components, handed, strict=True):
+            try:
+                info = os.fstat(fd)
+            except OSError as exc:  # pragma: no cover - the mutation's path
+                raise AssertionError(f"{component} was not held during the read") from exc
+            on_disk = os.stat(component)
+            assert (info.st_dev, info.st_ino) == (
+                on_disk.st_dev,
+                on_disk.st_ino,
+            ), f"the descriptor held for {component} is not that component"
+        return real_read(path)
+
+    real_write = cs.atomic_write
+
+    def write(path, content, **kw):
+        trace.append("write")
+        for fd in handed:
+            os.fstat(fd)
+        return real_write(path, content, **kw)
+
+    monkeypatch.setattr(cs, "_hold_chain_no_follow", walk)
+    monkeypatch.setattr(cs, "_recorded_unit_order_at", read)
+    monkeypatch.setattr(cs, "atomic_write", write)
+    cs._record_unit_order(OWNER, REPO, cid, sid, tmp_path)
+
+    assert trace[0] == "hold", "the hold is taken first"
+    assert trace[1] == "read", "the read runs under it"
+    assert trace[-1] == "write", "the write runs last, still under it"
+    assert order.read_text(encoding="utf-8").split()[-1] == sid, "the record landed"
+    for fd in handed:
+        with pytest.raises(OSError):
+            os.fstat(fd)
+
+
+def test_a_record_that_changes_nothing_still_releases_the_chain(tmp_path, monkeypatch):
+    """A unit already newest is a bare read -- and the hold that read ran under is
+    released, not leaked, on that early return.
+
+    The common case by far: a crew recording repeatedly into the unit it is already in.
+    A descriptor leaked once per cycle would exhaust the process, and on the platform
+    the hold is for it would also keep a directory unrenamable for the gateway's life."""
+    crew, sid = _live_crew(tmp_path)
+    cid = crew["id"]
+    order = cs._unit_order_path(OWNER, REPO, cid, tmp_path)
+    _fallback_only(monkeypatch)
+    order.parent.mkdir(parents=True, exist_ok=True)
+    order.write_text(f"{sid}\n", encoding="utf-8")
+
+    handed: list[int] = []
+    real_walk = cs._hold_chain_no_follow
+
+    def walk(directory):
+        fds = real_walk(directory)
+        handed.extend(fds)
+        return fds
+
+    wrote: list[str] = []
+    real_write = cs.atomic_write
+
+    def write(path, content, **kw):
+        wrote.append(os.fspath(path))
+        return real_write(path, content, **kw)
+
+    monkeypatch.setattr(cs, "_hold_chain_no_follow", walk)
+    monkeypatch.setattr(cs, "atomic_write", write)
+    cs._record_unit_order(OWNER, REPO, cid, sid, tmp_path)
+
+    assert wrote == [], "a unit already newest is not written again"
+    assert handed, "the read still ran under a hold"
+    for fd in handed:
+        with pytest.raises(OSError):
+            os.fstat(fd)
+
+
+def test_the_reads_walk_creates_nothing_under_the_directory_it_holds(tmp_path, monkeypatch):
+    """Neither walk creates anything: an absent component refuses on the read path and on
+    the write path alike.
+
+    A read runs on a crew's every cycle, so a read whose walk created its own chain would
+    write state on every read of a store that holds none. The write refuses for a second
+    reason: a component it created would be empty, and an empty directory is the one that
+    can take reparse data before the next step opens its child by name. The fold's answer
+    for a crew that recorded nothing is header order -- which ``()`` is."""
+    _fallback_only(monkeypatch)
+    nowhere = tmp_path / "nowhere"
+    assert not nowhere.exists(), "the directory starts absent"
+
+    with pytest.raises(FileNotFoundError):
+        cs._hold_chain_for_by_name_use(nowhere)
+    assert not nowhere.exists(), "the walk created nothing"
+
+    assert cs._read_unit_order_held(nowhere / f"c_00000000{cs._UNIT_ORDER_SUFFIX}") == ()
+    assert not nowhere.exists(), "and the read answered without creating it"
+
+    with pytest.raises(FileNotFoundError):
+        cs._hold_chain_no_follow(nowhere)
+    assert not nowhere.exists(), "the write's walk does not create it either"
+
+
+def test_a_component_that_cannot_be_held_stops_the_read_before_the_name(tmp_path, monkeypatch):
+    """A component that refuses to open without following a link stops the read, and
+    the name is never resolved through it.
+
+    A reparse point at a component is what that refusal stands for: on the platform
+    with junctions the open is the screen, so a read that fell back to resolving the
+    name anyway would perform the traversal the refusal exists to prevent. The answer
+    is ``()`` -- header order -- not an exception into a crew's read path."""
+    crew, sid = _live_crew(tmp_path)
+    cid = crew["id"]
+    order = cs._unit_order_path(OWNER, REPO, cid, tmp_path)
+    order.parent.mkdir(parents=True, exist_ok=True)
+    order.write_text(f"{sid}\n", encoding="utf-8")
+    _fallback_only(monkeypatch)
+
+    real_pin = cs.platform_compat.pin_directory
+
+    def refuse_that_component(component, **kwargs):
+        if os.fspath(component) == os.fspath(order.parent):
+            raise OSError("a reparse point sits at this component")
+        return real_pin(component, **kwargs)
+
+    resolved: list[str] = []
+    real_read = cs._recorded_unit_order_at
+
+    def read(path):
+        resolved.append(os.fspath(path))
+        return real_read(path)
+
+    monkeypatch.setattr(cs.platform_compat, "pin_directory", refuse_that_component)
+    monkeypatch.setattr(cs, "_recorded_unit_order_at", read)
+
+    assert cs._recorded_unit_order(OWNER, REPO, cid, tmp_path) == (), "the read refuses"
+    assert resolved == [], "the name was never resolved through the refused component"
+
+
+def test_the_posix_read_path_takes_no_hold(tmp_path):
+    """Where a descriptor-relative rename exists, the read takes no chain hold either.
+
+    The hold's value is the platform's: a handle that blocks renaming and deleting, and
+    an open that refuses a reparse point. POSIX has neither, writes through a pinned
+    descriptor instead, and a walk here would refuse components that POSIX today
+    resolves -- so this is the pin that says POSIX behaviour did not move."""
+    from kiro_crew import atomic_write as atomic_write_module
+
+    if not atomic_write_module.pinned_parent_replace_supported():
+        pytest.skip("this host has no descriptor-relative rename; the fallback is the only path")
+
+    crew, sid = _live_crew(tmp_path)
+    cid = crew["id"]
+    cs._record_unit_order(OWNER, REPO, cid, sid, tmp_path)
+
+    assert cs._hold_chain_for_by_name_use(tmp_path) == [], "no hold is taken"
+    assert cs._recorded_unit_order(OWNER, REPO, cid, tmp_path) == (sid,), "the read still works"
+
+
+def test_the_derived_crews_path_is_exactly_where_crews_dir_lives(tmp_path, monkeypatch):
+    """The derived path is the same place `store.repo_data_dir` would put it, with an
+    explicit root and with the app's own.
+
+    The derivation states that layout a second time, so this is the pin that stops the two
+    drifting: a layout change in the store that the derivation did not follow would
+    silently point every held read and write at a directory nothing else uses. Asserted
+    against `store.repo_data_dir` rather than against `crews_dir`, because `crews_dir`
+    delegates to the derivation -- comparing those two would move both sides at once and
+    catch nothing. The `crews_dir` line is kept for the day it stops delegating."""
+    assert (
+        cs._crews_path(OWNER, REPO, tmp_path)
+        == cs.store.repo_data_dir(OWNER, REPO, tmp_path) / "crews"
+    )
+    assert cs._crews_path(OWNER, REPO, tmp_path) == cs.crews_dir(OWNER, REPO, tmp_path)
+
+    home = tmp_path / "default-home"
+    monkeypatch.setattr(cs.store, "app_data_dir", lambda name: home / name)
+    assert cs._crews_path(OWNER, REPO) == cs.store.repo_data_dir(OWNER, REPO) / "crews"
+    assert home in cs._crews_path(OWNER, REPO).parents, "the default root is the app's own"
+
+
+def test_deriving_the_order_path_touches_nothing(tmp_path):
+    """Deriving the order file's path creates no directory and probes no component.
+
+    The hold its callers take has to be the FIRST thing that resolves this chain. A
+    `mkdir(parents=True)` while deriving would resolve the missing tail by name one line
+    earlier, which is exactly the resolution the hold is there to prevent -- and it would
+    make a read create the store it is reading."""
+    nowhere = tmp_path / "nowhere"
+    order = cs._unit_order_path(OWNER, REPO, "c_00000000", nowhere)
+
+    assert not nowhere.exists(), "no component of the chain was created"
+    assert order.name == f"c_00000000{cs._UNIT_ORDER_SUFFIX}"
+    assert order.parent == cs._crews_path(OWNER, REPO, nowhere)
+    assert not nowhere.exists(), "and reading the path back created nothing either"
+
+
+def test_a_failure_to_derive_the_order_path_answers_header_order(tmp_path, monkeypatch):
+    """A read whose path cannot be derived answers `()`, and does not raise.
+
+    `()` means "this crew recorded no order", and the fold then applies header order --
+    the answer every read gave before the order file existed. Raising instead would reach
+    `crew_log_units`' broad guard, which answers `()` for EVERY unit, so a crew whose
+    store directory is unusable would render an empty ledger rather than an unordered
+    one; under `strict` it would refuse the write outright."""
+    crew, sid = _live_crew(tmp_path)
+    cid = crew["id"]
+    cs._record_unit_order(OWNER, REPO, cid, sid, tmp_path)
+    assert cs._recorded_unit_order(OWNER, REPO, cid, tmp_path) == (sid,), "the order is there"
+
+    def refuse(*_args, **_kwargs):
+        raise OSError("the store directory is not usable")
+
+    monkeypatch.setattr(cs, "_unit_order_path", refuse)
+    assert cs._recorded_unit_order(OWNER, REPO, cid, tmp_path) == (), "answered, did not raise"
+    assert cs.crew_log_units(OWNER, REPO, cid, tmp_path) is not None, "the fold still answers"
+
+
+def test_the_order_files_own_name_is_settled_by_the_open_not_by_a_stat(tmp_path, monkeypatch):
+    """Reading the order file never stats its name: the open alone settles the leaf.
+
+    An `os.stat` FOLLOWS a reparse point, so a probe before the open would traverse a
+    junction planted at the order file's own name -- the outbound authentication this
+    module screens for -- before the no-follow open could refuse it. The open answers
+    every case a probe answered, as an `OSError` the read turns into `()`: absent file,
+    directory, or link."""
+    crew, sid = _live_crew(tmp_path)
+    cid = crew["id"]
+    cs._record_unit_order(OWNER, REPO, cid, sid, tmp_path)
+    order = cs._unit_order_path(OWNER, REPO, cid, tmp_path)
+    assert order.is_file(), "the order file is there to be read"
+
+    probed: list[str] = []
+    real_is_file = Path.is_file
+
+    def note(self):
+        probed.append(os.fspath(self))
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", note)
+    assert cs._recorded_unit_order(OWNER, REPO, cid, tmp_path) == (sid,), "the read still works"
+    assert os.fspath(order) not in probed, "the leaf was never stat'ed by name"
+
+    order.unlink()
+    assert cs._recorded_unit_order(OWNER, REPO, cid, tmp_path) == (), "an absent file answers ()"
+    assert os.fspath(order) not in probed, "and answers it without a stat"
+
+    order.mkdir()
+    assert cs._recorded_unit_order(OWNER, REPO, cid, tmp_path) == (), "a directory answers ()"
+    assert os.fspath(order) not in probed, "and that answer needs no stat either"
+
+
+def test_a_link_at_the_order_files_own_name_reveals_nothing_of_its_target(tmp_path):
+    """A link planted at the order file's name answers `()`; the target is not read.
+
+    The lines behind such a link would be taken for this crew's unit ids and, because the
+    writer re-states what it read, copied into the crew's own order file. The refusal is
+    the open itself, so the target is never opened and never resolved."""
+    crew, sid = _live_crew(tmp_path)
+    cid = crew["id"]
+    order = cs._unit_order_path(OWNER, REPO, cid, tmp_path)
+    order.parent.mkdir(parents=True, exist_ok=True)
+
+    elsewhere = tmp_path / "somebody-elses.unit-order"
+    elsewhere.write_text(f"{_unit(cid)}\n{_unit(cid)}\n", encoding="utf-8")
+    order.symlink_to(elsewhere)
+
+    assert cs._recorded_unit_order(OWNER, REPO, cid, tmp_path) == (), "nothing was read"
+    assert cs._recorded_unit_order_at(order) == (), "and the parse refuses it directly"
+    assert order.is_symlink(), "the link is still there; the refusal did not remove it"
+    assert elsewhere.read_text(encoding="utf-8").strip(), "its target is untouched"
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX FIFOs only")
+def test_a_fifo_at_the_order_files_name_is_refused_without_waiting(tmp_path):
+    """A FIFO planted at the order file's name answers `()` at once; it does not wait.
+
+    `O_RDONLY` on a FIFO waits for a writer, and a planted one never has a writer. This
+    read runs on a crew's every cycle, and on the recording path it runs inside the crew's
+    write lock -- so one FIFO would stop every update of that crew, permanently. The alarm
+    turns a wait into a failure instead of letting the suite hang."""
+    crew, _sid = _live_crew(tmp_path)
+    cid = crew["id"]
+    order = cs._unit_order_path(OWNER, REPO, cid, tmp_path)
+    order.parent.mkdir(parents=True, exist_ok=True)
+    os.mkfifo(order)
+
+    def complain(_signum, _frame):
+        raise AssertionError("the read waited on the FIFO instead of refusing it")
+
+    previous = signal.signal(signal.SIGALRM, complain)
+    signal.setitimer(signal.ITIMER_REAL, 5.0)
+    try:
+        assert cs._recorded_unit_order_at(order) == (), "the FIFO is refused"
+        assert cs._recorded_unit_order(OWNER, REPO, cid, tmp_path) == (), "and through the read"
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+@pytest.mark.skipif(not os.path.isdir("/proc/self/fd"), reason="needs /proc to count descriptors")
+def test_a_directory_at_the_order_files_name_leaks_no_descriptor(tmp_path):
+    """Repeated reads through a directory at the order file's name leak no descriptor.
+
+    A directory opens successfully on POSIX, and `os.fdopen` does not close a descriptor
+    it was handed when its own construction fails -- so the answer can be right while one
+    descriptor is lost per read, and a crew page that runs this every cycle walks into
+    `EMFILE`. Counted rather than reasoned about, because the answer looks identical
+    either way."""
+    crew, _sid = _live_crew(tmp_path)
+    cid = crew["id"]
+    order = cs._unit_order_path(OWNER, REPO, cid, tmp_path)
+    order.mkdir(parents=True, exist_ok=True)
+
+    def open_descriptors():
+        return len(os.listdir("/proc/self/fd"))
+
+    before = open_descriptors()
+    for _ in range(20):
+        assert cs._recorded_unit_order_at(order) == (), "a directory answers ()"
+    assert open_descriptors() <= before, "twenty reads left no descriptor behind"
+
+
+def test_a_failed_fdopen_is_not_closed_a_second_time(tmp_path, monkeypatch):
+    """`os.fdopen` owns the descriptor from the call, so a raise out of it leaves nothing
+    to close here.
+
+    `io.open` closes a descriptor handed to it when its own construction fails, and so
+    does `FileIO.__init__` before that. A second `os.close` on the same number is not a
+    harmless no-op: between the two closes another thread can open a file and be given
+    that number, and the second close would take its descriptor away."""
+    crew, sid = _live_crew(tmp_path)
+    cid = crew["id"]
+    order = cs._unit_order_path(OWNER, REPO, cid, tmp_path)
+    order.parent.mkdir(parents=True, exist_ok=True)
+    order.write_text(f"{sid}\n", encoding="utf-8")
+
+    real_close = os.close
+    closed: list[int] = []
+    owned: list[int] = []
+
+    def counting_close(fd):
+        closed.append(fd)
+        return real_close(fd)
+
+    def fdopen_that_owns_then_fails(fd, *args, **kwargs):
+        owned.append(fd)
+        real_close(fd)  # what os.fdopen itself does on its own failure
+        raise ValueError("unknown encoding")
+
+    monkeypatch.setattr(cs.os, "fdopen", fdopen_that_owns_then_fails)
+    monkeypatch.setattr(cs.os, "close", counting_close)
+
+    assert cs._recorded_unit_order_at(order) == (), "the failure answers header order"
+
+    assert owned, "os.fdopen was reached"
+    assert owned[0] not in closed, "the module closed a descriptor os.fdopen already owned"
+
+
+def test_a_leaf_that_is_not_a_regular_file_still_closes_its_descriptor(tmp_path, monkeypatch):
+    """The kind check runs before the handoff, so that path closes the descriptor itself.
+
+    The two halves of the ownership rule are separate claims: before `os.fdopen` this
+    function owns the descriptor and must close it, after the call it must not. A
+    directory at the order file's name is the case that opens successfully and is refused
+    on kind, and a crew reads on every cycle, so a leak there is one per cycle."""
+    crew, _ = _live_crew(tmp_path)
+    cid = crew["id"]
+    order = cs._unit_order_path(OWNER, REPO, cid, tmp_path)
+    order.mkdir(parents=True, exist_ok=True)
+
+    real_close = os.close
+    closed: list[int] = []
+
+    def counting_close(fd):
+        closed.append(fd)
+        return real_close(fd)
+
+    monkeypatch.setattr(cs.os, "close", counting_close)
+
+    assert cs._recorded_unit_order_at(order) == (), "a directory answers header order"
+    assert closed, "the descriptor was closed by this function, not leaked"
