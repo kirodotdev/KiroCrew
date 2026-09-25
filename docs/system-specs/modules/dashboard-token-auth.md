@@ -393,6 +393,8 @@ Security invariants:
 
 The **HMAC signing key** is loaded from (or created at) `<config_dir>/token_signing.key` (mode `0600`) by `token_secret.py` — it is **persistent**, not `os.urandom(32)` per process (that is only a can't-persist fallback). Signed access and refresh cookies therefore survive a gateway restart.
 
+Inside the Linux agent sandbox the key is masked by an unreadable (mode `0`) empty file, not a readable one (`sandbox._CREW_UNREADABLE_MASK_LEAVES`). A data-home copy made from a sandboxed shell (`rsync`, `cp -a`, `tar`) therefore fails on the key with `Permission denied` instead of writing a 0-byte `token_signing.key` at the destination, which `token_secret` would never replace. macOS denies the same read through its Seatbelt profile.
+
 Mutable link-session state is encapsulated in `TokenStateManager`, a thread-safe singleton using `threading.Lock` (not `asyncio.Lock`, since token operations are called from both async middleware and sync CLI contexts):
 
 ```python

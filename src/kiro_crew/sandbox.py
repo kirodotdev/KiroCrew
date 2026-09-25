@@ -515,6 +515,21 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     *(f"{AUTH_SQLITE_DB}{suffix}" for suffix in AUTH_SQLITE_SIDECAR_SUFFIXES),
 )
 
+#: Hidden leaves whose Linux mask must refuse the read instead of answering it empty.
+#:
+#: The Linux mask is an empty file bound over the real one, so a sandboxed ``rsync``,
+#: ``cp -a`` or ``tar`` of the data home reads zero bytes and copies them as the file's
+#: contents. For ``token_signing.key`` that copy is permanent damage: the gateway never
+#: overwrites an existing key (``token_secret._load_or_create_secret`` only creates one
+#: with ``O_EXCL`` or a non-clobbering link), so a destination that receives the empty
+#: copy signs with an ephemeral secret on every boot. An unreadable mask makes the copy
+#: fail loudly instead: rsync reports ``Permission denied``, leaves the destination's
+#: key untouched and exits 23. The macOS backend already denies this read, so this is
+#: the same answer on Linux. Nothing in a sandbox reads the key; the gateway, which
+#: does, runs outside it.
+_CREW_UNREADABLE_MASK_LEAVES: frozenset[str] = frozenset({"token_signing.key"})
+assert _CREW_UNREADABLE_MASK_LEAVES <= set(_CREW_HIDDEN_LEAVES)
+
 #: Crew-home ceilings and gateway-managed data: readable by sandboxed code,
 #: never writable by it. See the READONLY note above for why hiding a ceiling
 #: inverts its effect; named memory stores need write integrity, not secrecy.
@@ -6199,6 +6214,7 @@ def _build_launcher_script(
     # the launcher and kills the spawn (found in review).
     expose_pairs = list(dict.fromkeys(expose_pairs))
     expose_json = json.dumps(expose_pairs)
+    unreadable_masks_json = json.dumps(sorted(_CREW_UNREADABLE_MASK_LEAVES))
     env_prefixes_json = json.dumps(env_prefixes)
     ssh_dir = json.dumps(os.path.join(home, ".ssh"))
     ssh_known_hosts = json.dumps(os.path.join(home, ".ssh", "known_hosts"))
@@ -6644,11 +6660,16 @@ def main():
         # Bind-mount empty files over individual sensitive files. Source the
         # empty tempfile from a tmpfs (cross-fs) when available so the bind
         # cannot corrupt the target's host directory entry on namespace exit.
+        # A leaf in _unreadable_masks gets a mode-0 source, so a copy made inside
+        # the sandbox fails on it rather than carrying zero bytes out as its content.
+        _unreadable_masks = {unreadable_masks_json}
         for f in SENSITIVE_FILES:
             target = f.encode()
             if os.path.isfile(target):
                 fd, empty_path = tempfile.mkstemp(dir=_tmpfs_src, prefix=_src_prefix)
                 os.close(fd)
+                if os.path.basename(f) in _unreadable_masks:
+                    os.chmod(empty_path, 0)
                 _mount_or_die(empty_path.encode(), target, _MS_BIND,
                               "hiding sensitive file %s" % f)
 
