@@ -1,8 +1,20 @@
 """OS-level sandbox for agent child processes.
 
-Hides sensitive credential paths (``~/.aws``, ``~/.gnupg``, etc.) from the
-kiro-cli subprocess tree and exposes ``~/.ssh/known_hosts`` while hiding
-other SSH files (keys, config, etc.), using platform-native isolation:
+Hides sensitive credential paths from the kiro-cli subprocess tree using
+platform-native isolation, per tier:
+
+- ``standard`` (what the default ``"auto"`` resolves to) masks ``~/.gnupg``,
+  ``~/.docker``, ``~/.azure``, ``~/.config/gcloud``, the crew vault and the
+  governance cache -- and DELIBERATELY leaves ``~/.aws``, ``~/.ssh`` and
+  ``~/.kube`` visible so the aws CLI, ``credential_process``, git-over-SSH and
+  kubectl keep working inside the agent (see ``_STANDARD_DIRS``). The file
+  tools still refuse those paths through ``is_sensitive_path``; a spawned
+  shell's ``open()`` is not fenced at this tier.
+- ``strict`` masks all of the above plus ``~/.aws``, ``~/.kube``,
+  ``~/.config/gh`` and ``~/.ssh`` (exposing only ``~/.ssh/known_hosts``).
+- ``cc`` is the Claude Code backend's tier: ``strict`` minus ``~/.ssh`` and
+  ``~/.config/gh``, with a read-only copy of ``~/.aws/config`` exposed for
+  Bedrock auth.
 
 - **Linux**: fork → ``unshare(CLONE_NEWUSER)`` → parent writes identity
   UID/GID map → ``unshare(CLONE_NEWNS)`` → bind-mount empty dirs → exec.
@@ -13,8 +25,9 @@ The parent KiroCrew process is completely unaffected — isolation applies
 only to the spawned child.  Falls back gracefully to no sandbox when the
 OS mechanism is unavailable (logged as warning).
 
-Config: ``"sandbox": "auto" | "off"`` in ``~/.kiro/crew/config.json``.
-``"auto"`` (default) uses namespace sandbox on Linux, seatbelt on macOS.
+Config: ``"sandbox": "auto" | "strict" | "off"`` in ``~/.kiro/crew/config.json``.
+``"auto"`` (default) uses the standard-tier namespace sandbox on Linux and
+seatbelt on macOS; ``"strict"`` is the opt-in tier that also hides ``~/.aws``.
 """
 
 from __future__ import annotations

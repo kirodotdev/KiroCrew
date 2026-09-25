@@ -12232,6 +12232,8 @@
         "confirm_reapply_body": "此操作会重新加载已配置的模型，并清除、重建已存储的记忆向量。"
       },
       "kiroCrewCfgTab": {
+        "agent_for_pool_processes_empty_uses_default_agent": "用于池化进程的代理。留空则使用默认代理。",
+        "applies_to_sessions_started_after_the_change": "对更改后启动的会话生效。“auto”把代理放进沙箱，但凭证类工具照常可用；“strict”还会隐藏云、SSH、kube 和软件源凭证，因此这些工具在代理内不再可用——仅当由 {{productName}} 自己的沙箱约束进程时才生效，Windows 上或委托给 kiro-cli 内部沙箱的 macOS 进程不受影响；“off”跳过 {{productName}} 的沙箱（macOS 上若已启用 kiro-cli 自带沙箱，则仍然生效）。",
         "approval_mode": "审批模式",
         "auto": "自动",
         "auto_size_max": "自动调整上限",
@@ -12247,9 +12249,9 @@
         "embedding_provider": "嵌入提供方",
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "通过 kiro-cli 启用动态 MCP 工具发现。下次会话生效。",
         "immediate_auto_approves_all_tools_interactive_as": "立即生效。“auto”批准所有工具；“interactive”每次询问。",
-        "immediate_auto_enables_sandbox_for_untrusted_too": "立即生效。“auto”为不受信任的工具启用沙箱。",
         "inherited_provider": "继承 ({{provider}})",
         "kirocrew_agents": "{{productName}} 代理",
+        "max_age_for_pooled_processes_0_disables_expiry": "池化进程的最大存活时间。0 表示不过期。",
         "max_channel_agents": "最大频道代理数",
         "max_channels": "最大频道数",
         "max_concurrent_subagents": "最大并发子代理数",
@@ -12265,6 +12267,7 @@
         "next_update_check_cycle": "下一个更新检查周期生效。",
         "no_agents_defined": "未定义代理",
         "no_memory_stores": "无记忆存储",
+        "number_of_pre_spawned_processes_0_disables": "预启动进程数量。0 表示禁用。",
         "pool_agent": "池代理",
         "pool_size": "池大小",
         "pool_ttl": "池 TTL",
@@ -12281,12 +12284,9 @@
         "using_global_memory_settings": "使用全局记忆设置",
         "using_legacy_mode_agent_default_agent_as_agent_t": "使用旧版模式 — 以 agent.default_agent 作为代理模板",
         "warm_pool": "预热池",
-        "workspace": "工作区",
-        "workspaces": "工作区",
-        "number_of_pre_spawned_processes_0_disables": "预启动进程数量。0 表示禁用。",
-        "agent_for_pool_processes_empty_uses_default_agent": "用于池化进程的代理。留空则使用默认代理。",
         "warm_pool_description": "预先启动 ACP CLI 进程，让会话即时开始。",
-        "max_age_for_pooled_processes_0_disables_expiry": "池化进程的最大存活时间。0 表示不过期。"
+        "workspace": "工作区",
+        "workspaces": "工作区"
       },
       "mcpTab": {
         "actions": "操作",

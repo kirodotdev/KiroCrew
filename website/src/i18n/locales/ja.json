@@ -12232,6 +12232,8 @@
         "confirm_reapply_body": "設定済みのモデルを再読み込みし、保存されているメモリベクトルを消去して再構築します。"
       },
       "kiroCrewCfgTab": {
+        "agent_for_pool_processes_empty_uses_default_agent": "プール処理用のエージェント。空の場合はデフォルトエージェントを使用します。",
+        "applies_to_sessions_started_after_the_change": "変更後に開始したセッションに適用されます。「auto」はエージェントをサンドボックスに入れつつ、認証情報ツールはそのまま使えます。「strict」はクラウド・SSH・kube・レジストリの認証情報も隠すため、エージェント内でそれらのツールは使えなくなります。ただし {{productName}} 自身のサンドボックスがプロセスを閉じ込める場合のみで、Windows や、kiro-cli の内部サンドボックスに委ねられた macOS のプロセスには効きません。「off」は {{productName}} のサンドボックスを使いません（macOS では kiro-cli 自身のサンドボックスが有効なら引き続き適用されます）。",
         "approval_mode": "承認モード",
         "auto": "自動",
         "auto_size_max": "自動サイズ最大値",
@@ -12247,9 +12249,9 @@
         "embedding_provider": "埋め込みプロバイダー",
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "kiro-cli 経由の動的 MCP ツール検出を有効にします。次のセッションで有効になります。",
         "immediate_auto_approves_all_tools_interactive_as": "即座に実行。「auto」がすべてのツールを承認、「interactive」は各ツール前に確認。",
-        "immediate_auto_enables_sandbox_for_untrusted_too": "即座に実行。「auto」は信頼できないツールのサンドボックスを有効化。",
         "inherited_provider": "継承（{{provider}}）",
         "kirocrew_agents": "{{productName}} エージェント",
+        "max_age_for_pooled_processes_0_disables_expiry": "プール済みプロセスの最大有効期間。0 は有効期限を無効化します。",
         "max_channel_agents": "最大チャネルエージェント",
         "max_channels": "最大チャネル数",
         "max_concurrent_subagents": "最大並行サブエージェント数",
@@ -12265,6 +12267,7 @@
         "next_update_check_cycle": "次の更新確認サイクル。",
         "no_agents_defined": "定義されたエージェントがありません",
         "no_memory_stores": "メモリストアなし",
+        "number_of_pre_spawned_processes_0_disables": "事前スポーンされたプロセス数。0 で無効化します。",
         "pool_agent": "プールエージェント",
         "pool_size": "プールサイズ",
         "pool_ttl": "プール TTL",
@@ -12281,12 +12284,9 @@
         "using_global_memory_settings": "グローバルメモリ設定を使用中",
         "using_legacy_mode_agent_default_agent_as_agent_t": "レガシーモード使用中 — エージェントテンプレートとして agent.default_agent を使用",
         "warm_pool": "ウォームプール",
-        "workspace": "ワークスペース",
-        "workspaces": "ワークスペース",
-        "number_of_pre_spawned_processes_0_disables": "事前スポーンされたプロセス数。0 で無効化します。",
-        "agent_for_pool_processes_empty_uses_default_agent": "プール処理用のエージェント。空の場合はデフォルトエージェントを使用します。",
         "warm_pool_description": "ACP CLI プロセスを事前起動し、セッションを即時に開始します。",
-        "max_age_for_pooled_processes_0_disables_expiry": "プール済みプロセスの最大有効期間。0 は有効期限を無効化します。"
+        "workspace": "ワークスペース",
+        "workspaces": "ワークスペース"
       },
       "mcpTab": {
         "actions": "アクション",

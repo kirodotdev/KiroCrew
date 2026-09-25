@@ -12408,6 +12408,8 @@
         "confirm_reapply_body": "यह कॉन्फ़िगर किए गए मॉडल को पुनः लोड करता है और संग्रहीत मेमोरी वेक्टर को हटाकर पुनर्निर्मित करता है।"
       },
       "kiroCrewCfgTab": {
+        "agent_for_pool_processes_empty_uses_default_agent": "पूल प्रोसेस के लिए एजेंट। खाली छोड़ने पर डिफ़ॉल्ट एजेंट उपयोग होता है।",
+        "applies_to_sessions_started_after_the_change": "बदलाव के बाद शुरू हुए सत्रों पर लागू। 'auto' एजेंट को सैंडबॉक्स में रखता है पर क्रेडेंशियल टूल काम करते रहते हैं; 'strict' क्लाउड, SSH, kube और रजिस्ट्री क्रेडेंशियल भी छुपा देता है, इसलिए वे टूल एजेंट के अंदर काम नहीं करते — केवल वहीं जहाँ {{productName}} का अपना सैंडबॉक्स प्रोसेस को सीमित करता है, Windows पर या kiro-cli के आंतरिक सैंडबॉक्स को सौंपे गए macOS प्रोसेस पर नहीं; 'off' {{productName}} का सैंडबॉक्स छोड़ देता है (macOS पर kiro-cli का अपना सैंडबॉक्स सक्षम हो तो फिर भी लागू रहता है)।",
         "approval_mode": "अनुमोदन मोड",
         "auto": "auto",
         "auto_size_max": "ऑटो-साइज़ अधिकतम",
@@ -12423,9 +12425,9 @@
         "embedding_provider": "एम्बेडिंग प्रोवाइडर",
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "kiro-cli के ज़रिए डायनामिक MCP टूल डिस्कवरी चालू करें। अगले सत्र से लागू होगा।",
         "immediate_auto_approves_all_tools_interactive_as": "तुरंत लागू। 'auto' सभी टूल स्वीकृत करता है; 'interactive' हर बार पूछता है।",
-        "immediate_auto_enables_sandbox_for_untrusted_too": "तुरंत लागू। 'auto' अविश्वसनीय टूल के लिए सैंडबॉक्स चालू करता है।",
         "inherited_provider": "इनहेरिटेड ({{provider}})",
         "kirocrew_agents": "{{productName}} एजेंट",
+        "max_age_for_pooled_processes_0_disables_expiry": "पूल किए गए प्रोसेस की अधिकतम आयु। 0 से एक्सपायरी बंद हो जाती है।",
         "max_channel_agents": "अधिकतम चैनल एजेंट",
         "max_channels": "अधिकतम चैनल",
         "max_concurrent_subagents": "अधिकतम समवर्ती सबएजेंट",
@@ -12441,6 +12443,7 @@
         "next_update_check_cycle": "अगले अपडेट जाँच चक्र में।",
         "no_agents_defined": "कोई एजेंट परिभाषित नहीं",
         "no_memory_stores": "कोई मेमोरी स्टोर नहीं",
+        "number_of_pre_spawned_processes_0_disables": "पहले से स्पॉन किए गए प्रोसेस की संख्या। 0 से बंद।",
         "pool_agent": "पूल एजेंट",
         "pool_size": "पूल आकार",
         "pool_ttl": "पूल TTL",
@@ -12457,12 +12460,9 @@
         "using_global_memory_settings": "ग्लोबल मेमोरी सेटिंग का उपयोग हो रहा है",
         "using_legacy_mode_agent_default_agent_as_agent_t": "लेगेसी मोड उपयोग में — एजेंट टेम्पलेट के रूप में agent.default_agent",
         "warm_pool": "वॉर्म पूल",
-        "workspace": "वर्कस्पेस",
-        "workspaces": "वर्कस्पेस",
-        "number_of_pre_spawned_processes_0_disables": "पहले से स्पॉन किए गए प्रोसेस की संख्या। 0 से बंद।",
-        "agent_for_pool_processes_empty_uses_default_agent": "पूल प्रोसेस के लिए एजेंट। खाली छोड़ने पर डिफ़ॉल्ट एजेंट उपयोग होता है।",
         "warm_pool_description": "सत्र तुरंत शुरू करने के लिए ACP CLI प्रक्रियाएँ पहले से चालू करें।",
-        "max_age_for_pooled_processes_0_disables_expiry": "पूल किए गए प्रोसेस की अधिकतम आयु। 0 से एक्सपायरी बंद हो जाती है।"
+        "workspace": "वर्कस्पेस",
+        "workspaces": "वर्कस्पेस"
       },
       "mcpTab": {
         "actions": "कार्रवाइयाँ",

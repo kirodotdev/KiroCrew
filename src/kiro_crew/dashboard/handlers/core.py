@@ -2437,7 +2437,10 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "type": "enum",
         "values": ["30m", "1h", "6h", "12h", "24h", "until_shutdown"],
     },
-    "agent.sandbox": {"type": "enum", "values": ["auto", "off"]},
+    # Kept equal to the ``agent.sandbox`` enum in ``config/sections.py`` (pinned by
+    # test_sandbox_strict_selectable): a tier the CLI admits must be selectable
+    # here too, or Settings silently offers fewer tiers than ``config set``.
+    "agent.sandbox": {"type": "enum", "values": ["auto", "strict", "off"]},
     "agent.sandbox_allow_no_isolation": {"type": "bool"},
     "agent.tool_search": {"type": "bool"},
     "agent.completion_keep": {"type": "enum", "values": ["head", "tail", "both"]},

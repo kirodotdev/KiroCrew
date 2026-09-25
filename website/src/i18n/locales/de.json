@@ -12408,6 +12408,8 @@
         "confirm_reapply_body": "Dadurch wird das konfigurierte Modell neu geladen und die gespeicherten Speichervektoren werden gelöscht und neu erstellt."
       },
       "kiroCrewCfgTab": {
+        "agent_for_pool_processes_empty_uses_default_agent": "Agent für Pool-Prozesse. Leer verwendet den Standardagenten.",
+        "applies_to_sessions_started_after_the_change": "Gilt für Sitzungen, die nach der Änderung gestartet werden. „auto“ sperrt den Agenten in die Sandbox, Werkzeuge für Anmeldedaten funktionieren aber weiter; „strict“ verbirgt zusätzlich Cloud-, SSH-, Kube- und Registry-Anmeldedaten, sodass diese Werkzeuge im Agenten nicht mehr funktionieren – nur dort, wo die eigene Sandbox von {{productName}} den Prozess einschließt, nicht unter Windows und nicht bei einem macOS-Prozess, der an die interne Sandbox von kiro-cli delegiert wird; „off“ überspringt die Sandbox von {{productName}} (unter macOS gilt die eigene Sandbox von kiro-cli weiterhin, wenn sie aktiviert ist).",
         "approval_mode": "Genehmigungsmodus",
         "auto": "automatisch",
         "auto_size_max": "Maximale automatische Größe",
@@ -12423,9 +12425,9 @@
         "embedding_provider": "Embedding-Anbieter",
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "Dynamische MCP-Werkzeugerkennung über kiro-cli aktivieren. Wird in der nächsten Sitzung wirksam.",
         "immediate_auto_approves_all_tools_interactive_as": "Sofort. „auto“ genehmigt alle Werkzeuge; „interactive“ fragt vor jedem nach.",
-        "immediate_auto_enables_sandbox_for_untrusted_too": "Sofort. „auto“ aktiviert die Sandbox für nicht vertrauenswürdige Werkzeuge.",
         "inherited_provider": "übernommen ({{provider}})",
         "kirocrew_agents": "{{productName}}-Agenten",
+        "max_age_for_pooled_processes_0_disables_expiry": "Maximales Alter für Pool-Prozesse. 0 deaktiviert den Ablauf.",
         "max_channel_agents": "Max. Kanal-Agenten",
         "max_channels": "Max. Kanäle",
         "max_concurrent_subagents": "Max. gleichzeitige Subagenten",
@@ -12441,6 +12443,7 @@
         "next_update_check_cycle": "Nächster Aktualisierungsprüfzyklus.",
         "no_agents_defined": "Keine Agenten definiert",
         "no_memory_stores": "Keine Erinnerungsspeicher",
+        "number_of_pre_spawned_processes_0_disables": "Anzahl vorab gestarteter Prozesse. 0 deaktiviert dies.",
         "pool_agent": "Pool-Agent",
         "pool_size": "Poolgröße",
         "pool_ttl": "Pool-TTL",
@@ -12457,12 +12460,9 @@
         "using_global_memory_settings": "Globale Erinnerungseinstellungen werden verwendet",
         "using_legacy_mode_agent_default_agent_as_agent_t": "Legacy-Modus wird verwendet — agent.default_agent als Agenten-Vorlage",
         "warm_pool": "Warm-Pool",
-        "workspace": "Workspace",
-        "workspaces": "Workspaces",
-        "number_of_pre_spawned_processes_0_disables": "Anzahl vorab gestarteter Prozesse. 0 deaktiviert dies.",
-        "agent_for_pool_processes_empty_uses_default_agent": "Agent für Pool-Prozesse. Leer verwendet den Standardagenten.",
         "warm_pool_description": "Startet ACP-CLI-Prozesse vorab, damit Sitzungen sofort beginnen.",
-        "max_age_for_pooled_processes_0_disables_expiry": "Maximales Alter für Pool-Prozesse. 0 deaktiviert den Ablauf."
+        "workspace": "Workspace",
+        "workspaces": "Workspaces"
       },
       "mcpTab": {
         "actions": "Aktionen",

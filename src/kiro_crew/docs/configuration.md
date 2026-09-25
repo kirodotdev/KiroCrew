@@ -64,16 +64,44 @@ value and the notice with it.
 ## Sandbox
 
 `agent.sandbox` controls whether Kiro Crew wraps the agent process in its own
-OS-level sandbox (a user namespace on Linux, `sandbox-exec` on macOS).
+OS-level sandbox (a user namespace on Linux, `sandbox-exec` on macOS), and how
+much of your home directory that sandbox hides from the agent's subprocesses.
 
 | Value | Behavior |
 |-------|----------|
-| `auto` (default) | Add the Kiro Crew OS-level sandbox; on macOS it defers to the kiro-cli internal sandbox when that is enabled |
+| `auto` (default) | Add the Kiro Crew OS-level sandbox at the **standard** tier; on macOS it defers to the kiro-cli internal sandbox when that is enabled |
+| `strict` | Add the Kiro Crew OS-level sandbox at the **strict** tier: everything `standard` hides, plus `~/.aws` (including `~/.aws/sso/cache`, kiro-cli's grant store for OAuth-connected remote MCP servers), `~/.ssh` (only `known_hosts` stays readable), `~/.kube`, `~/.config/gh`, and the credential files `~/.npmrc`, `~/.pypirc`, `~/.netrc`, `~/.git-credentials` |
 | `off` | Skip the Kiro Crew OS-level sandbox |
+
+**What the default leaves visible, and why.** The standard tier hides
+`~/.gnupg`, `~/.docker`, `~/.azure`, `~/.config/gcloud`, the crew secret vault
+and the governance cache. It deliberately does **not** hide `~/.aws`, `~/.ssh`
+or `~/.kube`: the `aws` CLI, boto3 and `credential_process`, git-over-SSH and
+`kubectl` all read those directories, and an agent that cannot reach them
+cannot debug or deploy the way you would. Kiro Crew's file tools still refuse to
+open paths under them, and the AWS/SSH environment-variable, SDK and
+exfiltration command shapes are denied at the tool gate, but a plain shell read
+(`cat ~/.aws/credentials`) is not fenced at this tier — the OS sandbox is the
+enforcement point, and standard does not seal that directory.
+
+**When to use `strict`.** Set it when the host holds credentials the agent must
+never read, and you accept that inside the agent the `aws` CLI, boto3,
+git-over-SSH, `gh`, `kubectl`, npm/pip registry auth (`~/.npmrc`, `~/.pypirc`),
+`.netrc` HTTPS auth, the git credential store (`~/.git-credentials`) and
+OAuth-connected remote MCP servers (their grants live in `~/.aws/sso/cache`)
+stop working — they cannot see their config, keys or tokens, even though the
+gateway-side Connections page, which reads your real home, still shows the grant.
+It is opt-in and per host; nothing changes for you until you set it.
+Like every value of this key, a change applies to sessions started after it: a
+session already running keeps the tier it was spawned with until it ends, so
+restart the sessions (or the gateway) you want confined at the new tier.
+`strict` only tightens where Kiro Crew's own sandbox is what confines the
+spawn: on Windows there is no OS backend, and a macOS spawn delegated to
+kiro-cli's internal sandbox is confined by that profile instead.
 
 The two layers are mutually exclusive on macOS because a nested seatbelt sandbox fails with `EPERM`. The default is `auto`: it uses the Kiro Crew sandbox where available and defers to the kiro-cli internal sandbox on macOS when that sandbox is enabled.
 
-Set via `kirocrew config set agent.sandbox auto`.
+Set via `kirocrew config set agent.sandbox auto` (or `strict`, or `off`).
 
 ## ACP Backend
 
@@ -198,7 +226,7 @@ Set a registered value with, for example,
 | `agent.approval_mode` | `"auto"` or `"interactive"` | `"auto"` |
 | `agent.model` | Default LLM model for new sessions. `"auto"` defers to the agent config, then to Kiro's own default. Editable from Settings → Chat → Model; a per-session model picker overrides it for that session only | `"auto"` |
 | `agent.reasoning_effort` | Default reasoning effort on models that support it. One of `""`, `low`, `medium`, `high`, `xhigh`, `max`; `""` defers to the provider/model default. A per-session override wins | `""` |
-| `agent.sandbox` | `"auto"` (use Kiro Crew OS-level sandbox, or defer to the kiro-cli internal sandbox on macOS) or `"off"` (skip the Kiro Crew sandbox) | `"auto"` |
+| `agent.sandbox` | `"auto"` (Kiro Crew OS-level sandbox at the standard tier, which leaves `~/.aws`/`~/.ssh`/`~/.kube` visible for credential tooling; defers to the kiro-cli internal sandbox on macOS), `"strict"` (also hides `~/.aws` incl. `sso/cache`, `~/.ssh` bar `known_hosts`, `~/.kube`, `~/.config/gh`, `~/.npmrc`, `~/.pypirc`, `~/.netrc`, `~/.git-credentials`), or `"off"` (skip the Kiro Crew sandbox). Applies to sessions started after the change. See [Sandbox](#sandbox) | `"auto"` |
 | `agent.streaming` | Stream response text as it is generated | `true` |
 | `agent.bot_name` | Custom name the bot identifies as | `""` |
 | `agent.session_sharing` | Reuse a shared ACP runtime for subagents on the kiro-cli backend; alternate ACP backends ignore it | `true` |

@@ -7474,6 +7474,7 @@
         "err_env_override_with_ref": "<settingRef/> is set and overrides this setting. Unset it to change the model here."
       },
       "kiroCrewCfgTab": {
+        "applies_to_sessions_started_after_the_change": "Applies to sessions started after the change. 'auto' sandboxes the agent but keeps credential tooling working; 'strict' also hides cloud, SSH, kube and registry credentials, so those tools stop working inside the agent — only where {{productName}}'s own sandbox confines the spawn, not on Windows or on a macOS spawn delegated to kiro-cli's internal sandbox; 'off' skips {{productName}}'s sandbox (on macOS kiro-cli's own sandbox still applies when enabled).",
         "approval_mode": "Approval Mode",
         "auto": "auto",
         "auto_size_max": "Auto-Size Max",
@@ -7486,7 +7487,6 @@
         "embedding_provider": "Embedding Provider",
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "Enable dynamic MCP tool discovery via kiro-cli. Takes effect on next session.",
         "immediate_auto_approves_all_tools_interactive_as": "Immediate. 'auto' approves all tools; 'interactive' asks before each.",
-        "immediate_auto_enables_sandbox_for_untrusted_too": "Immediate. 'auto' enables sandbox for untrusted tools.",
         "kirocrew_agents": "{{productName}} Agents",
         "max_channel_agents": "Max Channel Agents",
         "max_channels": "Max Channels",

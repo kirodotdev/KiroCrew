@@ -12760,6 +12760,8 @@
         "confirm_reapply_body": "Это перезагрузит настроенную модель, а также очистит и пересоберёт сохранённые векторы памяти."
       },
       "kiroCrewCfgTab": {
+        "agent_for_pool_processes_empty_uses_default_agent": "Агент для процессов пула. Пусто — используется агент по умолчанию.",
+        "applies_to_sessions_started_after_the_change": "Применяется к сеансам, запущенным после изменения. 'auto' изолирует агента в песочнице, но инструменты с учётными данными продолжают работать; 'strict' дополнительно скрывает учётные данные облака, SSH, kube и реестров, поэтому эти инструменты внутри агента перестают работать — только там, где процесс ограничивает собственная песочница {{productName}}: не в Windows и не для процесса macOS, переданного внутренней песочнице kiro-cli; 'off' отключает песочницу {{productName}} (в macOS собственная песочница kiro-cli продолжает действовать, если включена).",
         "approval_mode": "Режим подтверждения",
         "auto": "auto",
         "auto_size_max": "Макс. авторазмер",
@@ -12775,9 +12777,9 @@
         "embedding_provider": "Провайдер эмбеддингов",
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "Включить динамическое обнаружение инструментов MCP через kiro-cli. Применится в следующей сессии.",
         "immediate_auto_approves_all_tools_interactive_as": "Применяется сразу. 'auto' — подтверждает все инструменты; 'interactive' — спрашивает перед каждым.",
-        "immediate_auto_enables_sandbox_for_untrusted_too": "Применяется сразу. 'auto' — включает песочницу для недоверенных инструментов.",
         "inherited_provider": "наследуется ({{provider}})",
         "kirocrew_agents": "Агенты {{productName}}",
+        "max_age_for_pooled_processes_0_disables_expiry": "Максимальный срок жизни процессов в пуле. 0 отключает истечение.",
         "max_channel_agents": "Макс. агентов канала",
         "max_channels": "Макс. каналов",
         "max_concurrent_subagents": "Макс. одновременных субагентов",
@@ -12793,6 +12795,7 @@
         "next_update_check_cycle": "В следующем цикле проверки обновлений.",
         "no_agents_defined": "Агенты не заданы",
         "no_memory_stores": "Нет хранилищ памяти",
+        "number_of_pre_spawned_processes_0_disables": "Количество заранее запущенных процессов. 0 отключает.",
         "pool_agent": "Агент пула",
         "pool_size": "Размер пула",
         "pool_ttl": "TTL пула",
@@ -12809,12 +12812,9 @@
         "using_global_memory_settings": "Используются глобальные настройки памяти",
         "using_legacy_mode_agent_default_agent_as_agent_t": "Используется устаревший режим — agent.default_agent как шаблон агента",
         "warm_pool": "Тёплый пул",
-        "workspace": "Рабочая область",
-        "workspaces": "Рабочие области",
-        "number_of_pre_spawned_processes_0_disables": "Количество заранее запущенных процессов. 0 отключает.",
-        "agent_for_pool_processes_empty_uses_default_agent": "Агент для процессов пула. Пусто — используется агент по умолчанию.",
         "warm_pool_description": "Заранее запускает процессы ACP CLI для мгновенного старта сессии.",
-        "max_age_for_pooled_processes_0_disables_expiry": "Максимальный срок жизни процессов в пуле. 0 отключает истечение."
+        "workspace": "Рабочая область",
+        "workspaces": "Рабочие области"
       },
       "mcpTab": {
         "actions": "Действия",

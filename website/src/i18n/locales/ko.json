@@ -12232,6 +12232,8 @@
         "confirm_reapply_body": "구성된 모델을 다시 로드하고 저장된 메모리 벡터를 지운 후 재구축합니다."
       },
       "kiroCrewCfgTab": {
+        "agent_for_pool_processes_empty_uses_default_agent": "풀 프로세스용 에이전트. 비워 두면 기본 에이전트를 사용합니다.",
+        "applies_to_sessions_started_after_the_change": "변경 후 시작된 세션에 적용됩니다. ‘auto’는 에이전트를 샌드박스에 넣되 자격 증명 도구는 계속 동작하고, ‘strict’는 클라우드, SSH, kube, 레지스트리 자격 증명도 숨기므로 에이전트 안에서 해당 도구가 동작하지 않습니다. 단, {{productName}} 자체 샌드박스가 프로세스를 가두는 경우에만 적용되며 Windows나 kiro-cli 내부 샌드박스에 위임된 macOS 프로세스에는 적용되지 않습니다. ‘off’는 {{productName}} 샌드박스를 건너뜁니다(macOS에서는 kiro-cli 자체 샌드박스가 켜져 있으면 계속 적용됩니다).",
         "approval_mode": "승인 모드",
         "auto": "자동",
         "auto_size_max": "자동 크기 조정 최대값",
@@ -12247,9 +12249,9 @@
         "embedding_provider": "임베딩 제공자",
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "kiro-cli를 통한 동적 MCP 도구 검색을 활성화합니다. 다음 세션부터 적용됩니다.",
         "immediate_auto_approves_all_tools_interactive_as": "즉시 적용됩니다. ‘auto’는 모든 도구를 승인하고, ‘interactive’는 도구마다 확인합니다.",
-        "immediate_auto_enables_sandbox_for_untrusted_too": "즉시 적용됩니다. ‘auto’는 신뢰할 수 없는 도구에 샌드박스를 활성화합니다.",
         "inherited_provider": "상속됨 ({{provider}})",
         "kirocrew_agents": "{{productName}} 에이전트",
+        "max_age_for_pooled_processes_0_disables_expiry": "풀링된 프로세스의 최대 수명. 0이면 만료를 비활성화합니다.",
         "max_channel_agents": "최대 채널 에이전트 수",
         "max_channels": "최대 채널 수",
         "max_concurrent_subagents": "최대 동시 서브에이전트 수",
@@ -12265,6 +12267,7 @@
         "next_update_check_cycle": "다음 업데이트 확인 주기.",
         "no_agents_defined": "정의된 에이전트 없음",
         "no_memory_stores": "메모리 저장소 없음",
+        "number_of_pre_spawned_processes_0_disables": "미리 생성할 프로세스 수. 0이면 비활성화됩니다.",
         "pool_agent": "풀 에이전트",
         "pool_size": "풀 크기",
         "pool_ttl": "풀 TTL",
@@ -12281,12 +12284,9 @@
         "using_global_memory_settings": "전역 메모리 설정 사용 중",
         "using_legacy_mode_agent_default_agent_as_agent_t": "레거시 모드 사용 중 — agent.default_agent를 에이전트 템플릿으로 사용",
         "warm_pool": "웜 풀",
-        "workspace": "워크스페이스",
-        "workspaces": "워크스페이스",
-        "number_of_pre_spawned_processes_0_disables": "미리 생성할 프로세스 수. 0이면 비활성화됩니다.",
-        "agent_for_pool_processes_empty_uses_default_agent": "풀 프로세스용 에이전트. 비워 두면 기본 에이전트를 사용합니다.",
         "warm_pool_description": "세션을 즉시 시작할 수 있도록 ACP CLI 프로세스를 미리 실행합니다.",
-        "max_age_for_pooled_processes_0_disables_expiry": "풀링된 프로세스의 최대 수명. 0이면 만료를 비활성화합니다."
+        "workspace": "워크스페이스",
+        "workspaces": "워크스페이스"
       },
       "mcpTab": {
         "actions": "동작",

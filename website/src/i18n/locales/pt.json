@@ -12584,6 +12584,8 @@
         "confirm_reapply_body": "Isso recarrega o modelo configurado e apaga e reconstrói os vetores de memória armazenados."
       },
       "kiroCrewCfgTab": {
+        "agent_for_pool_processes_empty_uses_default_agent": "Agente para os processos do pool. Vazio usa o agente padrão.",
+        "applies_to_sessions_started_after_the_change": "Aplica-se às sessões iniciadas após a alteração. 'auto' isola o agente no sandbox, mas as ferramentas de credenciais continuam funcionando; 'strict' também oculta credenciais de nuvem, SSH, kube e registros, então essas ferramentas deixam de funcionar dentro do agente, apenas onde o próprio sandbox do {{productName}} confina o processo: não no Windows nem em um processo do macOS delegado ao sandbox interno do kiro-cli; 'off' pula o sandbox do {{productName}} (no macOS o sandbox do próprio kiro-cli continua valendo se estiver ativado).",
         "approval_mode": "Modo de aprovação",
         "auto": "auto",
         "auto_size_max": "Máx. de auto-dimensionamento",
@@ -12599,9 +12601,9 @@
         "embedding_provider": "Provedor de embedding",
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "Ativa a descoberta dinâmica de ferramentas MCP via kiro-cli. Aplica-se na próxima sessão.",
         "immediate_auto_approves_all_tools_interactive_as": "Imediato. 'auto' aprova todas as ferramentas; 'interactive' pergunta antes de cada uma.",
-        "immediate_auto_enables_sandbox_for_untrusted_too": "Imediato. 'auto' ativa o sandbox para ferramentas não confiáveis.",
         "inherited_provider": "herdado ({{provider}})",
         "kirocrew_agents": "Agentes do {{productName}}",
+        "max_age_for_pooled_processes_0_disables_expiry": "Idade máxima dos processos do pool. 0 desativa a expiração.",
         "max_channel_agents": "Máx. de agentes por canal",
         "max_channels": "Máx. de canais",
         "max_concurrent_subagents": "Máx. de subagentes simultâneos",
@@ -12617,6 +12619,7 @@
         "next_update_check_cycle": "No próximo ciclo de verificação de atualizações.",
         "no_agents_defined": "Nenhum agente definido",
         "no_memory_stores": "Nenhum armazenamento de memória",
+        "number_of_pre_spawned_processes_0_disables": "Número de processos pré-iniciados. 0 desativa.",
         "pool_agent": "Agente do pool",
         "pool_size": "Tamanho do pool",
         "pool_ttl": "TTL do pool",
@@ -12633,12 +12636,9 @@
         "using_global_memory_settings": "Usando as configurações globais de memória",
         "using_legacy_mode_agent_default_agent_as_agent_t": "Usando o modo legado — agent.default_agent como modelo de agente",
         "warm_pool": "Pool aquecido",
-        "workspace": "Workspace",
-        "workspaces": "Workspaces",
-        "number_of_pre_spawned_processes_0_disables": "Número de processos pré-iniciados. 0 desativa.",
-        "agent_for_pool_processes_empty_uses_default_agent": "Agente para os processos do pool. Vazio usa o agente padrão.",
         "warm_pool_description": "Pré-inicia processos da ACP CLI para um arranque de sessão instantâneo.",
-        "max_age_for_pooled_processes_0_disables_expiry": "Idade máxima dos processos do pool. 0 desativa a expiração."
+        "workspace": "Workspace",
+        "workspaces": "Workspaces"
       },
       "mcpTab": {
         "actions": "Ações",
