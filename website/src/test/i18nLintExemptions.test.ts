@@ -424,4 +424,21 @@ describe('capability retention protocol sentinel', () => {
     expect(await lint("export const mask = '[REDACTED]'" )).toEqual([])
     expect(await lint("export const label = 'Keep [REDACTED] value'" )).not.toEqual([])
   })
+
+  it('allows the two backend credential tags the sanitize mirror holds byte-for-byte', async () => {
+    // `utils/sanitize.ts` keeps `REDACTION_TAGS` identical to the backend's
+    // `CREDENTIAL_REDACTION_TAGS` so a value that already IS the backend's output
+    // is left alone. The site is an ALL-CAPS module constant, so this is the
+    // strict-only population the wrapper surfaces; the exemption is by content.
+    expect(
+      await lint("export const REDACTION_TAGS = ['[REDACTED]', '[REDACTED: credential]', '[REDACTED: encoded credential]']"),
+    ).toEqual([])
+  })
+
+  it('still reports the exfiltration tag, whose rendering is catalog copy', async () => {
+    // Enumerated, not shaped: `[REDACTED: suspicious URL to <domain>]` is rendered
+    // through `utils.sanitize.redacted_suspicious_url`, so it must stay reportable.
+    expect(await lint("export const PROBE = ['[REDACTED: suspicious URL to example.com]']")).toHaveLength(1)
+    expect(await lint("export const PROBE = ['[REDACTED: token]']")).toHaveLength(1)
+  })
 })

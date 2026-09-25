@@ -186,11 +186,12 @@ def _scrub_decoded(val: object, depth: int = 0) -> object:
 def _is_json_document(val: str) -> bool:
     """Whether the text is a JSON document, judged before any scrub has touched it.
 
-    The scan below runs on scrubbed text, and a redactor's replacement can span JSON
-    structure: the credential-assignment patterns match across a name, its colon and its
-    value, so splicing one out leaves text that does not parse. Judging JSON-ness on that
-    text would call a real document prose and hand it back unscanned. This answers for the
-    stored bytes instead, so the two questions stay separate.
+    The scan below runs on scrubbed text, and a redactor's replacement can break JSON
+    structure: a credential-assignment pattern replaces the VALUE after a key, so an unquoted
+    scalar in that position (`"aws_secret_access_key": 0`) becomes a bare tag the parser
+    rejects, and the control-character strip can break a document as well. Judging JSON-ness
+    on that text would call a real document prose and hand it back unscanned. This answers
+    for the stored bytes instead, so the two questions stay separate.
 
     A decode that fails for any reason OTHER than malformed syntax still means the text is
     JSON -- decoding merely could not finish -- so those count as a document here.
@@ -241,10 +242,10 @@ def _scrub_json_transport(val: str, depth: int = 0, *, original: str | None = No
 
     Two ways of failing are kept apart, because only one of them leaves a payload behind.
     The dividing line is the PARSER's own verdict on the STORED bytes, not on the text in
-    hand: the scan runs on scrubbed text, and a credential-assignment pattern spans a name,
-    its colon and its value, so splicing one out can leave text that fails to parse even
-    though the stored document parses fine. Text the parser rejects AND that was never a
-    document
+    hand: the scan runs on scrubbed text, and a credential-assignment pattern replaces the
+    value after a key, so an unquoted scalar value becomes a bare tag and the text fails to
+    parse even though the stored document parses fine. Text the parser rejects AND that was
+    never a document
     holds no JSON payload at all, so the text scrub already covered everything there was to
     cover and the field passes through. Every other failure means a payload existed and
     decoding could not finish -- nested past the cap, nested deeply enough to exhaust the

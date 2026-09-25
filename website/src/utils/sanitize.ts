@@ -3,11 +3,34 @@
 import { i18nT } from '../i18n/t'
 
 // ── Credential patterns (matches redact_credentials in security.py) ──
+//
+// The three AWS key-value spellings are KEY-ANCHORED: they begin at the key
+// naming the secret. Like the backend's `_credential_value_span`, only the
+// `value` group is replaced -- the key and separator stay, so a redacted line
+// still says what was redacted -- and a value that IS a redaction tag, byte for
+// byte, is left alone (`isRedactionTag`), so this mirror is a fixed point over
+// the backend's own output (`key=[REDACTED: credential]`) instead of
+// re-collapsing it to `[REDACTED] credential]`. The value group is
+// `TAG\S*|\S+` (`TAG_ATOM`): a whole tag plus whatever is glued to it, or an
+// ordinary run -- so a bare tag is left alone, a tag with bytes glued to its `]`
+// is redacted whole (nothing certified those bytes), and a tag followed by a
+// space is a bare tag with an ordinary tail. Every other pattern IS the secret
+// and is replaced whole.
+const REDACTION_TAGS = ['[REDACTED]', '[REDACTED: credential]', '[REDACTED: encoded credential]']
+// Each tag is escaped as a whole regex literal (the backend's `re.escape`), not
+// just its brackets: the escape set is the full metacharacter class, backslash
+// included, so a future tag carrying `.` or `\` still matches byte for byte.
+const TAG_ATOM = `(?:${REDACTION_TAGS.map((tag) => tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`
+// A RegExp spliced in through `.source` (byte-identical: the pattern holds no
+// `/` and no line terminator, the only bytes the getter escapes), so the i18n
+// gate reads this regex source where its `RegExp` callee exemption puts one --
+// a pattern, never copy -- rather than as a literal inside an ALL-CAPS constant.
+const KEYED_VALUE = new RegExp(`(?<value>${TAG_ATOM}\\S*|\\S+)`)
 const CRED_PATTERNS: RegExp[] = [
   /(?:AKIA|ASIA)[A-Z0-9]{16}/g,
-  /(?:SecretAccessKey|aws_secret_access_key)\s*[:=]\s*\S+/gi,
-  /(?:SessionToken|aws_session_token)\s*[:=]\s*\S+/gi,
-  /(?:AccessKeyId|aws_access_key_id)\s*[:=]\s*\S+/gi,
+  new RegExp(`(?<key>(?:SecretAccessKey|aws_secret_access_key)\\s*[:=]\\s*)${KEYED_VALUE.source}`, 'gi'),
+  new RegExp(`(?<key>(?:SessionToken|aws_session_token)\\s*[:=]\\s*)${KEYED_VALUE.source}`, 'gi'),
+  new RegExp(`(?<key>(?:AccessKeyId|aws_access_key_id)\\s*[:=]\\s*)${KEYED_VALUE.source}`, 'gi'),
   /BEGIN\s(?:RSA|DSA|EC|OPENSSH)\sPRIVATE\sKEY/g,
   /xox[bpas]-[0-9a-zA-Z-]{10,}/g,
   // JWS (3 segments) and compact JWE (5 segments). Post-header segments use `*`,
@@ -98,12 +121,28 @@ function decodeB64Safe(chunk: string): string {
   return ''
 }
 
+// Trust is byte identity of the ENTIRE value with one of the tag literals above
+// (this mirror's own, and the two the backend's `CREDENTIAL_REDACTION_TAGS`
+// registers), never a shape and never a prefix: `[REDACTED<secret>` is a value
+// and is redacted like any other, and so is `[REDACTED: credential]<secret>`.
+function isRedactionTag(value: string): boolean {
+  return REDACTION_TAGS.includes(value)
+}
+
 export function sanitizeCredentials(text: string): string {
   let out = text
   // Plaintext credential patterns
   for (const re of CRED_PATTERNS) {
     re.lastIndex = 0
-    out = out.replace(re, '[REDACTED]')
+    out = out.replace(re, (...args: unknown[]) => {
+      const match = args[0] as string
+      const groups = args[args.length - 1]
+      if (typeof groups !== 'object' || groups === null) return '[REDACTED]'
+      const { key, value } = groups as { key?: string; value?: string }
+      if (key === undefined || value === undefined) return '[REDACTED]'
+      if (isRedactionTag(value)) return match
+      return `${key}[REDACTED]`
+    })
   }
   // Base64-encoded credentials
   B64_CHUNK.lastIndex = 0

@@ -138,3 +138,59 @@ describe('sanitizeCredentials: JWT family', () => {
     }
   })
 })
+
+describe('sanitizeCredentials: key-anchored AWS spellings', () => {
+  const TAG = '[REDACTED: credential]'
+
+  it('keeps the key and separator and replaces only the value', () => {
+    expect(sanitizeCredentials('aws_secret_access_key=test-secret-not-a-credential-0123')).toBe(
+      'aws_secret_access_key=[REDACTED]',
+    )
+    expect(sanitizeCredentials('SessionToken: test-session-not-a-credential-0123 # x')).toBe(
+      'SessionToken: [REDACTED] # x',
+    )
+    expect(sanitizeCredentials('AccessKeyId = test-key-id-not-a-credential-0123')).toBe(
+      'AccessKeyId = [REDACTED]',
+    )
+  })
+
+  it("is a fixed point over the backend's own redacted output", () => {
+    for (const line of [
+      `aws_secret_access_key=${TAG}`,
+      `SessionToken: ${TAG} # trailing`,
+      `AccessKeyId = [REDACTED: encoded credential]`,
+      `{"aws_secret_access_key": "${TAG}"}`,
+    ]) {
+      expect(sanitizeCredentials(line)).toBe(line)
+    }
+  })
+
+  it('is a fixed point over its own output', () => {
+    const once = sanitizeCredentials('aws_session_token=test-session-not-a-credential-0123')
+    expect(sanitizeCredentials(once)).toBe(once)
+  })
+
+  it('redacts a value that only resembles a tag', () => {
+    for (const lookalike of [
+      '[REDACTEDtest-secret-not-a-credential-0123',
+      '[REDACTED:credential]test-secret-not-a-credential-0123',
+      '[redacted:test-secret-not-a-credential-0123',
+    ]) {
+      const out = sanitizeCredentials(`aws_secret_access_key=${lookalike}`)
+      expect(out).toBe('aws_secret_access_key=[REDACTED]')
+      expect(out).not.toContain('test-secret-not-a-credential-0123')
+    }
+  })
+})
+
+describe('sanitizeCredentials: a tag with bytes glued to it is a value', () => {
+  it('redacts the whole glued value and leaves a boundary-separated tail alone', () => {
+    const glued = 'aws_secret_access_key=[REDACTED: credential]test-secret-not-a-credential-0123'
+    const out = sanitizeCredentials(glued)
+    expect(out).toBe('aws_secret_access_key=[REDACTED]')
+    expect(out).not.toContain('test-secret-not-a-credential-0123')
+
+    const tailed = 'aws_secret_access_key=[REDACTED: credential] tail-not-a-value'
+    expect(sanitizeCredentials(tailed)).toBe(tailed)
+  })
+})

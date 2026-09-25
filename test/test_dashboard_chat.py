@@ -2165,11 +2165,11 @@ class TestSlotDetailPagination:
             out, _ = redact_credentials(out)
             return out
 
-        # Two different credential KINDS rather than two near-identical keys: an
-        # access-key id and a labelled secret-key assignment redact to the same tag,
-        # so no second key-shaped literal is needed to make the bodies collide.
-        mine = "key AKIAIOSFODNN7EXAMPLE here"
-        theirs = "key aws_secret_access_key=x here"
+        # Two labelled secret-key assignments with DIFFERENT values: the redactor
+        # keeps the label and replaces each value with the same tag, so the two
+        # bodies collide without any key-shaped literal in the fixture.
+        mine = "key aws_secret_access_key=x here"
+        theirs = "key aws_secret_access_key=y here"
         assert mine != theirs, "fixture needs two DISTINCT bodies"
         assert (
             red(mine) == red(theirs) != mine

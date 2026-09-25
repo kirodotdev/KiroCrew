@@ -815,6 +815,34 @@ class TestScrub:
         )
         assert gate_mod.scrub_reason("clean", QUESTIONS, model="jev-latest") is None
 
+    def test_an_unterminated_quoted_pair_behind_a_redaction_tag_is_refused(self):
+        """The screen's only credential signal for a generic value is the
+        redactor's warning list (``_CREDENTIAL_RE`` knows fixed vendor, AWS-id and
+        JWT shapes). A key-anchored value whose opening quote never closes carries
+        the secret INSIDE the value as far as any format can tell, so the redactor
+        claims it to the line's end and warns, and the screen refuses. Red on the
+        head that fell back to the class run there: the tag was skipped, no
+        warning was raised, and an agent-written state such as an auto-nudge
+        criterion went to the provider with the secret in it. The redactor's own
+        first pass over ``key="<s1> <s2>`` emits this exact shape."""
+        for state in (
+            'aws_secret_access_key="[REDACTED: credential] test-secret-not-a-credential-0123',
+            '{"SessionToken": "[REDACTED: credential] test-session-not-a-credential-0123\n"r": "x"}',
+            "criterion: AccessKeyId='test-key-id-not-a-credential-0123 second-not-a-credential",
+        ):
+            assert (
+                gate_mod.scrub_reason(state, QUESTIONS, model="jev-latest")
+                == gate_mod.ERROR_SCRUBBED_CREDENTIAL
+            ), state
+        # A closed quoted pair the redactor already cleaned is a fixed point and
+        # passes: the screen refuses on secrets, not on the presence of a tag.
+        assert (
+            gate_mod.scrub_reason(
+                'aws_secret_access_key="[REDACTED: credential]"', QUESTIONS, model="jev-latest"
+            )
+            is None
+        )
+
     def test_a_credential_in_a_choice_option_is_found(self, install_impl, log_home):
         oracle = install_impl(_ExplodingOracle())
         questions = [Choice(id="q", prompt="which?", options=["fine", _AWS_KEY_SAMPLES[0]])]

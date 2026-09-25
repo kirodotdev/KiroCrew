@@ -1111,6 +1111,12 @@ class StreamRedactor:
         # A partial canonical tag is already-redacted material. It lowers only
         # the safety cut and is deliberately applied AFTER STRONG classification,
         # so the tag prefix itself can neither raise a cap nor authorize a drop.
+        # A COMPLETE tag standing as a token-parameter value at the tail is not
+        # this hold's case: `_TOKEN_PARAM_PARTIAL_RE` carries the batch grammar's
+        # tag atom, so that tail -- bare, or with `!` or a secret's first bytes
+        # glued to its `]` -- is a STRONG in-progress anchor above, held from
+        # `token=` until a terminator, and the batch pass then sees the joined
+        # value whole.
         if partial_tag_start is not None:
             i = min(i, partial_tag_start)
 
