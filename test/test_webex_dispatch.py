@@ -249,7 +249,7 @@ class FakeClient:
 
     async def edit_message(self, message_id: str, room_id: str, markdown: str) -> bool:
         self.edits.append((message_id, room_id, markdown))
-        return True
+        return getattr(self, "edit_ok", True)
 
     async def delete_message(self, message_id: str) -> None:
         self.deleted.append(message_id)
@@ -1282,6 +1282,20 @@ class TestApprovals:
 
 
 class TestQueueAndDrain:
+    @pytest.mark.asyncio
+    async def test_the_surface_reports_whether_the_edit_landed(self) -> None:
+        """Webex documents a per-message edit cap, so a refusal here is ordinary. The
+        registry can only keep such a transition retryable if the wrapper reports it
+        rather than swallowing the client's answer."""
+        client = FakeClient()
+        d = _dispatcher(FakeSessions(FakeProvider([])), FakeCtx(), client, cfg=_cfg_queue())
+        surface = d._receipt_surface(_inbound("x"))
+
+        client.edit_ok = True
+        assert await surface.edit_receipt("m1", "body") is True
+        client.edit_ok = False
+        assert await surface.edit_receipt("m1", "body") is False
+
     @pytest.mark.asyncio
     async def test_queue_mode_enqueues_with_a_receipt(self) -> None:
         provider = FakeProvider([])

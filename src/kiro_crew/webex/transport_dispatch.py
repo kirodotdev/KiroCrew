@@ -94,7 +94,7 @@ from kiro_crew.messaging.queue_drain import (
     register_drain,
     tag_entry,
 )
-from kiro_crew.messaging.queue_receipt import ReceiptQueue, ReceiptSurface
+from kiro_crew.messaging.queue_receipt import ReceiptQueue, ReceiptSurface, receipt_address_key
 from kiro_crew.safety_override import describe_grant_lifetime, safety_override
 from kiro_crew.sel import sel
 from kiro_crew.webex import cards
@@ -1232,6 +1232,11 @@ class WebexDispatcher:
 
         class _Surface:
             label = "webex"
+            # The room alone: ``edit_message`` takes the message id plus the room, and
+            # ``parent_id`` only threads a SEND. Every member of a group space therefore
+            # produces the SAME key, which is what lets a second member's mid-turn
+            # message update the one shared bubble.
+            address_key = receipt_address_key("webex", room_id)
 
             async def send_receipt(self, body: str) -> Any | None:
                 # A receipt quotes the message it queued, so it carries user text
@@ -1240,8 +1245,8 @@ class WebexDispatcher:
                     room_id, webex_display_safe(body), parent_id=parent_id
                 )
 
-            async def edit_receipt(self, msg_id: Any, body: str) -> None:
-                await client.edit_message(str(msg_id), room_id, webex_display_safe(body))
+            async def edit_receipt(self, msg_id: Any, body: str) -> bool:
+                return await client.edit_message(str(msg_id), room_id, webex_display_safe(body))
 
         return _Surface()
 

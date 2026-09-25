@@ -280,7 +280,7 @@ class FakeClient:
     ) -> bool:
         self.edits.append((message_id, text, reply_markup))
         self.edit_chats.append(chat_id)
-        return True
+        return getattr(self, "edit_ok", True)
 
     async def edit_message_reply_markup(
         self, chat_id: int, message_id: int, reply_markup: Any = None
@@ -4702,6 +4702,23 @@ class TestForumReplyThreading:
 class TestForumQueueDrain:
     """Fix B: a message queued mid-turn in a forum Topic drains under the FORUM
     session key, not the DM key."""
+
+    def test_the_surface_reports_whether_the_edit_landed(self) -> None:
+        """A rate-limited chat answers a refusal rather than raising, and the registry
+        can only keep that transition retryable if the wrapper reports it."""
+        d, cli, _sess = _dispatcher({7})
+        surface = d._receipt_surface(7, None)
+
+        async def go() -> tuple[bool, bool]:
+            cli.edit_ok = True
+            ok = await surface.edit_receipt(11, "body")
+            cli.edit_ok = False
+            refused = await surface.edit_receipt(11, "body")
+            return ok, refused
+
+        ok, refused = asyncio.run(go())
+        assert ok is True
+        assert refused is False
 
     def test_queued_forum_message_drains_under_forum_key(self) -> None:
         d, cli, sess = _dispatcher({7})

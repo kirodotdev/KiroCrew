@@ -4634,6 +4634,23 @@ class TestDrainSenderIdentity:
 
     _UNIFIED = "unified:kirocrew"
 
+    def test_the_surface_reports_whether_the_edit_landed(self) -> None:
+        """A rate-limited chat answers a refusal rather than raising, and the registry
+        can only keep that transition retryable if the wrapper reports it."""
+        d, cli, _sess = _dispatcher({7})
+        surface = d._receipt_surface("chan1")
+
+        async def go() -> tuple[bool, bool]:
+            cli.edit_ok = True
+            ok = await surface.edit_receipt("m1", "body")
+            cli.edit_ok = False
+            refused = await surface.edit_receipt("m1", "body")
+            return ok, refused
+
+        ok, refused = asyncio.run(go())
+        assert ok is True
+        assert refused is False
+
     async def _queue(self, d: Any, sess: Any, *msgs: InboundMessage) -> None:
         """Queue each message through the REAL enqueue, mid-turn.
 

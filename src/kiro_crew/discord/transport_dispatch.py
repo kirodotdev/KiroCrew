@@ -152,6 +152,7 @@ from kiro_crew.messaging.queue_receipt import STEER_ACK_EMOJI as _STEER_ACK_EMOJ
 from kiro_crew.messaging.queue_receipt import (
     ReceiptQueue,
     ReceiptSurface,
+    receipt_address_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -1702,12 +1703,15 @@ class DiscordDispatcher:
 
         class _Surface:
             label = "discord"
+            # The channel is the whole address: ``edit_message`` takes it plus the
+            # message id, and a Discord message id is only that channel's.
+            address_key = receipt_address_key("discord", channel_id)
 
             async def send_receipt(self, body: str) -> Any | None:
                 return await client.send_message(channel_id, body)
 
-            async def edit_receipt(self, msg_id: Any, body: str) -> None:
-                await client.edit_message(channel_id, msg_id, body)
+            async def edit_receipt(self, msg_id: Any, body: str) -> bool:
+                return await client.edit_message(channel_id, msg_id, body)
 
         return _Surface()
 

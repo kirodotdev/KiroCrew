@@ -53,9 +53,15 @@ from kiro_crew.messaging.queue_receipt import ReceiptQueue, receipt_text
 
 
 class _Surface:
-    """A receipt surface with its address already bound (what a channel supplies)."""
+    """A receipt surface with its address already bound (what a channel supplies).
+
+    ``address_key`` is part of that binding: the registry compares it to decide whether
+    a caller writes to the bubble's own conversation, so a fake without one addresses
+    nothing and every write is withheld.
+    """
 
     label = "fake"
+    address_key = "fake\x00chat"
 
     def __init__(self) -> None:
         self.sent: list[str] = []
