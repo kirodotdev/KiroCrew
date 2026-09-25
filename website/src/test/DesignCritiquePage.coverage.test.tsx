@@ -335,10 +335,18 @@ describe('Design Critique — annotations saved with a critique', () => {
   })
 
   it('asks a follow-up on the same thread and keeps it with the critique', async () => {
-    mockApi.getSlot.mockResolvedValue({
+    // The thread slot GROWS: the context turn leaves one assistant row; the
+    // question appends a user row and the answer. The page accepts only a row
+    // appended after its pre-send baseline, so the slot must actually grow --
+    // a static reply would read as the previous answer and be rejected.
+    const context = { role: 'assistant', content: 'Context noted.' }
+    const answer = { role: 'assistant', content: 'Because the fold hides it on a laptop.' }
+    mockApi.getSlot.mockImplementation(async () => ({
       running: false,
-      messages: [{ role: 'assistant', content: 'Because the fold hides it on a laptop.' }],
-    })
+      messages: mockApi.send.mock.calls.length >= 2
+        ? [context, { role: 'user', content: 'How would you fix it?' }, answer]
+        : [context],
+    }))
     openAnnotated()
     fireEvent.click(screen.getByTitle('Your question — click to see the answer'))
 
@@ -359,6 +367,25 @@ describe('Design Critique — annotations saved with a critique', () => {
     const saved = JSON.parse(localStorage.getItem(HKEY) || '[]')
     expect(saved[0].asks[0].turns).toHaveLength(2)
     expect(saved[0].asks[0].turns[1].a).toBe('Because the fold hides it on a laptop.')
+  })
+
+  it('never records the previous answer under a question whose send did not land', async () => {
+    // The thread shares one slot, so its latest assistant row is always the
+    // PREVIOUS answer. A send the wire reports as indeterminate (POST rejected
+    // before headers) resolves, and the slot never grows; the poll must not
+    // take that standing row as the reply to the new question.
+    const stale = { role: 'assistant', content: 'The previous answer.' }
+    mockApi.getSlot.mockResolvedValue({ running: false, messages: [stale] })
+    openAnnotated()
+    fireEvent.click(screen.getByTitle('Your question — click to see the answer'))
+    fireEvent.change(screen.getByPlaceholderText('Ask a follow-up…'), { target: { value: 'And on mobile?' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Ask' }))
+
+    await tick(3 * 60 * 1000 + 5000)
+    expect(screen.queryByText('The previous answer.')).toBeNull()
+    expect(screen.getByText('That took too long — ask again.')).toBeInTheDocument()
+    // Nothing persisted carries the stale row as an answer either.
+    expect(localStorage.getItem(HKEY) || '').not.toContain('The previous answer.')
   })
 
   it('reports a failed follow-up on the turn itself', async () => {

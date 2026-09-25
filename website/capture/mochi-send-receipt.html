@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>mochi-send-receipt capture</title>
+    <style>
+      /*
+       * Mirrors src/apps/mochi/panel.html: the panel window ships with ONLY
+       * this reset, the system font stack and the themable --text colour --
+       * plus the core theme VARIABLES that applyTheme() injects. No utility
+       * stylesheet reaches it, so a frame taken here shows what the shipped
+       * window shows.
+       */
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body {
+        overflow: hidden;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        color: var(--text, #cdd6f4);
+        height: 100%;
+      }
+      #root { width: 100%; height: 100%; }
+      ::-webkit-scrollbar { width: 5px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb { background: var(--scrollbar, rgba(255, 255, 255, 0.06)); border-radius: 3px; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/capture/mochi-send-receipt.tsx"></script>
+  </body>
+</html>

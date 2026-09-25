@@ -141,6 +141,7 @@
   },
   "api": {
     "client": {
+      "accepted_body_unreadable": "O servidor aceitou a solicitação, mas a resposta não pôde ser lida.",
       "paste_token_url_or_raw_token": "Cole a URL de início de sessão…",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Limite de taxa aplicado pela borda do túnel (HTTP 429) — muitas solicitações em rajada. O painel repete a tentativa automaticamente; se isso persistir, aguarde alguns segundos e recarregue.",
       "reauth_command": "kirocrew token",
@@ -276,6 +277,8 @@
   "appSdk": {
     "chatEmbed": {
       "agent_is_working": "O agente está trabalhando...",
+      "app_not_allowed_to_send_named": "{{app}} não tem permissão para enviar mensagens de chat: o app não declara acesso ao chat em suas permissões.",
+      "server_refused_with_status": "O servidor recusou (HTTP {{status}}) — tente novamente em instantes.",
       "chat_message": "Mensagem do chat",
       "message": "Mensagem...",
       "send": "Enviar",
@@ -10925,7 +10928,8 @@
       "run_in_terminal_liveness_probe_failed_error": "O comando não foi enviado para o novo terminal. O shell dele pode ainda estar em execução, por isso a aba foi mantida aberta.",
       "run_in_terminal_shell_alive_error": "O comando não foi enviado para o novo terminal, mas o shell dele está em execução — a aba foi mantida aberta para você executar o comando ali.",
       "run_in_terminal_dispatch_rolled_back_error": "O comando não foi enviado para o novo terminal, por isso esse terminal foi fechado.",
-      "model_auto_jev_description": "Deixe o Jev avaliar cada turno e executá-lo no modelo daquele nível"
+      "model_auto_jev_description": "Deixe o Jev avaliar cada turno e executá-lo no modelo daquele nível",
+      "delivery_unconfirmed_option": "Entrega não confirmada — verifique a conversa e, se estiver faltando, toque na sugestão novamente."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 ignorada — atualmente selecionada)",

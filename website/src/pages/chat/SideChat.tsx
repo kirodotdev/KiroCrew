@@ -2,8 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { MessageCircleQuestionMark, RotateCcw } from 'lucide-react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { api } from '../../api/client'
+import { sendTurn, type SendReceipt } from '../../chat-core/transport/sendTurn'
+import { sendFailureCopy, deliveryUnconfirmedCopy } from '../../chat-core/transport/receiptCopy'
+import { sideTurnWire } from './sideTurnWire'
 import { useAppSelector, useAppDispatch } from '../../store'
-import { sideClose, sideOptimisticAppend, sideOptimisticRollback, sseSideQueue, sideReleaseConsumed, queueEditBroadcastAt } from '../../store/chatSlice'
+import { sideClose, sideOptimisticAppend, sideOptimisticRollback, sseSideQueue, sideReleaseConsumed, sideSendStatus, queueEditBroadcastAt, type SideStandingNotice } from '../../store/chatSlice'
 import QueueStack from '../../components/QueueStack'
 import ChatMessageList from '../../app-sdk/ChatMessageList'
 import FollowUpBar from '../../components/FollowUpBar'
@@ -41,6 +44,10 @@ const EMPTY_SIDE_QUEUE: SideQueueEntry[] = []
  *  from state its own optimistic update already changed. */
 /** `slot` is captured at submit time: the panel's prop can change under an in-flight
  *  request, and a response must land where the question was asked. */
+/** The `/side/turn` acceptance body, as `api.sideTurn` types it. Read off the
+ *  transport receipt's `body` passthrough on `dispatched` / `queued`. */
+type SideTurnBody = Awaited<ReturnType<typeof api.sideTurn>>
+
 type SideSubmit = { q: string; steer: boolean; optimistic: boolean; slot: string;
   /** True when `q` came from a follow-up chip rather than the composer, so the draft the
    *  user is still writing must survive the send. */
@@ -68,6 +75,14 @@ function relativeTime(iso: string): string | null {  const diff = Date.now() - n
   if (diff < 24 * 3600_000) return `${Math.floor(diff / 3600_000)}h`
   return `${Math.floor(diff / (24 * 3600_000))}d`
 }
+type SendRecovery = { text?: string; pastes?: PasteBlock[]; error?: string; notice?: SideStandingNotice }
+/** What a send that was not accepted hands back to the composer: the payload as
+ *  the user SAW it (collapsed paste tokens plus their blocks) when the submit
+ *  carried one, else the text that went on the wire. */
+function handBack(vars: SideSubmit): Pick<SendRecovery, 'text' | 'pastes'> {
+  return vars.pastes?.length && vars.display ? { text: vars.display, pastes: vars.pastes } : { text: vars.q }
+}
+
 
 export default function SideChat({ slot }: { slot: string }) {
   const connected = useConnected()
@@ -99,8 +114,15 @@ export default function SideChat({ slot }: { slot: string }) {
   // ErrorNotice, which is for an operation that went wrong. It stays until the
   // draft changes (the user is acting on it) or a send goes out.
   const [lengthHint, setLengthHint] = useState<string | null>(null)
+  // A notice that describes a STANDING state (an unconfirmed send whose text is
+  // back in the composer) rather than a moment. It holds until the next submit
+  // clears it: auto-dismissing it would leave restored text with no explanation
+  // for a user who looks back after the TTL, and the text would be resent.
+  // Lives in the store, per slot, beside the text it explains (see SideState.sendStatus).
+  const sendStatus = reduxSide?.sendStatus
 
-  // Retire the notice on its own so it cannot outlive the moment it describes.
+  // Retire the transient notice on its own so it cannot outlive the moment it
+  // describes.
   useEffect(() => {
     if (!localNotice) return
     const t = setTimeout(() => setLocalNotice(null), NOTICE_TTL_MS)
@@ -196,6 +218,23 @@ export default function SideChat({ slot }: { slot: string }) {
     draft, setDraft,
     picked: pickedOptions, toggleOption, mergeIntoDraft, exceedsByteLimit,
   } = composer
+  // The standing notice asserts "your text is back in the composer"; once the
+  // user empties the composer (they checked the transcript and the send did
+  // land, so they deleted the restored copy) it would be asserting text that
+  // is no longer there. Retire it with the draft.
+  // Only a draft the user EMPTIED counts: the notice lands in the store in the
+  // same tick the restored text is merged into React state, and the store's
+  // re-render can run before that state flushes -- an "empty draft" seen then
+  // is the pre-restore composer, not a user action.
+  const restoredDraftSeen = useRef(false)
+  useEffect(() => {
+    if (!sendStatus?.notice?.restoredDraft) { restoredDraftSeen.current = false; return }
+    if (draft.trim()) { restoredDraftSeen.current = true; return }
+    if (restoredDraftSeen.current) {
+      restoredDraftSeen.current = false
+      dispatch(sideSendStatus({ slot, notice: null }))
+    }
+  }, [draft, sendStatus, slot, dispatch])
 
   /** Hand text back to the draft of the slot it belongs to — ALWAYS through the
    *  store, never through the composer's `mergeIntoDraft`: in controlled mode
@@ -225,6 +264,24 @@ export default function SideChat({ slot }: { slot: string }) {
   const restoreDraftTo = useCallback((target: string, text: string) => {
     writeSideChatDraft(target, appendToDraft(readSideChatDraft(target), text))
   }, [])
+
+  // A send's failure or unconfirmed receipt hands text back to the composer of
+  // the slot the send was FOR. The panel is one instance across slots
+  // (ActivityViewer re-props it rather than re-keying) and may be unmounted
+  // before the receipt lands, so the text goes through `restoreDraftTo` -- the
+  // per-slot draft store -- never the mounted composer: a receipt for slot A
+  // then lands in A's draft whether the panel shows A, shows B, or is gone,
+  // and it is there when A's panel is next on screen. The status that explains
+  // it (error line / standing notice) lives in the store per slot for the same
+  // reason, so it reappears with the text and never shows under another slot.
+  // A paste that was collapsed goes back collapsed -- the TOKEN text with its
+  // blocks (`restoreSideChatDraft` carries them in) -- never as the expanded
+  // lines, which would lose the tokens' identity on the retry.
+  const recoverFor = useCallback((forSlot: string, r: SendRecovery) => {
+    if (r.text && r.pastes?.length) restoreSideChatDraft(forSlot, r.text, r.pastes)
+    else if (r.text) restoreDraftTo(forSlot, r.text)
+    if (r.error || r.notice) dispatch(sideSendStatus({ slot: forSlot, error: r.error, notice: r.notice }))
+  }, [restoreDraftTo, dispatch])
 
   /** Wrapper around the native composer; the Select-to-Ask seed resolves the
    *  textarea through it (`textarea[data-composer-input]`) instead of a
@@ -284,15 +341,19 @@ export default function SideChat({ slot }: { slot: string }) {
     }
   }, [sideQueue, slot, dispatch])
 
+  // The send goes through the chat-core transport over the side wire, so the
+  // receipt is classified by the shared rule (deadline, refused vs unreadable
+  // vs transport failure) and this panel only decides how to REACT per status.
+  // `sendTurn` never rejects; the mutation's error slot is kept for the truly
+  // unexpected throw only.
   const sendMutation = useMutation({
-    mutationFn: async ({ q, steer, slot: target }: SideSubmit) => {
-      await api.sideOpen(target)
-      return api.sideTurn(target, q, steer ? { steer: true } : undefined)
-    },
+    mutationFn: ({ q, steer, slot: target }: SideSubmit): Promise<SendReceipt> =>
+      sendTurn({ message: q, slot: target, wire: sideTurnWire(target, steer) }),
     onMutate: ({ q, optimistic, slot: target, override }: SideSubmit) => {
       setLocalError(null)
       setLocalNotice(null)
       setLengthHint(null)
+      dispatch(sideSendStatus({ slot: target, error: null, notice: null }))
       if (optimistic) {
         const message: SideMessage = { role: 'user', content: q, ts: new Date().toISOString() }
         dispatch(sideOptimisticAppend({ slot: target, message }))
@@ -303,7 +364,60 @@ export default function SideChat({ slot }: { slot: string }) {
       // whose token left the text, which for an empty text is all of them.
       if (!override) setDraft('')
     },
-    onSuccess: (res, vars) => {
+    onSuccess: (receipt, vars) => {
+      // Receipt policy for the side panel:
+      // - `refused` / `transport-error`: nothing was accepted -- the same path
+      //   the mutation's onError took before the transport: roll the optimistic
+      //   bubble back and hand the text back, merged, not chosen (the user may
+      //   have started a new draft while the request was in flight). The
+      //   server's own reason shows when there is one (a 429 "side queue is
+      //   full" is actionable), FRAMED as a send failure -- a raw reason reads
+      //   as the agent erroring mid-work; otherwise the transport copy.
+      // - `response-late`: the deadline fired with no answer. The text is
+      //   handed back under a STANDING "unconfirmed" notice (the ChatEmbed
+      //   policy; held until the next submit, not auto-dismissed): a late turn
+      //   the server does honour will show up in the transcript (its SSE frame
+      //   appends the user row), and the user is told to look before resending.
+      //   An idle send's optimistic bubble is rolled back too: unlike ChatPane,
+      //   this panel has no slot poll that could ever clear `pending`, so a
+      //   bubble kept "pending" for a turn the server may never have received
+      //   would strand the panel busy for good -- refresh disabled, a thinking
+      //   indicator that never ends, the next send demoted to a queue entry
+      //   behind a phantom turn. A chip send (`override`) never consumed the
+      //   draft, so its notice says "tap the suggestion again" rather than claiming
+      //   a restore -- and nothing is merged into a draft the user may be
+      //   mid-writing.
+      // - `unknown`: a 2xx was received, only the body was unreadable -- a
+      //   stream cut mid-body. The server probably has the question, but the
+      //   same outage can swallow the terminal SSE frame that is the ONLY
+      //   thing (besides an explicit rollback) that ever clears this panel's
+      //   `pending`, and reconnect refetches slots, not side state. Left
+      //   alone, the bubble would sit "thinking" for good with refresh
+      //   disabled. So it takes the `response-late` recovery: roll the bubble
+      //   back and hand the text back under the standing notice, which tells
+      //   the user to look before resending -- a turn the server did take
+      //   shows up in the transcript through its SSE frames.
+      // - `dispatched` / `queued`: the acceptance body below is the one
+      //   `api.sideTurn` always returned; its handling is unchanged.
+      if (receipt.status === 'refused' || receipt.status === 'transport-error') {
+        if (vars.optimistic) dispatch(sideOptimisticRollback(vars.slot))
+        // Copy is the core's (`receiptCopy.ts`, shared with ChatEmbed): a
+        // composer submit hands the draft back, so its row says so; a chip
+        // send never consumed the draft and keeps the bare framing.
+        recoverFor(vars.slot, {
+          ...(vars.override ? {} : handBack(vars)),
+          error: sendFailureCopy(receipt.reason, !vars.override),
+        })
+        return
+      }
+      if (receipt.status === 'response-late' || receipt.status === 'unknown') {
+        if (vars.optimistic) dispatch(sideOptimisticRollback(vars.slot))
+        recoverFor(vars.slot, vars.override
+          ? { notice: { text: deliveryUnconfirmedCopy(false), restoredDraft: false } }
+          : { ...handBack(vars), notice: { text: deliveryUnconfirmedCopy(true), restoredDraft: true } })
+        return
+      }
+      const res = receipt.body as SideTurnBody
       // Same two-path convergence as cancel/edit: a queued submit's card comes
       // from whichever of the HTTP response and the WS frame lands first, so a
       // dropped socket cannot leave the queue invisible. `front` is deliberately
@@ -389,6 +503,8 @@ export default function SideChat({ slot }: { slot: string }) {
       if (res.demoted) setLocalNotice(i18nT('pages.chat.sideChat.steer_demoted_to_queue'))
     },
     onError: (_err, vars) => {
+      // `sendTurn` never rejects, so this is the unexpected-throw fallback only
+      // (a bug in the wire, not a send outcome). Same recovery as a refusal.
       // `optimistic` rides along in the vars rather than being recomputed here:
       // dispatching the bubble flips the side to busy, so re-deriving it in this
       // callback would read the post-submit state and skip the rollback.
@@ -631,7 +747,7 @@ export default function SideChat({ slot }: { slot: string }) {
   const sendErr = sendMutation.error
   const displayError = sendErr
     ? (sendErr instanceof Error ? sendErr.message : String(sendErr))
-    : localError
+    : (sendStatus?.error ?? localError)
 
   const turnsBehind = reduxSide ? parentTurnCount - reduxSide.openedAtTurnCount : 0
   const age = reduxSide?.createdAt ? relativeTime(reduxSide.createdAt) : null
@@ -704,17 +820,21 @@ export default function SideChat({ slot }: { slot: string }) {
       />
       {displayError && (
         <div className="px-3 py-1 border-t border-border">
-          {/* No hand-off: the side-chat composer draft (the failed question is
-              merged back into it by the mutation's onError) is unsaved local
-              state — a navigation would discard it. */}
+          {/* No hand-off action on the notice: the failed question is already
+              back in the composer (merged by the mutation's onError), and an
+              unmount parks that draft in the store for the slot's next mount,
+              so there is nothing further for the user to save. */}
           <ErrorNotice variant="inline" message={displayError} />
         </div>
       )}
       {!displayError && lengthHint && (
         <div className="px-3 py-1 text-[12px] text-warn border-t border-border" role="status" data-testid="side-chat-length-hint">{lengthHint}</div>
       )}
-      {!displayError && !lengthHint && localNotice && (
-        <div className="px-3 py-1 text-[12px] text-muted border-t border-border" role="status">{localNotice}</div>
+      {!displayError && !lengthHint && (sendStatus?.notice || localNotice) && (
+        // The standing unconfirmed notice carries a decision ("check the
+        // conversation above before sending it again"), so it reads at body
+        // weight; the transient demote notice keeps the muted strip.
+        <div className={`px-3 py-1 text-[12px] border-t border-border ${sendStatus?.notice ? 'text-text' : 'text-muted'}`} role="status">{sendStatus?.notice?.text ?? localNotice}</div>
       )}
       {queueCards.length > 0 && (
         <div className="shrink-0 pt-1">
