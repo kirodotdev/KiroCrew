@@ -99,6 +99,18 @@ MAX_SOURCE_CHARS = 200
 #: into an unbounded assembly; the char budget is what bounds the send.
 MAX_EVIDENCE_ITEMS = 40
 
+#: Ceiling on the quiet streak this state reports. The loop engine caps its own
+#: streak at the same number, and a test pins the two equal so neither drifts: the
+#: point bounds what it retains itself rather than borrowing the engine's constant,
+#: because the engine already depends on this module.
+MAX_QUIET_STREAK = 10
+
+#: How many labelled past verdicts ride into one request. Small on purpose: the
+#: judge is being shown its own recent hit rate for THIS loop, and a handful of
+#: rows answers that. A longer window would spend the char budget on history at
+#: the expense of the evidence the verdict is actually about.
+MAX_RECENT_VERDICTS = 5
+
 # --------------------------------------------------------------------------- #
 # Question identities and their option domains.
 # --------------------------------------------------------------------------- #
@@ -305,6 +317,71 @@ def screen_evidence(items: Sequence[Mapping[str, Any]] | None) -> tuple[list[dic
     return screened, dropped
 
 
+def recent_verdict_item(raw: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """One past verdict, reduced to numbers, its outcome name and at most one label.
+
+    ``None`` when *raw* names no outcome, which is the only way a row reaches the wire
+    at all. Every field is rebuilt rather than copied, so a record that grew a key --
+    the id the labeller keys its log row by, the flags the fire path stamps, a target
+    name -- carries none of it here: this rides in the request, and the judge needs its
+    own hit rate, not a second copy of the loop's bookkeeping.
+
+    ``evidence_items`` is carried because it is the one field ``last_verdict`` had that
+    the judge reads for meaning: it is what lets a judge tell "still nothing" from "the
+    same thing again". Keeping it is what makes this row a superset of the block it
+    replaces rather than a trade.
+
+    ``owner_acted`` and ``missed`` are the SAME fact read from the two sides of one
+    delivery. A delivered verdict carries whether the woken turn did anything; a
+    suppressed verdict carries whether it turned out the owner had something to do.
+    At most one is present, and an unlabelled row carries neither -- which is honest:
+    its delivery has not happened, or nothing scores it.
+    """
+    if not isinstance(raw, Mapping):
+        return None
+    outcome = raw.get("outcome")
+    if not isinstance(outcome, str) or not outcome.strip():
+        return None
+    item: dict[str, Any] = {
+        "outcome": outcome.strip()[:_MAX_OUTCOME_CHARS],
+        "age_s": _age(raw.get("age_s")),
+    }
+    seen = _count(raw.get("evidence_items"))
+    if seen is not None:
+        item["evidence_items"] = min(seen, MAX_EVIDENCE_ITEMS)
+    for key in ("owner_acted", "missed"):
+        value = raw.get(key)
+        if isinstance(value, bool):
+            item[key] = value
+            # One label per row: the two answer the same question from the two
+            # sides of a delivery, so a row carrying both would be a record that
+            # disagrees with itself rather than one a reader can average.
+            break
+    return item
+
+
+def screen_recent_verdicts(
+    rows: Sequence[Mapping[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """The labelled verdict history that may be sent, newest first.
+
+    Newest first and capped at :data:`MAX_RECENT_VERDICTS`, so a record that kept
+    more than the window still sends the window. Unlike evidence, these are never
+    dropped by the char budget: the whole point of carrying them is that the judge
+    sees the same history on a busy tick as on a calm one, and a history that
+    thins out exactly when evidence is plentiful would read as a better hit rate
+    than the loop earned.
+    """
+    screened: list[dict[str, Any]] = []
+    for raw in list(rows or []):
+        item = recent_verdict_item(raw)
+        if item is not None:
+            screened.append(item)
+    screened.sort(key=lambda row: row["age_s"])
+    del screened[MAX_RECENT_VERDICTS:]
+    return screened
+
+
 def build_state(
     instruction: str,
     *,
@@ -312,6 +389,9 @@ def build_state(
     quiet_when: str = "",
     evidence: Sequence[Mapping[str, Any]] | None = None,
     last_verdict: Mapping[str, Any] | None = None,
+    recent_verdicts: Sequence[Mapping[str, Any]] | None = None,
+    since_last_wake_s: float | None = None,
+    quiet_streak: int | None = None,
     trace: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The state sent to the judge, inside :data:`MAX_STATE_CHARS`.
@@ -325,6 +405,20 @@ def build_state(
     evidence once, which is what lets it tell "still nothing" from "the same thing
     again".
 
+    ``recent_verdicts`` is that same reading widened into a CALIBRATION one: the
+    last few verdicts on this loop with the label its delivery earned, so a judge
+    can see how often its own quiet calls turned out to be right for this subject.
+    It is data, not an instruction -- nothing here tells the judge what to do with
+    a poor hit rate, because the thresholds that consume the curve live in this
+    module and are tuned from the log rather than from a request.
+
+    ``since_last_wake_s`` and ``quiet_streak`` are the elapsed-time half of the
+    same reading, and they are what let a judge tell a subject that went quiet a
+    minute ago from one nobody has heard from all morning. Both are numbers off
+    the loop's own record. A negative, non-finite or non-numeric value is dropped
+    rather than coerced: a judge is better served by a shorter true reading than
+    by a clock it cannot trust.
+
     *trace* receives the counts the log row needs (``evidence_items``,
     ``evidence_chars``, ``dropped``, ``state_chars``), so the caller never
     reconstructs them from the state it just built.
@@ -337,19 +431,39 @@ def build_state(
         loop["wake_when"] = wake
     if quiet:
         loop["quiet_when"] = quiet
+    # Appended to ``loop`` rather than raised to the top level: both describe the
+    # WATCH rather than the subject, and the judge already reads this object for
+    # what the loop is for.
+    elapsed = _non_negative(since_last_wake_s)
+    if elapsed is not None:
+        loop["since_last_wake_s"] = elapsed
+    streak = _count(quiet_streak)
+    if streak is not None:
+        loop["quiet_streak"] = min(streak, MAX_QUIET_STREAK)
+    history = screen_recent_verdicts(recent_verdicts)
 
     def assemble(rows: list[dict[str, Any]]) -> dict[str, Any]:
         built: dict[str, Any] = {"loop": loop, "since_last_tick": rows}
-        if last_verdict:
+        if history:
+            # ``recent_verdicts`` SUPERSEDES ``last_verdict`` because it carries the
+            # same reading widened, not traded: its newest row holds that verdict's
+            # own outcome and evidence count, plus the label its delivery earned and
+            # the ages of the verdicts before it. Sending both would show the judge
+            # one verdict twice under two names and read as more history than the
+            # loop has. ``last_verdict`` still goes out for a loop with no history
+            # yet -- a first tick, or a brief just replaced.
+            built["recent_verdicts"] = [dict(row) for row in history]
+        elif last_verdict:
             built["last_verdict"] = dict(last_verdict)
         return built
 
     rows = list(screened)
     state = assemble(rows)
     # Drop from the TAIL, which ``screen_evidence`` ordered as the oldest. The
-    # loop instruction and ``last_verdict`` are never dropped: they are already
-    # bounded, and a judge without the owner's instruction cannot answer the one
-    # question that asks about the owner's intent.
+    # loop instruction, ``last_verdict`` and ``recent_verdicts`` are never
+    # dropped: all three are already bounded, and a judge without the owner's
+    # instruction cannot answer the one question that asks about the owner's
+    # intent.
     while rows and _rendered_len(state) > MAX_STATE_CHARS:
         rows.pop()
         dropped += 1
@@ -359,6 +473,7 @@ def build_state(
         trace["evidence_chars"] = sum(len(row["text"]) for row in rows)
         trace["dropped"] = dropped
         trace["state_chars"] = _rendered_len(state)
+        trace["recent_verdicts"] = len(history)
     return state
 
 
@@ -436,6 +551,9 @@ async def judge_tick(
     evidence: Sequence[Mapping[str, Any]] | None = None,
     dropped: int = 0,
     last_verdict: Mapping[str, Any] | None = None,
+    recent_verdicts: Sequence[Mapping[str, Any]] | None = None,
+    since_last_wake_s: float | None = None,
+    quiet_streak: int | None = None,
     session_key: str | None = None,
     extra: dict[str, Any] | None = None,
     trace: dict[str, Any] | None = None,
@@ -467,6 +585,11 @@ async def judge_tick(
     if trace is not None:
         trace["answers"] = None
         trace["evidence_items"] = 0
+        # Whether the decision is ON RECORD. Several returns below produce a verdict
+        # without a recorded request -- a target that could not be read, evidence the
+        # scrub shed, nothing new since the last tick, or a failed row append -- and
+        # those verdicts have no decision row a later label can join.
+        trace["answered"] = False
     try:
         state = build_state(
             instruction,
@@ -474,6 +597,9 @@ async def judge_tick(
             quiet_when=quiet_when,
             evidence=evidence,
             last_verdict=last_verdict,
+            recent_verdicts=recent_verdicts,
+            since_last_wake_s=since_last_wake_s,
+            quiet_streak=quiet_streak,
             trace=bounds,
         )
     except Exception:
@@ -516,8 +642,14 @@ async def judge_tick(
             "evidence_chars": bounds.get("evidence_chars"),
             "dropped_evidence": bounds.get("dropped"),
             "state_chars": bounds.get("state_chars"),
+            # How much labelled history this verdict was reached with. A reader
+            # tuning the thresholds needs to tell a verdict the judge reached
+            # blind from one it reached seeing its own recent hit rate, and a
+            # loop's first few ticks carry none.
+            "recent_verdicts": bounds.get("recent_verdicts"),
         }
     )
+    receipt: dict[str, Any] = {}
     try:
         answers = await core.decide(
             POINT,
@@ -525,6 +657,7 @@ async def judge_tick(
             build_questions(wake_when, quiet_when),
             session_key=session_key,
             extra=row,
+            receipt=receipt,
         )
     except Exception:
         # ``decide`` returns None rather than raising, so this is belt and braces
@@ -533,6 +666,9 @@ async def judge_tick(
         logger.debug("nudge.wake: the decision call failed", exc_info=True)
         return irq.Verdict(irq.Outcome.FALLBACK, body="wake judge could not be reached")
     if trace is not None:
+        # A verdict is scoreable only when its decision row landed. ``None`` answers
+        # still count when the gate recorded their provider or protocol failure.
+        trace["answered"] = receipt.get("row_written") is True
         trace["answers"] = answers
     return map_answers(answers)
 
@@ -591,6 +727,34 @@ def _age(raw: object) -> float:
     if not math.isfinite(value):
         return 0.0
     return max(0.0, value)
+
+
+#: Longest outcome name a recent-verdict row carries. The values this point writes
+#: are its own short constants; the bound is what holds when the row came off a
+#: record an older build wrote.
+_MAX_OUTCOME_CHARS = 32
+
+
+def _non_negative(raw: object) -> float | None:
+    """*raw* as a non-negative finite float, or ``None`` when it is not one.
+
+    ``None`` rather than 0.0, because these fields are OMITTED when unusable: a
+    loop that has never delivered has no elapsed time, and writing zero would tell
+    the judge the last delivery was this instant, which is the opposite reading.
+    """
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    value = float(raw)
+    if not math.isfinite(value) or value < 0:
+        return None
+    return value
+
+
+def _count(raw: object) -> int | None:
+    """*raw* as a whole count at or above zero, or ``None``. A bool is not a count."""
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        return None
+    return raw
 
 
 def _rendered_len(state: Mapping[str, Any]) -> int:

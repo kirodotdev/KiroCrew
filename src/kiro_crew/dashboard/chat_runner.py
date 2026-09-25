@@ -18728,7 +18728,22 @@ async def _run_chat(
 
             _autonudge = _autonudge_get()
             if _autonudge is not None:
-                _autonudge.notify_turn_complete(slot.key)
+                # The two facts only this frame holds: how many tools the turn
+                # dispatched and what it answered. The wake judge's feedback loop
+                # labels its own verdict from them -- a woken turn that called
+                # nothing and answered short is the quiet-cycle shape the judge
+                # should have suppressed. Passed as keywords so a build whose
+                # service predates them is unaffected, and neither is retained: the
+                # service reduces both to one boolean.
+                # A nudge turn labels its verdict only when its response lands;
+                # failed and cancelled turns keep the retry unlabelled.
+                _autonudge.notify_turn_complete(
+                    slot.key,
+                    tool_calls=_turn_tool_calls,
+                    reply_text=assistant_text if isinstance(assistant_text, str) else "",
+                    reply_flushed=_turn_flushed_visible_text,
+                    nudge_turn=_directive_self_wake and _turn_landed,
+                )
         except Exception:
             logger.debug("autonudge.notify_turn_complete failed", exc_info=True)
         # Clean up mirror stream on any exit path.

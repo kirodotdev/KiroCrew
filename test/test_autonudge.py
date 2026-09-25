@@ -1026,6 +1026,48 @@ async def test_a_retarget_releases_the_floor_claim_too(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_a_retarget_drops_the_labelled_judge_history(tmp_path):
+    """Labels earned answering the old instruction must not judge the new one.
+
+    Every judge reset sat behind the ``judge`` field, so an update that changed only
+    the message advanced the config generation and released both subject claims while
+    the labelled history stayed. Those rows supersede the single last verdict, so the
+    next tick read a hit rate for a question nobody was asking any more -- and on a
+    changed subject, about a subject nobody was watching. The reset does not turn on
+    whether the subject changed: a reworded instruction is a changed question either
+    way, which is the same ground the criteria path resets on.
+    """
+
+    service = AutoNudgeService(base_dir=tmp_path)
+    loop = NudgeLoop(
+        id="monitor41",
+        slot_key="chat-1-123",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=_structured_monitor(kind="gh-pr", target="acme/widgets#42"),
+        gate=True,
+    )
+    loop.judge_quiet_streak = 4
+    loop.judge_cursors = {"gh-pr": "cursor-42"}
+    loop.judge_last_verdict = {"outcome": "quiet", "age_s": 12.0}
+    loop.judge_recent_verdicts = [
+        {"outcome": "quiet", "at": 1.0, "suppressed": True, "answered": True, "missed": True},
+        {"outcome": "wake", "at": 2.0, "delivered": True, "answered": True, "owner_acted": True},
+    ]
+    service._loops[loop.id] = loop
+
+    try:
+        await service.update(loop.id, message="watch https://github.com/acme/widgets/pull/99")
+
+        assert loop.judge_recent_verdicts == [], "the old instruction's labels are gone"
+        assert loop.judge_quiet_streak == 0
+        assert loop.judge_cursors == {}
+        assert loop.judge_last_verdict == {}
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
 async def test_a_floor_tick_is_charged_only_when_its_delivery_lands(tmp_path, monkeypatch):
     """The floor counter must describe turns that ran, like the wake counter.
 

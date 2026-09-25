@@ -152,6 +152,118 @@ Mapping, in code, not in the model:
 Thresholds are constants in one module with tests, tuned from the JSONL log,
 not prompt text.
 
+### 3.1a Calibration feedback
+
+The thresholds above are tunable from a curve, and a curve needs labels. Each
+verdict is therefore labelled after the fact, deterministically, with no second
+model reading the first one's work.
+
+A verdict row is in one of three states, and the third is what keeps the labels
+honest:
+
+| state | means | label it can earn |
+|---|---|---|
+| suppressed | the tick withheld the turn | `missed` |
+| delivered | a turn really went out | `owner_acted` |
+| neither | the tick decided to wake; nothing went out yet | none |
+
+`delivered` is stamped by the fire path at the point delivery is confirmed, not
+by the tick that asked for it. A fire is refused when the slot is busy, the timer
+is cancelled when the owner types, and the process can stop in between — in all
+three the verdict asked for a turn that never happened, and a row marked
+delivered at decision time would be handed the actions of whatever turn finished
+next. A row loaded from disk as delivered but unlabelled is marked `forfeited` and
+remains a permanent cycle boundary: it accepts no `owner_acted`, and its
+suppressions accept no label from a later turn. A re-owed delivery has its own new
+row.
+
+`owner_acted` is `true` when the woken turn called at least one tool, or answered
+longer than a quiet-cycle reply, or answered with a link; `false` when it called
+nothing and answered short. A turn that changed the loop needs no separate
+signal — `monitor_update` and `autonudge_stop` are tool calls, so the count
+already carries them. The whole rule lives in one function,
+`autonudge_judge.owner_acted`, and an unknown tool-call count reads as acted,
+which is the direction that does not teach the judge to suppress. A quiet verdict
+that hits the streak floor spends a turn, so it is labelled as a delivery rather
+than counted as a suppression.
+
+`missed` is read off the next delivery's label: when that delivery is
+`owner_acted: true`, every suppressed verdict since the previous delivery is
+`missed: true` — the owner had something to do and the judge sat on it. When the
+delivery is `owner_acted: false`, they are `missed: false`. A verdict the judge
+never answered is skipped: a tick that read nothing new, or could not read a
+target, returns a verdict without asking, so it sat on nothing and scoring it
+would bias the curve it is meant to measure.
+
+The labels live on the loop's own record beside the quiet streak, and the store
+is sized from the QUIET-STREAK FLOOR rather than from the window the judge reads:
+a full streak is the floor's worth of suppressions followed by the delivery that
+labels them, so a smaller store would evict the earliest suppressions before
+their label arrives.
+
+Each label is also written to the decisions log as its own `kind="wake_label"`
+row keyed by the verdict's id. That row carries the id, the point name, the
+session digest, one label name, one boolean, the tool-call count and the stripped
+reply length: no reply, no transcript, no target. An unknown tool-call count is
+`null`. The decision row carries the same `verdict_id`, so the curve joins in one
+file. An id is minted only for a verdict the judge answered, because a label
+pointing at a decision row that was never written is a row nobody can read.
+
+Two fields on `loop` carry the elapsed-time half of the same reading:
+
+- `since_last_wake_s`: seconds since this loop last delivered a turn. Omitted
+  for a loop that has never delivered, because a zero there would read as a
+  delivery this instant.
+- `quiet_streak`: consecutive quiet verdicts, the counter the streak floor is
+  measured against.
+
+And `recent_verdicts` replaces `last_verdict` in the state once a loop has any
+history: a list of `{outcome, evidence_items, owner_acted|missed, age_s}`, newest
+first, so the judge sees its own recent hit rate on THIS loop. It carries
+`evidence_items` because that is the field `last_verdict` held for meaning — what
+lets a judge tell "still nothing" from "the same thing again" — so the supersede
+is a widening rather than a trade. It is text-free — the id and the state flags
+are stripped on the way out — and it survives the char budget, which spends only
+evidence: a history that thinned out on a busy tick would read as a better rate
+than the loop earned.
+
+The labels reach a loop on a dashboard slot. A loop bound to a messaging channel
+gets no turn-completion hook, so its verdicts stay unlabelled and its history
+carries the outcome and the evidence count alone. This creates SAMPLING BIAS: the
+calibration curve represents only dashboard-slot loops, while thresholds tuned
+from it apply to every loop, including channel-bound loops.
+
+A loop that stops or is deactivated during a delivered turn leaves that delivery
+unlabelled, and leaves the suppressions behind it unlabelled too. The label is
+absent rather than false, so the curve loses a sample instead of gaining a wrong
+one. This joins the channel-bound gap as a known limit on coverage, to be weighed
+by the first change that tunes a threshold from the curve.
+
+Replacing a loop's criteria clears its labelled history. Those rows record verdicts
+the previous criteria produced, and carrying them across the change would mix two
+different judges' samples into one curve. A smaller sample whose rows all answer the
+same question is worth more than a larger one whose rows do not, so the history
+starts again with the criteria. This is the third limit on coverage, and the same
+reader weighs all three.
+
+Retroactive `missed` labels otherwise weight every suppression since the prior
+delivery alike even when action appeared only near the labelling delivery; each
+`wake_label` row therefore carries numeric `position_back` and `age_s` from that
+delivery so a threshold reader can weight or discard far-back samples.
+
+A threshold read segments rows on the logged `recent_verdicts` count. A verdict
+decided with no history and one decided with five recent verdicts came from
+different inputs; comparing them as one population reads two judges as one.
+
+A threshold read must not treat every `owner_acted` alike. A delivery whose only
+evidence is a tool call is weaker evidence of a useful wake than one that answered
+at length or with a link, so pooling them overstates the hit rate. The label row
+carries the tool-call count and stripped reply length so the read can separate them.
+
+The judge stays stateless and tool-less. Everything above is data the gateway
+renders into the state; nothing tells the judge what to do with a poor hit rate,
+because the thresholds that consume the curve are constants in the point.
+
 ### 3.2 Evidence collectors
 
 The tick runs in the gateway (in `AutoNudgeService`, same thread the PR probe
