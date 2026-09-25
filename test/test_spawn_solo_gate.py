@@ -62,7 +62,8 @@ class TestRefusalPredicate:
         assert solo_spawn_refusal(1, reason) is None
 
     @pytest.mark.parametrize(
-        "named", [{"model": "opus"}, {"agent": "kirocrew-worker"}, {"crew": "coder"}]
+        "named",
+        [{"model": "opus"}, {"agent": "kirocrew-worker"}, {"crew": "coder"}, {"backend": "kas"}],
     )
     def test_a_named_model_agent_or_crew_passes_the_tool_side(self, named: dict[str, str]):
         """The tool cannot tell a named value from the caller's own -- the

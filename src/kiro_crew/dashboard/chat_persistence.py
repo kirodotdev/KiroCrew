@@ -33,6 +33,7 @@ from kiro_crew.config.loader import (
     KiroCrewConfig,
     config_dir,
 )
+from kiro_crew.dashboard import backend_pins
 from kiro_crew.dashboard.channel_slots import slot_closed_since
 from kiro_crew.dashboard.chat_utils import (
     _normalize_model,
@@ -535,7 +536,13 @@ def _prefetch_rehydrate_inputs(
     kiro_model_map: dict[str, str] | None = None,
     with_status: bool = False,
 ) -> tuple[
-    dict, bool, list[dict] | None, dict[str, str] | None, tuple[str, str] | None, str | None
+    dict,
+    bool,
+    list[dict] | None,
+    dict[str, str] | None,
+    tuple[str, str] | None,
+    str | None,
+    Mapping[str, Mapping[str, str]] | None,
 ]:
     """Read everything :func:`_rehydrate_slot_from_history` needs, off the loop.
 
@@ -553,20 +560,24 @@ def _prefetch_rehydrate_inputs(
     retries", and treating the second as the first is what silently discards a
     live tab.
 
-    Returns ``(meta, readable, messages, model_map, member_identity, agent)``.
-    *messages* and *model_map* are ``None`` when there is nothing to build — no
-    metadata, an unreadable read, or a session closed with ✕ that the caller did
-    not opt to adopt — so a caller can decide without a second disk round trip.
-    *member_identity* is the prefetched ``_member_restore_identity`` answer
-    (dm.json is file IO too, and the apply half is loop-affine); it is resolved
-    only when there is something to build.
+    Returns ``(meta, readable, messages, model_map, member_identity, agent,
+    backend_pins)``. *messages* and *model_map* are ``None`` when there is
+    nothing to build — no metadata, an unreadable read, or a session closed with
+    ✕ that the caller did not opt to adopt — so a caller can decide without a
+    second disk round trip. *member_identity* is the prefetched
+    ``_member_restore_identity`` answer (dm.json is file IO too, and the apply
+    half is loop-affine); it is resolved only when there is something to build.
+    *backend_pins* is the gateway-private pin store read whole
+    (``backend_pins.load_backend_pins``) -- another file open plus a JSON parse,
+    so it belongs in this off-loop half with the other reads; the apply half
+    only indexes it by slot key. ``None`` when there is nothing to build.
     """
     if with_status:
         meta, readable = conv_log.get_metadata_status(history_key)
     else:
         meta, readable = conv_log.get_metadata(history_key), True
     if not readable or not meta or (meta.get("closed") and not adopt_closed):
-        return meta or {}, readable, None, None, None, None
+        return meta or {}, readable, None, None, None, None, None
     return (
         meta,
         readable,
@@ -576,6 +587,7 @@ def _prefetch_rehydrate_inputs(
         # property of the slot name.
         _member_restore_identity(history_key.removeprefix("dashboard:")),
         _restored_agent_name(str(meta.get("linked_session_key") or history_key), meta),
+        backend_pins.load_backend_pins_snapshot(),
     )
 
 
@@ -615,7 +627,7 @@ def _restore_open_slots_steps(state: DashboardState) -> "Iterator[int]":
             # These reads MUST stay inside the per-tab guard. The async driver
             # has no except at its call site either, so anything escaping here
             # aborts dashboard startup and costs every LATER tab too.
-            meta, readable, messages, model_map, member_identity, agent = (
+            meta, readable, messages, model_map, member_identity, agent, pins = (
                 _prefetch_rehydrate_inputs(
                     state.conversation_log,
                     slot_transcript_key(key),
@@ -632,6 +644,7 @@ def _restore_open_slots_steps(state: DashboardState) -> "Iterator[int]":
                 model_map=model_map,
                 member_identity=member_identity,
                 agent=agent,
+                backend_pins_snapshot=pins,
                 unrestored=unrestored,
             )
         except Exception:
@@ -736,6 +749,7 @@ def _apply_restored_open_slot(
     unrestored: set[str],
     member_identity: tuple[str, str] | None = _IDENTITY_UNRESOLVED,
     agent: str | None = None,
+    backend_pins_snapshot: Mapping[str, Mapping[str, str]] | None = None,
     conv_log: ConversationLog | None = None,
     started: float | None = None,
 ) -> int:
@@ -798,6 +812,7 @@ def _apply_restored_open_slot(
         key,
         kiro_model_map=model_map,
         _prefetched_meta=meta,
+        _prefetched_backend_pins=backend_pins_snapshot,
         _prefetched_messages=messages,
         _prefetched_member_identity=member_identity,
         _prefetched_agent=agent,
@@ -886,7 +901,7 @@ async def restore_open_slots_async(state: DashboardState) -> int:
                 continue
             try:
                 started = time.time()
-                meta, readable, messages, model_map, member_identity, agent = (
+                meta, readable, messages, model_map, member_identity, agent, pins = (
                     await asyncio.to_thread(
                         _prefetch_rehydrate_inputs,
                         conv_log,
@@ -904,6 +919,7 @@ async def restore_open_slots_async(state: DashboardState) -> int:
                     model_map=model_map,
                     member_identity=member_identity,
                     agent=agent,
+                    backend_pins_snapshot=pins,
                     unrestored=unrestored,
                     # Opts into the post-hop re-checks (close tombstone +
                     # deletion): this driver's read ran in a worker thread, so
@@ -1339,6 +1355,7 @@ def _rehydrate_slot_from_history(
     _prefetched_messages: list[dict] | None = None,
     _prefetched_member_identity: tuple[str, str] | None = _IDENTITY_UNRESOLVED,
     _prefetched_agent: str | None = None,
+    _prefetched_backend_pins: Mapping[str, Mapping[str, str]] | None = None,
 ) -> _ChatSlot | None:
     """Rehydrate a single dashboard slot from persisted history.
 
@@ -1515,6 +1532,29 @@ def _rehydrate_slot_from_history(
         # re-picks "Auto (Jev)" to route again.
         if meta.get("reasoning_effort"):
             slot.reasoning_effort = _validate_reasoning_effort(meta["reasoning_effort"])
+        # ``acp_backend`` is deliberately NOT read from ``meta`` here, for the
+        # reason ``jev_route`` is not: the pin decides which harness PROCESS this
+        # chat's prompts reach, and this file is editable by the agent's own
+        # tools, so a value read back from it would let a prompt-injected agent
+        # hand the chat's next prompt to a provider the user never picked. The
+        # metadata line still CARRIES the pin so a transcript says what served
+        # it; the restore reads the gateway-private store instead
+        # (``dashboard.backend_pins``, sealed against the agent), where an absent
+        # key is "inherit" and ``""`` is a Kiro pin. The restored value re-crosses
+        # the selection gate in the provider factory on the next get_or_create,
+        # so a pin that is not selectable any more is refused there, not here.
+        # The store is a file open plus a JSON parse, so it is one of the
+        # ``_prefetched_*`` inputs: an async caller reads it in the worker thread
+        # with the metadata line and passes the snapshot; only the synchronous
+        # callers, whose reads are inline by construction, read it here.
+        _pins = (
+            _prefetched_backend_pins
+            if _prefetched_backend_pins is not None
+            else backend_pins.load_backend_pins_snapshot()
+        )
+        # An UNREADABLE store leaves the pin unresolved (dispatch refuses until
+        # it reads), never "inherit": see backend_pins.apply_restored_pin.
+        backend_pins.apply_restored_pin(slot, _pins)
         if meta.get("autocompact_pct") is not None:
             slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
         if meta.get("workspace"):
@@ -1892,7 +1932,7 @@ async def rehydrate_slot_from_history_async(
     conv_log = state.conversation_log
 
     started = time.time()
-    _meta, _readable, messages, model_map, _member_id, agent = await asyncio.to_thread(
+    _meta, _readable, messages, model_map, _member_id, agent, _pins = await asyncio.to_thread(
         _prefetch_rehydrate_inputs,
         conv_log,
         history_key,
@@ -1971,6 +2011,7 @@ async def rehydrate_slot_from_history_async(
         _prefetched_messages=messages,
         _prefetched_member_identity=_member_id,
         _prefetched_agent=agent,
+        _prefetched_backend_pins=_pins,
     )
     if _restored is not None:
         # Claim recovery belongs HERE, not in each caller: this function is how
@@ -2081,6 +2122,7 @@ def _apply_recent_session(
     restore_cfg: "KiroCrewConfig | None",
     member_identity: tuple[str, str] | None = _IDENTITY_UNRESOLVED,
     agent: str | None = None,
+    backend_pins_snapshot: Mapping[str, Mapping[str, str]] | None = None,
 ) -> None:
     """Build the slot for one prefetched recent session.
 
@@ -2169,6 +2211,20 @@ def _apply_recent_session(
     # path above states: it is an owner pick, and this file is agent-writable.
     if meta.get("reasoning_effort"):
         slot.reasoning_effort = _validate_reasoning_effort(meta["reasoning_effort"])
+    # ``acp_backend`` is not read from ``meta`` either, for the reason the
+    # rehydrate path above states: the pin routes prompts and this file is
+    # agent-editable. The gateway-private pin store is the source, read ONCE per
+    # restore by the driver (off the loop in the async one, like the model map
+    # and the restore cfg) and handed in as a snapshot; only the synchronous
+    # generator, whose reads are inline by construction, reads it here.
+    _pins = (
+        backend_pins_snapshot
+        if backend_pins_snapshot is not None
+        else backend_pins.load_backend_pins_snapshot()
+    )
+    # An UNREADABLE store leaves the pin unresolved (dispatch refuses until it
+    # reads), never "inherit": see backend_pins.apply_restored_pin.
+    backend_pins.apply_restored_pin(slot, _pins)
     if meta.get("autocompact_pct") is not None:
         slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
     if meta.get("workspace"):
@@ -2345,6 +2401,8 @@ def _restore_recent_sessions_steps(
 
     kiro_model_map = _build_kiro_model_map()
     _restore_cfg = _load_restore_cfg()
+    # The pin store, like the model map: one read shared by every session.
+    _pins = backend_pins.load_backend_pins_snapshot()
     for s in conv_log.list_sessions():
         key = s.get("key", "")
         slot_name = _recent_session_slot_name(key)
@@ -2367,6 +2425,7 @@ def _restore_recent_sessions_steps(
             restore_cfg=_restore_cfg,
             member_identity=_member_id,
             agent=agent,
+            backend_pins_snapshot=_pins,
         )
         restored += 1
         # Recover an app flag whose claim outlived its row, as the open-slots
@@ -2424,6 +2483,10 @@ async def restore_recent_sessions_async(
         sessions = await asyncio.to_thread(conv_log.list_sessions)
         kiro_model_map = await asyncio.to_thread(_build_kiro_model_map)
         _restore_cfg = await asyncio.to_thread(_load_restore_cfg)
+        # The pin store is a file open plus a JSON parse: read ONCE, off the
+        # loop, beside the model map and the restore cfg, and handed to every
+        # apply below as a snapshot -- never re-read per slot on the loop.
+        _pins = await asyncio.to_thread(backend_pins.load_backend_pins_snapshot)
         for s in sessions:
             key = s.get("key", "")
             slot_name = _recent_session_slot_name(key)
@@ -2500,6 +2563,7 @@ async def restore_recent_sessions_async(
                 restore_cfg=_restore_cfg,
                 member_identity=_member_id,
                 agent=agent,
+                backend_pins_snapshot=_pins,
             )
             restored += 1
             # Same recovery, with the spool read awaited: this driver is
@@ -3688,6 +3752,9 @@ def _save_slot_to_history(
                     # window, never a fresh read: a re-read here would be a
                     # second, unpaired observation of the queue.
                     "queued_prompts": queue_snapshot,
+                    # Per-chat ACP backend pick, mirroring ``model`` above:
+                    # slot-owned: None = inherit, "" = a Kiro pin, so written as-is.
+                    "acp_backend": slot.acp_backend,
                     # None means "follow the global threshold" and is the
                     # cleared value (rehydrate reads it with ``is not None``),
                     # so the override is CLEARABLE: written even when None,
@@ -4111,6 +4178,13 @@ def _save_slot_to_history(
             meta_line["model"] = slot.model
             if slot.reasoning_effort:
                 meta_line["reasoning_effort"] = slot.reasoning_effort
+            # Per-chat ACP backend pick, written unconditionally like
+            # ``autocompact_pct`` below: ``None`` is the cleared "inherit the
+            # global" value and has to LAND so a restore after un-pinning does
+            # not resurrect the old pin, and ``""`` is a Kiro pin -- a real value
+            # a truthiness check would drop. The restore side accepts any string
+            # and treats null/absent as inherit.
+            meta_line["acp_backend"] = slot.acp_backend
             # Unconditional, matching the empty-window merge mirror: None is
             # the cleared "follow the global" value, not an absent field.
             meta_line["autocompact_pct"] = slot.autocompact_pct

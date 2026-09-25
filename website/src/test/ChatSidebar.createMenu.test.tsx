@@ -345,6 +345,9 @@ describe('create-button caret menu', () => {
         undefined,
         // `agent_kind`: no agent was named, so no namespace rides with it.
         undefined,
+        // `backend`: a crew-mint carries no per-chat backend pick, so the slot
+        // inherits the resolved default.
+        undefined,
       ),
     )
   })

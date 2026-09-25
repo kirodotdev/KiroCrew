@@ -1859,6 +1859,8 @@
       "drop_to_attach": "Drop to attach",
       "agent": "Agent: {{name}}",
       "agent_inherited_default": "This session follows the default agent ({{name}}). It has no agent of its own, so it changes if the default does. Click to pin one.",
+      "backend_fixed_at_creation": "The backend was chosen when this chat was created and can't be changed. To use another one, start a new chat and pick a backend before the first message.",
+      "backend_inherited_default": "This chat follows the default backend, so it changes if the default does. To pin one, start a new chat and pick a backend before the first message.",
       "model_inherited_default": "This session runs on the default model ({{name}}). It has no model of its own, so it changes if the default does. Click to pin one.",
       "approve_sub_agent": "Approve sub-agent: {{name}}",
       "branch": "Branch: {{branch}}",
@@ -3408,6 +3410,18 @@
       "unexpected_response": "Unexpected response",
       "deploy_failed": "Deploy failed",
       "stale_preview_retry": "The app changed since it was checked — try again."
+    },
+    "backendSelector": {
+      "default_backend": "Default backend",
+      "backend_name": "Backend: {{name}}",
+      "backend_list": "Backend list",
+      "backend_list_unavailable": "Backend list unavailable",
+      "no_backends_registered": "No backends registered",
+      "default": "Default",
+      "backend_serving": "AI backend serving this chat: {{name}} (follows the default)",
+      "backend_serving_pinned": "AI backend serving this chat: {{name}} — fixed when the chat was created",
+      "unroutable_see_settings": "Not selectable — see Settings → AI Backends",
+      "invalid_see_settings": "Invalid — see Settings → AI Backends"
     }
   },
   "hooks": {
@@ -6950,6 +6964,27 @@
         "remove_confirm": "Remove the {{provider}} OAuth app? The client ID and the stored secret are deleted, and {{provider}} cannot connect until you enter them again.",
         "remove_confirm_action": "Remove OAuth app",
         "cancel": "Cancel"
+      },
+      "backendsPanel": {
+        "ai_backends": "AI Backends",
+        "registered_backends": "Registered backends",
+        "backends_are_defined_in_config_and_need_a_restart": "Backends are defined in harnesses.json (write-protected) in the {{productName}} home directory, next to config.json. Edits apply on the next gateway start.",
+        "authoring_guide": "How to add a backend",
+        "change_default_in_developer": "Change the default backend in Developer → Agent Backend",
+        "backend_list_unavailable": "Backend list unavailable",
+        "no_backends_registered": "No backends registered",
+        "badge_default": "Default",
+        "badge_unroutable": "Not selectable",
+        "badge_invalid": "Invalid",
+        "badge_unverified": "Routing not verified",
+        "unverified_here": "The descriptor declares its routing, but nothing has checked it end to end yet. Verify routing starts the backend once, asks it to write one file, denies every permission request, and confirms nothing was written.",
+        "verify_routing": "Verify routing",
+        "verifying": "Verifying…",
+        "verify_passed": "Verified: the backend asked for permission before acting and honoured the refusal. It can now be picked for a chat.",
+        "verify_violation": "Verification failed",
+        "verify_inconclusive": "Verification was inconclusive",
+        "verify_policy_denied": "Verified, but not selectable here",
+        "verify_unavailable": "Verification could not run"
       }
     },
     "worldsPage": {
@@ -7232,6 +7267,10 @@
       "connections": {
         "label": "OAuth Apps",
         "description": "OAuth apps for providers that need a registered client"
+      },
+      "backends": {
+        "label": "AI Backends",
+        "description": "The AI backends this build offers, and the status of backends defined in harnesses.json"
       }
     }
   },

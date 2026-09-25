@@ -379,6 +379,25 @@ def schemas() -> list[dict[str, Any]]:
                             "a long-lived delegation workstream."
                         ),
                     },
+                    "backend": {
+                        "type": "string",
+                        "description": (
+                            "Optional ACP backend override for the subagent(s): "
+                            "the harness id to run them on (e.g. 'kas', 'deepseek') "
+                            "instead of the gateway default. Absent means no "
+                            "override: the subagent runs on the configured default "
+                            "backend (it does not adopt the parent chat's per-chat "
+                            "pick); '' is kiro-cli's own id and PINS kiro. Batch-wide — applies to every "
+                            "task in this call. An id that is not selectable is "
+                            "REFUSED at spawn time (the refusal names the selectable "
+                            "set). Like 'model', setting it forces the "
+                            "dedicated-process path: each subagent runs its own "
+                            "process (~3-5s start, ~400MB) instead of session "
+                            "sharing (~200ms, near-zero memory), because a different "
+                            "backend is a different harness the parent's shared "
+                            "runtime cannot serve — so weigh it on a wide fan-out."
+                        ),
+                    },
                     **_context_group_props,
                 },
             },
@@ -670,6 +689,9 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
     cwd = args.get("cwd") or ""
     model = args.get("model") or ""
     reasoning_effort = args.get("reasoning_effort") or ""
+    backend = args.get("backend")
+    if backend is not None and not isinstance(backend, str):
+        backend = None
     keep = bool(args.get("keep"))
     # Context scope: absent ⇒ true, so a parent that passes nothing gets the
     # same context a normal session would.
@@ -697,6 +719,7 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
         model=model,
         agent=agent or (agents_list[0] if agents_list else ""),
         crew=crew,
+        backend=backend,
     )
     if refusal:
         mcp_core.sel().log_tool_invocation(
@@ -801,6 +824,8 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
             body["model"] = model
         if reasoning_effort:
             body["reasoning_effort"] = reasoning_effort
+        if backend is not None:
+            body["backend"] = backend
         if keep:
             body["keep"] = True
         if solo:

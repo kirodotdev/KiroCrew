@@ -21,6 +21,13 @@
       "route": "/settings/about?highlight=about.update-channel"
     },
     {
+      "id": "backends.registered-backends",
+      "label": "AI Backends",
+      "tab": "backends",
+      "route": "/settings/backends?highlight=backends.registered-backends",
+      "description": "Backends are defined in harnesses.json (write-protected) in the {{productName}} home directory, next to config.json. Edits apply on the next gateway start."
+    },
+    {
       "id": "browser.attach-token",
       "label": "Extension token (optional)",
       "tab": "browser",

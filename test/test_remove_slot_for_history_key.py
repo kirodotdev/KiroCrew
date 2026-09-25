@@ -144,6 +144,49 @@ def _guard_work_ledger_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
 
 class TestRemoveSlotForHistoryKey:
     @pytest.mark.asyncio
+    async def test_the_popped_slots_backend_pin_is_dropped_but_a_replacements_survives(
+        self, tmp_path, monkeypatch
+    ):
+        """The pin store is keyed by slot key, so the deleted chat's pin is dropped
+        with it -- conditioned on the store still naming the POPPED slot (its
+        ``created_at``) as the owner. A same-key replacement that recorded its pin
+        while the delete was pending carries a different creation identity and
+        keeps its pin; with no popped slot nothing is removed at all."""
+        from kiro_crew.dashboard import backend_pins
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        slot = _make_slot("chat-1-100")
+        slot.created_at = "2026-01-01T00:00:00+00:00"
+        backend_pins.set_pin("chat-1-100", "kas", owner=slot.created_at)
+        state = _make_state({"chat-1-100": slot})
+        await _remove_slot_for_history_key(state, "dashboard_chat-1-100")
+        assert "chat-1-100" not in state._slots
+        assert backend_pins.pin_for("chat-1-100") is None
+
+        # Race: the replacement recorded its pin before the delete's cleanup ran.
+        old = _make_slot("chat-2-200")
+        old.created_at = "2026-01-01T00:00:00+00:00"
+        backend_pins.set_pin("chat-2-200", "kas", owner=old.created_at)
+        state = _make_state({"chat-2-200": old})
+        real_forget = backend_pins.forget_pin
+
+        def _replacement_pins_first(slot_key, *, owner, path=None):
+            backend_pins.set_pin("chat-2-200", "", owner="2026-06-01T00:00:00+00:00")
+            return real_forget(slot_key, owner=owner, path=path)
+
+        monkeypatch.setattr(backend_pins, "forget_pin", _replacement_pins_first)
+        await _remove_slot_for_history_key(state, "dashboard_chat-2-200")
+        assert "chat-2-200" not in state._slots
+        assert backend_pins.pin_for("chat-2-200") == ""  # the replacement's Kiro pin
+
+        # No popped slot (nothing live under the key): the store is left alone.
+        monkeypatch.setattr(backend_pins, "forget_pin", real_forget)
+        backend_pins.set_pin("chat-3-300", "kas", owner="whoever")
+        state = _make_state({})
+        await _remove_slot_for_history_key(state, "dashboard:chat-3-300")
+        assert backend_pins.pin_for("chat-3-300") == "kas"
+
+    @pytest.mark.asyncio
     async def test_exact_key_match(self):
         slot = _make_slot("dashboard_chat-1-100")
         state = _make_state({"dashboard_chat-1-100": slot})

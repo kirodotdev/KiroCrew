@@ -37,6 +37,8 @@ const VALID_TABS = new Set([
   'overview', 'chat', 'voice', 'display', 'browser', 'skills', 'computer-use',
   'instances', 'security', 'secrets', 'notifications', 'channels', 'developer', 'about',
   'privacy', 'shortcuts', 'connections',
+  // W4 (descriptor-harness): the Backends inventory tab.
+  'backends',
 ])
 
 describe('settingsRegistry.gen.ts — anti-stale guard', () => {

@@ -178,8 +178,10 @@ def _sandbox_wrapper_generations(sandbox_mode: str) -> int:
         return 0
 
 
-async def resolve_spawn_masks(sandbox_mode: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """``(hidden_dirs, expose_files)`` for the spawn, or a refusal.
+async def resolve_spawn_masks(
+    backend: str, sandbox_mode: str
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """``(hidden_dirs, expose_files)`` for *backend*'s spawn, or a refusal.
 
     Two halves of one decision, resolved together and BEFORE the process exists:
 
@@ -203,15 +205,18 @@ async def resolve_spawn_masks(sandbox_mode: str) -> tuple[tuple[str, ...], tuple
 
     Keyed on the ROUTING, never on codex's identity: the preflight re-checks
     ``acp_tool_gate.is_enforced`` itself, so this cannot mask a harness this core
-    does not enforce, and a future ``SESSION_CONFIG`` harness gets the same
-    treatment by declaring the same routing.
+    does not enforce, and a ``SESSION_CONFIG`` harness gets the same treatment by
+    declaring the same routing. *backend* is a parameter for exactly that reason --
+    codex passes its own id, and :class:`kiro_crew.acp.harness.operator.DescriptorHarness`
+    passes a ``session_config``-routed descriptor's id, so one enforcement path
+    serves both without a per-harness copy.
     """
     from kiro_crew.acp import client as client_mod
 
     hidden = await client_mod._run_preflight_bounded(
-        client_mod._sandbox_preflight, ACP_BACKEND_CODEX, sandbox_mode
+        client_mod._sandbox_preflight, backend, sandbox_mode
     )
-    expose = acp_tool_gate.adapter_expose_files(ACP_BACKEND_CODEX, hidden)
+    expose = acp_tool_gate.adapter_expose_files(backend, hidden)
     return hidden, expose
 
 
@@ -272,7 +277,7 @@ class CodexHarness(MembershipHarness):
             # authorings of it drift. The search path is threaded through so a
             # "searched ..." line can never name a directory the search skipped.
             raise AcpRuntimeError(client_mod.codex_acp_not_found_message(search_path))
-        hidden, expose = await resolve_spawn_masks(ctx.sandbox_mode)
+        hidden, expose = await resolve_spawn_masks(self.backend, ctx.sandbox_mode)
         wrapper_generations = await asyncio.to_thread(
             _sandbox_wrapper_generations, ctx.sandbox_mode
         )

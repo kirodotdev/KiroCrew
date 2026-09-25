@@ -181,6 +181,22 @@ def _scope_permits(backend: str) -> bool:
         return False
 
 
+def policy_permits(backend: str) -> bool:
+    """The deployment's ``agent_backend`` verdict for ONE backend, for a registrar.
+
+    The per-id half of :func:`narrow_selectable_backends`, for a backend that is
+    being registered after the boot-time pass ran: the registrar asks first and
+    registers with the verdict applied
+    (``agent_sdk.backends.register_governed_backend``), so a denied backend is
+    never selectable for even the instant between a registration and the next
+    recompute. The floor is permitted without asking, as the recompute skips it.
+    Fails closed like the recompute: an evaluation error is a denial.
+    """
+    if backend == GOVERNANCE_FLOOR_BACKEND:
+        return True
+    return _scope_permits(backend)
+
+
 def narrow_selectable_backends() -> list[str]:
     """Recompute which backends this deployment may select. Returns what was removed.
 
@@ -218,4 +234,4 @@ def narrow_selectable_backends() -> list[str]:
         return []
 
 
-__all__ = ["SCOPE", "narrow_selectable_backends"]
+__all__ = ["SCOPE", "narrow_selectable_backends", "policy_permits"]

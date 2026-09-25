@@ -2277,9 +2277,31 @@ async def api_models(request: web.Request) -> web.Response:
     kiro-family backends read kiro-cli's ``--list-models`` catalog (narrowed to a
     live session's entitlement); claude and codex read what their adapter
     advertised, because neither accepts an id from that catalog.
+
+    An optional ``?backend=<id>`` re-keys the catalog to a per-chat pick instead
+    of the global ``agent.acp_backend``: the per-chat backend picker asks "what
+    models does THIS harness serve?" A supplied backend must be currently
+    selectable (the ``resolve_selected_backend`` gate — harness-parity H4), else
+    it is ignored and the configured backend answers, exactly as an unselectable
+    persisted value degrades. An ABSENT query keeps the configured behaviour
+    unchanged; a PRESENT ``?backend=`` with an empty value is a pin to kiro-cli
+    (its own id is ``""``) and answers with the kiro catalog even under a
+    non-kiro configured default.
     """
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
     backend = getattr(cfg.agent, "acp_backend", "")
+    if "backend" in request.query:
+        from kiro_crew.acp_backends import resolve_selected_backend
+
+        requested_backend = request.query["backend"]
+        # The single gate, reused: a selectable value is honored, anything else
+        # (unknown, denied, non-selectable) degrades to the configured backend
+        # rather than a second selectability check here (H4). Kiro's id is "",
+        # and "" resolves to "" through the gate, so an explicit kiro pin is
+        # honoured by the same equality every other pin is.
+        resolved = resolve_selected_backend(requested_backend)
+        if resolved == requested_backend:
+            backend = resolved
     if backend == ACP_BACKEND_CLAUDE:
         return web.json_response(
             _cc_models(request, configured_default=_scoped_default(cfg, backend))
@@ -2288,6 +2310,27 @@ async def api_models(request: web.Request) -> web.Response:
         return web.json_response(
             _codex_models(request, configured_default=_scoped_default(cfg, backend))
         )
+    # A config-authored operator backend serves ITS OWN model namespace, never
+    # kiro-cli's --list-models catalog: a static descriptor answers with its
+    # declared models, an acp_advertised one with what its harness advertised on
+    # session/new (cross-session cache). Falling through to the kiro branch would
+    # hand the picker kiro model ids the descriptor's harness rejects. ``auto``
+    # always leads (inherit the harness's own default), mirroring _codex_models.
+    from kiro_crew.agent_sdk.operator_harnesses import operator_backend_models
+
+    _op_models = operator_backend_models(backend)
+    if _op_models is not None:
+        rows: list[dict] = [
+            {"model_name": "auto", "display_name": "Auto", "description": "Backend default"}
+        ]
+        seen = {"auto"}
+        for name in _op_models:
+            key = (name or "").strip()
+            if not key or _normalize_model_key(key) == "auto" or key in seen:
+                continue
+            seen.add(key)
+            rows.append({"model_name": key, "display_name": key, "description": ""})
+        return web.json_response(rows)
     # Signed-out gateways must never reach the spawn below. kiro-cli auto-opens
     # an interactive browser login for ANY subcommand run unauthenticated
     # (--no-interactive does not suppress it, and there is no opt-out env var),

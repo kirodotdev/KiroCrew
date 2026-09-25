@@ -268,6 +268,19 @@ class SlotProjection:
             # otherwise be the same reading, and a stale client would show a
             # routed session as pinned.
             "jev_route": bool(getattr(slot, "jev_route", False)),
+            # The per-chat ACP backend pick. ``None`` = inherit the global
+            # ``agent.acp_backend``; ``""`` is a REAL pin (kiro-cli's own id), so a
+            # chat held on Kiro under a non-Kiro default stays on Kiro. Shipped so
+            # the frontend's backend selector
+            # can render the chat's own choice (Wave 4 consumes it); mirrors
+            # ``model`` as the display of a slot-owned pin.
+            "acp_backend": slot.acp_backend,
+            # True when the pin could not be READ at restore (the sealed store
+            # was unreadable): ``acp_backend`` is null for lack of an answer, not
+            # because the chat inherits, and its next send refuses until the
+            # store reads. Shipped so a client never shows "inherit" for a chat
+            # whose pin is merely unknown.
+            "backend_pin_unresolved": getattr(slot, "backend_pin_unresolved", False),
             # The backend's own withhold verdict for `model`: true = the account
             # cannot run the pin (this session is on the backend default), false
             # = it can, null = not known yet. Carried so the frontend reads the

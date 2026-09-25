@@ -139,20 +139,82 @@ def select_provider_backend(
     session_key: str | None,
     member_backend: str,
     configured_default: str,
+    override_backend: str | None = None,
 ) -> str:
     """The per-session half of the ONE backend-selection gate (H3/H13).
 
-    Precedence: the member-DM auto-route, then the configured default. The
-    member arm goes through :func:`resolve_selected_backend` — the same
-    governance/selectability gate the persisted field crosses, so a denied or
-    unknown value degrades to kiro and the member thread runs as plain chat.
+    Precedence, highest tier first:
+
+    1. ``override_backend`` — an explicit per-chat pick (the dashboard slot's
+       own ``acp_backend``). It wins over both the member auto-route and the
+       configured default, exactly as a slot's ``model_override`` wins over the
+       agent's configured model in the factory. ``None`` means "not pinned", so
+       the lower tiers decide; ``""`` is a REAL pick -- kiro-cli's own id -- and
+       is honoured as one, so a chat pinned to Kiro under a non-Kiro configured
+       default runs on Kiro. The two are different values on purpose: collapsing
+       them made an explicit Kiro pin silently run the global backend.
+    2. the member-DM auto-route.
+    3. the configured default.
+
+    Every tier goes through :func:`resolve_selected_backend` — the same
+    governance/selectability gate the persisted field crosses (H4: no second
+    selectability gate; this IS that gate, applied per session). A denied or
+    unknown MEMBER route or CONFIGURED default degrades to kiro: a member
+    thread then runs as plain chat. An explicit per-chat pick is different: a
+    pick that is not selectable is REFUSED (:class:`BackendPinNotSelectable`),
+    with nothing sent, because the alternatives both route the prompt to a
+    provider the chat did not pick while the chat still shows its pin as
+    honoured — degrading the pick to kiro sends it to kiro; falling through to
+    the member route or the configured default sends it wherever those point.
+    Withdrawal is an ordinary event, not an exotic one: a config-defined
+    backend leaves the selectable set the moment a spawn finds its verified
+    binary replaced (``operator_registry.revoke_routing_verification``), i.e.
+    on a routine binary upgrade, so the refusal is the per-chat correction path
+    and its message names the two ways out (pick another backend for the chat,
+    or re-verify the backend). The configured default is re-resolved here too,
+    per session, even though it left ``config.json`` already coerced:
+    selectability is LIVE, and a default captured at factory construction
+    would keep sending every later chat to the withdrawn backend instead of
+    degrading it to kiro.
 
     Lives here rather than inline in ``create_provider_factory`` so the
     factory body stays a single selection CALL with no branching of its own:
     harness-parity H3/H13 allow exactly one selection gate on the construction
     path, and this function is an input to that gate, not a second one.
     """
-    from kiro_crew.acp_backends import resolve_selected_backend
+    from kiro_crew.acp_backends import (
+        ACP_BACKEND_KIRO,
+        GOVERNANCE_FLOOR_BACKEND,
+        BackendPinNotSelectable,
+        resolve_selected_backend,
+        selectable_backends,
+    )
+
+    if override_backend is not None:
+        backend = resolve_selected_backend(override_backend)
+        if backend == GOVERNANCE_FLOOR_BACKEND and override_backend not in (
+            GOVERNANCE_FLOOR_BACKEND,
+            ACP_BACKEND_KIRO,
+        ):
+            # The pick DEGRADED to the floor because it is not selectable. That
+            # is not "the user asked for kiro", and it is not "no pick" either:
+            # both readings send this prompt to a provider the chat did not
+            # choose. Refuse, with nothing sent.
+            logger.warning(
+                "session %s: per-chat acp_backend override %r is not selectable; refusing the turn",
+                session_key,
+                override_backend,
+            )
+            raise BackendPinNotSelectable(override_backend, selectable_backends())
+        # A pick that resolves to a real (non-floor) backend, or a pick of kiro
+        # itself, is honored directly.
+        logger.info(
+            "session %s: per-chat acp_backend override %r resolved to %r",
+            session_key,
+            override_backend,
+            backend,
+        )
+        return backend
 
     if is_member_session_key(session_key):
         backend = resolve_selected_backend(member_backend)
@@ -163,7 +225,9 @@ def select_provider_backend(
             member_backend,
         )
         return backend
-    return configured_default
+    # The default tier crosses the same gate: what was selectable when the
+    # factory was built may have been withdrawn since.
+    return resolve_selected_backend(configured_default)
 
 
 #: MCP server mounted per session into member DM threads — the delivery vehicle

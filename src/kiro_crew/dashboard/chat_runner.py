@@ -19,6 +19,7 @@ from typing import Any, Awaitable, Callable, NamedTuple
 from kiro_crew import (
     mcp_apps_render,
     model_registry,
+    operator_backends,
     resource_status,
     session_directive,
 )
@@ -54,7 +55,7 @@ from kiro_crew.acp.types import (
     StructuredStatus,
     classify_stop_reason,
 )
-from kiro_crew.acp_backends import ACP_BACKENDS_COMPACT
+from kiro_crew.acp_backends import ACP_BACKENDS_COMPACT, BackendPinNotSelectable
 from kiro_crew.agent_discovery import (
     agent_welcome_message,
     session_skill_globs,
@@ -95,7 +96,7 @@ from kiro_crew.context_management import (
     validate_plan_format,
 )
 from kiro_crew.crew_log import emit as crew_log_emit
-from kiro_crew.dashboard import directive_queue
+from kiro_crew.dashboard import backend_pins, directive_queue
 from kiro_crew.dashboard.chat_delivery import (
     STEER_STATE_CONSUMED,
     STEER_STATE_REQUEUED,
@@ -6378,7 +6379,7 @@ async def _recover_app_agent_binding(
     return bindings
 
 
-def _slot_binding(slot: "_ChatSlot") -> tuple[str, str, str, str, str]:
+def _slot_binding(slot: "_ChatSlot") -> tuple[str, str, str, str, str, str | None, bool]:
     """The slot bindings an eager handshake bakes into the session it registers.
 
     ONE definition, because two exist to be compared: ``_eager_spawn`` snapshots
@@ -6387,6 +6388,11 @@ def _slot_binding(slot: "_ChatSlot") -> tuple[str, str, str, str, str]:
     either side is not a copy of this contract, it is a silent inversion of it —
     a field present here and missing there makes the comparison unequal on every
     call, so the guard removes the session it is supposed to keep.
+
+    ``acp_backend`` is a binding too: the speculative spawn passes it as
+    ``backend_override``, so a backend picked while the handshake runs (the
+    welcome-screen picker on a brand-new chat) would otherwise leave a session on
+    the OLD harness registered under the key for the first message to reuse.
     """
     return (
         slot.agent,
@@ -6394,6 +6400,8 @@ def _slot_binding(slot: "_ChatSlot") -> tuple[str, str, str, str, str]:
         slot.project,
         slot.reasoning_effort,
         slot.memory_store,
+        slot.acp_backend,
+        slot.backend_pin_unresolved,
     )
 
 
@@ -6440,6 +6448,19 @@ async def _eager_spawn(
             return  # slot deleted or replaced while debouncing
         if slot.running:
             return  # a real turn owns session creation (and the pending reset)
+        if slot.backend_pin_unresolved:
+            # The chat's own backend is UNKNOWN (the pin store was unreadable at
+            # restore): a speculative session would start on the configured
+            # default, which may not be what this chat picked. Stand down; the
+            # real turn re-reads the store and either resolves the pin or refuses.
+            return
+        if slot.acp_backend is None and not operator_backends.registration_settled():
+            # UNPINNED while the gateway is still registering operator backends:
+            # the configured default may be about to change from the boot-time
+            # coercion to an operator backend. A speculative session on today's
+            # answer would be a session on the wrong provider. Stand down; the
+            # real turn waits for the settle.
+            return
         if _eager_spawn_sem.locked():
             logger.info("Eager spawn: concurrency cap reached, skipping slot %s", slot.key)
             return
@@ -6755,6 +6776,7 @@ async def _spawn_admitted_prefetch(
             speculative=True,
             speculative_resume=allow_resume,
             reasoning_effort_override=slot.reasoning_effort or None,
+            backend_override=slot.acp_backend,
         )
     except SpeculativeResumeRefused:
         # Two sources: the entry gate (resumable key, resume not
@@ -10486,6 +10508,28 @@ async def _run_chat(
         # which decides whether to send it, and the crew log's `session/opened`,
         # which records the choice.
         _requested_model = slot.model or agent_model or default_model or ""
+        if slot.backend_pin_unresolved:
+            # This chat was restored while the gateway-private pin store could
+            # not be read, so its own backend choice is UNKNOWN -- not "inherit".
+            # Re-read the store now (off the loop, like every restore read): if
+            # it reads, the pin resolves and the turn proceeds on it; if it still
+            # does not, refuse the send. Running the prompt on the configured
+            # default here is the silent retarget the sealed store exists to
+            # prevent, so the refusal is deliberate and the card says what to do.
+            _pins_now = await asyncio.to_thread(backend_pins.load_backend_pins_snapshot)
+            if _pins_now is backend_pins.PINS_UNREADABLE:
+                raise backend_pins.BackendPinUnresolved(slot.key)
+            backend_pins.apply_restored_pin(slot, _pins_now)
+        if slot.acp_backend is None and not operator_backends.registration_settled():
+            # UNPINNED: this chat runs on the configured default, and the gateway
+            # is still registering the operator backends that default may name
+            # (its config instance reads the boot-time coercion, Kiro, until the
+            # registration re-resolves it). Allocating now would run this prompt
+            # on the wrong provider; wait for the settle instead. Only a gateway
+            # in its registration window makes this wait -- outside one the gate
+            # is settled from import. A pinned chat never reaches here: its
+            # backend is its own and needs no registration to be right.
+            await operator_backends.wait_until_registration_settled()
         _allocation_kwargs: dict[str, Any] = dict(
             agent=kiro_agent or slot.agent or None,
             # Same canonical crew identity as the eager-spawn path — the two
@@ -10499,6 +10543,10 @@ async def _run_chat(
             # direct dashboard turn.
             channel_id=_provider_channel_id or None,
             reasoning_effort_override=slot.reasoning_effort or None,
+            # The chat's per-chat backend pick crosses into the provider factory
+            # here, on every allocation, so the slot's own harness choice wins
+            # over the configured default (None = no pick, the default applies).
+            backend_override=slot.acp_backend,
         )
 
         def _release_dispatch_lock() -> None:
@@ -18516,6 +18564,28 @@ async def _run_chat(
         # send (once the warm lands) should start clean.
         logger.warning("App agent not loaded for slot %s: %s", slot.key, exc)
         slot.append("error", str(exc), "msg msg-err")
+        _crew_log_error = type(exc).__name__
+    except backend_pins.BackendPinUnresolved as exc:
+        # The chat's backend pin could not be READ (the sealed store is
+        # unreadable), so which backend the chat picked is unknown. Terminal and
+        # NOT a degrade, for the same reason as the arm below: the configured
+        # default may not be what this chat picked. Nothing was sent, no session
+        # failure is recorded, and the card names the way out (repair the store,
+        # or pick a backend for the chat to record a fresh pin).
+        logger.warning("Backend pin unresolved for slot %s: %s", slot.key, exc)
+        slot.append("error", str(exc), "msg msg-err", meta={"code": "backend_pin_unresolved"})
+        _crew_log_error = type(exc).__name__
+    except BackendPinNotSelectable as exc:
+        # The chat's own backend pin names a backend that is not selectable any
+        # more (its routing verification was withdrawn, or the build stopped
+        # offering it). Deliberately terminal, and deliberately NOT a degrade:
+        # running the member route or the configured default here would send this
+        # prompt to a provider the chat did not pick while the chat still shows
+        # its pin as honoured. Nothing was sent, so no session failure is recorded
+        # -- the session is not unhealthy, the pin is -- and the card carries the
+        # two ways out (pick another backend for the chat, or re-verify it).
+        logger.warning("Backend pin refused for slot %s: %s", slot.key, exc)
+        slot.append("error", str(exc), "msg msg-err", meta={"code": "backend_pin_not_selectable"})
         _crew_log_error = type(exc).__name__
     except SessionClosingError:
         # Shutdown race, not a turn failure: the SessionManager began closing

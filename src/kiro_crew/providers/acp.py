@@ -35,7 +35,6 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
-    ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_CONTEXT_RECYCLE,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
@@ -60,10 +59,13 @@ from kiro_crew.acp.types import (
     effort_config_option_id,
     effort_config_option_value,
 )
-from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND
+from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND, provider_label_for
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
-from kiro_crew.agent_sdk.backends import model_registry_namespace
+from kiro_crew.agent_sdk.backends import (
+    acp_runtime_backends,
+    model_registry_namespace,
+)
 from kiro_crew.agent_sdk.capabilities import SessionCapabilities, capabilities_for
 from kiro_crew.agent_sdk.tool_search import (
     TOOL_SEARCH_DEFAULT_MIN_PCT,
@@ -653,8 +655,15 @@ class AcpProvider(LLMProvider):
     def is_acp_runtime_backend(self) -> bool:
         """True when this provider is served by AcpRuntime rather than AcpClient.
 
-        Membership in ``ACP_BACKENDS_ACP_RUNTIME`` (harness-parity H5), read
-        straight off the frozenset. Names the set positively so the start path
+        Membership in the shared-runtime set (harness-parity H5), read through
+        ``acp_runtime_backends()``: the frozen ``ACP_BACKENDS_ACP_RUNTIME``
+        vocabulary PLUS the config-authored ids registered with ``runtime=True``
+        at boot. That accessor exists for this consumer -- ``DescriptorHarness``
+        is resolved only on the AcpRuntime path (``runtime.py`` ``harness_for``),
+        so an operator backend read off the frozen set alone would fall to the
+        direct ``AcpClient`` path, whose spawn ladder has no descriptor arm and
+        ends in the kiro-cli branch: the chat would advertise the operator's
+        backend and run kiro-cli. Names the set positively so the start path
         stops being spelled ``not is_claude_backend`` — which would hand the
         shared-runtime path to every harness added later. The claude AcpClient is
         deliberately not a member: it runs one process per session and shares no
@@ -670,7 +679,7 @@ class AcpProvider(LLMProvider):
         teardown verb, and the reason the background path asks its own question
         rather than reading this one.
         """
-        return self._client.backend in ACP_BACKENDS_ACP_RUNTIME
+        return self._client.backend in acp_runtime_backends()
 
     @property
     def is_session_sharing_eligible(self) -> bool:
@@ -2415,6 +2424,14 @@ def provider_label(provider: Any) -> str:
     shared subagent session. Missing either one persists a KAS session under
     the kiro label, and the map then prunes its id for want of a kiro
     transcript.
+
+    A config-authored backend has no row in the builtin mapping; its label is
+    the one ``register_known_backend`` recorded (``provider_label_for``), read
+    second. The DEFAULT is reached only for an id this build does not know at
+    all -- the same fallback the mapping's own comment describes. Reading only
+    the builtin mapping here would put every operator session under the kiro
+    label: persisted as kiro, resume-checked as kiro, and pruned by the map for
+    want of a kiro transcript (harness-parity H11).
     """
     if isinstance(provider, AcpSessionProvider):
         backend = provider.backend
@@ -2427,4 +2444,7 @@ def provider_label(provider: Any) -> str:
     # as that harness, which is more than one mapping key can hold.
     if is_claude_backend_name(backend):
         return PROVIDER_LABEL_CLAUDE
-    return PROVIDER_LABEL_BY_BACKEND.get(backend, PROVIDER_LABEL_DEFAULT)
+    builtin = PROVIDER_LABEL_BY_BACKEND.get(backend)
+    if builtin is not None:
+        return builtin
+    return provider_label_for(backend) or PROVIDER_LABEL_DEFAULT

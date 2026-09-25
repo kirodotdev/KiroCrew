@@ -49,7 +49,7 @@ from kiro_crew.channel_transcript_migration import _orphan_target_stem
 from kiro_crew.cloud.login_target import parse_whoami_output
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable, cron_owner_matches
-from kiro_crew.dashboard import directive_queue
+from kiro_crew.dashboard import backend_pins, directive_queue
 from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
     slot_history_key,
@@ -2827,6 +2827,24 @@ async def _remove_slot_for_history_key(
                 "History delete: slot %s was replaced, rerouted, or reclaimed; preserving it",
                 claim.registry_key,
             )
+
+    # The chat's backend pin lives in the gateway-private store keyed by slot key,
+    # not in the transcript just unlinked, so it is dropped here or it would
+    # outlive the chat and apply to a later slot created under the same name. Only
+    # for the slot THIS call popped, and only while the store still names that
+    # slot as the pin's owner (its ``created_at``, compared and deleted in one
+    # locked read-modify-write): a replacement chat created under the same key
+    # while this await was pending carries a different creation identity, so its
+    # pin survives a delete that finishes late. With no popped slot there is no
+    # owner to condition on, and nothing is removed -- an unowned stale entry can
+    # only ever be overwritten by a later pin on that key, never applied to one.
+    # Best-effort: a pin that cannot be dropped is such a stale entry, not a
+    # routing decision for this deleted chat.
+    if slot is not None:
+        try:
+            await asyncio.to_thread(backend_pins.forget_pin, slot.key, owner=slot.created_at)
+        except OSError:
+            logger.warning("History delete: backend pin for %s could not be dropped", slot.key)
 
     target_session_key = claim.session_key if slot is not None else None
     target_session_generation = claim.session_generation

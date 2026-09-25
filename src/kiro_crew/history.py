@@ -180,6 +180,13 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         "agent",
         "model",
         "reasoning_effort",
+        # Per-chat ACP backend pin. Slot-owned for the same reason as
+        # autocompact_pct below: the save writes the key on every line (null =
+        # inherit the default, "" = pinned to kiro-cli, "<id>" = pinned), so the
+        # slot's CURRENT value must win -- left unowned, ``carry_unowned_metadata``
+        # would copy an older line's pin forward over a later clear and the
+        # cleared chat would come back pinned on restart.
+        "acp_backend",
         "autocompact_pct",
         "mode",
         "workspace",

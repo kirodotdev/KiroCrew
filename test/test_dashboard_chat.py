@@ -16814,6 +16814,33 @@ class TestForkSlot:
         assert new_slot.project == str(tmp_path / "repo")
 
     @pytest.mark.asyncio
+    async def test_fork_inherits_backend_pin_into_the_sealed_store(self, tmp_path, monkeypatch):
+        """A fork keeps the parent's per-chat backend pin, and the pin's durable
+        home is the gateway-private store (``dashboard.backend_pins``) -- the
+        transcript metadata line is never read back for this field, so a fork
+        that only copied the field in memory would lose it on the next restart."""
+        from kiro_crew.dashboard import backend_pins
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+        (tmp_path / "home").mkdir()
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("src")
+        slot.acp_backend = "kas"
+        slot.append("user", "hi", "msg msg-u")
+        slot.drain()
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/slots/src/fork", json={})
+            assert resp.status == 200
+            data = await resp.json()
+
+        new_slot = state._slots.get(data["key"])
+        assert new_slot is not None
+        assert new_slot.acp_backend == "kas"
+        assert backend_pins.pin_for(new_slot.key) == "kas"
+
+    @pytest.mark.asyncio
     async def test_fork_inherits_empty_project(self, tmp_path):
         """Fork of a projectless slot stays projectless."""
         state = _make_state(tmp_path)

@@ -43,14 +43,20 @@ const PLACEHOLDER: ModelInfo[] = [{ name: 'auto', description: '' }]
  * kiro-cli. Other mounted observers still fetch normally — `enabled` gates who
  * *triggers* a fetch, not what lands in the cache.
  */
-type AvailableModelsOptions = { enabled?: boolean }
+type AvailableModelsOptions = { enabled?: boolean; backend?: string | null }
 
-export function useAvailableModelsQuery({ enabled }: AvailableModelsOptions = {}) {
+export function useAvailableModelsQuery({ enabled, backend }: AvailableModelsOptions = {}) {
   const provider = useProvider()
   const isDegraded = useModelsDegraded(provider.id)
   const query = useQuery({
-    queryKey: ['available-models', provider.id],
-    queryFn: async () => withAutoFirst(await provider.fetchAvailableModels()),
+    // The backend is part of the key: a per-chat backend pick asks a DIFFERENT
+    // harness what it serves, so its catalog must NOT share the primary
+    // `[available-models, provider.id]` cache entry — a shared key would let one
+    // harness's list overwrite the other's for every reader. An absent/empty
+    // backend keeps the original two-part key, so the configured-backend pickers
+    // are unaffected.
+    queryKey: typeof backend === 'string' ? ['available-models', provider.id, backend] : ['available-models', provider.id],
+    queryFn: async () => withAutoFirst(await provider.fetchAvailableModels(backend ?? undefined)),
     refetchInterval: modelListRefetchInterval,
     ...(enabled === undefined ? {} : { enabled }),
   })

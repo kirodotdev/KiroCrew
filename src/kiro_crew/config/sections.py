@@ -1018,6 +1018,23 @@ class AgentConfig:
             # renders. See harness-parity H4.
         ),
     )
+    #: The ``agent.acp_backend`` value as it stood IN THE FILE, before
+    #: :func:`_normalize_acp_backend` coerced it against the selectable registry.
+    #: ``None`` when the file carried no such key. Private (leading underscore) so
+    #: the schema/baseline machinery skips it and ``to_dict`` never writes it back;
+    #: consumers read :attr:`acp_backend_persisted`. It exists for exactly one
+    #: reader: the boot path registers the operator's ``harnesses.json`` backends
+    #: AFTER the instance it was handed was loaded, and re-resolves this value
+    #: against the registry as it stands then -- a registry lookup on a value
+    #: already in memory, so honouring an operator default costs the shared boot
+    #: path no second read of ``config.json``.
+    _acp_backend_persisted: str | None = field(default=None, repr=False, compare=False)
+
+    @property
+    def acp_backend_persisted(self) -> str | None:
+        """``agent.acp_backend`` as persisted, before the selectability coercion."""
+        return self._acp_backend_persisted
+
     member_acp_backend: str = field(
         default="kas",
         metadata=_meta(

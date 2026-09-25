@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from aiohttp import web
 
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.dashboard import backend_pins
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop, session_was_deleted
 from kiro_crew.dashboard.chat_utils import (
     _sync_dashboard_slots,
@@ -1158,6 +1159,15 @@ async def fork_slot(
     # Inheriting is arming a SECOND routed session, so it answers to the same owner
     # predicate as the arm itself; the caller says whether it passed that predicate.
     new_slot.jev_route = slot.jev_route and jev_route_allowed
+    # Inherit the per-chat ACP backend pick too: a fork keeps the parent's
+    # harness the same way it keeps the parent's model (passed to
+    # get_or_create_slot above) and effort. Stamped after construction like the
+    # model pin's siblings here.
+    new_slot.acp_backend = slot.acp_backend
+    # ... including an UNRESOLVED pin: a parent restored while the pin store was
+    # unreadable has an unknown backend, and so does its fork, until the store
+    # reads again. Copying ``None`` alone would make the fork "inherit".
+    new_slot.backend_pin_unresolved = slot.backend_pin_unresolved
     # Inherit the active project directory so the fork keeps the parent's working
     # context (agent resolution, steering files, CWD) instead of falling back to
     # the config/workspace default on first message.
@@ -1199,6 +1209,17 @@ async def fork_slot(
             # channel turn keeps the origin it actually had.
             carry_provenance(new_slot.messages[-1], m)
         new_slot.drain()
+        # The inherited backend pin's durable home is the gateway-private store,
+        # not the transcript line the save below writes (that line is never read
+        # back for this field): without this write the fork would show the
+        # parent's pin until the next restart and then run on the default.
+        if new_slot.acp_backend is not None:
+            await asyncio.to_thread(
+                backend_pins.set_pin,
+                new_slot.key,
+                new_slot.acp_backend,
+                owner=new_slot.created_at,
+            )
         await save_slot_off_loop(state, new_slot)
         new_slot._resumed_count = len(new_slot.messages)
     except Exception:

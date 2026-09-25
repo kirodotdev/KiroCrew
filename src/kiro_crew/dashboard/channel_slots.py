@@ -60,6 +60,7 @@ import weakref
 from itertools import islice
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.dashboard import backend_pins
 from kiro_crew.dashboard.channel_folders import (
     CHANNEL_CONFIG_SECTIONS,
     configured_folder_name,
@@ -81,6 +82,8 @@ from kiro_crew.messaging.upload_gate import live_dashboard_slot
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from collections.abc import Mapping
+
     from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
 logger = logging.getLogger(__name__)
@@ -505,6 +508,7 @@ def surface_channel_session(
     session_key: str = "",
     folder_id: str = "",
     folder_tags: list[str] | None = None,
+    backend_pins_snapshot: "Mapping[str, Mapping[str, str]] | None" = None,
 ) -> "_ChatSlot | None":
     """Create the dashboard slot for one channel session.
 
@@ -599,6 +603,23 @@ def surface_channel_session(
     # `jev_route` is deliberately NOT read back here, for the reason the two
     # persistence loaders state: it records an owner pick that spends money, and
     # this file is editable by the agent's own tools.
+    # ``acp_backend`` is not read back from ``meta`` either: the pin decides
+    # which harness process the chat's prompts reach, and this file is editable
+    # by the agent's own tools. The gateway-private pin store
+    # (``dashboard.backend_pins``, sealed against the agent) is the source, the
+    # same one the two persistence loaders read; the value re-crosses the
+    # selection gate in the provider factory on next use. The store is a file
+    # open plus a JSON parse, so the reconcile driver reads it ONCE in its
+    # worker-thread pass beside the transcripts and hands the snapshot in; an
+    # inline read here is for a synchronous caller only.
+    _pins = (
+        backend_pins_snapshot
+        if backend_pins_snapshot is not None
+        else backend_pins.load_backend_pins_snapshot()
+    )
+    # An UNREADABLE store leaves the pin unresolved (dispatch refuses until it
+    # reads), never "inherit": see backend_pins.apply_restored_pin.
+    backend_pins.apply_restored_pin(slot, _pins)
     if meta.get("autocompact_pct") is not None:
         # Restore the per-session compaction threshold, mirroring the
         # persistence loaders: without this, a surfaced slot's field stays
@@ -1061,6 +1082,10 @@ async def _reconcile_channel_slots_locked(state: "DashboardState", window_minute
         return out
 
     transcripts = await loop.run_in_executor(None, _load_messages)
+    # The per-chat backend pins, read once for every slot this pass surfaces --
+    # the same off-loop treatment as the transcripts (a file open and a JSON
+    # parse do not belong on the loop, per slot or otherwise).
+    pins_snapshot = await loop.run_in_executor(None, backend_pins.load_backend_pins_snapshot)
 
     # Clear stale closed flags BEFORE the slots become visible. Running the
     # clear after surfacing leaves a race: the slot broadcast lands, the user
@@ -1267,6 +1292,7 @@ async def _reconcile_channel_slots_locked(state: "DashboardState", window_minute
                 session_key=state.sessions.channel_key_for_stem(key) if state.sessions else "",
                 folder_id=to_file,
                 folder_tags=inherited if to_file else None,
+                backend_pins_snapshot=pins_snapshot,
             )
             if slot:
                 surfaced += 1

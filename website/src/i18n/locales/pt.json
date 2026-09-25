@@ -6194,6 +6194,8 @@
       "session_control_ready": "Pronto",
       "session_control_chip_label": "{{label}} — {{detail}}",
       "agent_inherited_default": "Esta sessão segue o agente padrão ({{name}}). Não tem um agente próprio, então muda se o padrão mudar. Clique para fixar um.",
+      "backend_fixed_at_creation": "O backend foi escolhido quando este chat foi criado e não pode ser alterado. Para usar outro, inicie um novo chat e escolha um backend antes da primeira mensagem.",
+      "backend_inherited_default": "Este chat segue o backend padrão, então muda se o padrão mudar. Para fixar um, inicie um novo chat e escolha um backend antes da primeira mensagem.",
       "model_inherited_default": "Esta sessão usa o modelo padrão ({{name}}). Não tem um modelo próprio, então muda se o padrão mudar. Clique para fixar um."
     },
     "chatPane": {
@@ -8972,6 +8974,18 @@
       "unexpected_response": "Resposta inesperada",
       "deploy_failed": "Falha ao implantar",
       "stale_preview_retry": "O app mudou desde a verificação — tente novamente."
+    },
+    "backendSelector": {
+      "default_backend": "Backend padrão",
+      "backend_name": "Backend: {{name}}",
+      "backend_list": "Lista de backends",
+      "backend_list_unavailable": "Lista de backends indisponível",
+      "no_backends_registered": "Nenhum backend registrado",
+      "default": "Padrão",
+      "unroutable_see_settings": "Não selecionável — veja Configurações → Backends de IA",
+      "invalid_see_settings": "Inválido — veja Configurações → Backends de IA",
+      "backend_serving": "Backend de IA deste chat: {{name}} (segue o padrão)",
+      "backend_serving_pinned": "Backend de IA deste chat: {{name}} — fixado quando o chat foi criado"
     }
   },
   "hooks": {
@@ -15865,6 +15879,27 @@
         "remove_confirm": "Remover o app OAuth do {{provider}}? O client ID e o secret salvo são apagados, e o {{provider}} não consegue conectar até você inseri-los de novo.",
         "remove_confirm_action": "Remover app OAuth",
         "cancel": "Cancelar"
+      },
+      "backendsPanel": {
+        "ai_backends": "Backends de IA",
+        "registered_backends": "Backends registrados",
+        "backends_are_defined_in_config_and_need_a_restart": "Os backends são definidos em harnesses.json (protegido contra gravação), no diretório inicial do {{productName}} ao lado de config.json. As alterações valem a partir da próxima inicialização do gateway.",
+        "authoring_guide": "Como adicionar um backend",
+        "change_default_in_developer": "Altere o backend padrão em Desenvolvedor → Backend do agente",
+        "backend_list_unavailable": "Lista de backends indisponível",
+        "no_backends_registered": "Nenhum backend registrado",
+        "badge_default": "Padrão",
+        "badge_unroutable": "Não selecionável",
+        "badge_invalid": "Inválido",
+        "badge_unverified": "Roteamento não verificado",
+        "unverified_here": "O descritor declara seu roteamento, mas nada o verificou de ponta a ponta ainda. Verificar roteamento inicia o backend uma vez, pede que ele grave um arquivo, nega cada pedido de permissão e confirma que nada foi gravado.",
+        "verify_routing": "Verificar roteamento",
+        "verifying": "Verificando…",
+        "verify_passed": "Verificado: o backend pediu permissão antes de agir e respeitou a recusa. Agora pode ser escolhido para um chat.",
+        "verify_violation": "Falha na verificação",
+        "verify_inconclusive": "A verificação foi inconclusiva",
+        "verify_policy_denied": "Verificado, mas não selecionável aqui",
+        "verify_unavailable": "A verificação não pôde ser executada"
       }
     },
     "settingsPage": {
@@ -16547,6 +16582,10 @@
       "connections": {
         "label": "Aplicativos OAuth",
         "description": "Apps OAuth para provedores que exigem um cliente registrado"
+      },
+      "backends": {
+        "label": "Backends de IA",
+        "description": "Os backends de IA que esta versão oferece e o status dos backends definidos em harnesses.json"
       }
     },
     "secrets": {

@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { Bell, Code, Fingerprint, Globe, History, Import, Info, Keyboard, KeyRound, Link2, MessageSquare, Mic, Palette, PanelsTopLeft, Plug, Server, ShieldCheck, Sparkles, SquareMousePointer, Webhook } from 'lucide-react'
+import { Bell, Code, Cpu, Fingerprint, Globe, History, Import, Info, Keyboard, KeyRound, Link2, MessageSquare, Mic, Palette, PanelsTopLeft, Plug, Server, ShieldCheck, Sparkles, SquareMousePointer, Webhook } from 'lucide-react'
 import { useAppSelector } from '../store'
 import SidePanelLayout from '../components/SidePanelLayout'
 import { SUBNAV_PARAM, SUBNAV_LEGACY_PARAMS, deleteSubSelection, toPathSegment, parsePathSegments } from '../components/subNavParams'
@@ -10,6 +10,7 @@ import { RemoteCrewPanel } from './settings/RemoteCrewPanel'
 import { isEmbeddedPane } from '../lib/embedded'
 import { DisplayPanel } from './settings/DisplayPanel'
 import { ChatPanel } from './settings/ChatPanel'
+import { BackendsPanel } from './settings/BackendsPanel'
 import { SkillsPanel } from './settings/SkillsPanel'
 import { VoicePanel } from './settings/VoicePanel'
 import { DeveloperPanel } from './settings/DeveloperPanel'
@@ -69,6 +70,7 @@ function buildTabs() {
     { key: 'connections', label: i18nT('settings.tabs.connections.label'), icon: <Plug size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.connections.description') },
     { key: 'secrets', label: i18nT('settings.tabs.secrets.label'), icon: <KeyRound size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.secrets.description') },
     { key: 'developer', label: i18nT('settings.tabs.developer.label'), icon: <Code size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.developer.description') },
+    { key: 'backends', label: i18nT('settings.tabs.backends.label'), icon: <Cpu size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.backends.description') },
     // The trailing divider fences off the entries that are not settings at all.
     // About was its only occupant; the release archive is the same kind of thing
     // (a document about the product, not a preference), so it joins the fence
@@ -247,6 +249,7 @@ export default function SettingsPage() {
         {tab === 'connections' && <ConnectionsPanel />}
         {tab === 'secrets' && <SecretsPanel />}
         {tab === 'developer' && <DeveloperPanel />}
+        {tab === 'backends' && <BackendsPanel />}
         {tab === 'releases' && <ReleasesPanel />}
         {tab === 'about' && <AboutPanel />}
       </>}

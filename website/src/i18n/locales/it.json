@@ -6194,6 +6194,8 @@
       "session_control_ready": "Pronto",
       "session_control_chip_label": "{{label}} — {{detail}}",
       "agent_inherited_default": "Questa sessione segue l’agente predefinito ({{name}}). Non ha un agente proprio, quindi cambia se cambia il predefinito. Fai clic per fissarne uno.",
+      "backend_fixed_at_creation": "Il backend è stato scelto alla creazione di questa chat e non può essere cambiato. Per usarne un altro, avvia una nuova chat e scegli un backend prima del primo messaggio.",
+      "backend_inherited_default": "Questa chat segue il backend predefinito, quindi cambia se cambia il predefinito. Per fissarne uno, avvia una nuova chat e scegli un backend prima del primo messaggio.",
       "model_inherited_default": "Questa sessione usa il modello predefinito ({{name}}). Non ha un modello proprio, quindi cambia se cambia il predefinito. Fai clic per fissarne uno."
     },
     "chatPane": {
@@ -8972,6 +8974,18 @@
       "unexpected_response": "Risposta inaspettata",
       "deploy_failed": "Deploy non riuscito",
       "stale_preview_retry": "L’app è cambiata dopo il controllo — riprova."
+    },
+    "backendSelector": {
+      "default_backend": "Backend predefinito",
+      "backend_name": "Backend: {{name}}",
+      "backend_list": "Elenco backend",
+      "backend_list_unavailable": "Elenco backend non disponibile",
+      "no_backends_registered": "Nessun backend registrato",
+      "default": "Predefinito",
+      "unroutable_see_settings": "Non selezionabile — vedi Impostazioni → Backend IA",
+      "invalid_see_settings": "Non valido — vedi Impostazioni → Backend IA",
+      "backend_serving": "Backend IA di questa chat: {{name}} (segue il predefinito)",
+      "backend_serving_pinned": "Backend IA di questa chat: {{name}} — fissato alla creazione della chat"
     }
   },
   "hooks": {
@@ -15865,6 +15879,27 @@
         "remove_confirm": "Rimuovere l’app OAuth di {{provider}}? Client ID e secret salvato vengono eliminati e {{provider}} non potrà connettersi finché non li inserisci di nuovo.",
         "remove_confirm_action": "Rimuovi app OAuth",
         "cancel": "Annulla"
+      },
+      "backendsPanel": {
+        "ai_backends": "Backend IA",
+        "registered_backends": "Backend registrati",
+        "backends_are_defined_in_config_and_need_a_restart": "I backend sono definiti in harnesses.json (protetto da scrittura), nella directory home di {{productName}} accanto a config.json. Le modifiche si applicano al prossimo avvio del gateway.",
+        "authoring_guide": "Come aggiungere un backend",
+        "change_default_in_developer": "Cambia il backend predefinito in Sviluppatore → Backend dell’agente",
+        "backend_list_unavailable": "Elenco backend non disponibile",
+        "no_backends_registered": "Nessun backend registrato",
+        "badge_default": "Predefinito",
+        "badge_unroutable": "Non selezionabile",
+        "badge_invalid": "Non valido",
+        "badge_unverified": "Routing non verificato",
+        "unverified_here": "Il descrittore dichiara il suo routing, ma nulla lo ha ancora verificato end-to-end. Verifica routing avvia il backend una volta, gli chiede di scrivere un file, nega ogni richiesta di permesso e conferma che nulla è stato scritto.",
+        "verify_routing": "Verifica il routing",
+        "verifying": "Verifica in corso…",
+        "verify_passed": "Verificato: il backend ha chiesto il permesso prima di agire e ha rispettato il rifiuto. Ora può essere scelto per una chat.",
+        "verify_violation": "Verifica fallita",
+        "verify_inconclusive": "Verifica non conclusiva",
+        "verify_policy_denied": "Verificato, ma non selezionabile qui",
+        "verify_unavailable": "La verifica non è stata eseguita"
       }
     },
     "settingsPage": {
@@ -16547,6 +16582,10 @@
       "connections": {
         "label": "App OAuth",
         "description": "App OAuth per i provider che richiedono un client registrato"
+      },
+      "backends": {
+        "label": "Backend IA",
+        "description": "I backend IA offerti da questa build e lo stato dei backend definiti in harnesses.json"
       }
     },
     "secrets": {

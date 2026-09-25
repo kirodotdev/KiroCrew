@@ -149,6 +149,9 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
     { tab: 'channels', params: { channel: 'wecom' }, labelSuffix: 'WeCom' },
   ],
   'DeveloperPanel.tsx': 'developer',
+  // W4 (descriptor-harness): read-only backend inventory panel; its
+  // data-setting-label anchors are indexed for palette deep links.
+  'BackendsPanel.tsx': 'backends',
   // The Feature Previews cards DeveloperPanel mounts. Indexed on purpose: the
   // old Developer-page tab kept itself out of search so "webhooks" would not
   // advertise a hidden page, but a control visible on a Settings pane that

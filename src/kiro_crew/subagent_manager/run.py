@@ -1172,6 +1172,15 @@ class RunEventCoordinator(ManagerComponent):
         eff_effort = info.reasoning_effort or _subagent_default_effort()
         if eff_effort:
             extra_kwargs["reasoning_effort_override"] = eff_effort
+        # Per-spawn ACP backend override -> the provider factory's
+        # ``backend_override`` seam (the same seam a per-chat backend uses).
+        # None ⇒ no override: the run stays on the configured default backend,
+        # unchanged from pre-feature behavior (it does not adopt the parent
+        # chat's per-chat pin; a parent names the child's provider explicitly).
+        # "" ⇒ a pin to kiro-cli, passed through like any other id.
+        eff_backend = info.acp_backend
+        if eff_backend is not None:
+            extra_kwargs["backend_override"] = eff_backend
         if info.bare:
             extra_kwargs["bare"] = True
         if info.allowed_tools:
@@ -1227,7 +1236,10 @@ class RunEventCoordinator(ManagerComponent):
         # dedicated process path so the override in extra_kwargs actually reaches
         # get_or_create -> the provider factory; otherwise a configured sub-agent
         # model/effort would silently no-op on the default (session-sharing) path.
-        if eff_model or eff_effort:
+        # A per-spawn BACKEND override is the same case, only more so: a different
+        # backend is a different harness/process entirely, so the shared runtime
+        # (started on the parent's backend) can never serve it.
+        if eff_model or eff_effort or eff_backend:
             use_session_sharing = False
         if use_session_sharing:
             # Local import: run.py's ``*_impl`` bodies resolve globals through
@@ -2985,7 +2997,8 @@ class RunEventCoordinator(ManagerComponent):
         """Decide whether a subagent should use the shared-runtime path.
 
         All must hold: session_sharing config True; parent session exists and
-        is ACP/kiro-backed (not CC); not a CC-specific spawn (model/allowed_tools/bare).
+        is ACP/kiro-backed (not CC); not a CC-specific spawn (model/allowed_tools/bare);
+        no per-spawn backend override (a different backend needs its own process).
         """
         # Member capability and native prompt documents are prepared at launch.
         if info.execution_context is not None and info.execution_context.member_id is not None:
@@ -2996,7 +3009,7 @@ class RunEventCoordinator(ManagerComponent):
                 return False
         except Exception:
             return False
-        if info.model or info.allowed_tools or info.bare:
+        if info.model or info.allowed_tools or info.bare or info.acp_backend is not None:
             return False
         if not info.parent_session_key:
             return False

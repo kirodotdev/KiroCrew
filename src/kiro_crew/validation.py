@@ -208,6 +208,16 @@ ARTIFACT_SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?\Z")
 # Valid model name pattern — alphanumerics, hyphens, dots (e.g. "claude-opus-4.8", "deepseek-3.2")
 _MODEL_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
 
+# Valid ACP backend id — the descriptor id grammar (lowercase alnum + hyphen,
+# 1-32 chars, e.g. "kas", "deepseek", "acme"). The SAME grammar the registrar
+# (``agent_sdk.backends._REGISTERABLE_BACKEND_ID``) and the descriptor validator
+# (``acp.harness.descriptor._HARNESS_ID_RE``) accept: a stricter pattern here
+# would make an id that registered and is selectable unspawnable from
+# ``spawn_run``. Stricter than the model pattern on purpose: a backend id is a
+# harness identifier, not a model name. The authoritative selectability check is
+# at spawn admission; this only keeps a malformed id out of the wire body.
+_BACKEND_ID_RE = re.compile(r"^[a-z0-9-]{1,32}$")
+
 # Content-bound theme-persona consent hash: sha256 rendered as EXACTLY 64
 # lowercase hex chars. This value flows into hmac.compare_digest at the
 # persona-injection site (chat_utils._maybe_inject_persona); compare_digest
@@ -1116,6 +1126,13 @@ SPAWN_RUN_SCHEMA = ToolSchema(
         # Batch-wide, like ``model``. ``""`` (in EFFORT_VALUES) means "unset —
         # defer to the role_efforts['subagent'] pin, else the provider default".
         FieldSpec("reasoning_effort", str, allowed=EFFORT_VALUES),
+        # Optional per-spawn ACP backend override (e.g. an edition-registered
+        # harness id). Batch-wide, like ``model``/``reasoning_effort``. ABSENT
+        # means no override (the configured default backend, not the parent
+        # chat's per-chat pick); ``""`` is a REAL pin -- kiro-cli's own id -- the
+        # same two-value rule the per-chat pick follows. Selectability is enforced at
+        # spawn admission (SubagentManager.spawn); this only shape-checks the id.
+        FieldSpec("backend", str, max_len=MAX_SHORT_STRING, pattern=_BACKEND_ID_RE),
         # keep=True makes the run a continuable conversation: its session
         # persists (hibernated on disk) after completion, and spawn_continue
         # can dispatch follow-up turns into it with full prior context.

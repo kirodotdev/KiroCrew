@@ -13,7 +13,7 @@ import tempfile
 import time
 import uuid
 import weakref
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from datetime import datetime, timezone
 from itertools import islice
 from pathlib import Path
@@ -39,7 +39,7 @@ from kiro_crew.config.loader import (
     published_autocompact_pct,
     resolve_agent_bindings,
 )
-from kiro_crew.dashboard import remote_mirror
+from kiro_crew.dashboard import backend_pins, remote_mirror
 from kiro_crew.dashboard.channel_slots import channel_slot_name, note_slot_closed
 from kiro_crew.dashboard.chat_auto_tag import maybe_auto_tag
 from kiro_crew.dashboard.chat_delivery import (
@@ -2743,6 +2743,35 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             {"error": "invalid agent kind", "code": "invalid_agent_kind"}, status=400
         )
     model = body.get("model", "")
+    # Optional per-chat ACP backend pick. Validated HERE (before any peer
+    # write, like every other refusable field in this handler): absent or
+    # ``null`` means inherit the global default, and any STRING is an explicit
+    # pin that must be currently selectable — the same set GET
+    # /api/config/schema advertises and resolve_selected_backend gates on
+    # (harness-parity H4: one selectability gate). ``""`` is kiro-cli's own id
+    # and is a real pin like any other, never "unset": collapsing the two made
+    # a chat pinned to Kiro under a non-Kiro default run the global backend. A
+    # non-selectable value is refused with a 400 naming the set rather than
+    # silently degrading to kiro, because the caller asked for a specific
+    # harness and a silent swap would run the chat on a different one.
+    backend = body.get("backend")
+    if backend is not None and not isinstance(backend, str):
+        return web.json_response(
+            {"error": "backend must be a string or null", "code": "invalid_backend"},
+            status=400,
+        )
+    if backend is not None:
+        from kiro_crew.acp_backends import selectable_backend_values
+
+        _selectable = selectable_backend_values()
+        if backend not in _selectable:
+            return web.json_response(
+                {
+                    "error": _backend_not_selectable_message(backend, _selectable),
+                    "code": "invalid_backend",
+                },
+                status=400,
+            )
     # Folder membership at BIRTH. Assigning it afterwards (client PATCH) is
     # visibly too late: get_or_create_slot broadcasts the new slot before this
     # handler returns, so the dashboard renders it at the top level for a frame
@@ -3257,6 +3286,68 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             slot.executor = "remote"
             slot.instance_id = instance_id
             slot.remote_slot = remote_slot_key
+        # Per-chat backend pick. Stamped after construction for the same reason
+        # the remote binding is: it is slot-owned metadata, not part of a
+        # slot's identity, so keeping it out of get_or_create_slot's signature
+        # leaves every other creation path (fork, channel, restore) untouched.
+        # Only for a genuinely new LOCAL slot: this handler is also the
+        # reopen/rehydrate path (``name`` can address an existing slot), and a
+        # re-open must not overwrite the pin the session already carries — and a
+        # remote slot runs on the peer, whose harness this local field does not
+        # select. An absent/``null`` ``backend`` leaves the field at its ``None``
+        # inherit default; ``""`` is a Kiro pin and IS stamped.
+        if is_new_slot and not remote_slot_key and backend is not None:
+            # The pin's durable home is the gateway-private store, not the
+            # transcript metadata line (which is agent-editable and is never read
+            # back for this field): a pin that only lived in memory would be gone
+            # on the next restart while the chat kept showing it. PERSIST BEFORE
+            # PUBLISH: the field is assigned only after the store holds the pin,
+            # so no reader -- a concurrent slots GET, a send -- ever sees a
+            # backend the store does not have. A store that cannot be written
+            # means the chat the caller asked for -- one pinned to this backend --
+            # cannot be created, so the newborn is retracted and the caller gets a
+            # retryable, coded 500, never a 200 for an unpinned chat whose first
+            # turn would run on the default backend. Same retraction rule as a
+            # failed birth write (``session_control``): the slot is popped only
+            # while it is still this request's own -- no turn started on it,
+            # nothing appended -- so a turn that slipped in is never orphaned.
+            try:
+                await asyncio.to_thread(
+                    backend_pins.set_pin, slot.key, backend, owner=slot.created_at
+                )
+            except OSError:
+                logger.error(
+                    "Slot %s: backend pin could not be recorded at creation; retracting",
+                    slot.key,
+                    exc_info=True,
+                )
+                if not slot.running and not slot.messages and state._slots.get(slot.key) is slot:
+                    state._slots.pop(slot.key, None)
+                else:
+                    # A send slipped into the persistence window and cold-started
+                    # a provider on the still-unpinned newborn. The chat the
+                    # caller asked for does not exist; discard that session too,
+                    # the same fence the backend route's rollback applies.
+                    await _discard_session_started_during_switch(
+                        state, slot, effective_session_key(slot), "backend"
+                    )
+                return web.json_response(
+                    {
+                        "error": "backend selection could not be saved",
+                        "code": "backend_persist_failed",
+                    },
+                    status=500,
+                )
+            if slot.running or slot.messages:
+                # A send slipped into the persistence window and started this
+                # chat's session on the INHERITED default, before the pin was
+                # durable. Publishing the pin over that live session would leave a
+                # chat that reports the picked backend served by another: discard
+                # the session so the next turn cold-starts on the pinned backend.
+                await _discard_session_started_during_switch(
+                    state, slot, effective_session_key(slot), "backend"
+                )
+            slot.acp_backend = backend
         if slot.is_restricted:
             logger.info("Slot %s created with memory_mode=%s", slot.key, slot.memory_mode)
         # App ownership check (App Kit §5.2), same deny-by-default rule as
@@ -4155,6 +4246,68 @@ async def _reset_slot_session(
 # model, workspace) so a frontend that ever starts reading it never has to
 # match per-handler spellings.
 _TEARDOWN_INCOMPLETE_WARNING = "old session teardown incomplete"
+
+
+def _restore_pin_best_effort(slot: _ChatSlot, prior_backend: str | None) -> None:
+    """Put the pin store back to *prior_backend* after a later persist step failed.
+
+    Synchronous (callers run it through ``asyncio.to_thread``). Best-effort by
+    design: the caller has already rolled the in-memory pin back and is about to
+    answer a coded 500, so a store that cannot be rewritten here is logged and
+    left for the retry -- the retry's own write overwrites it.
+    """
+    try:
+        if prior_backend is None:
+            backend_pins.forget_pin(slot.key, owner=slot.created_at)
+        else:
+            backend_pins.set_pin(slot.key, prior_backend, owner=slot.created_at)
+    except OSError:
+        logger.warning(
+            "Slot %s: backend pin store could not be restored to %r after a failed persist",
+            slot.key,
+            prior_backend,
+            exc_info=True,
+        )
+
+
+async def _discard_session_started_during_switch(
+    state: DashboardState, slot: _ChatSlot, session_key: str, switch_kind: str
+) -> None:
+    """Tear down a session a concurrent send started on a value that is now rolled back.
+
+    A switch handler publishes its new binding in memory, resets the session, and
+    only then persists -- and message dispatch does not take ``slot._lock``, so a
+    message arriving in that window cold-starts a provider on the NEW value. When
+    the persist then fails, the pin is rolled back but that provider would stay
+    live, running a backend (or model, or agent) other than the one the slot advertises.
+    Called from the rollback paths after a SUCCESSFUL reset, so the only session
+    that can be registered under the key is one started inside the window: it is
+    torn down (skip-if-busy, like every switch reset -- a turn already running on
+    it is not killed mid-stream, and its decline is logged) so the slot's live
+    state agrees with the value it advertises again. Never raises: this is
+    cleanup on an error path that is already answering 500.
+    """
+    if state.sessions.get_provider(session_key) is None:
+        return
+    try:
+        verdict = await _reset_slot_session_or_warn(
+            state, slot, session_key, switch_kind=switch_kind
+        )
+    except Exception:  # noqa: BLE001 - cleanup on an error path must not mask the 500
+        logger.warning(
+            "Slot %s: could not discard the session started during the %s switch",
+            slot.key,
+            switch_kind,
+            exc_info=True,
+        )
+        return
+    if verdict is False:
+        logger.warning(
+            "Slot %s: a turn started on the rolled-back %s value is still running; "
+            "it finishes on that value",
+            slot.key,
+            switch_kind,
+        )
 
 
 async def _reset_slot_session_or_warn(
@@ -7289,6 +7442,26 @@ def _slot_replaced_while_queued(
     return True
 
 
+def _backend_not_selectable_message(backend: str, selectable: Iterable[str]) -> str:
+    """User-facing copy for a refused per-chat backend pick.
+
+    Shown verbatim in the composer's switch notice, so it is prose, not a repr:
+    the previous form leaked Python's ``['', 'claude', …]`` -- a bare ``''`` for
+    kiro-cli in user copy. Names the offered backends by the same display labels
+    the picker and the Backends panel use, so the reader sees the words they can
+    click. Reached only in the stale-listing race (the picker offers only
+    selectable rows), which is exactly when the reader needs a readable answer.
+    """
+    from kiro_crew.dashboard.handlers.backends_listing import _label_for
+
+    offered = ", ".join(_label_for(b) for b in sorted(selectable, key=_label_for))
+    wanted = _label_for(backend) if backend else "the default backend"
+    return (
+        f"{wanted} is not selectable in this build. "
+        f"Choose one of: {offered}. Settings → AI Backends lists why an entry is not offered."
+    )
+
+
 def _switch_target_busy(
     state: DashboardState, slot: _ChatSlot, session_key: str, provider: object
 ) -> bool:
@@ -8924,7 +9097,242 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
     return web.json_response(model_resp)
 
 
-# Per-slot transaction locks for the autocompact endpoint. The write span
+async def api_chat_slot_backend(request: web.Request) -> web.Response:
+    """POST /api/chat/slots/{slot}/backend — set the ACP backend for a chat slot.
+
+    Body: ``{"backend": "<id>" | "" | null}``. ``null`` clears the pin (inherit
+    the global ``agent.acp_backend``); any string is an explicit pin that must be
+    currently selectable, and ``""`` is kiro-cli's own id -- a real pin, so a
+    chat can be held on Kiro under a non-Kiro default
+    (the same set ``GET /api/config/schema`` advertises, gated by
+    ``resolve_selected_backend`` — harness-parity H4), else a 400 names the set.
+
+    Unlike ``api_chat_slot_model``, there is NO live in-place switch: a backend
+    is a distinct harness PROCESS (kiro-cli vs KAS vs a descriptor harness), and
+    no ``session/set_model``-style call can move a running session across
+    harnesses. So changing the backend ALWAYS requires a session reset — the
+    live process is torn down and the next message cold-starts on the new
+    harness through the provider factory, where ``backend_override`` crosses the
+    single selection gate. A turn in flight answers 409 (the reset would tear
+    down the streaming turn); a parent with children attached answers 409 (the
+    reset kills the runtime their sessions run on). A no-op (same value) returns
+    without a reset. This mirrors ``api_chat_slot_model``'s lock order and its
+    session-reset machinery, minus the live-switch fast path that does not exist
+    for a backend.
+    """
+    state: DashboardState = request.app["state"]
+    name = request.match_info["slot"]
+    slot = state._slots.get(name)
+    if not slot:
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    denied = _deny_cross_app_slot_access(request, slot, name, "slot_backend")
+    if denied is not None:
+        return denied
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
+    backend = body.get("backend")
+    if backend is not None and not isinstance(backend, str):
+        return web.json_response(
+            {"error": "backend must be a string or null", "code": "invalid_backend"},
+            status=400,
+        )
+    if backend is not None:
+        from kiro_crew.acp_backends import selectable_backend_values
+
+        _selectable = selectable_backend_values()
+        if backend not in _selectable:
+            logger.warning("Slot %s backend rejected: %r not selectable", name, backend)
+            return web.json_response(
+                {
+                    "error": _backend_not_selectable_message(backend, _selectable),
+                    "code": "invalid_backend",
+                },
+                status=400,
+            )
+    if slot.is_remote:
+        # A crew-bound session runs on the PEER, which selects its own harness;
+        # this local ``acp_backend`` field does not drive it. Routing the pick
+        # through ``_apply_remote_pick`` is also unsafe here: that helper does
+        # ``setattr(slot, control, value)`` keyed on the control name, and the
+        # slot attribute is ``acp_backend`` rather than a bare ``backend`` — a
+        # per-chat backend pick on a remote slot is therefore refused rather
+        # than mirrored onto the wrong field. (Peer-side backend selection is a
+        # separate surface, not part of the per-chat backend arm.)
+        return web.json_response(
+            {
+                "error": "a crew-bound session's backend is chosen on the crew, not here",
+                "code": "remote_backend_unsupported",
+            },
+            status=400,
+        )
+    # Same lock order as api_chat_slot_model (slot._lock, then the session
+    # lock keyed on the in-lock effective key, then _model_pick_lock): a
+    # backend switch and a model switch on the same session must serialize, so
+    # they take the same locks in the same order.
+    async with contextlib.AsyncExitStack() as _stack:
+        await _stack.enter_async_context(slot._lock)
+        if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_backend"):
+            return _slot_not_found()
+        session_key = effective_session_key(slot)
+        await _stack.enter_async_context(_slot_switch_session_lock(session_key))
+        await _stack.enter_async_context(slot._model_pick_lock)
+        if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_backend"):
+            return _slot_not_found()
+        denied = _app_cancel_denied(request, slot, "chat.slot_backend", session_key)
+        if denied is not None:
+            return denied
+        if slot.acp_backend == backend:
+            # No-op: nothing to switch and no session to reset. Return the
+            # committed value so the client reflects the current pin.
+            return web.json_response({"ok": True, "backend": backend})
+        provider = state.sessions.get_provider(session_key)
+        if slot.running or (isinstance(provider, LLMProvider) and provider.has_active_turn()):
+            # Never tear down an in-flight turn: the switch requires a reset,
+            # and resetting under a live turn kills the stream. 409, retryable
+            # once the turn completes — same policy as the model handler's
+            # defer-not-reset branch. slot.running checked first (set at
+            # dispatch, before the cold-start provider registers).
+            return web.json_response(
+                {"error": "a turn is in flight", "code": "turn_in_flight"}, status=409
+            )
+        # Children guard, shared with reload/model: the reset tears down the
+        # runtime attached sub-agents run on, so a parent with children
+        # (running, queued, or a completion event in flight) refuses rather
+        # than discard their work.
+        children_409 = await _subagents_attached_response(state, slot, session_key, "slot_backend")
+        if children_409 is not None:
+            return children_409
+        prior_backend = slot.acp_backend
+        logger.info(
+            "Slot %s backend switching to %s, resetting session",
+            name,
+            "(inherit)" if backend is None else repr(backend),
+        )
+        # PERSIST BEFORE PUBLISH. The pin's home is the gateway-private store
+        # (``backend_pins``, sealed against the agent's tools): it is the ONLY
+        # place a restart reads the pin back from, because the transcript
+        # metadata line is agent-editable and a value read from it could
+        # retarget the chat's next prompt. The store is written FIRST, while the
+        # in-memory field still says what it said: a concurrent slots GET or a
+        # send in this window sees the prior backend, which is both what the
+        # store holds and what the live session runs on, never a backend the
+        # store does not have. A failed write changes nothing and answers a
+        # coded 500 the caller can retry; every later failure on the way to
+        # publication restores the prior pin in the store.
+        #
+        # This runs INSIDE the slot lock span on purpose: the persist is an
+        # await, and value-based rollback cannot tell "my write survived" from
+        # "a concurrent same-slot POST committed after me". Under the lock
+        # exactly one request is in the persist-reset-publish window, so a
+        # rollback can only undo its own write (same reasoning as the
+        # autocompact route's per-slot transaction lock).
+        try:
+            if backend is None:
+                await asyncio.to_thread(backend_pins.forget_pin, slot.key, owner=slot.created_at)
+            else:
+                await asyncio.to_thread(
+                    backend_pins.set_pin, slot.key, backend, owner=slot.created_at
+                )
+        except OSError:
+            logger.error(
+                "Slot %s: backend pin store write raised; nothing changed", name, exc_info=True
+            )
+            return web.json_response(
+                {"error": "backend selection could not be saved", "code": "backend_persist_failed"},
+                status=500,
+            )
+        teardown_incomplete = False
+        try:
+            reset_ok = await _reset_slot_session_or_warn(
+                state, slot, session_key, switch_kind="backend"
+            )
+        except Exception:
+            # Restore the prior pin in the store so the slot never advertises a
+            # backend the live session was never rebuilt on, then re-raise as a
+            # 500 the caller can retry (mirrors leaving slot.model untouched on
+            # a raise in the bulk model handler).
+            await asyncio.to_thread(_restore_pin_best_effort, slot, prior_backend)
+            raise
+        if reset_ok is None:
+            # Teardown raised after the session pop: the switch is COMMITTED
+            # (the session is gone; the next message cold-starts on the new
+            # backend). Answer the committed state with an advisory warning,
+            # never a 500 that strands the client on the old value.
+            teardown_incomplete = True
+        elif not reset_ok and state.sessions.get_provider(session_key) is not None:
+            # A LIVE session declined the reset because a turn slipped into the
+            # window (message dispatch does not take slot._lock). Roll back the
+            # pin and answer the same 409 the pre-check gives; the retry resets
+            # once the turn completes.
+            #
+            # ``reset()`` ALSO answers False when NOTHING is registered under
+            # the key -- the case for the first ~20-30s of every new chat, while
+            # ``_eager_spawn``'s speculative handshake runs before it registers
+            # a session. That is not a turn in flight and must not refuse the
+            # pick (it made the welcome-screen picker answer "a turn is
+            # running" on an empty chat). The pin stays committed: the eager
+            # path's own ``_slot_binding`` guard removes the session it
+            # registers if the slot's bindings changed mid-handshake, so the
+            # first message cold-starts on the picked backend. Same contract
+            # ``api_chat_slot_agent`` applies before its own 409.
+            await asyncio.to_thread(_restore_pin_best_effort, slot, prior_backend)
+            return web.json_response(
+                {"error": "a turn is in flight", "code": "turn_in_flight"}, status=409
+            )
+        if effective_session_key(slot) != session_key:
+            # The slot was rebound during the reset await: the torn-down
+            # session belongs to a different slot now, so committing would advertise
+            # the new backend over a session that never saw the switch. Restore
+            # the prior pin and answer 409; the retry resolves the current binding.
+            await asyncio.to_thread(_restore_pin_best_effort, slot, prior_backend)
+            return web.json_response(
+                {"error": "slot session was rebound during the switch", "code": "session_rebound"},
+                status=409,
+            )
+        # PUBLISH: the store holds the pin and the session it governed is gone,
+        # so the field can say so. Assigned with no await between the reset's
+        # return and this line, so nothing can register a session on the prior
+        # backend under a field that already names the new one. A pin that was
+        # UNRESOLVED (restored under an unreadable store) is resolved by this
+        # write: the store now holds what the chat picked.
+        slot.acp_backend = backend
+        slot.backend_pin_unresolved = False
+        _broadcast_context_reset(state, slot.key, None)
+        # The transcript line is still written (so a transcript says what backend
+        # served it), through save_slot_off_loop(force=True, best_effort=False)
+        # like every other slot-metadata route. On a failed write, roll the field
+        # back, restore the prior pin in the store, and surface a coded 500 the
+        # caller can retry -- mirroring the model route's mutate-persist-rollback
+        # shape.
+        try:
+            committed = await save_slot_off_loop(state, slot, force=True, best_effort=False)
+        except Exception:
+            slot.acp_backend = prior_backend
+            await asyncio.to_thread(_restore_pin_best_effort, slot, prior_backend)
+            logger.error("Slot %s: backend pin persist raised; rolled back", name, exc_info=True)
+            await _discard_session_started_during_switch(state, slot, session_key, "backend")
+            return web.json_response(
+                {"error": "backend selection could not be saved", "code": "backend_persist_failed"},
+                status=500,
+            )
+        if not committed:
+            slot.acp_backend = prior_backend
+            await asyncio.to_thread(_restore_pin_best_effort, slot, prior_backend)
+            logger.warning("Slot %s: backend pin persist did not commit; rolled back", name)
+            await _discard_session_started_during_switch(state, slot, session_key, "backend")
+            return web.json_response(
+                {"error": "backend selection could not be saved", "code": "backend_persist_failed"},
+                status=500,
+            )
+    state.push_slots_update()
+    backend_resp: dict = {"ok": True, "backend": backend}
+    if teardown_incomplete:
+        backend_resp["warning"] = _TEARDOWN_INCOMPLETE_WARNING
+    return web.json_response(backend_resp)
+
+
 # below contains awaits (body read, forced save), so two concurrent POSTs for
 # one slot can interleave: each captures the other's value as its rollback
 # snapshot, and a failed request's compare-and-swap rollback can then erase a

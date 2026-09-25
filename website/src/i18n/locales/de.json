@@ -6098,6 +6098,8 @@
       "session_control_ready": "Bereit",
       "session_control_chip_label": "{{label}} — {{detail}}",
       "agent_inherited_default": "Diese Sitzung folgt dem Standard-Agenten ({{name}}). Sie hat keinen eigenen Agenten, ändert sich also mit dem Standard. Zum Anheften klicken.",
+      "backend_fixed_at_creation": "Das Backend wurde beim Erstellen dieses Chats gewählt und lässt sich nicht mehr ändern. Für ein anderes startest du einen neuen Chat und wählst vor der ersten Nachricht ein Backend.",
+      "backend_inherited_default": "Dieser Chat folgt dem Standard-Backend und wechselt mit, wenn sich der Standard ändert. Um eines festzulegen, startest du einen neuen Chat und wählst vor der ersten Nachricht ein Backend.",
       "model_inherited_default": "Diese Sitzung läuft auf dem Standardmodell ({{name}}). Sie hat kein eigenes Modell, ändert sich also, wenn sich der Standard ändert. Klicken, um eines festzulegen."
     },
     "chatPane": {
@@ -8853,6 +8855,18 @@
       "unexpected_response": "Unerwartete Antwort",
       "deploy_failed": "Bereitstellung fehlgeschlagen",
       "stale_preview_retry": "Die App hat sich seit der Prüfung geändert — versuche es erneut."
+    },
+    "backendSelector": {
+      "default_backend": "Standard-Backend",
+      "backend_name": "Backend: {{name}}",
+      "backend_list": "Backend-Liste",
+      "backend_list_unavailable": "Backend-Liste nicht verfügbar",
+      "no_backends_registered": "Keine Backends registriert",
+      "default": "Standard",
+      "unroutable_see_settings": "Nicht auswählbar – siehe Einstellungen → KI-Backends",
+      "invalid_see_settings": "Ungültig – siehe Einstellungen → KI-Backends",
+      "backend_serving": "KI-Backend für diesen Chat: {{name}} (folgt dem Standard)",
+      "backend_serving_pinned": "KI-Backend für diesen Chat: {{name}} – festgelegt bei Erstellung des Chats"
     }
   },
   "hooks": {
@@ -15658,6 +15672,27 @@
         "remove_confirm": "{{provider}}-OAuth-App entfernen? Client ID und gespeichertes Secret werden gelöscht, und {{provider}} kann sich erst wieder verbinden, wenn du sie erneut einträgst.",
         "remove_confirm_action": "OAuth-App entfernen",
         "cancel": "Abbrechen"
+      },
+      "backendsPanel": {
+        "ai_backends": "KI-Backends",
+        "registered_backends": "Registrierte Backends",
+        "backends_are_defined_in_config_and_need_a_restart": "Backends werden in harnesses.json (schreibgeschützt) im {{productName}}-Startverzeichnis neben config.json definiert. Änderungen gelten ab dem nächsten Gateway-Start.",
+        "authoring_guide": "So fügst du ein Backend hinzu",
+        "change_default_in_developer": "Standard-Backend ändern unter Entwickler → Agent-Backend",
+        "backend_list_unavailable": "Backend-Liste nicht verfügbar",
+        "no_backends_registered": "Keine Backends registriert",
+        "badge_default": "Standard",
+        "badge_unroutable": "Nicht auswählbar",
+        "badge_invalid": "Ungültig",
+        "badge_unverified": "Routing nicht verifiziert",
+        "unverified_here": "Der Descriptor deklariert sein Routing, aber noch hat nichts es Ende-zu-Ende geprüft. „Routing prüfen“ startet das Backend einmal, lässt es eine Datei schreiben, lehnt jede Berechtigungsanfrage ab und bestätigt, dass nichts geschrieben wurde.",
+        "verify_routing": "Routing prüfen",
+        "verifying": "Wird geprüft…",
+        "verify_passed": "Geprüft: Das Backend hat vor dem Handeln um Erlaubnis gefragt und die Ablehnung respektiert. Es kann jetzt für einen Chat gewählt werden.",
+        "verify_violation": "Prüfung fehlgeschlagen",
+        "verify_inconclusive": "Prüfung ohne Ergebnis",
+        "verify_policy_denied": "Geprüft, aber hier nicht wählbar",
+        "verify_unavailable": "Prüfung konnte nicht laufen"
       }
     },
     "settingsPage": {
@@ -16327,6 +16362,10 @@
       "connections": {
         "label": "OAuth-Apps",
         "description": "OAuth-Apps für Anbieter, die einen registrierten Client benötigen"
+      },
+      "backends": {
+        "label": "KI-Backends",
+        "description": "Die KI-Backends dieser Version und der Status der in harnesses.json definierten Backends"
       }
     },
     "secrets": {

@@ -574,6 +574,34 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # gate matches no paths, so the read-only mount is what holds regardless of how
     # a command spells the way there.
     "ssh_auth_sock_consent.json",
+    # The operator-authored HARNESS DESCRIPTORS (``harnesses.json``). This is the
+    # shell-side half of the descriptor write guard: the file-edit tool gate
+    # (``security._WRITE_PROTECTED_HOME_PATHS``) fences the tool path, and — as the
+    # READONLY note above says — a command-text matcher matches no paths at all, so
+    # a kernel write denial is what holds regardless of how a command spells the way
+    # there. It is the STRONGEST class of ceiling: an entry is an EXECUTION GRANT —
+    # each descriptor names the ``executable`` and ``argv`` the gateway resolves and
+    # SPAWNS — so a sandboxed write is arbitrary code run through Crew's own trusted
+    # spawner, and the deny-list's text/argv tiers can be evaded by runtime
+    # construction (``$(printf ...)``) while a namespace/Seatbelt write denial cannot.
+    # READ-ONLY rather than hidden because the write is the whole risk: the registry
+    # must READ it on every listing to enumerate backends and Settings reads it to
+    # render the inventory, so masking it would break the feature; it holds no
+    # secret. Every legitimate WRITER (the dashboard/CLI descriptor editor) runs in
+    # the unsandboxed gateway or user process and opens the path directly. Paired
+    # with ``_CREW_PRECREATE_READONLY_FILE_LEAVES`` so the Linux mount seal has a
+    # target on an install that has never written a descriptor — which is the
+    # absent-and-therefore-writable default this list exists to close.
+    "harnesses.json",
+    # The routing attestations the verify action writes beside it: a selectability
+    # grant one step downstream of the descriptor, sealed read-only for the same
+    # reason (a sandboxed write would grant an unverified harness).
+    "backend-routing-attestations.json",
+    # The per-chat backend pins (``dashboard.backend_pins``): which harness PROCESS
+    # a chat's prompts reach. Gateway-written only; a sandboxed write would
+    # retarget a chat to a provider its user never picked, which is exactly why the
+    # pin left the agent-editable transcript metadata for this sealed document.
+    "chat-backend-pins.json",
     # The browser launcher and its vendored Node package tree. Agent browser
     # commands must read and execute this directory, while a write would choose
     # the binary the unsandboxed gateway executes during startup reclamation or
@@ -820,6 +848,17 @@ _CREW_CHILD_WITHHELD_LEAVES: tuple[str, ...] = (
     "oauth_endpoints.json",
     "decisions_consent.json",
     "file_delivery_consent.json",
+    # The operator-authored harness descriptors. A foreign harness's child that
+    # reads ``harnesses.json`` learns every other backend's executable path and
+    # launch argv -- an input to how backends launch, in the same family as the
+    # governance/consent documents above. Withholding fails CLOSED: an empty or
+    # absent file reads as "only the builtin harnesses are served", the safe
+    # narrower state, exactly as an empty consent record reads as consent
+    # withheld. The write seal beside it answers forgery on the WRITE side; this
+    # entry answers the passive READ that reaches no gate and leaves no record.
+    "harnesses.json",
+    "backend-routing-attestations.json",
+    "chat-backend-pins.json",
     "ssh_auth_sock_consent.json",
     # The paid-AWS consent grant. Unlike its sibling consent records this one stores
     # IDENTIFIERS as well as a decision -- ``Grant.to_dict`` writes ``account`` and
@@ -1412,8 +1451,19 @@ assert set(_CREW_NOFOLLOW_READONLY_DIR_LEAVES) <= set(_CREW_PRECREATE_READONLY_D
 #: writable parent: a sandboxed process unlinks it and drops its own file there, and
 #: the seal is intact around a name that now means something else. For ``cloud.json``
 #: that name decides which container image a Fargate launch runs, and the task's
-#: execution role delivers the model credential into it.
-_CREW_NOFOLLOW_READONLY_FILE_LEAVES: tuple[str, ...] = ("cloud.json",)
+#: execution role delivers the model credential into it. For ``harnesses.json`` the
+#: name is an execution grant (which binaries the gateway spawns as backends) and for
+#: ``backend-routing-attestations.json`` it is the selectability grant one step
+#: downstream: a link at either name would seal the referent and leave the name
+#: replaceable, so the next boot would read a forged grant through the sealed name.
+#: ``chat-backend-pins.json`` is the same shape one step further along: the name
+#: decides which harness a chat's prompts reach after a restart.
+_CREW_NOFOLLOW_READONLY_FILE_LEAVES: tuple[str, ...] = (
+    "cloud.json",
+    "harnesses.json",
+    "backend-routing-attestations.json",
+    "chat-backend-pins.json",
+)
 
 #: Every strict no-alias crew-home leaf a DELEGATED spawn's workspace must not overlap, with
 #: the wording that names which seal an operator is looking at. The refusal's target list is
@@ -1458,6 +1508,18 @@ _DELEGATED_OVERLAP_LEAF_REASONS: "dict[str, tuple[str, str]]" = {
     "pi-gate": (
         "sealed pi gate runtime",
         "the agent could plant the launcher a later pi session execs out of",
+    ),
+    "harnesses.json": (
+        "sealed backend descriptors",
+        "the agent could name the executable the gateway spawns as a backend",
+    ),
+    "backend-routing-attestations.json": (
+        "sealed routing attestations",
+        "the agent could forge the attestation that makes a backend selectable",
+    ),
+    "chat-backend-pins.json": (
+        "sealed per-chat backend pins",
+        "the agent could retarget a chat's prompts to a backend its user never picked",
     ),
 }
 assert set(_DELEGATED_OVERLAP_LEAF_REASONS) == set(_CREW_NOFOLLOW_READONLY_FILE_LEAVES) | set(
@@ -1508,6 +1570,24 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     # operator writes one, so the lane stays UNREGISTERED and an in-sandbox launch
     # reads as unconfigured -- narrower than the truth, never wider.
     "cloud.json",
+    # The operator-authored harness descriptors satisfy both criteria the way
+    # ``file_delivery_consent.json`` does. Criterion 1 — empty means absent: the
+    # registry reads ``{}`` as "no operator descriptors", exactly what an absent
+    # file means (only the bundled in-code harnesses are served). Criterion 2 — a
+    # stale sealed read fails toward refusal: the writer publishes through
+    # ``atomic_write`` (new inode), so a sandboxed reader frozen at ``{}`` sees
+    # FEWER backends than the operator has since added — narrower than the truth,
+    # and it grants nothing, because the write seal that withholds forgery applies
+    # regardless. Without this entry the Linux mount seal skips the absent
+    # descriptor file — the DEFAULT state on an install that has never authored a
+    # descriptor — leaving that execution-grant name creatable from inside the
+    # namespace sandbox, which is precisely the hole this list closes.
+    "harnesses.json",
+    "backend-routing-attestations.json",
+    # The pin store meets both criteria the same way: ``load_backend_pins`` reads an
+    # absent, empty, or ``{}`` document alike as "no pins" (every chat on the
+    # configured default), and a stale sealed read can only drop a pin, never add one.
+    "chat-backend-pins.json",
     # The fork-lineage sidecar satisfies both criteria the way
     # ``file_delivery_consent.json`` does: ``agent_state._read`` returns ``{}``
     # for absent, unreadable, AND an empty document alike, so a pre-created
@@ -2331,18 +2411,44 @@ def require_unaliased_cloud_config() -> None:
     mount, a Seatbelt ``deny file-write*`` matches a pathname -- so in each case the alias
     reaches the same inode by a name the rule does not cover.
     """
-    for leaf in _CREW_NOFOLLOW_READONLY_FILE_LEAVES:
-        _require_real_file_nofollow(
-            os.path.join(str(config_dir()), leaf),
-            harm=(
-                "choose the container image a Fargate launch runs, which is what the task's "
-                "execution role delivers the model credential into"
-            ),
-            remedy=(
-                "Make the path a lone regular file: replace a link with a regular file, or "
-                "break the extra hardlink."
-            ),
-        )
+    _require_real_file_nofollow(
+        os.path.join(str(config_dir()), _CLOUD_CONFIG_LEAF),
+        harm=(
+            "choose the container image a Fargate launch runs, which is what the task's "
+            "execution role delivers the model credential into"
+        ),
+        remedy=_LONE_REGULAR_FILE_REMEDY,
+    )
+
+
+#: The strict file leaf :func:`require_unaliased_cloud_config` refuses an alias of. Named
+#: here rather than derived from :data:`_CREW_NOFOLLOW_READONLY_FILE_LEAVES` because that
+#: list now carries leaves with their own consumers and their own harm wording.
+_CLOUD_CONFIG_LEAF = "cloud.json"
+assert _CLOUD_CONFIG_LEAF in _CREW_NOFOLLOW_READONLY_FILE_LEAVES
+
+_LONE_REGULAR_FILE_REMEDY = (
+    "Make the path a lone regular file: replace a link with a regular file, or "
+    "break the extra hardlink."
+)
+
+
+def require_unaliased_grant_file(target: str, *, harm: str, fd: "int | None" = None) -> None:
+    """Refuse an aliased backend GRANT file at the seam that consumes it.
+
+    PUBLIC, for the two ``acp.harness`` readers of a strict file leaf: the descriptor
+    loader (``harnesses.json`` names the executables the gateway spawns as backends)
+    and the attestation store (``backend-routing-attestations.json`` makes a backend
+    selectable). Both leaves are sealed no-follow at spawn like ``cloud.json``, and for
+    the same reason the seal alone is not the control: a link at the name seals the
+    referent and leaves the name replaceable, so the next boot would read a forged
+    grant through the sealed name. The consumer therefore asks the alias question
+    itself, by name (the symlink refusal) and, when *fd* is given, of the very inode
+    it read (the hardlink refusal), exactly as :func:`_require_real_file_nofollow`
+    documents. Raises :class:`SandboxCeilingUnsealable`; the callers fail closed on it
+    (no descriptors, no attestations) rather than serving what an alias delivered.
+    """
+    _require_real_file_nofollow(target, harm=harm, remedy=_LONE_REGULAR_FILE_REMEDY, fd=fd)
 
 
 def _delete_file_command(target: str, *, windows: "bool | None" = None) -> str:

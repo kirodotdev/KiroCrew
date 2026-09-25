@@ -1194,6 +1194,80 @@ def _resolve_self_served_bin(backend: str) -> tuple[str | None, str]:
     return None, search_path
 
 
+def resolve_descriptor_executable(executable: str) -> tuple[str | None, str]:
+    """Resolve an OPERATOR-descriptor's executable and the PATH searched for it.
+
+    The generic form of the plain-binary ladder every single-binary bundled host
+    walks (``_resolve_opencode_bin``, ``_resolve_goose_bin``, ``_resolve_deepseek_bin``),
+    with the tool name supplied by the descriptor instead of hardcoded. A descriptor
+    host is a binary that serves ACP itself, so there is no ``node_modules`` rung
+    and no node resolution -- if an operator runs their host through a Node adapter,
+    they name the adapter's own launcher as the ``executable`` and its arguments in
+    the argv template.
+
+    Rungs, cheapest and most explicit first:
+
+    * an ABSOLUTE (or otherwise directly-executable) path is honoured verbatim.
+      This is the common operator case -- they know exactly where their binary is --
+      and it is also what makes the argv attestation load-bearing: the file the
+      descriptor named is the file that resolves, with no PATH re-resolution that
+      could pick a different one.
+    * mise, then the augmented PATH, for a bare name -- the same two rungs the
+      bundled single-binary resolvers walk, so an operator's ``"executable": "my-acp"``
+      resolves exactly as ``opencode`` does.
+
+    Returns ``(None, search_path)`` when it is absent, so the caller reports what
+    was searched rather than raising from inside the resolver -- the same contract
+    every bundled resolver keeps. No override ENV rung: a descriptor's ``executable``
+    IS the operator's explicit choice, so there is no separate variable to consult.
+    """
+    search_path = augmented_path(os.environ.get("PATH", ""))
+    if not executable:
+        return None, search_path
+
+    # A path the operator gave directly (absolute, or relative to an executable
+    # file) is honoured as-is: it is the most explicit form and the one that keeps
+    # the attested file and the exec'd file the same.
+    if platform_compat.is_executable_file(executable):
+        # Canonicalize to an ABSOLUTE path at resolution time so the attested
+        # file cannot diverge from the exec'd file: a relative ``./host`` would
+        # otherwise re-resolve against whatever CWD the eventual spawn runs in
+        # (a session working directory need not be the gateway's), letting a
+        # different file run than the one resolution checked. abspath leaves an
+        # already-absolute operator path unchanged (the common case).
+        resolved = os.path.abspath(executable)
+        return _normalize_exe_casing(resolved) or resolved, search_path
+
+    mise_resolved = _mise_which(executable)
+    if mise_resolved:
+        return mise_resolved, search_path
+
+    on_path = shutil.which(executable, path=search_path)
+    if on_path:
+        return _normalize_exe_casing(on_path) or on_path, search_path
+
+    return None, search_path
+
+
+def descriptor_executable_not_found_message(
+    harness_id: str, executable: str, search_path: str
+) -> str:
+    """The one message for "an operator harness's executable is not where we looked".
+
+    Names the harness id, the executable the descriptor asked for, and the
+    directories actually walked (via :func:`env.describe_search_path`, the same
+    helper the kiro and single-binary paths use), so an operator whose install is
+    simply off the search sees where to look rather than a bare "not found". The
+    search path is threaded in from the resolver so the message can never name a
+    directory the search skipped.
+    """
+    return (
+        f"harness {harness_id!r}: executable {executable!r} not found "
+        f"({describe_search_path(search_path)}). Install it, put it on PATH, or set "
+        f"the descriptor's 'executable' to an absolute path in harnesses.json."
+    )
+
+
 def _opencode_readback_remedy() -> str:
     """What an operator does when the harness's config cannot be read back at all."""
     return (

@@ -6098,6 +6098,8 @@
       "session_control_ready": "तैयार",
       "session_control_chip_label": "{{label}} — {{detail}}",
       "agent_inherited_default": "यह सत्र डिफ़ॉल्ट एजेंट ({{name}}) का अनुसरण करता है। इसका अपना कोई एजेंट नहीं है, इसलिए डिफ़ॉल्ट बदलने पर यह भी बदल जाता है। पिन करने के लिए क्लिक करें।",
+      "backend_fixed_at_creation": "यह चैट बनाते समय बैकएंड चुना गया था और इसे बदला नहीं जा सकता। दूसरा बैकएंड इस्तेमाल करने के लिए नई चैट शुरू करो और पहले संदेश से पहले बैकएंड चुनो।",
+      "backend_inherited_default": "यह चैट डिफ़ॉल्ट बैकएंड का पालन करती है, इसलिए डिफ़ॉल्ट बदलने पर यह भी बदल जाती है। किसी एक को तय करने के लिए नई चैट शुरू करो और पहले संदेश से पहले बैकएंड चुनो।",
       "model_inherited_default": "यह सत्र डिफ़ॉल्ट मॉडल ({{name}}) पर चलता है। इसका अपना कोई मॉडल नहीं है, इसलिए डिफ़ॉल्ट बदलने पर यह भी बदल जाता है। एक पिन करने के लिए क्लिक करें।"
     },
     "chatPane": {
@@ -8853,6 +8855,18 @@
       "unexpected_response": "अनपेक्षित प्रतिक्रिया",
       "deploy_failed": "डिप्लॉय विफल",
       "stale_preview_retry": "जाँच के बाद ऐप बदल गया — फिर से कोशिश करें।"
+    },
+    "backendSelector": {
+      "default_backend": "डिफ़ॉल्ट बैकएंड",
+      "backend_name": "बैकएंड: {{name}}",
+      "backend_list": "बैकएंड सूची",
+      "backend_list_unavailable": "बैकएंड सूची अनुपलब्ध",
+      "no_backends_registered": "कोई बैकएंड पंजीकृत नहीं",
+      "default": "डिफ़ॉल्ट",
+      "unroutable_see_settings": "चयन योग्य नहीं — सेटिंग्स → AI बैकएंड देखो",
+      "invalid_see_settings": "अमान्य — सेटिंग्स → AI बैकएंड देखो",
+      "backend_serving": "इस चैट का AI बैकएंड: {{name}} (डिफ़ॉल्ट का अनुसरण करता है)",
+      "backend_serving_pinned": "इस चैट का AI बैकएंड: {{name}} — चैट बनाते समय तय किया गया"
     }
   },
   "hooks": {
@@ -15658,6 +15672,27 @@
         "remove_confirm": "{{provider}} का OAuth ऐप हटाना है? क्लाइंट ID और सेव किया गया secret मिट जाएँगे, और दोबारा भरने तक {{provider}} कनेक्ट नहीं हो पाएगा।",
         "remove_confirm_action": "OAuth ऐप हटाएँ",
         "cancel": "रद्द करो"
+      },
+      "backendsPanel": {
+        "ai_backends": "AI बैकएंड",
+        "registered_backends": "पंजीकृत बैकएंड",
+        "backends_are_defined_in_config_and_need_a_restart": "बैकएंड {{productName}} होम डायरेक्टरी में harnesses.json (लेखन-सुरक्षित) में परिभाषित होते हैं, config.json के बगल में। बदलाव अगली gateway शुरुआत पर लागू होते हैं।",
+        "authoring_guide": "बैकएंड कैसे जोड़ें",
+        "change_default_in_developer": "डिफ़ॉल्ट बैकएंड बदलें: डेवलपर → एजेंट बैकएंड",
+        "backend_list_unavailable": "बैकएंड सूची अनुपलब्ध",
+        "no_backends_registered": "कोई बैकएंड पंजीकृत नहीं",
+        "badge_default": "डिफ़ॉल्ट",
+        "badge_unroutable": "चयन योग्य नहीं",
+        "badge_invalid": "अमान्य",
+        "badge_unverified": "रूटिंग सत्यापित नहीं",
+        "unverified_here": "डिस्क्रिप्टर अपनी रूटिंग घोषित करता है, लेकिन अभी तक किसी ने इसे शुरू से अंत तक जाँचा नहीं है। रूटिंग सत्यापित करो बैकएंड को एक बार चलाता है, उससे एक फ़ाइल लिखने को कहता है, हर अनुमति अनुरोध को अस्वीकार करता है, और पुष्टि करता है कि कुछ भी नहीं लिखा गया।",
+        "verify_routing": "रूटिंग सत्यापित करो",
+        "verifying": "सत्यापन हो रहा है…",
+        "verify_passed": "सत्यापित: बैकएंड ने कार्य करने से पहले अनुमति माँगी और इनकार का सम्मान किया। अब इसे चैट के लिए चुना जा सकता है।",
+        "verify_violation": "सत्यापन विफल",
+        "verify_inconclusive": "सत्यापन अनिर्णायक रहा",
+        "verify_policy_denied": "सत्यापित, लेकिन यहाँ चुना नहीं जा सकता",
+        "verify_unavailable": "सत्यापन चल नहीं सका"
       }
     },
     "settingsPage": {
@@ -16327,6 +16362,10 @@
       "connections": {
         "label": "OAuth ऐप",
         "description": "ऐसे प्रोवाइडर के लिए OAuth ऐप जिन्हें रजिस्टर किया गया क्लाइंट चाहिए"
+      },
+      "backends": {
+        "label": "AI बैकएंड",
+        "description": "इस बिल्ड में उपलब्ध AI बैकएंड और harnesses.json में परिभाषित बैकएंड की स्थिति"
       }
     },
     "secrets": {

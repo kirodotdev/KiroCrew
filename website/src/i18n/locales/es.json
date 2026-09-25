@@ -6194,6 +6194,8 @@
       "session_control_ready": "Listo",
       "session_control_chip_label": "{{label}} — {{detail}}",
       "agent_inherited_default": "Esta sesión sigue el agente predeterminado ({{name}}). No tiene un agente propio, así que cambia si cambia el predeterminado. Haz clic para fijar uno.",
+      "backend_fixed_at_creation": "El backend se eligió al crear este chat y no se puede cambiar. Para usar otro, inicia un chat nuevo y elige un backend antes del primer mensaje.",
+      "backend_inherited_default": "Este chat sigue el backend predeterminado, así que cambia si el predeterminado cambia. Para fijar uno, inicia un chat nuevo y elige un backend antes del primer mensaje.",
       "model_inherited_default": "Esta sesión usa el modelo predeterminado ({{name}}). No tiene un modelo propio, así que cambia si cambia el predeterminado. Haz clic para fijar uno."
     },
     "chatPane": {
@@ -8972,6 +8974,18 @@
       "unexpected_response": "Respuesta inesperada",
       "deploy_failed": "Error al desplegar",
       "stale_preview_retry": "La aplicación cambió desde la comprobación — inténtalo de nuevo."
+    },
+    "backendSelector": {
+      "default_backend": "Backend predeterminado",
+      "backend_name": "Backend: {{name}}",
+      "backend_list": "Lista de backends",
+      "backend_list_unavailable": "Lista de backends no disponible",
+      "no_backends_registered": "No hay backends registrados",
+      "default": "Predeterminado",
+      "unroutable_see_settings": "No seleccionable: ver Configuración → Backends de IA",
+      "invalid_see_settings": "No válido: ver Configuración → Backends de IA",
+      "backend_serving": "Backend de IA de este chat: {{name}} (sigue el predeterminado)",
+      "backend_serving_pinned": "Backend de IA de este chat: {{name}}, fijado al crear el chat"
     }
   },
   "hooks": {
@@ -15865,6 +15879,27 @@
         "remove_confirm": "¿Eliminar la app OAuth de {{provider}}? Se borran el ID de cliente y el secreto guardado, y {{provider}} no podrá conectarse hasta que los introduzcas de nuevo.",
         "remove_confirm_action": "Eliminar app OAuth",
         "cancel": "Cancelar"
+      },
+      "backendsPanel": {
+        "ai_backends": "Backends de IA",
+        "registered_backends": "Backends registrados",
+        "backends_are_defined_in_config_and_need_a_restart": "Los backends se definen en harnesses.json (protegido contra escritura), en el directorio de inicio de {{productName}} junto a config.json. Los cambios se aplican en el siguiente inicio del gateway.",
+        "authoring_guide": "Cómo añadir un backend",
+        "change_default_in_developer": "Cambia el backend predeterminado en Desarrollador → Backend del agente",
+        "backend_list_unavailable": "Lista de backends no disponible",
+        "no_backends_registered": "No hay backends registrados",
+        "badge_default": "Predeterminado",
+        "badge_unroutable": "No seleccionable",
+        "badge_invalid": "No válido",
+        "badge_unverified": "Enrutamiento sin verificar",
+        "unverified_here": "El descriptor declara su enrutamiento, pero nada lo ha comprobado de extremo a extremo todavía. Verificar enrutamiento arranca el backend una vez, le pide escribir un archivo, deniega cada solicitud de permiso y confirma que no se escribió nada.",
+        "verify_routing": "Verificar enrutamiento",
+        "verifying": "Verificando…",
+        "verify_passed": "Verificado: el backend pidió permiso antes de actuar y respetó la negativa. Ya se puede elegir para un chat.",
+        "verify_violation": "La verificación falló",
+        "verify_inconclusive": "La verificación no fue concluyente",
+        "verify_policy_denied": "Verificado, pero no se puede elegir aquí",
+        "verify_unavailable": "La verificación no pudo ejecutarse"
       }
     },
     "settingsPage": {
@@ -16547,6 +16582,10 @@
       "connections": {
         "label": "Aplicaciones OAuth",
         "description": "Aplicaciones OAuth para proveedores que requieren un cliente registrado"
+      },
+      "backends": {
+        "label": "Backends de IA",
+        "description": "Los backends de IA que ofrece esta versión y el estado de los backends definidos en harnesses.json"
       }
     },
     "secrets": {

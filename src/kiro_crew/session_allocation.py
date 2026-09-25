@@ -1703,6 +1703,18 @@ class SessionAllocationService:
             # fixed when it was pre-spawned with no parent. Cold-starting is what
             # makes ``$KIROCREW_SCRATCH`` name the same place as the parent's.
             pool_decision = "bypass_shared_scratch"
+        elif extra_factory_kwargs.get("backend_override") is not None:
+            # A pooled child was spawned with no backend override, so it runs
+            # the factory's DEFAULT backend — a different harness PROCESS
+            # entirely from a per-chat pick. A warm hit would silently hand the
+            # chat a session on the wrong harness (the same failure the member
+            # arm above guards against, and a stronger version of it than the
+            # model post-claim switch handles, since a backend cannot be swapped
+            # on a live process). Cold-starting through the factory is what
+            # makes the per-chat backend real. ``is not None``, not truthiness:
+            # ``""`` is a pin to kiro-cli, and under a non-Kiro default a pooled
+            # child would be on the wrong harness for it too.
+            pool_decision = "bypass_backend"
         elif await self._crew_pins_effort(agent, extra_factory_kwargs.get("crew_agent")):
             # A CREW's pinned effort is fixed at spawn time and the warm-pool
             # claim path never re-pushes it, so a warm hit would silently run

@@ -192,9 +192,11 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, FrozenSet, Mapping, Set
+from typing import Any, FrozenSet, Iterator, Mapping, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -266,7 +268,33 @@ ACP_BACKEND_KIRO = ""
 # Membership gate for the ``acp_backend`` kwarg. An unrecognized value would
 # otherwise fall through every ``_is_<backend>`` check and silently spawn
 # kiro-cli, so provider construction rejects it instead.
-ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
+#
+# ── The set was frozen; now it is DERIVED (base ∪ registered). ──
+#
+# ``_ACP_BACKENDS_BUILTIN`` is the frozen base — the ids this build's own code
+# spells and serves through a hardcoded path. It is still a plain ``frozenset`` and
+# still the whole answer at rest, so ``sorted(ACP_BACKENDS_KNOWN)`` on a fresh
+# process is exactly these eight ids and nothing an existing test asserts about the
+# closed set moved.
+#
+# ``_registered_known`` is what a config-authored (out-of-tree) harness adds at
+# boot through :func:`register_known_backend`, BEFORE the first config load — the
+# same ordering ``register_selectable_backend`` already requires. Kept a private
+# mutable set for the reason ``_baseline``/``_selectable`` are: a second binding to
+# it is how two views of one registry start disagreeing, so it has one home and the
+# shim re-exports the derived VIEW, never this set.
+#
+# Why a derived VIEW rather than a recomputed frozenset. Every ``in
+# ACP_BACKENDS_KNOWN`` site, every ``sorted``/``set``/``len``/iteration, and every
+# ``capability_set <= ACP_BACKENDS_KNOWN`` subset check reads this ONE public name.
+# Rebinding it to a fresh frozenset on each registration would leave any module that
+# did ``from ... import ACP_BACKENDS_KNOWN`` holding a stale snapshot — ``host_auth``
+# and ``providers.acp`` both import the name directly. A live view read through
+# ``__contains__``/``__iter__`` cannot go stale: the name never rebinds, the content
+# is computed on access. The alternative (rewriting ~44 call sites to a
+# ``known_backends()`` function) is exactly the "convert call sites" churn this seam
+# is meant to avoid, and would break the shim's re-export identity besides.
+_ACP_BACKENDS_BUILTIN: FrozenSet[str] = frozenset(
     {
         ACP_BACKEND_KIRO,
         ACP_BACKEND_CLAUDE,
@@ -278,6 +306,244 @@ ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
         ACP_BACKEND_DEEPSEEK,
     }
 )
+
+#: Ids added at boot by an out-of-tree (config-authored) harness. Empty at rest, so
+#: a fresh process's known set is exactly ``_ACP_BACKENDS_BUILTIN``.
+_registered_known: Set[str] = set()
+
+#: Registered ids that are SERVED by ``AcpRuntime`` (serving path A). Empty at rest,
+#: so ``acp_runtime_backends()`` equals the frozen ``ACP_BACKENDS_ACP_RUNTIME`` until
+#: a config-authored harness registers -- and every config-authored harness IS served
+#: on path A, because ``DescriptorHarness`` only exists on that path (there is no
+#: data-driven ``AcpClient._is_<backend>`` branch). Kept beside ``_registered_known``
+#: rather than folded into it because "this build can spell the id" and "a session for
+#: it takes the shared-runtime start path" are the two orthogonal questions the module
+#: keeps apart everywhere else; a builtin can be known without being on path A (claude,
+#: codex-by-default), and the same separation holds for a registered id. A subset of
+#: ``_registered_known`` by construction: :func:`register_known_backend` adds to this
+#: set only when it added to that one.
+_registered_runtime: Set[str] = set()
+
+# A registered harness gets the DEFAULT posture on every capability set below: the
+# frozen ``ACP_BACKENDS_*`` sets are the only membership the session paths read, and
+# a config-authored descriptor cannot claim its way into one (harness-parity H6/H7).
+# Admitting a harness to a capability is a code-reviewed edit to the named set.
+
+
+def known_backends() -> FrozenSet[str]:
+    """Every id this build can SPELL: the frozen base plus whatever registered.
+
+    A snapshot for callers that want a plain frozenset. ``ACP_BACKENDS_KNOWN`` is
+    the live view over the same two sets; this function is the same answer captured
+    at the moment of the call. At rest the two are equal.
+    """
+    return frozenset(_ACP_BACKENDS_BUILTIN | _registered_known)
+
+
+class _KnownBackends(AbstractSet):
+    """A live, immutable-from-outside set VIEW of ``base ∪ registered``.
+
+    Bound once to the module name ``ACP_BACKENDS_KNOWN`` and never rebound, so a
+    ``from kiro_crew.agent_sdk.backends import ACP_BACKENDS_KNOWN`` binding in another
+    module always reflects the current registration rather than a snapshot taken at
+    its import time.
+
+    Reads through the set protocol only. It derives from ``collections.abc.Set``, so
+    ``__le__``/``__ge__``/``__or__``/``__sub__``/``__and__``/``__eq__`` and the
+    reflected forms come from the mixin off the three primitives below — which is
+    what makes ``some_frozenset <= ACP_BACKENDS_KNOWN`` (frozenset on the left,
+    ``NotImplemented`` there, ``__ge__`` here) and ``set(routing) >=
+    ACP_BACKENDS_KNOWN`` both resolve correctly. ``_from_iterable`` returns a
+    ``frozenset`` so every algebra result (``KNOWN | {x}``, ``KNOWN - other``) is an
+    ordinary set the callers already expect, not another view.
+
+    Deliberately unhashable (``abc.Set`` grants no ``__hash__``): its contents can
+    change across a registration, so it must never key a dict or enter a set.
+    """
+
+    __slots__ = ()
+
+    def __contains__(self, item: object) -> bool:
+        return item in _ACP_BACKENDS_BUILTIN or item in _registered_known
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(_ACP_BACKENDS_BUILTIN | _registered_known)
+
+    def __len__(self) -> int:
+        return len(_ACP_BACKENDS_BUILTIN | _registered_known)
+
+    @classmethod
+    def _from_iterable(cls, iterable) -> FrozenSet[str]:
+        # Set algebra (``|``, ``-``, ``&``) yields a plain frozenset, not a view.
+        return frozenset(iterable)
+
+    def __repr__(self) -> str:
+        return f"_KnownBackends({sorted(self)!r})"
+
+
+#: The membership gate for the ``acp_backend`` kwarg, as a LIVE set view. ``in``,
+#: iteration, ``sorted``, ``set(...)``, ``len``, and subset checks all read the
+#: current ``base ∪ registered`` — a registration is visible immediately with no
+#: rebind. Equal to ``_ACP_BACKENDS_BUILTIN`` whenever nothing has registered.
+ACP_BACKENDS_KNOWN: _KnownBackends = _KnownBackends()
+
+#: Provider label for each registered (out-of-tree) backend id, so
+#: ``test_harness_parity.py::test_every_known_backend_has_a_label`` — which requires
+#: EVERY id in ``ACP_BACKENDS_KNOWN`` to have a label — is satisfiable for a config
+#: authored harness WITHOUT minting an ``ACP_BACKEND*`` label constant outside this
+#: module (the parity gate's ``vocabulary-home`` rule forbids that). The builtin ids
+#: keep their ``PROVIDER_LABEL_*`` constants in ``acp/types.py``; a registered id's
+#: label is DATA and lives here, resolved through :func:`provider_label_for`.
+_REGISTERED_PROVIDER_LABELS: dict = {}
+
+#: Model-registry namespace for each registered backend id (own bucket per backend,
+#: defaulting to the backend id itself), so a registered harness's advertised ids do
+#: not collide with kiro's ``acp`` bucket. Read through
+#: :func:`model_registry_namespace`.
+_REGISTERED_MODEL_NAMESPACE: dict = {}
+
+# The id an out-of-tree harness may register: lowercase, ``[a-z0-9-]``, ≤32 chars.
+# The same shape a descriptor id must satisfy (W1-B), pinned here because this is
+# where an id first becomes known. The empty string (kiro) and every builtin id are
+# already known and cannot be re-registered.
+_REGISTERABLE_BACKEND_ID = re.compile(r"^[a-z0-9-]{1,32}$")
+
+
+def register_known_backend(
+    backend_id: str,
+    *,
+    label: str,
+    routing: "Routing",
+    permission_config: Optional[Tuple[str, str]] = None,
+    model_namespace: Optional[str] = None,
+    runtime: bool = True,
+) -> None:
+    """Teach this build to SPELL a new (config-authored) backend id.
+
+    This is the seam for an id the core has never heard of: a frozen
+    ``ACP_BACKENDS_KNOWN`` blocks it. It makes the id known — so ``AcpProvider`` stops
+    rejecting it at construction and a governance rule can name it — and records the
+    facts every "for every known backend" parity gate demands, WITHOUT any
+    ``ACP_BACKEND*`` constant being defined outside this module (the vocabulary-home
+    rule): a registered id and its label/routing/namespace are DATA in the dicts
+    here, not module-level constants.
+
+    Records, in order:
+
+    * the **id** into ``_registered_known``, so ``ACP_BACKENDS_KNOWN`` now contains
+      it and every subset gate still holds (the frozen capability sets never name it,
+      so a registered harness carries the default posture on every one of them --
+      admitting it to a capability is a code-reviewed edit to the named set, never a
+      registration-time claim);
+    * the **routing** into ``ACP_BACKEND_ROUTING``, so ``routing_for`` answers a real
+      mechanism instead of failing closed to ``UNVERIFIED`` — this is what a later
+      ``register_selectable_backend`` consults, and the reason an ``UNVERIFIED``
+      registration stays visible-but-unselectable;
+    * the **permission_config** (``(option_id, value)``) into
+      ``ACP_BACKEND_PERMISSION_CONFIG`` when routing is ``SESSION_CONFIG`` — required
+      there, refused otherwise;
+    * the **policy id** into ``POLICY_ID_BY_BACKEND`` (self-named, i.e. the id is its
+      own wire spelling), so a policy author can allow/deny it;
+    * the **provider label** into ``_REGISTERED_PROVIDER_LABELS``, so "every known
+      backend has a label" holds;
+    * the **model namespace** into ``_REGISTERED_MODEL_NAMESPACE`` (its own key,
+      default = the backend id), so its advertised ids never share kiro's ``acp``
+      bucket;
+    * the **id** into ``_registered_runtime`` when ``runtime`` (the default), so
+      ``acp_runtime_backends()`` reports it as served on the shared-process path.
+      Every config-authored harness IS on that path -- ``DescriptorHarness`` only
+      exists there -- so the default is True; the flag exists so an edition
+      registering a harness it serves through ``AcpClient`` (a hardcoded
+      ``_is_<backend>`` branch) can register the id without claiming the runtime
+      path. Only recorded when the id was actually added, so a refused registration
+      leaves this set untouched too.
+
+    Does NOT make the id selectable — that is a separate, stronger claim
+    :func:`register_selectable_backend` gates on verified routing. A registered id
+    with ``AGENT_SPEC``/``SESSION_CONFIG`` routing may then be passed to that function
+    unchanged; a ``UNVERIFIED`` one is refused there, exactly as it is today.
+
+    Idempotent-unfriendly on purpose: re-registering a known id (a builtin, or one
+    already registered) raises, because a silent overwrite of a label or routing is
+    how one harness's registration clobbers another's. Rejects an id outside
+    ``[a-z0-9-]`` / >32 chars for the same reason provider construction rejects an
+    unknown id — a malformed id that reached the switch could start nothing.
+    """
+    if not isinstance(backend_id, str) or not _REGISTERABLE_BACKEND_ID.match(backend_id):
+        raise ValueError(
+            f"cannot register backend id {backend_id!r}: an id must match "
+            f"{_REGISTERABLE_BACKEND_ID.pattern!r} (lowercase [a-z0-9-], 1-32 chars)"
+        )
+    if backend_id in ACP_BACKENDS_KNOWN:
+        raise ValueError(
+            f"cannot register {backend_id!r}: it is already a known backend "
+            "(a builtin or an already-registered id); registration must not silently "
+            "overwrite an existing label or routing"
+        )
+    if not isinstance(routing, Routing):
+        raise ValueError(
+            f"cannot register {backend_id!r}: routing must be a Routing, got {routing!r}"
+        )
+    session_config_pair: Optional[Tuple[str, str]] = None
+    if routing is Routing.SESSION_CONFIG:
+        if not permission_config or len(permission_config) != 2:
+            raise ValueError(
+                f"cannot register {backend_id!r} with SESSION_CONFIG routing and no "
+                "permission_config: that routing is enforced by applying and reading "
+                "back an (option_id, value), so the pair is required"
+            )
+        session_config_pair = (permission_config[0], permission_config[1])
+    elif permission_config is not None:
+        raise ValueError(
+            f"cannot register {backend_id!r}: permission_config is only meaningful for "
+            f"SESSION_CONFIG routing, not {routing.value!r}"
+        )
+    if not label:
+        raise ValueError(f"cannot register {backend_id!r}: a non-empty provider label is required")
+
+    # All validation passed before any mutation, so a rejected registration leaves no
+    # half-written id behind in one table and not the others.
+    _registered_known.add(backend_id)
+    ACP_BACKEND_ROUTING[backend_id] = routing
+    if session_config_pair is not None:
+        ACP_BACKEND_PERMISSION_CONFIG[backend_id] = session_config_pair
+    POLICY_ID_BY_BACKEND[backend_id] = backend_id
+    _REGISTERED_PROVIDER_LABELS[backend_id] = label
+    _REGISTERED_MODEL_NAMESPACE[backend_id] = model_namespace or backend_id
+    if runtime:
+        _registered_runtime.add(backend_id)
+
+
+def provider_label_for(backend: str) -> str:
+    """The display label a REGISTERED backend recorded, or ``""`` for an id with none.
+
+    Only answers for registered ids. The builtin ids keep their ``PROVIDER_LABEL_*``
+    constants in ``acp/types.py`` and their existing lookup; this is the data path a
+    config-authored id uses so "every known backend has a label" can hold without a
+    label constant living outside this module.
+    """
+    return _REGISTERED_PROVIDER_LABELS.get(backend, "")
+
+
+def _reset_registered_backends() -> None:
+    """TEST-ONLY: drop every registration, restoring the frozen builtin state.
+
+    The paired teardown for :func:`register_known_backend`, mirroring the
+    ``_baseline``/``_selectable`` snapshot-restore pattern the selectable-registry
+    tests use. Removes each registered id from the shared tables it was written into
+    (routing, permission-config, policy-id) so one test's registration cannot leak
+    into the next, and clears the label/namespace maps and the id set. Not called by
+    product code — registration is boot-once and never undone in a running gateway.
+    """
+    for backend_id in list(_registered_known):
+        ACP_BACKEND_ROUTING.pop(backend_id, None)
+        ACP_BACKEND_PERMISSION_CONFIG.pop(backend_id, None)
+        POLICY_ID_BY_BACKEND.pop(backend_id, None)
+    _registered_known.clear()
+    _registered_runtime.clear()
+    _REGISTERED_PROVIDER_LABELS.clear()
+    _REGISTERED_MODEL_NAMESPACE.clear()
+
 
 # ── Capability: where a harness gets its MCP servers ──
 
@@ -598,6 +864,13 @@ def register_selectable_backend(backend: str) -> None:
     can be selectable — an edition that needs otherwise arrives with its own caller
     and its own justification, which is a conversation rather than a flag.
     """
+    _refuse_unless_selectable_registrable(backend)
+    _baseline.add(backend)
+    _selectable.add(backend)
+
+
+def _refuse_unless_selectable_registrable(backend: str) -> None:
+    """The two refusals every selectable registration shares (see above)."""
     if backend not in ACP_BACKENDS_KNOWN:
         raise ValueError(
             f"cannot register unknown ACP backend {backend!r}; "
@@ -614,8 +887,52 @@ def register_selectable_backend(backend: str) -> None:
             "gated, and no compensating credential mask is applied. A harness must have "
             "established routing in ACP_BACKEND_ROUTING before it can be selectable."
         )
+
+
+def register_governed_backend(backend: str, *, permitted: bool) -> None:
+    """:func:`register_selectable_backend` with the deployment's verdict applied in the same step.
+
+    For a backend registered AFTER the boot-time governance pass -- an operator
+    descriptor loaded in the background, or one verified from Settings -- the
+    two-call form (register selectable, then ``narrow_selectable_backends``) has a
+    window in which a policy-denied backend IS selectable: a chat that resolves
+    its backend in that window starts a harness the deployment forbids. Here the
+    caller evaluates the policy first and passes the verdict, and the id joins the
+    BASELINE (so a later loosened policy can restore it, exactly as for a
+    boot-registered backend) while it joins the effective set only when
+    *permitted*. There is no instant at which a denied id is selectable.
+
+    Same two refusals as :func:`register_selectable_backend` -- an unknown id, an
+    ``UNVERIFIED`` routing -- and the same reasons.
+    """
+    _refuse_unless_selectable_registrable(backend)
     _baseline.add(backend)
-    _selectable.add(backend)
+    if permitted:
+        _selectable.add(backend)
+    else:
+        _selectable.discard(backend)
+
+
+def unregister_selectable_backend(backend: str) -> None:
+    """Take a REGISTERED (config-authored) backend out of the selectable set.
+
+    The inverse of :func:`register_selectable_backend`, scoped to ids that
+    :func:`register_known_backend` admitted: a descriptor backend's selectability
+    is granted by a routing attestation the gateway recorded, and when the spawn
+    path finds the verified executable replaced, that grant is withdrawn here
+    (``operator_registry.revoke_routing_verification``). Refuses a builtin --
+    their membership is the frozen baseline a governance ceiling narrows through
+    :func:`apply_selectable_denials`, never a per-id withdrawal -- so this cannot
+    become a second way to empty the switch. Removes from the BASELINE as well as
+    the effective set, so a later policy recompute does not resurrect it.
+    """
+    if backend not in _registered_known:
+        raise ValueError(
+            f"cannot unregister {backend!r} from the selectable set: only a "
+            "config-authored (registered) backend's selectability can be withdrawn"
+        )
+    _baseline.discard(backend)
+    _selectable.discard(backend)
 
 
 def selectable_backends() -> FrozenSet[str]:
@@ -715,6 +1032,38 @@ def resolve_selected_backend(value: object) -> str:
             ", ".join(repr(b) for b in sorted(selectable)),
         )
     return ACP_BACKEND_KIRO
+
+
+class BackendPinNotSelectable(RuntimeError):
+    """An EXPLICIT per-session backend pin names a backend that is not selectable.
+
+    Raised by the per-session selection gate for a pin the operator or the chat
+    made on purpose -- a slot's own ``acp_backend``, a spawn's named backend --
+    whose value has left the selectable set since it was persisted (a
+    config-defined backend is withdrawn the moment a spawn finds its verified
+    binary replaced; a build may stop registering an id). The pin is refused,
+    not degraded: degrading it to the floor, or falling through to the member
+    route or the configured default, sends the prompt to a provider the chat did
+    not pick while the chat still displays its pin as honoured. The turn ends
+    here with nothing sent, and the message names the correction paths.
+
+    Distinct from :func:`resolve_selected_backend`'s degrade-with-a-log, which is
+    the right answer for the CONFIGURED default (a field with no per-chat
+    intent behind it) and for the member auto-route; it is the wrong answer for
+    a value a chat chose.
+    """
+
+    def __init__(self, backend: str, selectable: FrozenSet[str]) -> None:
+        self.backend = backend
+        self.selectable = selectable
+        offered = ", ".join(repr(b) for b in sorted(selectable))
+        super().__init__(
+            f"This chat is pinned to backend {backend!r}, which is not selectable "
+            "right now (its routing verification was withdrawn, or this build does "
+            "not offer it). Nothing was sent. Pick another backend for this chat, "
+            "or re-verify it under Settings > Backends. "
+            f"Selectable now: {offered}."
+        )
 
 
 # ── Capability membership (harness-parity H6, H7) ──
@@ -1515,6 +1864,34 @@ ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KA
 # adapter growing. Membership is earned by a measured teardown, not by default.
 ACP_BACKENDS_SESSION_EVICTION = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CODEX})
 
+
+def acp_runtime_backends() -> FrozenSet[str]:
+    """Backends served by AcpRuntime in THIS process: the vocabulary plus registrations.
+
+    The one home for the derived answer: every FOREGROUND site asking "is this
+    backend on the shared runtime?" reads this. Equal to
+    ``ACP_BACKENDS_ACP_RUNTIME`` whenever nothing is registered, which is the
+    default.
+
+    Not every reader of that question. ``session._bg_runtime_backends`` reads the
+    frozenset directly, deliberately, so a config-authored harness is scoped to the
+    foreground — its reason lives beside that reader. A site that wants registered
+    ids reads here; a site they must not reach reads the set and says why.
+
+    A function rather than a set for the reason the module docstring gives for
+    ``host_auth.backends_retired_by_host_logout()``: this is a DERIVED answer, not
+    vocabulary, and the harness-parity gate reserves the ``ACP_BACKENDS_*``
+    spelling for vocabulary.
+
+    Includes ``_registered_runtime`` -- the config-authored ids served on path A --
+    for the same reason ``ACP_BACKENDS_KNOWN`` is derived: a registered harness runs
+    on ``AcpRuntime`` (that is the only path ``DescriptorHarness`` exists on), so the
+    foreground start path must route its sessions there. Empty at rest, so with
+    nothing registered this is exactly ``ACP_BACKENDS_ACP_RUNTIME``.
+    """
+    return frozenset(ACP_BACKENDS_ACP_RUNTIME | _registered_runtime)
+
+
 # ``ACP_BACKENDS_KIRO_IDENTITY_STORE`` is gone, and it has no replacement HERE.
 # Whether a ``kiro-cli logout`` may retire a running child is a fact about how the
 # harness SIGNS IN, and it was the third hand-maintained copy of that fact -- beside
@@ -1897,7 +2274,14 @@ _MODEL_REGISTRY_NAMESPACE_BY_BACKEND: dict = {
 
 
 def model_registry_namespace(backend: str) -> str:
-    """The model-registry namespace key for *backend* (default ``acp``)."""
+    """The model-registry namespace key for *backend* (default ``acp``).
+
+    A REGISTERED (config-authored) backend gets the own-key namespace it recorded at
+    registration (default = its own id), consulted before the ``acp`` fallback, so
+    its advertised ids never overwrite kiro-cli's ``acp`` bucket.
+    """
+    if backend in _REGISTERED_MODEL_NAMESPACE:
+        return _REGISTERED_MODEL_NAMESPACE[backend]
     return _MODEL_REGISTRY_NAMESPACE_BY_BACKEND.get(backend, "acp")
 
 

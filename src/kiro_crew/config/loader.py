@@ -2674,6 +2674,15 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
             agent_data.get("mcp_quarantine_after_failures", 3), 3
         ),
         acp_backend=_normalize_acp_backend(agent_data.get("acp_backend")),
+        # The persisted spelling rides along for the boot path's post-registration
+        # re-resolution (see ``AgentConfig._acp_backend_persisted``). Strings only:
+        # a non-string shape was already warned about and coerced above, and there
+        # is nothing to re-resolve in it.
+        _acp_backend_persisted=(
+            agent_data.get("acp_backend")
+            if isinstance(agent_data.get("acp_backend"), str)
+            else None
+        ),
         member_acp_backend=_normalize_acp_backend(agent_data.get("member_acp_backend", "kas")),
         default_agent=agent_data.get("default_agent", ""),
         # Through the module alias rather than a new top-level import: the loader's
@@ -5140,6 +5149,12 @@ class KiroCrewConfig:
         if isinstance(_gw_section, dict):
             _gw_section["stub_servers"] = list(self.mcp_gateway.stub_roster)
             _gw_section.pop("_stub_roster", None)
+        # ``agent._acp_backend_persisted`` is the file's own pre-coercion spelling of
+        # ``acp_backend``, carried for the boot path's re-resolution; the coerced
+        # field is what the file gets, and the carrier is never a config key.
+        _agent_section = d.get("agent")
+        if isinstance(_agent_section, dict):
+            _agent_section.pop("_acp_backend_persisted", None)
         # ``telegram.accounts`` is deprecated and inert. It is kept on disk ONLY
         # so an operator's named-account tokens survive the next save(); an
         # empty map protects nothing, and writing it back materializes a
@@ -5660,6 +5675,7 @@ class KiroCrewConfig:
             cwd: str | None = None,
             extra_env: dict[str, str] | None = None,
             reasoning_effort_override: str | None = None,
+            backend_override: str | None = None,
             crew_agent: str | None = None,
             # Per-session opt-in for the claude backend's own permission
             # classifier. NAMED rather than left to ``**_kwargs`` on purpose: a
@@ -5709,10 +5725,27 @@ class KiroCrewConfig:
             # circular import: members sits above config in the layering.
             from kiro_crew.members import select_provider_backend
 
+            # Per-session backend selection — ONE call to the selection gate's
+            # per-session half (members.select_provider_backend: per-chat
+            # override > member-DM auto-route > configured default). The factory
+            # body carries no branching of its own, so the kiro construction
+            # path gains no second check (harness-parity H3/H13);
+            # resolve_selected_backend inside the helper applies the same
+            # governance/selectability gate as the persisted field, so a denied
+            # or unknown value degrades to kiro — the member thread then runs as
+            # plain chat and the mount step logs why. ``backend_override`` is
+            # the dashboard slot's own ``acp_backend`` (see chat_runner), the
+            # exact analogue of ``model_override`` above; it is fed to the same
+            # single gate rather than branched on here. The ONE answer feeds both
+            # the model resolution below and ``AcpProvider(acp_backend=...)``: a
+            # second, override-blind call for the namespace would translate a
+            # per-chat pinned model against the DEFAULT backend's namespace and
+            # then start a different backend.
             _backend = select_provider_backend(
                 session_key,
                 self.agent.member_acp_backend,
                 self.agent.acp_backend,
+                override_backend=backend_override,
             )
             # Resolved BEFORE the model, and threaded into the resolution: the
             # model's namespace translation and its pin-scope check both have to

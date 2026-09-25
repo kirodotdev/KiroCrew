@@ -379,6 +379,17 @@ def _sel():
     return _pkg.sel()
 
 
+def _configured_default_backend() -> str | None:
+    """The deployment's ``agent.acp_backend`` -- a config READ (file I/O), so the
+    solo-spawn gate calls this through ``asyncio.to_thread`` and hands the answer
+    to the synchronous roster check rather than letting that check load config on
+    the event loop."""
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    default = KiroCrewConfig.load().agent.acp_backend
+    return default if isinstance(default, str) else None
+
+
 # ── Subagents ──
 
 #: Generic ``code`` for a spawn rejection that mints no identifier of its own.
@@ -529,6 +540,7 @@ async def api_spawn(request: web.Request) -> web.Response:
                 "cwd": body.get("cwd", ""),
                 "model": body.get("model", ""),
                 "reasoning_effort": body.get("reasoning_effort", ""),
+                "backend": body.get("backend"),
                 "include_memory": body.get("include_memory", True),
                 "include_lessons": body.get("include_lessons", True),
                 "include_project": body.get("include_project", True),
@@ -649,11 +661,12 @@ async def api_spawn(request: web.Request) -> web.Response:
     cwd = cleaned.get("cwd") or ""
     model = cleaned.get("model") or ""
     reasoning_effort = cleaned.get("reasoning_effort") or ""
+    acp_backend = cleaned.get("backend")
     # SOLO GATE, gateway half. ``solo`` is a transport-layer marker only the
     # MCP spawn tools send for a one-task call (the SDK and apps never do, so
     # they are never gated). The tool side already refused a solo call that
     # named nothing; this half catches the one that named the parent's OWN
-    # agent / model / crew to get past it. Pre-spawn, so never ``counted``.
+    # agent / model / crew / backend to get past it. Pre-spawn, so never ``counted``.
     solo = body.get("solo", False)
     if not isinstance(solo, bool):
         solo = str(solo).lower() in ("true", "1", "yes")
@@ -679,7 +692,25 @@ async def api_spawn(request: web.Request) -> web.Response:
             {"error": reason_error, "code": SOLO_SPAWN_REFUSED_CODE}, status=400
         )
     if solo and not solo_reason:
-        ground = solo_spawn_difference(state, parent_session, agent=agent, model=model, crew=crew)
+        # An unpinned parent runs on the deployment default, which lives in
+        # config: loaded here, off the loop, and handed to the synchronous check
+        # -- only when a backend was actually named, since that is the one
+        # ground that needs it. A failed load compares as unknown (fail open).
+        configured_default_backend: str | None = None
+        if acp_backend is not None:
+            try:
+                configured_default_backend = await asyncio.to_thread(_configured_default_backend)
+            except Exception:  # noqa: BLE001 - unknown default, compare nothing
+                configured_default_backend = None
+        ground = solo_spawn_difference(
+            state,
+            parent_session,
+            agent=agent,
+            model=model,
+            crew=crew,
+            backend=acp_backend,
+            configured_default_backend=configured_default_backend,
+        )
         if not ground:
             _sel().log_api_access(
                 caller="internal",
@@ -687,7 +718,7 @@ async def api_spawn(request: web.Request) -> web.Response:
                 outcome="denied",
                 source="solo_gate",
                 resources=parent_session,
-                error="names only the parent's own agent/model/crew",
+                error="names only the parent's own agent/model/crew/backend",
             )
             return web.json_response(
                 {"error": solo_spawn_question(), "code": SOLO_SPAWN_REFUSED_CODE},
@@ -734,6 +765,7 @@ async def api_spawn(request: web.Request) -> web.Response:
         cwd=cwd,
         model=model or None,
         reasoning_effort=reasoning_effort,
+        acp_backend=acp_backend,
         approval_mode=approval_mode or None,
         silent=silent,
         batch_id=batch_id,

@@ -450,7 +450,7 @@ def test_handshake_is_per_backend() -> None:
 
 
 def test_every_known_backend_has_a_label() -> None:
-    """H11: the provider label is a closed mapping and Kiro is its default.
+    """H11: the provider label is a closed mapping over the builtins, Kiro its default.
 
     The label indexes resume compatibility, session-map persistence, and
     session-file cleanup routing. A harness with no label of its own persists as
@@ -459,8 +459,11 @@ def test_every_known_backend_has_a_label() -> None:
     Read from the PRODUCTION mapping rather than a copy of it here. A copy asked a
     weaker question -- whether this file had been updated -- and answered it with a
     list that had to be edited for every harness; the mapping being closed over
-    ``ACP_BACKENDS_KNOWN``, and every label being distinct, are the properties that
-    actually carry the routing.
+    the builtin ids, and every label being distinct, are the properties that
+    actually carry the routing. A config-authored id has no row here by design:
+    its label is recorded at ``register_known_backend`` and ``provider_label``
+    reads it after this mapping (pinned in ``test_operator_harness_bootstrap``,
+    which also pins that a label already taken here is refused).
     """
     labels = dict(PROVIDER_LABEL_BY_BACKEND)
     assert set(labels) == set(ACP_BACKENDS_KNOWN), (
@@ -632,8 +635,13 @@ def test_model_switch_channel_is_opt_in() -> None:
             inspect.getsource(acp_client.AcpClient._apply_startup_model),
         )
     )
+    # The membership set, read either as the frozen vocabulary or through its
+    # derived accessor ``model_via_config_option_backends()`` (vocabulary plus the
+    # config-authored ids that claimed the capability at registration). Either is a
+    # membership read; a per-backend literal or a negation is what this forbids.
     assert (
         "ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION" in source
+        or "model_via_config_option_backends()" in source
     ), "the model switch must read the membership set, not a per-backend literal"
 
 

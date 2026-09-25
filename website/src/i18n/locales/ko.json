@@ -6002,6 +6002,8 @@
       "session_control_ready": "준비됨",
       "session_control_chip_label": "{{label}} — {{detail}}",
       "agent_inherited_default": "이 세션은 기본 에이전트({{name}})를 따릅니다. 자체 에이전트가 없어 기본값이 바뀌면 함께 바뀝니다. 고정하려면 클릭하세요.",
+      "backend_fixed_at_creation": "백엔드는 이 채팅을 만들 때 선택되었으며 변경할 수 없습니다. 다른 백엔드를 쓰려면 새 채팅을 시작하고 첫 메시지 전에 백엔드를 선택하세요.",
+      "backend_inherited_default": "이 채팅은 기본 백엔드를 따르므로 기본값이 바뀌면 함께 바뀝니다. 고정하려면 새 채팅을 시작하고 첫 메시지 전에 백엔드를 선택하세요.",
       "model_inherited_default": "이 세션은 기본 모델({{name}})로 실행됩니다. 자체 모델이 없어 기본값이 바뀌면 함께 바뀝니다. 고정하려면 클릭하세요."
     },
     "chatPane": {
@@ -8734,6 +8736,18 @@
       "unexpected_response": "예기치 않은 응답",
       "deploy_failed": "배포에 실패했습니다",
       "stale_preview_retry": "확인 후 앱이 변경되었습니다 — 다시 시도하세요."
+    },
+    "backendSelector": {
+      "default_backend": "기본 백엔드",
+      "backend_name": "백엔드: {{name}}",
+      "backend_list": "백엔드 목록",
+      "backend_list_unavailable": "백엔드 목록을 사용할 수 없음",
+      "no_backends_registered": "등록된 백엔드 없음",
+      "default": "기본값",
+      "unroutable_see_settings": "선택 불가 — 설정 → AI 백엔드 참조",
+      "invalid_see_settings": "잘못됨 — 설정 → AI 백엔드 참조",
+      "backend_serving": "이 채팅의 AI 백엔드: {{name}} (기본값을 따름)",
+      "backend_serving_pinned": "이 채팅의 AI 백엔드: {{name}} — 채팅 생성 시 고정됨"
     }
   },
   "hooks": {
@@ -15451,6 +15465,27 @@
         "remove_confirm": "{{provider}} OAuth 앱을 제거하시겠습니까? 클라이언트 ID와 저장된 시크릿이 삭제되며, 다시 입력하기 전까지 {{provider}}은(는) 연결할 수 없습니다.",
         "remove_confirm_action": "OAuth 앱 제거",
         "cancel": "취소"
+      },
+      "backendsPanel": {
+        "ai_backends": "AI 백엔드",
+        "registered_backends": "등록된 백엔드",
+        "backends_are_defined_in_config_and_need_a_restart": "백엔드는 {{productName}} 홈 디렉터리의 harnesses.json(쓰기 보호)에 정의됩니다. config.json과 같은 위치입니다. 변경 사항은 다음 gateway 시작 시 적용됩니다.",
+        "authoring_guide": "백엔드 추가 방법",
+        "change_default_in_developer": "기본 백엔드 변경: 개발자 → 에이전트 백엔드",
+        "backend_list_unavailable": "백엔드 목록을 사용할 수 없음",
+        "no_backends_registered": "등록된 백엔드 없음",
+        "badge_default": "기본값",
+        "badge_unroutable": "선택 불가",
+        "badge_invalid": "유효하지 않음",
+        "badge_unverified": "라우팅 미검증",
+        "unverified_here": "디스크립터는 라우팅을 선언하지만 아직 끝까지 확인된 적이 없습니다. 라우팅 검증은 백엔드를 한 번 실행해 파일 하나를 쓰도록 요청하고, 모든 권한 요청을 거부한 뒤, 아무것도 기록되지 않았는지 확인합니다.",
+        "verify_routing": "라우팅 검증",
+        "verifying": "검증 중…",
+        "verify_passed": "검증됨: 백엔드가 실행 전에 권한을 요청하고 거부를 존중했습니다. 이제 채팅에서 선택할 수 있습니다.",
+        "verify_violation": "검증 실패",
+        "verify_inconclusive": "검증 결과가 확정되지 않았습니다",
+        "verify_policy_denied": "검증됨, 하지만 여기서는 선택할 수 없음",
+        "verify_unavailable": "검증을 실행할 수 없음"
       }
     },
     "settingsPage": {
@@ -16107,6 +16142,10 @@
       "connections": {
         "label": "OAuth 앱",
         "description": "등록된 클라이언트가 필요한 제공업체용 OAuth 앱"
+      },
+      "backends": {
+        "label": "AI 백엔드",
+        "description": "이 빌드가 제공하는 AI 백엔드와 harnesses.json에 정의된 백엔드의 상태"
       }
     },
     "secrets": {

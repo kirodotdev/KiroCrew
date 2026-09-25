@@ -372,14 +372,21 @@ export class AcpAdapter implements ProviderAdapter {
     return { ok: false as const, error: 'plugin update is not supported' }
   }
 
-  async fetchAvailableModels(): Promise<ModelInfo[]> {
+  async fetchAvailableModels(backend?: string): Promise<ModelInfo[]> {
+    // The disk cache (readCachedModels/writeCachedModels) is a SINGLE global slot
+    // keyed to the primary (configured) backend's catalog. A per-chat `backend`
+    // pick asks a DIFFERENT harness what it serves, so it must neither read that
+    // cache (it holds the wrong harness's ids) nor write it (it would clobber the
+    // primary catalog every other picker reads). Only the default call — the one
+    // whose ids the rest of the app treats as authoritative — touches the cache.
+    const primary = typeof backend !== 'string'
     try {
-      const models = await api.models()
+      const models = await api.models(backend)
       if (!Array.isArray(models) || models.length === 0) {
         // Empty/non-array success: NOT a live list — keep polling, serve the
         // last-good live list if we have one, else auto-only.
         markModelsDegraded(this.id, true)
-        return readCachedModels() ?? this._defaultModels()
+        return (primary ? readCachedModels() : null) ?? this._defaultModels()
       }
       const result = models.map((m: RawModel) => {
         // Prefer the backend's resolved window over the bundled snapshot: the
@@ -396,7 +403,7 @@ export class AcpAdapter implements ProviderAdapter {
           rateMultiplier: rowMultiplier(m),
         }
       })
-      writeCachedModels(result) // remember this good live list for next hiccup
+      if (primary) writeCachedModels(result) // remember this good live list for next hiccup
       markModelsDegraded(this.id, false) // live success → self-heal can stop polling
       return result
     } catch {
@@ -404,7 +411,7 @@ export class AcpAdapter implements ProviderAdapter {
       // Serve the last-good live list if we have one, else auto-only. Never
       // surface canonical registry keys — the ACP CLI rejects them (-32603).
       markModelsDegraded(this.id, true)
-      return readCachedModels() ?? this._defaultModels()
+      return (primary ? readCachedModels() : null) ?? this._defaultModels()
     }
   }
 

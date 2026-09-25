@@ -73,6 +73,19 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     occurrence: 1,
   },
   {
+    // AI Backends inventory tab. The panel is a read-only registry listing built
+    // from a runtime fetch (backend rows are data, not JSX), so the extractor
+    // sees no primitive; this entry makes the tab reachable from Search
+    // Everywhere. `select` is the nearest primitive shape for a read-only list of
+    // enumerated backends.
+    id: 'backends.registered-backends',
+    labelKey: 'pages.settings.backendsPanel.ai_backends',
+    descriptionKey: 'pages.settings.backendsPanel.backends_are_defined_in_config_and_need_a_restart',
+    tab: 'backends',
+    type: 'select',
+    occurrence: 1,
+  },
+  {
     // Override of the one primitive the extractor DOES see in SecurityPanel:
     // without `section=apps` the deep link lands on the security rail with the
     // toggle's section unmounted, so the highlight silently no-ops.

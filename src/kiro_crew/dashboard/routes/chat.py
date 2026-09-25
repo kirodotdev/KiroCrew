@@ -85,6 +85,7 @@ def register(app: web.Application) -> None:
     # Optimizer
     app.router.add_post("/api/optimizer/optimize", handlers.handle_optimize)
     app.router.add_post("/api/chat/slots/{slot}/model", chat.api_chat_slot_model)
+    app.router.add_post("/api/chat/slots/{slot}/backend", chat.api_chat_slot_backend)
     app.router.add_get("/api/chat/slots/{slot}/autocompact", chat.api_chat_slot_autocompact)
     app.router.add_post("/api/chat/slots/{slot}/autocompact", chat.api_chat_slot_autocompact)
     app.router.add_post(

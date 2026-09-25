@@ -1188,7 +1188,7 @@ class TestDeliverScriptResult:
                 threads.append(True)  # on the loop -- the defect
             except RuntimeError:
                 threads.append(False)  # in a worker thread -- correct
-            return ({}, True, None, {}, None, None)
+            return ({}, True, None, {}, None, None, None)
 
         job = _job(script="probes.py:check", session_key="dashboard:chat-cold")
         result = {"status": "report", "message": "cold session"}

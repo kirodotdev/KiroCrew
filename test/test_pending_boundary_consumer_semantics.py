@@ -229,6 +229,16 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("chat_folders.py", "api_chat_slot_mode"),
                 ("chat_handlers.py", "_switch_target_busy"),
                 ("chat_handlers.py", "api_chat_slot_agent"),
+                # Per-chat backend switch: tears the session down, so it refuses on
+                # the RESERVATION like its agent/model siblings (and delegates the
+                # sibling-turn scan to _switch_target_busy, credited above).
+                ("chat_handlers.py", "api_chat_slot_backend"),
+                # Slot creation with a backend pick: when the sealed pin store
+                # cannot be written, the newborn is retracted only while it is
+                # still this request's own -- no turn RESERVED on it -- the same
+                # check session_control.create_session makes on a failed birth
+                # write (credited below).
+                ("chat_handlers.py", "api_chat_slot_create"),
                 ("chat_handlers.py", "api_chat_slot_continue"),
                 ("chat_handlers.py", "api_chat_slot_detail"),
                 ("chat_handlers.py", "api_chat_slot_interrupt"),

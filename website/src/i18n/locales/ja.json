@@ -6002,6 +6002,8 @@
       "session_control_ready": "準備完了",
       "session_control_chip_label": "{{label}} — {{detail}}",
       "agent_inherited_default": "このセッションはデフォルトエージェント（{{name}}）に従います。独自のエージェントを持たないため、デフォルトが変わると変わります。固定するにはクリックしてください。",
+      "backend_fixed_at_creation": "バックエンドはこのチャットの作成時に選択され、変更できません。別のバックエンドを使うには、新しいチャットを開始し、最初のメッセージの前にバックエンドを選択してください。",
+      "backend_inherited_default": "このチャットはデフォルトのバックエンドに従うため、デフォルトが変わると一緒に変わります。固定するには、新しいチャットを開始し、最初のメッセージの前にバックエンドを選択してください。",
       "model_inherited_default": "このセッションはデフォルトモデル（{{name}}）で動作します。独自のモデルを持たないため、デフォルトが変わると変わります。固定するにはクリックしてください。"
     },
     "chatPane": {
@@ -8734,6 +8736,18 @@
       "unexpected_response": "予期しないレスポンス",
       "deploy_failed": "デプロイに失敗",
       "stale_preview_retry": "チェック後にアプリが変更されました — もう一度お試しください。"
+    },
+    "backendSelector": {
+      "default_backend": "既定のバックエンド",
+      "backend_name": "バックエンド: {{name}}",
+      "backend_list": "バックエンド一覧",
+      "backend_list_unavailable": "バックエンド一覧を取得できません",
+      "no_backends_registered": "登録されたバックエンドがありません",
+      "default": "既定",
+      "unroutable_see_settings": "選択不可 — 設定 → AI バックエンドを参照",
+      "invalid_see_settings": "無効 — 設定 → AI バックエンドを参照",
+      "backend_serving": "このチャットの AI バックエンド: {{name}}（既定に従います）",
+      "backend_serving_pinned": "このチャットの AI バックエンド: {{name}} — チャット作成時に固定されます"
     }
   },
   "hooks": {
@@ -15451,6 +15465,27 @@
         "remove_confirm": "{{provider}} の OAuth アプリを削除しますか？クライアント ID と保存済みのシークレットが削除され、再入力するまで {{provider}} は接続できません。",
         "remove_confirm_action": "OAuth アプリを削除",
         "cancel": "キャンセル"
+      },
+      "backendsPanel": {
+        "ai_backends": "AI バックエンド",
+        "registered_backends": "登録済みのバックエンド",
+        "backends_are_defined_in_config_and_need_a_restart": "バックエンドは {{productName}} のホームディレクトリにある harnesses.json（書き込み保護）で定義します。config.json と同じ場所です。変更は次回の gateway 起動時に適用されます。",
+        "authoring_guide": "バックエンドを追加する方法",
+        "change_default_in_developer": "既定のバックエンドを変更するには デベロッパー → エージェントバックエンド",
+        "backend_list_unavailable": "バックエンド一覧を取得できません",
+        "no_backends_registered": "登録されたバックエンドがありません",
+        "badge_default": "既定",
+        "badge_unroutable": "選択不可",
+        "badge_invalid": "無効",
+        "badge_unverified": "ルーティング未検証",
+        "unverified_here": "ディスクリプタはルーティングを宣言していますが、まだエンドツーエンドで確認されていません。「ルーティングを検証」はバックエンドを一度起動し、ファイルを1つ書くよう求め、すべての権限要求を拒否し、何も書き込まれなかったことを確認します。",
+        "verify_routing": "ルーティングを検証",
+        "verifying": "検証中…",
+        "verify_passed": "検証済み: バックエンドは実行前に権限を求め、拒否を尊重しました。チャットで選択できるようになりました。",
+        "verify_violation": "検証に失敗しました",
+        "verify_inconclusive": "検証は結論に至りませんでした",
+        "verify_policy_denied": "検証済みですが、ここでは選択できません",
+        "verify_unavailable": "検証を実行できませんでした"
       }
     },
     "settingsPage": {
@@ -16107,6 +16142,10 @@
       "connections": {
         "label": "OAuth アプリ",
         "description": "登録済みクライアントが必要なプロバイダー向けの OAuth アプリ"
+      },
+      "backends": {
+        "label": "AI バックエンド",
+        "description": "このビルドが提供する AI バックエンドと、harnesses.json で定義されたバックエンドの状態"
       }
     },
     "secrets": {

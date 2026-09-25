@@ -272,6 +272,11 @@ from kiro_crew.monitoring.models import (
     MonitorOutcome,
     monitor_state_public_dict,
 )
+from kiro_crew.operator_backends import (
+    mark_registration_settled,
+    register_operator_backends,
+    registration_pending,
+)
 from kiro_crew.platform import boot_platform
 from kiro_crew.platform.context import (
     PlatformCompositionError,
@@ -15312,6 +15317,8 @@ class GatewayOrchestrator:
 # holds tasks weakly, so a fire-and-forget create_task with no reference can
 # be garbage-collected mid-flight.
 _SLICE_LIMITS_TASK: "asyncio.Task[None] | None" = None
+#: Strong reference to the operator-backend registration task (see run_gateway).
+_OPERATOR_BACKENDS_TASK: "asyncio.Task[None] | None" = None
 
 # Strong ref to the fire-and-forget agents-dir janitor sweep launched at boot
 # (the loop holds tasks weakly, so without this it could be GC'd mid-flight).
@@ -15362,6 +15369,48 @@ async def run_gateway(
     # Standalone composes the all-defaults context (identical to today); a
     # non-standalone profile that cannot compose its companion fails closed.
     boot_platform(cfg)
+
+    # ── Operator-defined ACP backends (additive, off the boot path) ──
+    # ``harnesses.json`` descriptors are registered HERE, by the gateway, and not
+    # inside ``bootstrap_context``: loading them is adapter work (a file read,
+    # descriptor validation, a digest of each verified binary, registry writes)
+    # and the Kiro construction path gains none of it (harness-parity H13) -- a
+    # CLI command or an app server that boots the platform runs the same path it
+    # always did. Scheduled as a contained background task and NEVER awaited on
+    # the boot path, like the slice-limits and janitor tasks below: slow storage
+    # or a large harness binary must not delay dashboard binding. Until it
+    # completes the operator ids are simply not registered -- a chat pinned to
+    # one is refused by the selection gate with the "not selectable" card, the
+    # same answer it gets on a deployment whose descriptor was withdrawn, and the
+    # next turn after registration lands runs normally. Also settles THIS config
+    # instance's ``agent.acp_backend`` against the widened registry (an in-memory
+    # lookup, never a second config read) -- and THAT is why the registration is
+    # announced first: until it lands, this instance still reads the boot-time
+    # coercion (Kiro) while ``config.json`` may name an operator backend, so an
+    # UNPINNED chat dispatching in the window would run on the wrong provider.
+    # ``registration_pending`` makes unpinned provider allocation wait for the
+    # settle (``chat_runner``); a pinned chat never waits. The function releases
+    # the gate on every exit path; the wrapper releases it too, for the one path
+    # the function cannot cover (the task cancelled before the thread ran). The
+    # function is best-effort inside; the wrapper logs anything that still
+    # escapes. The module global keeps a strong reference (the loop holds tasks
+    # weakly).
+    global _OPERATOR_BACKENDS_TASK
+
+    async def _register_operator_backends() -> None:
+        try:
+            await asyncio.to_thread(register_operator_backends, cfg)
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "operator backend registration failed", exc_info=True
+            )
+        finally:
+            mark_registration_settled()
+
+    registration_pending()
+    _OPERATOR_BACKENDS_TASK = asyncio.create_task(
+        _register_operator_backends(), name="operator-backends"
+    )
 
     # ── Aggregate cgroup ceiling for all agent scopes ──
     # The per-spawn scope wrapper (sandbox.cgroup_scope_argv) bounds ONE spawn

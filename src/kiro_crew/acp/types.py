@@ -278,9 +278,13 @@ PROVIDER_LABEL_DEEPSEEK = "deepseek"
 
 #: Backend id -> its label. The mapping is what ``provider_label`` resolves
 #: through, so a harness's label and the answer a session persists under are one
-#: fact rather than a constant here and a branch in ``providers.acp``. Closed on
-#: purpose: an id absent from it persists as a kiro session, which is why
-#: ``test_harness_parity`` asserts the keys are exactly ``ACP_BACKENDS_KNOWN``.
+#: fact rather than a constant here and a branch in ``providers.acp``. Closed over
+#: the BUILTIN ids on purpose: ``test_harness_parity`` asserts the keys are exactly
+#: the builtin set. A config-authored id has no row here; its label is the one
+#: ``register_known_backend`` recorded, read by ``provider_label`` after this
+#: mapping (``agent_sdk.backends.provider_label_for``), and the operator loader
+#: refuses a label any row here or any registered id already answers to. An id in
+#: neither place persists as a kiro session.
 #:
 #: kiro-cli's own id is the empty string and its label is the DEFAULT, so it is a
 #: row here like every other harness rather than the value a missing row falls

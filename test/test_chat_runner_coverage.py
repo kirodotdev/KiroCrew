@@ -4865,6 +4865,164 @@ class TestSessionStartFailureRowKind:
         assert "kind" not in (error.get("meta") or {})
 
 
+class TestBackendPinRefusedCard:
+    """A chat pinned to a backend that is not selectable any more gets a card.
+
+    The per-session selection gate refuses the pin (``BackendPinNotSelectable``)
+    from inside the provider factory, i.e. inside ``get_or_create``. The
+    dedicated terminal arm must surface that as ONE error card that names the
+    pin and the two ways out, record no session failure (nothing ran; the pin is
+    what is unhealthy, not the session), and let nothing escape ``_run_chat``.
+    The generic arm would also render a card, but it records a failure and
+    bounds the slot's start-failure cycle -- a repeated refusal of a stale pin
+    must not back a chat off as if its provider kept crashing.
+    """
+
+    @pytest.mark.asyncio
+    async def test_refused_pin_is_one_card_with_the_ways_out_and_no_failure(self, tmp_path):
+        from kiro_crew.acp_backends import BackendPinNotSelectable
+
+        state, _client = _runner_state(tmp_path)
+        state.sessions.get_or_create = AsyncMock(
+            side_effect=BackendPinNotSelectable("my-acp", frozenset({"", "kas"}))
+        )
+        slot = _slot()
+        slot.acp_backend = "my-acp"
+
+        await _drive(state, slot, "hello")
+
+        errors = _errors(slot)
+        assert len(errors) == 1, errors
+        text = errors[0]
+        assert "'my-acp'" in text
+        assert "Nothing was sent" in text
+        assert "Settings > Backends" in text
+        assert "'kas'" in text
+        card = [m for m in slot.messages if m.get("role") == "error"][-1]
+        assert (card.get("meta") or {}).get("code") == "backend_pin_not_selectable"
+        state.sessions.record_failure.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_unresolved_pin_refuses_the_send_until_the_store_reads(
+        self, tmp_path, monkeypatch
+    ):
+        """A chat restored while the pin store was unreadable has an UNKNOWN
+        backend, not an inherited one. Its send re-reads the store: still
+        unreadable -> one card, nothing sent, no session failure, and the
+        speculative spawn stands down too; readable -> the pin resolves and the
+        turn runs on it."""
+        from kiro_crew.dashboard import backend_pins
+
+        state, _client = _runner_state(tmp_path)
+        allocations: list[object] = []
+
+        async def _record_alloc(*a, **kw):
+            allocations.append(kw.get("backend_override"))
+            raise RuntimeError("stop here")
+
+        state.sessions.get_or_create = AsyncMock(side_effect=_record_alloc)
+        slot = _slot()
+        slot.backend_pin_unresolved = True
+        monkeypatch.setattr(
+            backend_pins,
+            "load_backend_pins_snapshot",
+            lambda path=None: backend_pins.PINS_UNREADABLE,
+        )
+
+        await _drive(state, slot, "hello")
+
+        errors = _errors(slot)
+        assert len(errors) == 1, errors
+        assert "could not be read" in errors[0]
+        assert "nothing was sent" in errors[0]
+        card = [m for m in slot.messages if m.get("role") == "error"][-1]
+        assert (card.get("meta") or {}).get("code") == "backend_pin_unresolved"
+        assert allocations == [], "no provider may be allocated while the pin is unknown"
+        state.sessions.record_failure.assert_not_awaited()
+        assert slot.backend_pin_unresolved is True
+
+        # The store reads again: the pin resolves to what it holds and the turn
+        # proceeds on it.
+        monkeypatch.setattr(
+            backend_pins,
+            "load_backend_pins_snapshot",
+            lambda path=None: {slot.key: {"backend": "kas", "owner": slot.created_at}},
+        )
+        await _drive(state, slot, "hello again")
+        assert allocations == ["kas"]
+        assert slot.acp_backend == "kas"
+        assert slot.backend_pin_unresolved is False
+
+    @pytest.mark.asyncio
+    async def test_an_unpinned_send_waits_for_operator_backend_registration_to_settle(
+        self, tmp_path, monkeypatch
+    ):
+        """While the gateway is still registering operator backends, its config
+        instance reads the boot-time coercion of ``agent.acp_backend`` (Kiro)
+        even when ``config.json`` names an operator backend. An UNPINNED chat
+        dispatching in that window would run on the wrong provider, so its
+        allocation waits for the settle; a PINNED chat does not wait."""
+        import asyncio
+
+        from kiro_crew import operator_backends
+
+        state, _client = _runner_state(tmp_path)
+        allocations: list[object] = []
+
+        async def _record_alloc(*a, **kw):
+            allocations.append(kw.get("backend_override"))
+            raise RuntimeError("stop here")
+
+        state.sessions.get_or_create = AsyncMock(side_effect=_record_alloc)
+        slot = _slot()
+        assert slot.acp_backend is None
+
+        operator_backends.registration_pending()
+        try:
+            assert operator_backends.registration_settled() is False
+            turn = asyncio.ensure_future(_drive(state, slot, "hello"))
+            await asyncio.sleep(0.3)
+            assert allocations == [], "an unpinned chat must not allocate before the settle"
+            assert not turn.done()
+            operator_backends.mark_registration_settled()
+            await asyncio.wait_for(turn, 10)
+        finally:
+            operator_backends.mark_registration_settled()
+        assert allocations == [None]
+
+        # Pinned: its backend is its own; no wait even while pending.
+        pinned = _slot()
+        pinned.acp_backend = "kas"
+        operator_backends.registration_pending()
+        try:
+            await asyncio.wait_for(_drive(state, pinned, "hello"), 10)
+        finally:
+            operator_backends.mark_registration_settled()
+        assert allocations == [None, "kas"]
+
+    def test_the_eager_spawn_stands_down_while_registration_is_pending(self):
+        import inspect
+
+        src = inspect.getsource(chat_runner._eager_spawn)
+        assert (
+            "if slot.acp_backend is None and not operator_backends.registration_settled():" in src
+        )
+
+    def test_the_eager_spawn_stands_down_for_an_unresolved_pin(self):
+        """Source-pinned beside the runtime assertion above: the speculative
+        spawn returns before any provider work when the pin is unknown, and the
+        binding tuple carries the flag so a resolution mid-handshake is a
+        binding change."""
+        import inspect
+
+        src = inspect.getsource(chat_runner._eager_spawn)
+        assert (
+            "if slot.backend_pin_unresolved:\n            # The chat's own backend is UNKNOWN"
+            in src
+        )
+        assert "slot.backend_pin_unresolved," in inspect.getsource(chat_runner._slot_binding)
+
+
 class TestRunChatWakaTimeCodingAccounting:
     @staticmethod
     def _wakatime_config():

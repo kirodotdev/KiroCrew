@@ -1809,6 +1809,18 @@ class SubagentInfo:
     # Wins over the ``role_efforts['subagent']`` pin; ``""`` defers to it.
     # Like ``model``, a non-empty value forces the dedicated-process path.
     reasoning_effort: str = ""
+    # Per-spawn ACP backend override (spawn_run ``backend``). ``None`` means NO
+    # override: the child runs on the configured default backend exactly as it
+    # did before per-spawn selection existed. ``""`` is kiro-cli's own id and is
+    # a REAL override -- it pins the child to Kiro even under a non-Kiro default.
+    # Neither inherits the parent CHAT's per-chat pin -- a parent that wants its
+    # child on a specific provider names it here. Validated selectable at
+    # admission (gate.py). Like ``model``/``reasoning_effort`` an override
+    # (any string) forces the dedicated-process path: the parent's shared
+    # runtime runs on its own backend and cannot switch per session, so the
+    # override reaches the provider factory only on a fresh process. Delivered
+    # to the factory as ``backend_override`` in ``_run_inner``'s ``extra_kwargs``.
+    acp_backend: str | None = None
     allowed_tools: list[str] = field(default_factory=list)
     bare: bool = False
     # Continuable conversations (spawn_run keep=True / spawn_continue):
@@ -3961,6 +3973,7 @@ class SubagentManager:
         delegation: dict[str, str] | None = None,
         _execution_context: dict | None = None,
         _stage_boundary_owner: str = "",
+        acp_backend: str | None = None,
     ) -> SubagentInfo | None:
         result = self._admission.spawn_impl(
             task,
@@ -3998,6 +4011,7 @@ class SubagentManager:
             delegation=delegation,
             _execution_context=_execution_context,
             _stage_boundary_owner=_stage_boundary_owner,
+            acp_backend=acp_backend,
         )
         assert not isinstance(result, PreparedSpawn)
         # Every synchronous gate return (started, queued, or refused) receives

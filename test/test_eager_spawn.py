@@ -538,6 +538,32 @@ class TestEagerSpawn:
         state.sessions.remove.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_removes_session_when_backend_is_picked_mid_handshake(self, tmp_path):
+        """The per-chat backend is a binding: the speculative spawn passes it as
+        ``backend_override``, so a pick landing during the handshake (the
+        welcome-screen picker on a brand-new chat -- the backend endpoint's
+        reset no-ops because nothing is registered yet) must tear down the
+        session the eager task registers on the OLD harness. Otherwise the first
+        real message reuses a kiro-cli process for a chat pinned to another
+        backend, and the composer chip lies."""
+        slot = _ChatSlot("t1")
+        slot.project = str(tmp_path)
+        state = _mock_state(slot)
+        state.sessions.remove = AsyncMock()
+
+        async def _create_then_pick(*a, **kw):
+            assert kw.get("backend_override") is None  # spawned on the default
+            slot.acp_backend = "kas"
+            return (MagicMock(), True, False)
+
+        state.sessions.get_or_create = AsyncMock(side_effect=_create_then_pick)
+        with patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)):
+            await _eager_spawn(state, slot)
+        key = state.sessions.get_or_create.await_args.args[0]
+        state.sessions.remove.assert_awaited_once_with(key)
+        state.sessions.release.assert_called_once_with(key)
+
+    @pytest.mark.asyncio
     async def test_lost_race_never_removes_the_winning_session(self, tmp_path):
         """GPT BLOCKING — stale eager cleanup destroying the real turn's session.
 

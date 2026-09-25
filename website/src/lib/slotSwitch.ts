@@ -91,6 +91,11 @@ export interface SlotSwitchValueMap {
   project: string
   agent: AgentSwitchValue
   reasoning_effort: string
+  /** The per-chat ACP backend id a pick writes: always a chosen id, where '' is a
+   *  REAL pin (kiro-cli's own id), so a chat held on Kiro under a non-Kiro default
+   *  stays on Kiro. "Inherit the global default" is `null` on the slot and is not a
+   *  value a pick produces. */
+  backend: string
 }
 
 export type SlotSwitchField = keyof SlotSwitchValueMap

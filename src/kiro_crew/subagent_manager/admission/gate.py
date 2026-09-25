@@ -194,6 +194,7 @@ class _GateMixin(ManagerComponent):
         delegation: dict[str, str] | None = None,
         _execution_context: dict | None = None,
         _stage_boundary_owner: str = "",
+        acp_backend: str | None = None,
     ) -> "SubagentInfo | PreparedSpawn | ClaimPoint | None":
         """Spawn a subagent for *task*.
 
@@ -228,6 +229,18 @@ class _GateMixin(ManagerComponent):
             model (str): Model override for CC provider (ignored for ACP).
             reasoning_effort (str): Per-call reasoning-effort override; wins
                 over the ``role_efforts['subagent']`` pin. ``""`` defers to it.
+            acp_backend (str | None): Per-spawn ACP backend override (e.g. an
+                edition-registered harness id). ``None`` (the default) is no
+                override: the subagent runs on the configured default backend,
+                not the parent chat's per-chat pick. Any string is a pin --
+                ``""`` is kiro-cli's own id -- and must be in
+                ``selectable_backends()`` -- it is validated at admission here
+                (a typed refusal naming the selectable set), NOT deep in
+                provider construction. Like ``model``/``reasoning_effort`` a
+                pin forces the dedicated-process path: the parent's
+                shared runtime was started on its own backend and cannot switch
+                per session, so the override can only reach the provider factory
+                on a fresh process (~3-5s start, ~400MB).
             allowed_tools (list): Tool allowlist for CC provider (ignored for ACP).
             bare (bool): Launch CC in bare mode (ignored for ACP).
             cwd (str): Optional absolute path where the subagent subprocess
@@ -495,6 +508,51 @@ class _GateMixin(ManagerComponent):
                 )
             )
 
+        # --- Per-spawn backend override: refuse an unselectable id at ADMISSION.
+        # ``None`` is no override (the configured default backend, not the
+        # parent chat's per-chat pick) and needs no check; ``""`` is a real pin
+        # of kiro-cli's own id. A given value is validated against the SAME selectable set the
+        # single backend gate (resolve_selected_backend) reads, so a denied or
+        # unknown harness fails here with a named refusal instead of silently
+        # degrading to kiro deep in provider construction (fail at spawn time,
+        # not at the factory). Only checked on the FIRST entry (``_gate``): a
+        # queued/drained re-entry carries a value that already passed. ---
+        if acp_backend is not None and _gate:
+            from kiro_crew.agent_sdk.backends import selectable_backends
+
+            _selectable = selectable_backends()
+            if acp_backend not in _selectable:
+                refusal = (
+                    f"spawn refused: acp_backend {acp_backend!r} is not selectable; "
+                    f"must be one of {sorted(_selectable)}"
+                )
+                logger.warning("Subagent spawn refused: %s", refusal)
+                # Function-local import for the same rebinding reason as the
+                # memory_check_unavailable site below; slice AFTER redaction so
+                # a companion-only credential is never split at the boundary.
+                from kiro_crew.platform.context import redact_log_via_context
+
+                _task_note = redact_log_via_context(_redacted_task)[:120]
+                sel().log_tool_invocation(
+                    session_key=parent_session_key or "",
+                    source="subagent",
+                    tool_name="spawn_run",
+                    outcome="rejected_unknown_backend",
+                    metadata={"acp_backend": acp_backend[:64], "task": _task_note},
+                )
+                return _refuse_row(
+                    SubagentInfo(
+                        id=agent_id,
+                        task=_redacted_task,
+                        agent=agent,
+                        parent_session_key=parent_session_key,
+                        done=True,
+                        error=refusal,
+                        batch_id=batch_id,
+                        batch_total=max(0, int(batch_total)),
+                    )
+                )
+
         # --- Persist BEFORE any resource check: write-before-ack. Policy refusals
         # above (empty task, memory identity, cwd, governance) never reach the
         # store, so a refused spawn leaves no row; from here on the row exists
@@ -507,6 +565,7 @@ class _GateMixin(ManagerComponent):
             "max_turns": max_turns,
             "model": model,
             "reasoning_effort": reasoning_effort,
+            "acp_backend": acp_backend,
             "allowed_tools": allowed_tools,
             "bare": bare,
             "cwd": resolved_cwd,
@@ -1137,6 +1196,7 @@ class _GateMixin(ManagerComponent):
             max_turns=max_turns,
             model=model or "",
             reasoning_effort=reasoning_effort or "",
+            acp_backend=acp_backend,
             allowed_tools=list(allowed_tools) if allowed_tools else [],
             bare=bare,
             cwd=resolved_cwd,

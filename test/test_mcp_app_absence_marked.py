@@ -625,7 +625,7 @@ class TestTheClaimIsReadWithTheKeyItWasWrittenUnder:
         monkeypatch.setattr(
             chat_persistence,
             "_prefetch_rehydrate_inputs",
-            lambda *a, **k: ({"linked_session_key": linked}, True, [{}], {}, None, None),
+            lambda *a, **k: ({"linked_session_key": linked}, True, [{}], {}, None, None, {}),
         )
         monkeypatch.setattr(chat_persistence, "slot_closed_since", lambda *a, **k: False)
         monkeypatch.setattr(chat_persistence, "_deletion_during_read", lambda *a, **k: None)
@@ -665,7 +665,7 @@ class TestTheClaimIsReadWithTheKeyItWasWrittenUnder:
         monkeypatch.setattr(
             chat_persistence,
             "_prefetch_rehydrate_inputs",
-            lambda *a, **k: ({}, True, [{}], {}, None, None),
+            lambda *a, **k: ({}, True, [{}], {}, None, None, {}),
         )
         monkeypatch.setattr(chat_persistence, "slot_closed_since", lambda *a, **k: False)
         monkeypatch.setattr(chat_persistence, "_deletion_during_read", lambda *a, **k: None)
@@ -761,7 +761,7 @@ class TestTargetedRehydrationRecoversToo:
         monkeypatch.setattr(
             chat_persistence,
             "_prefetch_rehydrate_inputs",
-            lambda *a, **k: ({"title": "t"}, True, [{}], {}, None, None),
+            lambda *a, **k: ({"title": "t"}, True, [{}], {}, None, None, {}),
         )
         monkeypatch.setattr(chat_persistence, "slot_closed_since", lambda *a, **k: False)
         monkeypatch.setattr(chat_persistence, "_deletion_during_read", lambda *a, **k: None)
@@ -854,7 +854,7 @@ class TestNoAwaitSeparatesTheDeletionCheckFromTheBuild:
         monkeypatch.setattr(
             chat_persistence,
             "_prefetch_rehydrate_inputs",
-            lambda *a, **k: ({"title": "t"}, True, [{}], {}, None, None),
+            lambda *a, **k: ({"title": "t"}, True, [{}], {}, None, None, {}),
         )
         monkeypatch.setattr(chat_persistence, "slot_closed_since", lambda *a, **k: False)
         monkeypatch.setattr(

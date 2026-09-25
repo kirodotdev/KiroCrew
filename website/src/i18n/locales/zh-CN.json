@@ -6002,6 +6002,8 @@
       "session_control_ready": "就绪",
       "session_control_chip_label": "{{label}} — {{detail}}",
       "agent_inherited_default": "此会话跟随默认代理（{{name}}）。它没有自己的代理，因此默认代理变化时它也会变化。点击可固定一个。",
+      "backend_fixed_at_creation": "后端在创建此聊天时已选定，无法更改。要使用其他后端，请开始新聊天，并在发送第一条消息前选择后端。",
+      "backend_inherited_default": "此聊天跟随默认后端，默认后端更改时它也会随之更改。要固定后端，请开始新聊天，并在发送第一条消息前选择后端。",
       "model_inherited_default": "此会话运行在默认模型（{{name}}）上。它没有自己的模型，因此默认模型变化时它也会变化。点击可固定一个。"
     },
     "chatPane": {
@@ -8734,6 +8736,18 @@
       "unexpected_response": "意外的响应",
       "deploy_failed": "部署失败",
       "stale_preview_retry": "检查后应用已更改 — 请重试。"
+    },
+    "backendSelector": {
+      "default_backend": "默认后端",
+      "backend_name": "后端：{{name}}",
+      "backend_list": "后端列表",
+      "backend_list_unavailable": "无法获取后端列表",
+      "no_backends_registered": "未注册任何后端",
+      "default": "默认",
+      "unroutable_see_settings": "不可选 — 见 设置 → AI 后端",
+      "invalid_see_settings": "无效 — 见 设置 → AI 后端",
+      "backend_serving": "此对话的 AI 后端：{{name}}（跟随默认）",
+      "backend_serving_pinned": "此对话的 AI 后端：{{name}} — 在对话创建时固定"
     }
   },
   "hooks": {
@@ -15451,6 +15465,27 @@
         "remove_confirm": "移除 {{provider}} 的 OAuth 应用？客户端 ID 和已保存的密钥会被删除，重新填写之前 {{provider}} 无法连接。",
         "remove_confirm_action": "移除 OAuth 应用",
         "cancel": "取消"
+      },
+      "backendsPanel": {
+        "ai_backends": "AI 后端",
+        "registered_backends": "已注册的后端",
+        "backends_are_defined_in_config_and_need_a_restart": "后端在 {{productName}} 主目录下的 harnesses.json（写保护）中定义，与 config.json 同一位置。更改将在下次 gateway 启动时生效。",
+        "authoring_guide": "如何添加后端",
+        "change_default_in_developer": "在 开发者 → 代理后端 中更改默认后端",
+        "backend_list_unavailable": "无法获取后端列表",
+        "no_backends_registered": "未注册任何后端",
+        "badge_default": "默认",
+        "badge_unroutable": "不可选",
+        "badge_invalid": "无效",
+        "badge_unverified": "路由未验证",
+        "unverified_here": "描述符声明了其路由，但尚未经过端到端检查。“验证路由”会启动一次后端，要求其写入一个文件，拒绝所有权限请求，并确认没有任何内容被写入。",
+        "verify_routing": "验证路由",
+        "verifying": "正在验证…",
+        "verify_passed": "已验证：后端在执行前请求了权限并接受了拒绝。现在可以在聊天中选择它。",
+        "verify_violation": "验证失败",
+        "verify_inconclusive": "验证结果不确定",
+        "verify_policy_denied": "已验证，但在此处不可选择",
+        "verify_unavailable": "无法运行验证"
       }
     },
     "settingsPage": {
@@ -16107,6 +16142,10 @@
       "connections": {
         "label": "OAuth 应用",
         "description": "为需要预先注册客户端的提供方配置 OAuth 应用"
+      },
+      "backends": {
+        "label": "AI 后端",
+        "description": "此版本提供的 AI 后端，以及 harnesses.json 中所定义后端的状态"
       }
     },
     "secrets": {

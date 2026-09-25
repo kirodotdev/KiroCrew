@@ -163,6 +163,9 @@ _CAP_REASONS = {
 _CAP_REGISTER: dict[str, tuple[str, str]] = {
     # Pre-existing capped sites -- the bounded read's live consumers.
     "chat_pins.py::api_chat_pins_create": ("<default>", _BOUNDED_BY_DEFAULT),
+    # The routing-verify body is at most one short agent name (or absent: the
+    # panel's button sends none), so the shared ceiling is right.
+    "handlers/backends_listing.py::api_backend_verify": ("<default>", _BOUNDED_CONTROL_FIELDS),
     # A thread reply is one text field (capped at 32 KiB by the handler) plus a
     # slot key, so the shared default ceiling is the right one.
     "chat_threads.py::api_chat_thread_reply": ("<default>", _BOUNDED_BY_DEFAULT),
@@ -310,6 +313,9 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "chat_handlers.py::api_chat_slots_cleanup": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_handlers.py::api_chat_slot_agent": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_handlers.py::api_chat_slot_model": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    # W3 (descriptor-harness): the backend mutation is the model mutation's
+    # sibling — same tiny control body ({"backend": "<id>"}), same default cap.
+    "chat_handlers.py::api_chat_slot_backend": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_handlers.py::api_chat_slots_model": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_handlers.py::api_chat_slot_reasoning_effort": (
         "<default>",
