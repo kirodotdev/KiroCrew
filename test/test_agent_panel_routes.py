@@ -453,12 +453,15 @@ async def test_the_crew_is_not_taken_from_the_body(vetted):
         assert agent_panel.read("research-lab") is None
 
 
-async def test_a_session_with_no_allocation_is_not_reported_as_no_crew(vetted):
+async def test_a_session_with_no_dashboard_slot_is_told_that_and_nothing_else(vetted):
     """A conductor publishing every cycle into a void looks like a broken feature.
 
-    A state with no allocation to resolve is reported as THAT, not as a crew
-    binding the caller is missing. The two were one message, which is how a gate
-    closed against every member read as routine.
+    Three causes, three messages. A caller with no dashboard slot is told THAT --
+    not that its allocation could not be resolved, which for such a caller is
+    false: a subagent inheriting its parent's member selection resolves perfectly
+    well and is refused because publishing is confined to the crew's own thread.
+    Collapsing the two would reintroduce, one case over, the conflation this
+    change exists to remove.
     """
     async with _client(agent=None) as c:
         resp = await c.post(
@@ -467,7 +470,7 @@ async def test_a_session_with_no_allocation_is_not_reported_as_no_crew(vetted):
             headers={"X-Session-Key": "dashboard:chat-1"},
         )
         assert resp.status == 400
-        assert (await resp.json())["code"] == "session_not_resolved"
+        assert (await resp.json())["code"] == "no_dashboard_slot"
 
 
 async def test_an_omitted_template_resolves_to_the_crews_own(vetted):
@@ -951,12 +954,88 @@ async def test_a_real_member_allocation_can_publish(vetted):
     assert record["data"] == {"cycle": 47}
 
 
-async def test_a_bare_slot_key_reaches_the_same_member_allocation(vetted):
-    """A caller presenting the slot name alone resolves to the same session.
+def test_every_refusal_in_the_crew_resolver_audits_its_denial():
+    """No denial may return without a denied SEL event, on any exit.
 
-    ``dashboard:<name>`` IS the session of slot ``<name>``, so the retry cannot
-    reach another identity -- it reaches the one the recognition gate already
-    vetted this key against.
+    ``_recognize_session`` writes an ``outcome="allowed"`` event before this
+    resolver reaches its own checks, so a refusal that returns without its own
+    event leaves the audit trail ending on the ALLOW -- the record says the caller
+    was let through while the HTTP response is the only trace that it was not.
+
+    Asserted structurally over the function's AST rather than by exercising each
+    branch: a per-branch test proves only the branches someone remembered to
+    write, and this finding was exactly a branch nobody had. Every ``return None,
+    web.json_response(...)`` in the resolver must be preceded, within its own
+    block, by a ``log_api_access`` call.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(routes._resolve_publishing_crew)))
+
+    def audits(body: list[ast.stmt]) -> list[str]:
+        """Names of refusal statements in *body* that no preceding call audits."""
+        unaudited: list[str] = []
+        seen_audit = False
+        for node in body:
+            src = ast.dump(node)
+            if "log_api_access" in src:
+                seen_audit = True
+            returns_refusal = isinstance(node, ast.Return) and "json_response" in src
+            if returns_refusal and not seen_audit:
+                unaudited.append(ast.dump(node)[:80])
+            for field in ("body", "orelse", "finalbody", "handlers"):
+                inner = getattr(node, field, None)
+                if isinstance(inner, list) and inner and isinstance(inner[0], ast.stmt):
+                    unaudited.extend(audits(inner))
+                elif isinstance(inner, list):
+                    for handler in inner:
+                        unaudited.extend(audits(getattr(handler, "body", [])))
+        return unaudited
+
+    refusals = sum(
+        1
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Return) and "json_response" in ast.dump(node)
+    )
+    # Every refusal this resolver can return: internal secret, crew_panel off,
+    # restricted session, no dashboard slot, unresolved session, no crew, bad slug.
+    assert refusals == 7, refusals
+    assert audits(tree.body[0].body) == []
+
+
+async def test_the_unresolved_session_denial_is_audited(vetted, monkeypatch):
+    """The finding's own case, exercised rather than only asserted structurally."""
+    events: list[dict[str, Any]] = []
+
+    class _Sel:
+        def log_api_access(self, **kw):
+            events.append(kw)
+
+    monkeypatch.setattr(routes, "sel", lambda: _Sel())
+    sessions = _real_allocation()
+    async with _client(CREW, sessions=sessions) as c:
+        resp = await c.post(
+            "/api/agent-panel/publish",
+            json={"data": {"cycle": 51}},
+            headers={"X-Session-Key": "dashboard:chat-not-a-member"},
+        )
+        assert resp.status == 400
+        assert (await resp.json())["code"] == "session_not_resolved"
+    denied = [e for e in events if e.get("outcome") == "denied"]
+    assert denied, events
+    assert denied[-1]["error"] == "caller's allocation could not be resolved"
+
+
+async def test_a_bare_slot_key_is_refused_rather_than_re_prefixed(vetted):
+    """A bare slot name resolves to nothing, and that refusal is deliberate.
+
+    Every identity source the strict gate accepts yields the full session key,
+    and it requires its caller to send back the key it returned, so no caller of
+    this route presents a bare name. Re-adding the prefix to rescue one would
+    hide the anomaly of the gate having returned something unexpected -- which is
+    the very thing the separated refusal exists to surface.
     """
     sessions = _real_allocation()
     async with _client(CREW, sessions=sessions) as c:
@@ -965,9 +1044,9 @@ async def test_a_bare_slot_key_reaches_the_same_member_allocation(vetted):
             json={"data": {"cycle": 48}},
             headers={"X-Session-Key": _crew_slot(CREW)},
         )
-        assert resp.status == 200, await resp.text()
-    record = _folded()
-    assert record is not None and record["data"] == {"cycle": 48}
+        assert resp.status == 400, await resp.text()
+        assert (await resp.json())["code"] == "session_not_resolved"
+    assert _folded() is None
 
 
 async def test_a_real_allocation_that_selected_a_template_is_refused_no_crew(vetted):

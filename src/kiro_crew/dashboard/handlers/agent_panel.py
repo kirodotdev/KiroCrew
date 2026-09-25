@@ -73,21 +73,22 @@ def _live_session_key(state: DashboardState, sk: str) -> str:
     None`` arm with ``("template", "")``, and the publish is refused for a reason
     that is not about crew binding at all.
 
-    ``X-Session-Key`` is already the full key -- it is the value the gateway
-    injected as ``KIROCREW_SESSION_KEY`` -- so it is tried first and unchanged,
-    which is what every other reader of an allocation's selection does
-    (``messaging``, ``solo_spawn``, ``subagent``, the admission gate all pass the
-    session key straight through). The bare-name retry covers a caller that
-    presents the slot name alone, the same two-step
-    ``crew_log.resolve`` already applies for the same reason. It cannot reach a
-    DIFFERENT identity: ``dashboard:<name>`` is the session of slot ``<name>``,
-    which is the slot ``_recognize_session`` vetted this key against.
+    ``X-Session-Key`` is used unchanged, because it already IS that full key:
+    every identity source ``mcp_core._resolve_session_key_strict`` accepts -- the
+    gateway-injected caller context, the signed per-session token,
+    ``KIROCREW_SESSION_KEY``, the HMAC host-pid sidecar -- yields one, and that
+    gate requires its caller to send back the key it returned. Passing it through
+    is also what every other reader of an allocation's selection does
+    (``messaging``, ``solo_spawn``, ``subagent`` and the admission gate all hand
+    over the session key as they received it).
+
+    A bare slot name therefore resolves to nothing and the publish is refused
+    ``session_not_resolved``. That refusal is the point rather than a gap to
+    paper over: a bare key here would mean the strict identity gate returned
+    something this route does not expect, and rescuing it by re-adding the prefix
+    would hide exactly the anomaly the separated refusal exists to surface.
     """
-    if state.sessions.has_session(sk):
-        return sk
-    if sk and ":" not in sk and state.sessions.has_session(f"dashboard:{sk}"):
-        return f"dashboard:{sk}"
-    return ""
+    return sk if state.sessions.has_session(sk) else ""
 
 
 async def _resolve_publishing_crew(
@@ -204,13 +205,37 @@ async def _resolve_publishing_crew(
     # binding is accepted only when it says ``member``.
     #
     # Asked with the key the REGISTRY holds the session under, which is not the
-    # slot key -- see ``_live_session_key`` for the two keyspaces. The slot must
-    # still be present: it is what confines publishing to a dashboard thread, so
-    # a live non-slot session (a subagent inheriting its parent's member
-    # selection) cannot publish as the crew it descends from.
+    # slot key -- see ``_live_session_key`` for the two keyspaces.
+    #
+    # Three distinct refusals, because they have three distinct causes and one
+    # message for several of them is the defect this whole change removes. The
+    # slot is checked FIRST and answers for itself: its absence is what confines
+    # publishing to a dashboard thread, so a live non-slot session (a subagent
+    # inheriting its parent's member selection) cannot publish as the crew it
+    # descends from. Such a caller's allocation resolves perfectly well, so
+    # telling it the allocation could not be resolved would be false.
+    if slot is None:
+        sel().log_api_access(
+            caller=sk,
+            operation=operation,
+            outcome="denied",
+            source="dashboard",
+            resources=request.path,
+            error="caller has no dashboard slot",
+        )
+        return None, web.json_response(
+            {
+                "error": (
+                    "a crew webview is published from the crew's own dashboard thread, "
+                    "and this session is not one"
+                ),
+                "code": "no_dashboard_slot",
+            },
+            status=400,
+        )
     crew_name = ""
     unresolved = True
-    session_key = _live_session_key(state, sk) if slot is not None else ""
+    session_key = _live_session_key(state, sk)
     if session_key:
         try:
             namespace, selected = state.sessions.get_agent_selection(session_key)
@@ -233,6 +258,20 @@ async def _resolve_publishing_crew(
         # while an unreachable allocation is a gateway-side fault -- and one
         # message for both is what let a gate closed against every member read
         # as a routine "you have no crew".
+        #
+        # Audited, like every other refusal here. ``_recognize_session`` has
+        # already written an ``outcome="allowed"`` event for this call, so a
+        # denial that returns without its own event leaves the SEL trail ending
+        # on the ALLOW: the record would say the caller was let through and the
+        # HTTP response would be the only trace that it was not.
+        sel().log_api_access(
+            caller=sk,
+            operation=operation,
+            outcome="denied",
+            source="dashboard",
+            resources=request.path,
+            error="caller's allocation could not be resolved",
+        )
         return None, web.json_response(
             {
                 "error": (
@@ -247,6 +286,14 @@ async def _resolve_publishing_crew(
         # No agent binding means no crew, and a panel has nowhere to go. Said
         # plainly rather than silently dropped: a conductor publishing every
         # cycle into a void would look like the feature is broken.
+        sel().log_api_access(
+            caller=sk,
+            operation=operation,
+            outcome="denied",
+            source="dashboard",
+            resources=request.path,
+            error="caller is not bound to a crew",
+        )
         return None, web.json_response(
             {
                 "error": (
@@ -270,6 +317,14 @@ async def _resolve_publishing_crew(
         slug = members_mod.member_slug(crew_name, cfg)
         members_mod.validate_slug(slug)
     except MemberSlugError:
+        sel().log_api_access(
+            caller=sk,
+            operation=operation,
+            outcome="denied",
+            source="dashboard",
+            resources=request.path,
+            error="crew name has no addressable slug",
+        )
         return None, web.json_response(
             {"error": "this crew's name has no addressable slug", "code": "bad_crew_slug"},
             status=400,
