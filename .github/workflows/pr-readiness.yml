@@ -52,7 +52,7 @@ on:
     # guard, and `requested` is deliberately absent.
     #
     # Why `requested` carries nothing: it fires when a run is CREATED, which on
-    # a head update happens for all 14 workflows above before any of them can
+    # a head update happens for all 19 workflows above before any of them can
     # have a verdict -- and readiness has already published `checking` for that
     # revision via the `pull_request_target: synchronize` path. Its only other
     # occasion is a brand-new run, whose eventual `completed` is the fire that
@@ -70,9 +70,9 @@ on:
     # trade a merge-safety guard for dispatch, which is the wrong direction.
     #
     # The dispatch problem this addresses: every type fires once per monitored
-    # workflow per revision, so all three dispatched up to 42 readiness runs per
+    # workflow per revision, so all three dispatched up to 57 readiness runs per
     # head update and made this workflow the majority of the repository's run
-    # creation. Two types put the ceiling at 28. The per-revision concurrency
+    # creation. Two types put the ceiling at 38. The per-revision concurrency
     # group below collapses the burst for EXECUTION, but a collapsed run has
     # already consumed its dispatch slot, so the group never bounded this cost.
     # Measurements and the queue-saturation mechanism: docs/ci/ci-and-reviews.md.
@@ -164,88 +164,153 @@ jobs:
       # evaluation before the publish step could run -- leaving a permanently
       # red check unrelated to actual readiness (issue #2753: the same commit
       # evaluated green then red 39 seconds apart with nothing pushed). Every
-      # READ-ONLY gh call below now goes through this bounded helper: 3
-      # attempts with short backoff, mirroring the bounded-attempts convention
-      # in publish-installer.yml. Stdout is buffered per attempt so a failed
-      # attempt's partial output (e.g. an aborted --paginate stream) never
-      # leaks into a pipe. WRITE calls are deliberately NOT retried here; the
-      # label writes have their own narrow race tolerance (see drop_label /
+      # READ-ONLY gh calls below go through one bounded helper. Ordinary
+      # transport/5xx failures keep three attempts with short backoff. A
+      # rate-limit 403/429 instead reads the dedicated `rate_limit` resource
+      # and waits at most once, only for a trustworthy cheap core reset that
+      # fits the job's remaining budget. Stdout is buffered per attempt so a
+      # failed attempt's partial output (e.g. an aborted --paginate stream)
+      # never leaks into a pipe. WRITE calls are deliberately NOT retried here;
+      # the label writes have their own narrow race tolerance (see drop_label /
       # ensure_label), and a lost-response retry of a DELETE outside that
       # tolerance would turn an applied change into a new failure.
       - name: Install bounded retry helper for read-only gh calls
         run: |
+          date +%s > "$RUNNER_TEMP/pr-readiness-job-start"
           cat > "$RUNNER_TEMP/gh-retry.sh" <<'HELPER'
+          GH_RETRY_ATTEMPTS=3
+          GH_RETRY_ATTEMPT_SECONDS=120
+          GH_RETRY_JOB_BUDGET_SECONDS=1200
+          GH_RETRY_FINISH_RESERVE_SECONDS=120
+          GH_RETRY_MAX_RATE_LIMIT_WAIT_SECONDS=30
+
           # `timeout` is GNU coreutils: present on the runner, ABSENT on macOS by
           # default -- and these step scripts are extracted and executed verbatim
           # by test_pr_readiness_evaluate.py / _publish.py, so they have to run
-          # there too. Missing, `timeout` makes every call exit 127, `gh_retry`
-          # reads that as a transient failure, and the lane publishes `pending`
-          # for a reason that has nothing to do with the PR under test.
-          #
-          # Resolved once here rather than at each call site, so the 120s bound
-          # also has a single definition. Falling back to UNBOUNDED is deliberate:
-          # a call with no ceiling is a weaker guarantee than a bounded one, but a
-          # far better answer than treating the tool's absence as the request
-          # having failed. Written for bash 3.2, which is what macOS ships.
+          # there too. Falling back to unbounded preserves the existing portable
+          # behavior when neither spelling is installed.
           bounded() {
             if command -v timeout >/dev/null 2>&1; then
-              timeout 120 "$@"
+              timeout "$GH_RETRY_ATTEMPT_SECONDS" "$@"
             elif command -v gtimeout >/dev/null 2>&1; then
-              gtimeout 120 "$@"
+              gtimeout "$GH_RETRY_ATTEMPT_SECONDS" "$@"
             else
               "$@"
             fi
           }
 
+          next_read_call() {
+            local file="$RUNNER_TEMP/gh-retry-read-count" count=0
+            if [ -f "$file" ]; then
+              count="$(cat "$file" 2>/dev/null || true)"
+            fi
+            case "$count" in ''|*[!0-9]*) count=0 ;; esac
+            count=$(( count + 1 ))
+            printf '%s\n' "$count" > "$file"
+            printf '%s\n' "$count"
+          }
+
+          request_class() {
+            local arg
+            for arg in "$@"; do
+              case "$arg" in
+                rate_limit) echo "rate-limit-resource"; return ;;
+                *"/check-runs"*) echo "check-runs"; return ;;
+                *"/actions/workflows/"*"/runs"*|*"/actions/runs?"*)
+                  echo "workflow-runs"; return ;;
+                *"/pulls"*) echo "pull-requests"; return ;;
+                *"/issues/"*"/labels"*) echo "labels"; return ;;
+              esac
+            done
+            echo "other"
+          }
+
+          is_rate_limit_error() {
+            grep -q 'HTTP 429' <<<"$1" \
+              || { grep -q 'HTTP 403' <<<"$1" \
+                   && grep -Eiq 'rate limit|abuse detection' <<<"$1"; }
+          }
+
           gh_retry() {
-            local attempt out err rc=1
-            for attempt in 1 2 3; do
-              # `bounded` caps a HANGING attempt (gh applies no HTTP request
-              # timeout of its own); rc 124 is just another retryable failure.
+            local attempt out err rc=1 class call
+            local quota quota_call remaining reset extra now wait
+            local job_start job_deadline rate_retry_used=false
+            class="$(request_class "$@")"
+            job_start="$(cat "$RUNNER_TEMP/pr-readiness-job-start" 2>/dev/null || date +%s)"
+            case "$job_start" in ''|*[!0-9]*) job_start="$(date +%s)" ;; esac
+            job_deadline=$(( job_start + GH_RETRY_JOB_BUDGET_SECONDS ))
+
+            attempt=1
+            while [ "$attempt" -le "$GH_RETRY_ATTEMPTS" ]; do
+              call="$(next_read_call)"
+              # `bounded` caps a hanging attempt. Stdout remains buffered so a
+              # failed paginated read cannot leak a partial JSON document.
               if out="$(bounded "$@" 2>"$RUNNER_TEMP/gh-retry-err")"; then
-                cat "$RUNNER_TEMP/gh-retry-err" >&2
+                echo "pr-readiness: gh read call=$call class=$class attempt=$attempt outcome=success" >&2
                 printf '%s\n' "$out"
                 return 0
               else
                 rc=$?
               fi
               err="$(cat "$RUNNER_TEMP/gh-retry-err" 2>/dev/null || true)"
-              printf '%s\n' "$err" >&2
-              # A non-429 HTTP 4xx is a PERMANENT request error (renamed
-              # workflow file, missing scope, bad endpoint): retrying cannot
-              # fix it, and calling it "transient" would misdiagnose a
-              # misconfiguration as network trouble. Return a distinct code
-              # immediately so callers can fail loud instead of publishing a
-              # pending "could not be evaluated" verdict forever.
-              # EXCEPTION: GitHub's primary/secondary rate limits surface as
-              # HTTP 403 with rate-limit text in the body -- those are
-              # transient exactly like a 429 and must be retried, not failed.
-              if grep -Eq 'HTTP 4[0-9][0-9]' <<<"$err" \
-                && ! grep -q 'HTTP 429' <<<"$err" \
-                && ! grep -Eiq 'rate limit|abuse detection' <<<"$err"; then
-                echo "gh_retry: permanent HTTP error (no retry): $*" >&2
+
+              if is_rate_limit_error "$err"; then
+                echo "pr-readiness: gh read call=$call class=$class attempt=$attempt outcome=rate-limited" >&2
+                if [ "$rate_retry_used" = "true" ]; then
+                  echo "pr-readiness: quota resource=core remaining=unknown reset=unknown decision=abort-retry-used" >&2
+                  return "$rc"
+                fi
+                if [ "$attempt" -ge "$GH_RETRY_ATTEMPTS" ]; then
+                  echo "pr-readiness: quota resource=core remaining=unknown reset=unknown decision=abort-attempt-cap" >&2
+                  return "$rc"
+                fi
+
+                quota_call="$(next_read_call)"
+                if quota="$(bounded gh api rate_limit \
+                    --jq '.resources.core | [.remaining, .reset] | @tsv' \
+                    2>"$RUNNER_TEMP/gh-retry-quota-err")"; then
+                  echo "pr-readiness: gh read call=$quota_call class=rate-limit-resource attempt=1 outcome=success" >&2
+                else
+                  echo "pr-readiness: gh read call=$quota_call class=rate-limit-resource attempt=1 outcome=unavailable" >&2
+                  echo "pr-readiness: quota resource=core remaining=unknown reset=unknown decision=abort-quota-unavailable" >&2
+                  return "$rc"
+                fi
+                IFS=$'\t' read -r remaining reset extra <<<"$quota"
+                now="$(date +%s)"
+                if [ -n "${extra:-}" ] || [ "$remaining" != "0" ] \
+                  || [[ ! "$reset" =~ ^[0-9]{10}$ ]] || [ "$reset" -lt "$now" ]; then
+                  echo "pr-readiness: quota resource=core remaining=${remaining:-unknown} reset=${reset:-unknown} decision=abort-untrusted-reset" >&2
+                  return "$rc"
+                fi
+                wait=$(( reset - now ))
+                if [ "$wait" -gt "$GH_RETRY_MAX_RATE_LIMIT_WAIT_SECONDS" ]; then
+                  echo "pr-readiness: quota resource=core remaining=$remaining reset=$reset wait=$wait decision=abort-reset-too-far" >&2
+                  return "$rc"
+                fi
+                if [ $(( now + wait + GH_RETRY_ATTEMPT_SECONDS + GH_RETRY_FINISH_RESERVE_SECONDS )) \
+                  -gt "$job_deadline" ]; then
+                  echo "pr-readiness: quota resource=core remaining=$remaining reset=$reset wait=$wait decision=abort-job-budget" >&2
+                  return "$rc"
+                fi
+                echo "pr-readiness: quota resource=core remaining=$remaining reset=$reset wait=$wait decision=wait-retry" >&2
+                rate_retry_used=true
+                sleep "$wait"
+                attempt=$(( attempt + 1 ))
+                continue
+              fi
+
+              # Any other HTTP 4xx is permanent: a renamed workflow, missing
+              # scope, or bad endpoint cannot improve with backoff.
+              if grep -Eq 'HTTP 4[0-9][0-9]' <<<"$err"; then
+                echo "pr-readiness: gh read call=$call class=$class attempt=$attempt outcome=permanent-http" >&2
                 return 22
               fi
-              # The PRIMARY limit is the exception to the exception. It is
-              # the hourly budget every workflow in this repository shares
-              # through GITHUB_TOKEN, and it refills at the top of the hour,
-              # not in the seconds this loop waits -- so attempts 2 and 3 are
-              # certain to fail and only add to the request volume that
-              # emptied the pool. GitHub words it "API rate limit exceeded
-              # for <installation|user|...>"; the secondary limit says
-              # "secondary rate limit" and IS worth a short backoff. Return
-              # the transient code without retrying: the evaluate step turns
-              # it into the non-terminal "could not be evaluated" verdict
-              # and the next event (or the sweep) recomputes once the hour
-              # has turned.
-              if grep -q 'API rate limit exceeded' <<<"$err"; then
-                echo "gh_retry: primary rate limit exhausted (no retry): $*" >&2
-                return "$rc"
-              fi
-              echo "gh_retry: attempt $attempt/3 failed (rc=$rc): $*" >&2
-              if [ "$attempt" -lt 3 ]; then
+
+              echo "pr-readiness: gh read call=$call class=$class attempt=$attempt outcome=transient-failure rc=$rc" >&2
+              if [ "$attempt" -lt "$GH_RETRY_ATTEMPTS" ]; then
                 sleep $(( attempt * 2 ))
               fi
+              attempt=$(( attempt + 1 ))
             done
             return "$rc"
           }
@@ -612,7 +677,7 @@ jobs:
             # sibling fork PR on the same head SHA, or a stale row from a
             # previous rerun attempt, could answer for this one. The fourth
             # field is the workflow whose completion triggers the lane -- all
-            # five fire on `Fast Gate` completing, so its newest run + attempt
+            # seven fire on `Fast Gate` completing, so its newest run + attempt
             # for this head is what "current" means here (fast-gate.yml).
             workflow_specs+=(
               # The scan reaches a fork through the same Stage-2 pattern: a fork
@@ -718,6 +783,29 @@ jobs:
               workflow_specs=()
             }
           fi
+
+          # Select Fast Gate once from the shared pull_request-runs response.
+          # The same exact repo/ref/SHA-bound run answers the Fast Gate lane and
+          # supplies the run id + attempt for all seven fork check-run bindings.
+          fast_gate_run=""
+          if [ "$transport_failed" != "true" ]; then
+            if fast_gate_run="$(jq -c \
+                --arg path ".github/workflows/fast-gate.yml" \
+                --arg repo "$HEAD_REPO" --arg ref "$HEAD_REF" '
+              [.workflow_runs[]
+               | select(.path == $path
+                        and (.head_repository.full_name // "") == $repo
+                        and (.head_branch // "") == $ref)]
+              | max_by(.id) // empty
+            ' <<<"$pr_runs")"; then
+              echo "pr-readiness: Fast Gate snapshot selections=1 head=$SHA trigger=$([[ -n "$fast_gate_run" ]] && echo found || echo absent)"
+            else
+              rc=$?
+              echo "::error::The shared workflow-runs response was not valid JSON (jq rc=$rc)."
+              exit 1
+            fi
+          fi
+
           # The head SHA's check-runs, read once and lazily: only a fork
           # evaluation has checkrun: specs, and all seven read the same
           # collection. Paginated because a head carries one check-run per
@@ -740,6 +828,10 @@ jobs:
             # branch. Split on `|` alone so a label keeps its spaces.
             IFS='|' read -r file label extid trigfile <<<"$spec"
             if [[ "$file" == checkrun:* ]]; then
+              if [ -n "${trigfile:-}" ] && [ "$trigfile" != "fast-gate.yml" ]; then
+                echo "::error::check-run trigger must be fast-gate.yml before reusing the Fast Gate snapshot." >&2
+                exit 1
+              fi
               # Fork AI-review lane: the verdict lives in the head SHA's
               # check-runs, not a PR-bound workflow run (the fork reviewer runs
               # via workflow_run from the default branch, so its workflow-run
@@ -794,7 +886,7 @@ jobs:
               # head, so a stale clean verdict is not merely old, it can be WRONG.
               #
               # The fourth spec field names the workflow whose completion triggers
-              # the lane (Fast Gate, for all five). Its newest run for this head,
+              # the lane (Fast Gate, for all seven). Its newest run for this head,
               # plus that run's attempt, is what "the current attempt" means -- so
               # the expected id is <prefix><pr>-<run id>-<attempt> and nothing
               # else matches. When the expected row is not there yet, total=0 ->
@@ -814,23 +906,9 @@ jobs:
               if [ -n "${extid:-}" ]; then
                 want="$extid$PR"
                 if [ -n "${trigfile:-}" ]; then
-                  # Bind the trigger run to THIS PR by (head repository, head
-                  # branch) before picking the newest, for the same reason the
-                  # workflow-run branch below does it: the query is pinned to the
-                  # head SHA, but two open PRs can share that SHA, so an unfiltered
-                  # `max_by(.id)` can select the SIBLING's trigger run. The
-                  # expected external_id would then name a run this PR's lane never
-                  # saw, nothing would ever match, and the lane would sit pending
-                  # forever -- the exact opposite failure to the stale-verdict one
-                  # the binding exists to prevent, and just as bad.
-                  trun="$(jq -c --arg path ".github/workflows/$trigfile" \
-                    --arg repo "$HEAD_REPO" --arg ref "$HEAD_REF" '
-                    [.workflow_runs[]
-                     | select(.path == $path
-                              and (.head_repository.full_name // "") == $repo
-                              and (.head_branch // "") == $ref)]
-                    | max_by(.id) // empty
-                  ' <<<"$pr_runs")"
+                  # Every fork check-run lane binds to the exact Fast Gate run
+                  # already selected for this source repository and ref.
+                  trun="$fast_gate_run"
                   if [ -z "$trun" ]; then
                     # The trigger has not run for this head yet, so no review is
                     # owed and none can have reported. Pending, not passed.
@@ -932,36 +1010,40 @@ jobs:
                 | max_by(.id) // empty
               ' <<<"$runs")"
             else
-              # Bind the run to this PR by (head repository, head branch), NOT
-              # by `.pull_requests`: that array is empty on every fork run, so
-              # filtering on it matched nothing and reported each already-green
-              # workflow as "(not started)" -- a permanent pending verdict. The
-              # query is already pinned to this exact head SHA, and only one
-              # open PR can exist per source repository + branch.
-              # Collapse to one run on the monotonic run id, never on
-              # created_at: that timestamp has one-second granularity, and two
-              # runs of the same workflow on the same head routinely share a
-              # second (e.g. a workflow that fires on both synchronize and
-              # edited). jq's sort_by is stable and the API returns runs
-              # newest-first, so a created_at sort left same-second ties in
-              # API order and `last` picked the OLDEST run -- when that run
-              # was concurrency-cancelled, a lane whose newest run succeeded
-              # read as a blocking failure. max_by(.id) orders same-second
-              # runs correctly because ids increase monotonically, and it is
-              # sufficient on its own: a concurrency-cancelled twin is always
-              # superseded by a same-head run with a HIGHER id, so the newest
-              # run is never the cancelled duplicate. Deliberately NO
-              # cancelled-run filter here: dropping a cancelled newest run
-              # would revive an older verdict -- a manually cancelled rerun
-              # must read failure-class, not resurface a stale green.
-              run="$(jq -c --arg path ".github/workflows/$file" \
-                --arg head_repo "$HEAD_REPO" --arg head_ref "$HEAD_REF" '
-                [.workflow_runs[]
-                 | select(.path == $path
-                          and .head_repository.full_name == $head_repo
-                          and .head_branch == $head_ref)]
-                | max_by(.id) // empty
-              ' <<<"$pr_runs")"
+              if [ "$file" = "fast-gate.yml" ]; then
+                run="$fast_gate_run"
+              else
+                # Bind the run to this PR by (head repository, head branch), NOT
+                # by `.pull_requests`: that array is empty on every fork run, so
+                # filtering on it matched nothing and reported each already-green
+                # workflow as "(not started)" -- a permanent pending verdict. The
+                # query is already pinned to this exact head SHA, and only one
+                # open PR can exist per source repository + branch.
+                # Collapse to one run on the monotonic run id, never on
+                # created_at: that timestamp has one-second granularity, and two
+                # runs of the same workflow on the same head routinely share a
+                # second (e.g. a workflow that fires on both synchronize and
+                # edited). jq's sort_by is stable and the API returns runs
+                # newest-first, so a created_at sort left same-second ties in
+                # API order and `last` picked the OLDEST run -- when that run
+                # was concurrency-cancelled, a lane whose newest run succeeded
+                # read as a blocking failure. max_by(.id) orders same-second
+                # runs correctly because ids increase monotonically, and it is
+                # sufficient on its own: a concurrency-cancelled twin is always
+                # superseded by a same-head run with a HIGHER id, so the newest
+                # run is never the cancelled duplicate. Deliberately NO
+                # cancelled-run filter here: dropping a cancelled newest run
+                # would revive an older verdict -- a manually cancelled rerun
+                # must read failure-class, not resurface a stale green.
+                run="$(jq -c --arg path ".github/workflows/$file" \
+                  --arg head_repo "$HEAD_REPO" --arg head_ref "$HEAD_REF" '
+                  [.workflow_runs[]
+                   | select(.path == $path
+                            and .head_repository.full_name == $head_repo
+                            and .head_branch == $head_ref)]
+                  | max_by(.id) // empty
+                ' <<<"$pr_runs")"
+              fi
             fi
             if [ -z "$run" ]; then
               pending+=("$label (not started)")

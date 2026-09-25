@@ -28,6 +28,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -53,9 +54,10 @@ pytestmark = pytest.mark.skipif(
 # fails with a TLS-style error until its per-run counter exceeds $FLAKY_FAILS.
 GH_STUB = r"""#!/usr/bin/env bash
 set -euo pipefail
+printf '%s\n' "$*" >> "$FIXTURES/gh_calls"
 url=""
 for arg in "$@"; do
-  case "$arg" in repos/*|*/actions/*) url="$arg" ;; esac
+  case "$arg" in repos/*|*/actions/*|rate_limit) url="$arg" ;; esac
 done
 if [ -n "${FLAKY_SUBSTR:-}" ] && [[ "$url" == *"$FLAKY_SUBSTR"* ]]; then
   count=0
@@ -75,6 +77,9 @@ if [ -n "${FLAKY_SUBSTR:-}" ] && [[ "$url" == *"$FLAKY_SUBSTR"* ]]; then
   fi
 fi
 case "$url" in
+  rate_limit)
+    printf '%s\t%s\n' "${RATE_LIMIT_REMAINING:-5000}" "${RATE_LIMIT_RESET:-0}"
+    exit 0 ;;
   *"/commits/"*"/check-runs"*)             cat "$FIXTURES/check_runs.json"; exit 0 ;;
   *"/commits/"*"/status"*)
     # The truncated-fallback's defer guard: the CURRENT "PR Readiness"
@@ -309,6 +314,10 @@ class Runner:
         disposition_violations: str = "",
         wr_name: str = "",
         wr_status: str = "",
+        rate_limit_remaining: str = "",
+        rate_limit_reset_after: int | None = None,
+        job_elapsed_seconds: int = 0,
+        script: str | None = None,
     ):
         env = dict(self.env)
         if disposition_ok:
@@ -323,6 +332,14 @@ class Runner:
             env["WR_NAME"] = wr_name
         if wr_status:
             env["WR_STATUS"] = wr_status
+        if rate_limit_remaining:
+            env["RATE_LIMIT_REMAINING"] = rate_limit_remaining
+        if rate_limit_reset_after is not None:
+            env["RATE_LIMIT_RESET"] = str(int(time.time()) + rate_limit_reset_after)
+        if job_elapsed_seconds:
+            (self.temp / "pr-readiness-job-start").write_text(
+                str(int(time.time()) - job_elapsed_seconds) + "\n"
+            )
         state_file = self.fixtures / "existing_status_state.txt"
         state_file.unlink(missing_ok=True)
         if existing_status_state:
@@ -331,7 +348,7 @@ class Runner:
             env["FLAKY_SUBSTR"] = flaky_substr
             env["FLAKY_FAILS"] = str(flaky_fails)
         proc = subprocess.run(
-            ["bash", "-c", _evaluate_script()],
+            ["bash", "-c", script if script is not None else _evaluate_script()],
             env=env,
             capture_output=True,
             text=True,
@@ -343,12 +360,27 @@ class Runner:
             outputs[key] = value
         return proc, outputs
 
+    def set_retry_attempts(self, attempts: int) -> None:
+        """Change the installed helper's declared retry bound for one test."""
+        helper = self.temp / "gh-retry.sh"
+        script = helper.read_text()
+        declaration = "GH_RETRY_ATTEMPTS=3"
+        assert script.count(declaration) == 1
+        helper.write_text(script.replace(declaration, f"GH_RETRY_ATTEMPTS={attempts}"))
+
     def backoff(self) -> list[int]:
         """Seconds the retry helper asked to sleep, in order."""
         log = self.fixtures / "sleeps"
         if not log.is_file():
             return []
         return [int(ln) for ln in log.read_text().split()]
+
+    def gh_calls(self, needle: str) -> list[str]:
+        """Recorded gh calls containing ``needle``."""
+        log = self.fixtures / "gh_calls"
+        if not log.is_file():
+            return []
+        return [line for line in log.read_text().splitlines() if needle in line]
 
 
 @pytest.fixture()
@@ -428,6 +460,55 @@ class TestPendingLanesAreNamedInTheStatus:
         )
 
 
+class TestForkFastGateSnapshot:
+    def test_all_seven_bindings_and_the_lane_share_one_snapshot(self, runner: Runner):
+        proc, outputs = runner.evaluate(fork=True)
+
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "pending"
+        assert proc.stdout.count("Fast Gate snapshot selections=1") == 1
+        assert len(runner.gh_calls(RUNS_READ)) == 1
+
+    def test_the_repo_ref_max_id_selection_is_hoisted_before_the_lane_loop(self):
+        script = _evaluate_script()
+        selection = [
+            "[.workflow_runs[]",
+            "| select(.path == $path",
+            'and (.head_repository.full_name // "") == $repo',
+            'and (.head_branch // "") == $ref)]',
+            "| max_by(.id) // empty",
+        ]
+        lines = [line.strip() for line in script.splitlines()]
+        start = lines.index(selection[0])
+
+        assert lines[start : start + len(selection)] == selection
+        loop = script.index('for spec in "${workflow_specs[@]}"; do')
+        snapshot = script.index('fast_gate_run="$(jq -c')
+        assert snapshot < loop
+        assert 'trun="$fast_gate_run"' in script[loop:]
+        assert 'if [ "$file" = "fast-gate.yml" ]; then' in script[loop:]
+        assert 'run="$fast_gate_run"' in script[loop:]
+
+    def test_a_non_fast_gate_trigger_spec_fails_loudly(self, runner: Runner):
+        script = _evaluate_script()
+        fast_gate_spec = (
+            '"checkrun:Internal Content Scan|Internal Content Scan|'
+            'internal-content-scan-pr-|fast-gate.yml"'
+        )
+        drifted_spec = fast_gate_spec.replace("fast-gate.yml", "other-gate.yml")
+        assert script.count(fast_gate_spec) == 1
+
+        proc, outputs = runner.evaluate(
+            fork=True,
+            script=script.replace(fast_gate_spec, drifted_spec),
+        )
+
+        assert proc.returncode != 0
+        assert outputs.get("status_state") != "pending"
+        assert "check-run trigger must be fast-gate.yml" in proc.stderr
+        assert runner.gh_calls("actions/workflows/other-gate.yml/runs") == []
+
+
 class TestTransientFailureIsRetried:
     def test_one_flake_still_reaches_the_real_verdict(self, runner: Runner):
         # The failure site this guards: the consolidated runs read. One
@@ -452,6 +533,24 @@ class TestTransientFailureIsRetried:
         )
         assert proc.returncode == 0, proc.stderr
         assert outputs["status_state"] == "success"
+
+    def test_attempt_bound_is_derived_from_gh_retry_attempts(self, runner: Runner):
+        runner.set_retry_attempts(2)
+
+        proc, outputs = runner.evaluate(
+            flaky_substr=RUNS_READ, flaky_fails=99
+        )
+
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "pending"
+        assert int((runner.fixtures / "flaky_count").read_text()) == 2
+        assert runner.backoff() == [2]
+
+    def test_retry_loop_has_no_second_literal_attempt_bound(self):
+        helper = _helper_script()
+
+        assert "for attempt in 1 2 3" not in helper
+        assert 'while [ "$attempt" -le "$GH_RETRY_ATTEMPTS" ]; do' in helper
 
 
 class TestPersistentTransportFailureIsNonTerminal:
@@ -581,22 +680,20 @@ class TestPermanentHttpErrorFailsLoud:
         # No retries: the endpoint was hit exactly once.
         assert int((runner.fixtures / "flaky_count").read_text()) == 1
 
-    def test_http_429_is_still_retried_as_transient(self, runner: Runner):
-        # Rate limiting is the one HTTP error class that IS transient.
+    def test_http_429_retries_once_for_a_trustworthy_cheap_reset(self, runner: Runner):
         proc, outputs = runner.evaluate(
             flaky_substr=RUNS_READ,
             flaky_fails=1,
             http_error="HTTP 429: rate limited",
+            rate_limit_remaining="0",
+            rate_limit_reset_after=1,
         )
         assert proc.returncode == 0, proc.stderr
         assert outputs["status_state"] == "success"
-        assert int((runner.fixtures / "flaky_count").read_text()) >= 2
+        assert int((runner.fixtures / "flaky_count").read_text()) == 2
+        assert len(runner.gh_calls("api rate_limit")) == 1
 
-    def test_secondary_rate_limit_403_is_retried_as_transient(self, runner: Runner):
-        # GitHub's secondary rate limit surfaces as HTTP 403 (not 429) with
-        # rate-limit text in the body. It is transient and lifts within the
-        # backoff window: classifying it permanent would turn readiness red
-        # on a busy runner -- recreating the exact symptom this change fixes.
+    def test_secondary_rate_limit_403_uses_the_same_reset_gate(self, runner: Runner):
         proc, outputs = runner.evaluate(
             flaky_substr=RUNS_READ,
             flaky_fails=1,
@@ -604,35 +701,102 @@ class TestPermanentHttpErrorFailsLoud:
                 "HTTP 403: You have exceeded a secondary rate limit. "
                 "Please wait a few minutes before you try again."
             ),
+            rate_limit_remaining="0",
+            rate_limit_reset_after=1,
         )
         assert proc.returncode == 0, proc.stderr
         assert outputs["status_state"] == "success"
-        # It WAS retried past the failure.
-        assert int((runner.fixtures / "flaky_count").read_text()) >= 2
+        assert int((runner.fixtures / "flaky_count").read_text()) == 2
+        assert len(runner.gh_calls("api rate_limit")) == 1
 
-    def test_primary_rate_limit_is_not_retried(self, runner: Runner):
-        # The PRIMARY limit is the shared hourly pool, and it refills at the
-        # top of the hour, not in the seconds the backoff waits. A retry is
-        # certain to fail and only adds to the volume that emptied the pool
-        # -- this step, at ~250 evaluations an hour under load, is itself the
-        # largest draw on it. So: hit once, no backoff, and the
-        # non-terminal "could not be evaluated" verdict (never a red) for the
-        # next event or the sweep to recompute once the hour has turned.
+    def test_a_far_reset_aborts_without_fixed_short_retries(self, runner: Runner):
         proc, outputs = runner.evaluate(
             flaky_substr=RUNS_READ,
             flaky_fails=99,
-            http_error=(
-                "HTTP 403: API rate limit exceeded for installation. If you "
-                "reach out to GitHub Support for help, please include the "
-                "request ID 9412:2D"
-            ),
+            http_error="HTTP 403: API rate limit exceeded for installation",
+            rate_limit_remaining="0",
+            rate_limit_reset_after=3600,
         )
+
         assert proc.returncode == 0, proc.stderr
         assert outputs["status_state"] == "pending"
-        assert outputs["label"] == "readiness: checking"
-        assert "could not be evaluated" in outputs["description"]
+        assert outputs["description"].startswith("[read-failed]")
         assert int((runner.fixtures / "flaky_count").read_text()) == 1
         assert runner.backoff() == []
+        assert "decision=abort-reset-too-far" in proc.stderr
+
+    def test_a_nonzero_remaining_value_makes_the_reset_untrustworthy(
+        self, runner: Runner
+    ):
+        proc, outputs = runner.evaluate(
+            flaky_substr=RUNS_READ,
+            flaky_fails=99,
+            http_error="HTTP 429: rate limited",
+            rate_limit_remaining="100",
+            rate_limit_reset_after=1,
+        )
+
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "pending"
+        assert int((runner.fixtures / "flaky_count").read_text()) == 1
+        assert "decision=abort-untrusted-reset" in proc.stderr
+
+    def test_a_reset_outside_the_remaining_job_budget_is_not_waited_out(
+        self, runner: Runner
+    ):
+        proc, outputs = runner.evaluate(
+            flaky_substr=RUNS_READ,
+            flaky_fails=99,
+            http_error="HTTP 403: API rate limit exceeded for installation",
+            rate_limit_remaining="0",
+            rate_limit_reset_after=5,
+            job_elapsed_seconds=1100,
+        )
+
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "pending"
+        assert int((runner.fixtures / "flaky_count").read_text()) == 1
+        assert runner.backoff() == []
+        assert "decision=abort-job-budget" in proc.stderr
+
+    def test_a_rate_limit_is_retried_at_most_once(self, runner: Runner):
+        proc, outputs = runner.evaluate(
+            flaky_substr=RUNS_READ,
+            flaky_fails=99,
+            http_error="HTTP 429: rate limited",
+            rate_limit_remaining="0",
+            rate_limit_reset_after=1,
+        )
+
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "pending"
+        assert int((runner.fixtures / "flaky_count").read_text()) == 2
+        assert len(runner.gh_calls("api rate_limit")) == 1
+        assert "decision=abort-retry-used" in proc.stderr
+
+    def test_rate_limit_telemetry_names_only_class_and_quota_decision(
+        self, runner: Runner
+    ):
+        proc, _ = runner.evaluate(
+            flaky_substr=RUNS_READ,
+            flaky_fails=1,
+            http_error="HTTP 429: PRIVATE_RESPONSE_BODY",
+            rate_limit_remaining="0",
+            rate_limit_reset_after=1,
+        )
+
+        assert proc.returncode == 0, proc.stderr
+        assert "class=workflow-runs" in proc.stderr
+        assert "remaining=0" in proc.stderr
+        assert "decision=wait-retry" in proc.stderr
+        assert "PRIVATE_RESPONSE_BODY" not in proc.stderr
+        assert "GH_TOKEN" not in proc.stderr
+
+    def test_rate_limit_budget_matches_the_job_timeout(self):
+        workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+        timeout_seconds = workflow["jobs"]["readiness"]["timeout-minutes"] * 60
+
+        assert f"GH_RETRY_JOB_BUDGET_SECONDS={timeout_seconds}" in _helper_script()
 
     def test_plain_403_is_still_permanent(self, runner: Runner):
         # A 403 WITHOUT rate-limit text (missing scope, SSO enforcement)

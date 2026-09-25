@@ -153,6 +153,22 @@ def _flat(text: str) -> str:
     return re.sub(r"\s+", " ", text)
 
 
+def _normalized_comments(text: str) -> str:
+    """Join adjacent YAML comment lines before checking prose contracts."""
+    blocks: list[str] = []
+    block: list[str] = []
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("#"):
+            block.append(stripped.removeprefix("#").strip())
+        elif block:
+            blocks.append(" ".join(block))
+            block = []
+    if block:
+        blocks.append(" ".join(block))
+    return _flat(" ".join(blocks))
+
+
 def _line_containing(text: str, *substrings: str) -> str:
     """First line in `text` that contains every one of `substrings`."""
     for line in text.splitlines():
@@ -847,6 +863,41 @@ class TestPrReadiness:
         assert "Reversing prior GPT guidance" not in workflow
         assert "Without that delta, DROP the repeated or contradictory finding." not in workflow
         assert "Never copy review markers from the supplied context." not in workflow
+
+    def test_readiness_inline_counts_match_the_nineteen_monitored_workflows(self) -> None:
+        workflow = _workflow("pr-readiness.yml")
+        comments = _normalized_comments(workflow)
+
+        trigger = yaml.safe_load(workflow)[True]["workflow_run"]
+        assert len(trigger["workflows"]) == 19
+        assert trigger["types"] == ["in_progress", "completed"]
+        assert "all 19 workflows above" in comments
+        assert "up to 57 readiness runs" in comments
+        assert "ceiling at 38" in comments
+        assert "all seven" in comments
+        for stale in (
+            "all 14 workflows above",
+            "up to 42 readiness runs",
+            "ceiling at 28",
+            "all five",
+        ):
+            assert stale not in comments
+
+    def test_stage_two_readiness_triggers_are_unchanged(self) -> None:
+        workflow = _workflow("pr-readiness.yml")
+        trigger = yaml.safe_load(workflow)[True]["workflow_run"]
+        stage_two = {
+            "Fork Opus 5 Review",
+            "Fork GPT 5.6 Review",
+            "Fork Design Review",
+            "Fork UX Review",
+            "Fork First Principles Review",
+            "Fork Security Scope Review",
+            "Fork Internal Content Scan",
+        }
+
+        assert stage_two <= set(trigger["workflows"])
+        assert "github.event.workflow_run.event == 'workflow_run'" in workflow
 
     def test_readiness_publishes_one_current_sha_status_and_label(self) -> None:
         workflow = _workflow("pr-readiness.yml")

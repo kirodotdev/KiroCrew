@@ -2322,9 +2322,12 @@ Two subtleties:
   come from one `actions/runs?event=pull_request&head_sha=` page (19 workflows in this
   repository fire on `pull_request`, one run each per head), selected per lane by
   `.path`; on a fork, all seven check-run lanes come from one paginated read of the
-  head's check-runs, bound per lane by `external_id`. Per-lane reads were ~11
-  requests per evaluation at ~250 evaluations an hour under load -- the largest
-  single draw on the hourly REST pool every workflow here shares through
+  head's check-runs, bound per lane by `external_id`. From the shared workflow-run
+  response, readiness selects one exact Fast Gate run by path, source repository and
+  ref with `max_by(.id)`; the Fast Gate lane and all seven external-ID bindings reuse
+  that same run and attempt without another API read or another selection. Per-lane
+  reads were ~11 requests per evaluation at ~250 evaluations an hour under load --
+  the largest single draw on the hourly REST pool every workflow here shares through
   `GITHUB_TOKEN` (15,000 requests an hour, the Enterprise Cloud ceiling). That pool
   ran dry on 2026-09-15 and again on 2026-09-23: every AI lane failed closed and this
   job logged `API rate limit exceeded for installation`. The one cost of the
@@ -2336,13 +2339,22 @@ Two subtleties:
   answers in one request; the walk over every open PR (seven pages at 600 open PRs)
   remains only for an event that carries neither field.
 - **A transport error during evaluation is non-terminal.** Every read-only `gh`
-  call goes through a bounded retry helper (3 attempts with backoff, 120s cap per
-  attempt); a non-429 HTTP 4xx is treated as permanent misconfiguration and fails
-  the job loudly instead of retrying. A secondary rate limit (`HTTP 403 ... secondary
-  rate limit`) is retried like a 429; the **primary** limit (`API rate limit exceeded
-  for installation`) is not -- it refills at the top of the hour, not within the
-  backoff, so a retry only adds to the volume that emptied the shared pool. It takes
-  the same non-terminal branch below after a single attempt. If an **evaluation**
+  call goes through a bounded retry helper (`GH_RETRY_ATTEMPTS=3` by default,
+  with backoff and a 120s cap per attempt); the loop derives its bound from that
+  declaration so tuning it cannot leave a second attempt count behind. Rate limits
+  are the exception to that fixed backoff: HTTP 429 and a rate-limit 403 query the
+  dedicated `GET /rate_limit` core resource, retry at most once, and wait only when
+  `remaining` is exactly zero, `reset` is a usable future epoch, the wait is at most
+  30 seconds, and the wait plus one full attempt
+  and the publish reserve fit inside the 20-minute job budget. An unknown,
+  contradictory, farther-off, or out-of-budget reset is not guessed; evaluation
+  retains the fail-closed `[read-failed]` pending verdict. This relies on GitHub's
+  documented property that `GET /rate_limit` does not consume primary rate-limit
+  quota; a secondary limit can still refuse that probe, which is treated as an
+  unreadable reset. Each helper call logs only a request class, ordinal, attempt,
+  outcome, and the core remaining/reset decision -- never a token, command body,
+  or API response body. Any other HTTP 4xx is permanent misconfiguration and
+  fails the job loudly instead of retrying. If an **evaluation**
   read still fails after the retries, the evaluate step publishes an explicit
   non-terminal "could not be evaluated" verdict (`pending` under
   `readiness: checking`) instead of exiting
@@ -2397,8 +2409,12 @@ and attempt (`<lane>-pr-<PR>-<run>-<attempt>`), not the check-run name alone: tw
 open PRs can share a head SHA and each posts a check-run under this same name, and a
 rerun on an unchanged head leaves the previous attempt's row in place, so a
 name-only read could let a sibling PR's clean verdict — or a stale previous-attempt
-row — answer for this PR. Readiness derives the expected id from the newest run of
-the triggering workflow (`Fast Gate`); when no matching row exists yet the lane
+row — answer for this PR. Readiness selects one SHA-pinned Fast Gate run from the
+shared workflow-runs response, filtered once by source repository and ref with
+`max_by(.id)`; the Fast Gate lane itself and all seven check-run bindings reuse that
+exact run and attempt. A check-run spec that names a triggering workflow must name
+`fast-gate.yml`; any drift fails loudly before the shared snapshot can bind that lane
+to the wrong run. When no matching row exists yet the lane
 reads as pending, which holds the merge rather than borrowing an answer. A
 human-override rerun (`gh api .../runs/<id>/rerun`) re-executes a lane's run
 directly without Fast Gate re-running, so the trigger-bound id stays identical
