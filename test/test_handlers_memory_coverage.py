@@ -23,7 +23,7 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import DEFAULT, AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -107,7 +107,22 @@ def _make_request(
         req.can_read_body = True
     else:
         req.json = AsyncMock(return_value=json_body)
+    _as_owner(req, state)
     return req
+
+
+def _as_owner(req: Any, state: Any) -> None:
+    """Give a mock request the dashboard owner's claims, leaving every other key as-is.
+
+    The durable-memory writes are owner-gated, so the dashboard-user request these
+    tests model carries ``app == ""`` and the owner's subject: ``state.owner_id``
+    when one is configured, else the signed local bootstrap subject.
+    """
+    owner = str(getattr(state, "owner_id", "") or "") or "local-app"
+    claims = {"app": "", "user": owner}
+    req.__contains__.side_effect = lambda key: key in claims
+    req.__getitem__.side_effect = lambda key: claims[key] if key in claims else DEFAULT
+    req.get.side_effect = lambda key, *default: claims[key] if key in claims else DEFAULT
 
 
 def _store(**attrs: Any) -> Any:

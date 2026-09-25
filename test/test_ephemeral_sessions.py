@@ -23,6 +23,24 @@ from kiro_crew.history import ConversationLog
 # ── Helpers ──
 
 
+def _owner_dashboard_identity():
+    """The owner's dashboard claims, for the routes the owner gate covers.
+
+    ``app == ""`` with the owner's subject: ``state.owner_id`` when one is
+    configured, else the signed local bootstrap subject.
+    """
+    from aiohttp import web
+
+    @web.middleware
+    async def middleware(request, handler):
+        state = request.app.get("state")
+        request["user"] = str(getattr(state, "owner_id", "") or "") or "local-app"
+        request["app"] = ""
+        return await handler(request)
+
+    return middleware
+
+
 def _make_state(tmp_path, **kwargs):
     sessions = MagicMock(count=0)
     sessions.remove = AsyncMock()
@@ -2166,7 +2184,7 @@ class TestMemoryRoutesSessionGate:
             api_memory_semantic_write,
         )
 
-        app = web.Application()
+        app = web.Application(middlewares=[_owner_dashboard_identity()])
         app["state"] = state
         app.router.add_put("/api/memory/semantic", api_memory_semantic_write)
         app.router.add_delete("/api/memory/semantic/{key:.+}", api_memory_semantic_delete)

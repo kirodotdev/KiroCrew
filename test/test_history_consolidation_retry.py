@@ -252,6 +252,11 @@ class _FakeRequest(dict):
     def __init__(self, state: Any, body: dict) -> None:
         super().__init__()
         self.app = {"state": state}
+        # The owner's dashboard claims: the manual trigger is an owner-gated write.
+        # The subject is ``state.owner_id`` when one is configured, else the signed
+        # local bootstrap subject.
+        self["app"] = ""
+        self["user"] = str(getattr(state, "owner_id", "") or "") or "local-app"
         # The handler's session-recognition gate refuses a request with no
         # X-Session-Key; the browser UI's static key is the recognised caller.
         self.headers: dict[str, str] = {"X-Session-Key": "dashboard:ui"}

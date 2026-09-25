@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew.config import KiroCrewConfig
@@ -48,7 +49,15 @@ async def test_workflow_memory_recognition_tracks_registration(prefix):
         assert sessions.has_session(key)
         assert await recognize(key) is None
         assert (await recognize(f"{prefix}:wf_2:0")).status == 400
-        request = make_mocked_request("POST", "/api/memory/recall", headers={"X-Session-Key": key})
+        # The owner's dashboard claims: the memory write gate asks for the owner
+        # first, so the restricted-session refusal this asserts is reached.
+        app = web.Application()
+        app["state"] = state
+        request = make_mocked_request(
+            "POST", "/api/memory/recall", headers={"X-Session-Key": key}, app=app
+        )
+        request["user"] = "local-app"
+        request["app"] = ""
         state._restricted_keys.add(key)
         refusal = await _memory_write_gate(state, request, "memory_recall")
         assert refusal.status == 403

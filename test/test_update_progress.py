@@ -6,12 +6,26 @@ import asyncio
 import json
 import os
 import subprocess
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import DEFAULT, AsyncMock, MagicMock
 
 import pytest
 from aiohttp import web
 
 from kiro_crew.dashboard.state import DashboardState
+
+
+def _as_owner(req: MagicMock) -> None:
+    """Give a mock request the dashboard owner's claims, leaving every other key as-is.
+
+    ``POST /api/update`` is owner-gated, so the dashboard-user request these tests
+    model carries ``app == ""`` and the owner's subject: ``state.owner_id`` when
+    one is configured, else the signed local bootstrap subject.
+    """
+    owner = str(getattr(req.app["state"], "owner_id", "") or "") or "local-app"
+    claims = {"app": "", "user": owner}
+    req.__contains__.side_effect = lambda key: key in claims
+    req.__getitem__.side_effect = lambda key: claims[key] if key in claims else DEFAULT
+    req.get.side_effect = lambda key, *default: claims[key] if key in claims else DEFAULT
 
 
 def _init_repo(path) -> None:
@@ -291,6 +305,7 @@ class TestUpdateEndpoints:
         app["state"] = state
         request = MagicMock()
         request.app = app
+        _as_owner(request)
 
         # Mock git status to return dirty output
         async def fake_exec(*args, **kwargs):  # type: ignore[no-untyped-def]

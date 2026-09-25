@@ -45,6 +45,24 @@ from kiro_crew.validation import ValidationError
 # ── Fire-path harness (mirrors test_autonudge_dashboard_fire.py) ──
 
 
+def _owner_dashboard_identity():
+    """The owner's dashboard claims, for the routes the owner gate covers.
+
+    ``app == ""`` with the owner's subject: ``state.owner_id`` when one is
+    configured, else the signed local bootstrap subject.
+    """
+    from aiohttp import web
+
+    @web.middleware
+    async def middleware(request, handler):
+        state = request.app.get("state")
+        request["user"] = str(getattr(state, "owner_id", "") or "") or "local-app"
+        request["app"] = ""
+        return await handler(request)
+
+    return middleware
+
+
 def _loop(**kw) -> NudgeLoop:
     base = dict(
         id="loop-abc",
@@ -746,7 +764,7 @@ class TestRestSurface:
         state._slots = {
             "chat-1-123": MagicMock(workspace="default", memory_mode="persistent", mode="chat")
         }
-        app = web.Application()
+        app = web.Application(middlewares=[_owner_dashboard_identity()])
         app["state"] = state
         app.router.add_post("/api/autonudge", _handler.api_autonudge_start)
         app.router.add_patch("/api/autonudge/{loop_id}", _handler.api_autonudge_update)

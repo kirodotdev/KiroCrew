@@ -32,6 +32,24 @@ from kiro_crew.irq import Outcome, Verdict
 from kiro_crew.validation import JUDGE_OFF_KEY, ValidationError, validate_judge_spec
 
 
+def _owner_dashboard_identity():
+    """The owner's dashboard claims, for the routes the owner gate covers.
+
+    ``app == ""`` with the owner's subject: ``state.owner_id`` when one is
+    configured, else the signed local bootstrap subject.
+    """
+    from aiohttp import web
+
+    @web.middleware
+    async def middleware(request, handler):
+        state = request.app.get("state")
+        request["user"] = str(getattr(state, "owner_id", "") or "") or "local-app"
+        request["app"] = ""
+        return await handler(request)
+
+    return middleware
+
+
 def answers(
     owner: str = point.NEEDS_OWNER_QUIET,
     owner_p: float = 0.9,
@@ -2427,7 +2445,7 @@ class TestTheHttpArmingRouteCarriesTheBrief:
         state._slots = {
             "chat-1-123": MagicMock(workspace="default", memory_mode="persistent", mode="chat")
         }
-        app = web.Application()
+        app = web.Application(middlewares=[_owner_dashboard_identity()])
         app["state"] = state
         app.router.add_post("/api/autonudge", _handler.api_autonudge_start)
         return app

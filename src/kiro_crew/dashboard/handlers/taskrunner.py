@@ -11,7 +11,10 @@ from typing import TYPE_CHECKING
 
 from aiohttp import web
 
-from kiro_crew.dashboard.handlers._shared import read_bounded_json
+from kiro_crew.dashboard.handlers._shared import (
+    read_bounded_json,
+    require_owner_dashboard_request,
+)
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.execution_context import ExecutionContext, bind_session_execution
 from kiro_crew.hooks import FileTooLargeError
@@ -65,6 +68,22 @@ def _sel():
     import kiro_crew.dashboard.handlers as _pkg  # noqa: F811
 
     return _pkg.sel()
+
+
+async def _require_taskrunner_owner(request: web.Request, operation: str) -> web.Response | None:
+    """Owner gate for the mutating task-runner routes, or ``None`` to proceed.
+
+    Owner identity is a property of a dashboard-user request: ``app == ""`` is
+    the class ``is_owner_dashboard_request`` can rule on at all. The other two
+    caller classes keep the control that already governs them -- an
+    ``X-Internal-Secret`` loopback process (the ``task_run`` MCP tool) reaches
+    here with ``app`` ABSENT, and an app token (the Projects app declares
+    ``/api/taskrunner``) is confined to its manifest's declared paths by
+    ``_enforce_app_scope``.
+    """
+    if request.get("app") != "":
+        return None
+    return await require_owner_dashboard_request(request, operation)
 
 
 async def _gate_auto_approve(
@@ -178,6 +197,9 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
     Body: ``{"spec": "path/to/file.md"}`` or ``{"spec": "__inline__:# Task content..."}``
     Inline specs are written to a temp file in the work directory.
     """
+    owner_denied = await _require_taskrunner_owner(request, "taskrunner.start")
+    if owner_denied is not None:
+        return owner_denied
     state: DashboardState = request.app["state"]
     if not state.task_runner:
         return web.json_response({"error": "task runner not available"}, status=400)
@@ -274,6 +296,9 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
 
 async def api_taskrunner_cancel(request: web.Request) -> web.Response:
     """POST /api/taskrunner/cancel — cancel a specific or all running tasks."""
+    owner_denied = await _require_taskrunner_owner(request, "taskrunner.cancel")
+    if owner_denied is not None:
+        return owner_denied
     state: DashboardState = request.app["state"]
     if not state.task_runner:
         return web.json_response({"error": "task runner not available"}, status=400)
@@ -307,6 +332,9 @@ async def api_taskrunner_cancel(request: web.Request) -> web.Response:
 
 async def api_taskrunner_pause(request: web.Request) -> web.Response:
     """POST /api/taskrunner/{task_id}/pause — pause a running task (resumable via execute)."""
+    owner_denied = await _require_taskrunner_owner(request, "taskrunner.pause")
+    if owner_denied is not None:
+        return owner_denied
     state: DashboardState = request.app["state"]
     if not state.task_runner:
         return web.json_response({"error": "task runner not available"}, status=400)
@@ -351,6 +379,9 @@ async def api_taskrunner_pause(request: web.Request) -> web.Response:
 
 async def api_taskrunner_delete(request: web.Request) -> web.Response:
     """DELETE /api/taskrunner/{task_id} — remove a finished run."""
+    owner_denied = await _require_taskrunner_owner(request, "taskrunner.delete")
+    if owner_denied is not None:
+        return owner_denied
     state: DashboardState = request.app["state"]
     if not state.task_runner:
         return web.json_response({"error": "task runner not available"}, status=400)
@@ -369,6 +400,9 @@ async def api_taskrunner_delete(request: web.Request) -> web.Response:
 
 async def api_taskrunner_rename(request: web.Request) -> web.Response:
     """PATCH /api/taskrunner/{task_id}/name — rename a task run."""
+    owner_denied = await _require_taskrunner_owner(request, "taskrunner.rename")
+    if owner_denied is not None:
+        return owner_denied
     state: DashboardState = request.app["state"]
     if not state.task_runner:
         return web.json_response({"error": "task runner not available"}, status=400)
@@ -390,6 +424,9 @@ async def api_taskrunner_rename(request: web.Request) -> web.Response:
 
 async def api_taskrunner_update_task(request: web.Request) -> web.Response:
     """PATCH /api/taskrunner/{task_id}/tasks/{index} — edit a pending task in-place."""
+    owner_denied = await _require_taskrunner_owner(request, "taskrunner.update_task")
+    if owner_denied is not None:
+        return owner_denied
     state: DashboardState = request.app["state"]
     if not state.task_runner:
         return web.json_response({"error": "task runner not available"}, status=400)
@@ -432,6 +469,9 @@ async def api_taskrunner_update_task(request: web.Request) -> web.Response:
 
 async def api_taskrunner_retry(request: web.Request) -> web.Response:
     """POST /api/taskrunner/{task_id}/retry — retry from a specific step."""
+    owner_denied = await _require_taskrunner_owner(request, "taskrunner.retry")
+    if owner_denied is not None:
+        return owner_denied
     state: DashboardState = request.app["state"]
     if not state.task_runner:
         return web.json_response({"error": "task runner not available"}, status=400)
@@ -512,6 +552,9 @@ async def api_taskrunner_export_yaml(request: web.Request) -> web.Response:
 
 async def api_taskrunner_to_chat(request: web.Request) -> web.Response:
     """POST /api/taskrunner/{task_id}/to-chat — open task results in a chat slot."""
+    owner_denied = await _require_taskrunner_owner(request, "taskrunner.to_chat")
+    if owner_denied is not None:
+        return owner_denied
     state: DashboardState = request.app["state"]
     if not state.task_runner:
         return web.json_response({"error": "task runner not available"}, status=400)
@@ -617,6 +660,9 @@ async def api_taskrunner_to_chat(request: web.Request) -> web.Response:
 
 async def api_taskrunner_plan(request: web.Request) -> web.Response:
     """POST /api/taskrunner/plan — decompose input into a plan without executing."""
+    owner_denied = await _require_taskrunner_owner(request, "taskrunner.plan")
+    if owner_denied is not None:
+        return owner_denied
     state: DashboardState = request.app["state"]
     if not state.task_runner:
         return web.json_response({"error": "task runner not available"}, status=400)
@@ -695,6 +741,9 @@ async def api_taskrunner_plan(request: web.Request) -> web.Response:
 
 async def api_taskrunner_plan_cancel(request: web.Request) -> web.Response:
     """POST /api/taskrunner/plan/cancel — cancel running plan decomposition."""
+    owner_denied = await _require_taskrunner_owner(request, "taskrunner.plan_cancel")
+    if owner_denied is not None:
+        return owner_denied
     state: DashboardState = request.app["state"]
     if request.get("internal_auth") is True:
         _, refusal = await _taskrunner_request_origin(request)
@@ -714,6 +763,9 @@ async def api_taskrunner_plan_cancel(request: web.Request) -> web.Response:
 
 async def api_taskrunner_update_plan(request: web.Request) -> web.Response:
     """PUT /api/taskrunner/{task_id}/plan — update steps on a planned run."""
+    owner_denied = await _require_taskrunner_owner(request, "taskrunner.update_plan")
+    if owner_denied is not None:
+        return owner_denied
     state: DashboardState = request.app["state"]
     if not state.task_runner:
         return web.json_response({"error": "task runner not available"}, status=400)
@@ -755,6 +807,9 @@ async def api_taskrunner_update_plan(request: web.Request) -> web.Response:
 
 async def api_taskrunner_execute_plan(request: web.Request) -> web.Response:
     """POST /api/taskrunner/{task_id}/execute — execute a planned run."""
+    owner_denied = await _require_taskrunner_owner(request, "taskrunner.execute")
+    if owner_denied is not None:
+        return owner_denied
     state: DashboardState = request.app["state"]
     if not state.task_runner:
         return web.json_response({"error": "task runner not available"}, status=400)
@@ -792,6 +847,9 @@ async def api_taskrunner_execute_plan(request: web.Request) -> web.Response:
 
 async def api_taskrunner_from_chat(request: web.Request) -> web.Response:
     """POST /api/taskrunner/from-chat — create or update a plan from chat-provided steps."""
+    owner_denied = await _require_taskrunner_owner(request, "taskrunner.from_chat")
+    if owner_denied is not None:
+        return owner_denied
     from kiro_crew.taskrunner import Project  # noqa: F811
 
     state: DashboardState = request.app["state"]
@@ -980,6 +1038,9 @@ async def _run_refine(
 
 async def api_taskrunner_refine(request: web.Request) -> web.Response:
     """POST /api/taskrunner/refine — start background spec generation from user input."""
+    owner_denied = await _require_taskrunner_owner(request, "taskrunner.refine")
+    if owner_denied is not None:
+        return owner_denied
     state: DashboardState = request.app["state"]
     origin, _ = await _taskrunner_request_origin(request)
     execution = (
@@ -1028,6 +1089,9 @@ async def api_taskrunner_refine_status(request: web.Request) -> web.Response:
 
 async def api_taskrunner_refine_cancel(request: web.Request) -> web.Response:
     """POST /api/taskrunner/refine/cancel — cancel running refine."""
+    owner_denied = await _require_taskrunner_owner(request, "taskrunner.refine_cancel")
+    if owner_denied is not None:
+        return owner_denied
     state: DashboardState = request.app["state"]
     if state._refine_task and not state._refine_task.done():
         state._refine_task.cancel()
@@ -1036,6 +1100,9 @@ async def api_taskrunner_refine_cancel(request: web.Request) -> web.Response:
 
 async def api_taskrunner_refine_answer(request: web.Request) -> web.Response:
     """POST /api/taskrunner/refine/answer — answer a clarifying question."""
+    owner_denied = await _require_taskrunner_owner(request, "taskrunner.refine_answer")
+    if owner_denied is not None:
+        return owner_denied
     state: DashboardState = request.app["state"]
     body, body_err = await read_bounded_json(request, max_bytes=None)
     if body_err is not None:

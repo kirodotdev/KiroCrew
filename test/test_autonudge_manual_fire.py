@@ -378,6 +378,7 @@ def _mk(loop_id: str, *, slot: Any = None) -> web.Request:
     app = web.Application()
     state = MagicMock()
     state.get_slot = MagicMock(return_value=slot)
+    state.owner_id = ""  # no owner configured: the local bootstrap subject is the owner
     app["state"] = state
     req = make_mocked_request(
         "POST",
@@ -386,6 +387,7 @@ def _mk(loop_id: str, *, slot: Any = None) -> web.Request:
         match_info={"loop_id": loop_id},
     )
     req["user"] = "local-app"
+    req["app"] = ""  # the dashboard-user class the owner gate rules on
     return req
 
 
