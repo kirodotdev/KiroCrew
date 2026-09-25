@@ -2121,6 +2121,36 @@ def _extract_shared_text(event: dict) -> str:
     return "\n\n".join(part for part in parts if part).strip()
 
 
+def _extract_trusted_bot_attachment_text(event: dict) -> str:
+    """Recover ordinary attachment text for an already-admitted trusted bot.
+
+    Human messages keep the shared-message-only path so link previews never
+    become routed content. Trusted bot cards prefer Slack's plain-text fallback
+    and use their Block Kit text only when the fallback is absent or generic.
+    """
+    attachments = event.get("attachments")
+    if not isinstance(attachments, list):
+        return ""
+
+    parts: list[str] = []
+    for attachment in attachments:
+        if not isinstance(attachment, dict):
+            continue
+        fallback = attachment.get("fallback")
+        if isinstance(fallback, str):
+            fallback = fallback.strip()
+            if fallback and fallback not in _SLACK_BLOCK_FALLBACKS:
+                parts.append(fallback)
+                continue
+        blocks = attachment.get("blocks")
+        if isinstance(blocks, list):
+            extracted = _extract_blocks_text(blocks)
+            if extracted:
+                parts.append(extracted)
+
+    return "\n\n".join(parts).strip()[:_MAX_RECOVERED_TEXT_CHARS]
+
+
 async def _route_message(
     orch: GatewayOrchestrator,
     event: dict,
@@ -2139,10 +2169,14 @@ async def _route_message(
 
     # Slack forwards carry content in attachments, not text — recover it so the
     # forward isn't silently dropped by the (not text and not files) guard below.
-    # Also recover when Slack sets text to a generic Block Kit fallback placeholder.
+    # A positively admitted trusted bot may also carry card text in an ordinary
+    # attachment; keep that recovery unavailable to every other sender.
     if not text or text in _SLACK_BLOCK_FALLBACKS:
         fallback = "" if text in _SLACK_BLOCK_FALLBACKS else text
-        text = _extract_shared_text(event) or fallback
+        text = _extract_shared_text(event)
+        if not text and from_trusted_bot:
+            text = _extract_trusted_bot_attachment_text(event)
+        text = text or fallback
 
     logger.debug("Stream debug: team_id=%s user_id=%s channel=%s", team_id, sender_id, channel)
 

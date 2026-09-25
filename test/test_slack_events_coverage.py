@@ -2138,6 +2138,80 @@ class TestRouteMessageGuards:
         assert allowed[0]["resources"] == "trusted_bot"
 
     @pytest.mark.asyncio
+    async def test_trusted_bot_attachment_fallback_is_recovered(self):
+        orch = _make_orch()
+        event = _event(
+            user="",
+            bot_id="B_TRUSTED",
+            text="",
+            attachments=[{"fallback": "🚨 CloudWatch Alarm | myapi-5xx-alarm"}],
+        )
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=False):
+            with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
+                await ev._route_message(
+                    orch,
+                    event,
+                    ev.SeenCache(),
+                    from_trusted_bot=True,
+                )
+                await _drain(orch)
+        assert hm.await_args is not None, "trusted-bot attachment text was dropped"
+        assert hm.await_args[0][3] == "🚨 CloudWatch Alarm | myapi-5xx-alarm"
+
+    @pytest.mark.asyncio
+    async def test_trusted_bot_attachment_blocks_are_recovered(self):
+        orch = _make_orch()
+        event = _event(
+            user="",
+            bot_id="B_TRUSTED",
+            text="",
+            attachments=[
+                {
+                    "fallback": "This message contains interactive elements.",
+                    "blocks": [
+                        {
+                            "type": "section",
+                            "text": {"type": "mrkdwn", "text": "Alarm is *firing*"},
+                        }
+                    ],
+                }
+            ],
+        )
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=False):
+            with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
+                await ev._route_message(
+                    orch,
+                    event,
+                    ev.SeenCache(),
+                    from_trusted_bot=True,
+                )
+                await _drain(orch)
+        assert hm.await_args is not None, "trusted-bot attachment blocks were dropped"
+        assert hm.await_args[0][3] == "Alarm is *firing*"
+
+    @pytest.mark.asyncio
+    async def test_human_attachment_fallback_stays_excluded(self):
+        orch = _make_orch()
+        event = _event(text="", attachments=[{"fallback": "link preview"}])
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
+            with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
+                await ev._route_message(orch, event, ev.SeenCache())
+        hm.assert_not_called()
+
+    def test_trusted_bot_attachment_recovery_validates_and_caps_input(self):
+        assert ev._extract_trusted_bot_attachment_text({"attachments": "bad"}) == ""
+        assert (
+            ev._extract_trusted_bot_attachment_text(
+                {"attachments": [None, {"fallback": 42, "blocks": "bad"}]}
+            )
+            == ""
+        )
+        recovered = ev._extract_trusted_bot_attachment_text(
+            {"attachments": [{"fallback": "x" * (ev._MAX_RECOVERED_TEXT_CHARS + 1)}]}
+        )
+        assert len(recovered) == ev._MAX_RECOVERED_TEXT_CHARS
+
+    @pytest.mark.asyncio
     async def test_trusted_bot_turn_limit_caps_the_thread(self, _mock_sel):
         """The (limit+1)-th consecutive trusted-bot turn in one thread is denied."""
         orch = _make_orch()
