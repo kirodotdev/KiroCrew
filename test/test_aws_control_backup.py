@@ -2265,6 +2265,101 @@ class TestSessionsArchiveLayerBGate:
         assert set(backup.uploaded_objects(ACCOUNT)) == {"key-low", "key-high"}
         assert backup.uploaded_versions(ACCOUNT)["key-low"] == "v-low"
 
+    def test_a_superseded_run_still_clears_the_nightly_backoff(self, tmp_path, monkeypatch):
+        """A run that loses the slot still ends the retry backoff. Pins what the code does.
+
+        ``_record_run_locked``'s mutate does two things: it writes the run record into
+        the ``runs`` slot under the supersession guard, and it calls
+        ``_clear_nightly_failure`` OUTSIDE that guard. Gating the clear or leaving it
+        ungated produces identical state everywhere but one window, which is why no
+        other case in the suite tells the two apart: the winner clears the backoff in
+        its own mutate, so a failure has to land BETWEEN the winner's commit and the
+        loser's for the loser's clear to be the one that removes it.
+
+        Reaching that window takes the witness as well. ``record_nightly_failure``
+        compares the run slot against the witness read before its attempt, so a failure
+        whose witness predates the winner's commit is refused and writes nothing. The
+        witness here is therefore read AFTER the winner commits, and the row is asserted
+        PRESENT before the loser is released -- without that the loser's clear would have
+        nothing to remove and this would pass under either placement.
+
+        The inversion is produced rather than simulated, the same way the clobber test
+        above builds it: the low-sequence writer bumps first, parks in ``file_lock``, and
+        is released only once the high-sequence writer has committed.
+
+        This PINS the behaviour and does not endorse it. Which placement is right is an
+        open question for the backoff's owner; what an unpinned answer allows is a
+        refactor flipping it with no test objecting.
+        """
+        monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
+        real_file_lock = backup.file_lock
+        bumped = threading.Event()
+        release_low = threading.Event()
+        low: dict[str, Any] = {}
+
+        @contextlib.contextmanager
+        def spy_file_lock(fd, **kwargs):
+            if threading.current_thread().name == "low-seq-writer":
+                # Its sequence is already taken; hold it out of the file lock until the
+                # higher-sequenced run has committed AND a failure has been recorded.
+                bumped.set()
+                assert release_low.wait(timeout=10), "the high-seq writer never released"
+            with real_file_lock(fd, **kwargs):
+                yield
+
+        def write_low() -> None:
+            try:
+                backup._record_run(
+                    ACCOUNT, backup.KIND_SESSIONS, "key-low", 1, "fp-low", "v-low", tree="tree-low"
+                )
+            except Exception as exc:  # noqa: BLE001 - reported, never swallowed
+                low["error"] = repr(exc)
+
+        thread = threading.Thread(target=write_low, name="low-seq-writer", daemon=True)
+        try:
+            with mock.patch.object(backup, "file_lock", spy_file_lock):
+                thread.start()
+                assert bumped.wait(timeout=10), "the low-seq writer never took a sequence"
+                # Bumps to a HIGHER sequence and commits first, clearing the backoff in
+                # its own mutate -- so the row the loser meets has to be written after.
+                backup._record_run(
+                    ACCOUNT,
+                    backup.KIND_SESSIONS,
+                    "key-high",
+                    2,
+                    "fp-high",
+                    "v-high",
+                    tree="tree-high",
+                )
+                witness = backup.nightly_run_witness(ACCOUNT, backup.KIND_SESSIONS)
+                assert witness is not None, "the winner left no identifiable run record"
+                recorded = backup.record_nightly_failure(
+                    ACCOUNT, backup.KIND_SESSIONS, "eio", run_witness=witness
+                )
+                assert recorded, "the compare-and-set refused a witness read after the commit"
+                assert backup.nightly_failures(ACCOUNT).get(backup.KIND_SESSIONS), (
+                    "the window was never entered: with no failure row on the account,"
+                    " the superseded run's clear has nothing to remove and this case"
+                    " cannot tell the two placements apart"
+                )
+                release_low.set()
+                thread.join(timeout=15)
+        finally:
+            release_low.set()
+            thread.join(timeout=15)
+            assert not thread.is_alive(), "the low-seq writer never completed"
+
+        assert "error" not in low, low
+        # The supersession really happened, so the clear under test is the LOSER's: the
+        # slot still holds the winner's record and the loser's write was refused.
+        assert backup.last_runs(ACCOUNT)[backup.KIND_SESSIONS]["key"] == "key-high"
+        assert backup.nightly_failures(ACCOUNT) == {}, (
+            "a superseded run kept the nightly retry backoff, so the clear is gated on"
+            " the supersession guard. That is a deliberate semantic change for the"
+            " backoff's owner to make, not a side effect of a refactor -- update this"
+            " pin together with the decision that changes it"
+        )
+
     def test_the_authorization_runs_inside_the_lock_it_will_upload_under(
         self, tmp_path, monkeypatch
     ):
