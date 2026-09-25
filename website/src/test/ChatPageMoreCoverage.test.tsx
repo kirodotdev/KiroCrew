@@ -35,7 +35,7 @@ import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import { RUN_IN_TERMINAL_READY_DEADLINE_MS, RUN_IN_TERMINAL_OPENING_GRACE_MS } from '../utils/fenceShell'
 import { useBottomTerminal, __resetBottomTerminal, removeTab } from '../hooks/useBottomTerminal'
-import { registerTerminalWs, unregisterTerminalWs } from '../utils/terminalRegistry'
+import * as terminalRegistry from '../utils/terminalRegistry'
 
 // The run-in-terminal rollback consults the popout probe to avoid tearing a
 // session out of a popped-out panel; the flag lets each test pick the state.
@@ -862,6 +862,65 @@ describe('ChatPage run-in-terminal dispatch rollback (#10822)', () => {
     }
   })
 
+  it.each(['already known', 'reported later'] as const)('settles a directory refusal %s without losing its diagnostic tab', async timing => {
+    const project = '/missing/code-block-workspace'
+    const slot = { ...SLOT, project }
+    await renderTurn({ slots: [slot] })
+    const dock = renderHook(() => useBottomTerminal())
+    const fetchSpy = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetchSpy)
+    const { results, stop } = collect()
+    const onTerminalReady = terminalRegistry.onTerminalReady
+    let refuse: (() => void) | undefined
+    const readySpy = vi.spyOn(terminalRegistry, 'onTerminalReady').mockImplementation((id, onReady, onInvalidCwd) => {
+      const unsubscribe = onTerminalReady(id, onReady, onInvalidCwd)
+      // Model the registry's refusal contract: consume the ready listener before
+      // reporting failure, including a known failure before subscription returns.
+      refuse = () => { unsubscribe(); onInvalidCwd?.() }
+      if (timing === 'already known') refuse()
+      return unsubscribe
+    })
+    let sessionId = ''
+    try {
+      act(() => {
+        window.dispatchEvent(new CustomEvent('mc:run-in-terminal', {
+          detail: { code: 'npm test', reqId: 'invalid-cwd' },
+        }))
+      })
+      expect(dock.result.current.tabs).toHaveLength(1)
+      sessionId = dock.result.current.tabs[0].id
+      if (timing === 'reported later') {
+        expect(results).toEqual([])
+        act(() => refuse?.())
+      }
+      // Failure is acknowledged before the readiness deadline, not at it.
+      expect(results).toEqual([{ reqId: 'invalid-cwd', ok: false }])
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(RUN_IN_TERMINAL_READY_DEADLINE_MS + RUN_IN_TERMINAL_OPENING_GRACE_MS + 1_000)
+      })
+      expect(dock.result.current.tabs).toEqual([expect.objectContaining({ id: sessionId, cwd: project })])
+      expect(fetchSpy).not.toHaveBeenCalledWith('/api/terminal/sessions')
+      expect(fetchSpy).not.toHaveBeenCalledWith(
+        `/api/terminal/sessions/${sessionId}`, expect.objectContaining({ method: 'DELETE' }),
+      )
+      expect(disposeTerminalSessionSpy).not.toHaveBeenCalled()
+      expect(screen.queryByTestId('action-error')).not.toBeInTheDocument()
+
+      // A later successful reconnect cannot replay the refused command.
+      const send = vi.fn()
+      const ws = { readyState: WebSocket.OPEN, send } as unknown as WebSocket
+      act(() => { terminalRegistry.registerTerminalWs(sessionId, ws) })
+      expect(send).not.toHaveBeenCalled()
+      expect(results).toEqual([{ reqId: 'invalid-cwd', ok: false }])
+    } finally {
+      stop()
+      readySpy.mockRestore()
+      if (sessionId) terminalRegistry.unregisterTerminalWs(sessionId)
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('keeps the tab when the probe reports a live shell without a ready frame', async () => {
     await renderTurn()
     const dock = renderHook(() => useBottomTerminal())
@@ -1124,7 +1183,7 @@ describe('ChatPage run-in-terminal dispatch rollback (#10822)', () => {
       // The PTY reports ready: registering the socket drains the ready
       // listener synchronously and the command goes out on it.
       const ws = { readyState: WebSocket.OPEN, send: (d: Uint8Array) => { sent.push(d) } } as unknown as WebSocket
-      act(() => { registerTerminalWs(sessionId, ws) })
+      act(() => { terminalRegistry.registerTerminalWs(sessionId, ws) })
 
       await waitFor(() => expect(results.length).toBe(1))
       expect(results[0]).toMatchObject({ reqId: 'rb2', ok: true })
@@ -1138,7 +1197,7 @@ describe('ChatPage run-in-terminal dispatch rollback (#10822)', () => {
       )
     } finally {
       stop()
-      if (sessionId) unregisterTerminalWs(sessionId)
+      if (sessionId) terminalRegistry.unregisterTerminalWs(sessionId)
       vi.unstubAllGlobals()
     }
   })

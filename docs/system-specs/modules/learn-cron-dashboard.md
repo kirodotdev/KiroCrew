@@ -1312,6 +1312,152 @@ HTTP receipts still confirm delivery but never insert a skipped bubble.
 Uncorrelated sends, actual queued/steered sends, and in-band/relay streams keep
 their existing event paths.
 
+### Direct terminal commands from the composer
+
+The main chat and shared chat panes recognize `! <command>` when the user presses
+Run or the configured send shortcut. The leading `!` must be followed by whitespace
+or the end of the input; Markdown images, `!!`, and ordinary prose stay chat text.
+The composer shows the terminal action and its workspace while this mode is active.
+Its Run button uses “Review and run in terminal” for its tooltip and accessible
+name; the composer's visible label is “Run…” to signal the review step. The
+confirmation dialog's execution button remains “Run”. Code-block triggers keep
+their existing “Run in terminal” label.
+Refusal hints appear eagerly and disable Run while a refusal applies. Run remains
+visible alongside Stop, Force stop, or Force reset while the agent is busy.
+Below 400px of composer width, escalation controls show “Stop agent” or “Reset
+agent”. The full force-stop helper remains available to screen readers and appears
+visibly at wider widths. The reset helper explains that stopping is taking longer
+than expected and stays visible at every width.
+Force reset has a distinct reset icon in the shared stop-control
+branch, including ordinary chat and terminal mode. The stop buttons and their
+actions stay in place.
+The terminal toolbar and its action group wrap when translated controls need
+more room. The stop block can move below Run instead of compressing its labels
+and context into narrow columns; helper text wraps beside its stop button.
+Chat slash, file, skill, and path completion menus stay closed so their keyboard
+handlers cannot rewrite a command or consume its send shortcut.
+
+The default placeholder advertises `! command` and the required space only for
+local sessions with an enabled, docked terminal. Caller-supplied placeholders and
+the existing connection, stop, voice, and recovery hints retain their priority.
+
+Every eligible terminal submission opens the existing `RunInTerminalConfirm`
+dialog with the exact expanded command and the warning from
+`checkSensitiveCommand`, when applicable.
+Composer confirmations also show the captured project directory, fully wrapped,
+or the default-terminal-directory label when no project is selected. Code-block
+confirmations omit this composer-specific destination line.
+This includes manually typed commands: follow-up options, voice, history, and
+prompt optimization can also populate the draft, so draft text alone is not
+operator authorization. Cancel preserves the draft. Opening the dialog creates
+no terminal, starts no handoff timer, and does not return a detached dock.
+The shared dialog initially focuses Cancel for every command, including
+unflagged commands, so a held or repeated Enter cannot approve the command.
+Keyboard execution requires deliberately moving focus to Run and activating it.
+The hook captures the command, slot, project, and local/remote target before
+showing the dialog. Confirmation executes only that displayed command, never a
+later draft or replacement paste, and rechecks context ownership, terminal
+availability, and attachments before opening a tab and before delivery.
+
+After confirmation, `useTerminalCommand` opens a fresh docked terminal in that
+composer's selected project directory and waits for the existing shell-ready
+signal before writing the command. Parsing removes leading separator whitespace
+but preserves the command's trailing whitespace. The composer opts into preserving
+that whitespace through the ready-gated sender, which appends one submission
+newline only when the exact approved command ends in neither LF nor CR. An
+already-terminated command receives no extra input that could answer an interactive
+prompt. Code-block callers retain the sender's default trailing-whitespace trimming
+and appended newline. A detached terminal returns to the dashboard
+through the existing popout handoff before the tab is added; existing shells
+survive that handoff.
+The handoff waits for the dashboard's docked state, including its popout beacon,
+before creating a tab; a timed-out return cannot launch a late command.
+`TerminalHostContext` marks the full dashboard branch in `App.tsx`, so nested
+chat panes share its dock while standalone embed and chat/artifact popout frames
+ask the user to open the session in the main window without starting a handoff.
+With no project selected, the terminal uses its configured default
+directory. A requested directory that does not exist is reported after the
+authenticated WebSocket upgrade as an `error` frame with
+`code: "terminal_invalid_cwd"`, followed by a bounded close. No shell is spawned
+and no `ready` frame is sent; the opening reservation is released even if the
+handshake or close fails. It never falls back to another directory. Reconnecting
+to an existing terminal retains its shell's directory.
+
+The opening handler exclusively owns its `None` registry reservation until it
+publishes a session or releases that reservation. Allocation errors and
+cancellation release an unpublished reservation; publication and early error
+release retire the handler's reservation ownership before any later await.
+On POSIX, both setup descriptor closes run on the existing subprocess executor.
+A returned child stays owned by an unpublished session until the parent worker
+descriptor closes. Failed or cancelled setup uses the existing session teardown
+to stop that child and close its controller descriptor. Cancellation waits for
+submitted cleanup to settle, including queued closes, before releasing the
+reservation and propagating; a close error cannot turn cancellation into a
+successful return. Cleanup never retries a numeric descriptor that may have
+been reused.
+Stale-session cleanup checks the captured session's identity after awaiting
+teardown. The orphan reaper snapshots session entries and rechecks both identity
+and current eligibility immediately before removal, so neither can remove a
+replacement session or another opener's reservation.
+DELETE `/api/terminal/sessions/{id}` returns 409 while that id is opening and
+leaves its reservation intact. This is a refusal to stop an opening session,
+not cancellation of its setup: it may still publish one tracked shell.
+Missing ids retain 404, and deleting a published session retains its normal
+success response. The frontend treats 404 as already stopped; 409 follows its
+existing close-failure notice while the local tab closes. It does not retry
+DELETE or replay a pending command. A disconnected shell that finishes opening
+remains tracked for the orphan reaper.
+
+The shared terminal registry records a missing-directory refusal as an
+`invalidCwd` flag on its connection, parks without automatic retry (including
+online/visibility revival), and exposes it through `useTerminalInvalidCwd` to
+the dock and Activity terminal's localized `ErrorNotice`. The notice includes the
+full requested directory from that terminal tab's `cwd` and wraps long paths.
+The banner lets Reconnect wrap
+below the error when space is tight. Explicit Reconnect clears the flag and tries
+the same directory again, allowing recovery after the directory is restored.
+`onTerminalReady` takes an optional third `onInvalidCwd()` callback with no
+arguments; readiness or directory refusal settles a listener once, including an
+already-known outcome at subscription time. Refusal consumes pending ready
+listeners so manual recovery cannot execute an old command.
+The code-block Run in terminal handler also settles failure on this callback.
+Its deadline then skips liveness probing and rollback, keeping the terminal’s
+missing-directory notice available for manual recovery.
+
+This is an explicit operator action through the authenticated terminal plane.
+It invokes no model, starts no chat turn, resolves no approval card, and never
+queues or steers the agent, including while the agent is busy or stopping.
+Output stays in the interactive terminal; commands and output are not appended
+to the agent transcript. Each invocation starts a separate shell, so `cd` and
+environment changes persist only within that terminal.
+
+The terminal feature flag and terminal count cap still apply. When the terminal
+is turned off, the refusal points to server configuration to enable it. If opening
+a tab reaches the cap after confirmation, the composer keeps the draft and asks
+the user to close an unused terminal tab before trying again. Remote crew
+sessions refuse this local action. An identified session whose metadata is missing
+stays in terminal mode with Run disabled until its details load or another session
+is selected; it never defaults to local execution or falls back to an agent send.
+Losing metadata cancels any confirmation or handoff, and rehydration cannot replay
+it. A local session without a selected project uses the default terminal directory.
+Attachments and knowledge context must be removed first, including folder tokens
+derived from the input in both main chat and shared panes. Folder-chip removal
+removes the corresponding token; the folder refusal explains that its `@path`
+reference also leaves the command. Pasted command blocks expand verbatim, without
+chat file or skill token substitution. A bare `!` prompts for a command. A failed
+or timed-out handoff preserves the draft, says the command was not sent, and asks
+the user to check the terminal panel before trying again. A late ready event cannot
+execute a timed-out command. Slot, project, and local/remote target changes, as
+well as unmounting, cancel open confirmations and pending handoffs. A typed
+`terminal_invalid_cwd` failure ends the pending composer handoff immediately.
+The composer uses the same launch-failure notice. The terminal's typed notice
+owns the failed directory and recovery instructions. Launch errors can be
+dismissed without changing the draft, retrying a command, or
+affecting terminal recovery; a later failed submission reports its own error
+again. Completion never clears a newer draft.
+The clear check compares expanded paste content as well as visible text, because
+a replacement paste can reuse the same chip label.
+
 ### Queue turn boundary finalize
 
 A successor turn dispatched WITHOUT a `chat_done` -- the tail-drain starting a
@@ -2444,7 +2590,7 @@ exclude that volatile edit. A successful same-window rename or an actual foreign
 label event clears it. Local/foreign tab removal, storage clear, and the test reset
 also discard it; reload restores only persisted labels, never the volatile entry.
 
-**Terminal mutation ownership**: every terminal route is dashboard-owner-only (`require_owner_dashboard_request`, the shared `is_owner_dashboard_request` gate); an authenticated non-owner cannot list terminal IDs, create or delete a session, request completion or redaction, or upgrade the per-session WebSocket. Within that owner boundary, the current `sess.ws` identity is server-authoritative for client mutation. Binary input and `resize` confirm that identity under `write_lock`. Reconnect candidates serialize separately from PTY writes, replay the bounded scrollback, and catch output produced during replay through a monotonic byte count before owner publication: unlocked catch-up rounds keep PTY recording flowing to the current owner, and the last round sends under `output_lock` (output cannot advance while it is held) so a candidate always converges even against a continuously streaming PTY — a reload with no live owner can never be starved by `tail -f`. Replay and ready sends are bounded; a failed candidate, or one the bounded ring overtook while a live owner would see the gap, leaves the previous owner authoritative (with no live owner the ring's remaining bytes are delivered and the candidate published), while publishing a candidate cancels any blocked send to the displaced socket, rotates the transport lock, and — outside the output-publication lock — sends the displaced socket one coarse `error` frame (`code: "displaced"`, no session id, no terminal content) and closes it. The bundled frontend (`website/src/utils/terminalRegistry.ts`) treats that code as a deliberate close: the session parks in `disconnected` — the banner names the cause (`components.cliPanel.displaced_message`, neutral icon, not the network-failure copy) — with no automatic redial (the online/visibility revive listeners skip it) until the user's Reconnect button re-arms it, so two live windows cannot displace each other in a loop; an `error` frame without the code, or a plain drop, keeps the ordinary backoff redial. Publication is cancellation-safe: a candidate whose handler is cancelled during that displaced-socket cleanup is detached again (identity-guarded, arming the orphan reaper) rather than left published as a dead owner. Error delivery and both candidate/displaced-socket cleanup are bounded so a backpressured transport cannot retain a handler or stall later reconnects indefinitely. Advisory `title`/`cwd`/`pong` frames go through `_send_owner_control_frame`, which captures the transport lock the socket was published with, re-confirms `sess.ws` identity after acquiring it, and bounds acquire-plus-send, so the singleton title poller can neither deliver to a displaced socket nor park behind a blocked one; the `last_title`/`last_cwd` dedup markers advance only after a confirmed send, so a timed-out or failed frame is retried on the next dirty tick instead of leaving chat handoff labelled with a stale cwd. A frame accepted before publication may finish. The first later input or resize from a displaced handler records one coarse SEL denial without terminal content and ends the handler, so one denial audit is the per-socket ceiling. A per-session reconnect credential is deliberately NOT part of this fence; it is the Phase 2 ownership protocol proposed in the terminal session ownership RFC (PR #7649).
+**Terminal mutation ownership**: every terminal route is dashboard-owner-only (`require_owner_dashboard_request`, the shared `is_owner_dashboard_request` gate); an authenticated non-owner cannot list terminal IDs, create or delete a session, request completion or redaction, or upgrade the per-session WebSocket. Within that owner boundary, the current `sess.ws` identity is server-authoritative for client mutation. Binary input and `resize` confirm that identity under `write_lock`. Reconnect candidates serialize separately from PTY writes, replay the bounded scrollback, and catch output produced during replay through a monotonic byte count before owner publication: unlocked catch-up rounds keep PTY recording flowing to the current owner, and the last round sends under `output_lock` (output cannot advance while it is held) so a candidate always converges even against a continuously streaming PTY — a reload with no live owner can never be starved by `tail -f`. Replay and ready sends are bounded; a failed candidate, or one the bounded ring overtook while a live owner would see the gap, leaves the previous owner authoritative (with no live owner the ring's remaining bytes are delivered and the candidate published), while publishing a candidate cancels any blocked send to the displaced socket, rotates the transport lock, and — outside the output-publication lock — sends the displaced socket one coarse `error` frame (`code: "displaced"`, no session id, no terminal content) and closes it. The bundled frontend (`website/src/utils/terminalRegistry.ts`) treats that code as a deliberate close: the session parks in `disconnected` — the banner names the cause (`components.cliPanel.displaced_message`, neutral icon, not the network-failure copy) — with no automatic redial (the online/visibility revive listeners skip it) until the user's Reconnect button re-arms it, so two live windows cannot displace each other in a loop; `terminal_invalid_cwd` also parks until explicit retry and displays the directory failure through `ErrorNotice` (see direct terminal commands above); an `error` frame without either recognized code, or a plain drop, keeps the ordinary backoff redial. Publication is cancellation-safe: a candidate whose handler is cancelled during that displaced-socket cleanup is detached again (identity-guarded, arming the orphan reaper) rather than left published as a dead owner. Error delivery and both candidate/displaced-socket cleanup are bounded so a backpressured transport cannot retain a handler or stall later reconnects indefinitely. Advisory `title`/`cwd`/`pong` frames go through `_send_owner_control_frame`, which captures the transport lock the socket was published with, re-confirms `sess.ws` identity after acquiring it, and bounds acquire-plus-send, so the singleton title poller can neither deliver to a displaced socket nor park behind a blocked one; the `last_title`/`last_cwd` dedup markers advance only after a confirmed send, so a timed-out or failed frame is retried on the next dirty tick instead of leaving chat handoff labelled with a stale cwd. A frame accepted before publication may finish. The first later input or resize from a displaced handler records one coarse SEL denial without terminal content and ends the handler, so one denial audit is the per-socket ceiling. A per-session reconnect credential is deliberately NOT part of this fence; it is the Phase 2 ownership protocol proposed in the terminal session ownership RFC (PR #7649).
 **Terminal input readiness**: opening `/api/ws/terminal/{sessionId}` is transport readiness only; it is not permission for an automated caller to write a command. The additional server→client `ready` control frame marks input readiness. For Bash (the Linux/WSL Run-in-terminal target), the PTY is launched as a REAL login shell (`-l`) and inherits a `PROMPT_COMMAND` that emits a randomized OSC marker; the raw reader matches that marker across read boundaries without decoding or rewriting output and sends `ready` only after the profile chain returns. A login shell runs an inherited `PROMPT_COMMAND` after the profile files return and before its first prompt, which is why the signal can live there and still be a post-profile one; it also holds while a profile is blocked in a shell builtin such as `read`, where foreground-process-group inference would release too early. The marker CANNOT ride an injected `--init-file` instead, because Bash reads an rc file only for a NON-login shell, and a non-login shell is the regression in #5885: `shopt -q login_shell` is then false, so every profile stanza guarded on login-ness silently no-ops and the user's environment never loads (that option is read-only, so sourcing the same files from an rc file cannot substitute for it). The injected snippet is single-shot and self-removing — it emits only while its token variable is still set, unsets that token so neither a later prompt nor a child shell repeats the sequence, and withdraws itself from `PROMPT_COMMAND` only while that variable is still exactly the SCALAR that was exported — `${PROMPT_COMMAND[1]+x}` separates a Bash 5.1 array whose element zero is still the hook, so a profile that appended keeps its own half either way, and the check avoids Bash 5.1-only syntax that macOS's `/bin/bash` 3.2 cannot parse. The mirror variable the ownership check compares against is unset on both branches whenever the hook runs. An operator who EXPORTED `PROMPT_COMMAND` into the gateway's own environment keeps it: the exported value is the hook followed by the inherited command (so it runs from the FIRST prompt, after the marker), the mirror is that whole value, and the withdrawal RESTORES the inherited command instead of unsetting the variable. Replacing it would be data loss rather than a lost nicety -- `PROMPT_COMMAND='history -a'` is the standard way to make concurrent shells append to `HISTFILE`, and without it an exiting shell overwrites that file with its own in-memory list, dropping what every sibling shell appended. A profile that ASSIGNS `PROMPT_COMMAND` outright drops the hook and with it the marker; that session's barrier never opens and the frontend's own bounded timeout reports the failure without writing, the same fail-closed outcome the barrier already has for a profile that never returns (tracked as #7657). One case is NOT fail-closed and the spec states it rather than implying the set is clean: a profile that installs its own hook only when the variable looks unset (`[ -z "$PROMPT_COMMAND" ]`, which is how the RHEL-family `/etc/bashrc` installs its terminal-title updater, reached through the default `~/.bash_profile` -> `~/.bashrc` chain) sees the exported hook, skips its own install, and then the snippet withdraws — so that session ends with no prompt command at all, silently. No carrier choice avoids it: every hook a login shell inherits is visible to the profile chain, and the mechanisms invisible to it (`BASH_ENV` non-interactive only, `ENV` POSIX mode only, `INPUTRC` cannot execute commands) do not run at the post-profile point the marker needs. Also #7657. There is deliberately NO second release on inferred progress. Two were tried on #7641 and both could release while a profile was still reading input, which hands it the queued command: a timeout cannot tell a dropped hook from a slow profile, and inferring the prompt from the PTY's line discipline is fooled by a profile sitting in `read -n 1` (clears `ICANON`) or `read -s -n 1` (clears `ICANON` and `ECHO`, i.e. indistinguishable from readline at a prompt) -- where the command loses its first byte and the remainder executes corrupted, which is worse than not running. Configured POSIX shells without an injected protocol retain transport-ready behavior rather than becoming unusable, and a ConPTY session sends `ready` after its first shell output reaches the client. Reconnects to an initialized session replay scrollback before `ready`. The frontend keeps `onTerminalReady` waiters parked until that frame; its existing bounded timeout reports failure without sending when Bash initialization never completes.
 **File Picker**: POST `/api/upload` (macOS only — opens native osascript file picker, returns absolute paths)
 **Screenshot**: POST `/api/screenshot` (macOS only — `screencapture -i`, returns path to `~/.kiro/crew/screenshots/`)

@@ -1,11 +1,11 @@
 """The `platformdirs` pytest11 block, pinned from outside setup.cfg.
 
-`platformdirs` declares a `pytest11` entry point (`platformdirs_isolated`), so
-pytest imports `platformdirs.pytest_plugin` during startup for every invocation
-in this repository. A `pytest11` entry point that fails to import is fatal
-before collection: the run exits 1 with zero tests and an annotation that says
-only `exit code 1`. `setup.cfg` refuses the plugin with `-p no:platformdirs`,
-which pluggy honors BEFORE it imports the module.
+`platformdirs` declares a `pytest11` entry point exporting the
+`platformdirs_isolated` fixture, so pytest imports `platformdirs.pytest_plugin`
+during startup for every invocation in this repository. A `pytest11` entry point
+that fails to import is fatal before collection: the run exits 1 with zero tests
+and an annotation that says only `exit code 1`. `setup.cfg` refuses the plugin
+with `-p no:platformdirs`, which pluggy honors BEFORE it imports the module.
 
 The block is only safe while nothing here wants the fixture, and it is only
 load-bearing while it is actually in `addopts`. Both halves are asserted here,
@@ -131,7 +131,12 @@ class TestBlockingSurvivesAnUnimportablePlugin:
                 "test_probe.py",
             ],
             cwd=project,
-            env={**os.environ, **env, "PYTEST_ADDOPTS": ""},
+            env={
+                **os.environ,
+                **env,
+                "PYTEST_ADDOPTS": "",
+                "PYTHONIOENCODING": "utf-8",
+            },
             capture_output=True,
             timeout=180,
             **UTF8_TEXT,

@@ -1,7 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { i18nT } from '../i18n/t'
 import type { ReactNode } from 'react'
-import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import type { RootState } from '../store'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -9,9 +10,13 @@ import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
 import chatReducer, { setQuestionCard, sseChatMessage, selectComposerBusy, selectSlotMessages } from '../store/chatSlice'
-import dashboardReducer from '../store/dashboardSlice'
+import dashboardReducer, { sseSlots } from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import { store as appStore } from '../store'
+import { TerminalHostContext } from '../hooks/useTerminalCommand'
+import * as bottomTerminal from '../hooks/useBottomTerminal'
+import * as terminalRegistry from '../utils/terminalRegistry'
+import * as terminalPopout from '../utils/terminalPopout'
 
 /* ChatPane sends must follow ChatPage's wire/bubble split for folder tokens
  * (issue #743 review finding): the API payload carries `[attached_dir N] path`
@@ -66,13 +71,13 @@ Object.defineProperty(window, 'matchMedia', {
 import ChatPane from '../components/ChatPane'
 import { api } from '../api/client'
 
-function makeStore(slotKey: string, busy = false) {
+function makeStore(slotKey: string, busy = false, overrides: Partial<RootState['dashboard']['slots'][number]> = {}) {
   return configureStore({
     reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer },
     preloadedState: {
       dashboard: {
         status: null, connected: true,
-        slots: [{ key: slotKey, messages: 0, running: false, subagents_running: busy, mode: '', pending_approval: false, waiting_for_input: false, last_activity_ts: undefined }],
+        slots: [{ key: slotKey, messages: 0, running: false, subagents_running: busy, mode: '', pending_approval: false, waiting_for_input: false, last_activity_ts: undefined, ...overrides }],
         unreadSlots: [], refreshTrigger: 0, approvalMode: 'normal',
         subagentRunning: {}, subagentDetails: {}, subagentText: {},
       } as unknown as RootState['dashboard'],
@@ -80,9 +85,9 @@ function makeStore(slotKey: string, busy = false) {
   })
 }
 
-function renderPane(slotKey: string, busy = false) {
+function renderPane(slotKey: string, busy = false, overrides: Partial<RootState['dashboard']['slots'][number]> = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  const store = makeStore(slotKey, busy)
+  const store = makeStore(slotKey, busy, overrides)
   return renderWithStore(store, qc, slotKey)
 }
 
@@ -92,7 +97,7 @@ function renderWithStore(store: ReturnType<typeof makeStore>, qc: QueryClient, s
       <QueryClientProvider client={qc}>
         <ThemeProvider>
           <MemoryRouter>
-            <ChatPane slotKey={slotKey} />
+            <TerminalHostContext.Provider value="docked"><ChatPane slotKey={slotKey} /></TerminalHostContext.Provider>
           </MemoryRouter>
         </ThemeProvider>
       </QueryClientProvider>
@@ -781,5 +786,93 @@ describe('ChatPane file drop', () => {
     await waitFor(() => {
       expect(screen.queryByTestId('chat-drop-overlay')).not.toBeInTheDocument()
     })
+  })
+})
+
+describe('ChatPane terminal attachment and session boundaries', () => {
+  beforeEach(() => {
+    terminalRegistry.setTerminalEnabledFlag(true)
+    vi.spyOn(bottomTerminal, 'addTab').mockReturnValue('pane-terminal')
+    vi.spyOn(terminalRegistry, 'sendToTerminalSession').mockReturnValue(true)
+    vi.spyOn(terminalRegistry, 'onTerminalReady').mockImplementation((_id, ready) => {
+      ready()
+      return vi.fn()
+    })
+    vi.spyOn(terminalPopout, 'bringBack').mockImplementation(() => {})
+  })
+  afterEach(() => {
+    terminalRegistry.setTerminalEnabledFlag(false)
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  it('refuses a dropped folder until its chip removes the token, then reviews the pane workspace', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal('kirocrew', { getPathForFile: () => '/work/docs' })
+    renderPane('pane-terminal-folder', false, { project: '/work/pane-project' })
+    const box = await screen.findByRole('textbox', { name: 'Message input' })
+    const folder = new File([], 'docs')
+    const dataTransfer = {
+      types: ['Files'], files: [folder],
+      items: [{ kind: 'file', getAsFile: () => folder, webkitGetAsEntry: () => ({ isDirectory: true }) }],
+    }
+    fireEvent.drop(box, { dataTransfer })
+    expect(box).toHaveValue('@/work/docs/ ')
+    fireEvent.change(box, { target: { value: '! pwd @/work/docs/ ' } })
+    const run = screen.getByRole('button', { name: 'Review and run in terminal' })
+    expect(run).toBeDisabled()
+    expect(screen.getByText('Remove folder attachments before running. Removing a folder also removes its @path reference from the command.')).toBeVisible()
+    await user.click(run)
+    await user.click(box)
+    await user.keyboard('{Enter}')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(box).toHaveValue('! pwd @/work/docs/ ')
+    expect(bottomTerminal.addTab).not.toHaveBeenCalled()
+    expect(terminalRegistry.sendToTerminalSession).not.toHaveBeenCalled()
+    expect(terminalPopout.bringBack).not.toHaveBeenCalled()
+    expect(api.sendChat).not.toHaveBeenCalled()
+    expect(api.uploadFiles).not.toHaveBeenCalled()
+
+    await user.click(within(screen.getByRole('group', { name: '/work/docs/' })).getByRole('button', { name: 'Remove folder' }))
+    expect(box).toHaveValue('! pwd ')
+    expect(run).toBeEnabled()
+    await user.click(run)
+    const dialog = screen.getByRole('dialog')
+    expect(dialog).toHaveTextContent('/work/pane-project')
+    expect(bottomTerminal.addTab).not.toHaveBeenCalled()
+    await user.click(within(dialog).getByRole('button', { name: 'Run', exact: true }))
+    expect(bottomTerminal.addTab).toHaveBeenCalledExactlyOnceWith('/work/pane-project')
+    expect(terminalRegistry.sendToTerminalSession).toHaveBeenCalledExactlyOnceWith('pane-terminal', 'pwd ', { preserveTrailingWhitespace: true })
+    expect(box).toHaveValue('')
+    expect(api.sendChat).not.toHaveBeenCalled()
+  })
+
+  it('keeps a retained remote pane blocked when its row disappears, without replay on rehydration', async () => {
+    const user = userEvent.setup()
+    const { store } = renderPane('pane-remote-retained', false, { executor: 'remote', project: '/peer/project' })
+    const row = store.getState().dashboard.slots[0]
+    act(() => store.dispatch(sseSlots([row])))
+    const box = await screen.findByRole('textbox', { name: 'Message input' })
+    fireEvent.change(box, { target: { value: '! pwd' } })
+    expect(screen.getByText('Terminal commands are unavailable for remote crew sessions.')).toBeVisible()
+    act(() => store.dispatch(sseSlots([])))
+    expect(store.getState().dashboard.slots).toHaveLength(0)
+    expect(screen.getByText('Wait for session details to load, or select another session.')).toBeVisible()
+    const run = screen.getByRole('button', { name: 'Review and run in terminal' })
+    expect(run).toBeDisabled()
+    await user.click(run)
+    await user.click(box)
+    await user.keyboard('{Enter}')
+    expect(box).toHaveValue('! pwd')
+    act(() => store.dispatch(sseSlots([row])))
+    expect(screen.getByText('Terminal commands are unavailable for remote crew sessions.')).toBeVisible()
+    expect(run).toBeDisabled()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(box).toHaveValue('! pwd')
+    expect(bottomTerminal.addTab).not.toHaveBeenCalled()
+    expect(terminalRegistry.onTerminalReady).not.toHaveBeenCalled()
+    expect(terminalRegistry.sendToTerminalSession).not.toHaveBeenCalled()
+    expect(terminalPopout.bringBack).not.toHaveBeenCalled()
+    expect(api.sendChat).not.toHaveBeenCalled()
   })
 })

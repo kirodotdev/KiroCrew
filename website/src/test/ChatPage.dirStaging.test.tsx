@@ -1,6 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { ReactNode } from 'react'
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import type { RootState } from '../store'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -8,8 +9,12 @@ import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
 import chatReducer, { setActiveSlot } from '../store/chatSlice'
-import dashboardReducer from '../store/dashboardSlice'
+import dashboardReducer, { sseSlots } from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
+import { TerminalHostContext } from '../hooks/useTerminalCommand'
+import * as bottomTerminal from '../hooks/useBottomTerminal'
+import * as terminalRegistry from '../utils/terminalRegistry'
+import * as terminalPopout from '../utils/terminalPopout'
 
 vi.mock('react-virtuoso', () => ({
   Virtuoso: ({ data, itemContent }: { data?: unknown[]; itemContent: (index: number, item: unknown) => ReactNode }) => (
@@ -62,12 +67,12 @@ Object.defineProperty(window, 'matchMedia', {
 import ChatPage from '../pages/ChatPage'
 import { api } from '../api/client'
 
-function makeStore(activeSlot: string, slots: { key: string; project?: string }[]) {
+function makeStore(activeSlot: string, slots: { key: string; project?: string; executor?: string }[]) {
   return configureStore({
     reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer },
     preloadedState: {
       dashboard: {
-        status: null, connected: true, slots: slots.map(s => ({ key: s.key, project: s.project, messages: 1, running: false, mode: '', pending_approval: false, waiting_for_input: false, last_activity_ts: undefined })),
+        status: null, connected: true, slots: slots.map(s => ({ ...s, messages: 1, running: false, mode: '', pending_approval: false, waiting_for_input: false, last_activity_ts: undefined })),
         unreadSlots: [], refreshTrigger: 0, approvalMode: 'normal',
         subagentRunning: {}, subagentDetails: {}, subagentText: {},
       } as unknown as RootState['dashboard'],
@@ -94,7 +99,7 @@ async function renderPage(store: ReturnType<typeof makeStore>) {
       <QueryClientProvider client={qc}>
       <Provider store={store}>
         <ThemeProvider>
-          <MemoryRouter><ChatPage /></MemoryRouter>
+          <MemoryRouter><TerminalHostContext.Provider value="docked"><ChatPage /></TerminalHostContext.Provider></MemoryRouter>
         </ThemeProvider>
       </Provider>
       </QueryClientProvider>,
@@ -274,4 +279,55 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     fireEvent.click(removeBtn2)
     await waitFor(() => expect(ta2.value).not.toContain('@src/main.ts'))
   })
+})
+
+describe('ChatPage terminal session identity', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    terminalRegistry.setTerminalEnabledFlag(true)
+    vi.spyOn(bottomTerminal, 'addTab').mockReturnValue('main-terminal')
+    vi.spyOn(terminalRegistry, 'sendToTerminalSession').mockReturnValue(true)
+    vi.spyOn(terminalRegistry, 'onTerminalReady').mockImplementation((_id, ready) => {
+      ready()
+      return vi.fn()
+    })
+    vi.spyOn(terminalPopout, 'bringBack').mockImplementation(() => {})
+  })
+  afterEach(() => {
+    terminalRegistry.setTerminalEnabledFlag(false)
+    vi.restoreAllMocks()
+  })
+
+  it('does not treat a retained remote session with deleted metadata as local', async () => {
+    const user = userEvent.setup()
+    const store = makeStore('retained-remote', [{ key: 'retained-remote', executor: 'remote', project: '/peer/project' }])
+    await renderPage(store)
+    const row = store.getState().dashboard.slots[0]
+    act(() => store.dispatch(sseSlots([row])))
+    const box = screen.getByRole('textbox', { name: 'Message input' })
+    fireEvent.change(box, { target: { value: '! pwd' } })
+    expect(screen.getByText('Terminal commands are unavailable for remote crew sessions.')).toBeVisible()
+    act(() => store.dispatch(sseSlots([])))
+    expect(store.getState().chat.activeSlot).toBe('retained-remote')
+    expect(store.getState().dashboard.slots).toHaveLength(0)
+    expect(screen.getByText('Wait for session details to load, or select another session.')).toBeVisible()
+    const run = screen.getByRole('button', { name: 'Review and run in terminal' })
+    expect(run).toBeDisabled()
+    await user.click(run)
+    await user.click(box)
+    await user.keyboard('{Enter}')
+    expect(box).toHaveValue('! pwd')
+    act(() => store.dispatch(sseSlots([row])))
+    expect(screen.getByText('Terminal commands are unavailable for remote crew sessions.')).toBeVisible()
+    expect(run).toBeDisabled()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(box).toHaveValue('! pwd')
+    expect(bottomTerminal.addTab).not.toHaveBeenCalled()
+    expect(terminalRegistry.onTerminalReady).not.toHaveBeenCalled()
+    expect(terminalRegistry.sendToTerminalSession).not.toHaveBeenCalled()
+    expect(terminalPopout.bringBack).not.toHaveBeenCalled()
+    expect(api.sendChat).not.toHaveBeenCalled()
+    expect(api.createChatSlot).not.toHaveBeenCalled()
+  })
+
 })

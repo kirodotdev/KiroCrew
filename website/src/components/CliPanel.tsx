@@ -5,7 +5,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import { useMutation } from '@tanstack/react-query'
 import { MessageSquarePlus, Copy, Check, PlugZap, AppWindow } from 'lucide-react'
-import { ensureTerminalConnection, disposeTerminalConnection, getTerminalCwd, useTerminalConnStatus, useTerminalManualRetry, useTerminalDisplaced, retryTerminalConnection } from '../utils/terminalRegistry'
+import { ensureTerminalConnection, disposeTerminalConnection, getTerminalCwd, useTerminalConnStatus, useTerminalManualRetry, useTerminalDisplaced, useTerminalInvalidCwd, retryTerminalConnection } from '../utils/terminalRegistry'
 import { getTerminalFont, resolveTerminalFontFamily, subscribeTerminalFont } from '../hooks/useTerminalFont'
 import { ansiPaletteFromVars } from '../utils/terminalPalette'
 import { useIsTouchDevice } from '../hooks/useIsTouchDevice'
@@ -279,6 +279,7 @@ function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: st
   // silent. Ordinary automatic 'reconnecting' blips (tab hide/show) stay quiet
   // to avoid flicker; only a manual retry sets manualRetry.
   const connStatus = useTerminalConnStatus(sessionId)
+  const invalidCwd = useTerminalInvalidCwd(sessionId)
   const manualRetry = useTerminalManualRetry(sessionId)
   // The manual "Reconnecting…" state: the user clicked Reconnect and the dial
   // has not yet resolved. On failure the status flips back to 'disconnected'
@@ -549,7 +550,7 @@ function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: st
         )}
         {showBanner && (
           <div
-            className="absolute inset-x-0 top-0 z-30 flex items-center gap-2 border-b border-border bg-bg-elevated/95 px-3 py-1.5 text-[12px] text-text shadow-sm backdrop-blur"
+            className="absolute inset-x-0 top-0 z-30 flex flex-wrap items-center gap-2 border-b border-border bg-bg-elevated/95 px-3 py-1.5 text-[12px] text-text shadow-sm backdrop-blur"
             role={displaced || reconnecting ? 'status' : undefined}
             aria-live={displaced || reconnecting ? 'polite' : undefined}
           >
@@ -567,16 +568,17 @@ function TerminalView({ sessionId, cwd, visible, onSendToChat }: { sessionId: st
                 </span>
               </>
             ) : (
-              /* The redial chain gave up: a FAILED outcome, so it renders through
-                 the shared error surface with the agent hand-off on. Nothing is
-                 lost by navigating away -- the PTY stays alive server-side and
-                 the cached xterm keeps its screen for the reconnect. */
+              /* Rejected opens and exhausted retries use the shared error
+                 surface with the agent hand-off on. Existing shells and cached
+                 xterm content survive navigating away. */
               <ErrorNotice
                 variant="inline"
                 askAgent
                 testId="cli-panel-disconnected"
-                className="min-w-0 flex-1"
-                message={i18nT('components.cliPanel.disconnected_message')}
+                className="min-w-0 flex-auto"
+                message={invalidCwd
+                  ? i18nT('components.cliPanel.invalid_cwd_message', { cwd })
+                  : i18nT('components.cliPanel.disconnected_message')}
               />
             )}
             <button
