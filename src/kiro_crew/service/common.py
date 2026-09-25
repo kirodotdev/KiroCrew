@@ -8,12 +8,14 @@ import shlex
 import shutil
 import sys
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 from kiro_crew.config import loader
 
 SERVICE_NAME = "kirocrew"  # systemd unit name (without .service)
 LAUNCHD_LABEL = "dev.kirocrew.gateway"  # launchd Label
+
 
 # The NAME of the environment variable kiro-cli reads its model credential
 # from — not the credential. This holds a variable name, is safe to print, and
@@ -42,6 +44,51 @@ def systemd_quote(value: str) -> str:
         )
     escaped = value.replace("%", "%%").replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
+
+
+def session_runtime_dir() -> str:
+    """The per-user runtime directory ``systemctl --user`` resolves against.
+
+    ``XDG_RUNTIME_DIR`` when the caller has one, else systemd's conventional
+    ``/run/user/<uid>``. ``os.getuid`` is absent on Windows; every caller is
+    Linux-only at runtime, but the ``getattr`` keeps this module importable there.
+    """
+    explicit = os.environ.get("XDG_RUNTIME_DIR")
+    if explicit:
+        return explicit
+    uid = getattr(os, "getuid", lambda: -1)()
+    return f"/run/user/{uid}"
+
+
+def systemctl_user_env() -> dict[str, str]:
+    """Environment for ``systemctl --user``, with the session-bus pointers
+    backfilled when absent.
+
+    ``systemctl --user`` finds the per-user systemd instance through
+    ``XDG_RUNTIME_DIR`` + ``DBUS_SESSION_BUS_ADDRESS``. A process launched from
+    a systemd SYSTEM unit — which is how ``kirocrew service install`` runs the
+    gateway — inherits no login-session environment and therefore neither
+    variable, so a ``systemctl --user`` spawned from it dies with "Failed to
+    connect to bus: No medium found" even though the bus socket is present and
+    the unit it asks about is running. Every ``systemctl --user`` this codebase
+    spawns — the pod runtime's and the service module's user-scope verbs — reads
+    a bus failure as a verdict about the host, so every one of them resolves its
+    environment here: an "unreachable" reading is never an artifact of the
+    spawning shell's missing variables.
+
+    Only ever ADDS: an explicitly-set value always wins, so a caller that has
+    deliberately pointed at another bus is left untouched. The socket must exist
+    before we name it — if ``systemd --user`` genuinely is not running we want
+    systemctl's own diagnostic, not a failure against a path we invented.
+    """
+    env = {**os.environ}
+    runtime_dir = session_runtime_dir()
+    if not env.get("DBUS_SESSION_BUS_ADDRESS"):
+        sock = os.path.join(runtime_dir, "bus")
+        if os.path.exists(sock):
+            env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={sock}"
+    env.setdefault("XDG_RUNTIME_DIR", runtime_dir)
+    return env
 
 
 def launchd_live_program() -> "os.PathLike[str]":
@@ -357,18 +404,156 @@ def restart_command_hint() -> str:
     scopes are not interchangeable — printing the wrong one sends the user
     down a dead end:
 
-    * ``SYSTEMD`` — the unit is **system-level** at
-      ``/etc/systemd/system/kirocrew.service`` (see
-      :mod:`kiro_crew.service.linux`). ``systemctl --user`` fails on AL2
-      (no per-user systemd manager), so the working command needs sudo:
-      ``sudo systemctl restart kirocrew``.
-    * ``LAUNCHD`` / ``UNSUPPORTED`` — defer to the service-aware
-      ``kirocrew restart`` CLI, which resolves the right mechanism itself.
+    * ``SYSTEMD`` with ONLY the **system** unit file present
+      (:data:`kiro_crew.service.linux.UNIT_PATH`, what ``service install``
+      writes) — the unit is system-level; ``systemctl --user`` fails on AL2 (no
+      per-user systemd manager) and addresses the wrong manager everywhere
+      else, so the working command needs sudo: ``sudo systemctl restart
+      kirocrew``.
+    * ``SYSTEMD`` with ONLY the **per-user** unit file at the remedy's location
+      (:func:`kiro_crew.service.linux.user_unit_file_path`) — the SELinux
+      remedy's gateway runs in the account's own manager, where the system
+      command answers ``Unit kirocrew.service not found``: ``systemctl --user
+      restart kirocrew``.
+    * Anything else — ``LAUNCHD``, ``UNSUPPORTED``, a systemd host with
+      neither file (a foreground ``kirocrew gateway``), or one with BOTH (a
+      stale system unit beside the remedy's user unit, where a file says
+      nothing about which scope is running and the wrong pick would restart a
+      dead unit or start a competitor) — defer to the service-aware
+      ``kirocrew restart`` CLI, which reads both managers and acts on the
+      scope that runs the unit.
 
-    Centralised so the update path and the Slack restart-failure hint share
-    one source of truth and can never drift back to the broken
-    ``systemctl --user`` string.
+    Decided by two stats, never by spawning ``systemctl``: this string is built
+    inside the gateway's own update path and at install time. The user location
+    resolves against the calling process's home, so under ``sudo -H`` it is
+    root's and the user file is simply not found — the answer is then the CLI,
+    never a command for the wrong account's manager. Cheap is not the same as
+    non-blocking: that home can be a network mount, and a stat against a
+    disconnected mount waits for as long as the mount does, so this is a
+    SYNCHRONOUS call for a thread that may block — the gateway's async
+    update-failure handler awaits it through ``asyncio.to_thread`` rather than
+    calling it on the event loop, where the wait would freeze chat and the
+    liveness heartbeat together. Centralised so the update
+    path, the Slack restart-failure hint and the install-time credential
+    warning share one source of truth and cannot drift back to a fixed
+    ``systemctl --user`` — or a fixed ``sudo systemctl`` — for a unit that lives
+    in the other scope. The two locations stay in the Linux module, which owns
+    every other systemd path and whose ``UNIT_PATH`` is the binding its tests
+    patch; it is imported at call time because that module imports this one.
     """
     if current_platform() is Platform.SYSTEMD:
-        return f"sudo systemctl restart {SERVICE_NAME}"
+        from kiro_crew.service import (  # circular import: linux imports this module at load
+            linux,
+        )
+
+        system_present = linux.UNIT_PATH.is_file()
+        user_present = linux.user_unit_file_path().is_file()
+        if system_present and not user_present:
+            return system_restart_command_hint()
+        if user_present and not system_present:
+            return user_restart_command_hint()
     return "kirocrew restart"
+
+
+def system_restart_command_hint() -> str:
+    """The command that restarts the SYSTEM systemd unit by hand — the string
+    :func:`restart_command_hint` answers on a systemd host, spelled once.
+
+    Unconditional on purpose: :mod:`kiro_crew.service.linux` reports a system
+    unit's refused restart with this command and is, by construction, only ever
+    driving systemd — so its report must not turn into ``kirocrew restart``
+    because the process that built it (a test on another platform) is not on a
+    systemd host, which is what a platform-switched helper would do.
+    """
+    return f"sudo systemctl restart {SERVICE_NAME}"
+
+
+def user_restart_command_hint() -> str:
+    """The command that restarts the PER-USER systemd unit by hand.
+
+    The user-scope sibling of :func:`restart_command_hint`: the SELinux remedy's
+    unit lives in the calling account's own manager, so the command for it is
+    ``systemctl --user restart kirocrew`` — under ``sudo`` it would address
+    root's manager and fail with ``Unit kirocrew.service not found``, the exact
+    dead end the restart verb's hint exists to prevent. Spelled once here so the
+    restart report and the remedy text cannot drift.
+    """
+    return f"systemctl --user restart {SERVICE_NAME}"
+
+
+# The three ways one scope's restart fails — :attr:`ScopeRestart.kind` — and
+# they call for three different remedies, which is why the report keeps them
+# apart instead of collapsing to a bool. REFUSED: the manager did not run the
+# restart, the unit is as it was (an unprivileged caller and a system unit,
+# a bus the shell cannot reach), so the same command with the right privilege,
+# from the right shell, is the remedy. NOT_UP: the manager ran it and the
+# gateway is not up afterwards — it exits on start, or the start job itself
+# failed — so a hand-run restart fails the same way and the journal is the
+# remedy. UNCONFIRMED: the manager stopped answering while the unit was being
+# re-read, so its health is unknown, neither "restarted" nor "exiting".
+RESTART_REFUSED = "refused"
+RESTART_NOT_UP = "not-up"
+RESTART_UNCONFIRMED = "unconfirmed"
+
+
+@dataclass(frozen=True)
+class ScopeRestart:
+    """One scope's outcome from a service restart, for the CLI to print.
+
+    ``scope`` names the manager (``system`` / ``user`` on Linux, ``launchd`` on
+    macOS). ``ok`` is the whole verdict: the manager ran the restart AND the
+    unit was up once its start had had time to fail. When False, ``reason``
+    says what happened in the manager's own words and the unit's real state,
+    ``kind`` is one of :data:`RESTART_REFUSED` / :data:`RESTART_NOT_UP` /
+    :data:`RESTART_UNCONFIRMED`, and ``hint`` is the command for THAT kind and
+    THAT scope: the restart to run by hand, the journal to read, or the status
+    to check.
+    """
+
+    scope: str
+    ok: bool
+    reason: str = ""
+    kind: str = ""
+    hint: str = ""
+
+
+@dataclass(frozen=True)
+class RestartReport:
+    """What a service restart did, one :class:`ScopeRestart` per scope acted on.
+
+    Empty ``outcomes`` means no scope had a running unit, so nothing was
+    restarted and the caller falls back to its foreground-gateway path — read
+    :attr:`attempted`, because an attempted restart that failed must NOT take
+    that path (it would spawn an unmanaged gateway beside an installed unit).
+    The report is truthy exactly when :attr:`ok` — a report is the answer to
+    "did the restart take?" first, so the callers that ask only that
+    (``if restart_service():``) read it as the bool it replaces — and the
+    failure path reads :attr:`restarted` and :attr:`failures` for what to tell
+    the operator, per scope: with a unit running in BOTH scopes (a stale
+    crash-looping system unit beside the working per-user one) one scope
+    restarts and the other does not, and "the gateway was not restarted" would
+    be false for the gateway the operator uses.
+    """
+
+    outcomes: tuple[ScopeRestart, ...] = ()
+
+    @property
+    def attempted(self) -> bool:
+        return bool(self.outcomes)
+
+    @property
+    def ok(self) -> bool:
+        """At least one scope was restarted and every one of them came back up."""
+        return bool(self.outcomes) and all(o.ok for o in self.outcomes)
+
+    @property
+    def restarted(self) -> tuple[ScopeRestart, ...]:
+        """The scopes whose unit the manager restarted and that stayed up."""
+        return tuple(o for o in self.outcomes if o.ok)
+
+    @property
+    def failures(self) -> tuple[ScopeRestart, ...]:
+        return tuple(o for o in self.outcomes if not o.ok)
+
+    def __bool__(self) -> bool:
+        return self.ok

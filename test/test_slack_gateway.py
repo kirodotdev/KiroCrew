@@ -1219,6 +1219,44 @@ class TestAutoApplyUpdate:
             ):
                 await orch._auto_apply_update()
 
+    @pytest.mark.asyncio
+    async def test_failure_path_resolves_the_restart_hint_off_the_event_loop(self):
+        # The except handler prints `restart_command_hint()`, which stats the
+        # per-user unit file under the account's home; a disconnected network
+        # home holds that stat for as long as it is disconnected. Called on the
+        # loop thread, the wait freezes chat and the liveness heartbeat together
+        # with nothing in-band to clear it. The double below stands in for that
+        # slow stat and blocks until the LOOP sets an event: only a hint
+        # resolved off the loop lets the loop run the task that sets it, so a
+        # hint called synchronously on the loop thread times out and answers
+        # `LOOP BLOCKED` instead of the command — deterministic, not a timing
+        # race, because nothing but the loop can set the event.
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        loop_ran = threading.Event()
+
+        def slow_hint() -> str:
+            return "kirocrew restart" if loop_ran.wait(timeout=2.0) else "LOOP BLOCKED"
+
+        async def loop_is_serving() -> None:
+            await asyncio.sleep(0)
+            loop_ran.set()
+
+        with (
+            patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}, clear=False),
+            # The first statement inside the handler's `try` raises, so the
+            # failure path is reached before any spawn.
+            patch.object(gw, "git_command_env", side_effect=RuntimeError("disk gone")),
+            patch.object(gw, "restart_command_hint", slow_hint),
+        ):
+            serving = asyncio.ensure_future(loop_is_serving())
+            await orch._auto_apply_update()
+            await serving
+
+        orch.dashboard_state.push_update_progress.assert_called_once_with(
+            "failed", "Restart failed — run: kirocrew restart"
+        )
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Tests: _is_brazil_install and _check_missing_deps

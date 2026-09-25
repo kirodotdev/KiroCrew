@@ -61,6 +61,7 @@ from kiro_crew.pod.config import (
     PodConfig,
 )
 from kiro_crew.seed import SeedError
+from kiro_crew.service.common import session_runtime_dir, systemctl_user_env
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 # Pod names become systemd instance names and path segments; keep them strict.
@@ -821,19 +822,12 @@ def pod_socket_path(cfg: PodConfig, name: str, port: int) -> Path:
 # --------------------------------------------------------------------------- #
 # systemd --user helpers.
 # --------------------------------------------------------------------------- #
-def _session_runtime_dir() -> str:
-    """The per-user runtime directory ``systemctl --user`` resolves against.
-
-    ``XDG_RUNTIME_DIR`` when the caller has one, else systemd's conventional
-    ``/run/user/<uid>``. ``os.getuid`` is absent on Windows; pods are Linux-only
-    (:func:`require_systemd`) so that branch is unreachable at runtime, but the
-    ``getattr`` keeps this module importable there.
-    """
-    explicit = os.environ.get("XDG_RUNTIME_DIR")
-    if explicit:
-        return explicit
-    uid = getattr(os, "getuid", lambda: -1)()
-    return f"/run/user/{uid}"
+# The runtime-dir and bus-pointer resolution is shared with the service module's
+# user-scope verbs (`kiro_crew.service.common`): both spawn `systemctl --user`
+# and both read a bus failure as a verdict about the host, so one resolver
+# decides what environment such a spawn sees. Kept under the module-level names
+# `pod/cli.py` and the tests reach for.
+_session_runtime_dir = session_runtime_dir
 
 
 def _address_socket_paths(address: str) -> list[str] | None:
@@ -917,31 +911,16 @@ class UserBusProbe:
 
 
 def _systemctl_env() -> dict[str, str]:
-    """Environment for ``systemctl --user``, with the session-bus pointers
-    backfilled when absent.
+    """Environment for the pod runtime's ``systemctl --user`` spawns.
 
-    ``systemctl --user`` finds the per-user systemd instance through
-    ``XDG_RUNTIME_DIR`` + ``DBUS_SESSION_BUS_ADDRESS``. A process launched from
-    a systemd SYSTEM unit — which is how ``kirocrew service install`` runs the
-    gateway — inherits no login-session environment and therefore neither
-    variable, so every pod verb died with "Failed to connect to bus: No medium
-    found" even though the bus socket was present and the pod unit installed.
-
-    Only ever ADDS: an explicitly-set value always wins, so a caller that has
-    deliberately pointed at another bus is left untouched. The socket must
-    exist before we name it — if ``systemd --user`` genuinely is not running we
-    want systemctl's own diagnostic, not a failure against a path we invented.
+    The session-bus backfill is :func:`kiro_crew.service.common.systemctl_user_env`
+    (why it exists and what it never overrides is documented there). Pods add one
+    thing on top: Kiro Crew's CLI and error classifier use English diagnostics,
+    so the service-manager tools are pinned to their stable C messages and a host
+    locale cannot turn Permission denied or No medium found into the generic
+    failure class.
     """
-    env = {**os.environ}
-    runtime_dir = _session_runtime_dir()
-    if not env.get("DBUS_SESSION_BUS_ADDRESS"):
-        sock = os.path.join(runtime_dir, "bus")
-        if os.path.exists(sock):
-            env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={sock}"
-    env.setdefault("XDG_RUNTIME_DIR", runtime_dir)
-    # Kiro Crew's CLI and error classifier use English diagnostics. Pin the
-    # service-manager tools to their stable C messages so a host locale cannot
-    # turn Permission denied or No medium found into the generic failure class.
+    env = systemctl_user_env()
     env["LC_ALL"] = "C"
     return env
 

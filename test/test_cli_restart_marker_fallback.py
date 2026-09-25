@@ -5,6 +5,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from kiro_crew.service.common import RestartReport
+
 
 def test_authenticated_shutdown_request_uses_fixed_loopback_endpoint() -> None:
     from kiro_crew import cli_server
@@ -132,7 +134,7 @@ def test_restart_refuses_spawn_after_blind_authenticated_shutdown(
         patch("kiro_crew.cli_server.resolve_client_port", return_value=7777),
         patch(
             "kiro_crew.cli_server.service_controller.restart_service",
-            return_value=False,
+            return_value=RestartReport(),
         ),
         patch(
             "kiro_crew.cli_server.service_controller.is_service_active",
@@ -174,7 +176,9 @@ def test_restart_refuses_spawn_when_the_lock_is_still_held_after_the_incumbent_e
     mock_sel = MagicMock()
     with (
         patch("kiro_crew.cli_server.resolve_client_port", return_value=7777),
-        patch("kiro_crew.cli_server.service_controller.restart_service", return_value=False),
+        patch(
+            "kiro_crew.cli_server.service_controller.restart_service", return_value=RestartReport()
+        ),
         patch("kiro_crew.cli_server.service_controller.is_service_active", return_value=False),
         patch("kiro_crew.cli_server.run_marker.read_pid", return_value=4242),
         patch("kiro_crew.cli_server.platform_compat.find_listening_pids", return_value=[4242]),
@@ -211,7 +215,9 @@ def test_restart_refuses_spawn_when_the_lock_probe_is_indeterminate_after_the_wa
     mock_sel = MagicMock()
     with (
         patch("kiro_crew.cli_server.resolve_client_port", return_value=7777),
-        patch("kiro_crew.cli_server.service_controller.restart_service", return_value=False),
+        patch(
+            "kiro_crew.cli_server.service_controller.restart_service", return_value=RestartReport()
+        ),
         patch("kiro_crew.cli_server.service_controller.is_service_active", return_value=False),
         patch("kiro_crew.cli_server.run_marker.read_pid", return_value=4242),
         patch("kiro_crew.cli_server.platform_compat.find_listening_pids", return_value=[4242]),
