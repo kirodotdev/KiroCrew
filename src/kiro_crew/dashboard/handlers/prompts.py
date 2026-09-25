@@ -3380,6 +3380,12 @@ async def api_skills_create(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "invalid skill name", "code": "invalid_name"}, status=400
         )
+    # Sanitizing imposes no length bound, so bound it here — on the WHOLE name,
+    # since nesting (``a/b/c``) blows PATH_MAX or mkdir's recursion on short segments.
+    if len(safe_name.encode("utf-8")) > MAX_PROMPT_NAME_BYTES:
+        return web.json_response(
+            {"error": "skill name is too long", "code": "name_too_long"}, status=400
+        )
     # Refuse creating into the open-standard read-only territories. Checked on
     # the SANITISED name because that is what create_skill would write (e.g.
     # 'Kiro-Workspace/Foo' sanitises to 'kiro-workspace/foo'). create_skill joins
