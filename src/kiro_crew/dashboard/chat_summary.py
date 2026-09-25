@@ -155,7 +155,8 @@ def _should_summarize(
     and the regeneration cadence -- because an explicit click already carries the
     consent they stand in for. It lifts none of the others: ``disabled`` is the
     feature's off switch, ``in_flight`` prevents two passes racing the same
-    sidecar, ``memory_mode`` protects a transcript that must not outlive itself,
+    sidecar, ``memory_mode`` keeps a derived artifact off a conversation that
+    learns nothing from itself,
     ``running`` keeps a turn that is still streaming from being cached as if it    had finished, and ``too_few_turns`` still holds because a two-message session
     has no intent structure to find and spending a model call to discover that is
     the waste this gate exists to prevent.
@@ -164,9 +165,9 @@ def _should_summarize(
         return "disabled"
     if getattr(slot, "_summary_in_flight", False) and not holding_guard:
         return "in_flight"
-    # An incognito/temporary session forbids deriving durable artifacts: its
-    # transcript is discarded, so persisting a summary to the .intents sidecar
-    # would leave conversation content on disk after the conversation is gone.
+    # An incognito/temporary session keeps its transcript for the user's own
+    # History but derives nothing from it: a persisted summary is exactly the
+    # kind of model-produced artifact of the conversation the mode withholds.
     if is_incognito_transcript(getattr(slot, "memory_mode", "")):
         return "memory_mode"
     # A turn IN FLIGHT has no boundary worth summarizing, and `force` cannot tell

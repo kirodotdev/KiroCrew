@@ -48,12 +48,15 @@ class TestSaveSlotToHistory:
         _save_slot_to_history(state, slot, force=True)
         return sorted((tmp_path / "history").rglob("*.jsonl"))
 
-    def test_temporary_slot_is_not_saved(self, tmp_path, monkeypatch):
-        """Tab recovery must not retain a temporary session's body."""
+    def test_temporary_slot_is_saved(self, tmp_path, monkeypatch):
+        """Tab recovery and History keep a temporary session's body."""
         files = self._save_and_count_lines(
             tmp_path, monkeypatch, {"key": "tmp-1", "memory_mode": "temporary"}
         )
-        assert files == []
+        assert files, "temporary slot must persist history"
+        body = files[0].read_text(encoding="utf-8")
+        assert '"memory_mode": "temporary"' in body
+        assert '"content": "hi"' in body
 
     def test_normal_slot_not_skipped(self, tmp_path, monkeypatch):
         """Persistent slot should NOT early-return."""
@@ -62,21 +65,83 @@ class TestSaveSlotToHistory:
 
 
 # ---------------------------------------------------------------------------
-# Dashboard: _persist_title skips restricted slots
+# Dashboard: _persist_title stamps a restricted slot's mode on the line it upserts
 # ---------------------------------------------------------------------------
 
 
 class TestPersistTitle:
-    def test_temporary_slot_auto_title_skipped(self):
-        """Auto-title skips restricted slots."""
-        from kiro_crew.dashboard.state import _ChatSlot
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", ["incognito", "temporary"])
+    async def test_title_born_header_carries_the_restricted_mode(self, tmp_path, monkeypatch, mode):
+        """The on-send titler can write the FIRST line of a session.
 
-        slot = _ChatSlot(key="tmp-2", memory_mode="temporary")
-        slot._titled = False
-        slot.messages = [{"role": "user", "content": "hi"}]
+        A header without ``memory_mode`` reads back as persistent after a
+        restart, so the title upsert of a restricted slot carries the mode.
+        """
+        from chat_test_helpers import _make_state
 
-        # _maybe_auto_title returns early for restricted slots
-        assert slot.is_restricted is True
+        from kiro_crew.dashboard.chat_title import _persist_title
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("titled", memory_mode=mode)
+        slot.title = "A private question"
+        key = "dashboard:titled"
+        assert not state.conversation_log.has_log(key)
+
+        assert await _persist_title(state, slot)
+
+        meta = state.conversation_log.get_metadata(key)
+        assert meta.get("title") == "A private question"
+        assert meta.get("memory_mode") == mode
+        assert state.conversation_log.list_sessions()[0]["memory_mode"] == mode
+
+    @pytest.mark.asyncio
+    async def test_persistent_title_upsert_leaves_the_mode_to_the_transcript_save(
+        self, tmp_path, monkeypatch
+    ):
+        from chat_test_helpers import _make_state
+
+        from kiro_crew.dashboard.chat_title import _persist_title
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("plain")
+        slot.title = "An ordinary question"
+
+        assert await _persist_title(state, slot)
+
+        meta = state.conversation_log.get_metadata("dashboard:plain")
+        assert meta.get("title") == "An ordinary question"
+        assert "memory_mode" not in meta
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("line_mode", ["temporary", "Temporary"])
+    async def test_title_upsert_cannot_loosen_the_on_disk_mode(
+        self, tmp_path, monkeypatch, line_mode
+    ):
+        import asyncio
+
+        from chat_test_helpers import _make_state
+
+        from kiro_crew.dashboard.chat_title import _persist_title
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        key = "dashboard:ratcheted-title"
+        await asyncio.to_thread(
+            state.conversation_log.update_metadata,
+            key,
+            {"memory_mode": line_mode},
+        )
+        slot = state.get_or_create_slot("ratcheted-title", memory_mode="incognito")
+        slot.title = "A private question"
+
+        assert await _persist_title(state, slot)
+
+        meta = state.conversation_log.get_metadata(key)
+        assert meta.get("title") == "A private question"
+        assert meta.get("memory_mode") == "temporary"
 
 
 # ---------------------------------------------------------------------------

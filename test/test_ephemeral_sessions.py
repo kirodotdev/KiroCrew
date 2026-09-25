@@ -160,10 +160,14 @@ class TestSlotCreation:
 
 class TestHistoryPersistence:
     @pytest.mark.parametrize("mode", ["incognito", "temporary"])
-    def test_restricted_session_keeps_conversation_only_in_memory(
-        self, tmp_path, monkeypatch, mode
-    ):
-        """Restricted bodies remain live but do not enter tab-recovery files."""
+    def test_restricted_session_writes_transcript_for_history(self, tmp_path, monkeypatch, mode):
+        """Every memory mode writes its transcript: the user can reopen it from History.
+
+        What a restricted mode withholds is learning FROM the conversation
+        (consolidation, lessons, memory injection), never the conversation
+        itself. Those readers gate on the ``memory_mode`` the metadata line
+        carries, which is asserted alongside the body.
+        """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         from kiro_crew.dashboard.chat import _save_slot_to_history
 
@@ -172,15 +176,18 @@ class TestHistoryPersistence:
         slot.append("user", "secret tax info")
         slot.append("assistant", "noted")
 
-        _save_slot_to_history(state, slot)
+        assert _save_slot_to_history(state, slot)
 
         msgs = state.conversation_log.read_messages("dashboard:e1")
-        assert msgs == []
-        assert not state.conversation_log._path("dashboard:e1").exists()
+        assert [(m["role"], m["content"]) for m in msgs] == [
+            ("user", "secret tax info"),
+            ("assistant", "noted"),
+        ]
+        assert state.conversation_log.get_metadata("dashboard:e1").get("memory_mode") == mode
         assert len(slot.messages) == 2
 
-    def test_new_restricted_session_does_not_create_metadata_file(self, tmp_path, monkeypatch):
-        """The live mode does not need a new durable recovery record."""
+    def test_new_restricted_session_metadata_carries_its_mode(self, tmp_path, monkeypatch):
+        """The metadata line is the file's privacy contract, so it names the mode."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         from kiro_crew.dashboard.chat import _save_slot_to_history
 
@@ -191,7 +198,16 @@ class TestHistoryPersistence:
         _save_slot_to_history(state, slot)
 
         meta = state.conversation_log.get_metadata("dashboard:e1")
-        assert meta == {}
+        assert meta == {
+            "_type": "metadata",
+            "created_at": slot.created_at,
+            "last_consolidated": 0,
+            "memory_mode": "incognito",
+            "model": "",
+            "autocompact_pct": None,
+            "tab_id": slot._tab_id,
+        }
+        assert "memory_store" not in meta
         assert slot.memory_mode == "incognito"
         assert "dashboard:e1" in state._restricted_keys
 
@@ -209,8 +225,16 @@ class TestHistoryPersistence:
         meta = state.conversation_log.get_metadata("dashboard:n1")
         assert "memory_mode" not in meta or meta.get("memory_mode") == "persistent"
 
-    def test_temporary_flush_does_not_create_transcript_or_title(self, tmp_path, monkeypatch):
-        """The ordinary flush cannot persist a temporary conversation."""
+    def test_temporary_transcript_on_disk_predates_any_titling(self, tmp_path, monkeypatch):
+        """A temporary slot's transcript reaches disk with NO titling involved.
+
+        Locks in the premise behind "titling is independent of memory_mode"
+        (docs/system-specs/modules/history.md): the session JSONL -- full user
+        and assistant content -- is written by the ordinary flush path regardless
+        of mode. A persisted title is therefore a summary of content already in
+        that same file, not a new disclosure. If this ever starts asserting
+        False, `_maybe_auto_title` must be re-gated on memory_mode.
+        """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         from kiro_crew.dashboard.chat import _save_slot_to_history
 
@@ -223,16 +247,21 @@ class TestHistoryPersistence:
         _save_slot_to_history(state, slot)
 
         path = state.conversation_log._path("dashboard:t-disk")
-        assert not path.exists()
-        assert state.conversation_log.list_sessions() == []
+        assert path.exists()
+        body = path.read_text(encoding="utf-8")
+        assert "my private question" in body
+        assert "the answer" in body
+        listed = state.conversation_log.list_sessions()
+        assert len(listed) == 1
+        assert listed[0]["memory_mode"] == "temporary"
 
 
 # ── Restore on gateway restart ──
 
 
 class TestRestore:
-    def test_restart_does_not_restore_new_restricted_body(self, tmp_path, monkeypatch):
-        """A transient conversation is not persisted merely to allow restart."""
+    def test_restore_rebuilds_memory_mode(self, tmp_path, monkeypatch):
+        """Gateway restart restores restricted sessions with memory_mode intact."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         from kiro_crew.dashboard.chat import _save_slot_to_history, restore_recent_sessions
 
@@ -245,9 +274,11 @@ class TestRestore:
         state2 = _make_state(tmp_path)
         restored = restore_recent_sessions(state2, window_minutes=0)
 
-        assert restored == 0
-        assert "e1" not in state2._slots
-        assert state2.conversation_log.read_messages("dashboard:e1") == []
+        assert restored == 1
+        assert "e1" in state2._slots
+        assert state2._slots["e1"].memory_mode == "incognito"
+        assert "dashboard:e1" in state2._restricted_keys
+        assert [m["content"] for m in state2._slots["e1"].messages] == ["private stuff", "ok"]
 
 
 # ── User-initiated resume from History tab ──
@@ -813,6 +844,52 @@ class TestCrossTabPrivacy:
         texts = [m.get("content", "") for m in results]
         included = sum(1 for t in texts if t.startswith("normal-"))
         assert included == 5
+
+
+# ── Suggestions builder: restricted transcripts never ground the prompt ──
+
+
+class TestSuggestionsContext:
+    @pytest.mark.parametrize("mode", ["incognito", "temporary", "Incognito"])
+    def test_build_context_skips_restricted_sessions(self, tmp_path, monkeypatch, mode):
+        """A restricted transcript's rows never reach the suggestions prompt.
+
+        ``_build_context`` walks ``list_sessions()`` and pulls each session's
+        last user messages through ``recent()`` into a prompt that is shipped to a
+        model and cached for the dashboard. The transcript is on disk for the
+        user to reopen, so the gate has to be here, on the reader -- mirroring
+        ``chat_folder_suggest._folder_sample_titles``. The restricted key must
+        not be READ at all, not merely dropped from the output.
+        """
+        from kiro_crew import suggestions
+
+        monkeypatch.setattr(
+            suggestions.ContextBuilder,
+            "get_memory_for",
+            MagicMock(side_effect=RuntimeError("no memory in this test")),
+        )
+        log = ConversationLog(base_dir=tmp_path)
+        _write_session(log, "dashboard:e1", [("user", "SECRET tax question")], memory_mode=mode)
+        _write_session(log, "dashboard:n1", [("user", "public refactor plan")])
+        read_keys: list[str] = []
+        real_recent = log.recent
+
+        def _recent(key, *args, **kwargs):
+            read_keys.append(key)
+            return real_recent(key, *args, **kwargs)
+
+        monkeypatch.setattr(log, "recent", _recent)
+        state = MagicMock(conversation_log=log)
+        state.crons.list_jobs.return_value = []
+
+        context = suggestions._build_context(state)
+
+        assert "public refactor plan" in context
+        assert "SECRET" not in context
+        assert "e1" not in context
+        # ``list_sessions`` yields the file stem as the key; that is what ``recent``
+        # is handed, so the read log is checked in that spelling.
+        assert read_keys == ["dashboard_n1"], "the restricted transcript was read"
 
 
 # ── Soft gate: incognito prompt prefix (chat.py) ──

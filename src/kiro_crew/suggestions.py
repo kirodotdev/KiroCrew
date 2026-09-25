@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from aiohttp import web
 
 from kiro_crew.context import ContextBuilder
+from kiro_crew.history import is_incognito_transcript
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
@@ -103,6 +104,11 @@ def _build_context(state: DashboardState) -> str:
             if sessions:
                 session_parts: list[str] = []
                 for s in sessions[:5]:
+                    # A restricted transcript is on disk for the user to reopen,
+                    # never for a model to read: its rows must not ground a prompt
+                    # (mirrors chat_folder_suggest._folder_sample_titles).
+                    if is_incognito_transcript(s.get("memory_mode")):
+                        continue
                     title = s.get("title", "")
                     key = s.get("key", "")
                     if not key:
