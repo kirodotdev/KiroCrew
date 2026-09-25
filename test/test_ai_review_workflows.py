@@ -9522,7 +9522,14 @@ class TestReviewLaneVerdictVisibility:
         # And that branch answers 2 as well: a rival comment in the slot is the
         # same refusal as finding one before the first write, reached later.
         rival = canonical.split("took this lane's slot while this run was retrying", 1)[1]
-        assert rival.split("\n")[1].strip() == "return 2", rival[:160]
+        # Read as the FIRST return after that branch rather than the next
+        # physical line: a withheld arm retains the verdict before returning, so
+        # a line sits between the message and the answer. Any other status here,
+        # including one the retention introduced, still fails.
+        rival_returns = [
+            line.strip() for line in rival.split("\n") if line.strip().startswith("return ")
+        ]
+        assert rival_returns and rival_returns[0] == "return 2", rival[:240]
         # Two classified reads, asking the same question at different times:
         # before the first write, and again during the backoff. Both are scoped
         # to the slot as well as the needle.
