@@ -4123,6 +4123,56 @@ def resolve_pin_spelling(model_id: str, advertised: Sequence[str] | None) -> str
     return model_registry.preferred_advertised_spelling(folded)
 
 
+def resolve_advertised_model_spelling(
+    model_id: str, advertised: Sequence[str] | None, *, namespace: str = ""
+) -> str:
+    """Return the wire spelling advertised by the backend for *model_id*.
+
+    ``resolve_pin_spelling`` handles exact ids, stale ``namespace::id`` pins and
+    registry-known provider ids. Claude ACP has one more shape: its current
+    adapter can advertise a short family alias while the static claude_code
+    registry expands the same pick to an older provider id. When an advertised
+    alias prefixes the registry's canonical key for a pin, that advertised alias
+    is the only value safe to send over ``session/set_config_option``.
+    """
+    resolved = resolve_pin_spelling(model_id, advertised)
+    if resolved or namespace != "claude_code":
+        return resolved
+    ids = [m.strip() for m in (advertised or []) if m and m.strip()]
+    if not ids:
+        return ""
+
+    translated = model_registry.resolve_wire_model_id(model_id, namespace)
+    if translated and translated != model_id:
+        resolved = resolve_pin_spelling(translated, ids)
+        if resolved:
+            return resolved
+
+    by_catalog = {model_registry.catalog_key(m): m for m in ids}
+    for candidate in (model_id, translated):
+        key = model_registry.catalog_key(candidate)
+        if key and key in by_catalog:
+            return by_catalog[key]
+
+    for candidate in (model_id, translated):
+        canonical = model_registry.canonical_key(candidate) or ""
+        if not canonical:
+            continue
+        for advertised_id in ids:
+            alias = advertised_id.lower()
+            # A simple advertised alias (for example a family name) can be the
+            # wire spelling for every registry version in that family. Derive the
+            # family from the advertised list itself instead of naming one here:
+            # the static registry is the stale component in this failure mode.
+            if (
+                alias
+                and all(ch.isalnum() or ch == "_" for ch in alias)
+                and canonical.startswith(f"{alias}-")
+            ):
+                return advertised_id
+    return ""
+
+
 def resolve_usable_model(preferred: str, advertised: Sequence[str] | None) -> str:
     """Resolve a SUBSTITUTE (non-explicit) model choice to what the account can
     run, mirroring the interactive path's reset-to-default (``_wire_model_id``).
@@ -7905,7 +7955,12 @@ class AcpClient:
             await self._ensure_served_default()
             return
         if self._uses_advertised_model_selection:
-            self._model = model_registry.resolve_wire_model_id(
+            advertised_spelling = resolve_advertised_model_spelling(
+                self._model,
+                advertised,
+                namespace=self._model_registry_namespace,
+            )
+            self._model = advertised_spelling or model_registry.resolve_wire_model_id(
                 self._model, self._model_registry_namespace
             )
         if self._is_kiro and self._model_is_unusable(self._model):
