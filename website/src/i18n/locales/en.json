@@ -2475,7 +2475,7 @@
         "trust_normal": "Normal",
         "trust_normal_desc": "Ask for approval on each tool use",
         "trust_reads": "Read",
-        "trust_reads_desc": "Auto-approve read-only operations (ls, cat, grep). Write operations still ask.",
+        "trust_reads_desc": "Auto-approve read-only shell commands (ls, cat, grep). Everything else still asks.",
         "trust_trust": "Trust all tools",
         "trust_trust_desc": "Auto-approve every tool Mochi uses, without asking",
         "trust_yolo_active": "YOLO (auto-approve everything) is active. It applies to all of {{productName}} and is changed from the dashboard, not here.",
