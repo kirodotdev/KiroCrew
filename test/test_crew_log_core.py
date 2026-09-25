@@ -302,6 +302,50 @@ def test_seq_starts_at_one_after_the_header_and_time_is_epoch_ms():
     assert first.time > 1_600_000_000_000
 
 
+def test_append_if_writes_nothing_once_the_tail_is_past_the_callers_seq():
+    crew = _crew()
+    crew.append("item/opened", {"item": "pr-1"}, src="gateway")
+    before = _log_bytes(lg.KIND_CREW, CREW)
+
+    declined = crew.append_if("item/opened", {"item": "pr-2"}, src="gateway", max_tail_seq=0)
+
+    assert declined is None
+    assert _log_bytes(lg.KIND_CREW, CREW) == before, "a declined append rewrote the file"
+    assert crew.last_seq == 1
+
+
+def test_append_if_writes_and_keeps_the_seq_contract_when_the_tail_still_matches():
+    # CONTROL. A bound that never matched would satisfy the test above while
+    # silently dropping every closer in the system.
+    crew = _crew()
+    crew.append("item/opened", {"item": "pr-1"}, src="gateway")
+
+    written = crew.append_if("item/opened", {"item": "pr-2"}, src="gateway", max_tail_seq=1)
+
+    assert written is not None
+    assert (written.seq, crew.last_seq) == (2, 2)
+
+
+def test_append_if_compares_against_the_tail_read_back_under_the_lock():
+    """The file decides, not the handle's cached idea of it.
+
+    A second handle -- standing in for another process -- commits an entry this
+    handle never saw. The bound must be judged against THAT tail, or a caller
+    deciding from a stale cache appends after an entry it never accounted for.
+    """
+    crew = _crew()
+    crew.append("item/opened", {"item": "pr-1"}, src="gateway")
+    CrewLog.open(lg.KIND_CREW, CREW).append("item/opened", {"item": "foreign"}, src="gateway")
+
+    # The caller's decision reached seq 1; the file is already at 2.
+    declined = crew.append_if("item/opened", {"item": "pr-2"}, src="gateway", max_tail_seq=1)
+    assert declined is None, "the foreign entry was not seen, so a stale decision was written"
+
+    # Accounting for it lets the same append through, at the seq after it.
+    written = crew.append_if("item/opened", {"item": "pr-2"}, src="gateway", max_tail_seq=2)
+    assert written is not None and written.seq == 3
+
+
 def test_seq_stays_contiguous_across_a_reopen():
     crew = _crew()
     for index in range(3):
