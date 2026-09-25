@@ -25,6 +25,7 @@ if TYPE_CHECKING:
         asyncio,
         create_agent_folder,
         logger,
+        parent_spawn_policy,
         sel,
         time,
     )
@@ -273,8 +274,19 @@ class _PumpMixin(ManagerComponent):
         ``store.defer`` is awaited the same way (``DeferPoint``)."""
         store = self._manager._admission.taskq_store()
         admission = self._manager._admission
+        # The parent agent spec's ``availableAgents`` declaration is re-read
+        # here, off the loop, so the gate's re-check at dispatch costs the loop
+        # no directory scan (same reason the record read above is threaded).
+        policy = await asyncio.to_thread(
+            parent_spawn_policy, str(params.get("parent_session_key") or "")
+        )
+        # The durable row carries no policy (``taskq_build_record`` drops it);
+        # a params dict that still holds one yields to the fresh read. ``params``
+        # itself stays whole: it is the row's identity for the stop path below.
+        spawn_params = {k: v for k, v in params.items() if k != "_parent_spawn_policy"}
         first: Any = self._manager.spawn(
-            **params,
+            **spawn_params,
+            _parent_spawn_policy=policy,
             _from_queue=True,
             _stop_before_claim=store is not None,
             _child_registration=store is None,
@@ -298,7 +310,11 @@ class _PumpMixin(ManagerComponent):
         result: Any = await admission.claim_and_start(
             first,
             lambda claimed: self._manager.spawn(
-                **params, _from_queue=True, _claimed=claimed, _child_registration=False
+                **spawn_params,
+                _parent_spawn_policy=policy,
+                _from_queue=True,
+                _claimed=claimed,
+                _child_registration=False,
             ),
             stop_params=params,
         )
