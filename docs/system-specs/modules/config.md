@@ -1973,6 +1973,7 @@ class MemoryConfig:
     persistence_enabled: bool = True # global switch: off = no automatic memory writes (lessons, consolidation, task-runner) AND no stored memory/lessons injected
     inject_memory: bool = True       # inject the stored memory block (preferences, activity index, recent-session snippets) into new-session context
     inject_lessons: bool = True      # inject the [Learned corrections] + [USER PROFILE] blocks into new-session context
+    inject_activity: bool = True     # inject the budgeted [Memory activity] block (projects, daily history (14 full days, then decayed summaries and counts to day 180), task facts, relevant episodes); requires inject_memory
 
 @dataclass
 class KnowledgeConfig:
@@ -2845,7 +2846,8 @@ Returns the effective config for a channel:
     "history_max_days": 365,
     "persistence_enabled": true,
     "inject_memory": true,
-    "inject_lessons": true
+    "inject_lessons": true,
+    "inject_activity": true
   },
   "knowledge": {
     "auto_add_documents": false,

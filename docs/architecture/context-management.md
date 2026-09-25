@@ -58,7 +58,7 @@ cannot disagree with what was sent.
 | 12 | `[Steering resources]` | `_load_steering_resources` → `file://*.md` in `~/.kiro/agents/kirocrew.json` | **Claude Code backend**, `kirocrew` agent, `project` group |
 | 13 | `[THREAD CONVERSATION HISTORY]` | `compress_thread_history`, else `_recall_rows` truncation | new, non-resumed session |
 | 14 | `[PREVIOUS TURN WAS CANCELLED …]` | `_build_stop_event_notes` | recent user stop |
-| 15 | `[Memory …]` + `[Memory activity index]` + `[Memory tools]` | `memory.py` → `get_context`, `activity_index` | not temporary, `memory` group |
+| 15 | `[Memory …]` + `[Memory activity index]` + `[Memory activity]` + `[Memory tools]` | `memory.py` → `get_context`, `activity_index`, `get_activity_context` | not temporary, `memory` group; the activity block also needs `memory.inject_activity` |
 | 16 | `[Skills:]` (pinned bodies, then discovery) | `skills.py` → `get_context` | see §4 |
 | 17 | `[Learned corrections …]` | vector `get_lessons_context`, else `lessons.jsonl` | `lessons` group |
 | 18 | `## Recent Session Context` | `conversation_log.recent_with_provenance` | `memory` group |
@@ -84,16 +84,25 @@ time-to-first-token: `build_session_context` stamps `_mark(...)` per group
 ### What memory contributes at session start
 
 `build_session_context` calls `MemoryStore.get_context` with
-`include_activity=False`. That is narrower than it reads:
+`include_activity=False` for the protected half, then
+`MemoryStore.get_activity_context` for the background half:
 
 - **Preferences** — injected **complete**, not capped, while the protected set
   stays under the model-safe ceiling.
-- **Semantic memory** — only the eligible `pref.*` records
-  (`get_preferences_context`), not a query-ranked search.
-- **Projects, daily history, episodic fragments** — **not injected**. `activity_index()`
-  lands instead: a bounded index of project headings and the last three days'
-  titles (the `cap` default of `activity_index`),
-  plus a `[Memory tools]` line pointing at `memory_recall` for the bodies.
+- **Semantic memory** — the eligible `pref.*` records
+  (`get_preferences_context`) are protected; task facts arrive in the activity
+  block below, query-ranked and with the `pref.*` rows dropped
+  (`get_semantic_context(facts_only=True)`) so nothing ships twice.
+- **`activity_index()`** — protected: a bounded index of project headings and
+  the last three days' titles (the `cap` default of `activity_index`), plus a
+  `[Memory tools]` line pointing at `memory_recall` for the bodies.
+- **Projects, daily history (14 full days, then decayed summaries and counts to
+  day 180), task facts, episodic fragments** — the `[Memory activity]` block,
+  one **ordinary background part** under the section
+  caps (`projects`, `memory_history`, `semantic`, `_EPISODIC_INJECT_CAP`). The
+  admission loop admits it whole or drops it whole, so a long history can never
+  displace preferences or lessons. `memory.inject_activity: false` withholds
+  it and the `[Memory tools]` line then says so.
 
 Lessons (`learn_add`) are separate and injected for **every** agent, custom
 included. A lesson with no `repo_scope` applies everywhere; a scoped one reaches
@@ -508,7 +517,7 @@ per-member permission control; both exist today, in the forms above.
 | What is in the first-turn prompt, in what order | `src/kiro_crew/context.py` (`build_message`, `build_session_context`) |
 | Which block is which, and how big it was | `src/kiro_crew/context_blocks.py` (`_MARKERS`, `_CLOSERS`, `measure_prompt`) |
 | Budgets, caps, the protected ceiling | `src/kiro_crew/context.py` (`_budget`, `_resolve_caps`, `_ResolvedCaps`) |
-| Memory block contents | `src/kiro_crew/memory.py` (`get_context`, `activity_index`) |
+| Memory block contents | `src/kiro_crew/memory.py` (`get_context`, `activity_index`, `get_activity_context`) |
 | Lessons | `src/kiro_crew/learn.py`, `src/kiro_crew/vector_memory.py` |
 | Skill index, pinned bodies, discovery | `src/kiro_crew/skills.py` (`get_context`, `load_skill`) |
 | Trigger matching, and its model-picked override | `src/kiro_crew/trigger_match.py`, `src/kiro_crew/skills.py` (`get_triggered_skills`, `split_triggered`, `trigger_hint`), `src/kiro_crew/decisions/points/skills_select.py` |

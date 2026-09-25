@@ -10980,6 +10980,7 @@
       "block_semantic_memory": "教えたファクト",
       "block_skill_hint": "関連スキル",
       "block_skill_index": "スキルインデックス",
+      "block_task_facts": "このタスクのために思い出したファクト",
       "block_unclassified": "分類されていません",
       "block_your_message": "あなたのメッセージ",
       "cat_memory": "あなたについての記憶",

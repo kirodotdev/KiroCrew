@@ -6687,6 +6687,7 @@
       "block_semantic_memory": "Facts you told it",
       "block_skill_hint": "Relevant skills",
       "block_skill_index": "Skill index",
+      "block_task_facts": "Facts recalled for this task",
       "block_unclassified": "Unclassified",
       "block_your_message": "Your message",
       "cat_memory": "Memory about you",

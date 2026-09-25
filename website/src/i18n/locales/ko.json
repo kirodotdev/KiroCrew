@@ -10980,6 +10980,7 @@
       "block_semantic_memory": "사용자가 알려준 사실",
       "block_skill_hint": "관련 스킬",
       "block_skill_index": "스킬 인덱스",
+      "block_task_facts": "이 작업을 위해 떠올린 사실",
       "block_unclassified": "분류되지 않음",
       "block_your_message": "사용자 메시지",
       "cat_memory": "나에 대한 기억",

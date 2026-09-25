@@ -11306,6 +11306,7 @@
       "block_semantic_memory": "Fatti che gli hai detto",
       "block_skill_hint": "Skill pertinenti",
       "block_skill_index": "Indice delle skill",
+      "block_task_facts": "Fatti richiamati per questo compito",
       "block_unclassified": "Non classificato",
       "block_your_message": "Il tuo messaggio",
       "cat_memory": "Memoria su di te",

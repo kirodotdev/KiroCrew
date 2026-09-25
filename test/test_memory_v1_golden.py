@@ -362,6 +362,12 @@ EXPECTED_BLOCK_ORDER = [
     "## User Preferences",
     "[Semantic Memory -- factual key-value pairs.",
     "[End of memory]",
+    "[Memory activity index -- reference data",
+    "[Memory activity -- recent work log and task facts.",
+    "## Active Projects",
+    "## Recent History",
+    "[Episodic Memory -- relevant past conversation fragments.",
+    "[End of memory activity]",
     "[Memory tools]",
     "[Skills:]",
     "[Learned corrections -- retained rules from past mistakes.",
@@ -373,9 +379,7 @@ EXPECTED_BLOCK_ORDER = [
 #: starts injecting one of these is a change to the default path even when every
 #: block above is still byte-identical.
 EXPECTED_ABSENT = {
-    "## Active Projects": "notebook facts are retrieved on demand",
-    "## Recent History": "daily activity is retrieved on demand",
-    "[Episodic Memory": "episodes are retrieved on demand",
+    "[Task facts": "the only non-preference fact scores 0 against the request and is dropped",
     "[CONTEXT SCOPE]": "nothing was withheld (context_groups=None)",
     "[USER PROFILE]": "onboarding questions unanswered",
     "[UI LANGUAGE]": "dashboard.language is the follow-the-browser sentinel",
@@ -488,11 +492,11 @@ EXPECTED_EXTENTS = {
     "[CURRENT AGENT]": 196,
     "[WORKSPACE IDENTITY]": 376,
     "[DOCUMENTATION]": 235,
-    "[Memory —": 1249,
+    "[Memory —": 2008,
     "[Skills:]": 413,
     "[Learned corrections": 320,
 }
-EXPECTED_TOTAL = 5899
+EXPECTED_TOTAL = 6658
 
 
 def test_session_context_char_extents(seeded: Seeded) -> None:
@@ -530,9 +534,19 @@ def test_memory_sub_block_bodies_fit_their_own_caps(seeded: Seeded) -> None:
     semantic = memory_block[memory_block.index("[Semantic Memory") :]
     semantic = semantic[: semantic.index("[End of semantic memory]")]
     assert len(semantic) <= caps.semantic
-    assert "[Episodic Memory" not in memory_block
     assert _PREFERENCES in memory_block
-    assert _PROJECTS not in payload and _HISTORY_DAY not in payload
+    # The activity half rides in the same extent as ordinary background: the
+    # projects file, the day's history, and the query-ranked episodes, each
+    # inside the cap the builder passed.
+    activity = memory_block[memory_block.index("[Memory activity —") :]
+    activity = activity[: activity.index("[End of memory activity]")]
+    assert _PROJECTS in activity and _HISTORY_DAY in activity
+    episodic = activity[activity.index("[Episodic Memory") :]
+    episodic = episodic[: episodic.index("[End of episodic memory]")]
+    assert len(episodic) <= min(ctx._EPISODIC_INJECT_CAP, caps.episodic)
+    # Preferences ship once, protected; the activity half never repeats them.
+    assert "[Task facts" not in memory_block
+    assert memory_block.count(SEM_TOP[0]) == 1
 
 
 @pytest.mark.parametrize("section", ["prefs", "projects", "memory_history"])
@@ -565,7 +579,10 @@ def test_oversized_memory_file_truncates_exactly_at_its_cap(seeded: Seeded, sect
     if section == "prefs":
         assert target.read_text(encoding="utf-8") in startup
     else:
+        # Background: cut at the production cap inside the startup payload too,
+        # and the index still names the entries the cut removed.
         assert target.read_text(encoding="utf-8") not in startup
+        assert "\n…[truncated]" in startup
         assert "Memory activity index" in startup
     marker = {
         "prefs": "## User Preferences",
@@ -600,11 +617,14 @@ def test_semantic_recall_order(seeded: Seeded) -> None:
 def test_episodic_recall_order(seeded: Seeded) -> None:
     """Relevance gate then decay ranking; the older, more relevant row leads."""
     payload = seeded.memory.get_context(query=QUERY, include_activity=True)
-    assert "[Episodic Memory" not in _session_context(seeded)
-    block = payload[payload.index("[Episodic Memory") : payload.index("[End of episodic memory]")]
-    rows = [line for line in block.splitlines() if re.match(r"^\d+\. ", line)]
-    assert rows == [f"1. {EP_TOP[0]}", f"2. {EP_MID[0]}"]
-    assert EP_OFF[0] not in payload, "a row below the relevance gate must not be injected"
+    startup = _session_context(seeded)
+    for candidate in (payload, startup):
+        block = candidate[
+            candidate.index("[Episodic Memory") : candidate.index("[End of episodic memory]")
+        ]
+        rows = [line for line in block.splitlines() if re.match(r"^\d+\. ", line)]
+        assert rows == [f"1. {EP_TOP[0]}", f"2. {EP_MID[0]}"]
+        assert EP_OFF[0] not in candidate, "a row below the relevance gate must not be injected"
 
 
 def test_lesson_recall_order(seeded: Seeded) -> None:
@@ -740,26 +760,45 @@ def test_seeded_home_file_set_is_pinned(seeded: Seeded) -> None:
     }
 
 
-# ── 6. Embed accounting: 3 calls, 1 inference ────────────────────────────────
+# ── 6. Embed accounting: one inference per request, shared by every reader ───
 
 
-def test_startup_does_not_embed_but_explicit_readers_share_one_inference(seeded: Seeded) -> None:
-    """Only explicit activity and lesson ranking embed, through the shared cache."""
+def test_startup_embeds_the_request_once_and_explicit_readers_share_it(seeded: Seeded) -> None:
+    """The activity block ranks facts and episodes against the request: two embed
+    calls, ONE inference. Explicit activity and lesson readers reuse that inference
+    through the shared cache rather than paying it again."""
     _session_context(seeded)
-    assert seeded.embed_fn_calls == []
-    assert seeded.inference_calls == []
+    assert seeded.embed_fn_calls == [QUERY, QUERY]
+    assert seeded.inference_calls == [QUERY]
     seeded.memory.get_context(query=QUERY, include_activity=True)
     seeded.vectors.get_lessons_context(QUERY)
-    assert seeded.embed_fn_calls == [QUERY, QUERY, QUERY]
+    assert seeded.embed_fn_calls == [QUERY] * 5
     assert seeded.inference_calls == [QUERY]
 
 
-def test_a_second_build_still_does_not_retrieve_activity(seeded: Seeded) -> None:
-    """Repeated startup does not rely on an embedding cache to stay cheap."""
+def test_a_second_build_shares_the_first_builds_inference(seeded: Seeded) -> None:
+    """Repeated startup on the same request never re-runs the encoder."""
     _session_context(seeded)
     _session_context(seeded)
+    assert seeded.embed_fn_calls == [QUERY] * 4
+    assert seeded.inference_calls == [QUERY]
+
+
+def test_activity_off_makes_startup_embed_free(seeded: Seeded) -> None:
+    """``memory.inject_activity: false`` is the lean startup: preferences and the
+    activity index only, nothing ranked, nothing embedded."""
+    config_file = seeded.home / "config.json"
+    data = json.loads(config_file.read_text(encoding="utf-8"))
+    data["memory"] = {"inject_activity": False}
+    config_file.write_text(json.dumps(data), encoding="utf-8")
+    assert KiroCrewConfig.load().memory.inject_activity is False
+    payload = _session_context(seeded)
     assert seeded.embed_fn_calls == []
     assert seeded.inference_calls == []
+    assert "[Memory activity —" not in payload
+    assert "Memory activity index" in payload
+    assert _PREFERENCES in payload
+    assert "not loaded automatically" in payload
 
 
 def test_an_empty_query_skips_episodic_recall_and_lesson_ranking(seeded: Seeded) -> None:
@@ -768,6 +807,10 @@ def test_an_empty_query_skips_episodic_recall_and_lesson_ranking(seeded: Seeded)
     assert seeded.embed_fn_calls == []
     assert seeded.inference_calls == []
     assert "[Episodic Memory" not in payload
+    # Nothing to rank against: the activity block carries projects and history
+    # but no recency-dumped facts, and the preferences half stays stable.
+    assert "[Task facts" not in payload
+    assert _PROJECTS in payload and _HISTORY_DAY in payload
     # Query-free startup keeps stable preferences, not recency-filled facts.
     block = payload[payload.index("[Semantic Memory") : payload.index("[End of semantic memory]")]
     rows = [line for line in block.splitlines() if line.startswith(("pref.", "user."))]

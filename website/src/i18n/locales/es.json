@@ -11306,6 +11306,7 @@
       "block_semantic_memory": "Datos que le contaste",
       "block_skill_hint": "Habilidades relevantes",
       "block_skill_index": "Índice de habilidades",
+      "block_task_facts": "Datos recordados para esta tarea",
       "block_unclassified": "Sin clasificar",
       "block_your_message": "Tu mensaje",
       "cat_memory": "Memoria sobre ti",

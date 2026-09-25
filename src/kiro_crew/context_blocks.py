@@ -48,6 +48,7 @@ _MARKERS: Final[tuple[tuple[str, str], ...]] = (
     ("context_scope", r"\[CONTEXT SCOPE\]"),
     ("recovery", r"\[(?:SESSION RESUMED|REINJECTED AFTER COMPACTION)"),
     ("semantic_memory", r"\[Semantic Memory"),
+    ("task_facts", r"\[Task facts"),
     ("skill_index", r"\[Skills:\]"),
     ("lessons", r"\[Learned corrections"),
     ("episodic_memory", r"\[Episodic Memory"),
@@ -106,12 +107,17 @@ _CLOSERS: Final[dict[str, re.Pattern[str]]] = {
         ("session_wrapper", r"\[END OF SESSION CONTEXT\]"),
         ("workspace_identity", r"\[End of workspace identity\]"),
         ("docs_pointer", r"\[END DOCUMENTATION\]"),
-        ("memory", r"\[End of memory(?: activity index)?\]"),
+        # Three memory blocks share this opener: the protected `[Memory —` read,
+        # the `[Memory activity index —` hints and the budgeted `[Memory activity
+        # —` block. Each closes with its own spelling, so one alternation covers
+        # them; a closer left out here lets that block absorb what follows it.
+        ("memory", r"\[End of memory(?: activity(?: index)?)?\]"),
         ("memory_tools", r"\[End of memory tools\]"),
         ("steering", r"\[End of steering resources\]"),
         ("thread_history", r"\[End of thread history\]"),
         ("recovery", r"\[END REINJECTED\]"),
         ("semantic_memory", r"\[End of semantic memory\]"),
+        ("task_facts", r"\[End of task facts\]"),
         ("skill_index", r"\[End of skills\]"),
         ("lessons", r"\[End of learned corrections\]"),
         ("episodic_memory", r"\[End of episodic memory\]"),

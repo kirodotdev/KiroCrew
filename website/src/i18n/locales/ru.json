@@ -11469,6 +11469,7 @@
       "block_semantic_memory": "Факты, которые вы сообщили",
       "block_skill_hint": "Релевантные навыки",
       "block_skill_index": "Указатель навыков",
+      "block_task_facts": "Факты, вспомненные для этой задачи",
       "block_unclassified": "Не классифицировано",
       "block_your_message": "Ваше сообщение",
       "cat_memory": "Память о тебе",

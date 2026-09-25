@@ -59,16 +59,15 @@ def seed_skill(root: Path, name: str, *, always=False, body="Synthetic procedure
 
 
 class TestDefaultMemory:
-    def test_fresh_ordinary_context_keeps_preferences_not_activity(self, rig, monkeypatch):
+    def test_fresh_ordinary_context_keeps_preferences_and_bounded_activity(self, rig):
         builder, memory, _, _, _ = rig
         memory.write_preferences("# Preferences\nAlways preserve approved safety controls.\n")
-        monkeypatch.setattr(
-            memory, "read_recent_history", Mock(side_effect=AssertionError("full history read"))
-        )
         memory.write_projects("# Payment migration\n" + "Details stay on demand.\n" * 100)
         text, _ = builder.build_message("Fix today's task", True, session_key="dashboard:synthetic")
         assert "Payment migration" in text
+        # The projects file is cut at its own cap, never carried whole.
         assert "Details stay on demand.\n" * 100 not in text
+        assert "[truncated]" in text
         assert "Always preserve approved safety controls." in text
         assert "memory_recall" in text
         assert text.endswith("Fix today's task")

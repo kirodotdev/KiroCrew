@@ -54,6 +54,7 @@ async def test_slow_v1_query_embeds_fall_back_without_holding_prompt_build(monke
 
     memory.get_context.side_effect = memory_context
     memory.activity_index.return_value = ""
+    memory.get_activity_context.return_value = ""
     builder = ContextBuilder(
         memory=MemoryStore(workspace=tmp_path / "workspace"),
         skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
