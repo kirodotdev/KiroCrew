@@ -941,11 +941,16 @@ class OrphanStallMonitor(ManagerComponent):
                 # "failed to start" error instead of burning the full deadline
                 # and surfacing a misleading 30-minute turn-0 timeout.
                 if self._manager._is_startup_stalled(info, now):
+                    # The in-startup population is diagnostic only: the
+                    # deadline is the fixed ``_startup_deadline`` whatever the
+                    # crowd, measured from gate exit (``_gate_exit_reset``).
                     logger.warning(
                         "Reaper: subagent %s failed to start within %ds "
-                        "(turn 0, no runtime launched), force-killing",
+                        "(turn 0, no runtime launched; %d other agent(s) in startup), "
+                        "force-killing",
                         agent_id,
                         self._manager._startup_deadline,
+                        self._manager._startup_population(exclude=info),
                     )
                     try:
                         await self._manager._force_reap(
@@ -1002,15 +1007,31 @@ class OrphanStallMonitor(ManagerComponent):
         ``_exec_started`` — not the registration timestamp ``started`` — means
         an agent merely awaiting spawn approval (never entered ``_run_inner``)
         is never caught here.
+
+        The deadline is the fixed ``_startup_deadline`` however many other
+        agents are in startup, and the clock it is measured on does not run
+        while the run is queued for a ``SessionStartGate`` permit: the clock
+        freezes at gate entry (``_gate_wait_mark`` stamps
+        ``_gate_wait_started``, which stands in for *now* here) and restarts at
+        acquisition (``_gate_exit_reset``). So the clock measures time spent
+        STARTING -- before the gate and with a permit held -- never time queued
+        behind other starts, on both start paths, and the in-startup population
+        is bounded separately by ``_startup_cap`` at admission. The deadline does not grow with the
+        population: a term sampled at sweep time against a clock spanning the
+        whole crowded period would not be monotonic -- it would shrink as the
+        crowd drained and could reap at one sweep an agent the sweep before had
+        left inside its window.
         """
         exec_started = info._exec_started
         if exec_started is None:
             return False
+        # Queued for a permit: the clock reads as it stood when the wait began.
+        clock_now = info._gate_wait_started if info._gate_wait_started is not None else now
         return (
             info.turns == 0
             and info._pid is None
             and info._first_stream_started is None
-            and (now - exec_started) > self._manager._startup_deadline
+            and (clock_now - exec_started) > self._manager._startup_deadline
         )
 
     async def _stall_verdict_impl(self, info: SubagentInfo) -> tuple[str, str]:

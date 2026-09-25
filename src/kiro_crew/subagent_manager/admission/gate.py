@@ -890,10 +890,12 @@ class _GateMixin(ManagerComponent):
             ):
                 self._manager._queue.append(queue_params)
             logger.info(
-                "Subagent queued (%d running, %d queued, slot_free=%s)",
+                "Subagent queued (%d running, %d queued, slot_free=%s, in_startup=%d/%d)",
                 self._manager._running_count,
                 len(self._manager._queue),
                 slot_free,
+                self._manager._startup_population(),
+                self._manager._startup_cap(),
             )
             # Advisory UI signal: tell the chip how many agents are now waiting
             # to start for this parent so it can appear immediately and show a
@@ -1004,6 +1006,11 @@ class _GateMixin(ManagerComponent):
                 # awaits the claim, so nothing admitted during that await can
                 # overshoot the cap or skip the stagger.
                 self._manager._running_count += 1
+                # The reservation is also an admitted-but-unstarted agent
+                # for the in-startup bound (``_startup_population``): the
+                # re-entry skips the admission gate, so it must have been
+                # counted by every admission decided in between.
+                self._manager._startup_reservations += 1
                 self._manager._last_spawn_ts = time.monotonic()
                 return ClaimPoint(agent_id, parent_session_key, _stage_boundary_owner)
             taskq_generation, proceed, claim_reason = self._manager._admission.taskq_claim(agent_id)
@@ -1098,6 +1105,12 @@ class _GateMixin(ManagerComponent):
         self._record_crew_log_dispatch(info, from_queue=_from_queue, asked=_crew_log_asked)
         if not _dispatch_now:  # a ClaimPoint re-entry already holds its reservation
             self._manager._running_count += 1
+        else:
+            # Registered: the info now counts in ``_startup_population``
+            # itself, so the reservation stands down.
+            self._manager._startup_reservations = max(
+                0, int(self._manager._startup_reservations) - 1
+            )
         self._manager._last_spawn_ts = time.monotonic()  # stagger gate: one start per interval
         # Batch lifecycle: announce the wave ONCE, on its first member to
         # actually start (queued members haven't started yet — the event marks

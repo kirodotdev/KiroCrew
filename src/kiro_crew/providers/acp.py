@@ -7,7 +7,7 @@ import functools
 import json
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import aclosing
 from pathlib import Path
 from typing import Any
@@ -387,6 +387,8 @@ class AcpProvider(LLMProvider):
         member_context: bool = False,
         memory_mode: str = "persistent",
         shared_scratch: Path | None = None,
+        on_gate_acquired: Callable[[float], None] | None = None,
+        on_gate_queued: Callable[[], None] | None = None,
     ) -> None:
         # An unrecognized backend would pass every ``_is_<backend>`` check and
         # spawn kiro-cli, so a typo'd config would drive the wrong agent with no
@@ -423,6 +425,16 @@ class AcpProvider(LLMProvider):
         # ``AcpRuntime`` it constructs itself, and a dedicated subagent's
         # inherited work directory has to reach THAT process.
         self._shared_scratch: Path | None = shared_scratch
+        # Forwarded to ``runtime.create_session`` on the fresh-session path only
+        # (``session/load`` takes no gate permit). Fires at ``SessionStartGate``
+        # EXIT with the queue wait in ms, so a dedicated subagent process can
+        # restart its start clock the way a session-shared one does in
+        # ``_create_shared_session``: a wait for a permit is admission's cost,
+        # not this start's. None -- every non-subagent session -- is inert.
+        self._on_gate_acquired: Callable[[float], None] | None = on_gate_acquired
+        # Its companion for gate ENTRY: the manager freezes the start clock for
+        # the span spent waiting for a permit. Same None-is-inert rule.
+        self._on_gate_queued: Callable[[], None] | None = on_gate_queued
         self._client = AcpClient(**kwargs)
         # Consumer opt-in for the low-fidelity child permission downgrade
         # (see child_fidelity_aware property). Set by fidelity-aware
@@ -1271,6 +1283,8 @@ class AcpProvider(LLMProvider):
                         memory_mode=self.memory_mode,
                         session_key=self._owning_session_key(),
                         channel_id=self._owning_channel_id() or "",
+                        on_gate_acquired=self._on_gate_acquired,
+                        on_gate_queued=self._on_gate_queued,
                     )
                 except AcpRuntimeError as exc:
                     sandbox_failure = await sandbox_init_failure_for_runtime(runtime)
