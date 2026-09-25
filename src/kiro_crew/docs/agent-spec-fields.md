@@ -633,4 +633,7 @@ Skill resource mappings define the available set, not startup body injection. Cr
 resolves the winning project/global spec for directory, search, list and exact read.
 Native CLI execution uses a managed view without skill resources; the original spec
 remains unchanged and supplies the mapping. Internal `kirocrew-skill-view-` specs
-are omitted from Crew agent discovery. See [context management](../../../docs/architecture/context-management.md).
+are omitted from Crew agent discovery, and from the stat-only fingerprints its
+roster and spec caches revalidate on, so an alias write cannot invalidate them
+(`agent_spec_format.is_native_skill_alias_name` is the one predicate both apply).
+See [context management](../../../docs/architecture/context-management.md).
