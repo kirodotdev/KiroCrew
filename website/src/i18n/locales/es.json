@@ -8378,7 +8378,9 @@
     "voiceStatusBar": {
       "default_microphone": "Micrófono predeterminado",
       "dictation_kept_for_model": "Tu dictado se conserva y se transcribirá.",
-      "recording": "Grabando"
+      "recording": "Grabando",
+      "waiting_for_speech_model": "Esperando el modelo de voz.",
+      "discard_dictation": "Descartar"
     },
     "webAppArtifactCard": {
       "acct": "cuenta",

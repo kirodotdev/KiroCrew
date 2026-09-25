@@ -8146,7 +8146,9 @@
     "voiceStatusBar": {
       "default_microphone": "기본 마이크",
       "dictation_kept_for_model": "녹음한 움성은 보관되어 텍스트로 변환됩니다.",
-      "recording": "녹음 중"
+      "recording": "녹음 중",
+      "waiting_for_speech_model": "음성 모델을 기다리고 있습니다.",
+      "discard_dictation": "버리기"
     },
     "webAppArtifactCard": {
       "acct": "계정",

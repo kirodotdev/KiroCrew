@@ -8262,7 +8262,9 @@
     "voiceStatusBar": {
       "default_microphone": "ডিফল্ট মাইক্রোফোন",
       "dictation_kept_for_model": "তোমার ডিক্টেশন সংরক্ষিত আছে এবং পরে ট্রান্সক্রাইব করা হবে।",
-      "recording": "রেকর্ডিং হচ্ছে"
+      "recording": "রেকর্ডিং হচ্ছে",
+      "waiting_for_speech_model": "স্পিেচ মডেলের জন্য অপেক্ষা করা হছ্ে।",
+      "discard_dictation": "বাতিল"
     },
     "webAppArtifactCard": {
       "acct": "অ্যাকাউন্ট",

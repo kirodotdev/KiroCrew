@@ -8146,7 +8146,9 @@
     "voiceStatusBar": {
       "default_microphone": "默认麦克风",
       "dictation_kept_for_model": "你的录音已保留，准备好后会自动转写。",
-      "recording": "正在录音"
+      "recording": "正在录音",
+      "waiting_for_speech_model": "正在等待语音模型。",
+      "discard_dictation": "丢弃"
     },
     "webAppArtifactCard": {
       "acct": "账户",

@@ -8378,7 +8378,9 @@
     "voiceStatusBar": {
       "default_microphone": "Microfono predefinito",
       "dictation_kept_for_model": "La tua dettatura è conservata e verrà trascritta.",
-      "recording": "Registrazione"
+      "recording": "Registrazione",
+      "waiting_for_speech_model": "In attesa del modello vocale.",
+      "discard_dictation": "Scarta"
     },
     "webAppArtifactCard": {
       "acct": "account",

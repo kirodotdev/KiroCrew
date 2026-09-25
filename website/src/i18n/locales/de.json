@@ -8262,7 +8262,9 @@
     "voiceStatusBar": {
       "default_microphone": "Standardmikrofon",
       "dictation_kept_for_model": "Deine Aufnahme bleibt erhalten und wird transkribiert.",
-      "recording": "Aufnahme"
+      "recording": "Aufnahme",
+      "waiting_for_speech_model": "Warten auf das Sprachmodell.",
+      "discard_dictation": "Verwerfen"
     },
     "webAppArtifactCard": {
       "acct": "Konto",

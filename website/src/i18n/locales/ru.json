@@ -8494,7 +8494,9 @@
     "voiceStatusBar": {
       "default_microphone": "Микрофон по умолчанию",
       "dictation_kept_for_model": "Записанная речь сохранена и будет расшифрована.",
-      "recording": "Запись"
+      "recording": "Запись",
+      "waiting_for_speech_model": "Ожидание речевой модели.",
+      "discard_dictation": "Отменить"
     },
     "webAppArtifactCard": {
       "acct": "аккаунт",

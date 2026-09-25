@@ -4183,6 +4183,18 @@ function ChatInput({
         ) : (
           <VoiceStatusBar
             recording={voiceRecording} level={voiceLevel} deviceLabel={voiceDeviceLabel} deviceId={voiceDeviceId} error={voiceError} onDismissError={onClearVoiceError} onSelectDevice={onSelectVoiceDevice || noopSelectDevice} deviceSwitchIsLive={voiceDeviceSwitchIsLive} download={voiceDownload}
+            /* The released utterance's own window. `voiceStreaming` is part of
+               the condition because only a streaming session can still be called
+               off: its audio is held against an open socket and the discard
+               closes it. A batch transcription is already in the transcriber's
+               hands over HTTP, so the strip offers it no exit rather than an exit
+               that leaves the work running.
+
+               Ownership-gated through `voiceTranscribing`, so a composer offers
+               the discard for its OWN drain and never for a session another chat
+               holds. */
+            draining={voiceStreaming && voiceTranscribing}
+            onCancelDrain={onVoiceCancel}
             /* Visible reasons, not tooltips: why the mic is blocked, or that a
                held dictation just arrived. Only while the mic is offered at all.
                Shown in hold mode too: one message, one shape, and the name
