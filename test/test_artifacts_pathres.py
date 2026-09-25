@@ -145,7 +145,7 @@ class TestTheListingStaysOffThePool:
         monkeypatch.setattr(security.paths, "_home_targets_cache", {})
         monkeypatch.setattr(
             security.paths,
-            "is_sensitive_path",
+            "sensitive_path_refusal",
             lambda *a, **k: pytest.fail("the artifact listing called is_sensitive_path"),
         )
 
@@ -159,7 +159,7 @@ class TestTheListingStaysOffThePool:
         store = ArtifactStore(root=tmp_path / "artifacts")
         monkeypatch.setattr(
             security.paths,
-            "is_sensitive_path",
+            "sensitive_path_refusal",
             lambda *a, **k: pytest.fail("a store file helper called is_sensitive_path"),
         )
         text_path = tmp_path / "files" / "note.txt"
@@ -241,13 +241,13 @@ class TestTheDecisionMovedGatesNotVerdicts:
 
 def _bounded_recorder(monkeypatch) -> list[str]:
     seen: list[str] = []
-    real_gate = security.paths.is_sensitive_path
+    real_gate = security.paths.sensitive_path_refusal
 
-    def recording(path_str: str, base_dir=None) -> bool:
+    def recording(path_str: str, base_dir=None) -> str | None:
         seen.append(path_str)
         return real_gate(path_str, base_dir)
 
-    monkeypatch.setattr(security.paths, "is_sensitive_path", recording)
+    monkeypatch.setattr(security.paths, "sensitive_path_refusal", recording)
     return seen
 
 
@@ -297,7 +297,7 @@ class TestTheFenceFollowsTheThread:
         seen = _recorder(monkeypatch)
         monkeypatch.setattr(
             security.paths,
-            "is_sensitive_path",
+            "sensitive_path_refusal",
             lambda *a, **k: pytest.fail("the bounded gate ran on a worker thread"),
         )
 
@@ -402,7 +402,7 @@ class TestReadsAreDescriptorPinned:
         )
         monkeypatch.setattr(
             security.paths,
-            "is_sensitive_path",
+            "sensitive_path_refusal",
             lambda *a, **k: pytest.fail("the helper re-asked the fence for a judged path"),
         )
 

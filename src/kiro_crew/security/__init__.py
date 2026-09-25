@@ -365,6 +365,7 @@ from .paths import (
     _run_resolution_bounded,
     _stall_prefix,
     _wedged_workers,
+    canonical_path_refusal,
     crew_home_prefixes,
     is_sensitive_bash_command,
     is_sensitive_canonical_path,

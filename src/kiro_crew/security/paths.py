@@ -3161,6 +3161,20 @@ def is_sensitive_canonical_path(resolved: str) -> bool:
     return is_sensitive_path(resolved)
 
 
+def canonical_path_refusal(resolved: str) -> str | None:
+    """:func:`is_sensitive_canonical_path` as reason-or-``None``: same gate per thread.
+
+    Only the on-loop (bounded) gate can stall, so only it can return the stall wording.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        if is_sensitive_canonical_path(resolved):
+            return f"Blocked: access to sensitive path: {resolved}"
+        return None
+    return sensitive_path_refusal(resolved)
+
+
 #: The fixed opening of an unverifiable-path refusal. Consumers tell a stall from a
 #: match with :func:`is_unverifiable_path_refusal`, a prefix test, and never by
 #: searching the text: both refusals embed the caller-chosen path, and a prefix is

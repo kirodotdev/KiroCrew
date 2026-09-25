@@ -64,8 +64,9 @@ from kiro_crew.secrets import SecretVault
 from kiro_crew.security import (
     _REDACTED_CREDENTIAL_TAG,
     _STREAM_HOLDBACK_JWT_MAX,
-    is_sensitive_path,
+    is_unverifiable_path_refusal,
     redact,
+    sensitive_path_refusal,
 )
 from kiro_crew.sel import sel
 
@@ -1530,7 +1531,9 @@ def resolve_script_path(script_path: str) -> tuple[str, str]:
     file_path = Path(os.path.expanduser(module_part)).resolve()
     if not file_path.exists():
         raise FileNotFoundError(f"Script file not found: {file_path}")
-    if is_sensitive_path(str(file_path)):
+    if reason := sensitive_path_refusal(str(file_path)):
+        if is_unverifiable_path_refusal(reason):
+            raise PermissionError(reason)
         raise PermissionError(f"Script path blocked by security policy: {file_path}")
     allowed_dir = (config_dir() / "crons").resolve()
     if not file_path.is_relative_to(allowed_dir):

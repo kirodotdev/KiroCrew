@@ -366,10 +366,10 @@ class TestSetProjectApplier:
     async def test_sensitive_path_denied_without_mutating_slot(self, tmp_path, monkeypatch):
         slot = _FakeSlot(project="/existing/project")
         state = _FakeState()
-        # _set_project imports is_sensitive_path lazily from kiro_crew.security,
+        # _set_project imports sensitive_path_refusal lazily from kiro_crew.security,
         # so patch it on the source module.
         monkeypatch.setattr(
-            "kiro_crew.security.is_sensitive_path", lambda *a, **k: True
+            "kiro_crew.security.sensitive_path_refusal", lambda *a, **k: "Blocked: x"
         )
         result = await apply_session_directive(
             state,
@@ -381,6 +381,27 @@ class TestSetProjectApplier:
         )
         assert "access denied" in result.lower()
         # Load-bearing: the slot was NOT repointed to the sensitive path.
+        assert slot.project == "/existing/project"
+
+    @pytest.mark.asyncio
+    async def test_a_resolver_stall_is_refused_with_the_stall_wording(self, tmp_path, monkeypatch):
+        from kiro_crew import security
+
+        def stalled(*args, **kwargs):
+            raise security.PathResolutionStalled("/x", "/x")
+
+        slot = _FakeSlot(project="/existing/project")
+        monkeypatch.setattr(security.paths, "_path_in_home_dirs", stalled)
+        result = await apply_session_directive(
+            _FakeState(),
+            slot,
+            slot.key,
+            "set_project",
+            {"project": str(tmp_path), "clear": False},
+            producer_is_user_facing=True,
+        )
+        assert security.is_unverifiable_path_refusal(result.removeprefix("Error: "))
+        assert "sensitive path)" not in result
         assert slot.project == "/existing/project"
 
     @pytest.mark.asyncio
@@ -457,7 +478,7 @@ class TestApplierAuditAndFailSoft:
     async def test_success_emits_one_mcp_directive_event(self, tmp_path, monkeypatch, sel_spy):
         """A valid set_project audits source='mcp-directive', the tool name, and
         outcome='success' — and the recent-projects offload actually fires."""
-        monkeypatch.setattr("kiro_crew.security.is_sensitive_path", lambda *a, **k: False)
+        monkeypatch.setattr("kiro_crew.security.sensitive_path_refusal", lambda *a, **k: None)
         saved: list[str] = []
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat_handlers._save_recent_project",
@@ -484,7 +505,7 @@ class TestApplierAuditAndFailSoft:
     async def test_denied_path_audits_denied_and_returns_error(self, tmp_path, monkeypatch, sel_spy):
         """A sensitive-path block raises ``_DirectiveDenied`` internally; the
         wrapper audits outcome='denied' and returns the fixed error string."""
-        monkeypatch.setattr("kiro_crew.security.is_sensitive_path", lambda *a, **k: True)
+        monkeypatch.setattr("kiro_crew.security.sensitive_path_refusal", lambda *a, **k: "Blocked: x")
         slot = _FakeSlot(project="/existing")
         state = _FakeState()
         result = await apply_session_directive(
@@ -535,7 +556,7 @@ class TestApplierAuditAndFailSoft:
         """A sensitive path is refused BEFORE it is resolved/stat'ed, so a
         nonexistent sensitive path cannot be probed via the not-a-directory
         error. Still audited denied, and never leaks the isdir outcome."""
-        monkeypatch.setattr("kiro_crew.security.is_sensitive_path", lambda *a, **k: True)
+        monkeypatch.setattr("kiro_crew.security.sensitive_path_refusal", lambda *a, **k: "Blocked: x")
         probed: list[str] = []
 
         def _no_stat(p):
@@ -563,7 +584,7 @@ class TestApplierAuditAndFailSoft:
     ):
         """These two act on a dashboard SLOT card and require a connected
         dashboard tab. A cron / Slack / sub-agent caller should not get a card."""
-        monkeypatch.setattr("kiro_crew.security.is_sensitive_path", lambda *a, **k: False)
+        monkeypatch.setattr("kiro_crew.security.sensitive_path_refusal", lambda *a, **k: None)
         slot = _FakeSlot(project="/original")
         state = _FakeState()
         args = {
@@ -586,7 +607,7 @@ class TestApplierAuditAndFailSoft:
         """set_project should apply its CWD effect on any user-facing surface
         (Telegram, Slack, Discord) — not just dashboard. Only suggest_followup
         and ask_question are dashboard-only (they render UI cards)."""
-        monkeypatch.setattr("kiro_crew.security.is_sensitive_path", lambda *a, **k: False)
+        monkeypatch.setattr("kiro_crew.security.sensitive_path_refusal", lambda *a, **k: None)
         slot = _FakeSlot(project="/original")
         state = _FakeState()
         result = await apply_session_directive(
@@ -611,7 +632,7 @@ class TestApplierAuditAndFailSoft:
     ):
         """A cron/sub-agent turn borrows its destination slot and session key;
         producer provenance must still prevent it from retargeting that slot."""
-        monkeypatch.setattr("kiro_crew.security.is_sensitive_path", lambda *a, **k: False)
+        monkeypatch.setattr("kiro_crew.security.sensitive_path_refusal", lambda *a, **k: None)
         slot = _FakeSlot(project="/original")
         result = await apply_session_directive(
             _FakeState(),
@@ -649,7 +670,7 @@ class TestApplierAuditAndFailSoft:
         project: a cron turn can run on a user's dashboard slot
         (session="origin" injection) and a sub-agent shares its parent's slot,
         so allowing them would silently repoint the user's own session."""
-        monkeypatch.setattr("kiro_crew.security.is_sensitive_path", lambda *a, **k: False)
+        monkeypatch.setattr("kiro_crew.security.sensitive_path_refusal", lambda *a, **k: None)
         slot = _FakeSlot(project="/original")
         state = _FakeState()
         result = await apply_session_directive(
@@ -666,7 +687,7 @@ class TestApplierAuditAndFailSoft:
     ):
         """Some appliers RETURN a readable failure instead of raising (invalid
         project dir). The audit must reflect that, not blanket 'success'."""
-        monkeypatch.setattr("kiro_crew.security.is_sensitive_path", lambda *a, **k: False)
+        monkeypatch.setattr("kiro_crew.security.sensitive_path_refusal", lambda *a, **k: None)
         slot = _FakeSlot(project="/original")
         state = _FakeState()
         missing = str(tmp_path / "definitely-not-a-directory")

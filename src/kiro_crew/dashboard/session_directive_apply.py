@@ -1055,7 +1055,7 @@ async def _autonudge_stop(slot: Any, session_key: str, args: dict[str, Any]) -> 
 async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
     from kiro_crew.dashboard.chat_utils import effective_session_key
     from kiro_crew.sandbox import voice_runtime_workspace_conflict
-    from kiro_crew.security import is_sensitive_path
+    from kiro_crew.security import is_unverifiable_path_refusal, sensitive_path_refusal
 
     clear = bool(args.get("clear"))
     project = str(args.get("project") or "").strip()
@@ -1068,27 +1068,29 @@ async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
         return "Project cleared. The next message cold-starts with no project scope."
     expanded = os.path.expanduser(project)
 
-    def _validate() -> tuple[str, bool, bool]:
+    def _validate() -> tuple[str, str | None, bool]:
         """Resolve + classify the path on a worker thread.
 
         `realpath`/`isdir` touch the filesystem, so a network-mounted project
         path would stall chat, heartbeat and liveness if resolved on the event
         loop (no-blocking-call-on-event-loop). Returns
-        (realpath, sensitive, is_dir); the sensitive check runs on BOTH the
+        (realpath, refusal, is_dir); the sensitive check runs on BOTH the
         pre-resolution and resolved forms — the pre-check keeps a sensitive
         path from being probed at all, the post-check catches symlink/".."
         evasion.
         """
-        if is_sensitive_path(expanded):
-            return "", True, False
+        if reason := sensitive_path_refusal(expanded):
+            return "", reason, False
         rp_ = os.path.realpath(expanded)
-        if is_sensitive_path(rp_):
-            return rp_, True, False
-        return rp_, False, os.path.isdir(rp_)
+        if reason := sensitive_path_refusal(rp_):
+            return rp_, reason, False
+        return rp_, None, os.path.isdir(rp_)
 
-    rp, sensitive, is_dir = await asyncio.to_thread(_validate)
-    if sensitive:
+    rp, refusal, is_dir = await asyncio.to_thread(_validate)
+    if refusal:
         # Permission decision — raise so the wrapper audits it as denied.
+        if is_unverifiable_path_refusal(refusal):
+            raise _DirectiveDenied(f"Error: {refusal}")
         raise _DirectiveDenied("Error: access denied (sensitive path).")
     if not is_dir:
         return f"Error: not a directory: {rp}"

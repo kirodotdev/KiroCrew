@@ -1722,7 +1722,7 @@ class TestResolveScriptPathSensitive:
         script = crons_dir / "test.py"
         script.write_text("def run(ctx): pass")
         with patch("pathlib.Path.home", return_value=tmp_path), patch(
-            "kiro_crew.cron_script.is_sensitive_path", return_value=True
+            "kiro_crew.cron_script.sensitive_path_refusal", return_value="Blocked: x"
         ):
             with pytest.raises(PermissionError, match="security policy"):
                 resolve_script_path(str(script) + ":run")
