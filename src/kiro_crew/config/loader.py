@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import copy
+import hashlib as _hashlib
 import json
 import logging
 import math  # noqa: F401 - historical loader namespace compatibility
@@ -2621,6 +2622,99 @@ def _config_fingerprint() -> tuple:
     return tuple(sig)
 
 
+def _content_digest_of(parts: "list[bytes | None]") -> str:
+    """Digest *parts* -- one entry per config file, ``None`` for a file that is absent.
+
+    Shared by :func:`config_content_stamp`, which reads the files, and by the load
+    path, which already holds what it parsed. One framing so the two answers are
+    comparable: each part is length-prefixed, so moving bytes from one file to the
+    other cannot produce the same digest, and an absent file gets its own token so
+    creating or deleting the overlay changes the answer.
+
+    Both sides hand over the file's DECODED text re-encoded, not the raw bytes, so
+    that they hash the same thing: the loader reads through ``read_text``, whose
+    newline translation the raw bytes would not survive, and a digest that disagreed
+    with itself across the two callers would refuse every comparison forever. What
+    this identifies is therefore the document, which is what the comparison is about.
+    """
+    hasher = _hashlib.sha256()
+    for blob in parts:
+        if blob is None:
+            hasher.update(b"absent\x00")
+            continue
+        hasher.update(b"present\x00")
+        hasher.update(str(len(blob)).encode("ascii"))
+        hasher.update(b"\x00")
+        hasher.update(blob)
+    return hasher.hexdigest()
+
+
+def config_content_stamp() -> str | None:
+    """A digest of the config files' BYTES, or ``None`` when one cannot be read.
+
+    :func:`_config_fingerprint` answers a cheaper and different question -- has
+    either file been REPLACED -- from stat metadata. For a rename that lands the
+    same byte count, the device, both timestamps, the size and the mode can all be
+    identical, leaving the inode as the only field that differs; where inodes are
+    not stable across a replacement, two different contents share a fingerprint. A
+    caller asking "is the live config still the bytes I derived this answer from"
+    is asking about content, so this reads the content.
+
+    ``None`` does NOT mean unchanged: it means the question could not be answered,
+    and a caller comparing stamps must treat it as a mismatch rather than a match.
+    The two paths are framed with their lengths so that moving bytes from one file
+    to the other cannot produce the same digest.
+    """
+    parts: list[bytes | None] = []
+    for p in (config_path(), config_local_path()):
+        try:
+            parts.append(p.read_text(encoding="utf-8").encode("utf-8"))
+        except FileNotFoundError:
+            # A file that does not exist is a real state, not a failure.
+            parts.append(None)
+        except (OSError, UnicodeDecodeError):
+            return None
+    return _content_digest_of(parts)
+
+
+def _bind_content_digest(cfg: object, digest: str | None) -> None:
+    """Record on a loaded config which bytes it was parsed from.
+
+    The digest rides on the instance rather than in the dataclass, because it does not
+    describe the user's configuration: a field here would enter the constructor, the
+    generated settings surface and the field walk :func:`_adopt_in_memory` performs, all
+    of which speak for the document. Attaching it outside the field set keeps those
+    surfaces unchanged, at the cost that an object produced any other way -- a bare
+    ``KiroCrewConfig()``, a test double standing in for a load -- carries no such
+    attribute. :func:`load_config_with_content_stamp` therefore asks with a default, and
+    reads that absence as "provenance unknown".
+    """
+    setattr(cfg, "_content_digest", digest)
+
+
+def load_config_with_content_stamp() -> tuple[KiroCrewConfig, str | None]:
+    """Load the config together with the digest of the bytes it was parsed from.
+
+    The digest comes OUT of the load rather than being read around it, which is the
+    only way it can describe this object: reading the files on both sides of the call
+    proves the bytes did not move during it, but the load answers from a cache keyed
+    on stat metadata, so a replacement presenting the same fingerprint returns an
+    earlier object while those reads hash the new bytes. The cache entry carries the
+    digest of the bytes it was parsed from, so a hit reports its own provenance and a
+    miss reports what it just read.
+
+    ``None`` means no digest can be bound -- the files could not be read whole, or the
+    document was unusable and defaults were substituted. A caller must treat that as
+    unknown, never as a match.
+
+    For a caller that holds the result across other I/O and later writes something
+    derived from it, comparing this against :func:`config_content_stamp` is what tells
+    "my copy is still current" from "a save landed while I was working".
+    """
+    cfg = KiroCrewConfig.load()
+    return cfg, getattr(cfg, "_content_digest", None)
+
+
 def _cached_validated_data(fp: tuple | None = None) -> dict | None:
     """Return a deep copy of the cached validated config dict, or None on miss.
 
@@ -2642,13 +2736,20 @@ def _store_validated_data(
     sidecar: dict | None = None,
     *,
     expected_generation: int | None = None,
+    content_digest: str | None = None,
 ) -> None:
-    """Cache validated data unless a write invalidated its disk-read generation."""
+    """Cache validated data unless a write invalidated its disk-read generation.
+
+    *content_digest* names the bytes *data* was parsed from, so a later hit on this
+    entry can say which content it represents rather than only which stat signature
+    it was filed under.
+    """
     _CONFIG_CACHE.store(
         data,
         fp,
         sidecar,
         expected_generation=expected_generation,
+        content_digest=content_digest,
     )
 
 
@@ -4248,7 +4349,7 @@ class KiroCrewConfig:
         # read, so a concurrent newer load cannot be overwritten by this one
         # finishing later (see publish_autocompact_pct) and this method adds no
         # filesystem I/O of its own on the event loop.
-        cfg, _autocompact_ticket = cls._load_resolved()
+        cfg, _autocompact_ticket, _content_digest = cls._load_resolved()
         # Push the MCP search-path setting to its consumer. It is PUSHED rather
         # than read there because kiro_crew.env.mcp_search_path is reached from
         # the event loop by every MCP probe and by the agent-config resolver, so
@@ -4300,10 +4401,17 @@ class KiroCrewConfig:
             # A publish failure must never make the config unloadable; cron
             # keeps using the zone it already had.
             logger.warning("Publishing config timezone failed: %s", e)
+        # The digest of the bytes this object was parsed from, recorded ON the object
+        # so provenance travels with it and this method's signature stays as every
+        # caller has it. ``None`` when the read could not name any bytes -- the files
+        # were unreadable, or the document was unusable and field defaults stand in --
+        # and an object built any other way has no attribute at all, which reads the
+        # same. :func:`config_content_stamp` is what it is later compared against.
+        _bind_content_digest(cfg, _content_digest)
         return cfg
 
     @classmethod
-    def _load_resolved(cls) -> tuple[KiroCrewConfig, int]:
+    def _load_resolved(cls) -> tuple[KiroCrewConfig, int, str | None]:
         """Resolve the config from disk (or defaults). See :meth:`load`.
 
         Split out so :meth:`load` owns the post-resolution publication on every
@@ -4346,8 +4454,9 @@ class KiroCrewConfig:
         # therefore the correct answer on the hot path, not a missing one -- the load
         # that populated the cache already adopted.
         adoptable: list[SupersededDefault] = []
+        content_digest: str | None = None
         if cached is not None:
-            data, sidecar = cached
+            data, sidecar, content_digest = cached
             base_shadow = sidecar.get(_SIDECAR_BASE_SHADOW, {})
         else:
             # Capture the invalidation generation BEFORE disk I/O. A successful
@@ -4363,9 +4472,15 @@ class KiroCrewConfig:
             data = {}
             loaded_base = False
             config_source_unreadable = False
+            # The bytes, kept so the digest names exactly what was parsed rather
+            # than whatever a later read would find.
+            read_parts: list[bytes | None] = [None, None]
+            digestible = True
             if path.exists():
                 try:
-                    raw = json.loads(path.read_text(encoding="utf-8"))
+                    base_text = path.read_text(encoding="utf-8")
+                    read_parts[0] = base_text.encode("utf-8")
+                    raw = json.loads(base_text)
                     if isinstance(raw, dict):
                         data = raw
                         loaded_base = True
@@ -4373,8 +4488,14 @@ class KiroCrewConfig:
                         config_source_unreadable = True
                         logger.warning("Config is not a JSON object, using defaults")
                         _mark_file_degraded(path)
-                except (json.JSONDecodeError, OSError) as e:
+                except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
                     config_source_unreadable = True
+                    # A digest names the BYTES, and a document that read whole but would
+                    # not parse still has bytes to name -- what it does not have is
+                    # faithful CONTENT, which ``degraded_sections`` is what reports. Only
+                    # a read that never completed leaves nothing to name.
+                    if read_parts[0] is None:
+                        digestible = False
                     logger.warning("Failed to load config from %s: %s", path, e)
                     _mark_file_degraded(path)
 
@@ -4411,15 +4532,21 @@ class KiroCrewConfig:
                             st_mode & 0o777,
                             local_path,
                         )
-                    raw_local = json.loads(local_path.read_text(encoding="utf-8"))
+                    local_text = local_path.read_text(encoding="utf-8")
+                    read_parts[1] = local_text.encode("utf-8")
+                    raw_local = json.loads(local_text)
                     if isinstance(raw_local, dict):
                         local_data = raw_local
                     else:
                         config_source_unreadable = True
                         logger.warning("config.local.json is not a JSON object, ignoring")
                         _mark_file_degraded(local_path)
-                except (json.JSONDecodeError, OSError) as e:
+                except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
                     config_source_unreadable = True
+                    # Same rule as the base file: bytes that read whole can be named
+                    # whether or not they parsed.
+                    if read_parts[1] is None:
+                        digestible = False
                     logger.warning("Failed to load config.local.json: %s", e)
                     _mark_file_degraded(local_path)
 
@@ -4466,7 +4593,11 @@ class KiroCrewConfig:
                     memory_store="default",
                 )
                 cfg.default_agent = "default"
-                return cfg, ticket
+                # Both files absent is a VALID state with bytes to name -- the digest of
+                # "neither file exists" -- and naming it is what lets a caller holding
+                # this config tell "still absent" from "someone just created one". Only
+                # a read that never completed reaches here with nothing to name.
+                return cfg, ticket, _content_digest_of(read_parts) if digestible else None
 
             # Preserve fail-closed security semantics before advisory schema
             # validation can replace malformed input with a missing-field default.
@@ -4541,11 +4672,18 @@ class KiroCrewConfig:
             # both paths force the next load to re-read. The base shadow rides
             # along so a hit can capture unknown keys from the base document
             # exactly as this disk read did.
+            # Named from the bytes THIS read parsed, so a later hit on this entry can
+            # say which content it represents. Withheld only when a file existed and
+            # could not be READ whole: a document that read but would not parse still
+            # has bytes to name, and that it is not faithful is what
+            # ``degraded_sections`` reports instead.
+            content_digest = _content_digest_of(read_parts) if digestible else None
             _store_validated_data(
                 data,
                 pre_read_fp,
                 {_SIDECAR_BASE_SHADOW: base_shadow},
                 expected_generation=read_generation,
+                content_digest=content_digest,
             )
 
         # Collected during the parse that discards them — the only moment the
@@ -5105,7 +5243,7 @@ class KiroCrewConfig:
             if adopt_keys and not adoption_landed and not cfg._degraded_sections:
                 _invalidate_config_cache()
 
-        return cfg, ticket
+        return cfg, ticket, content_digest
 
     def to_dict(self) -> dict:
         """Serialize config to the JSON structure used by config.json."""

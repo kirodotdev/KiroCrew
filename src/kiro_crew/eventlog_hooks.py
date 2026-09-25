@@ -268,7 +268,36 @@ def _config_snapshot_for_agent(agent_cfg) -> dict:
     return out
 
 
-def reconcile_member_config(slug, name, agent_cfg, roster_view) -> "list[str] | None":
+def _config_is_still_at(values: dict, observed: dict) -> bool:
+    """Does the roster still show the config fields the caller decided to correct?
+
+    Module level so the reconcile and its tests share ONE definition.
+
+    The correcting event carries the WHOLE config snapshot, not just the fields that
+    differed, and the roster fold is last-wins per field. So every config field is
+    rewritten by it, and any one of them that another writer moved between the
+    caller's observation and this write would be regressed -- which is why all of
+    them are compared here rather than only the ``changed`` list. Nothing else in
+    the block is: an unrelated event (a message, a slot opening) must not starve a
+    correction that is still right.
+
+    A field absent from one side and present in the other counts as moved, so the
+    first snapshot for a never-configured member is refused once another writer has
+    placed one.
+    """
+    from kiro_crew.eventlog import types
+
+    current = values.get(types.PROJ_ROSTER, {}) if isinstance(values, dict) else {}
+    was = observed.get(types.PROJ_ROSTER, {}) if isinstance(observed, dict) else {}
+    if not isinstance(current, dict) or not isinstance(was, dict):
+        return False
+    missing = object()
+    return all(current.get(f, missing) == was.get(f, missing) for f in _CONFIG_FIELDS)
+
+
+def reconcile_member_config(
+    slug, name, agent_cfg, roster_view, *, config_stamp: str
+) -> "list[str] | None":
     """Append a correcting member/config when the log's roster drifts from config.
 
     Compares the log-derived *roster_view*'s config fields against the live
@@ -281,6 +310,55 @@ def reconcile_member_config(slug, name, agent_cfg, roster_view) -> "list[str] | 
     Returns the ``changed`` field list when an event was appended, ``None`` when
     the roster already matched (no write). Best-effort: any failure is swallowed
     and reported as ``None``.
+
+    Two different staleness windows sit between the caller's decision and this
+    write, and each has its own guard.
+
+    *config_stamp* closes the first, and is REQUIRED: it is the digest
+    ``load_config_with_content_stamp`` bound to the bytes ``agent_cfg`` was parsed
+    from. The caller's ``agent_cfg`` comes from a config it loaded earlier, and a save
+    landing after that load writes config.json AND appends its own member/config -- so
+    the roster view can already carry the NEW values while ``agent_cfg`` still carries
+    the old ones, and the comparison above then reads the save as drift and appends the
+    pre-save snapshot over it. The projection is what the roster row and the
+    member_projection frame render, and the log has no compaction, so that regression
+    stands until something re-reads. Passing the stamp makes this refuse unless the
+    live config is still those bytes. A caller whose load could not name them holds no
+    stamp to pass and must not reconcile at all, which is why the parameter admits no
+    stand-in for "unknown": see :func:`reconcile_member_config_unstamped` for the one
+    caller that legitimately has no bytes to name.
+
+    The conditional append closes the second: another writer can commit between
+    the comparison and this write. ``append_closer_if_still_applies`` re-asks
+    ``_config_is_still_at`` against the current projection under the lock that
+    writes, and the store admits the entry only while the log's tail is still where
+    the fold that answered it reached. A refusal is a normal outcome -- the other
+    writer's values are the newer word -- and the next roster read compares afresh.
+    """
+    return _reconcile_member_config(slug, name, agent_cfg, roster_view, config_stamp=config_stamp)
+
+
+def reconcile_member_config_unstamped(slug, name, agent_cfg, roster_view) -> "list[str] | None":
+    """Reconcile without asserting the config's content currency.
+
+    Same comparison and same write as :func:`reconcile_member_config`, for a caller
+    that writes from a long-lived config object it did not load itself and whose bytes
+    it therefore cannot name. Such a caller has the conditional append alone, and it is
+    a separate entry point rather than a stamp value meaning "unknown" so that the one
+    place giving up that guard says so by name, and a caller that merely FAILED to name
+    its bytes cannot reach the same exemption by accident.
+    """
+    return _reconcile_member_config(slug, name, agent_cfg, roster_view, config_stamp=None)
+
+
+def _reconcile_member_config(
+    slug, name, agent_cfg, roster_view, *, config_stamp: "str | None"
+) -> "list[str] | None":
+    """Shared body of the two reconcile entry points; see them for the contract.
+
+    ``config_stamp`` is ``None`` only when it arrived through
+    :func:`reconcile_member_config_unstamped`, which is the sole caller allowed to
+    assert nothing about content currency.
     """
     if not slug:
         return None
@@ -297,13 +375,28 @@ def reconcile_member_config(slug, name, agent_cfg, roster_view) -> "list[str] | 
             changed = [f for f in _CONFIG_FIELDS if view.get(f) != snapshot[f]]
         if not changed:
             return None
+        if config_stamp is not None:
+            from kiro_crew.config.loader import config_content_stamp
+
+            # Read here rather than inside the append: the store's hold must carry a
+            # comparison and never file I/O, and a stamp taken now is what the
+            # comparison below is about.
+            if config_stamp != config_content_stamp():
+                return None
+        from kiro_crew.eventlog import types
         from kiro_crew.eventlog.service import get_service
         from kiro_crew.eventlog.types import MEMBER_CONFIG
 
         svc = get_service()
         svc.ensure(slug, name or slug)
-        svc.append(slug, MEMBER_CONFIG, {**snapshot, "changed": changed})
-        return changed
+        appended = svc.append_closer_if_still_applies(
+            slug,
+            MEMBER_CONFIG,
+            {**snapshot, "changed": changed},
+            still_applies=_config_is_still_at,
+            observed={types.PROJ_ROSTER: view},
+        )
+        return changed if appended is not None else None
     except Exception:
         logger.debug("reconcile_member_config failed for slug=%r", slug, exc_info=True)
         return None
@@ -544,7 +637,17 @@ def reconcile_members_at_startup(cfg, state, autonudge_svc) -> int:
             svc.ensure(slug, name)
             snap = svc.snapshot(slug)
             values = snap.get("values", {}) if isinstance(snap, dict) else {}
-            reconcile_member_config(slug, name, agent_cfg, values.get(types.PROJ_ROSTER, {}))
+            # No content stamp: this sweep writes from the gateway's long-lived config
+            # object, which it did not load and whose bytes it cannot name, so there is
+            # nothing to bind a stamp to. The named entry is what makes giving up that
+            # guard explicit; the conditional append below is what protects this path
+            # from a writer landing mid-sweep.
+            reconcile_member_config_unstamped(
+                slug,
+                name,
+                agent_cfg,
+                values.get(types.PROJ_ROSTER, {}),
+            )
             # Patrol closer.
             wake = values.get(types.PROJ_WAKE, {}) or {}
             if wake.get("patrol") == "armed":

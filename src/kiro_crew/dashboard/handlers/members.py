@@ -26,7 +26,11 @@ from aiohttp import web
 
 import kiro_crew.dashboard.handlers as _h
 from kiro_crew import members as members_mod
-from kiro_crew.config.loader import KiroCrewConfig, default_project_dir
+from kiro_crew.config.loader import (
+    KiroCrewConfig,
+    default_project_dir,
+    load_config_with_content_stamp,
+)
 from kiro_crew.dashboard.chat_persistence import (
     pin_private_agent_store,
     rehydrate_slot_from_history_async,
@@ -357,7 +361,29 @@ async def api_members(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
     state: DashboardState | None = request.app.get("state")
-    cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    # Loaded WITH the digest of the bytes it was parsed from. Every config-derived row
+    # field below comes from this one load, and the per-row reconcile that writes them
+    # into the member log runs several awaited reads later, so a save landing in
+    # between would be overwritten by the values held here. The digest is what lets
+    # that reconcile refuse instead.
+    cfg, config_stamp = await asyncio.to_thread(load_config_with_content_stamp)
+    # The reconcile below corrects the log FROM this config, so it may run only while
+    # the config is both current and faithful. Currency is the digest: without one there
+    # is nothing to check the live file against. Faithfulness is
+    # ``degraded_sections``: a file that read whole but would not parse leaves field
+    # DEFAULTS standing in for what the operator wrote, and correcting the log from
+    # those defaults would overwrite good values because of a typo -- the same
+    # projection regression this guard exists to prevent. The permission rides on the
+    # stamp itself rather than a separate flag, so no row can reach the reconcile
+    # without one. Either way the rows below still render from the config in hand; only
+    # the correcting write is withheld.
+    reconcile_stamp = None if cfg.degraded_sections else config_stamp
+    if reconcile_stamp is None:
+        logger.warning(
+            "the agents config is %s, so this roster read reconciles no member/config; "
+            "a read of a whole, parseable config does",
+            "degraded to defaults" if cfg.degraded_sections else "unnamed by any content",
+        )
 
     # The roster's redaction chokepoint, shared with ``GET /api/agents`` so the
     # two endpoints cannot drift apart. Function-local for the same reason
@@ -691,17 +717,23 @@ async def api_members(request: web.Request) -> web.Response:
                 snap = svc.snapshot(slug)
                 agent_cfg = agent_cfgs.get(row["name"])
                 appended = False
-                # Every read, for every member whose log exists. The reconcile
-                # compares the folded roster against the live config and returns
-                # before writing when they match, so a config that has not drifted
-                # costs one field comparison -- and a config edited by hand rather
-                # than through the dashboard reaches the log on the next read with
-                # nothing to remember between requests.
-                if agent_cfg is not None:
+                # Every read of a whole, parseable config, for every member whose log
+                # exists. The reconcile compares the folded roster against the live
+                # config and returns before writing when they match, so a config that
+                # has not drifted costs one field comparison -- and a config edited by
+                # hand rather than through the dashboard reaches the log on the next
+                # read with nothing to remember between requests.
+                # ``reconcile_stamp`` is None for a config that is not current or not
+                # faithful, which is what withholds the write; see where it is decided.
+                if agent_cfg is not None and reconcile_stamp is not None:
                     values = snap.get("values", {}) if isinstance(snap, dict) else {}
                     appended = (
                         eventlog_hooks.reconcile_member_config(
-                            slug, row["name"], agent_cfg, values.get("roster", {})
+                            slug,
+                            row["name"],
+                            agent_cfg,
+                            values.get("roster", {}),
+                            config_stamp=reconcile_stamp,
                         )
                         is not None
                     )

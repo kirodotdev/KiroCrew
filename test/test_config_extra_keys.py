@@ -10,6 +10,7 @@ kind. See ``KiroCrewConfig._extra_keys`` and
 from __future__ import annotations
 
 import json
+import pathlib
 
 import pytest
 
@@ -399,19 +400,191 @@ def test_cache_data_and_sidecar_are_served_together_or_not_at_all():
     cache.store({"agent": {"k": "MERGED"}}, fp, {"base_shadow": {"agent": {"k": "BASE"}}})
     got = cache.get_with_sidecar(fp)
     assert got is not None
-    data, sidecar = got
+    data, sidecar, digest = got
     assert data == {"agent": {"k": "MERGED"}}
     assert sidecar == {"base_shadow": {"agent": {"k": "BASE"}}}
+    assert digest is None, "a store that named no bytes must not claim provenance"
     # Deep copies: mutating what was handed out cannot poison the cache.
     data["agent"]["k"] = "X"
     sidecar["base_shadow"]["agent"]["k"] = "Y"
     assert cache.get_with_sidecar(fp) == (
         {"agent": {"k": "MERGED"}},
         {"base_shadow": {"agent": {"k": "BASE"}}},
+        None,
     )
     cache.clear()
     assert cache.get_with_sidecar(fp) is None
     assert cache.get(fp) is None
+
+
+def test_a_real_load_records_the_digest_of_the_bytes_it_parsed(cfg_home):
+    """The object must be able to say which content it came from, cold or cached.
+
+    Everything downstream that asks "is my copy still current" compares this against
+    a fresh read of the files. If the load records nothing, that comparison silently
+    has nothing to compare and a stale copy passes for a current one; if the cached
+    path records something different from the cold path, the answer depends on
+    whether the cache happened to be warm.
+    """
+    _write(cfg_home, {"agent": {"provider": "acp"}})
+    L._CONFIG_CACHE.clear()
+    # A first load can rewrite config.json (the write-back migration completes a
+    # partial document), so the bytes to compare against are the ones standing
+    # BEFORE the load. The next load reads the migrated file and leaves it alone.
+    L.KiroCrewConfig.load()
+
+    before = L.config_content_stamp()
+    L._CONFIG_CACHE.clear()
+    cold = L.KiroCrewConfig.load()
+    cold_digest = getattr(cold, "_content_digest", None)
+    assert cold_digest == before, (
+        "a load that read the files did not record the digest of what it read, so "
+        "nothing downstream can tell a current copy from a stale one"
+    )
+
+    warm = L.KiroCrewConfig.load()
+    assert getattr(warm, "_content_digest", None) == cold_digest, (
+        "the cached path reported different provenance from the cold path, so the "
+        "answer depends on whether the cache was warm"
+    )
+
+    # New bytes: the digest must move with them.
+    _write(cfg_home, {"agent": {"provider": "acp", "added": "key"}})
+    moved = L.config_content_stamp()
+    after = L.KiroCrewConfig.load()
+    after_digest = getattr(after, "_content_digest", None)
+    assert after_digest not in (None, cold_digest), "the digest did not move when the content did"
+    assert after_digest == moved
+
+
+def test_a_load_that_rewrote_the_file_names_the_bytes_it_parsed(cfg_home):
+    """A migrating load parsed the OLD document, so that is what it must name.
+
+    Claiming the rewritten bytes would say this object came from content it never
+    read. The consequence is deliberate and self-limiting: a caller comparing against
+    the live file sees a mismatch and declines for that one request, and the next load
+    reads the migrated file and agrees with it again.
+    """
+    _write(cfg_home, {"agent": {"provider": "acp"}})
+    L._CONFIG_CACHE.clear()
+    parsed = L.config_content_stamp()
+
+    cfg = L.KiroCrewConfig.load()
+    rewritten = L.config_content_stamp()
+    assert rewritten != parsed, "this fixture no longer exercises the write-back migration"
+    assert (
+        getattr(cfg, "_content_digest", None) == parsed
+    ), "the load named the bytes it WROTE rather than the ones it parsed"
+
+    L._CONFIG_CACHE.clear()
+    settled = L.KiroCrewConfig.load()
+    assert getattr(settled, "_content_digest", None) == L.config_content_stamp(), (
+        "the next load did not agree with the migrated file, so the mismatch is not "
+        "limited to the migrating request"
+    )
+
+
+def test_a_load_with_no_config_files_at_all_still_names_that_state(cfg_home):
+    """ "Neither file exists" is a valid state with bytes to name, so it is named.
+
+    Withholding a digest here would be read downstream as "provenance unknown", and a
+    caller that declines on unknown provenance would then decline FOREVER on a home
+    that simply has no config yet -- leaving whatever a durable projection already
+    holds standing in for the defaults that are actually in force. Deleting config.json
+    is an ordinary operator action, not a failure.
+    """
+    L._CONFIG_CACHE.clear()
+    assert not cfg_home.exists()
+    cfg = L.KiroCrewConfig.load()
+    digest = getattr(cfg, "_content_digest", None)
+    assert digest is not None, "an absent config named no bytes, so nothing may reconcile"
+    assert (
+        digest == L.config_content_stamp()
+    ), "the digest does not agree with the live state of the two files"
+
+
+def test_a_document_that_read_whole_but_would_not_parse_still_names_its_bytes(cfg_home):
+    """A digest answers "is the file still what I read", which a parse failure allows.
+
+    The bytes were read whole, so they can be named; what a typo costs is faithful
+    CONTENT, and ``degraded_sections`` is what reports that. Conflating the two withheld
+    a digest the bytes supported, and every later read then treated a recoverable typo
+    as unknown provenance.
+    """
+    L._CONFIG_CACHE.clear()
+    # cfg_home IS the config.json path. Bytes that read whole, content that will not.
+    cfg_home.write_text('{"agent": {"provider": "acp"},,}', encoding="utf-8")
+
+    cfg = L.KiroCrewConfig.load()
+    digest = getattr(cfg, "_content_digest", None)
+    assert digest is not None, "bytes that read whole were left unnamed"
+    assert digest == L.config_content_stamp(), "the digest does not name the file on disk"
+    assert cfg.degraded_sections, (
+        "the load reported no degradation, so nothing downstream can tell this config "
+        "carries defaults rather than what the operator wrote"
+    )
+
+
+def test_a_load_that_could_not_read_the_files_records_no_provenance(cfg_home, monkeypatch):
+    """A read that never completed captured nothing, so there are no bytes to name.
+
+    Reporting a digest here would certify whatever a LATER read would find as the
+    content this object came from, and a caller comparing it would see a match and
+    write field defaults into a durable projection.
+    """
+    L._CONFIG_CACHE.clear()
+    _write(cfg_home, {"agent": {"provider": "acp"}})
+    real_read_text = pathlib.Path.read_text
+
+    def _unreadable(self, *a, **kw):
+        # The file is there and the read does not complete, which is the case the
+        # parse-failure one above must stay distinct from.
+        if self == cfg_home:
+            raise OSError("the read did not complete")
+        return real_read_text(self, *a, **kw)
+
+    monkeypatch.setattr(pathlib.Path, "read_text", _unreadable)
+    cfg = L.KiroCrewConfig.load()
+    assert (
+        getattr(cfg, "_content_digest", None) is None
+    ), "a load whose read failed claimed provenance it does not have"
+
+
+def test_a_cache_entry_reports_the_bytes_it_was_parsed_from_not_its_fingerprint():
+    """A fingerprint cannot identify content, so the entry must carry its own digest.
+
+    The fingerprint is stat metadata. A replacement landing the same byte count can
+    present an identical one -- device, inode, both timestamps, size and mode all
+    matching -- and the cache then serves the EARLIER document under the new file's
+    signature. A caller pairing that document with a digest it reads itself would
+    certify bytes the document never came from, and write values derived from the old
+    content as if they were current. So the digest travels with the entry, from the
+    same lock hold as its data, and a replacement under a colliding fingerprint shows
+    up as a digest that differs.
+    """
+    from kiro_crew.config.validation import ConfigCache
+
+    cache = ConfigCache()
+    collided_fp = ("same-stat-signature",)
+
+    cache.store({"agent": {"model": "sonnet"}}, collided_fp, None, content_digest="digest-of-old")
+    got = cache.get_with_sidecar(collided_fp)
+    assert got is not None
+    data, _sidecar, digest = got
+    assert data == {"agent": {"model": "sonnet"}}
+    assert digest == "digest-of-old", (
+        "the entry cannot say which bytes it was parsed from, so a caller has nothing "
+        "to compare the live content against"
+    )
+
+    # The replacement: different content, SAME fingerprint. Without a per-entry
+    # digest the two are indistinguishable through this cache.
+    cache.store({"agent": {"model": "opus"}}, collided_fp, None, content_digest="digest-of-new")
+    got = cache.get_with_sidecar(collided_fp)
+    assert got is not None
+    data, _sidecar, digest = got
+    assert (data, digest) == ({"agent": {"model": "opus"}}, "digest-of-new")
+    assert digest != "digest-of-old", "a colliding fingerprint must not carry a stale digest"
 
 
 def test_an_overlay_shadowed_unknown_section_keeps_its_base_values(cfg_home, tmp_path):
