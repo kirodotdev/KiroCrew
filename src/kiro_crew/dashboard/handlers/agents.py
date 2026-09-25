@@ -3503,6 +3503,50 @@ def _agent_detail_candidates(name: str) -> list[tuple[Path, dict[str, Any]]]:
     return matches
 
 
+def _merge_resources_delta(
+    fresh: dict[str, Any], before: dict[str, Any], after: dict[str, Any]
+) -> None:
+    """Apply this patch's ``resources`` delta to the freshly-read spec, element-wise.
+
+    ``after`` was built from a snapshot taken before the spec lock, so assigning it whole
+    would drop a URI a concurrent writer added into *fresh* since. Only what this patch
+    NAMED -- the URIs it removed and the ones it added -- may move.
+    """
+
+    def _uris(doc: dict[str, Any]) -> list[str]:
+        """URI strings, with a malformed ``resources`` normalised to empty.
+
+        Iterating a STRING yields characters and every one of them is a ``str``, so an
+        unguarded comprehension would rewrite the value as a per-character list.
+        """
+        resources = doc.get("resources")
+        if not isinstance(resources, list):
+            return []
+        return [r for r in resources if isinstance(r, str)]
+
+    before_uris = _uris(before)
+    after_uris = _uris(after)
+    if before_uris == after_uris:
+        # This patch named no resource change, so it may not rewrite the key at all: a
+        # malformed value it never looked at must survive untouched rather than normalised.
+        return
+    removed = [r for r in before_uris if r not in after_uris]
+    added = [r for r in after_uris if r not in before_uris]
+    fresh_entries = fresh.get("resources")
+    if not isinstance(fresh_entries, list):
+        fresh_entries = []
+    # Only the STRINGS this patch named may leave: an entry of any other shape is not
+    # something this merge has an opinion about, so it is carried through unread.
+    kept = [e for e in fresh_entries if not isinstance(e, str) or e not in removed]
+    merged = kept + [r for r in added if r not in kept]
+    if merged:
+        fresh["resources"] = merged
+    else:
+        # Same reason the mapping writer drops the key rather than writing []: an empty
+        # list suppresses the shipped steering defaults.
+        fresh.pop("resources", None)
+
+
 async def api_agent_detail(request: web.Request) -> web.Response:
     """GET/PATCH /api/agents/detail/{name} — view or update agent config."""
     name = request.match_info["name"]
@@ -3732,11 +3776,16 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                             apply_definition_patch(data, patch_body)
                             agent_state.lift_and_strip_bookkeeping(data, agent_name)
                             for key, value in data.items():
+                                if key == "resources":
+                                    # Merged element-wise below: assigning this list
+                                    # whole would drop a concurrent writer's addition.
+                                    continue
                                 if key not in before_patch or before_patch[key] != value:
                                     fresh[key] = value
                             for key in before_patch:
-                                if key not in data:
+                                if key not in data and key != "resources":
                                     fresh.pop(key, None)
+                            _merge_resources_delta(fresh, before_patch, data)
                             sanitize_agent_config_governance(fresh)
                             # Atomic replace: a direct write truncates first,
                             # so ENOSPC mid-write would destroy the existing
