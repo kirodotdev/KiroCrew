@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+import logging
 import os
 import socket
 import string
@@ -1461,6 +1462,297 @@ def test_signing_secret_create_contention_retries_not_ephemeral(tmp_path, monkey
     assert secret == on_disk, "must return the persisted key, not an ephemeral one"
 
 
+def _poison_key_file(key_file, *, age_seconds: float, size: int = 0) -> None:
+    """Write a short key file whose mtime lies ``age_seconds`` in the past."""
+    key_file.write_bytes(b"P" * size)
+    stamp = time.time() - age_seconds
+    os.utime(key_file, (stamp, stamp))
+
+
+def test_signing_secret_poisoned_key_is_removed_and_replaced(tmp_path, monkeypatch, caplog) -> None:
+    """A 0-byte ``token_signing.key`` older than the fresh-create window is a
+    poisoned file, not a key in progress: an in-place creator makes the key file
+    empty and writes it afterwards, so a kill or an update completing in that
+    window leaves exactly this file, and every later boot reads <32 bytes,
+    exhausted the retry budget and signed with an ephemeral secret -- logging
+    every dashboard session out on every restart, which a restart could not fix.
+
+    The loader must remove the never-valid short file and publish a fresh key in
+    its place, so the NEXT restart keeps its cookies without exposing partial
+    key bytes under a sibling name.
+    """
+    from kiro_crew.dashboard import token_secret as ts
+
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
+    monkeypatch.setattr(ts, "_CREATE_BACKOFF_SECONDS", 0.0)
+    key_file = tmp_path / ts._SECRET_KEY_FILE
+    _poison_key_file(key_file, age_seconds=ts._POISONED_KEY_MIN_AGE_SECONDS + 60)
+
+    with caplog.at_level(logging.WARNING, logger=ts.logger.name):
+        secret = ts._load_or_create_secret()
+
+    on_disk = key_file.read_bytes()
+    assert len(on_disk) >= ts._MIN_KEY_BYTES, "no fresh key was published"
+    assert secret == on_disk, "returned an ephemeral secret instead of the published key"
+    assert not list(tmp_path.glob(f".{ts._SECRET_KEY_FILE}.poisoned-*"))
+    assert "removed it" in caplog.text, "the heal must be logged"
+    assert "using ephemeral secret" not in caplog.text
+
+    # A second load reads the published key verbatim: the heal is one-shot.
+    monkeypatch.setattr(ts, "_SECRET", None)
+    assert ts._get_secret() == on_disk
+
+
+def test_signing_secret_heal_lock_is_sealed_by_the_sandbox() -> None:
+    """A replaceable healer lock lets sandboxed code unlink its inode, make
+    concurrent healers lock different files, and quarantine a freshly published
+    key. The read-only seal preserves the inode, and pre-creation gives the Linux
+    mount seal a target before the lazily created lock exists.
+    """
+    from pathlib import Path
+
+    from kiro_crew import sandbox
+    from kiro_crew.dashboard import token_secret as ts
+
+    lock_leaf = ts._heal_lock_path(Path("<any>/token_signing.key")).name
+    assert lock_leaf in sandbox._CREW_READONLY_LEAVES
+    assert lock_leaf in sandbox._CREW_PRECREATE_READONLY_FILE_LEAVES
+
+
+def test_signing_secret_heal_lock_symlink_is_not_followed(tmp_path) -> None:
+    """A symlinked lock can send gateways to different inodes, allowing one
+    healer to unlink a freshly published key. Refusing the symlink keeps the
+    poisoned key and blocks in-place creation without touching the referent.
+    """
+    from kiro_crew.dashboard import token_secret as ts
+
+    key_file = tmp_path / ts._SECRET_KEY_FILE
+    lock_path = ts._heal_lock_path(key_file)
+    lock_target = tmp_path / "heal-lock-target"
+    target_contents = b"not a lock"
+    lock_target.write_bytes(target_contents)
+    try:
+        os.symlink(lock_target, lock_path)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+
+    _poison_key_file(key_file, age_seconds=3600)
+    assert ts._remove_poisoned_key(key_file) is False
+    assert key_file.read_bytes() == b""
+
+    key_file.unlink()
+    assert ts._create_key_in_place(key_file) is None
+    assert not key_file.exists()
+    assert lock_path.is_symlink()
+    assert lock_target.read_bytes() == target_contents
+
+
+def test_signing_secret_fresh_short_key_is_not_removed(tmp_path, monkeypatch, caplog) -> None:
+    """A short file written moments ago may be an in-place creator on a
+    link-less filesystem between its ``O_EXCL`` create and its write. It must be
+    left where it is: the loader degrades to an ephemeral secret for this boot
+    exactly as before, and nothing is removed.
+    """
+    from kiro_crew.dashboard import token_secret as ts
+
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
+    monkeypatch.setattr(ts, "_CREATE_BACKOFF_SECONDS", 0.0)
+    key_file = tmp_path / ts._SECRET_KEY_FILE
+    _poison_key_file(key_file, age_seconds=0.0)
+
+    with caplog.at_level(logging.WARNING, logger=ts.logger.name):
+        secret = ts._load_or_create_secret()
+
+    assert len(secret) == ts._MIN_KEY_BYTES
+    assert key_file.read_bytes() == b"", "a fresh short file must not be touched"
+    assert "using ephemeral secret" in caplog.text
+
+
+def test_signing_secret_absent_key_after_exhaustion_is_not_healed(
+    tmp_path, monkeypatch, caplog
+) -> None:
+    """An exhausted publish budget with NO file at the key path is a publish that
+    keeps failing, not a poisoned key.
+
+    ``_heal_verdict`` answers ``"retry"`` for an un-stat'able path, which is right
+    under the lock (absence there means a sibling healer removed the file moments
+    ago and is publishing). Reading it that way after exhaustion instead buys a
+    second full 50-attempt sleep loop in the boot thread against the same
+    permanently failing link, and then reports ``_CREATE_MAX_ATTEMPTS`` after
+    twice that many attempts ran. The heal must only run when a read saw a short
+    file present.
+    """
+    from windows_sim import link_sharing_violation
+
+    from kiro_crew.dashboard import token_secret as ts
+
+    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
+    monkeypatch.setattr(ts, "_CREATE_BACKOFF_SECONDS", 0.0)
+    key_file = tmp_path / ts._SECRET_KEY_FILE
+
+    heal_calls: list[str] = []
+    real_remove = ts._remove_poisoned_key
+
+    def _spy(path):  # type: ignore[no-untyped-def]
+        heal_calls.append(str(path))
+        return real_remove(path)
+
+    monkeypatch.setattr(ts, "_remove_poisoned_key", _spy)
+
+    # A sharing violation on EVERY publish attempt: transient in class, so the
+    # in-place fallback stays locked and the destination is never created.
+    with link_sharing_violation(match=ts._SECRET_KEY_FILE, times=10**6) as state:
+        with caplog.at_level(logging.WARNING, logger=ts.logger.name):
+            secret = ts._load_or_create_secret()
+
+    assert heal_calls == [], f"healed an absent key path: {heal_calls}"
+    assert state["n"] == ts._CREATE_MAX_ATTEMPTS, (
+        "the publish loop ran more than its budget; the heal bought an extra "
+        f"pass that could not change the outcome (attempts={state['n']})"
+    )
+    assert len(secret) == ts._MIN_KEY_BYTES
+    assert not key_file.exists()
+    assert list(tmp_path.iterdir()) == []
+    assert "using ephemeral secret" in caplog.text
+
+
+def test_remove_pre_check_asks_for_another_pass_when_a_sibling_healed(
+    tmp_path, monkeypatch
+) -> None:
+    """The heal's verdict must separate "nothing to heal" from "a sibling got
+    there first", because those two demand opposite answers.
+
+    A gateway that lost the heal race by milliseconds finds either NO file (the
+    winner removed it and is publishing) or a FULL key (the winner published).
+    Both mean one more publish pass will read the winner's persisted key, so both
+    must return True -- collapsing them onto False would sign this gateway's
+    cookies with an ephemeral secret while a valid key sits on disk, and the pair
+    could not validate each other's tokens.
+
+    Only two shapes mean there is nothing to do: a non-regular file (a symlink
+    planted at the key path, judged by ``lstat`` as the link it is however old it
+    is -- the mtime here is backdated so the regular-file check is what decides)
+    and a short file young enough to be an in-place creator between its
+    ``O_EXCL`` create and its write. Neither is removed, and both degrade to the
+    ephemeral secret exactly as before.
+    """
+    from kiro_crew.dashboard import token_secret as ts
+
+    monkeypatch.setattr(ts, "_CREATE_BACKOFF_SECONDS", 0.0)
+
+    def _key_in(name: str):
+        d = tmp_path / name
+        d.mkdir()
+        return d / ts._SECRET_KEY_FILE
+
+    # (a) A sibling published a full key: another pass reads it, and it is never
+    #     removed whatever its age.
+    full = _key_in("published")
+    _poison_key_file(full, age_seconds=3600, size=ts._MIN_KEY_BYTES)
+    assert ts._remove_poisoned_key(full) is True
+    assert full.read_bytes() == b"P" * ts._MIN_KEY_BYTES
+
+    # (b) A sibling removed the poisoned file and is publishing: the path is
+    #     gone, and another pass reads what it writes.
+    missing = _key_in("gone")
+    assert ts._remove_poisoned_key(missing) is True
+    assert not missing.exists()
+
+    # (c) A symlink at the key path is not a key file and is not touched. The
+    # age gate is disabled for this case so the regular-file check alone
+    # decides (a symlink's own mtime cannot be set portably).
+    linked = _key_in("symlink")
+    target = linked.parent / "elsewhere"
+    target.write_bytes(b"")
+    try:
+        os.symlink(target, linked)
+    except (OSError, NotImplementedError):
+        linked = None  # symlinks unavailable on this platform; case (c) not exercised
+    if linked is not None:
+        age_gate = ts._POISONED_KEY_MIN_AGE_SECONDS
+        monkeypatch.setattr(ts, "_POISONED_KEY_MIN_AGE_SECONDS", 0.0)
+        assert ts._remove_poisoned_key(linked) is False
+        assert linked.is_symlink()
+        monkeypatch.setattr(ts, "_POISONED_KEY_MIN_AGE_SECONDS", age_gate)
+
+    # (d) A short file written moments ago may be an in-place creator mid-write.
+    fresh = _key_in("fresh")
+    _poison_key_file(fresh, age_seconds=0.0)
+    assert ts._remove_poisoned_key(fresh) is False
+    assert fresh.read_bytes() == b""
+
+
+def test_remove_waits_for_holder_and_asks_for_another_pass(tmp_path, monkeypatch) -> None:
+    """A contender waits for the short holder and preserves its full key."""
+    from kiro_crew import platform_compat
+    from kiro_crew.dashboard import token_secret as ts
+
+    key_file = tmp_path / ts._SECRET_KEY_FILE
+    lock_path = ts._heal_lock_path(key_file)
+    _poison_key_file(key_file, age_seconds=3600)
+
+    holder_fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+    acquired = threading.Event()
+    release = threading.Event()
+
+    def _holder() -> None:
+        with platform_compat.file_lock(holder_fd, exclusive=True, wait=True):
+            acquired.set()
+            time.sleep(0.3)
+            key_file.write_bytes(b"K" * ts._MIN_KEY_BYTES)
+            release.set()
+
+    t = threading.Thread(target=_holder)
+    t.start()
+    assert acquired.wait(10)
+    started = time.monotonic()
+    try:
+        result = ts._remove_poisoned_key(key_file)
+    finally:
+        assert release.wait(10)
+        t.join(10)
+        os.close(holder_fd)
+
+    assert result is True, "a contender must still run one more pass to read the holder's key"
+    assert time.monotonic() - started >= 0.2, "the contender did not yield to the holder"
+    assert key_file.read_bytes() == b"K" * ts._MIN_KEY_BYTES
+
+
+def test_remove_bounds_wait_for_wedged_holder(tmp_path, monkeypatch) -> None:
+    """A contender stops waiting while a long-running holder keeps the lock."""
+    from kiro_crew import platform_compat
+    from kiro_crew.dashboard import token_secret as ts
+
+    monkeypatch.setattr(ts, "_HEAL_LOCK_WAIT_SECONDS", 0.2)
+    key_file = tmp_path / ts._SECRET_KEY_FILE
+    lock_path = ts._heal_lock_path(key_file)
+    _poison_key_file(key_file, age_seconds=3600)
+
+    holder_fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+    acquired = threading.Event()
+
+    def _holder() -> None:
+        with platform_compat.file_lock(holder_fd, exclusive=True, wait=True):
+            acquired.set()
+            time.sleep(1.0)
+
+    t = threading.Thread(target=_holder)
+    t.start()
+    assert acquired.wait(10)
+    started = time.monotonic()
+    try:
+        result = ts._remove_poisoned_key(key_file)
+        elapsed = time.monotonic() - started
+    finally:
+        t.join(10)
+        os.close(holder_fd)
+
+    assert result is True, "the bounded refusal must still request the extra pass"
+    assert elapsed < 0.8, f"the contender exceeded its bounded wait ({elapsed:.3f}s)"
+    assert key_file.read_bytes() == b"", "the contender unlinked under the holder's lock"
+    assert sorted(p.name for p in tmp_path.iterdir()) == [lock_path.name, key_file.name]
+
+
 def test_signing_secret_destination_never_exists_while_incomplete(tmp_path, monkeypatch) -> None:
     """Regression (Mesh-3720): ``token_signing.key`` must never exist on disk in a
     partial state, so an interrupted update cannot leave a 0-byte key.
@@ -1626,6 +1918,49 @@ def test_signing_secret_concurrent_first_init_converges_without_hard_links(
         "racing first inits diverged on a link-less filesystem: "
         f"{len(set(results))} distinct secrets for one persisted key"
     )
+
+
+def test_create_key_in_place_declines_a_held_heal_lock(tmp_path) -> None:
+    """Between its ``O_EXCL`` create and its write the in-place creator's
+    destination is a 0-byte file, the shape the healer moves aside. If a healer
+    could run in that window it would quarantine the creator's file, the write
+    would land in the quarantine inode, and that gateway would sign with a key
+    its sibling never sees. So the creator takes the same advisory lock.
+
+    It asks for it single-shot: while a healer holds the lock the creator makes no
+    file at all and returns ``None``, which the caller's bounded loop treats as a
+    lost create and retries after re-reading the path. Blocking here instead would
+    add up to ``_LOCK_TIMEOUT_SECS`` to each of 50 attempts, twice over with the
+    heal's extra pass, so one wedged holder would keep the port unbound for hours.
+    Once the lock is free the creator publishes a full key.
+    """
+    from kiro_crew import platform_compat
+    from kiro_crew.dashboard import token_secret as ts
+
+    key_file = tmp_path / ts._SECRET_KEY_FILE
+    holder_fd = os.open(str(ts._heal_lock_path(key_file)), os.O_RDWR | os.O_CREAT, 0o600)
+    acquired = threading.Event()
+    release = threading.Event()
+
+    def _holder() -> None:
+        with platform_compat.file_lock(holder_fd, exclusive=True, wait=True):
+            acquired.set()
+            release.wait(10)
+
+    holder = threading.Thread(target=_holder)
+    holder.start()
+    try:
+        assert acquired.wait(10)
+        assert ts._create_key_in_place(key_file) is None, "the creator ran under a held heal lock"
+        assert not key_file.exists(), "a 0-byte destination appeared under a held heal lock"
+    finally:
+        release.set()
+        holder.join(10)
+        os.close(holder_fd)
+
+    created = ts._create_key_in_place(key_file)
+    assert created is not None and len(created) == ts._MIN_KEY_BYTES
+    assert key_file.read_bytes() == created
 
 
 def test_signing_secret_failed_dir_sync_keeps_a_recoverable_name(tmp_path, monkeypatch) -> None:

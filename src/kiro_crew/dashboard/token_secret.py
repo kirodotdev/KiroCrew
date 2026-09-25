@@ -21,12 +21,15 @@ commands like ``kirocrew --help``.
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import logging
 import os
+import stat
 import threading
 import time
 from pathlib import Path
+from typing import Literal
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write, fsync_dir
@@ -44,6 +47,25 @@ _MIN_KEY_BYTES = 32
 # an unbounded hang.
 _CREATE_MAX_ATTEMPTS = 50
 _CREATE_BACKOFF_SECONDS = 0.02
+
+#: A key file shorter than ``_MIN_KEY_BYTES`` is never accepted as a key, so the
+#: only legitimate reason for one to exist is an in-place creator (link-less
+#: filesystem) caught between its ``O_EXCL`` create and its write -- a window of
+#: milliseconds. One older than this is a poisoned file (an in-place creator
+#: killed in that window, a partial copy from a migration, a truncated restore) and
+#: is removed so a fresh key can be published; a younger one is left alone.
+_POISONED_KEY_MIN_AGE_SECONDS = 30.0
+
+#: Ceiling on a contending healer's wait for the heal lock, sized against the
+#: SLOWER of the lock's two holders. A healer holds it for an ``lstat`` plus an
+#: ``unlink`` -- milliseconds. The in-place creator holds it across
+#: :func:`_enforce_owner_only`, the key write and the ``os.fsync`` that makes the
+#: key durable, which on a slow link-less mount can take seconds. The ceiling
+#: exists so a genuinely wedged holder cannot stall a gateway boot indefinitely;
+#: it is set far enough above a healthy creator's create-write-fsync that a
+#: contender does not mistake one for wedged, take the extra pass and sign with
+#: an ephemeral secret while that creator persists a real key.
+_HEAL_LOCK_WAIT_SECONDS = 30.0
 
 #: Errors that mean the FILESYSTEM has no hard links, as opposed to a link that
 #: failed for a reason retrying could fix. Only these may send the publish onto
@@ -147,10 +169,7 @@ def _unlink_if_same_file(key_path: Path, created_stat: os.stat_result) -> None:
         # Already gone (a sibling cleaned it up, or it never landed) — nothing
         # of ours to remove.
         return
-    if (
-        on_disk.st_dev == created_stat.st_dev
-        and on_disk.st_ino == created_stat.st_ino
-    ):
+    if on_disk.st_dev == created_stat.st_dev and on_disk.st_ino == created_stat.st_ino:
         try:
             os.unlink(key_path)
         except OSError:
@@ -162,6 +181,87 @@ def _unlink_if_same_file(key_path: Path, created_stat: os.stat_result) -> None:
                 key_path,
                 exc_info=True,
             )
+
+
+#: What the on-disk key file asks the healer to do. ``"heal"`` is a stale short
+#: regular file to remove; ``"retry"`` means a sibling is already ahead of us
+#: (the path is gone, or a full key is on disk), so one more publish pass reads
+#: its key; ``"leave"`` means nothing to heal and nobody publishing.
+_HealVerdict = Literal["heal", "retry", "leave"]
+
+
+def _heal_verdict(key_path: Path) -> tuple[_HealVerdict, os.stat_result | None]:
+    """Judge the key file at *key_path* from a single ``lstat``.
+
+    Returns the verdict and the stat it was read from (``None`` when the path
+    could not be stat'd, or when the mode alone decided).
+
+    The two "a sibling is ahead of us" observations -- the path is GONE (a
+    sibling healer removed it and is publishing) and a FULL key is on disk (a
+    sibling published) -- must not collapse into ``"leave"``. A gateway that
+    lost the heal race by milliseconds sees exactly one of those two, and
+    answering "nothing to heal" there would skip the extra pass and sign with an
+    ephemeral secret while a persisted key sits at ``key_path``: the divergence
+    the heal exists to close. Only a non-regular file (a symlink planted at the
+    path) or a short file younger than
+    :data:`_POISONED_KEY_MIN_AGE_SECONDS` (an in-place creator between its
+    ``O_EXCL`` create and its write) means there is nothing to do.
+
+    ``os.lstat``, never ``os.stat``, so a symlink swapped in at the path is
+    judged as the link it is rather than as whatever it points at.
+    """
+    try:
+        on_disk = os.lstat(key_path)
+    except OSError:
+        return "retry", None
+    if not stat.S_ISREG(on_disk.st_mode):
+        return "leave", None
+    if on_disk.st_size >= _MIN_KEY_BYTES:
+        return "retry", on_disk
+    if time.time() - on_disk.st_mtime < _POISONED_KEY_MIN_AGE_SECONDS:
+        return "leave", on_disk
+    return "heal", on_disk
+
+
+def _heal_lock_path(key_path: Path) -> Path:
+    """The advisory-lock sibling shared by the in-place creator and the healer.
+
+    The ``.lock`` suffix keeps it behind ``security.py``'s keystone fence with the
+    key. The file is never removed: unlinking a lock file another process has
+    open would let a later opener take a lock on a fresh inode and run beside
+    the current holder.
+    """
+    return key_path.with_name(f".{key_path.name}.heal.lock")
+
+
+def _open_heal_lock(key_path: Path) -> int | None:
+    """Open the heal lock without following a symlink at the lock path.
+
+    Locking through a referent could let gateways lock different inodes and let
+    one unlink a freshly published key. Refusing such a lock leaves both
+    gateways on ephemeral secrets for that boot, with the fallback logged. The
+    lock file is never unlinked so every successful opener shares one inode.
+
+    Two checks, because neither covers every platform alone: ``O_NOFOLLOW``
+    makes the open itself fail on a symlink on POSIX and is a no-op on Windows,
+    where the ``lstat`` check refuses a link a privileged (developer-mode) user
+    could have created.
+    """
+    lock_path = _heal_lock_path(key_path)
+    try:
+        if stat.S_ISLNK(os.lstat(lock_path).st_mode):
+            return None
+    except OSError:
+        # Absent: the open below creates it.
+        pass
+    try:
+        return os.open(
+            str(lock_path),
+            os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+    except OSError:
+        return None
 
 
 def _create_key_in_place(key_path: Path) -> bytes | None:
@@ -176,7 +276,42 @@ def _create_key_in_place(key_path: Path) -> bytes | None:
     deliberate -- on a filesystem with no hard links the alternative is no
     persisted key at all -- and it is why the linked publish is the default
     rather than this.
+
+    The in-place create runs under the same advisory lock the healer takes
+    (:func:`_remove_poisoned_key`), because between the ``O_EXCL`` create
+    and the write the destination IS a 0-byte file, the shape the healer looks
+    for. Holding the lock across the durable write means a healer that reaches
+    its stat-then-unlink sees either no file or a full key, never this
+    creator's empty one.
+
+    The acquire is ``wait=False``: a held lock raises :class:`BlockingIOError`
+    at once and this returns ``None``, which the caller's bounded loop already
+    treats as "lost the create" -- it re-reads the path and retries. Waiting
+    instead would stack ``_LOCK_TIMEOUT_SECS`` per attempt on top of a
+    50-attempt loop that runs twice over with ``after_heal``, so one holder
+    wedged mid-fsync on a link-less mount would hold the port bind for hours
+    rather than the ~1 s this module's retry budget is sized for. Contention is
+    resolved by retrying, not by blocking the boot.
     """
+    lock_fd = _open_heal_lock(key_path)
+    if lock_fd is None:
+        return None
+    try:
+        with contextlib.ExitStack() as stack:
+            try:
+                stack.enter_context(platform_compat.file_lock(lock_fd, exclusive=True, wait=False))
+            except OSError:
+                # Held by a healer or a sibling creator: retry from the caller's
+                # loop, which re-reads the path first and so picks up whatever
+                # the holder published.
+                return None
+            return _create_key_in_place_locked(key_path)
+    finally:
+        os.close(lock_fd)
+
+
+def _create_key_in_place_locked(key_path: Path) -> bytes | None:
+    """The body of :func:`_create_key_in_place`, run while the heal lock is held."""
     # O_EXCL guarantees exactly one process across all sharers of this data
     # home wins the create; everyone else hits FileExistsError and loops back
     # to read the winner's bytes. This is what eliminates the divergence: only
@@ -237,9 +372,7 @@ def _create_key_in_place(key_path: Path) -> bytes | None:
         while mv:
             n = os.write(fd, mv)
             if n == 0:
-                raise OSError(
-                    "short write persisting token signing key (wrote 0 bytes)"
-                )
+                raise OSError("short write persisting token signing key (wrote 0 bytes)")
             mv = mv[n:]
         # Cross-restart persistence is the entire reason this file
         # exists, so flush the bytes to stable storage before we treat
@@ -268,8 +401,106 @@ def _create_key_in_place(key_path: Path) -> bytes | None:
     return key
 
 
-def _load_or_create_secret() -> bytes:
+def _remove_poisoned_key(key_path: Path) -> bool:
+    """Remove a poisoned key file so one more publish pass can mint a key.
+
+    Reached only after the publish loop exhausted its budget against a file that
+    stayed shorter than :data:`_MIN_KEY_BYTES`. Such a file was never accepted as
+    a key by any boot, so removing it loses no usable signing secret. The warning
+    records its size and age without preserving potentially sensitive partial key
+    bytes under a sibling name the OS sandbox does not mask.
+
+    Returns True when the caller should run one more pass: this process removed
+    the file, or a sibling is ahead of us (:func:`_heal_verdict` answered
+    ``"retry"``). Returns False when there is nothing to heal and nobody is
+    publishing (``"leave"``), or the unlink failed; the caller then degrades to
+    the ephemeral secret as before, and no lock file is created in that case.
+
+    Why a lock: two gateways booting on the same poisoned home both reach here.
+    Without one, A could remove the poisoned file and publish a valid key in the
+    instant between B's stat and B's unlink, and B would then remove A's VALID
+    key -- A signing with bytes that are not on disk, the divergence this module
+    exists to prevent. The lock is an OS advisory lock
+    (:func:`platform_compat.file_lock`) on a ``.lock`` sibling, released by the
+    kernel when the holder dies, so a killed healer never fences the key off.
+
+    Off the asyncio event-loop thread, the acquire waits at most
+    :data:`_HEAL_LOCK_WAIT_SECONDS`, a ceiling sized against both holders of this
+    lock: a healer, whose critical section is an ``lstat`` plus an ``unlink`` and
+    lasts milliseconds, and the in-place creator, which holds it across
+    :func:`_enforce_owner_only`, the key write and the ``os.fsync`` and so can
+    take seconds on a slow link-less mount. Waiting that long lets a contender
+    re-judge either holder's outcome under the lock rather than treating a
+    healthy creator's fsync as a stall. A holder still holding past the ceiling
+    is treated as wedged: the contender reports True and runs the bounded extra
+    pass, which may use an ephemeral key if nothing appears.
+    On the event-loop thread :func:`platform_compat.file_lock` remains
+    single-shot regardless of the timeout; a contended acquire raises at once
+    and follows the same True/extra-pass path.
+
+    This never raises.
+    """
+    verdict, _ = _heal_verdict(key_path)
+    # Unlocked pre-check, so a path that asks for nothing (a symlink, a fresh
+    # short file) leaves no lock file behind and keeps the ephemeral fallback
+    # exactly as it was, while a path a sibling already handled still earns the
+    # extra pass. The decision to REMOVE is made again under the lock below.
+    if verdict != "heal":
+        return verdict == "retry"
+    lock_fd = _open_heal_lock(key_path)
+    if lock_fd is None:
+        return False
+    try:
+        with platform_compat.file_lock(
+            lock_fd,
+            exclusive=True,
+            wait=True,
+            timeout=_HEAL_LOCK_WAIT_SECONDS,
+        ):
+            verdict, on_disk = _heal_verdict(key_path)
+            if verdict != "heal" or on_disk is None:
+                # Another healer removed it while we opened the lock and has
+                # published, or is publishing, its key: one more pass reads that
+                # key. A symlink or a fresh short file appearing here asks for
+                # nothing, exactly as in the pre-check.
+                return verdict == "retry"
+            age = time.time() - on_disk.st_mtime
+            try:
+                os.unlink(key_path)
+            except OSError:
+                # Logs the key file PATH (key_path), never key bytes.
+                logger.warning(  # nosemgrep: python-logger-credential-disclosure
+                    "token signing key at %s is %d bytes and could not be removed",
+                    key_path,
+                    on_disk.st_size,
+                    exc_info=True,
+                )
+                return False
+            logger.warning(  # nosemgrep: python-logger-credential-disclosure
+                "token signing key at %s held %d bytes (a key is %d) and was last "
+                "written %.0f s ago; removed it and creating a fresh key. Every "
+                "cookie and Slack link signed under the previous ephemeral secret "
+                "is invalid; anything certified under this key must be re-issued",
+                key_path,
+                on_disk.st_size,
+                _MIN_KEY_BYTES,
+                age,
+            )
+            return True
+    except OSError:
+        # The lock is held on the event-loop thread, or its bounded wait expired:
+        # one more pass is still worth running to read a holder's published key.
+        return True
+    finally:
+        os.close(lock_fd)
+
+
+def _load_or_create_secret(*, after_heal: bool = False) -> bytes:
     """Return the HMAC signing secret, persisted across restarts.
+
+    ``after_heal`` marks the single extra pass run after
+    :func:`_remove_poisoned_key` removed a poisoned file; that pass
+    never heals again, so the recursion is bounded at one level.
 
     See module docstring for the persistence rationale. Falls back to an
     ephemeral secret if the key file is unwritable — tokens still work within
@@ -321,6 +552,11 @@ def _load_or_create_secret() -> bytes:
         # the destination empty.
         link_unsupported = False
 
+        # Set only when a read found the key file PRESENT and shorter than
+        # _MIN_KEY_BYTES. That observation is the only thing a heal can act on,
+        # so it is what gates the heal below.
+        saw_short_key = False
+
         for _attempt in range(_CREATE_MAX_ATTEMPTS):
             # 1) Fast path: an already-populated key file. Read the persisted
             #    bytes VERBATIM and never regenerate, so a restart or a sibling
@@ -344,6 +580,11 @@ def _load_or_create_secret() -> bytes:
                 )
                 time.sleep(_CREATE_BACKOFF_SECONDS)
                 continue
+            else:
+                # The file exists and holds fewer than 32 bytes (0 counts): the
+                # one shape a heal can do anything about.
+                if len(existing) < _MIN_KEY_BYTES:
+                    saw_short_key = True
             if len(existing) >= _MIN_KEY_BYTES:
                 # Re-enforce 0600 at load time, not just at creation: perms may
                 # have been relaxed since (backup restore, manual edit,
@@ -379,9 +620,7 @@ def _load_or_create_secret() -> bytes:
             # path). It also matches the suffix atomic_write's own mkstemp temp
             # already uses. test_token_auth.py pins this against the real
             # predicate so a rename cannot silently leave the fence behind.
-            staged = key_path.with_name(
-                f".{key_path.name}.{os.getpid()}.{os.urandom(8).hex()}.tmp"
-            )
+            staged = key_path.with_name(f".{key_path.name}.{os.getpid()}.{os.urandom(8).hex()}.tmp")
             key = os.urandom(_MIN_KEY_BYTES)
             try:
                 # restrict_to_owner (rather than mode=0o600 alone) is what
@@ -516,21 +755,38 @@ def _load_or_create_secret() -> bytes:
                 # loop back and read what they persisted.
                 time.sleep(_CREATE_BACKOFF_SECONDS)
 
-        # A persistently short/empty file (external corruption, or a creator
-        # that was killed mid-publish on a filesystem with no hard links). Do
-        # NOT truncate-and-regenerate — that reintroduces the exact divergence
-        # race this function exists to prevent. Degrade to an ephemeral secret
-        # (works this session, not across restart), matching the
-        # unwritable-file fallback below. An operator can remove the stale file
-        # to let a fresh key be created cleanly.
+        # A persistently short/empty file: external corruption, a partial copy
+        # from a migration, or a creator killed between an in-place create and
+        # its write (the in-place fallback still creates the key that way). Do NOT
+        # truncate-and-regenerate in place — that reintroduces the exact
+        # divergence race this function exists to prevent. Instead remove the
+        # file under a lock (see _remove_poisoned_key) and run the
+        # publish loop ONCE more against the now-empty name, so the single
+        # creator election above is what mints the replacement. Only a file
+        # older than _POISONED_KEY_MIN_AGE_SECONDS is removed. The extra pass also
+        # runs when a sibling is already ahead of us -- the path is gone, or a
+        # full key has appeared -- because that pass reads the sibling's key
+        # instead of signing with an ephemeral secret beside it. A symlink or a
+        # short file inside the create window heals nothing and degrades to the
+        # ephemeral secret (works this session, not across restart), matching the
+        # unwritable-file fallback below. The heal is entered only when a read
+        # actually saw a short file PRESENT at the path: an absent path after
+        # exhaustion is a publish that keeps failing, not a poisoned key, and a
+        # second pass against it would re-run the same sleep loop without
+        # anything that could change the outcome.
+        if not after_heal and saw_short_key and _remove_poisoned_key(key_path):
+            return _load_or_create_secret(after_heal=True)
+
         # Logs only the key PATH (key_path) and an attempt count, never the key
         # bytes; the Semgrep rule fires on the credential-adjacent wording in
         # the static message string, not on any secret value.
         logger.warning(  # nosemgrep: python-logger-credential-disclosure
             "token signing key at %s did not converge to a valid persisted "
-            "key after %d attempts; using ephemeral secret",
+            "key after %d attempts; using ephemeral secret. Every restart will "
+            "log every dashboard session out until the file holds a %d-byte key",
             key_path,
             _CREATE_MAX_ATTEMPTS,
+            _MIN_KEY_BYTES,
         )
         return os.urandom(_MIN_KEY_BYTES)
     except OSError:

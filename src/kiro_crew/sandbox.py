@@ -680,6 +680,16 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # mutators via the dashboard/CLI) runs unsandboxed. Absent-file coverage
     # mirrors the sidecar's own entry via the pre-create list.
     "agent_model_state.json.lock",
+    # The signing-key healer's cross-process advisory lock. Its identity is
+    # what makes it a lock: if a sandboxed process can unlink and recreate the
+    # name, concurrent healers lock different inodes and one can quarantine the
+    # other's newly published key. No sandboxed process legitimately takes it;
+    # both lockers (token_secret._remove_poisoned_key and
+    # token_secret._create_key_in_place) run in the unsandboxed gateway.
+    # Absent-file coverage comes from the pre-create list because the lock is
+    # created lazily, while read-only rather than hidden keeps its inert bytes
+    # visible without weakening the write seal.
+    ".token_signing.key.heal.lock",
 )
 
 #: Crew-home leaves that MUST stay read-write for a sandboxed process. Every entry is
@@ -874,6 +884,10 @@ _CREW_CHILD_READABLE_LEAVES: tuple[str, ...] = (
     "settings_seeds.json",
     "agent_model_state.json",
     "agent_model_state.json.lock",
+    # The healer lock carries no content or capability; its risk is replacement,
+    # which the read-only seal prevents. Classify it here so enforced-child
+    # completeness stays explicit.
+    ".token_signing.key.heal.lock",
     # Gateway-owned run records, read to restore app authorization on a cold
     # continuation. The risk they carry is a rewritten app owner, not a read, and the
     # read-only seal is what answers it. Classified for completeness rather than for
@@ -1526,6 +1540,10 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     # stop. An empty lock file is absent-equivalent by definition: its content
     # is never read, only its identity is locked.
     "agent_model_state.json.lock",
+    # The signing-key healer lock is also created only on first use. Pre-create
+    # it so the Linux mount seal always has a target; an empty lock file is
+    # absent-equivalent because no code reads its bytes, only its inode identity.
+    ".token_signing.key.heal.lock",
 )
 
 #: The one masked leaf that carries its own argument (see the sibling-gap note
