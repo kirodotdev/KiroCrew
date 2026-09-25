@@ -90,7 +90,7 @@ The other spawn tools:
 - `spawn_steer` — inject a message into a RUNNING subagent's in-flight turn (`agent_id`, `message`, `mode`: `interrupt` default or `follow_up`)
 - `spawn_release` — end a continuable conversation (`conversation`) so it can no longer be continued
 - `spawn_list` — list running and completed subagents
-- `spawn_status` — read a completed run's retained transcript (see below)
+- `spawn_status` — read a run's transcript: the live partial view while it runs, the retained full transcript once complete (see below)
 - `resource_status` — advisory host headroom (available memory, CPU load, posture, and the current concurrent sub-agent cap)
 
 ## How It Works
@@ -167,7 +167,7 @@ Set via `kirocrew config set agent.completion_keep tail` or by editing
 
 ### Reading the full transcript on demand
 
-`spawn_status` reads the retained transcript by agent ID and supports
+`spawn_status` reads a run's transcript by agent ID and supports
 line-oriented paging (like reading code) for large results:
 
 - `spawn_status(agent_id, limit=200)` — first 200 lines
@@ -176,5 +176,16 @@ line-oriented paging (like reading code) for large results:
 
 A paged/filtered response is prefixed with a continuation header
 (`showing lines X-Y of N | more available — call again with offset=Y`). With no
-paging args it returns the full transcript. You can also point the generic
-`read` / `grep` tools straight at the `result_path` from the completion event.
+paging args it returns the full transcript of a completed run. You can also
+point the generic `read` / `grep` tools straight at the `result_path` from the
+completion event.
+
+While the run is still going, the same call returns its live status and the
+redacted partial transcript streamed so far, under a
+`[RUNNING · <elapsed>s · <N> turns · last tool: <X>]` header. A run still
+parked on the spawn-approval prompt has launched no process, so its header
+leads with `AWAITING-APPROVAL` instead of `RUNNING` and the body says to
+approve it in the dashboard (Approvals) to start it. The partial view grows
+as the run streams and, past the manager's bound, is truncated from the
+front, so line offsets can shift between polls: `offset`/`limit` paging is
+best-effort until completion. Completed-run output is unchanged.

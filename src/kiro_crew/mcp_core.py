@@ -6,7 +6,7 @@ and calls tools via JSON-RPC over stdio (MCP protocol).
 Tools:
     spawn_run       — spawn a background subagent
     spawn_list      — list running/completed subagents
-    spawn_status    — retrieve full subagent output
+    spawn_status    — retrieve live status and partial/full subagent output
     resource_status — check host resource headroom before heavy work
     learn_add       — save a learned correction
     learn_list      — list one window of lessons, with the total

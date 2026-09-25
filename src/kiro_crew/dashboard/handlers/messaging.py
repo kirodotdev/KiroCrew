@@ -1273,6 +1273,11 @@ async def api_spawn_status(request: web.Request) -> web.Response:
         data["turns"] = info.turns
         data["last_tool"] = _redact(info.last_tool)
         data["elapsed"] = round(time.time() - info.started)
+        partial = _redact(getattr(info, "streaming_text", ""))
+        view, view_meta = await _apply_result_view(request, partial)
+        data["result"] = view
+        if view_meta:
+            data["result_meta"] = view_meta
         # Same predicate, same present-only-while-true convention as
         # api_spawn_list. This endpoint is the one a blocking `kirocrew spawn
         # run` polls every 2s (cli_commands.py), so leaving it out would keep the

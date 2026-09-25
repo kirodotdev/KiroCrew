@@ -737,6 +737,83 @@ class TestSpawnStatusTool:
         with patch.object(mcp_core, "_get", return_value={"result": ""}):
             assert _call_tool_inner("spawn_status", {"agent_id": "a1"}) == "_No result._"
 
+    def test_a_running_payload_renders_progress_and_partial_text(self) -> None:
+        payload = {
+            "done": False,
+            "result": "partial transcript",
+            "elapsed": 3141,
+            "turns": 16,
+            "last_tool": "git grep status",
+        }
+        with patch.object(mcp_core, "_get", return_value=payload):
+            out = _call_tool_inner("spawn_status", {"agent_id": "a1"})
+        assert (
+            out == "[RUNNING · 3141s · 16 turns · last tool: git grep status]\npartial transcript"
+        )
+
+    def test_a_running_payload_without_text_explains_the_delay(self) -> None:
+        payload = {"done": False, "result": "", "turns": 7}
+        with patch.object(mcp_core, "_get", return_value=payload):
+            out = _call_tool_inner("spawn_status", {"agent_id": "a1"})
+        assert out == (
+            "[RUNNING · 7 turns]\n"
+            "(no streamed text yet — 7 turns so far; "
+            "transcript arrives with the completion event)"
+        )
+
+    def test_a_run_parked_on_the_spawn_gate_is_not_reported_as_running(self) -> None:
+        # ``awaiting_approval`` is present-only and, per api_spawn_status, set only
+        # while the run sits on the SPAWN-approval gate: no process, no turn. The
+        # tool must say so the way spawn_list ("awaiting-approval") and the CLI
+        # waiter ("approve it ... to start this run") do, not claim work is
+        # under way and promise a transcript "with the completion event".
+        payload = {
+            "done": False,
+            "result": "",
+            "elapsed": 42,
+            "turns": 0,
+            "last_tool": "",
+            "awaiting_approval": True,
+        }
+        with patch.object(mcp_core, "_get", return_value=payload):
+            out = _call_tool_inner("spawn_status", {"agent_id": "a1"})
+        header, body = out.split("\n", 1)
+        assert header == "[AWAITING-APPROVAL · 42s · 0 turns]"
+        assert "RUNNING" not in out
+        assert "approve it in the dashboard (Approvals) to start this run" in body
+        assert "transcript arrives with the completion event" not in out
+
+    def test_an_empty_running_page_reports_filtered_partial_text(self) -> None:
+        payload = {
+            "done": False,
+            "result": "",
+            "turns": 7,
+            "result_meta": {
+                "total_lines": 3,
+                "matched_lines": 0,
+                "offset": 0,
+                "returned_lines": 0,
+                "has_more": False,
+            },
+        }
+        with patch.object(mcp_core, "_get", return_value=payload):
+            out = _call_tool_inner("spawn_status", {"agent_id": "a1"})
+        assert "no partial transcript lines in this view" in out
+        assert "no streamed text yet" not in out
+
+    def test_a_done_payload_ignores_progress_fields(self) -> None:
+        payload = {
+            "done": True,
+            "result": "finished transcript",
+            "elapsed": 3141,
+            "turns": 16,
+            "last_tool": "git grep status",
+            "awaiting_approval": True,
+        }
+        with patch.object(mcp_core, "_get", return_value=payload):
+            out = _call_tool_inner("spawn_status", {"agent_id": "a1"})
+        assert out == "finished transcript"
+
     def test_a_paged_read_is_prefixed_with_a_continuation_header(self) -> None:
         payload = {
             "result": "line-a\nline-b",

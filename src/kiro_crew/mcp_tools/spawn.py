@@ -491,12 +491,16 @@ def schemas() -> list[dict[str, Any]]:
         {
             "name": "spawn_status",
             "description": (
-                "Retrieve a completed subagent's full transcript by agent ID (from a "
-                "completion event). The completion event gives a summary plus this "
-                "transcript on disk — use this tool (or the read/grep tools on the path) "
-                "to read the rest instead of re-running the subagent. For large "
-                "transcripts, page with offset/limit (line-based, like reading code) or "
-                "filter with grep (regex) rather than pulling the whole thing into context."
+                "Retrieve a subagent's live status and partial transcript while it runs, "
+                "or its full retained transcript after completion. The completion event "
+                "gives a summary plus the transcript path — use this tool (or the read/grep "
+                "tools on the path) to read the rest instead of re-running the subagent. "
+                "For large transcripts, page with offset/limit (line-based, like reading "
+                "code) or filter with grep (regex) rather than pulling the whole thing into "
+                "context. While a run is still going the partial transcript is a live view "
+                "that grows (and past the manager's bound is truncated from the front), so "
+                "line offsets can shift between polls and offset/limit paging is best-effort "
+                "until completion."
             ),
             "inputSchema": {
                 "type": "object",
@@ -1151,7 +1155,33 @@ def spawn_status(name: str, args: dict[str, Any]) -> str:
     if isinstance(meta, dict) and meta.get("grep_error"):
         return f"Error: {meta['grep_error']}"
 
-    result = d.get("result") or "_No result._"
+    running = d.get("done") is False
+    # Present-only, and api_spawn_status sets it ONLY while the run is parked on
+    # the SPAWN-approval gate (never entered execution): no process, no turn.
+    # spawn_list renders that "awaiting-approval" and the CLI waiter says
+    # "approve it ... to start this run", so this tool must not report work
+    # under way for it either.
+    awaiting = running and d.get("awaiting_approval") is True
+    result = d.get("result") or ""
+    if running and not result:
+        turns = d.get("turns", 0)
+        if awaiting:
+            result = (
+                "(not started — waiting for spawn approval; approve it in the "
+                "dashboard (Approvals) to start this run)"
+            )
+        elif isinstance(meta, dict) and meta.get("total_lines", 0) > 0:
+            result = (
+                f"(no partial transcript lines in this view — {turns} turns so far; "
+                "adjust offset/grep to inspect the running transcript)"
+            )
+        else:
+            result = (
+                f"(no streamed text yet — {turns} turns so far; "
+                "transcript arrives with the completion event)"
+            )
+    elif not result:
+        result = "_No result._"
     result, _ = redact_exfiltration_urls(result)
     result, _ = redact_credentials(result)
 
@@ -1167,7 +1197,20 @@ def spawn_status(name: str, args: dict[str, Any]) -> str:
         hdr.append(f"showing lines {start}-{start + returned} of {total}")
         if meta.get("has_more"):
             hdr.append(f"more available — call again with offset={start + returned}")
-        return f"[{' | '.join(hdr)}]\n{result}"
+        result = f"[{' | '.join(hdr)}]\n{result}"
+
+    if running:
+        status = ["AWAITING-APPROVAL" if awaiting else "RUNNING"]
+        if "elapsed" in d:
+            status.append(f"{d['elapsed']}s")
+        if "turns" in d:
+            status.append(f"{d['turns']} turns")
+        if d.get("last_tool"):
+            status.append(f"last tool: {d['last_tool']}")
+        header = f"[{' · '.join(status)}]"
+        header, _ = redact_exfiltration_urls(header)
+        header, _ = redact_credentials(header)
+        return f"{header}\n{result}"
     return result
 
 

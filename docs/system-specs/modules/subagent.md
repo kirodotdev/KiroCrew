@@ -2033,10 +2033,31 @@ the hint the parent re-spawns from scratch and pays for the same tool calls twic
 
 ### MCP Tool: `spawn_status`
 
-Retrieves a completed subagent's transcript by ID. The completion event now
-carries a **summary + the `result_path`** whenever the completion copy was
-truncated (`result_truncated`) or in orchestrator mode, so the parent reads the
-full transcript on demand instead of re-running the subagent.
+Retrieves live status and a redacted partial transcript for a running subagent, or
+the retained full transcript for a completed subagent. The completion event carries
+a **summary + the `result_path`** whenever the completion copy was truncated
+(`result_truncated`) or in orchestrator mode, so the parent reads the full transcript
+on demand instead of re-running the subagent.
+
+For a running in-memory record, `GET /api/spawn/{id}` keeps `done: false` and
+returns the manager's bounded `streaming_text` as `result` alongside `turns`,
+`last_tool`, `elapsed`, and present-only `awaiting_approval`; the tool branches on
+`done` alone, so there is no separate running flag. `turns` counts permission-gated
+turns charged against the run's turn budget, not tool invocations (auto-allowed
+tool calls bump `tool_count`, not `turns`). Redaction runs before optional line
+paging, so the response never exposes an unredacted partial and
+`offset`/`limit`/`grep` work in both running and completed states. The partial
+transcript is a live view that grows (and past the manager's bound is
+truncated from the front), so line offsets can shift between polls and
+`offset`/`limit` paging is best-effort until completion. The MCP tool labels this
+output with a `RUNNING` header — or `AWAITING-APPROVAL` in its place when
+`awaiting_approval` is present, because that flag means the run is parked on the
+spawn gate with no process and no turn, the state `spawn_list` renders as
+`awaiting-approval` and the CLI waiter reports as "approve it ... to start this
+run"; when no text chunk has arrived, it says that explicitly instead of
+rendering the completed-empty sentinel `_No result._`, and for the
+awaiting-approval case it says to approve the run in the dashboard (Approvals) to
+start it rather than promising a transcript with the completion event.
 
 The full transcript stays in `~/.kiro/crew/subagents/<id>/result.txt` for a
 **retention grace window** after delivery — on success the folder is *not*

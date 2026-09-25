@@ -722,14 +722,35 @@ class TestApiSpawnStatus:
         assert data["result_meta"]["offset"] == 1
         assert data["error"] == ""
 
-    def test_running_agent_reports_progress_fields(self) -> None:
+    def test_running_agent_reports_redacted_partial_transcript(self) -> None:
+        streaming_text = "working\nsecret AKIAIOSFODNN7EXAMPLE\nstill working"
         mgr = _mgr()
-        mgr.get.return_value = _info(done=False)
+        mgr.get.return_value = _info(done=False, streaming_text=streaming_text)
         req = _Req(_state(subagents=mgr), None, match_info={"agent_id": "a1"})
         data = _payload(_run(mod.api_spawn_status, req))
         assert data["done"] is False
+        assert data["result"] == mod._redact(streaming_text)
         assert data["turns"] == 2 and data["last_tool"] == "fs_read"
         assert isinstance(data["elapsed"], int)
+
+    def test_running_agent_pages_partial_transcript(self) -> None:
+        mgr = _mgr()
+        mgr.get.return_value = _info(done=False, streaming_text="l0\nl1\nl2")
+        req = _Req(
+            _state(subagents=mgr),
+            None,
+            match_info={"agent_id": "a1"},
+            query={"offset": "1", "limit": "1"},
+        )
+        data = _payload(_run(mod.api_spawn_status, req))
+        assert data["done"] is False
+        assert data["result"] == "l1"
+        assert data["result_meta"] == {
+            "total_lines": 3,
+            "offset": 1,
+            "returned_lines": 1,
+            "has_more": True,
+        }
 
     def test_done_agent_prefers_full_result_from_disk(self, tmp_path: Path) -> None:
         result_file = tmp_path / "result.txt"

@@ -1292,7 +1292,8 @@ SPAWN_STATUS_SCHEMA = ToolSchema(
     tool_name="spawn_status",
     fields=[
         FieldSpec("agent_id", str, required=True, max_len=64),
-        # Paged / filtered reads of the retained transcript (line-oriented).
+        # Paged / filtered reads of a running partial or retained full transcript
+        # (line-oriented in both states).
         FieldSpec("offset", int, min_val=0, max_val=100_000_000),
         FieldSpec("limit", int, min_val=0, max_val=2000),
         FieldSpec("grep", str, max_len=500),
