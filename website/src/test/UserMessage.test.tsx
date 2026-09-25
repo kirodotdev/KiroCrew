@@ -103,23 +103,34 @@ describe('UserMessage', () => {
     expect(screen.getByText('Cancel')).toBeInTheDocument()
   })
 
-  it('enters edit mode on double-click of the bubble', () => {
+  it('does not enter edit mode on double-click of the bubble by default', () => {
+    // Regression guard (#7908): without the opt-in, a double-click on the
+    // read-only bubble keeps native word selection and never opens the editor,
+    // even when editing is enabled. The pencil button is the edit path.
     const { container } = render(<UserMessage content="original" renderContent={renderContent} canEdit onEditResend={() => {}} />)
+    const bubble = container.querySelector('.msg-content') as HTMLElement
+    fireEvent.doubleClick(bubble)
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+    expect(screen.getByTestId('content')).toBeInTheDocument()
+  })
+
+  it('enters edit mode on double-click of the bubble when doubleClickToEdit is on', () => {
+    const { container } = render(<UserMessage content="original" renderContent={renderContent} canEdit onEditResend={() => {}} doubleClickToEdit />)
     const bubble = container.querySelector('.msg-content') as HTMLElement
     fireEvent.doubleClick(bubble)
     expect(screen.getByRole('textbox')).toHaveValue('original')
     expect(screen.getByText('Send')).toBeInTheDocument()
   })
 
-  it('does not enter edit mode on double-click when onEditResend is not provided', () => {
-    const { container } = render(<UserMessage content="original" renderContent={renderContent} canEdit />)
+  it('does not enter edit mode on double-click when doubleClickToEdit is on but onEditResend is not provided', () => {
+    const { container } = render(<UserMessage content="original" renderContent={renderContent} canEdit doubleClickToEdit />)
     const bubble = container.querySelector('.msg-content') as HTMLElement
     fireEvent.doubleClick(bubble)
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
   })
 
-  it('does not enter edit mode on double-click when canEdit is false', () => {
-    const { container } = render(<UserMessage content="original" renderContent={renderContent} onEditResend={() => {}} />)
+  it('does not enter edit mode on double-click when doubleClickToEdit is on but canEdit is false', () => {
+    const { container } = render(<UserMessage content="original" renderContent={renderContent} onEditResend={() => {}} doubleClickToEdit />)
     const bubble = container.querySelector('.msg-content') as HTMLElement
     fireEvent.doubleClick(bubble)
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument()

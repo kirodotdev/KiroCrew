@@ -363,6 +363,7 @@ describe('ChatPanel — Messages', () => {
 
   it.each([
     ['Show Timestamps', 'showTimestamps', false],
+    ['Double-click to edit your messages', 'doubleClickToEdit', true],
     ['Pin the latest turn', 'pinLastPrompt', false],
     ['Simplified Tool Call Names', 'simplifiedToolNames', false],
     ['Show Context Percentage', 'showContextPct', true],

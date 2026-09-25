@@ -1276,6 +1276,10 @@ export function ChatPanel() {
             onChange={v => setChat('streamMode', v as ChatConfig['streamMode'])}
           />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.show_timestamps')} description={i18nT('pages.settings.chatPanel.display_time_on_each_message')} checked={chatCfg.showTimestamps} onChange={v => setChat('showTimestamps', v)} />
+          {/* Browser-local like the toggles around it, hence no `configKey`.
+              Default off: the gesture takes the double-click that otherwise
+              selects a word in the bubble (#7908). */}
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.double_click_to_edit')} description={i18nT('pages.settings.chatPanel.double_click_to_edit_desc')} checked={chatCfg.doubleClickToEdit} onChange={v => setChat('doubleClickToEdit', v)} />
           <SettingsButtonGroup label={i18nT('pages.settings.chatPanel.content_width')} description={i18nT('pages.settings.chatPanel.compact_is_the_original_view_comfortable_and_ful')} value={chatCfg.contentWidth} options={[{ value: "compact", label: i18nT('pages.settings.chatPanel.compact') }, { value: "comfortable", label: i18nT('pages.settings.chatPanel.comfortable') }, { value: "full", label: i18nT('pages.settings.chatPanel.full') }]} onChange={v => setChat('contentWidth', v as ContentWidth)} />
           <SettingsStepper
             label={i18nT('pages.settings.chatPanel.message_font_size')}

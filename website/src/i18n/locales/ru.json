@@ -14527,6 +14527,8 @@
         "developer": "Разработчик",
         "disabled_by_instance_config_tips_enabled_false": "Отключено конфигурацией экземпляра (tips_enabled: false)",
         "display_time_on_each_message": "Показывать время у каждого сообщения",
+        "double_click_to_edit": "Двойной щелчок для редактирования твоих сообщений",
+        "double_click_to_edit_desc": "Если выключено, двойной щелчок по твоему сообщению выделяет слово, как в любом тексте.",
         "display_usage_percentage_next_to_the_context_pro": "Показывать процент использования рядом с индикатором контекста",
         "display_used_and_total_tokens_next_to_the_contex": "Показывать использованные и общие токены рядом с индикатором контекста",
         "e_g_solutions_architect_sre_founder": "например: архитектор решений, SRE, основатель",

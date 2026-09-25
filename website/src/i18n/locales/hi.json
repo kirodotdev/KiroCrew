@@ -14113,6 +14113,8 @@
         "developer": "डेवलपर",
         "disabled_by_instance_config_tips_enabled_false": "इंस्टेंस कॉन्फ़िग से बंद (tips_enabled: false)",
         "display_time_on_each_message": "प्रत्येक संदेश पर समय दिखाएँ",
+        "double_click_to_edit": "अपने संदेश संपादित करने के लिए डबल-क्लिक करो",
+        "double_click_to_edit_desc": "बंद होने पर, तुम्हारे संदेश पर डबल-क्लिक किसी भी टेक्स्ट की तरह एक शब्द चुनता है।",
         "display_usage_percentage_next_to_the_context_pro": "कॉन्टेक्स्ट प्रोग्रेस बार के आगे उपयोग प्रतिशत दिखाएँ",
         "display_used_and_total_tokens_next_to_the_contex": "कॉन्टेक्स्ट प्रोग्रेस बार के आगे उपयोग किए गए और कुल टोकन दिखाएँ",
         "e_g_solutions_architect_sre_founder": "जैसे सॉल्यूशंस आर्किटेक्ट, SRE, फ़ाउंडर",

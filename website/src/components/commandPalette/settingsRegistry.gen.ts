@@ -929,6 +929,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "chat.double-click-to-edit-your-messages",
+    "label": "Double-click to edit your messages",
+    "labelKey": "pages.settings.chatPanel.double_click_to_edit",
+    "description": "When off, a double-click on your message selects a word as in any text.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "chat.fallback-model",
     "label": "Fallback model",
     "labelKey": "pages.settings.chatPanel.fallback_model",

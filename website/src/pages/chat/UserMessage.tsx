@@ -36,6 +36,11 @@ interface UserMessageProps {
   messageIndex?: number
   messageTs?: string
   onEditResend?: (index: number, ts: string, newContent: string) => void
+  /** Opt-in: a double-click on the read-only bubble opens the editor. Off by
+   *  default because the gesture replaces native double-click word selection
+   *  on the bubble. The pencil button is the edit path for everyone. Wired
+   *  from Settings → Chat → "Double-click to edit your messages". */
+  doubleClickToEdit?: boolean
   slotKey?: string
   slotTitle?: string
   mode?: string
@@ -59,7 +64,7 @@ interface UserMessageProps {
   hideSteerBadge?: boolean
 }
 
-const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, slotKey, slotTitle, mode, pinned, onTogglePin, onReplyInThread, slotRunning, hideSteerBadge }: UserMessageProps) {
+const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, doubleClickToEdit = false, slotKey, slotTitle, mode, pinned, onTogglePin, onReplyInThread, slotRunning, hideSteerBadge }: UserMessageProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [editing, setEditing] = useState(false)
   const ime = useImeGuard()
@@ -232,7 +237,9 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
     e.preventDefault()
   }, [meta])
 
-  const canEditResend = !!(canEdit && onEditResend)
+  // The gesture is attached only when the user opted in: it takes the
+  // double-click that would otherwise select a word in the bubble.
+  const dblClickEdits = !!(canEdit && onEditResend && doubleClickToEdit)
 
   // Declared before the editing early-return so hook order stays stable across
   // the read-only and editing renders.
@@ -294,7 +301,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
     // Disable is safe: the keyboard-accessible edit path is the aria-labelled
     // pencil button in the action row below, not this bubble.
     // eslint-disable-next-line jsx-a11y/no-static-element-interactions
-    <div ref={userRef} onCopy={handleCopy} onDoubleClick={canEditResend ? handleDoubleClick : undefined} className={`message-bubble mc-message-font-scope msg-content px-4 py-2 leading-relaxed rounded-xl overflow-hidden min-w-0 w-fit max-w-full ${isSteer ? 'bg-accent-subtle text-text' : 'user-bubble bg-card text-card-fg'}`} style={{ overflowWrap: 'anywhere', wordBreak: 'break-word', fontSize: 'var(--mc-message-font-size, 14px)' }}>
+    <div ref={userRef} onCopy={handleCopy} onDoubleClick={dblClickEdits ? handleDoubleClick : undefined} className={`message-bubble mc-message-font-scope msg-content px-4 py-2 leading-relaxed rounded-xl overflow-hidden min-w-0 w-fit max-w-full ${isSteer ? 'bg-accent-subtle text-text' : 'user-bubble bg-card text-card-fg'}`} style={{ overflowWrap: 'anywhere', wordBreak: 'break-word', fontSize: 'var(--mc-message-font-size, 14px)' }}>
       {/* `messageTs` FIRST, `clientTs` only as a fallback. The opposite order is
           correct for the audio key above, which wants the optimistic bubble's own
           identity, but this value is COMPARED against server-clock slot mint

@@ -5692,6 +5692,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               messageIndex={i}
               messageTs={m.ts || ''}
               onEditResend={handleEditResend}
+              doubleClickToEdit={chatConfig.doubleClickToEdit}
               slotKey={activeSlot || undefined}
               slotTitle={activeSlotTitle}
               mode={mode}

@@ -6126,6 +6126,8 @@
         "comfortable": "Comfortable",
         "compact": "Compact",
         "default_auto": "Default (auto)",
+        "double_click_to_edit": "Double-click to edit your messages",
+        "double_click_to_edit_desc": "When off, a double-click on your message selects a word as in any text.",
         "failed_to_save_selectable_models": "Failed to save selectable models",
         "model_picker_all_models": "All models ({{count}})",
         "model_picker_selected_models": "Selected {{selected}} / {{total}}",

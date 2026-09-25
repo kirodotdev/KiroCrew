@@ -531,6 +531,13 @@
       "description": "Kiro uses this description to adapt vocabulary and examples to your role."
     },
     {
+      "id": "chat.double-click-to-edit-your-messages",
+      "label": "Double-click to edit your messages",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.double-click-to-edit-your-messages",
+      "description": "When off, a double-click on your message selects a word as in any text."
+    },
+    {
       "id": "chat.fallback-model",
       "label": "Fallback model",
       "tab": "chat",
