@@ -756,6 +756,25 @@ def test_kiro_identity_projection_fails_closed_on_settings_errors(
     assert session_mcp.kiro_control_plane_servers("kirocrew", work_dir=tmp_path) == []
 
 
+def test_kiro_identity_projection_accepts_utf8_bom_in_global_settings(tmp_path, monkeypatch):
+    from kiro_crew import agent
+    from kiro_crew.acp import session_mcp
+
+    managed = {"command": "test-crew", "args": ["mcp"]}
+    spec = {"tools": ["@kirocrew-core"], "mcpServers": {"kirocrew-core": managed}}
+    global_path = tmp_path / "global" / "mcp.json"
+    global_path.parent.mkdir(parents=True)
+    global_path.write_bytes(b'\xef\xbb\xbf{"mcpServers": {}}')
+    monkeypatch.setattr(agent, "_KIRO_MCP_JSON", global_path)
+    monkeypatch.setattr(session_mcp, "_agent_spec_for", lambda *a, **k: spec)
+    monkeypatch.setattr(session_mcp, "_registry_mode", lambda: False)
+    monkeypatch.setattr(session_mcp, "managed_mcp_spec_entry", lambda name, **_kw: managed)
+
+    elements = session_mcp.kiro_control_plane_servers("kirocrew", work_dir=tmp_path)
+
+    assert [element["name"] for element in elements] == ["kirocrew-core"]
+
+
 def test_the_control_plane_element_env_matches_the_spec_writing_consumer(tmp_path, monkeypatch):
     """The projected element's env is the one the disk path writes, and then the token.
 

@@ -242,7 +242,7 @@ def _read_mcp_settings(path: Path) -> dict[str, Any]:
     if raw is None:
         raise ValueError("MCP settings could not be safely read")
     try:
-        settings = json.loads(raw.decode("utf-8"))
+        settings = json.loads(raw.decode("utf-8-sig"))
     except RecursionError as exc:
         raise ValueError("MCP settings exceed the JSON nesting limit") from exc
     if not isinstance(settings, dict) or not isinstance(settings.get("mcpServers", {}), dict):
