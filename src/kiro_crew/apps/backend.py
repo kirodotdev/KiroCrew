@@ -476,6 +476,17 @@ class AppProcess:
     proc: subprocess.Popen | None = field(default=None, repr=False)
     log_fh: Any = field(default=None, repr=False)
     healthy: bool = False
+    # Digest of the proxy secret injected into this exact child. The plaintext
+    # remains only in the child environment and on disk; process tracking keeps
+    # enough evidence for the gateway to reject a stale generation after a CLI
+    # reinstall rotates .app_secret.
+    proxy_secret_digest: bytes = field(default=b"", repr=False)
+    # Requests that acquired this exact process as their target and have not yet
+    # received upstream response headers. Teardown marks the record retiring
+    # before waiting for this count, so its port cannot be freed and rebound
+    # under a signed request body.
+    forward_leases: int = field(default=0, repr=False)
+    retiring: bool = field(default=False, repr=False)
     # The `healthy` value last SUCCESSFULLY reconciled into mcp.json, or None if nothing
     # has been written for this record yet. Distinct from `healthy` because the flag
     # moves even when the mcp.json write fails; the gap between them is what the watch
@@ -2360,6 +2371,7 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
     # secret is readable AND the origin was injected above; a missing
     # .app_secret is tolerated as before and yields neither the secret nor the
     # proof (a secret-less legacy backend gets the origin only).
+    _proxy_secret = ""
     try:
         _proxy_secret = (root / ".app_secret").read_text().strip()
         if _proxy_secret:
@@ -2791,6 +2803,9 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
         proc=proc,
         log_fh=log_fh,
         healthy=False,
+        proxy_secret_digest=(
+            hashlib.sha256(_proxy_secret.encode("utf-8")).digest() if _proxy_secret else b""
+        ),
         started_at=time.time(),
         log_path=str(log_path),
         gateway_started=True,
@@ -2869,21 +2884,35 @@ def stop_app_backend(
     withdrawn trust ceiling needs that, and it pays for the probe.
     """
     # Teardown participates in the health serialization, so the pop cannot land in the
-    # middle of a reconcile. Without this, a watcher that had already passed its identity
-    # check could still be inside `_gate_mcp_registration` when the caller's subsequent
-    # `deregister_app` scrubs — and its write would land AFTER, restoring the dead url
-    # this whole gate exists to keep out of mcp.json. Holding it across the pop makes the
-    # two mutually exclusive: either the reconcile completes and this pop follows it (the
-    # caller's scrub then wins), or this pop lands first and the reconcile's identity
-    # check fails. Lock order matches `_set_backend_health`: reconcile lock, then `_lock`.
+    # middle of a reconcile. It also retires the record before waiting for proxy target
+    # leases: acquisition and retirement share ``_lock``, so no new request can select
+    # this process while existing signed bodies drain. Proxy requests have a bounded
+    # timeout and release in ``finally``, so this wait cannot create an unbounded lease.
     with _health_reconcile_lock:
-        with _lock:
-            if _expected is not None and _processes.get(app_name) is not _expected:
-                return False
-            _advance_lifecycle_locked(app_name, _LIFECYCLE_STOP)
-            ap = _processes.pop(app_name, None)
-            _allocated_ports.pop(app_name, None)
-            _restart_attempts.pop(app_name, None)
+        while True:
+            with _lock:
+                ap = _processes.get(app_name)
+                if _expected is not None and ap is not _expected:
+                    return False
+                if ap is not None:
+                    ap.retiring = True
+                    if ap.forward_leases > 0:
+                        wait_for_leases = True
+                    else:
+                        wait_for_leases = False
+                else:
+                    wait_for_leases = False
+                if not wait_for_leases:
+                    _advance_lifecycle_locked(app_name, _LIFECYCLE_STOP)
+                    ap = _processes.pop(app_name, None)
+                    _allocated_ports.pop(app_name, None)
+                    _restart_attempts.pop(app_name, None)
+                    break
+            # Wait outside ``_lock`` so the request can release its lease. The
+            # timeout closes the check/wait notification race without polling
+            # aggressively; every wake revalidates record identity under `_lock`.
+            with _forward_leases_changed:
+                _forward_leases_changed.wait(timeout=0.1)
         # Keep cleanup inside the lifecycle transition's serialization. A later explicit
         # start cannot record its successor between the pop and this identity check.
         if ap is not None and ap.proc is not None:
@@ -3224,6 +3253,111 @@ def get_app_backend_port(app_name: str) -> int | None:
     with _lock:
         ap = _processes.get(app_name)
         return ap.port if ap and ap.healthy else None
+
+
+@dataclass(frozen=True)
+class BackendTargetLease:
+    """A verified gateway-owned backend pinned against teardown."""
+
+    port: int
+    pid: int
+    _process: AppProcess = field(repr=False, compare=False)
+
+
+_forward_leases_changed = threading.Condition(_lock)
+
+
+def acquire_app_backend_target(app_name: str, secret: str) -> BackendTargetLease | None:
+    """Lease the healthy child spawned with *secret*, or fail closed.
+
+    Authorization and pinning happen under the process-table lock. Once this
+    returns, teardown cannot free the target port until
+    :func:`release_app_backend_target` returns the lease.
+    """
+    if not secret:
+        return None
+    actual_digest = hashlib.sha256(secret.encode("utf-8")).digest()
+    with _lock:
+        ap = _processes.get(app_name)
+        if (
+            ap is None
+            or not ap.healthy
+            or ap.retiring
+            or ap.proc is None
+            or ap.proc.poll() is not None
+            or not ap.proxy_secret_digest
+            or not hmac.compare_digest(ap.proxy_secret_digest, actual_digest)
+        ):
+            return None
+        ap.forward_leases += 1
+        return BackendTargetLease(port=ap.port, pid=ap.pid, _process=ap)
+
+
+def acquire_adopted_app_backend_target(app_name: str) -> BackendTargetLease | None:
+    """Lease a healthy backend already adopted under the existing contract.
+
+    Adoption is an explicit externally-managed capability: the gateway records
+    the listener owners and their start-time identities, but did not spawn the
+    process and therefore has no spawn-time secret digest to compare.  Keep
+    that capability separate from :func:`acquire_app_backend_target` so an
+    absent tracking record can never become permission to use a manifest port.
+
+    The lease serializes gateway teardown with request transmission.  It does
+    not claim control over the external supervisor, matching the existing
+    adoption contract.
+    """
+    with _lock:
+        ap = _processes.get(app_name)
+        if (
+            ap is None
+            or not ap.healthy
+            or ap.retiring
+            or ap.starting
+            or ap.proc is not None
+            or not ap.adopted_pids
+            or set(ap.adopted_pids) != set(ap.adopted_start_times)
+        ):
+            return None
+        ap.forward_leases += 1
+        return BackendTargetLease(port=ap.port, pid=ap.adopted_pids[0], _process=ap)
+
+
+def release_app_backend_target(lease: BackendTargetLease) -> None:
+    """Return a target lease and wake teardown waiting on this process."""
+    with _forward_leases_changed:
+        ap = lease._process
+        if ap.forward_leases <= 0:
+            logger.error("App %s backend target lease released twice", ap.app_name)
+            return
+        ap.forward_leases -= 1
+        _forward_leases_changed.notify_all()
+
+
+def app_backend_matches_current_secret(app_name: str) -> bool | None:
+    """Compare the tracked spawned child with the current on-disk secret.
+
+    ``None`` is reserved for an unreadable/empty secret file, where the caller
+    must defer. ``False`` means replacement is required: no process, an adopted
+    process with no spawn-time proof, a dead/starting record, or a stale digest.
+    """
+    try:
+        secret = (app_dir(app_name) / ".app_secret").read_text().strip()
+    except OSError:
+        return None
+    if not secret:
+        return None
+    actual_digest = hashlib.sha256(secret.encode("utf-8")).digest()
+    with _lock:
+        ap = _processes.get(app_name)
+        if (
+            ap is None
+            or ap.starting
+            or ap.proc is None
+            or ap.proc.poll() is not None
+            or not ap.proxy_secret_digest
+        ):
+            return False
+        return hmac.compare_digest(ap.proxy_secret_digest, actual_digest)
 
 
 def recorded_backend_port(app_name: str) -> int | None:

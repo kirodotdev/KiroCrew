@@ -62,6 +62,14 @@ import logging
 from functools import partial
 from typing import Any
 
+from kiro_crew.apps.backend import (
+    _activation_denied,
+    app_backend_matches_current_secret,
+    get_app_process,
+    list_app_processes,
+    start_app_backend,
+    stop_app_backend,
+)
 from kiro_crew.apps.hooks_integration import (
     clear_loaded_hook_signature,
     compute_hook_signature,
@@ -78,6 +86,8 @@ from kiro_crew.apps.lifecycle import app_has_retained_startup, apps_with_retaine
 from kiro_crew.apps.manager import app_enabled_state, app_lifecycle_lock, get_app, list_apps
 from kiro_crew.apps.module_loader import unload_app_modules
 from kiro_crew.apps.teardown import forget_app_hooks
+from kiro_crew.executors import subprocess_executor
+from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +143,118 @@ _active_pass: asyncio.Task | None = None
 #: most ONE reconcile per app is ever outstanding; the entry clears when the task
 #: finishes (done callback), so the next tick picks the app up normally.
 _inflight_app_tasks: dict[str, asyncio.Task] = {}
+
+#: Replacement retry state is private to this reconciler. It affects when the
+#: next start is attempted, never whether the proxy may forward.
+BACKEND_RETRY_SECS = 30.0
+_backend_retry_after: dict[str, float] = {}
+
+
+def _declares_managed_backend(app_info: dict[str, Any] | None) -> bool:
+    manifest = (app_info or {}).get("manifest") or {}
+    backend = manifest.get("backend") or {}
+    return bool(backend.get("entryPoint"))
+
+
+def _tracked_backend_names() -> list[str]:
+    return [str(row["app_name"]) for row in list_app_processes() if row.get("app_name")]
+
+
+def _audit_backend_replacement(name: str, outcome: str, error: str = "") -> None:
+    try:
+        sel().log_api_access(
+            caller="gateway",
+            operation="app_backend_replace",
+            outcome=outcome,
+            resources=name,
+            error=error,
+        )
+    except Exception as exc:  # noqa: BLE001 -- audit failure cannot change the decision
+        logger.debug("SEL audit failed for app backend replacement %s: %s", name, exc)
+
+
+async def _reconcile_managed_backend(
+    name: str, current: dict[str, Any] | None, *, gone: bool
+) -> None:
+    """Keep one enabled managed app on the current secret generation."""
+    ap = get_app_process(name)
+    should_run = (
+        not gone
+        and current is not None
+        and bool(current.get("enabled"))
+        and _declares_managed_backend(current)
+    )
+    if not should_run:
+        _backend_retry_after.pop(name, None)
+        if ap is not None:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(subprocess_executor(), stop_app_backend, name)
+        return
+    if _stopping or (ap is not None and ap.starting):
+        return
+    if ap is not None and ap.proc is None:
+        # Externally-managed adoption is an existing audited capability.  It
+        # has no spawn-time secret digest, and this reconciler must not turn
+        # that absence into permission to kill and replace the operator's
+        # process.  The backend health watcher owns adopted-record recovery.
+        _backend_retry_after.pop(name, None)
+        return
+
+    generation_matches = await asyncio.to_thread(app_backend_matches_current_secret, name)
+    if generation_matches is None:
+        return  # a secret write may be in flight; retry from the next disk snapshot
+    if generation_matches:
+        _backend_retry_after.pop(name, None)
+        return
+
+    now = asyncio.get_running_loop().time()
+    if now < _backend_retry_after.get(name, 0.0):
+        return
+
+    verdict = await asyncio.to_thread(_activation_denied, name, "respawn")
+    if verdict.denied:
+        if ap is not None:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(subprocess_executor(), stop_app_backend, name)
+        _backend_retry_after[name] = now + BACKEND_RETRY_SECS
+        _audit_backend_replacement(name, "denied", verdict.denied)
+        return
+
+    loop = asyncio.get_running_loop()
+    if ap is not None:
+        stopped = await loop.run_in_executor(subprocess_executor(), stop_app_backend, name)
+        if not stopped and get_app_process(name) is not None:
+            _backend_retry_after[name] = now + BACKEND_RETRY_SECS
+            return
+
+    # A CLI process does not share this in-process lock. Re-read immediately
+    # before and after spawn, leaving a child serving only on positive enablement.
+    enabled = await asyncio.to_thread(app_enabled_state, name)
+    if enabled is not True:
+        if enabled is False:
+            _backend_retry_after.pop(name, None)
+        else:
+            _backend_retry_after[name] = now + BACKEND_RETRY_SECS
+        return
+    try:
+        spawned = await loop.run_in_executor(subprocess_executor(), start_app_backend, name)
+    except Exception as exc:  # noqa: BLE001 -- one app must not wedge the reconcile pass
+        _backend_retry_after[name] = now + BACKEND_RETRY_SECS
+        _audit_backend_replacement(name, "error", str(exc))
+        logger.exception("hook reconcile: managed backend replacement failed for %s", name)
+        return
+    enabled_after = await asyncio.to_thread(app_enabled_state, name)
+    if spawned is None or enabled_after is not True:
+        if spawned is not None:
+            await loop.run_in_executor(subprocess_executor(), stop_app_backend, name)
+        if enabled_after is False:
+            _backend_retry_after.pop(name, None)
+        else:
+            _backend_retry_after[name] = now + BACKEND_RETRY_SECS
+        return
+    _backend_retry_after.pop(name, None)
+    _audit_backend_replacement(name, "allowed")
+    logger.info("hook reconcile: replaced managed backend for %s", name)
 
 
 def _clear_inflight(app_name: str, task: asyncio.Task) -> None:
@@ -284,6 +406,9 @@ async def _reconcile_app(name: str, snapshot_info: dict[str, Any] | None) -> Non
                 name,
             )
             return
+
+        await _reconcile_managed_backend(name, current, gone=gone)
+
         turned_off = current is not None and (
             not current.get("enabled") or not manifest_declares_hooks(current)
         )
@@ -399,10 +524,12 @@ async def reconcile_once(installed: list[dict[str, Any]]) -> None:
     # the exact snapshot value non-authoritative, so this set only needs to be a
     # superset of what actually changed.
     candidates_set = set(loaded_hook_apps())
+    candidates_set.update(_tracked_backend_names())
     candidates_set.update(
         name
         for name, info in by_name.items()
-        if info.get("enabled") and manifest_declares_hooks(info)
+        if info.get("enabled")
+        and (manifest_declares_hooks(info) or _declares_managed_backend(info))
     )
     # Also examine apps whose loaded record was cleared on a degraded startup but
     # whose detached startup task is still live -- they must be torn down when they

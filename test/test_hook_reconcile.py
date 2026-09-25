@@ -16,6 +16,7 @@ per-test to a deterministic answer.
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -33,16 +34,27 @@ def _isolate_home(tmp_path, monkeypatch):
     hi._loaded_hook_signatures.clear()
     hi._loaded_hook_manifests.clear()
     hr._inflight_app_tasks.clear()
+    hr._backend_retry_after.clear()
     hr._stopping = False
     yield
     hi._loaded_hook_signatures.clear()
     hi._loaded_hook_manifests.clear()
     hr._inflight_app_tasks.clear()
+    hr._backend_retry_after.clear()
     hr._stopping = False
 
 
-def _app_info(name: str, *, enabled: bool = True, version: str = "1.0.0", hooks: bool = True):
-    backend = {"hooks": {"on_startup": "backend.hooks:on_startup"}} if hooks else {}
+def _app_info(
+    name: str,
+    *,
+    enabled: bool = True,
+    version: str = "1.0.0",
+    hooks: bool = True,
+    managed: bool = False,
+):
+    backend: dict[str, Any] = {"hooks": {"on_startup": "backend.hooks:on_startup"}} if hooks else {}
+    if managed:
+        backend["entryPoint"] = "backend/server.py"
     return {
         "name": name,
         "enabled": enabled,
@@ -121,6 +133,140 @@ def _harness(monkeypatch):
         state["denied"] = reason
 
     return calls, (set_current, set_disable_result, set_denied)
+
+
+@pytest.fixture
+def _managed_backend_harness(monkeypatch):
+    calls: list[str] = []
+    state: dict[str, Any] = {
+        "process": SimpleNamespace(starting=False, proc=object()),
+        "matches": False,
+        "denied": None,
+        "transient": False,
+        "spawn_result": SimpleNamespace(starting=False),
+        "enabled_reads": [True, True],
+    }
+
+    def fake_stop(name):
+        calls.append("stop")
+        state["process"] = None
+        return True
+
+    def fake_start(name):
+        calls.append("start")
+        state["process"] = state["spawn_result"]
+        return state["spawn_result"]
+
+    def fake_enabled(name):
+        reads = state["enabled_reads"]
+        return reads.pop(0) if len(reads) > 1 else reads[0]
+
+    monkeypatch.setattr(hr, "get_app_process", lambda name: state["process"])
+    monkeypatch.setattr(
+        hr, "_tracked_backend_names", lambda: ["managed"] if state["process"] else []
+    )
+    monkeypatch.setattr(hr, "app_backend_matches_current_secret", lambda name: state["matches"])
+    monkeypatch.setattr(
+        hr,
+        "_activation_denied",
+        lambda name, action: SimpleNamespace(denied=state["denied"], transient=state["transient"]),
+    )
+    monkeypatch.setattr(hr, "stop_app_backend", fake_stop)
+    monkeypatch.setattr(hr, "start_app_backend", fake_start)
+    monkeypatch.setattr(hr, "app_enabled_state", fake_enabled)
+    monkeypatch.setattr(
+        hr,
+        "_audit_backend_replacement",
+        lambda name, outcome, error="": calls.append(f"audit:{outcome}"),
+    )
+    return calls, state
+
+
+@pytest.mark.asyncio
+async def test_stale_managed_backend_is_replaced(_harness, _managed_backend_harness):
+    _, (set_current, _, _) = _harness
+    calls, state = _managed_backend_harness
+    app = _app_info("managed", hooks=False, managed=True)
+    set_current(app)
+    await hr.reconcile_once([app])
+    assert calls == ["stop", "start", "audit:allowed"]
+    assert state["process"] is state["spawn_result"]
+    assert "managed" not in hr._backend_retry_after
+
+
+@pytest.mark.asyncio
+async def test_adopted_managed_backend_remains_externally_managed(
+    _harness, _managed_backend_harness
+):
+    _, (set_current, _, _) = _harness
+    calls, state = _managed_backend_harness
+    state["process"] = SimpleNamespace(
+        starting=False,
+        proc=None,
+        adopted_pids=[888],
+    )
+    app = _app_info("managed", hooks=False, managed=True)
+    set_current(app)
+    await hr.reconcile_once([app])
+    assert calls == []
+    assert state["process"].adopted_pids == [888]
+    assert "managed" not in hr._backend_retry_after
+
+
+@pytest.mark.asyncio
+async def test_denied_replacement_stops_stale_child_and_retries_later(
+    _harness, _managed_backend_harness
+):
+    _, (set_current, _, _) = _harness
+    calls, state = _managed_backend_harness
+    state["denied"] = "execution denied"
+    app = _app_info("managed", hooks=False, managed=True)
+    set_current(app)
+    await hr.reconcile_once([app])
+    assert calls == ["stop", "audit:denied"]
+    assert state["process"] is None
+    assert "managed" in hr._backend_retry_after
+
+
+@pytest.mark.asyncio
+async def test_failed_replacement_uses_private_backoff(_harness, _managed_backend_harness):
+    _, (set_current, _, _) = _harness
+    calls, state = _managed_backend_harness
+    state["process"] = None
+    state["spawn_result"] = None
+    app = _app_info("managed", hooks=False, managed=True)
+    set_current(app)
+    await hr.reconcile_once([app])
+    await hr.reconcile_once([app])
+    assert calls == ["start"]
+    assert "managed" in hr._backend_retry_after
+
+
+@pytest.mark.asyncio
+async def test_disable_during_spawn_stops_unconfirmed_child(_harness, _managed_backend_harness):
+    _, (set_current, _, _) = _harness
+    calls, state = _managed_backend_harness
+    state["process"] = None
+    state["enabled_reads"] = [True, False]
+    app = _app_info("managed", hooks=False, managed=True)
+    set_current(app)
+    await hr.reconcile_once([app])
+    assert calls == ["start", "stop"]
+    assert state["process"] is None
+    assert "managed" not in hr._backend_retry_after
+
+
+@pytest.mark.asyncio
+async def test_disabled_managed_backend_is_stopped_without_restart(
+    _harness, _managed_backend_harness
+):
+    _, (set_current, _, _) = _harness
+    calls, state = _managed_backend_harness
+    app = _app_info("managed", enabled=False, hooks=False, managed=True)
+    set_current(app)
+    await hr.reconcile_once([app])
+    assert calls == ["stop"]
+    assert state["process"] is None
 
 
 # ---------------------------------------------------------------------------

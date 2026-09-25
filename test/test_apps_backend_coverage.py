@@ -22,6 +22,7 @@ and ``loopback_urlopen`` are stubbed, and the spawn body is frozen at the
 from __future__ import annotations
 
 import ast
+import hashlib
 import importlib
 import json
 import logging
@@ -3329,6 +3330,7 @@ class TestSpawnOutcome:
         self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         (spawn_root / "server.py").write_text("x = 1\n")
+        (spawn_root / ".app_secret").write_text("spawn-secret\n")
         monkeypatch.setattr(bmod, "_survived_spawn", lambda _proc, _port=None: True)
         recorded: list[tuple[str, int, int, str | None]] = []
         monkeypatch.setattr(
@@ -3340,6 +3342,8 @@ class TestSpawnOutcome:
         ap = bmod._start_app_backend_body("okapp", _manifest("server.py"))
         assert ap is not None
         assert ap.pid == 777
+        assert ap.proxy_secret_digest == hashlib.sha256(b"spawn-secret").digest()
+        assert b"spawn-secret" not in repr(ap).encode("utf-8")
         # Surviving the bind is NOT health: the health loop owns that transition.
         assert ap.healthy is False
         assert bmod._processes["okapp"] is ap
@@ -3378,6 +3382,125 @@ class TestSpawnOutcome:
 # ---------------------------------------------------------------------------
 # Stop
 # ---------------------------------------------------------------------------
+
+
+class TestBackendTargetLease:
+    def _track(self, secret: str = "current") -> AppProcess:
+        ap = AppProcess(
+            app_name="leased",
+            port=9100,
+            pid=777,
+            proc=_fake_proc(pid=777),
+            healthy=True,
+            gateway_started=True,
+            proxy_secret_digest=hashlib.sha256(secret.encode("utf-8")).digest(),
+        )
+        with bmod._lock:
+            bmod._processes[ap.app_name] = ap
+            bmod._allocated_ports[ap.app_name] = ap.port
+        return ap
+
+    def test_only_current_live_spawned_generation_is_acquired(self) -> None:
+        ap = self._track()
+        lease = bmod.acquire_app_backend_target("leased", "current")
+        assert lease is not None
+        assert (lease.port, lease.pid) == (ap.port, ap.pid)
+        assert ap.forward_leases == 1
+        bmod.release_app_backend_target(lease)
+        assert ap.forward_leases == 0
+
+    def test_adopted_record_uses_a_separate_tracked_target_lease(self) -> None:
+        adopted = AppProcess(
+            app_name="adopted",
+            port=9200,
+            pid=0,
+            proc=None,
+            healthy=True,
+            adopted_pids=[888],
+            adopted_start_times={888: "start-888"},
+        )
+        with bmod._lock:
+            bmod._processes[adopted.app_name] = adopted
+            bmod._allocated_ports[adopted.app_name] = adopted.port
+
+        assert bmod.acquire_app_backend_target("adopted", "current") is None
+        lease = bmod.acquire_adopted_app_backend_target("adopted")
+        assert lease is not None
+        assert (lease.port, lease.pid) == (adopted.port, 888)
+        assert adopted.forward_leases == 1
+        bmod.release_app_backend_target(lease)
+        assert adopted.forward_leases == 0
+
+    def test_adopted_target_requires_complete_owner_identities(self) -> None:
+        adopted = AppProcess(
+            app_name="adopted",
+            port=9200,
+            pid=0,
+            proc=None,
+            healthy=True,
+            adopted_pids=[888],
+        )
+        with bmod._lock:
+            bmod._processes[adopted.app_name] = adopted
+        assert bmod.acquire_adopted_app_backend_target("adopted") is None
+
+    @pytest.mark.parametrize("state", ["stale", "unhealthy", "retiring", "adopted", "dead"])
+    def test_untrusted_target_states_fail_closed(self, state: str) -> None:
+        ap = self._track()
+        secret = "current"
+        if state == "stale":
+            secret = "rotated"
+        elif state == "unhealthy":
+            ap.healthy = False
+        elif state == "retiring":
+            ap.retiring = True
+        elif state == "adopted":
+            ap.proc = None
+        elif state == "dead":
+            ap.proc.returncode = 1
+        assert bmod.acquire_app_backend_target("leased", secret) is None
+        assert ap.forward_leases == 0
+
+    def test_reconciler_generation_check_observes_disk_rotation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ap = self._track("first")
+        secret_file = tmp_path / ".app_secret"
+        secret_file.write_text("first", encoding="utf-8")
+        monkeypatch.setattr(bmod, "app_dir", lambda name: tmp_path)
+        assert bmod.app_backend_matches_current_secret("leased") is True
+        secret_file.write_text("second", encoding="utf-8")
+        assert bmod.app_backend_matches_current_secret("leased") is False
+        ap.proc = None
+        assert bmod.app_backend_matches_current_secret("leased") is False
+        secret_file.unlink()
+        assert bmod.app_backend_matches_current_secret("leased") is None
+
+    def test_stop_waits_for_the_exact_process_lease(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        ap = self._track()
+        lease = bmod.acquire_app_backend_target("leased", "current")
+        assert lease is not None
+        monkeypatch.setattr(bmod.platform_compat, "kill_process_tree", lambda *_args: None)
+        stopped: list[bool] = []
+        worker = threading.Thread(
+            target=lambda: stopped.append(bmod.stop_app_backend("leased")),
+            daemon=True,
+        )
+        worker.start()
+        for _ in range(100):
+            with bmod._lock:
+                retiring = ap.retiring
+            if retiring:
+                break
+            threading.Event().wait(0.01)
+        assert ap.retiring is True
+        assert worker.is_alive(), "teardown must wait while a signed request owns the target"
+        assert bmod.acquire_app_backend_target("leased", "current") is None
+        bmod.release_app_backend_target(lease)
+        worker.join(timeout=2)
+        assert not worker.is_alive()
+        assert stopped == [True]
+        assert "leased" not in bmod._processes
 
 
 class TestStopSpawnedBackend:

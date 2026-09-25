@@ -3447,19 +3447,6 @@ def register_builtin_apps() -> int:
                 from kiro_crew.dashboard.token_auth import generate_app_secret, write_app_secret
 
                 write_app_secret(name, generate_app_secret())
-            # Invalidate the proxy secret cache so the newly-written (or
-            # pre-existing) secret is picked up on the next request.
-            try:
-                # circular import: routes → manager
-                # kiro_crew.apps.routes imports from kiro_crew.apps.manager
-                # at module load, so we cannot import routes at the top of
-                # this file without creating a cycle.
-                from kiro_crew.apps.routes import invalidate_app_secret_cache
-
-                invalidate_app_secret_cache(name)
-            except Exception:
-                pass  # routes module may not be importable during bootstrap
-
         count += 1
 
     if count:

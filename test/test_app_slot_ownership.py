@@ -656,7 +656,7 @@ async def test_a_flush_that_fails_does_not_abandon_the_rest_of_the_uninstall(
     the uninstall is past the point of being retried as a whole. The flush is the one
     call in that step still outside the per-key ``try``, so an ENOSPC or a permission
     error there raised straight out of the handler and skipped everything after it:
-    ``invalidate_app_secret_cache``, ``_unregister_notification_channels`` and
+    ``_unregister_notification_channels`` and
     ``forget_app_hooks``. A stale slot-close hook is the worst of those — it makes the
     removed app's leftover tabs UNDISMISSABLE, which is a user-visible dead end far
     past the cost of the pointer the flush failed to persist.
@@ -737,7 +737,6 @@ async def test_a_flush_that_fails_does_not_abandon_the_rest_of_the_uninstall(
             new_callable=AsyncMock,
             return_value=[],
         ),
-        patch("kiro_crew.apps.routes.invalidate_app_secret_cache") as secret_cache,
         patch("kiro_crew.apps.routes._unregister_notification_channels") as channels,
         patch("kiro_crew.apps.routes.forget_app_hooks") as hooks,
         caplog.at_level(logging.WARNING, logger=routes.logger.name),
@@ -756,7 +755,6 @@ async def test_a_flush_that_fails_does_not_abandon_the_rest_of_the_uninstall(
     )
 
     # (b) Every teardown step after the flush still runs.
-    assert secret_cache.called, "a surviving secret cache entry outlives the app"
     assert channels.called, "a surviving notification channel points at removed code"
     assert hooks.called, (
         "a surviving slot-close hook makes the removed app's leftover tabs "

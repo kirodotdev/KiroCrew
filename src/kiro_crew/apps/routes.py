@@ -32,9 +32,11 @@ from aiohttp import web
 from kiro_crew import platform_compat
 from kiro_crew.apps import official_catalog
 from kiro_crew.apps.backend import (
-    get_app_backend_port,
+    acquire_adopted_app_backend_target,
+    acquire_app_backend_target,
     list_app_processes,
     recorded_backend_port,
+    release_app_backend_target,
     start_app_backend,
     stop_app_backend,
     unstopped_backend_port,
@@ -809,8 +811,6 @@ async def handle_install_app(request: web.Request) -> web.Response:
                 error=result.error,
             )
             return web.json_response(result.to_dict(), status=400)
-        invalidate_app_secret_cache(result.name)
-
         # Same gate as the registry paths: a fresh install whose manifest declares
         # ``permissions.sessionApproval`` is consent-pending, so its resources
         # are not registered and its backend does not start until the user
@@ -1711,11 +1711,10 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
                     # time this runs `uninstall_app` has already removed the app's
                     # files, so the uninstall is past being retried as a whole. An
                     # ENOSPC or a permission error here would raise straight out of
-                    # the handler and skip `invalidate_app_secret_cache`,
-                    # `_unregister_notification_channels` and `forget_app_hooks` --
-                    # and a surviving slot-close hook makes the removed app's
-                    # leftover tabs UNDISMISSABLE, which costs the user more than
-                    # the pointer this write failed to persist. The CLI sibling
+                    # the handler and skip `_unregister_notification_channels`
+                    # and `forget_app_hooks` -- and a surviving slot-close hook makes
+                    # the removed app's leftover tabs UNDISMISSABLE, which costs the
+                    # user more than the pointer this write failed to persist. The CLI sibling
                     # states the same rule as `SessionPointerCleanup(failed=True)`.
                     try:
                         await sessions.aflush()
@@ -1748,7 +1747,6 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
             error=result.error,
         )
         return web.json_response(result.to_dict(), status=400)
-    invalidate_app_secret_cache(name)
     _unregister_notification_channels(request, name)
     # Same reason as the line above, for the hook registries: uninstall is the
     # terminal path, so an entry left behind is a closure over a store this
@@ -4126,30 +4124,15 @@ async def handle_blob_proxy(request: web.Request) -> web.Response:
 
 _PROXY_TIMEOUT = 30  # seconds
 
-# App secret cache — secrets don't change after install, no need to read
-# from disk on every proxied request.  Invalidated on install/uninstall.
-_app_secret_cache: dict[str, str] = {}
 
-
+# App secrets are read for each proxied request. CLI install/reinstall can rotate
+# the file without reaching this gateway process, so any in-memory cache needs a
+# second cross-process invalidation protocol and can sign with a stale generation.
+# This local file read is offloaded from the event loop by the proxy handler.
 def _get_app_secret(name: str) -> str:
-    """Read the app secret, using an in-memory cache.
-
-    Empty values are NOT cached — the secret may be provisioned after
-    the first proxy attempt (e.g. install-from-source race).
-    """
-    cached = _app_secret_cache.get(name)
-    if cached:
-        return cached
+    """Read the current app proxy secret from disk."""
     path = apps_dir() / name / ".app_secret"
-    secret = path.read_text().strip() if path.is_file() else ""
-    if secret:
-        _app_secret_cache[name] = secret
-    return secret
-
-
-def invalidate_app_secret_cache(name: str) -> None:
-    """Remove a cached secret (call on install/uninstall)."""
-    _app_secret_cache.pop(name, None)
+    return path.read_text().strip() if path.is_file() else ""
 
 
 _PROXY_HOP_HEADERS = frozenset(
@@ -4175,37 +4158,17 @@ _PROXY_STRIP_HEADERS = _PROXY_HOP_HEADERS | frozenset(
 
 
 def _resolve_app_backend_url(name: str) -> str | None:
-    """Resolve the backend URL for an app.
+    """Resolve a backend URL without crossing the ownership boundary.
 
-    For gateway-managed apps: use the tracked backend port.
-    For self-managed apps: check manifest for backend.url or mcpServers URL.
+    A ``backend.entryPoint`` declares a gateway-managed process. It is reachable
+    only through the healthy process table; an absent record is unavailable,
+    never permission to send a signed body to the manifest's fixed port.
+    Apps without an entry point are self-managed and may use their declared MCP
+    URL because the gateway never claims process ownership for them.
     """
-    # 1. Gateway-managed backend (spawned by backend.py)
-    port = get_app_backend_port(name)
-    if port:
-        return f"http://127.0.0.1:{port}"
-
-    # 2. Self-managed: check manifest for explicit backend URL
     manifest = get_app_manifest(name)
-    if not manifest:
+    if not manifest or manifest.backend.entryPoint:
         return None
-
-    # backend.routes field contains the base URL for some apps
-    if manifest.backend.entryPoint and manifest.backend.port != "auto":
-        try:
-            return f"http://127.0.0.1:{int(manifest.backend.port)}"
-        except ValueError:
-            pass
-
-    # 3. Fallback: derive from the MCP server URL (common for self-managed apps)
-    # e.g. crew-companion declares mcpServers."crew-companion".url =
-    # "http://127.0.0.1:7778/mcp" -> the backend is at http://127.0.0.1:7778
-    #
-    # Shared with register_builtin_apps(), which uses the SAME function to decide
-    # whether to issue the .app_secret this proxy signs with. Keeping one
-    # definition is load-bearing: if resolution and secret issuance disagree, an
-    # app resolves a backend here and is then refused below with 502 "has no
-    # secret", which is not detectable at registration time.
     return resolve_mcp_backend_url(manifest.mcpServers)
 
 
@@ -4253,12 +4216,10 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
     # activated. Governance denial is covered transitively: a denied app cannot be
     # activated, so it is never enabled.
     #
-    # Deliberately NOT folded into _resolve_app_backend_url: that resolver is shared
-    # with register_builtin_apps(), where an app is legitimately not yet enabled, and
-    # returning None here would surface refusal as the same misleading 502 "no
-    # reachable backend" that sharing the resolver was meant to eliminate. This is an
-    # authorization decision, so it sits with the other authorization checks and says
-    # so with 403.
+    # Deliberately separate from target acquisition below: enablement is an
+    # authorization decision and answers 403. A permitted managed app whose
+    # current child is absent or stale is an availability state and answers the
+    # retryable 503; a self-managed app with no declared URL answers 502.
     if not await asyncio.to_thread(is_app_enabled, name):
         # SEL audit for the permission decision, matching the sibling deny path
         # above. An authorization denial that leaves no trail is invisible to the
@@ -4281,23 +4242,10 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
             status=403,
         )
 
-    # Resolve backend URL
-    backend_url = _resolve_app_backend_url(name)
-    if not backend_url:
-        return web.json_response(
-            {"error": f"app {name!r} has no reachable backend"},
-            status=502,
-        )
-
-    # Build target URL — preserve the exact wire encoding of path and query
-    # params so the gateway's HMAC signature matches what the backend sees on
-    # self.path. `request.query_string` is DECODED by aiohttp, so signing it causes
-    # HMAC verification to fail closed (401) whenever query parameters contain
-    # percent-encodable characters like spaces, non-ASCII, or '+'.
+    # Preserve the exact wire encoding of path and query parameters so the
+    # gateway's HMAC signature matches what the backend sees on self.path.
     raw_qs = request.rel_url.raw_query_string
     target_path = f"/api/{path}" + (f"?{raw_qs}" if raw_qs else "")
-    target_url = yarl.URL(f"{backend_url}{target_path}", encoded=True)
-    wire_target = target_url.raw_path_qs
 
     # Forward headers (strip hop-by-hop, inject proxy auth)
     headers: dict[str, str] = {}
@@ -4315,13 +4263,51 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
     # The HMAC is computed over "timestamp:method:path[?query]:sha256(body)"
     # using the app secret as key. Backend verifies by recomputing with its
     # copy of the secret and checking the timestamp is recent (±60s).
+    lease = None
     try:
-        secret = _get_app_secret(name)
+        secret = await asyncio.to_thread(_get_app_secret, name)
         if not secret:
             return web.json_response(
                 {"error": f"app {name!r} has no secret — cannot authenticate proxy request"},
                 status=502,
             )
+        manifest = await asyncio.to_thread(get_app_manifest, name)
+        if not manifest:
+            return web.json_response(
+                {
+                    "code": "app_backend_unreachable",
+                    "error": f"app {name!r} has no reachable backend",
+                },
+                status=502,
+            )
+        backend_url: str | None
+        if manifest.backend.entryPoint:
+            lease = acquire_app_backend_target(name, secret)
+            if lease is None:
+                lease = acquire_adopted_app_backend_target(name)
+            if lease is None:
+                return web.json_response(
+                    {
+                        "code": "app_backend_unavailable",
+                        "error": f"app {name!r} backend is restarting",
+                    },
+                    status=503,
+                    headers={"Retry-After": "1"},
+                )
+            backend_url = f"http://127.0.0.1:{lease.port}"
+        else:
+            backend_url = _resolve_app_backend_url(name)
+            if not backend_url:
+                return web.json_response(
+                    {
+                        "code": "app_backend_unreachable",
+                        "error": f"app {name!r} has no reachable backend",
+                    },
+                    status=502,
+                )
+
+        target_url = yarl.URL(f"{backend_url}{target_path}", encoded=True)
+        wire_target = target_url.raw_path_qs
         ts = str(int(time.time()))
         body_hash = hashlib.sha256(body or b"").hexdigest()
         msg = f"{ts}:{request.method}:{wire_target}:{body_hash}"
@@ -4333,6 +4319,11 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
             {"error": "proxy auth failed: cannot read app secret"},
             status=502,
         )
+    except Exception:
+        if lease is not None:
+            release_app_backend_target(lease)
+            lease = None
+        raise
 
     try:
         timeout = aiohttp.ClientTimeout(total=_PROXY_TIMEOUT)
@@ -4349,6 +4340,12 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
                 timeout=timeout,
                 allow_redirects=False,
             ) as upstream:
+                # Connection and request transmission reached the verified child.
+                # A later stop may truncate response streaming, but cannot redirect
+                # the already-connected request to a new listener on the same port.
+                if lease is not None:
+                    release_app_backend_target(lease)
+                    lease = None
                 # Stream response back
                 resp = web.StreamResponse(
                     status=upstream.status,
@@ -4370,6 +4367,9 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
                     pass
                 return resp
         finally:
+            if lease is not None:
+                release_app_backend_target(lease)
+                lease = None
             if owns_session:
                 await session.close()
     except aiohttp.ClientError as exc:

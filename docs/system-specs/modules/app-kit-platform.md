@@ -1069,7 +1069,7 @@ schedules a debounced flush — without it the handler answers 200 while the dro
 still only in memory, and a restart inside that window brings the stale sid back with
 the app already gone. Both flushes are REPORTED on failure, never raised: the files
 are gone by then, so an ENOSPC there must not skip the teardown that follows it —
-`invalidate_app_secret_cache`, `_unregister_notification_channels`, `forget_app_hooks`
+`_unregister_notification_channels`, `forget_app_hooks`
 — and a stale slot-close hook makes the removed app's leftover tabs undismissable. The
 CLI path says so as `SessionPointerCleanup(failed=True)`, the route as a `uninstall_log`
 line naming the pointer that did not persist; neither reports the sweep as clean.
