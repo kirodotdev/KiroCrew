@@ -16,6 +16,7 @@ Three jobs:
 from __future__ import annotations
 
 import asyncio
+import errno
 import os
 import shutil
 import socket
@@ -889,12 +890,26 @@ def test_probe_live_treats_a_connect_timeout_as_live(
 ) -> None:
     """A connect that times out is an inconclusive probe, not a dead endpoint.
 
-    When the listener's accept backlog is full, POSIX blocks ``connect()``
-    instead of refusing it, so the 1s timeout fires on a healthy but heavily
-    loaded daemon. Reporting that as dead lets ``remove_stale`` unlink a live
-    daemon's socket.
+    A real timeout is only one of the inconclusive shapes a loaded daemon can
+    produce; whichever it is, the endpoint must not be taken away. Reporting a
+    timeout as dead would let ``remove_stale`` unlink a live daemon's socket.
     """
     _force_posix_probe_branch(monkeypatch, socket.timeout("timed out"))
+    assert transport.probe_live("/state/gateway.sock") is True
+
+
+def test_probe_live_treats_a_full_backlog_eagain_as_live(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real Linux full-backlog case: a non-blocking connect fails EAGAIN.
+
+    ``settimeout`` makes the socket non-blocking, so on Linux a ``connect()``
+    against a full accept backlog fails at once with ``EAGAIN``
+    (``BlockingIOError``) rather than raising ``socket.timeout``. That is the
+    exact condition the fix protects -- a healthy but overloaded daemon -- so
+    it must report live, not dead.
+    """
+    _force_posix_probe_branch(monkeypatch, BlockingIOError(errno.EAGAIN, "try again"))
     assert transport.probe_live("/state/gateway.sock") is True
 
 
@@ -903,6 +918,14 @@ def test_probe_live_treats_a_refused_connect_as_dead(
 ) -> None:
     """The true negative stays negative: a refused connect means no listener."""
     _force_posix_probe_branch(monkeypatch, ConnectionRefusedError(111, "refused"))
+    assert transport.probe_live("/state/gateway.sock") is False
+
+
+def test_probe_live_treats_a_missing_socket_as_dead(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The other conclusive negative: the socket name does not exist."""
+    _force_posix_probe_branch(monkeypatch, FileNotFoundError(errno.ENOENT, "no such file"))
     assert transport.probe_live("/state/gateway.sock") is False
 
 
