@@ -2037,32 +2037,42 @@ def _record_run_locked(
             _set_conversations_retained(entry)
         if not superseded:
             runs[kind] = record
-        # A completed run ends the retry backoff, and it does so HERE -- inside the
-        # same mutate, under the same sidecar lock as the record that proves the run
-        # -- rather than as a second call beside it. A separate write would leave a
-        # window in which the run is recorded and the failure count is not yet
-        # cleared, and this state is read by a loop that wakes on its own schedule:
-        # that window is exactly long enough for a wake to land in it and withhold
-        # the next attempt on the strength of failures that are already over.
-        #
-        # Both outcomes clear it. `uploaded=False` is a run that found the tree
-        # unchanged, which is a successful comparison against an archive that is
-        # provably in the drive, not a failure -- and it takes a fresh `at` for the
-        # same reason.
-        #
-        # Reached by the OWNER-triggered path too, and that asymmetry is deliberate:
-        # only the unattended loop RECORDS a failure (see
-        # :func:`record_nightly_failure`), while any success clears one. An owner who
-        # presses the button and watches it work has just demonstrated the fault is
-        # gone, so making them wait out a backoff measured for an unattended loop
-        # would be withholding the schedule on evidence that has been superseded.
-        #
-        # It sits OUTSIDE the supersession guard above, which covers the identity slot
-        # alone: this records that a run SUCCEEDED, and that is as true of a superseded
-        # run as of a winning one. The two placements coincide except when a run loses
-        # the slot AND a failure is recorded between the winner's commit and this one,
-        # because the winner otherwise clears the backoff in its own mutate.
-        _clear_nightly_failure(entry, kind)
+            # A completed run ends the retry backoff, and it does so HERE -- inside the
+            # same mutate, under the same sidecar lock as the record that proves the run
+            # -- rather than as a second call beside it. A separate write would leave a
+            # window in which the run is recorded and the failure count is not yet
+            # cleared, and this state is read by a loop that wakes on its own schedule:
+            # that window is exactly long enough for a wake to land in it and withhold
+            # the next attempt on the strength of failures that are already over.
+            #
+            # Both outcomes clear it. `uploaded=False` is a run that found the tree
+            # unchanged, which is a successful comparison against an archive that is
+            # provably in the drive, not a failure -- and it takes a fresh `at` for the
+            # same reason.
+            #
+            # Reached by the OWNER-triggered path too, and that asymmetry is deliberate:
+            # only the unattended loop RECORDS a failure (see
+            # :func:`record_nightly_failure`), while any success clears one. An owner who
+            # presses the button and watches it work has just demonstrated the fault is
+            # gone, so making them wait out a backoff measured for an unattended loop
+            # would be withholding the schedule on evidence that has been superseded.
+            #
+            # INSIDE the supersession guard, sharing the run write's condition for the
+            # reason :func:`_merge_pending` states at the other place a run record and
+            # this clear travel together: a record this document has already superseded
+            # is not evidence of anything, so it must not clear a count a later failure
+            # legitimately accumulated. The two callers therefore answer one question
+            # the same way. It matters in one window: the winner clears the backoff in
+            # its own mutate, so the placements diverge only when a failure is recorded
+            # BETWEEN the winner's commit and a loser's, and there the loser is a run
+            # whose own record was refused as stale -- too stale to write a key, and so
+            # too stale to retire a newer failure.
+            #
+            # The conversations-retained fact above is deliberately NOT gated, and the
+            # difference is what each one is evidence OF. That fact is monotonic and
+            # concerns the drive's contents, which no record can undo; this concerns
+            # whether a run is current, which is exactly what losing the slot settles.
+            _clear_nightly_failure(entry, kind)
         return record
 
     try:
@@ -6580,10 +6590,14 @@ def _a_day_since_last_run(account: str, kind: str, now: Optional[dt.datetime]) -
 def _clear_nightly_failure(entry: dict[str, Any], kind: str) -> None:
     """Drop one kind's failure record from an account entry being mutated.
 
-    Takes the ENTRY rather than the account, because its only caller is already
-    inside :func:`_record_run_locked`'s mutate and holds the document; reading the
-    account again from there would be a second read of state the caller is midway
-    through rewriting.
+    Takes the ENTRY rather than the account, because both callers are already inside
+    a mutate that holds the document -- :func:`_record_run_locked`'s and
+    :func:`_merge_pending`'s -- and reading the account again from there would be a
+    second read of state the caller is midway through rewriting.
+
+    Each caller pairs this with a run-record write under the SAME condition that
+    write is gated on, because a superseded record is not evidence that the backoff
+    it would retire is over.
 
     The key is REMOVED rather than zeroed, so "no failures" has one spelling.
     :func:`_backoff_withholds` already reads a non-positive count as no backoff, so

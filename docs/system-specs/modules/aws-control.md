@@ -1353,10 +1353,13 @@ corrupt or absent stamp, a stamp in the future from a backwards clock step. That
 the rule `_a_day_since_last_run` already states for an unparseable success stamp,
 and a failure record is a new place for the same silence to appear.
 
-Any success clears the count, atomically inside `_record_run_locked`'s mutate
-rather than as a second write beside it, so no wake can land between the run record
-and the clear. Only the SCHEDULED path records a failure, while a success from
-anywhere clears one: an owner pressing the button is present and has just
+A success by a CURRENT run clears the count, atomically inside `_record_run_locked`'s
+mutate rather than as a second write beside it, so no wake can land between the run
+record and the clear. A run whose own record is refused as stale leaves the count
+standing: the clear shares the run write's condition, because a record this document
+has already superseded is not evidence that a later failure is over. Only the
+SCHEDULED path records a failure, while a success from anywhere clears one: an owner
+pressing the button is present and has just
 demonstrated the fault is gone, which is the line `_unattended_sessions_redaction_gap`
 already draws. The status read serves the record as `nightlyFailures` so an operator
 can see the count and the day it started; no console renderer ships with it.
@@ -1399,11 +1402,15 @@ one-step skew on the next genuine failure. The row is why the guard ships -- mak
 state readable is half of what this change is for -- and a review lane that priced the
 guard against the withheld-attempt claim was right to reject that claim.
 
-A run record reaches the document by TWO paths, so the clear sits on both. The second is
-`_merge_pending`, which carries a run whose own state write raised and was held in memory;
-before it also cleared, a stale count outlived the success that should have ended it, and
-after a restart withheld one nightly for up to the ceiling on an account that had already
-backed up. It is gated on `_run_is_newer` for the same reason the run write is.
+A run record reaches the document by TWO paths, so the clear sits on both, and on both it
+carries the same condition as the run write beside it. `_record_run_locked` gates it on
+`not superseded`, the same-process comparison; `_merge_pending` gates it on
+`_run_is_newer`, the best-effort recovery comparison that also weighs wall time. The two
+spellings are one question -- whether this record is the current one -- and a record that
+loses it is too stale to write a key and so too stale to retire a count a later failure
+accumulated. `_merge_pending` carries a run whose own state write raised and was held in
+memory; a stale count that outlives the success which should have ended it withholds one
+nightly, after a restart, for up to the ceiling on an account that had already backed up.
 
 `run_witness` is a required keyword with no default, so a call site added later cannot
 opt out of the protocol silently -- which is the shape of the bug it closes. Each hooks
