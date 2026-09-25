@@ -2060,7 +2060,7 @@ class TaskRunner:
         try:
             from kiro_crew.hooks import validate_file_path
 
-            safe_sp = validate_file_path(str(spec_path))
+            safe_sp = await asyncio.to_thread(validate_file_path, str(spec_path))
             if input_content is not None:
                 early_content = input_content[:4000]
             elif safe_sp:

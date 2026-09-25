@@ -59,6 +59,7 @@ from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence, cast
 import pathspec
 import yaml  # type: ignore[import-untyped]
 
+from kiro_crew import platform_compat
 from kiro_crew.hooks import safe_read_file_bytes_nolink
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 
@@ -1007,8 +1008,10 @@ class _Frame:
 # in the Windows SDK): set on every reparse kind whose NAME resolves somewhere
 # else — symlinks and mount points (junctions) today, and whatever redirecting
 # kind ships next — and clear on the kinds that decorate a real local directory
-# in place (cloud placeholders, WCI, dedup), which must keep scanning.
-_REPARSE_NAME_SURROGATE = 0x2000_0000
+# in place (cloud placeholders, WCI, dedup), which must keep scanning. The value
+# lives in ``platform_compat`` with the other Windows file constants, so the bit
+# has one definition; the DECISION below is this walk's own, and differs from the
+# path gate's on a reparse point whose tag cannot be read.
 # ``stat.FILE_ATTRIBUTE_REPARSE_POINT`` exists at runtime on every platform but
 # typeshed declares it Windows-only, so the value is pinned here — the same
 # treatment ``platform_compat`` gives it.
@@ -1042,7 +1045,7 @@ def _entry_redirects(entry: os.DirEntry[str]) -> bool:
         return False
     if not getattr(info, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT:
         return False
-    return bool(getattr(info, "st_reparse_tag", 0) & _REPARSE_NAME_SURROGATE)
+    return bool(getattr(info, "st_reparse_tag", 0) & platform_compat.WIN_REPARSE_NAME_SURROGATE)
 
 
 def _entry_identity(entry: os.DirEntry[str]) -> _DirId | None:

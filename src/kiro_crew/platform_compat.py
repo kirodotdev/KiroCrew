@@ -7073,12 +7073,51 @@ def unlink_link_or_junction(path: str | os.PathLike) -> None:
 #: name is seen for what it is rather than silently traversed. The share mode
 #: deliberately omits ``FILE_SHARE_DELETE``: that omission is the pin.
 _WIN_GENERIC_READ = 0x80000000
+#: Desired access for a walk that CLASSIFIES a component and holds it still.
+#:
+#: The share mode alone does not pin anything. Windows arbitrates sharing only when the
+#: request asks for one of ``FILE_READ_DATA``, ``FILE_EXECUTE``, ``FILE_WRITE_DATA``,
+#: ``FILE_APPEND_DATA`` or ``DELETE``; a request naming none of them is granted without
+#: consulting the object's share state and without contributing to it, so omitting
+#: ``FILE_SHARE_DELETE`` next to such a mask restricts nobody and the handle holds the
+#: name against nothing.
+#:
+#: ``0x0020`` is what makes the omission bite. On a DIRECTORY it is ``FILE_TRAVERSE``,
+#: which is the access a resolution of a path through that directory needs anyway, so
+#: requiring it refuses no component that could have been walked -- unlike
+#: ``GENERIC_READ``, which additionally demands ``FILE_LIST_DIRECTORY`` and so refuses a
+#: directory whose ACL grants traverse but not list. On a FILE the same bit is
+#: ``FILE_EXECUTE``; a leaf that denies it, or that another process holds with a
+#: deny-read share mode, cannot be held -- and the walk reports a shorter boundary
+#: rather than failing, because a component it could not hold is one it must not let a
+#: resolution cross.
+#:
+#: ``0x0080`` is ``FILE_READ_ATTRIBUTES``, which is what the classification itself
+#: reads off the handle.
+_WIN_FILE_TRAVERSE_READ_ATTRIBUTES = 0x0020 | 0x0080
+
+#: Attribute-only desired access, for a component that must be CLASSIFIED but not
+#: pinned. It names no data, execute or delete right, so by the rule above Windows
+#: grants it without consulting the object's share state -- which cuts both ways and is
+#: why it has exactly one caller: the handle pins nothing, and equally nothing another
+#: process holds can refuse it. A leaf held exclusively by another process opens for
+#: this and not for the mask above.
+_WIN_FILE_READ_ATTRIBUTES = 0x0080
 _WIN_FILE_SHARE_READ_WRITE = 0x00000001 | 0x00000002
 _WIN_OPEN_EXISTING = 3
 _WIN_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
 _WIN_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
 _WIN_FILE_ATTRIBUTE_DIRECTORY = 0x00000010
 _WIN_FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
+#: Set in a reparse TAG when the target is another NAME -- a symlink or a mount point.
+#: Its absence marks a tag that decorates an object in place without redirecting a path
+#: (a cloud placeholder, a WOF- or dedup-backed file), which a path walk must not refuse.
+#: Public because it is the single home for the bit: ``project_scan._entry_redirects``
+#: tests the same bit on a listing's cached stat. The two readers do NOT share a
+#: predicate -- a reparse point whose tag cannot be read is refused by a gate about to
+#: resolve the name and scanned by a walk deciding whether to descend -- so what is
+#: shared is the value, which has one correct definition, and not the decision.
+WIN_REPARSE_NAME_SURROGATE = 0x2000_0000
 
 
 def pin_directory(path: str | os.PathLike) -> int:
@@ -7124,13 +7163,26 @@ def pin_directory(path: str | os.PathLike) -> int:
     return fd
 
 
-def _win_open_without_following(path: str | os.PathLike) -> int:
-    """``CreateFileW`` *path* for reading, opening a reparse point INSTEAD of following it.
+def _win_open_without_following(
+    path: str | os.PathLike, *, desired_access: int = _WIN_GENERIC_READ
+) -> int:
+    """``CreateFileW`` *path*, opening a reparse point INSTEAD of following it.
 
-    Shared by :func:`pin_directory` and :func:`open_file_no_reparse` so the two do
-    not carry separate copies of the same security-critical flags. What each of
-    them then asserts about the descriptor differs; how the object is reached must
-    not.
+    Shared by :func:`pin_directory`, :func:`open_file_no_reparse` and
+    :func:`open_entry_no_follow` so they do not carry separate copies of the same
+    security-critical flags. What each of them then asserts about the descriptor
+    differs; how the object is reached must not.
+
+    *desired_access* is a parameter because callers need different access, not because
+    it is inert. A caller that reads BYTES needs ``GENERIC_READ``, the default; a caller
+    that walks a path asks for :data:`_WIN_FILE_TRAVERSE_READ_ATTRIBUTES` and reaches a
+    directory granting traverse but not list, which ``GENERIC_READ`` cannot open at all.
+    It also decides whether the share mode below means anything: Windows arbitrates
+    sharing only for a request naming one of ``FILE_READ_DATA``, ``FILE_EXECUTE``,
+    ``FILE_WRITE_DATA``, ``FILE_APPEND_DATA`` or ``DELETE``, so a mask naming none of
+    them yields a handle that neither conflicts with another opener's share mode nor
+    imposes its own. Both masks used here name one, and a caller adding a third that
+    does not gets an unpinned handle from the same call.
 
     ``OPEN_REPARSE_POINT`` is the whole point: a junction or symlink at the name is
     opened AS ITSELF, so the caller sees what is really there and the target is
@@ -7166,7 +7218,7 @@ def _win_open_without_following(path: str | os.PathLike) -> int:
     kernel32.CreateFileW.restype = wintypes.HANDLE
     handle = kernel32.CreateFileW(
         os.fspath(path),
-        _WIN_GENERIC_READ,
+        desired_access,
         _WIN_FILE_SHARE_READ_WRITE,
         None,
         _WIN_OPEN_EXISTING,
@@ -7223,6 +7275,153 @@ def open_file_no_reparse(path: str | os.PathLike, *, nonblocking: bool = False) 
         os.close(fd)
         raise
     return fd
+
+
+#: ``FileAttributeTagInfo`` in ``FILE_INFO_BY_HANDLE_CLASS``.
+_WIN_FILE_ATTRIBUTE_TAG_INFO_CLASS = 9
+
+
+class _WIN_FILE_ATTRIBUTE_TAG_INFO(ctypes.Structure):  # noqa: N801
+    """``FILE_ATTRIBUTE_TAG_INFO``, the only handle-side source of a reparse TAG."""
+
+    _fields_ = [("FileAttributes", wintypes.DWORD), ("ReparseTag", wintypes.DWORD)]
+
+
+def _win_reparse_tag_from_fd(fd: int) -> int:
+    """The reparse tag of the object *fd* holds, read off the HANDLE.
+
+    ``os.fstat`` cannot answer this. CPython fills ``st_reparse_tag`` only on the
+    path-based ``stat``/``lstat`` route, which queries this same information class by
+    name; the descriptor route builds its result from ``GetFileInformationByHandle``,
+    which has no tag field, and reports zero. Every other reader in this package reads
+    the tag off a path stat for that reason. A classifier that wants the tag of the
+    object it is ALREADY HOLDING -- the only object a swap cannot exchange -- has to ask
+    the handle, and this is the call that answers.
+
+    Raises ``OSError`` when the query fails, which the callers above turn into a
+    refusal. That is the existing answer for a component whose state cannot be read,
+    not a new one.
+    """
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    kernel32.GetFileInformationByHandleEx.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    ]
+    kernel32.GetFileInformationByHandleEx.restype = wintypes.BOOL
+    info = _WIN_FILE_ATTRIBUTE_TAG_INFO()
+    ok = kernel32.GetFileInformationByHandleEx(
+        msvcrt.get_osfhandle(fd),  # type: ignore[attr-defined]
+        _WIN_FILE_ATTRIBUTE_TAG_INFO_CLASS,
+        ctypes.byref(info),
+        ctypes.sizeof(info),
+    )
+    if not ok:
+        raise ctypes.WinError(ctypes.get_last_error())  # type: ignore[attr-defined]
+    return int(info.ReparseTag)
+
+
+def is_reparse_point_fd(fd: int) -> bool:
+    """Whether the object *fd* refers to REDIRECTS: a symlink or a junction.
+
+    The descriptor-side twin of :func:`kiro_crew.pinned_fs.is_reparse_point`, and the
+    only one of the two a walk can trust: the question is answered about the object
+    already held, so nothing can be swapped at that name between the answer and its
+    use.
+
+    The bare ``FILE_ATTRIBUTE_REPARSE_POINT`` bit is NOT the question. Windows sets it
+    on kinds that decorate a real local object in place and send a path nowhere -- a
+    cloud placeholder, a WOF- or dedup-backed file -- so a walk keyed on the bit refuses
+    ordinary local paths. The redirecting kinds are the ones whose reparse TAG carries
+    the name-surrogate bit: the tag says the target is another name, which is exactly
+    what a resolution would follow. ``project_scan._entry_redirects`` draws the same
+    line for the same reason.
+
+    The tag is read off the HANDLE (:func:`_win_reparse_tag_from_fd`), not off
+    ``os.fstat``. ``st_reparse_tag`` is populated only on CPython's path-based
+    ``stat``/``lstat`` route and reads zero on a descriptor, so classifying on it here
+    would make the name-surrogate test unreachable and turn this predicate into the bare
+    attribute-bit check the paragraph above rejects -- refusing every placeholder and
+    WOF-backed file. Asking the handle is also the only question a swap cannot answer
+    differently, which is the whole reason the walk holds the object.
+
+    A tag that cannot be read at all raises rather than answering. That combination says
+    an object IS a reparse point while giving nothing to classify it by, and a caller
+    about to resolve the name has to fail closed on it -- which is what the callers
+    already do for a component whose state cannot be read.
+
+    Lives here rather than with the caller because the answer is a Windows file
+    attribute, and the bit belongs with the other ``FILE_ATTRIBUTE`` values in this
+    module -- a second copy next to a caller is a second place for it to drift.
+
+    Always False on POSIX, and that is correct rather than a gap: a descriptor there
+    was opened with ``O_NOFOLLOW``, which refuses a symlink at the name instead of
+    handing back a descriptor for it, so a POSIX caller learns about the link from the
+    ``ELOOP`` on the open. Windows has no such refusal -- ``OPEN_REPARSE_POINT`` opens
+    the link itself -- so on Windows this is where the link is found.
+    """
+    info = os.fstat(fd)
+    if not getattr(info, "st_file_attributes", 0) & _WIN_FILE_ATTRIBUTE_REPARSE_POINT:
+        return False
+    return bool(_win_reparse_tag_from_fd(fd) & WIN_REPARSE_NAME_SURROGATE)
+
+
+def open_entry_no_follow(path: str | os.PathLike, *, hold: bool = True) -> int:
+    """Open whatever sits at *path* -- file, directory, or a reparse point itself.
+
+    The untyped sibling of :func:`pin_directory` and :func:`open_file_no_reparse`.
+    Those two assert what they opened and refuse anything else, which is right for a
+    caller that knows; a caller walking a path one component at a time does not yet
+    know, and needs the three answers kept apart. ``NotADirectoryError`` for a
+    reparse point and for a plain file are the same exception from
+    :func:`pin_directory`, so a walk built on it cannot tell "a link is sitting
+    here, read its target" from "this component is an ordinary file, the path ends".
+
+    The descriptor is the answer: read ``st_file_attributes`` off ``os.fstat`` on
+    Windows, or ``os.fstat`` alone on POSIX, and the caller learns what is there
+    from the object it is already holding rather than from a second look by name.
+
+    Never follows. On Windows that is ``OPEN_REPARSE_POINT``, so a junction aimed at
+    a share is opened as the junction and the share is not contacted; on POSIX it is
+    ``O_NOFOLLOW``, which refuses a symlink at the name with ``ELOOP`` instead --
+    the two platforms report a link differently and a caller has to handle both.
+
+    ``O_NONBLOCK`` on POSIX so a FIFO at the name cannot make the open wait for a
+    writer. Release the descriptor with ``os.close``.
+
+    On Windows the access mask follows *hold*, because holding and classifying need
+    different rights and only one of them can always be had.
+
+    ``hold=True`` (the default) asks for TRAVERSE plus attribute access
+    (:data:`_WIN_FILE_TRAVERSE_READ_ATTRIBUTES`), which is both the least a walk needs
+    and the least that still pins. ``GENERIC_READ`` would refuse a directory whose ACL
+    grants traverse but not list -- perfectly ordinary, and validating before this --
+    turning a fail-closed guard into a fault on normal paths. Attribute access ALONE
+    would open everything and hold nothing, because a request naming no data, execute or
+    delete right is granted without Windows consulting the object's share state, so the
+    omitted ``FILE_SHARE_DELETE`` would restrict nobody.
+
+    ``hold=False`` asks for :data:`_WIN_FILE_READ_ATTRIBUTES` and gets exactly that
+    property on purpose: taking no part in sharing, it cannot be refused by another
+    process holding the object exclusively. It is for the one component a walk does not
+    need to pin -- the LAST one, which a resolution ends at rather than passes through.
+    Classifying it is still necessary, because its name is handed back to a caller that
+    will open it; pinning it is not.
+    """
+    if IS_POSIX:
+        return os.open(
+            os.fspath(path),
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+        )
+    # pragma: no cover below -- the ctypes route is Windows-only and the Windows CI
+    # shards run with --no-cov, so the statement is unmeasurable anywhere rather than
+    # merely untested. What it returns IS measured: the walk that consumes it is
+    # exercised on POSIX through this function's own POSIX branch.
+    return _win_open_without_following(  # pragma: no cover
+        path,
+        desired_access=(_WIN_FILE_TRAVERSE_READ_ATTRIBUTES if hold else _WIN_FILE_READ_ATTRIBUTES),
+    )
 
 
 _WIN_FILE_SHARE_READ_WRITE_DELETE = 0x00000001 | 0x00000002 | 0x00000004

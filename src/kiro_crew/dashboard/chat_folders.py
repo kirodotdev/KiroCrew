@@ -1453,7 +1453,12 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
                 )
         changes["parent_id"] = new_parent
     if "project_dir" in body:
-        pd, err = _validate_project_dir(str(body["project_dir"] or "").strip())
+        # Off-loop: realpath + isdir + the sensitive-path scan touch the
+        # filesystem, so a slow or network-mounted directory would otherwise
+        # stall every other request, the same reason the create path offloads it.
+        pd, err = await asyncio.to_thread(
+            _validate_project_dir, str(body["project_dir"] or "").strip()
+        )
         if err:
             return web.json_response({"error": err}, status=400)
         if pd:

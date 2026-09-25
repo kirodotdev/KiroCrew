@@ -412,18 +412,44 @@ async def index(request: web.Request) -> web.Response:
     return web.Response(text=html, content_type="text/html")
 
 
-async def logo(request: web.Request) -> web.StreamResponse:
-    """Serve the logo — prefer custom avatar from config, fall back to default."""
+def _resolve_configured_avatar() -> tuple[str | None, bool]:
+    """Resolve the configured avatar off the loop: ``(path, refused)``.
+
+    One filesystem transaction, for the same reason ``index()`` above routes
+    its own resolve through :func:`discovery_executor`: the config read, the
+    sensitive-path judgement and ``validate_file_path`` all touch storage that
+    can be network-backed, and the validation walks every component of the
+    configured path -- on Windows opening each one and holding it open for the
+    length of the resolve, so a slow or unresponsive mount costs one worker
+    here instead of the loop every session's turn shares.
+
+    ``refused`` is true only for a sensitive path, which is a 404 rather than a
+    fall-through to the default logo.
+    """
     import kiro_crew.dashboard.handlers as _h  # noqa: F811
     from kiro_crew.hooks import validate_file_path  # noqa: F811
 
     cfg = _h.KiroCrewConfig.load()
-    if cfg.dashboard.avatar:
-        if _h.is_sensitive_path(cfg.dashboard.avatar):
-            return web.Response(status=404)
-        validated = validate_file_path(cfg.dashboard.avatar)
-        if validated and Path(validated).is_file():
-            return web.FileResponse(validated)
+    if not cfg.dashboard.avatar:
+        return None, False
+    if _h.is_sensitive_path(cfg.dashboard.avatar):
+        return None, True
+    validated = validate_file_path(cfg.dashboard.avatar)
+    if validated and Path(validated).is_file():
+        return validated, False
+    return None, False
+
+
+async def logo(request: web.Request) -> web.StreamResponse:
+    """Serve the logo — prefer custom avatar from config, fall back to default."""
+    import kiro_crew.dashboard.handlers as _h  # noqa: F811
+
+    loop = asyncio.get_running_loop()
+    avatar, refused = await loop.run_in_executor(discovery_executor(), _resolve_configured_avatar)
+    if refused:
+        return web.Response(status=404)
+    if avatar:
+        return web.FileResponse(avatar)
     # The DEFAULT logo is channel-aware: nightly builds serve the night-sky
     # variant so the whole in-app surface -- sidebar logo, browser favicon,
     # and native-notification avatar all resolve through /logo.png -- matches

@@ -23,6 +23,7 @@ These tests pin the two halves of the fix:
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 import logging
@@ -201,6 +202,24 @@ _EXPECTED_GATE_CALL_SITES: dict[str, int] = {
     # root and cache key checks, stay on ``is_sensitive_path``: none of those
     # values is canonicalised first.
     "kiro_crew/security/paths.py": 1,
+    # ``hooks._screen_and_resolve_held``: the BOUNDED arm of the Windows tail of
+    # ``validate_file_path``, where the held walk covered only a prefix of the path.
+    # Both halves of the contract hold. The argument is canonical without a resolve:
+    # ``_canonicalize_within_hold`` runs ``realpath`` on the proven prefix and joins
+    # the remainder as text, and that remainder holds no link for a resolution to
+    # follow -- the walk classified every component it PROVED off that component's own
+    # descriptor and would have reported a reparse point instead of this outcome, and a
+    # name that holds nothing redirects nothing. And the bounded gate is the one thing
+    # this arm must not use: it resolves its candidate again, which would send
+    # ``realpath`` through the single component nothing is holding and re-open the
+    # junction-swap window the bound exists to close. The call never runs on the event
+    # loop, because ``validate_file_path`` is synchronous and every coroutine reaching
+    # it hands it to a worker (``logo`` and ``api_skill_detail`` through
+    # ``discovery_executor``, ``start_background`` through ``asyncio.to_thread``, and
+    # ``_run_chat``'s two turn-flush exits through ``drained_to_thread``). The SETTLED
+    # arm of the same function stays on ``is_sensitive_path``: the whole chain is held
+    # there, so that gate's own resolution traverses nothing that can be swapped.
+    "kiro_crew/hooks.py": 1,
 }
 
 
@@ -529,3 +548,133 @@ class TestNamedAgentModelReadsTheSnapshot:
 
         monkeypatch.setattr(agent_discovery, "parsed_agent_specs", boom)
         assert KiroCrewConfig._resolve_named_agent_model("bot", agents_dir=tmp_path) == ""
+
+
+# ---------------------------------------------------------------------------
+# The folder project-dir validator stays off the event loop
+# ---------------------------------------------------------------------------
+
+#: Names that reach ``_validate_project_dir`` without an offload of their own, so
+#: an ``async def`` frame calling any of them inline puts ``realpath`` + ``isdir``
+#: + the sensitive-path scan on the loop. The two helpers are listed BY NAME
+#: rather than left to the validator's own name: each calls the validator inline
+#: in a synchronous frame, which is correct there because every caller hands the
+#: helper to a worker, and a gate that watched only the validator would miss an
+#: async frame that reached it through one of them instead.
+_ON_LOOP_BANNED_PROJECT_DIR_NAMES = frozenset(
+    {
+        "_validate_project_dir",
+        "_resolve_folder_project_dir",
+        "_resolve_root",
+    }
+)
+
+#: Modules owning an ``async def`` that may touch folder project directories.
+_PROJECT_DIR_LOOP_MODULES = (
+    "kiro_crew/dashboard/chat_folders.py",
+    "kiro_crew/dashboard/chat_folder_scaffold.py",
+    "kiro_crew/dashboard/chat_handlers.py",
+)
+
+_PROJECT_DIR_NESTED_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+
+
+def _inline_project_dir_calls_in_async_frames(source: str, label: str) -> list[str]:
+    """Offenders: a banned name CALLED inside an ``async def``'s own frame.
+
+    Handing the name to ``asyncio.to_thread`` passes it as a bare ``Name``, not
+    a ``Call``, so the offloaded form is invisible here and needs no exemption.
+    A nested ``def`` or ``lambda`` is a separate frame -- that is the offloaded
+    callable itself -- and is not scanned, matching the scoping the apps-dir and
+    registry ratchets already use.
+    """
+    offenders: list[str] = []
+
+    def _scan(node: ast.AST, owner: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, _PROJECT_DIR_NESTED_SCOPES):
+                continue
+            if isinstance(child, ast.Call):
+                func = child.func
+                name = ""
+                if isinstance(func, ast.Name):
+                    name = func.id
+                elif isinstance(func, ast.Attribute):
+                    name = func.attr
+                if name in _ON_LOOP_BANNED_PROJECT_DIR_NAMES:
+                    offenders.append(f"{label}:{owner}:{child.lineno} calls {name}()")
+            _scan(child, owner)
+
+    for node in ast.walk(ast.parse(source, label)):
+        if isinstance(node, ast.AsyncFunctionDef):
+            for stmt in node.body:
+                _scan(stmt, node.name)
+    return offenders
+
+
+class TestProjectDirValidationStaysOffTheLoop:
+    """``_validate_project_dir`` is never called synchronously on the loop.
+
+    The validator's own contract requires it: ``realpath`` + ``isdir`` + the
+    sensitive-path scan touch the filesystem, so an event-loop caller must hand
+    it to ``asyncio.to_thread``. This pins the INVARIANT over every ``async def``
+    in the owning modules rather than the wrapping of one call site, because the
+    offending call and the compliant one sit in the same file a few hundred lines
+    apart and a per-site assertion cannot see the next one.
+    """
+
+    def test_no_inline_project_dir_validation_in_async_frames(self) -> None:
+        src = Path(skills_mod.__file__).resolve().parents[1]
+        offenders: list[str] = []
+        scanned = 0
+        for rel in _PROJECT_DIR_LOOP_MODULES:
+            path = src / rel
+            assert path.is_file(), f"ratchet names a module that does not exist: {rel}"
+            scanned += 1
+            offenders += _inline_project_dir_calls_in_async_frames(
+                path.read_text(encoding="utf-8"), rel
+            )
+        assert scanned == len(_PROJECT_DIR_LOOP_MODULES)
+        assert not offenders, "folder project-dir validation on the event loop:\n" + "\n".join(
+            offenders
+        )
+
+    def test_the_ratchet_flags_an_inline_call(self) -> None:
+        """Non-vacuity: the detector reports the shape the fix removed."""
+        offenders = _inline_project_dir_calls_in_async_frames(
+            "async def api_chat_folder_update(request):\n"
+            "    pd, err = _validate_project_dir(raw)\n",
+            "probe.py",
+        )
+        assert len(offenders) == 1
+        assert "calls _validate_project_dir()" in offenders[0]
+
+    def test_the_ratchet_flags_a_helper_that_reaches_the_validator(self) -> None:
+        """A banned helper called inline is an offender too, not just the validator."""
+        offenders = _inline_project_dir_calls_in_async_frames(
+            "async def handler(request):\n    return _resolve_folder_project_dir(snap, fid)\n",
+            "probe.py",
+        )
+        assert len(offenders) == 1
+        assert "calls _resolve_folder_project_dir()" in offenders[0]
+
+    def test_the_ratchet_allows_the_offloaded_form(self) -> None:
+        """Control: the compliant spelling is not an offender."""
+        assert (
+            _inline_project_dir_calls_in_async_frames(
+                "async def api_chat_folder_update(request):\n"
+                "    pd, err = await asyncio.to_thread(_validate_project_dir, raw)\n",
+                "probe.py",
+            )
+            == []
+        )
+
+    def test_the_ratchet_allows_a_synchronous_frame(self) -> None:
+        """Control: the two helpers' own inline calls are correct where they are."""
+        assert (
+            _inline_project_dir_calls_in_async_frames(
+                "def _resolve_root(body):\n    return _validate_project_dir(raw)\n",
+                "probe.py",
+            )
+            == []
+        )
