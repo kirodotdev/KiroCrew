@@ -147,24 +147,34 @@ Out-of-band lanes that never gate a PR:
   button, not a CI comment), `pr-merge-conflict-label.yml` and `fork-pr-label.yml`
   (both mirror a fact GitHub does not surface in the `/pulls` list onto a label), and
   `add-contributor.yml` (a daily cron, plus manual dispatch, adds each merged
-  PR's author AND the reporters of the issues that PR closed to the README
+  PR's author, the linked authors and co-authors of the commits that landed via
+  a merged PR, AND the reporters of the issues those PRs closed to the README
   Contributors block via
   `scripts/update_contributors.py`; because the default branch is protected it
   opens a rolling PR rather than committing directly, like `test-durations.yml`.
   A login in `.github/contributors-optout.txt` is never added, which keeps the
   README's removal promise enforceable against the full-rebuild collector).
-  One paginated GraphQL sweep over `pullRequests(states: MERGED)` drives it,
-  reading each node's `author` and its `closingIssuesReferences` authors. The
-  reporter side is deliberately keyed on that link rather than on listing
-  `/issues`: the connection is populated only when a PR declares it closes the
-  issue, and only merged PRs are scanned, so an entry is evidence the report
-  changed the product — which keeps duplicates, invalid reports and
-  credit-farming issues out. It undercounts by design (a fix that omitted the
-  closing keyword is invisible), and the remedy is the manual `--login` path, not
-  loosening the rule. Dedup is two-layered: `sort -u` over the union, because
-  someone can be both a PR author and a reporter, then the script's own README
-  scan. The same block also holds contributors whose contribution left neither
-  trace — a review, a translation, a private security report — added with
+  Two independent paginated GraphQL sweeps drive it: one over
+  `pullRequests(states: MERGED)`, reading each node's `author` and its
+  `closingIssuesReferences` authors; and a separate commit-history sweep over
+  the default branch, scoped to commits whose `associatedPullRequests` include a
+  merged PR, reading each commit's `authors` (which resolves `Co-authored-by:`
+  trailers to linked accounts). The commit sweep is kept separate rather than
+  nested in the PR query because GraphQL cost scales with the product of nested
+  connections, and it is scoped to merged-PR commits so it credits the same
+  public-contribution boundary the author/reporter paths do — reaching an
+  original author whose work was cherry-picked or co-authored into a maintainer's
+  replacement PR. The reporter side is deliberately keyed on that closing link
+  rather than on listing `/issues`: the connection is populated only when a PR
+  declares it closes the issue, and only merged PRs are scanned, so an entry is
+  evidence the report changed the product — which keeps duplicates, invalid
+  reports and credit-farming issues out. It undercounts by design (a fix that
+  omitted the closing keyword is invisible), and the remedy is the manual
+  `--login` path, not loosening the rule. Dedup is two-layered: `sort -u` over
+  the three-way union (someone can be a PR author, a merged-PR commit co-author
+  and a reporter at once), then the script's own README scan. The same block also
+  holds contributors whose contribution left neither trace — a review, a
+  translation, a private security report — added with
   `scripts/update_contributors.py --login`. Those entries survive every later run
   because the collector only ever inserts and never rewrites an existing line;
   that preservation is what makes one shared list workable instead of a second

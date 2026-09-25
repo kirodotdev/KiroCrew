@@ -1051,9 +1051,12 @@ make this tool possible:
 
 Listed alphabetically by GitHub username. Internal contributors appear here if they
 consented to public recognition in the contributor survey; open-source contributors are
-collected automatically from this repository's merged pull requests — both the author of
-each pull request and the people who reported the issues it closed, so a report that
-led to a real change is credited like the change itself. Contributions that leave
+collected automatically from this repository's merged pull requests — the author of
+each pull request, the linked authors and co-authors of the commits that landed via a merged
+pull request, and the people who
+reported the issues it closed, so a report that led to a real change is credited like
+the change itself, and someone whose work landed via a maintainer's replacement pull
+request is credited through their commits. Contributions that leave
 neither trace — a code review, a translation, an idea, a private security report — are
 added on request. If you contributed and would like to be
 added, corrected, or removed, please open an issue or a pull request.

@@ -1,6 +1,7 @@
 name: Add Contributor
 
-# Add the authors of merged pull requests, and the people who reported the issues
+# Add the authors of merged pull requests, the linked authors and co-authors of
+# the commits on the default branch, and the people who reported the issues
 # those pull requests closed, to the README Contributors block.
 # main is a protected branch, so this never commits directly -- it stages the
 # README edit on a single rolling feature branch, opens (or updates) one PR, and
@@ -93,11 +94,22 @@ jobs:
         run: |
           set -euo pipefail
 
-          # One paginated GraphQL sweep over EVERY merged pull request yields both
-          # sets of people this job credits:
+          # This job credits three sets of people, collected by TWO independent
+          # paginated GraphQL sweeps:
           #
-          #   1. the PR's own author, and
-          #   2. the authors of the issues that PR declared it closes.
+          #   1. the author of each merged pull request        (this sweep),
+          #   2. the reporters of the issues those PRs closed   (this sweep), and
+          #   3. the linked authors and co-authors of the commits that landed via
+          #      a merged PR                                    (a SEPARATE sweep,
+          #      further down -- NOT nested in this one).
+          #
+          # Set 3 lives in its own commit-history sweep, not as a `commits`
+          # connection nested inside this merged-PR query, because GraphQL query
+          # cost scales with the PRODUCT of nested connections: nesting commits
+          # here and paginating every merged PR would multiply the per-request
+          # cost on every page and blow past the API's 1,000-point cost limit on
+          # a repository with thousands of merged PRs. See that sweep's own
+          # comment for how it credits a superseded PR's original author.
           #
           # Crediting issue REPORTERS this way, rather than by listing every
           # issue, is the whole point of the shape: `closingIssuesReferences` is
@@ -123,9 +135,9 @@ jobs:
           # (dependabot, renovate, github-actions, ...), whose author type is
           # "Bot" -- the GraphQL analogue of REST's `.user.type == "User"`.
           #
-          # `first: 50` on the nested connection is a cap, not a page: a single PR
-          # closing more than 50 issues would truncate. None come close, and the
-          # miss would be a missing credit, never a wrong one.
+          # `first: 50` on the closing-issues connection is a cap, not a page: a
+          # single PR closing more than 50 issues would truncate. None come
+          # close, and the miss would be a missing credit, never a wrong one.
           gh api graphql --paginate \
             -f owner="${REPO%/*}" -f name="${REPO#*/}" \
             -f query='
@@ -152,15 +164,94 @@ jobs:
                  | select(.author != null and .author.__typename == "User")
                  | .author.login' /tmp/merged.jsonl | sort -u >/tmp/issue_logins.txt
 
-          # Union, deduped: someone who both authored a merged PR and reported a
-          # fixed issue appears in both files and must be credited exactly once.
-          # `sort -u` across both is the first of two dedup layers; the second is
-          # the script's own README scan, which is what keeps a daily full rebuild
-          # from ever duplicating an existing entry.
-          sort -u /tmp/pr_logins.txt /tmp/issue_logins.txt >/tmp/logins.txt
+          # Commit authors and co-authors, collected in a SEPARATE paginated
+          # sweep over the default branch's commit history -- NOT as a nested
+          # connection inside the merged-PR query above. GraphQL query cost
+          # scales with the PRODUCT of nested connections, so nesting
+          # `commits`/`authors` inside `pullRequests(first: 100)` and paginating
+          # every merged PR would multiply the per-request cost on every page
+          # and, on a repository with thousands of merged PRs, blow past the
+          # 1,000-point cost limit -- aborting the whole sweep under `set -e`
+          # with no self-recovery. A flat history walk keeps each page's cost
+          # bounded and independent of the PR sweep.
+          #
+          # The walk is SCOPED to commits that landed via a MERGED pull request
+          # (`associatedPullRequests` with `merged: true`). This is the boundary
+          # the PR-author and issue-reporter paths already use, and it is what the
+          # README promises: a merged PR is a public contribution, whereas a raw
+          # branch commit can be internal work pushed directly or merged by other
+          # means -- crediting those would publish an internal author who never
+          # consented to public recognition (README's "Internal contributors
+          # appear here if they consented..."). Filtering on the merged-PR link
+          # keeps this path's exposure identical to the author/reporter paths.
+          #
+          # GitHub's `authors` connection resolves `Co-authored-by:` trailers to
+          # linked accounts, so this credits both the committer and any co-author
+          # whose commit email is linked -- which is what reaches an original
+          # author whose work was cherry-picked or co-authored into a maintainer's
+          # replacement PR. `authors(first: 10)` caps co-authors per commit; more
+          # than ten on one commit is not something this repo produces.
+          #
+          # Bot handling differs from the PR/issue paths: those read the `Actor`
+          # interface, whose `__typename` distinguishes `User` from `Bot`. Here
+          # `GitActor.user` is typed `User` outright, so a `__typename == "User"`
+          # test would be INERT -- it would not exclude a machine account (e.g.
+          # `kiro-agent`, whose account type is `User`). A null `user` (unlinked
+          # email) is skipped here; bot exclusion is left to the ONE existing
+          # mechanism the script already applies to every source --
+          # `.github/contributors-optout.txt` for `User`-typed service accounts,
+          # and the script's `_LOGIN_RE` for `[bot]`-suffixed logins (`[` is
+          # invalid) -- so there is no second bot list on this path to drift.
+          gh api graphql --paginate \
+            -f owner="${REPO%/*}" -f name="${REPO#*/}" \
+            -f query='
+              query($owner: String!, $name: String!, $endCursor: String) {
+                repository(owner: $owner, name: $name) {
+                  defaultBranchRef {
+                    target {
+                      ... on Commit {
+                        history(first: 100, after: $endCursor) {
+                          pageInfo { hasNextPage endCursor }
+                          nodes {
+                            associatedPullRequests(first: 1) {
+                              nodes { merged }
+                            }
+                            authors(first: 10) {
+                              nodes { user { login } }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }' \
+            --jq '.data.repository.defaultBranchRef.target.history.nodes[]' >/tmp/commits.jsonl
 
-          echo "Merged PRs scanned: $(wc -l </tmp/merged.jsonl)."
+          # Keep the linked (`user != null`) authors of commits that reached the
+          # default branch through a MERGED pull request. Bots are handled by the
+          # SINGLE existing mechanism, not a second list here: `[bot]`-suffixed
+          # accounts are rejected by the script's login grammar, and `User`-typed
+          # service accounts (e.g. `kiro-agent`) are listed in
+          # `.github/contributors-optout.txt`, which `update_contributors.py`
+          # already skips case-insensitively for every source. Keeping one list
+          # means the two cannot drift apart when the next service account lands.
+          jq -r 'select(any(.associatedPullRequests.nodes[]?; .merged == true))
+                 | .authors.nodes[]? | select(.user != null) | .user.login' \
+                 /tmp/commits.jsonl | sort -u >/tmp/commit_logins.txt
+
+          # Union, deduped: someone who authored a merged PR, co-authored a commit
+          # that landed via a merged PR, or reported a fixed issue can appear in
+          # more than one file and must be credited exactly once. `sort -u` across
+          # all three is the first of two dedup layers; the second is the script's
+          # own README scan, which keeps a daily full rebuild from ever
+          # duplicating an existing entry.
+          sort -u /tmp/pr_logins.txt /tmp/commit_logins.txt /tmp/issue_logins.txt >/tmp/logins.txt
+
+          echo "Merged PRs scanned: $(wc -l </tmp/merged.jsonl);" \
+               "default-branch commits scanned: $(wc -l </tmp/commits.jsonl)."
           echo "PR authors: $(wc -l </tmp/pr_logins.txt);" \
+               "merged-PR commit authors/co-authors: $(wc -l </tmp/commit_logins.txt);" \
                "reporters of closed issues: $(wc -l </tmp/issue_logins.txt);" \
                "union: $(wc -l </tmp/logins.txt)."
 

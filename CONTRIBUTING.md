@@ -343,8 +343,16 @@ Deliberately one: a second table for "other" contributions would rank one kind o
 help above another, and split recognition across two places nobody reads twice.
 
 Two things are credited automatically by a daily job: authoring a merged pull
-request, and reporting an issue that a merged pull request closed. You do not need
-to ask for either.
+request, and reporting an issue that a merged pull request closed. The job also
+credits the linked authors and co-authors of a merged PR's commits, so work that
+lands under someone else's PR still reaches its real author. You do not need to
+ask for any of these.
+
+Superseding another contributor's PR: when you open a replacement PR that takes
+over someone else's work, keep their commits authored as-is (cherry-pick, do not
+re-author) and add `Co-authored-by: <login> <id+login@users.noreply.github.com>`
+to every commit you write. The daily job reads those trailers, so the original
+author is credited even though the replacement PR is authored by you.
 
 The second rule is deliberately about outcome, not volume. Credit follows a report
 that changed the product, which is why the job reads each merged PR's closing
