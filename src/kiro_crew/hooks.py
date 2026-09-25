@@ -4149,7 +4149,7 @@ _AUDIT_ONLY_READ_IDS: dict[str, str] = {
     "kiro_prerequisite.identity_fingerprint": ".local/share/kiro-cli/data.sqlite3",
     # Same store, read read-only by
     # ``kiro_crew.apps.builtins.aws_control.backend.backup._export_cli_conversations``
-    # to copy ONLY the terminal conversation allowlist (``conversations_v2``) into
+    # to copy ONLY the terminal conversation allowlist (its chat tables) into
     # the off-host sessions archive. No token row is read and no credential value
     # leaves the function -- the export writes a fresh database of the allowlisted
     # tables alone -- but the file holds live bearer tokens whatever this reader
