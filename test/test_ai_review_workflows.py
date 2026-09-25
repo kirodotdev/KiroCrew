@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -45,6 +46,26 @@ PREPARE_PR_FINDINGS = (
     / "scripts"
     / "pr_findings.py"
 )
+
+
+@functools.lru_cache(maxsize=1)
+def _scope_candidates():
+    """Load `scripts/scope_candidates.py` for its `_VALIDATE_REFUSALS` table.
+
+    Read from the module the fork lane actually runs, so a rename of a dict key
+    is caught rather than mirrored in a second copy of the names here. Registered
+    in `sys.modules` before exec because the script's dataclasses resolve their
+    own annotations through it. `deny_diff.py` sits beside it and is imported by
+    path at load time, so both modules must be reachable -- they are, as siblings
+    under `scripts/`.
+    """
+    path = ROOT / "scripts" / "scope_candidates.py"
+    spec = importlib.util.spec_from_file_location("scope_candidates_for_workflow_tests", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 #: Variables a Windows child needs even when the test controls the rest of its
@@ -13688,6 +13709,74 @@ class TestScopeConclusionLadderLivesInOnePlace:
         # and runs no PR tree, so `scripts/scope_candidates.py` there is trusted.
         fork = _step_script(_workflow(self.FORK), "Decide the lane's conclusion")
         assert "scripts/scope_candidates.py conclude" in fork
+
+    def test_the_fork_lane_hands_the_validate_refusal_code_to_the_table(self) -> None:
+        # A `validate` refusal dispatches no leg, so the fold reads `no-report` and
+        # the table's generic sentence for that row names no cause. The code the
+        # refusal writes as a job output is an INPUT to the shared table, so the
+        # cause and its remedy are decided in the one place both lanes read.
+        decide = _step_by_name(self.FORK, "publish", "Decide the lane's conclusion")
+        assert decide["env"]["VALIDATE_RC"] == "${{ needs.validate.outputs.rc }}"
+        run = decide["run"]
+        assert '--refusal "${VALIDATE_RC:-}"' in run
+        # The remedy is a key of its own because a check-run title is capped at 255
+        # characters; the lane selects it by key, never by line number.
+        assert "remedy=\"$(printf '%s\\n' \"$conc\" | sed -n 's/^remedy=//p')\"" in run
+        assert 'echo "remedy=$remedy" >> "$GITHUB_OUTPUT"' in run
+        # Not re-derived in shell: the cause text is authored in the table, so no
+        # value of `$VALIDATE_RC` is ever interpolated into a published verdict.
+        assert "corpus-credential" not in run
+        assert "corpus-uncheckable" not in run
+
+    def test_the_emitted_refusal_codes_are_exactly_the_tables_keys(self) -> None:
+        # The one live coupling nothing else pins: `validate` writes a bare string
+        # (`rc=corpus-credential`), the fork lane hands it to `conclude --refusal`,
+        # and the table names a cause ONLY on an exact key match against
+        # `_VALIDATE_REFUSALS` -- an unrecognized code falls through to the generic
+        # "no leg reported" sentence. So a rename on either side, the emitted string
+        # or the dict key, silently regresses a named refusal to that generic
+        # sentence with no other test failing. Match the two SETS both ways: every
+        # code the workflow emits must be a table key (or it explains nothing), and
+        # every table key must be emitted by some `validate` branch (or it is a dead
+        # entry no run can reach). Read the dict from the module the lane runs, not
+        # a second copy of the names here, which would be one more thing to drift.
+        emitted = set(
+            re.findall(
+                r'echo "rc=(corpus-[a-z-]+)" >> "\$GITHUB_OUTPUT"',
+                _workflow(self.FORK),
+            )
+        )
+        assert emitted, "the validate step emits no rc=corpus-* code any more"
+        keys = set(_scope_candidates()._VALIDATE_REFUSALS)
+        assert emitted == keys, (
+            "the rc=corpus-* codes the fork lane emits and the _VALIDATE_REFUSALS "
+            f"keys have drifted: emitted={sorted(emitted)}, keys={sorted(keys)}. "
+            "A code with no key regresses to the generic sentence; a key with no "
+            "emitter is unreachable."
+        )
+
+    def test_a_floor_override_drops_the_refusal_remedy(self) -> None:
+        # The floor can REPLACE the title with its own reason. A remedy that outlived
+        # it would explain a sentence the check-run does not carry.
+        run = _step_script(_workflow(self.FORK), "Decide the lane's conclusion")
+        after_floor = run.split("floor_ok", 1)[1]
+        assert after_floor.count('remedy=""') >= 2, after_floor.count('remedy=""')
+
+    def test_the_fork_check_run_summary_promises_no_rows_it_has_none_of(self) -> None:
+        # A run where no leg folded any rows has none to point at, in a PR comment or
+        # anywhere else -- and on the refusal path that comment is not posted either.
+        publish = _step_by_name(self.FORK, "publish", "Publish check-run")
+        assert publish["env"]["REMEDY"] == "${{ steps.decide.outputs.remedy }}"
+        run = publish["run"]
+        assert "See the PR comment for the confirmed rows" not in run
+        assert "No leg produced confirmed rows" in run
+        assert '[ -n "${REMEDY:-}" ]' in run
+        # The comment pointer survives only in the arm that HAS a deterministic body
+        # to point at, which is the arm that stamps and publishes one.
+        body_arm = run.split('elif [ -s "$BODY" ]', 1)
+        assert len(body_arm) == 2, "the deterministic-body arm is gone"
+        assert "Full review in the PR comment" in body_arm[1]
+        assert "Full review in the PR comment" not in body_arm[0]
 
 
 _SCOPE_HEAD = "cafe1234cafe1234cafe1234cafe1234cafe1234"
