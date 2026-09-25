@@ -8146,9 +8146,12 @@
     "voiceStatusBar": {
       "default_microphone": "デフォルトマイク",
       "dictation_kept_for_model": "録音した音声は保持され、文字起こしされます。",
+      "dictation_kept_or_discard": "録音した音声は保持され、文字起こしされます。待つのをやめる場合は破棄してください。",
+      "download_continues_after_discard": "破棄してもダウンロードは続くので、同じものを二度取得することはありません。",
+      "discard_dictation_consequence": "破棄は取り消せませんが、自分で入力した文字は残り、もう一度口述できます。",
       "recording": "録音中",
-      "waiting_for_speech_model": "音声モデルを待機しています。",
-      "discard_dictation": "破棄"
+      "waiting_for_speech_model": "録音した音声を文字起こしする準備をしています。",
+      "discard_dictation": "口述を破棄"
     },
     "webAppArtifactCard": {
       "acct": "アカウント",

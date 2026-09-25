@@ -8378,9 +8378,12 @@
     "voiceStatusBar": {
       "default_microphone": "Micrófono predeterminado",
       "dictation_kept_for_model": "Tu dictado se conserva y se transcribirá.",
+      "dictation_kept_or_discard": "Tu dictado se conserva y se transcribirá, o descártalo para dejar de esperar.",
+      "download_continues_after_discard": "La descarga continúa aunque descartes, así que nada se descarga dos veces.",
+      "discard_dictation_consequence": "Descartar no se puede deshacer, pero lo que escribiste tú se conserva y puedes dictar de nuevo.",
       "recording": "Grabando",
-      "waiting_for_speech_model": "Esperando el modelo de voz.",
-      "discard_dictation": "Descartar"
+      "waiting_for_speech_model": "Preparando la transcripción de tu dictado.",
+      "discard_dictation": "Descartar el dictado"
     },
     "webAppArtifactCard": {
       "acct": "cuenta",

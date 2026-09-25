@@ -8146,9 +8146,12 @@
     "voiceStatusBar": {
       "default_microphone": "默认麦克风",
       "dictation_kept_for_model": "你的录音已保留，准备好后会自动转写。",
+      "dictation_kept_or_discard": "你的录音已保留，准备好后会自动转写；不想等就放弃这段口述。",
+      "download_continues_after_discard": "就算放弃，下载也会继续，不会重复下载。",
+      "discard_dictation_consequence": "放弃之后找不回来，但你自己打的字会留下，也可以重新口述一遍。",
       "recording": "正在录音",
-      "waiting_for_speech_model": "正在等待语音模型。",
-      "discard_dictation": "丢弃"
+      "waiting_for_speech_model": "正在准备转写你的录音。",
+      "discard_dictation": "放弃这段口述"
     },
     "webAppArtifactCard": {
       "acct": "账户",

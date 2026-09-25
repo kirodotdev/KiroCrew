@@ -1052,6 +1052,7 @@ function ChatInput({
     voiceDeviceSwitchIsLive = false,
     voiceTranscribing = false,
     voiceTranscribeActive,
+    voiceDrainCancellable = false,
     voiceBusyElsewhere = false,
     voiceBusyElsewhereSession = null,
     voiceHeldLanded = false,
@@ -1525,6 +1526,29 @@ function ChatInput({
   useEffect(() => {
     if (showDictation || voiceTranscribing) composerControl()?.focus()
   }, [showDictation, voiceTranscribing, composerControl])
+
+  // Discarding a drain from the strip's own button removes the element the press
+  // happened on: the discard clears `draining`, so `voiceDrainCancellable` goes
+  // false and the strip unmounts with the focused button inside it. The effect
+  // above cannot catch that -- a streaming drain has already cleared `recording`
+  // (so `showDictation` is null) and `voiceTranscribing` is the batch flag -- and
+  // focus would land on the document body, leaving the composer deaf to the very
+  // keyboard and touch users this control was added for. Hand focus back as part
+  // of the discard rather than on an effect edge, so it is the same press.
+  //
+  // Stays `undefined` when there is no discard to run, because the strip reads
+  // the handler's presence as one of the two terms deciding whether to offer the
+  // control at all: wrapping unconditionally would put a button on screen whose
+  // only effect is to move focus.
+  const cancelVoiceDrain = useMemo(
+    () => onVoiceCancel
+      ? () => {
+        onVoiceCancel()
+        composerControl()?.focus()
+      }
+      : undefined,
+    [onVoiceCancel, composerControl],
+  )
 
   // Escape CANCELS dictation (discards the audio), from ANYWHERE. Deliberately a
   // document-level listener rather than the textarea's onKeyDown: starting a
@@ -4183,18 +4207,21 @@ function ChatInput({
         ) : (
           <VoiceStatusBar
             recording={voiceRecording} level={voiceLevel} deviceLabel={voiceDeviceLabel} deviceId={voiceDeviceId} error={voiceError} onDismissError={onClearVoiceError} onSelectDevice={onSelectVoiceDevice || noopSelectDevice} deviceSwitchIsLive={voiceDeviceSwitchIsLive} download={voiceDownload}
-            /* The released utterance's own window. `voiceStreaming` is part of
-               the condition because only a streaming session can still be called
-               off: its audio is held against an open socket and the discard
-               closes it. A batch transcription is already in the transcriber's
-               hands over HTTP, so the strip offers it no exit rather than an exit
-               that leaves the work running.
+            /* The released utterance's own window. Gated on the transport of the
+               request IN FLIGHT, which is what `voiceDrainCancellable` reads: a
+               streaming drain is held against an open socket and the discard
+               closes it, while a batch transcription is already in the
+               transcriber's hands over HTTP and the strip offers it no exit
+               rather than an exit that leaves the work running.
 
-               Ownership-gated through `voiceTranscribing`, so a composer offers
-               the discard for its OWN drain and never for a session another chat
-               holds. */
-            draining={voiceStreaming && voiceTranscribing}
-            onCancelDrain={onVoiceCancel}
+               Not on `voiceStreaming`. That is the saved setting, so it describes
+               the NEXT utterance; a setting flipped while one request is open
+               names a transport nothing in flight is using, and the control then
+               appears over a batch request whose transcript still lands. The flag
+               is ownership-gated at its source, so a composer offers the discard
+               for its OWN drain and never for a session another chat holds. */
+            draining={voiceDrainCancellable}
+            onCancelDrain={cancelVoiceDrain}
             /* Visible reasons, not tooltips: why the mic is blocked, or that a
                held dictation just arrived. Only while the mic is offered at all.
                Shown in hold mode too: one message, one shape, and the name

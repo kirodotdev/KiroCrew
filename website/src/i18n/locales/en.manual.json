@@ -2929,8 +2929,11 @@
     "voiceStatusBar": {
       "default_microphone": "Default microphone",
       "dictation_kept_for_model": "Your dictation is kept and will be transcribed.",
-      "waiting_for_speech_model": "Waiting for the speech model.",
-      "discard_dictation": "Discard"
+      "dictation_kept_or_discard": "Your dictation is kept and will be transcribed, or discard it to stop waiting.",
+      "download_continues_after_discard": "The download continues even if you discard, so nothing is fetched twice.",
+      "discard_dictation_consequence": "Discarding cannot be undone, but anything you typed yourself stays, and you can dictate again.",
+      "waiting_for_speech_model": "Getting ready to transcribe your dictation.",
+      "discard_dictation": "Discard dictation"
     },
     "webAppArtifactCard": {
       "api_app": "API app",

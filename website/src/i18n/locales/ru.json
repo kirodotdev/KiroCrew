@@ -8494,9 +8494,12 @@
     "voiceStatusBar": {
       "default_microphone": "Микрофон по умолчанию",
       "dictation_kept_for_model": "Записанная речь сохранена и будет расшифрована.",
+      "dictation_kept_or_discard": "Записанная речь сохранена и будет расшифрована, либо отмени диктовку, чтобы не ждать.",
+      "download_continues_after_discard": "Загрузка продолжится, даже если отменишь диктовку, поэтому ничего не скачивается дважды.",
+      "discard_dictation_consequence": "Отмену уже не вернуть, но то, что ты набрал сам, останется, и можно продиктовать заново.",
       "recording": "Запись",
-      "waiting_for_speech_model": "Ожидание речевой модели.",
-      "discard_dictation": "Отменить"
+      "waiting_for_speech_model": "Идёт подготовка к расшифровке записанной речи.",
+      "discard_dictation": "Отменить диктовку"
     },
     "webAppArtifactCard": {
       "acct": "аккаунт",

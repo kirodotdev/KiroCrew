@@ -215,6 +215,45 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
     if (!streamEnabled && streamRecording) streamStop()
   }, [streamEnabled, streamRecording, streamStop])
 
+  /**
+   * Which transport THIS hook's own utterance is in flight on, or null when it
+   * has none.
+   *
+   * `streamEnabled` cannot answer this. It is the saved preference, so it
+   * describes the transport the NEXT utterance will take; flip it while one
+   * utterance is open and it names a transport nothing in flight is using. A
+   * discard routed off it then lands on the wrong path — closing a socket that
+   * was never opened, or skipping the flag that drops a blob still on its way to
+   * the transcriber — and the press changes the UI while the utterance survives.
+   *
+   * Only first-hand signals count: this hook's own socket
+   * (`streamRecording`/`streamDraining`) and its own recorder (`recording`).
+   * `transcribing` is deliberately NOT read here, because the inbox raises it for
+   * whatever request is on display, including one another composer started —
+   * routing a discard off someone else's request is how a press aimed at a
+   * startup of ours would go to the wrong mechanism.
+   */
+  const ownTransport: TranscriptOrigin | null =
+    streamRecording || streamDraining ? 'stream' : recording ? 'batch' : null
+  // Read inside `cancel()`, which fires from a keystroke or a press rather than
+  // from a render, so it must see the transport as of that moment.
+  const ownTransportRef = useRef(ownTransport)
+  ownTransportRef.current = ownTransport
+  /**
+   * The transport a startup still in flight OPENED with.
+   *
+   * `ownTransport` cannot see a startup: between the awaits in `start()` there is
+   * no socket and no recorder yet, so it reads null, and falling back to the
+   * preference there is wrong for the one case that matters — the preference
+   * changing inside that same window. The startup then gets discarded down the
+   * other transport's path, which for a stream means its socket is never closed.
+   *
+   * Written before `startingRef` is raised and only ever read while it is still
+   * raised, so a value left over from a settled startup can never be consulted
+   * and there is nothing to clear.
+   */
+  const startupTransportRef = useRef<TranscriptOrigin | null>(null)
+
   const stopStream = useCallback(() => {
     if (warmTimerRef.current) { clearTimeout(warmTimerRef.current); warmTimerRef.current = null }
     levelStopRef.current?.()
@@ -389,6 +428,7 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
       // stream actually starts — so a mid-startup slot switch can't misattribute
       // this stream to the slot now on screen.
       if (startingRef.current) return
+      startupTransportRef.current = 'stream'
       startingRef.current = true
       // Stop spoken replies before capture can feed them back into dictation.
       window.dispatchEvent(new CustomEvent('voice-stop'))
@@ -415,6 +455,7 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
       return
     }
     if (!voiceInputSupported || startingRef.current) return
+    startupTransportRef.current = 'batch'
     startingRef.current = true
     window.dispatchEvent(new CustomEvent('voice-stop'))
     const gen = ++startGenRef.current
@@ -548,6 +589,10 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
   // disarms the draining final and restores the pre-dictation composer text.
   const cancel = useCallback(() => {
     if (warmTimerRef.current) { clearTimeout(warmTimerRef.current); warmTimerRef.current = null }
+    // Read BEFORE the latch is released below: a startup still in flight is the
+    // request this discard is ending, and its transport is the only honest answer
+    // for a window in which no socket or recorder exists yet.
+    const startupTransport = startingRef.current ? startupTransportRef.current : null
     // Abandon any startup still in flight and RELEASE the re-entrancy latch, so a
     // replacement press can start a new session immediately instead of being
     // swallowed. Without this, cancelling while `getUserMedia` is still awaiting
@@ -560,7 +605,16 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
     startGenRef.current++
     startingRef.current = false
     setPartial('')
-    if (streamEnabled) { streamCancel(); setSessionOwner(null); return }
+    // Routed on the utterance in flight, never on the preference: a preference
+    // flipped mid-utterance would otherwise send the discard down the other
+    // transport's path, where it closes a socket that was never opened and
+    // leaves the blob it should have dropped on its way to the transcriber.
+    // A startup counts as in flight and is consulted second, because between the
+    // awaits in `start()` there is no socket and no recorder for the live read to
+    // see. Only with neither does the preference decide, and there the press is
+    // releasing a warm mic, which exists on the batch path alone.
+    const transport = ownTransportRef.current ?? startupTransport
+    if (transport ? transport === 'stream' : streamEnabled) { streamCancel(); setSessionOwner(null); return }
     if (mediaRef.current?.state === 'recording') {
       // onstop drops the blob (see discardRef) and tears down the meter + stream.
       discardRef.current = true
@@ -621,5 +675,22 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
   /** True when `switchDevice` takes effect immediately rather than next recording. */
   const deviceSwitchIsLive = streamEnabled && streamRecording
 
-  return { recording: isRecording, transcribing: transcribing || !!streamDraining, sessionOwner, streamEnabled, toggle, start, stop, cancel, prewarm, error, level, deviceLabel, deviceId, clearError, partial, download, sampleRef, switchDevice, deviceSwitchIsLive }
+  /**
+   * Can the utterance in flight still be called off?
+   *
+   * Answered from the ACTIVE transport, so a preference flipped mid-request
+   * cannot make it lie. Streaming is the one transport whose drain can be ended:
+   * the audio is held against a socket this hook owns, so `cancel()` closes it
+   * and the final never arrives. Batch has no drain to end — capture is over and
+   * the blob is already POSTed, so `cancel()` reaches nothing on the wire and the
+   * transcript lands anyway. A batch dictation is discardable only while its
+   * capture still runs, which is a different window from this one.
+   *
+   * So `streamDraining` IS the whole answer, and reading it here rather than in
+   * the UI keeps the rule beside `cancel()`, whose routing decides whether a
+   * press does anything at all.
+   */
+  const drainCancellable = !!streamDraining
+
+  return { recording: isRecording, transcribing: transcribing || !!streamDraining, transport: ownTransport, drainCancellable, sessionOwner, streamEnabled, toggle, start, stop, cancel, prewarm, error, level, deviceLabel, deviceId, clearError, partial, download, sampleRef, switchDevice, deviceSwitchIsLive }
 }

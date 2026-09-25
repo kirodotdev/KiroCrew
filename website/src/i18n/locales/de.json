@@ -8262,9 +8262,12 @@
     "voiceStatusBar": {
       "default_microphone": "Standardmikrofon",
       "dictation_kept_for_model": "Deine Aufnahme bleibt erhalten und wird transkribiert.",
+      "dictation_kept_or_discard": "Deine Aufnahme bleibt erhalten und wird transkribiert, oder verwirf sie, um die Wartezeit zu beenden.",
+      "download_continues_after_discard": "Der Download läuft auch weiter, wenn du verwirfst, es wird also nichts doppelt geladen.",
+      "discard_dictation_consequence": "Verwerfen lässt sich nicht rückgängig machen, aber was du selbst getippt hast, bleibt, und du kannst neu diktieren.",
       "recording": "Aufnahme",
-      "waiting_for_speech_model": "Warten auf das Sprachmodell.",
-      "discard_dictation": "Verwerfen"
+      "waiting_for_speech_model": "Die Transkription deiner Aufnahme wird vorbereitet.",
+      "discard_dictation": "Diktat verwerfen"
     },
     "webAppArtifactCard": {
       "acct": "Konto",

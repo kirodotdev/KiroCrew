@@ -8145,10 +8145,13 @@
     },
     "voiceStatusBar": {
       "default_microphone": "기본 마이크",
-      "dictation_kept_for_model": "녹음한 움성은 보관되어 텍스트로 변환됩니다.",
+      "dictation_kept_for_model": "녹음한 음성은 보관되어 텍스트로 변환됩니다.",
+      "dictation_kept_or_discard": "녹음한 음성은 보관되어 텍스트로 변환됩니다. 기다리지 않으려면 버리세요.",
+      "download_continues_after_discard": "버려도 다운로드는 계속되므로 같은 파일을 두 번 받지 않습니다.",
+      "discard_dictation_consequence": "버리면 되돌릴 수 없지만 직접 입력한 글자는 남고, 다시 받아쓰기를 할 수 있습니다.",
       "recording": "녹음 중",
-      "waiting_for_speech_model": "음성 모델을 기다리고 있습니다.",
-      "discard_dictation": "버리기"
+      "waiting_for_speech_model": "녹음한 음성을 텍스트로 변환할 준비를 하고 있습니다.",
+      "discard_dictation": "받아쓰기 버리기"
     },
     "webAppArtifactCard": {
       "acct": "계정",

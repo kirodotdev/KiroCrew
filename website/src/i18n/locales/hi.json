@@ -8262,9 +8262,12 @@
     "voiceStatusBar": {
       "default_microphone": "डिफ़ॉल्ट माइक्रोफ़ोन",
       "dictation_kept_for_model": "तुम्हारा डिक्टेशन सुरक्षित है और बाद में ट्रांसक्राइब किया जाएगा।",
+      "dictation_kept_or_discard": "तुम्हारा डिक्टेशन सुरक्षित है और ट्रांसक्राइब किया जाएगा, या इंतज़ार रोकने के लिये उसे छोड़ दो।",
+      "download_continues_after_discard": "छोड़ने पर भी डाउनलोड चलता रहेगा, इसलिये कुछ भी दो बार नहीं उतरेगा।",
+      "discard_dictation_consequence": "छोड़ी हुई डिक्टेशन लौटकर नहीं आएगी, पर तुमने खुद जो लिखा है वह बना रहेगा, और तुम फिर से डिक्टेशन कर सकते हो।",
       "recording": "रिकॉर्डिंग",
-      "waiting_for_speech_model": "स्पीच मॉडल की प्रतीक्षा है।",
-      "discard_dictation": "रद्द करें"
+      "waiting_for_speech_model": "तुम्हारे डिक्टेशन को ट्रांसक्राइब करने की तैयारी चल रही है।",
+      "discard_dictation": "डिक्टेशन को छोड़ दो"
     },
     "webAppArtifactCard": {
       "acct": "खाता",

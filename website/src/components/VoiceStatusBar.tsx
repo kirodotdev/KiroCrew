@@ -1,4 +1,6 @@
 import { CheckCircle2, Loader2, MicOff, X } from 'lucide-react'
+import { useId } from 'react'
+
 import ErrorNotice from './ErrorNotice'
 
 import MicSourceMenu from './MicSourceMenu'
@@ -94,6 +96,11 @@ function renderNoticeText(notice: NonNullable<Props['notice']>) {
 }
 
 export default function VoiceStatusBar({ recording, level, deviceLabel, deviceId, error, onDismissError, onSelectDevice, deviceSwitchIsLive, download, draining, onCancelDrain, notice }: Props) {
+  /* Addresses the one visible sentence that says what a discard costs, so the
+     discard button can point at it. Above the early returns because it is a
+     hook, and generated rather than fixed because two panes can each mount a
+     strip and a duplicate id would aim both buttons at the first one. */
+  const consequenceId = useId()
   if (error) {
     return (
       <div className="flex items-center px-3 py-1.5 text-[12px] bg-danger-subtle border-b border-danger-subtle">
@@ -126,6 +133,15 @@ export default function VoiceStatusBar({ recording, level, deviceLabel, deviceId
     // cannot be ended. A control that changed the strip without stopping the
     // work would read as a stop that had happened.
     const drainCancel = draining && onCancelDrain ? onCancelDrain : null
+    /* The reassurance names the exit only where the exit is on screen. Alone,
+       "your dictation is kept" beside a Discard button reads as a contradiction —
+       a reader told their words are safe will not press a control that sounds like
+       losing them — so the two become one sentence that offers the choice. Where
+       no control is rendered the plain line stays, because a sentence inviting a
+       press the strip does not show is the same mismatch in the other direction. */
+    const keptLine = drainCancel
+      ? 'components.voiceStatusBar.dictation_kept_or_discard'
+      : 'components.voiceStatusBar.dictation_kept_for_model'
     const cancelButton = drainCancel
       ? (
         <button
@@ -133,6 +149,15 @@ export default function VoiceStatusBar({ recording, level, deviceLabel, deviceId
           data-testid="voice-drain-cancel"
           onClick={drainCancel}
           aria-label={i18nT('components.voiceStatusBar.discard_dictation')}
+          /* The name says what the control does; this says what pressing it
+             costs, which is the question a reader has to answer before pressing
+             and cannot answer from "Discard dictation" alone. Carried as a
+             description rather than folded into the name so the accessible name
+             still matches the visible label, and pointed at the visible sentence
+             so a reader who can see the strip and one who hears it are told the
+             same thing once. A confirm step would answer it too, and would make
+             a wait the control exists to cut short take longer. */
+          aria-describedby={consequenceId}
           /* A real target, not a 12px glyph: this row is the only exit on a
              device with no Escape key, so it is sized for a fingertip and keeps
              its label rather than relying on an icon the user must decode. */
@@ -142,6 +167,16 @@ export default function VoiceStatusBar({ recording, level, deviceLabel, deviceId
           {i18nT('components.voiceStatusBar.discard_dictation')}
         </button>
       )
+      : null
+    /* What the press costs and what it spares, in one line, rendered only where
+       the control is. Both halves are load-bearing and both are true of
+       `cancelVoice`: no final is committed and the dictated region is taken back
+       out of the draft, so the spoken words are gone for good; the text the user
+       typed themselves is restored verbatim, and where the region cannot be
+       verified exactly the composer is left untouched rather than trimmed. The
+       reassuring half is the half that gets the button pressed. */
+    const consequenceLine = drainCancel
+      ? <span className="block" id={consequenceId}>{i18nT('components.voiceStatusBar.discard_dictation_consequence')}</span>
       : null
     if (download) {
       return (
@@ -168,7 +203,16 @@ export default function VoiceStatusBar({ recording, level, deviceLabel, deviceId
                 shows on its own in thirteen catalogs. Not dimmed either: this is
                 the sentence that stops the user retyping a dictation that is
                 still on its way. */}
-            <span className="block">{i18nT('components.voiceStatusBar.dictation_kept_for_model')}</span>
+            <span className="block">{i18nT(keptLine)}</span>
+            {/* Only alongside a real download figure, where it is a fact: the
+                fetch is a shared, caller-independent job on the gateway, so
+                closing this session's socket cannot call it back and the bytes
+                already paid for are not paid for twice. Without it the reader has
+                to guess whether leaving also abandons a gigabyte, and the guess
+                is what stops them pressing. Withheld from the silent strip, which
+                has no announced stage to be truthful about. */}
+            {drainCancel ? <span className="block">{i18nT('components.voiceStatusBar.download_continues_after_discard')}</span> : null}
+            {consequenceLine}
           </span>
           {cancelButton}
         </div>
@@ -190,7 +234,8 @@ export default function VoiceStatusBar({ recording, level, deviceLabel, deviceId
           <Loader2 size={13} className="shrink-0 mt-0.5 animate-spin" aria-hidden="true" />
           <span className="flex-1 min-w-0 break-words">
             {i18nT('components.voiceStatusBar.waiting_for_speech_model')}
-            <span className="block">{i18nT('components.voiceStatusBar.dictation_kept_for_model')}</span>
+            <span className="block">{i18nT(keptLine)}</span>
+            {consequenceLine}
           </span>
           {cancelButton}
         </div>

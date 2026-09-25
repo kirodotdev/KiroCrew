@@ -8262,9 +8262,12 @@
     "voiceStatusBar": {
       "default_microphone": "ডিফল্ট মাইক্রোফোন",
       "dictation_kept_for_model": "তোমার ডিক্টেশন সংরক্ষিত আছে এবং পরে ট্রান্সক্রাইব করা হবে।",
+      "dictation_kept_or_discard": "তোমার ডিক্টেশন সংরক্ষিত আছে ও ট্রান্সক্রাইব করা হবে, অবশ্য অপেক্ষা থামাতে সেটা বাতিল করো।",
+      "download_continues_after_discard": "তুমি বাতিল করলেও ডাউনলোড চলতে থাকবে, তাই কিছু দুবার নামানো হবে না।",
+      "discard_dictation_consequence": "বাতিল করলে তা আর ফেরানো যাবে না, তবে তুমি নিজে যা লিখেছ তা থেকে যাবে, আর আবার ডিক্টেশন করা যাবে।",
       "recording": "রেকর্ডিং হচ্ছে",
-      "waiting_for_speech_model": "স্পিেচ মডেলের জন্য অপেক্ষা করা হছ্ে।",
-      "discard_dictation": "বাতিল"
+      "waiting_for_speech_model": "তোমার ডিক্টেশন ট্রান্সক্রাইব করার প্রস্তুতি চলছে।",
+      "discard_dictation": "ডিক্টেশন বাতিল করো"
     },
     "webAppArtifactCard": {
       "acct": "অ্যাকাউন্ট",

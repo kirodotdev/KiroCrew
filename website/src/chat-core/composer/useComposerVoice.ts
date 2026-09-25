@@ -686,7 +686,22 @@ export function useComposerVoice(host: ComposerVoiceHost) {
   // Uses voiceRef.current (not `voice`) so this prop stays referentially stable
   // and does not re-render the composer every render — matching toggleVoice.
   const cancelVoice = useCallback(() => {
-    if (streamEnabledRef.current) {
+    // Which utterance this discard is ending is answered by the SESSION in
+    // flight, `voice.transport`, and only then by the saved mode. The mode
+    // describes the utterance the user will start next, and the two come apart
+    // exactly where it costs the most: turning streaming off mid-capture is
+    // converted by the engine's own effect into a drain, so the socket is still
+    // the live session while the mode already reads batch. Gated on the mode
+    // alone, this discard closed that socket and left the words it had promised
+    // to take back sitting in the draft.
+    //
+    // The mode is kept as the second term rather than replaced, because a final
+    // can still be in transit in the instant after the engine clears its own
+    // flags, and then the mode is the only signal left that one is coming. Both
+    // terms only ever WIDEN what is disarmed, which costs nothing: a batch
+    // transcript is exempt from `sttDisarmedRef` by design, and the removal below
+    // verifies its own ground before touching a character.
+    if (voiceRef.current.transport === 'stream' || streamEnabledRef.current) {
       sttDisarmedRef.current = true
       // Remove the dictated region at the frozenInputRef boundary, preserving
       // the pre-dictation text EXACTLY (including its own trailing whitespace)
@@ -705,20 +720,96 @@ export function useComposerVoice(host: ComposerVoiceHost) {
         // and fell through to the leave-unchanged branch, stranding the partial
         // in the draft. spliceDictation reads the same frozen caret, so this
         // reproduces the write exactly for both the append and mid-caret shapes.
-        const written = spliceDictation(frozen, p).value
+        const region = spliceDictation(frozen, p)
+        const written = region.value
         if (cur.startsWith(written)) {
           // The composer still begins with exactly the region onPartial wrote.
           // Restore the pre-dictation text verbatim and keep any suffix the user
-          // typed after it.
-          setInput(frozen + cur.slice(written.length))
+          // typed after it -- re-deriving that one seam, because the separator the
+          // write put between the draft and the dictated words is inside the
+          // region being dropped. A draft that ended in whitespace keeps it and
+          // the rule adds nothing; one that did not would otherwise have the
+          // typed run abut its last word.
+          const typedSuffix = cur.slice(written.length)
+          setInput(frozen + dictationSeparator(frozen, typedSuffix) + typedSuffix)
+        } else {
+          // MID-DRAFT, which is the ordinary shape rather than an edge: the
+          // restored caret sits at the END of the dictated region, so typing
+          // during the drain lands BETWEEN that region and the tail which
+          // follows it. The composer then reads `head + typed + tail`, and the
+          // whole-value prefix check above cannot match it. Verify the two ends
+          // independently instead — the dictated region is still the prefix, the
+          // pre-existing tail is still the suffix — which identifies the typed
+          // run exactly and licenses rebuilding the pre-dictation text with only
+          // that run put back where they typed it.
+          //
+          // `head` is the anchor onPartial maintains, i.e. the region actually in
+          // the composer. `tail` has to come from this reconstruction and NOT
+          // from `lastDictationValueRef`: a drain-time correction folds the typed
+          // run into that value, so a tail read from there swallows the run,
+          // computes it as empty, and deletes the user's own words.
+          const head = lastDictationAnchorRef.current ?? written.slice(0, region.caret)
+          const tail = written.slice(region.caret)
+          const caret = frozenCaretRef.current ?? voiceCaretRef.current
+          // The insertion point `spliceDictationText` derives its own `before`
+          // from, read the same way so the two agree by construction.
+          const at = caret ? Math.min(caret.start, frozen.length) : frozen.length
+          // Where the replaced span ENDED in the pre-dictation draft. Dictating
+          // over a selection stands in place of `frozen[at..resumeAt)`, so the
+          // rollback owes two things that are easy to confuse: give that span
+          // back, and resume the typed run AFTER it, because the caret the user
+          // typed at was restored to the end of what replaced it. Rebuilding at
+          // `at` does the first and gets the second backwards, moving their typing
+          // in front of their own selected words. Identical to `at` for a
+          // collapsed caret, which is every case that has no selection.
+          const resumeAt = caret
+            ? Math.max(at, Math.min(caret.end, frozen.length))
+            : frozen.length
+          if (
+            cur.length >= head.length + tail.length &&
+            cur.startsWith(head) && cur.endsWith(tail) &&
+            // The span invariant, checked rather than assumed: the region's own
+            // prefix has to BE the pre-dictation text up to that insertion point.
+            // A caret that has moved on since the write fails here and the
+            // composer is left alone, rather than edited at the wrong offset.
+            head.slice(0, at) === frozen.slice(0, at)
+          ) {
+            const typed = cur.slice(head.length, cur.length - tail.length)
+            // Both seams are re-derived through `dictationSeparator`, the rule
+            // `spliceDictationText` itself applies. The separators it wrote live
+            // INSIDE `head` and `tail`, which are the two pieces being dropped,
+            // so splicing `typed` in raw hands back a draft with its words glued
+            // at the junction ("Hi team, " + "plus" + "see you").
+            //
+            // Not `spliceDictation(frozen, typed)`, which would apply the rule
+            // but drop the selection again: it takes its `after` from the caret's
+            // END on a draft that still HAS the selected span, so that span is
+            // deleted a second time by a rollback whose job is to restore it.
+            // Here the split point carries the span and only the separator rule
+            // is borrowed. An empty `typed` needs no branch -- the rule answers ''
+            // at both seams, leaving exactly `frozen`.
+            const before = frozen.slice(0, resumeAt)
+            const after = frozen.slice(resumeAt)
+            const lead = dictationSeparator(before, typed)
+            setInput(
+              before + lead + typed + dictationSeparator(typed, after) + after,
+            )
+            // Arm the caret at the end of what the USER typed, not at the end of
+            // the value. Leaving it unarmed is not "leaving it alone": React
+            // replaces the textarea value and the browser resets the DOM caret to
+            // the end, which after the discard hands focus back would drop them
+            // behind the draft's restored tail instead of where they were typing.
+            // The same compensation the delivery path above already makes.
+            voicePendingCaretRef.current = before.length + lead.length + typed.length
+          }
+          // else: the dictated region can't be verified exactly — the user edited
+          // or replaced it (e.g. deleted the separator, or typed their own text
+          // that merely ends in the same word as the partial). Leave the composer
+          // UNCHANGED: a suffix-match heuristic here would delete user-authored
+          // text ("say hello" -> "say"). The disarm above still drops the draining
+          // final, so no dictation is committed; at worst the visible partial
+          // lingers for the user to clear.
         }
-        // else: the dictated region can't be verified exactly — the user edited
-        // or replaced it (e.g. deleted the separator, or typed their own text
-        // that merely ends in the same word as the partial). Leave the composer
-        // UNCHANGED: a suffix-match heuristic here would delete user-authored
-        // text ("say hello" -> "say"). The disarm above still drops the draining
-        // final, so no dictation is committed; at worst the visible partial
-        // lingers for the user to clear.
       }
       // (frozen===null, or no current partial: nothing verifiably removable —
       // leave the composer as-is rather than risk clobbering user text.)
@@ -732,7 +823,7 @@ export function useComposerVoice(host: ComposerVoiceHost) {
       frozenCaretRef.current = null
     }
     voiceRef.current.cancel()
-  }, [spliceDictation, inputRef, setInput])
+  }, [spliceDictation, inputRef, setInput, voiceCaretRef, voicePendingCaretRef])
 
   // Push-to-talk / tap-to-toggle keyboard binding (default: hold right ⌥ on
   // macOS, ⌥⇧Space elsewhere). Routed through startVoice/stopVoice rather than
@@ -876,6 +967,11 @@ export function composerVoiceInputProps(cv: ComposerVoice) {
   return {
     voiceRecording: voiceOwned && voice.recording,
     voiceTranscribing: voiceOwned && voice.transcribing,
+    /* Whether the utterance in flight can still be called off, read from its own
+       transport rather than from the streaming setting — the setting describes
+       the next utterance, so it cannot carry a live obligation. Ownership-gated
+       like the rest: a composer answers for its own dictation only. */
+    voiceDrainCancellable: voiceOwned && voice.drainCancellable,
     /* Ungated: `startVoice` refuses on `voice.transcribing` outright, so the
        voice controls have to read the same global fact. */
     voiceTranscribeActive: voice.transcribing,
