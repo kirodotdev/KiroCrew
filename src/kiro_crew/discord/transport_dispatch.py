@@ -1769,6 +1769,14 @@ class DiscordDispatcher:
         # Auth first (deny-by-default short-circuit).
         if not self._authorized(itx.user_id):
             return
+        if not itx.guild_id:
+            # A DM interaction names its peer, and every callback below answers
+            # that SAME channel without ever opening it, so this is where the
+            # pairing can be learned for the interaction direction. Recorded
+            # before any callback is issued, because the mid-send re-check runs
+            # inside the first one; and on the authorized path only, so a denied
+            # presser cannot plant a pairing. Mirrors transport.receive().
+            self.client.remember_dm_recipient(itx.channel_id, itx.user_id)
         # Guild interactions are accepted only in an allow-listed channel that
         # Discord confirms is a thread. This mirrors transport.receive().
         thread_id = itx.channel_id if itx.guild_id else ""
@@ -1785,6 +1793,13 @@ class DiscordDispatcher:
             # wider disclosure boundary than the thread allow-list grants and
             # turns are deliberately never run in one.
             if itx.is_command:
+                # No destination, deliberately: this notice exists BECAUSE the
+                # channel is not on the roster, so passing it would have the
+                # re-check refuse the explanation for the very reason it is being
+                # given, and the presser would see Discord's red "did not respond"
+                # instead. It is ephemeral -- visible to the presser alone, never
+                # posted into the channel -- so it discloses nothing the ceiling
+                # governs.
                 await self.client.respond_interaction(
                     itx.interaction_id,
                     itx.interaction_token,
@@ -1808,6 +1823,11 @@ class DiscordDispatcher:
                 # Named, not silent, for the same reason as the guild refusal
                 # above. The wording stays generic: the governance profile is the
                 # operator's ceiling and its contents are not the user's to read.
+                # No destination, for the same reason as well, and more sharply: the
+                # outbound ceiling reads the SAME `channels` allowlist that just
+                # denied this command, so a re-check would refuse the notice in
+                # exactly the case it is written for. Ephemeral, so nothing the
+                # ceiling governs is disclosed.
                 await self.client.respond_interaction(
                     itx.interaction_id,
                     itx.interaction_token,
@@ -1822,7 +1842,9 @@ class DiscordDispatcher:
         # the governance check below does off-loop profile-store I/O that can, on a
         # slow FS, exceed Discord's ~3s interaction-ack deadline. Acking is a no-op
         # UI dismissal; it does NOT resolve the approval or start a turn.
-        await self.client.ack_component_interaction(itx.interaction_id, itx.interaction_token)
+        await self.client.ack_component_interaction(
+            itx.interaction_id, itx.interaction_token, destination=itx.channel_id
+        )
 
         data = itx.custom_id or ""
 
@@ -1837,9 +1859,31 @@ class DiscordDispatcher:
         # kiro-cli approval until timeout, ~300s). Approve presses and [OPTIONS:]
         # turns stay blocked.
         _is_reject_press = data.startswith("a:") and data.rpartition(":")[2] == "0"
-        if not _is_reject_press and not await channel_inbound_permitted("discord"):
-            logger.info("discord interaction dropped: denied by channels governance policy")
-            return
+        if not _is_reject_press:
+            # The rosters are read ONCE before the ack, and the ack itself serves the
+            # REST ladder's waits while the governance read is deliberately off-loop,
+            # so authorization can be withdrawn across that window. Re-read the same
+            # things the pre-ack gate established before anything resolves: without
+            # this a stale Approve press executes the governed tool after the operator
+            # has already withdrawn it. The channel TYPE is immutable and so is not
+            # re-resolved -- only membership moves.
+            #
+            # ORDER: the governance ceiling first, the rosters LAST. The ceiling read
+            # is an `await` doing profile-store I/O, so a roster reading taken before
+            # it describes a state that can have changed by the time anything
+            # resolves; reading the rosters last makes them the final word, which is
+            # the same contract the client's own mid-send predicate states.
+            if not await channel_inbound_permitted("discord"):
+                logger.info("discord interaction dropped: denied by channels governance policy")
+                return
+            if not self._authorized(itx.user_id) or (
+                itx.guild_id and thread_id not in self._allowed_threads
+            ):
+                logger.info(
+                    "discord interaction dropped: authorization withdrawn during the "
+                    "acknowledgement"
+                )
+                return
 
         # Session picker: "s:<nonce>:<index>". The controller binds the nonce
         # to the owner, channel, message, TTL, and exact server-side choice list.
@@ -1876,6 +1920,43 @@ class DiscordDispatcher:
                 # No pending decision — already timed out (deny-by-default) or
                 # answered. Don't imply the press took effect.
                 verdict = "⌛ This approval already expired."
+            # The confirmation is an outbound write, and a reject press reaches here
+            # without the re-read above: resolving a denial is what a withdrawal
+            # wants, but writing into the channel afterwards is not. The edit may
+            # also serve no wait, in which case the ladder's own re-check never runs
+            # and nothing else judges it. So both authorities are read once more.
+            #
+            # A channel the ceiling refuses gets NO edit at all, whichever
+            # verdict it would have carried. The card is an ordinary channel message,
+            # visible to everyone who can read that channel, and it was posted while
+            # the channel was still permitted; leaving it exactly as the operator last
+            # allowed it writes nothing new, while replacing its text names a tool and
+            # its outcome into a channel the ceiling now refuses as a destination.
+            # The pending approval is resolved before this point, so a withheld edit
+            # costs the presser a confirmation and never the decision.
+            #
+            # ORDER: the ceiling first, the rosters LAST -- the ceiling read is an
+            # `await`, so a roster reading taken before it can be stale by the time the
+            # edit is issued, which is the same contract the client's own mid-send
+            # predicate states. Read here even on the arm that already read it above,
+            # rather than carrying that answer forward: a value taken before a
+            # suspension is exactly the defect this change exists to close, and on an
+            # ungoverned install the read permits without writing a row, so the second
+            # reading costs a row only where an operator asked for the audit trail.
+            if not await channel_inbound_permitted("discord"):
+                logger.info(
+                    "discord approval confirmation withheld: denied by channels "
+                    "governance policy"
+                )
+                return
+            if not self._authorized(itx.user_id) or (
+                itx.guild_id and thread_id not in self._allowed_threads
+            ):
+                logger.info(
+                    "discord approval confirmation withheld: authorization withdrawn "
+                    "before the verdict could be written"
+                )
+                return
             await self.client.edit_message(itx.channel_id, itx.message_id, verdict, components=[])
             return
 
@@ -2932,7 +3013,11 @@ class DiscordDispatcher:
         async def _respond(text: str) -> None:
             assert self.client is not None
             await self.client.respond_interaction(
-                itx.interaction_id, itx.interaction_token, text, ephemeral=True
+                itx.interaction_id,
+                itx.interaction_token,
+                text,
+                ephemeral=True,
+                destination=itx.channel_id,
             )
 
         return _respond
@@ -2984,7 +3069,11 @@ class DiscordDispatcher:
             return
         if name == "help":
             await self.client.respond_interaction(
-                itx.interaction_id, itx.interaction_token, build_help_text(), ephemeral=True
+                itx.interaction_id,
+                itx.interaction_token,
+                build_help_text(),
+                ephemeral=True,
+                destination=itx.channel_id,
             )
             return
         if name == "model" and thread_id:
@@ -3002,6 +3091,7 @@ class DiscordDispatcher:
                 "private here. DM me `/model`, or send `!model` if you are happy "
                 "for the list to be visible in this thread.",
                 ephemeral=True,
+                destination=itx.channel_id,
             )
             return
         # Everything else is session-scoped. Acknowledge the interaction first so
@@ -3013,6 +3103,7 @@ class DiscordDispatcher:
             itx.interaction_token,
             f"Running `/{name}`…",
             ephemeral=True,
+            destination=itx.channel_id,
         )
         argument = " ".join(itx.options.values()).strip()
         synthetic = InboundMessage(

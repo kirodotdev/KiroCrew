@@ -252,3 +252,103 @@ async def channel_inbound_permitted(channel_type: str) -> bool:
     return await asyncio.get_running_loop().run_in_executor(
         governance_executor(), _channel_inbound_permitted_sync, channel_type
     )
+
+
+def _channel_outbound_permitted_sync(channel_type: str) -> bool:
+    """Blocking ``channels`` governance check for an OUTBOUND send (worker only).
+
+    Reads the SAME ``channels`` ScopedMap ``members`` allowlist as its inbound
+    sibling :func:`_channel_inbound_permitted_sync`, on the host surface
+    (``HOST_SESSION_KEY``) with ``fail_closed=True``, and differs from it in exactly
+    one way, the one the direction dictates: the audit row names the direction it
+    decided, ``outbound:<channel_type>``. A send and a received message are separate
+    decisions about separate traffic, and an egress refusal filed under an ingress
+    name is unreadable to whoever later asks why a message did not go out.
+
+    Everything else matches the sibling deliberately, criticality included. A
+    governed ALLOW is written ``critical=True`` and unguarded, so an SEL that cannot
+    record it raises into the handler below and the answer degrades to a refusal: a
+    governed allow nobody can record is not an allow, and an egress decision is the
+    one a reader needs most. A DENY is best-effort, because the refusal already
+    stands and audit-store health must not convert it into anything else.
+
+    Fail-CLOSED throughout: a governance-evaluation error, and an unrecordable
+    governed allow alike, return False, because the caller is about to write to a
+    destination whose standing it cannot establish. Default OSS build (no ``channels``
+    policy) permits, so sends are unchanged, and an ungoverned permit writes no row.
+    Does blocking profile-file I/O, so callers MUST offload it (see
+    :func:`channel_outbound_permitted`).
+    """
+    try:
+        decision = governance_permits(
+            "channels", channel_type, session_key=HOST_SESSION_KEY, fail_closed=True
+        )
+        permitted = bool(getattr(decision, "permitted", False))
+        layer = getattr(decision, "layer", "")
+        governed = layer in ("policy", "profile", "both")
+        # Same disposition as the inbound sibling for WHICH decisions are recorded --
+        # every governed decision and every deny, never an ungoverned default-permit,
+        # which is not a decision and would append a row per send on installs with no
+        # governance configured. The criticality matches it too: a governed ALLOW that
+        # cannot be recorded is not an allow, so the write is critical and unguarded,
+        # and the handler below turns the failure into a degraded refusal.
+        if governed and permitted:
+            sel().log_governance_decision(
+                session_key=HOST_SESSION_KEY,
+                tool_name=f"outbound:{channel_type}",
+                scope="channels",
+                item=channel_type,
+                outcome="allowed",
+                rule=getattr(decision, "rule", ""),
+                layer=layer,
+                reason=getattr(decision, "reason", ""),
+                critical=True,
+            )
+        elif not permitted:
+            # A deny is recorded best-effort: the refusal already stands, so audit
+            # disk health must not convert it into anything else.
+            try:
+                sel().log_governance_decision(
+                    session_key=HOST_SESSION_KEY,
+                    tool_name=f"outbound:{channel_type}",
+                    scope="channels",
+                    item=channel_type,
+                    outcome="denied",
+                    rule=getattr(decision, "rule", ""),
+                    layer=layer,
+                    reason=getattr(decision, "reason", ""),
+                )
+            except Exception:
+                logger.debug("outbound governance deny audit failed", exc_info=True)
+        return permitted
+    except PlatformCompositionError:
+        # A broken CPP composition must surface rather than silently denying every
+        # send, matching the inbound sibling and the host gate.
+        raise
+    except Exception:
+        try:
+            audit_governance_degraded(
+                f"outbound:{channel_type}",
+                session_key=HOST_SESSION_KEY,
+                scope="channels",
+                failed_closed=True,
+            )
+        except Exception:
+            logger.debug("outbound governance degrade audit failed", exc_info=True)
+        return False
+
+
+async def channel_outbound_permitted(channel_type: str) -> bool:
+    """Return True only if the ``channels`` policy permits outbound via *channel_type*.
+
+    Off-loop wrapper around :func:`_channel_outbound_permitted_sync`, on the same
+    dedicated ``governance_executor`` (``mc-gov``) its inbound sibling uses: the
+    check walks the ProfileStore (blocking filesystem I/O), so it must not run on
+    the event loop.
+
+    Callers are mid-send re-checks taken after a bounded wait, so the rows and the
+    executor slots are paced by rate limits and back-offs rather than by traffic.
+    """
+    return await asyncio.get_running_loop().run_in_executor(
+        governance_executor(), _channel_outbound_permitted_sync, channel_type
+    )
