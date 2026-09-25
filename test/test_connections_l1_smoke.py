@@ -258,6 +258,44 @@ async def test_pass_echoes_the_session_id_on_every_later_request(granted):
     assert session.calls[-1][1]["json"]["method"] == "tools/list"
 
 
+def version_refusal(supported):
+    """A server that dropped our offered revision answers -32602 listing what it speaks."""
+    data = {"supported": supported, "requested": l1_smoke.MCP_CLIENT_PROTOCOL_VERSION}
+    error = {"code": -32602, "message": "Unsupported protocol version", "data": data}
+    return FakeResponse(200, {"jsonrpc": "2.0", "id": 1, "error": error})
+
+
+def offered_versions(session):
+    inits = [c[1]["json"] for c in session.calls if c[1]["json"]["method"] == "initialize"]
+    return [body["params"]["protocolVersion"] for body in inits]
+
+
+@pytest.mark.asyncio
+async def test_initialize_offers_the_newest_version_and_later_requests_carry_the_answer(granted):
+    session = FakeSession(happy_path())
+    await run_one(session, cache_dir=granted)
+    assert offered_versions(session) == ["2025-06-18"]
+    versions = [call[1]["headers"].get("MCP-Protocol-Version") for call in session.calls]
+    answered = json.loads(initialize_ok().raw)["result"]["protocolVersion"]
+    assert versions == [None, answered, answered]
+
+
+@pytest.mark.asyncio
+async def test_a_version_refusal_is_retried_once_with_the_newest_supported(granted):
+    session = FakeSession([version_refusal(["2024-11-05", "2025-03-26"]), *happy_path()])
+    result = await run_one(session, cache_dir=granted)
+    assert result["verdict"] == "PASS"
+    assert offered_versions(session) == ["2025-06-18", "2025-03-26"]
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_initialize_error_is_not_retried(granted):
+    session = FakeSession([jsonrpc_error("boom", request_id=1)])
+    result = await run_one(session, cache_dir=granted)
+    assert result["verdict"] == "FAIL"
+    assert session.methods == ["initialize"]
+
+
 @pytest.mark.asyncio
 async def test_sse_framed_responses_are_parsed_by_the_shared_reader(granted):
     sse = FakeResponse(
