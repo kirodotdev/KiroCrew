@@ -3479,6 +3479,19 @@ SESSION_CLOSE_SCHEMA = ToolSchema(
     ],
 )
 
+SESSION_REVIVE_SCHEMA = ToolSchema(
+    tool_name="session_revive",
+    fields=[
+        FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
+        # Same folder reference ``session_create.folder`` takes. The folder is
+        # resolved and checked BEFORE anything is revived, so an unknown or
+        # deleted folder refuses with nothing done; a revive-then-move pair
+        # would leave the session revived and unfiled when the move refused.
+        # Filing itself runs after the revive has committed and is best-effort.
+        FieldSpec("folder", str, required=False, default="", max_len=_ARTIFACT_FOLDER_REF_MAX),
+    ],
+)
+
 SESSION_SEND_SCHEMA = ToolSchema(
     tool_name="session_send",
     fields=[
@@ -3798,6 +3811,7 @@ MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
     "session_stop": SESSION_STOP_SCHEMA,
     "session_set_model": SESSION_SET_MODEL_SCHEMA,
     "session_close": SESSION_CLOSE_SCHEMA,
+    "session_revive": SESSION_REVIVE_SCHEMA,
     "session_send": SESSION_SEND_SCHEMA,
     "session_broadcast": SESSION_BROADCAST_SCHEMA,
     "session_status": SESSION_STATUS_SCHEMA,

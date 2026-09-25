@@ -169,6 +169,7 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     # prompt; the chat_session_pin handler in mcp_dashboard.py refuses a
     # ``channel:`` caller at dispatch, which is what holds for auto-approval.
     "chat_session_pin",
+    "session_revive",
     # The four work-ledger tools, blocked for the same containment reason and not
     # for a new one: a channel agent has no dispatch relationship, so it is
     # neither a conductor nor a bound worker and has no business holding one.

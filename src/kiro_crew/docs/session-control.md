@@ -1,16 +1,17 @@
 # Session Control — driving another session
 
-One chat session can open, fork, seed, watch, stop and close another one, change its model, and take
-another one under itself in the sidebar. The tools come from the
+One chat session can open, fork, seed, watch, stop, close and revive another one,
+change its model, and take another one under itself in the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 22 of its tools, written for the agent that is about to use them.
+for all 23 of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
 
 - **Session control** — `session_create`, `session_fork`, `session_send`,
   `session_read_message`, `session_summary`, `session_stop`, `session_set_model`,
-  `session_close`, `session_adopt`, `session_release`. These reach another session.
+  `session_close`, `session_revive`, `session_broadcast`, `session_status`,
+  `session_adopt`, `session_release`. These reach another session.
 - **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
   `chat_folder_move`, `chat_folder_move_session`, `chat_folder_file_self`,
   `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`,
@@ -387,8 +388,8 @@ The reply distinguishes the two facts a stop can report: `nothing to stop` for a
 target that was never running, and `the earlier stop still stands` for one whose
 cancel is still in flight.
 
-`session_close` is not a permanent delete — the conversation is archived and can
-be reopened — but it does discard a running turn's work. Read the session first
+`session_close` is not a permanent delete — the conversation is archived and
+`session_revive` brings it back — but it does discard a running turn's work. Read the session first
 when you are not sure what it is doing.
 
 ### `session_set_model`
@@ -416,6 +417,37 @@ To force the change, call `session_stop`, then retry once the target is idle.
 Also refused: `auto` and `Auto (Jev)` (`model_owner_only`), because with the Jev
 preview on a slot on `auto` hands each turn's model to Jev routing, which only the
 owner may arm; and a target bound to a remote crew (`remote_target_unsupported`).
+
+### `session_revive`
+
+| Argument | Required | Meaning |
+|---|---|---|
+| `target` | yes | The archived session: its slot key (`chat-7-...`), its `dashboard:<slot>` session key, the transcript name `list_sessions` reports, or its exact title when it is unique among archived sessions |
+| `folder` | no | Sidebar folder id or `/`-separated path to file it into once it is live (best-effort; the result's `filed` says whether it happened). Missing path segments are created (`mkdir -p`), like `session_create`'s `folder` |
+
+The mirror of `session_close`: it pulls a history session back up into a live
+tab with its full transcript — the same thing as clicking it in the History tab.
+Nothing runs until someone sends it a message, so the revived session is idle
+and addressable by the key the reply returns: `session_send`,
+`session_read_message`, `chat_folder_move_session` and `chat_tag_assign` all
+work on it afterwards. Reviving does not transfer ownership — the session keeps
+the creator it had — and a session that is already open is refused with its
+live key (`target_already_live`) rather than opened twice.
+
+The same containment as the other verbs applies, read from the archived
+session's own metadata since there is no live slot yet: same workspace only, no
+app-scoped or channel-linked sessions, and an ownership-fenced caller (a crew
+member, a scheduled run, an agent-created session) may revive only a session it
+created itself. Because the archived metadata line is a file an agent's tools can
+edit, that ownership is corroborated against the crew log's session-tree lineage,
+which only the gateway writes: a fenced caller's revive is refused
+`ownership_unverified` when the lineage is off or names a different parent. The
+crew log is on by default (`KIROCREW_CREW_LOG` unset, empty or truthy); a fenced
+revive is refused when the log is off, its projection is unseeded, or the session
+predates it, since none of those leaves a lineage to check. The person's own sessions are not ownership-gated and are
+unaffected. A revive also spends the caller's create budget and per-caller slot
+cap (the revived slot is charged to the reviver for the cap while keeping its own
+creator) and the global slot cap.
 
 ## Folders
 
@@ -447,8 +479,8 @@ worker under one heading. It can write no placement but its own, which is why it
 is safe to grant where `chat_folder_move_session` is withheld.
 
 Folder moves are metadata only: the session keeps its transcript, its model, and
-any running turn. Archived (history) sessions cannot be moved — revive one into
-the sidebar first. There is no delete verb here.
+any running turn. Archived (history) sessions cannot be moved — bring one back
+with `session_revive` first. There is no delete verb here.
 
 ## Tags
 
@@ -493,7 +525,8 @@ gateway-issued key counts. Refusals you should expect, by code:
 
 | Code | Meaning |
 |---|---|
-| `target_not_found` | No open session matches that key or title. A closed tab is out of scope |
+| `target_not_found` | No open session matches that key or title. A closed tab is out of scope for every verb except session_revive, whose target is precisely an archived session |
+| `target_already_live` | session_revive only: the session is open already. The message carries its live key — address it directly |
 | `ambiguous_target` | The string matches more than one session across the three forms below. Address it by its session key |
 | `self_target` | A session cannot control itself |
 | `not_creator` | The caller is fenced to sessions it created itself (a crew member's DM slot, a scheduled run, and anything either of them created) |

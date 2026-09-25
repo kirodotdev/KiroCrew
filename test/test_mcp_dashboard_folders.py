@@ -1891,6 +1891,7 @@ class TestAdvertisedSet:
             "session_stop",
             "session_set_model",
             "session_close",
+            "session_revive",
             "session_send",
             "session_broadcast",
             "session_status",

@@ -119,6 +119,7 @@ from kiro_crew.validation import (
     SESSION_FORK_SCHEMA,
     SESSION_READ_MESSAGE_SCHEMA,
     SESSION_RELEASE_SCHEMA,
+    SESSION_REVIVE_SCHEMA,
     SESSION_SEND_SCHEMA,
     SESSION_SET_MODEL_SCHEMA,
     SESSION_STATUS_SCHEMA,
@@ -144,6 +145,7 @@ SESSION_CONTROL_TOOLS: tuple[str, ...] = (
     "session_stop",
     "session_set_model",
     "session_close",
+    "session_revive",
     "session_send",
     "session_broadcast",
     "session_status",
@@ -285,7 +287,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "folder id or human path — the folder must already exist "
                 "(chat_folder_create makes one). Metadata only: the session keeps its "
                 "transcript, model, and any running turn. ARCHIVED (history) sessions "
-                "cannot be moved — revive one into the sidebar first, then call this. "
+                "cannot be moved — bring one back with session_revive first, then call this. "
                 "An app agent may file only its own sessions; a crew member may file "
                 "only a session it owns or created."
             ),
@@ -418,8 +420,8 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "person changes the session's tags at the same moment the call fails "
                 "with the current list instead of overwriting their click; re-read and "
                 "retry. Metadata only: the transcript, model and any running turn are "
-                "untouched. ARCHIVED (history) sessions cannot be tagged — revive one "
-                "into the sidebar first. An app agent may tag only its own sessions; "
+                "untouched. ARCHIVED (history) sessions cannot be tagged — bring one back "
+                "with session_revive first. An app agent may tag only its own sessions; "
                 "a crew member may tag only a session it owns or created."
             ),
             "inputSchema": {
@@ -453,7 +455,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "writes nothing and reports it. chat_folder_tree marks pinned sessions "
                 "``[pinned]``. Metadata only: the transcript, model and any running "
                 "turn are untouched. ARCHIVED (history) sessions cannot be pinned — "
-                "revive one into the sidebar first. An app agent may pin only its own "
+                "bring one back with session_revive first. An app agent may pin only its own "
                 "sessions; a crew member may pin only a session it owns or created."
             ),
             "inputSchema": {
@@ -654,7 +656,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "name": "session_close",
             "description": (
                 "Close another session — the same thing as pressing the ✕ on that tab. "
-                "The conversation is archived to history (it can be reopened later); "
+                "The conversation is archived to history (session_revive brings it back); "
                 "this is NOT a permanent delete, but it does dismiss the live tab and, "
                 "if the target is mid-turn, cancels that turn first and discards its "
                 "work. Use it to tidy up a peer session you created and are done with "
@@ -669,6 +671,51 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     "target": {
                         "type": "string",
                         "description": "Session key from list_sessions, or its exact title.",
+                    },
+                },
+                "required": ["target"],
+            },
+        },
+        {
+            "name": "session_revive",
+            "description": (
+                "Bring an ARCHIVED (history) session back into the live sidebar — the "
+                "mirror of session_close. The conversation reopens as a live tab with "
+                "its full transcript, the same thing as clicking it in the History tab; "
+                "nothing runs until someone sends it a message. Use it when a closed "
+                "session is the right home for new work (an investigation to continue, "
+                "a session to tag or file), then address it with the returned key: "
+                "session_send, session_read_message, chat_folder_move_session and "
+                "chat_tag_assign all work on it afterwards. A session that is already "
+                "open is refused with its live key — just use that. Only dashboard "
+                "sessions in the caller's own workspace are addressable; a crew member "
+                "or agent-created session may revive only a session it created itself, verified against "
+                "the gateway's crew-log lineage (on by default; refused ownership_unverified "
+                "when the log is off, unseeded, or predates the session)."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": (
+                            "The archived session: its slot key (``chat-7-...``), its "
+                            "'dashboard:<slot>' session key, the transcript name "
+                            "list_sessions reports, or its exact title when that title "
+                            "is unique among archived sessions."
+                        ),
+                    },
+                    "folder": {
+                        "type": "string",
+                        "description": (
+                            "Sidebar folder to file the revived session into once it is live "
+                            "— a folder id or a '/'-separated human path; missing path "
+                            "segments are created (mkdir -p), like session_create's `folder`. "
+                            "Filing is best-effort AFTER the revive has landed: the result's "
+                            "`filed` says whether it happened, and a revive whose filing "
+                            "failed still succeeds (the session is live, unfiled). Omit to "
+                            "leave it where it was."
+                        ),
                     },
                 },
                 "required": ["target"],
@@ -1644,8 +1691,8 @@ def _resolve_chat_slot_key(ref: str, slots: list[dict]) -> tuple[str, str | None
         # could file a session that merely happens to be TITLED with that key.
         return "", (
             f"no live session has the key {redact(bare)} — call chat_folder_tree "
-            "for slot keys. An ARCHIVED session cannot be moved: revive it into "
-            "the sidebar first"
+            "for slot keys. An ARCHIVED session cannot be moved: bring it back "
+            "with session_revive first"
         )
     if len(titled) == 1:
         return titled[0], None
@@ -1656,7 +1703,7 @@ def _resolve_chat_slot_key(ref: str, slots: list[dict]) -> tuple[str, str | None
         )
     return "", (
         f"no live session matches {redact(ref)} — call chat_folder_tree for slot "
-        "keys. An ARCHIVED session cannot be moved: revive it into the sidebar first"
+        "keys. An ARCHIVED session cannot be moved: bring it back with session_revive first"
     )
 
 
@@ -1986,7 +2033,7 @@ def _resolve_folder_for_new_session(
 ) -> tuple[str, str, str, str | None]:
     """``(folder_id, folder_label, made_note, error)`` for filing a NEW session.
 
-    Shared by ``session_create`` and ``session_fork``, which file a child the same
+    Shared by ``session_create``, ``session_fork`` and ``session_revive``, which file a session the same
     way: the reference is resolved with ``chat_folder_create``'s `parent`
     semantics -- missing path segments are CREATED -- and creating folders is
     tree shaping, so the same gate applies rather than a second authorization
@@ -2248,6 +2295,32 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         return (
             f"\U0001f5d1\ufe0f Closed `{target}` — the tab is dismissed and the "
             "conversation archived to history (it can be reopened later)."
+        )
+
+    if name == "session_revive":
+        args = validate_tool_args(args, SESSION_REVIVE_SCHEMA)
+        payload_r: dict[str, Any] = {"target": args["target"]}
+        fld_id, folder_label, made_note, fld_error = _resolve_folder_for_new_session(
+            str(args.get("folder") or ""), "filing a revived session"
+        )
+        if fld_error:
+            return fld_error
+        if fld_id:
+            payload_r["folder_id"] = fld_id
+        resp = _post("/api/session-control/revive", payload_r, session_key=caller_key)
+        if resp.get("error"):
+            return redact(f"Error: could not revive that session: {resp['error']}{made_note}")
+        target = resp.get("target", args["target"])
+        filed = f" and filed in `{folder_label}`" if resp.get("filed") and folder_label else ""
+        unfiled_note = (
+            " (the folder could not be applied; the session keeps its previous placement)"
+            if fld_id and not resp.get("filed") and resp.get("folder_id") != fld_id
+            else ""
+        )
+        return redact(
+            f"\u267b\ufe0f Revived `{target}` ({resp.get('title')}) with "
+            f"{resp.get('messages', 0)} messages{filed}.{unfiled_note}{made_note} It is open and idle "
+            "in the user's sidebar; session_send starts its next turn."
         )
 
     if name == "session_send":
