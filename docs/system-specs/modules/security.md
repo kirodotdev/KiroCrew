@@ -57,6 +57,13 @@ the redactors; and replacing `panel-templates/` is authoring markup that renders
 in the panel rather than changing a setting. A warning was what made this silent —
 the log said the path was sealed while the writes went elsewhere.
 
+Gateway-validated ACP effort markers live under
+`crew-panels/validated_effort_levels/`. The existing `crew-panels` mask is
+precreated and follows a relocated data home; the agent file-tool floor also
+fences that whole parent. The panel record reader uses flat `.json` names, so
+the marker subdirectory is outside its record namespace. Reusing this masked
+parent avoids adding another root-level leaf held only by its own mount name.
+
 The MASKED leaves are a separate population with a separate pass.
 `sandbox._refuse_aliased_masked_leaves` refuses a SYMLINK at every entry in
 `_CREW_HIDDEN_LEAVES` except the ones in `_CREW_ALIAS_TOLERATED_LEAVES`, and it runs last

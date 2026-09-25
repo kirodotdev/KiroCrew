@@ -10688,6 +10688,7 @@
       "could_not_start_a_new_session": "नया सेशन शुरू नहीं हो सका",
       "could_not_start_session_message_restored": "नया सत्र शुरू नहीं हो सका: {{error}}। तुम्हारा संदेश वापस ले आया गया — दोबारा कोशिश करने के लिए उसे फिर से भेजें।",
       "enter_split_view": "स्प्लिट व्यू में जाएँ",
+      "effort_options_unavailable": "इस सत्र के तर्क प्रयास के विकल्प सत्यापित नहीं किए जा सके। कनेक्शन बहाल होने तक प्रयास नियंत्रण उपलब्ध नहीं होगा।",
       "esc_to_dismiss": "खारिज करने के लिए Esc",
       "expand_knowledge_context": "ज्ञान संदर्भ विस्तृत करें",
       "failed_to_apply_plan": "योजना लागू नहीं हो सकी",

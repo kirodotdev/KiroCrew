@@ -4279,7 +4279,6 @@ async def api_kirocrew_agents(request: web.Request) -> web.Response:
         {
             "agents": agents,
             "default_agent": cfg.default_agent,
-            "acp_backend": (getattr(cfg.agent, "acp_backend", "") or "") if not redact else "",
         }
     )
 

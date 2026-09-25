@@ -9,14 +9,8 @@ import ModelEffortDropdown from '../components/ModelEffortDropdown'
 import chatReducer from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
-import { api } from '../api/client'
 import { SETTINGS_DEFAULT_MODEL_ID } from '../hooks/useSettingHighlight'
 import { SETTINGS_REGISTRY } from '../components/commandPalette/settingsRegistry.gen'
-
-// The nested ReasoningEffortDropdown persists slider picks over the wire
-// (#5120); none of these tests touch the slider, but the stub keeps an
-// accidental future interaction from hitting a real fetch.
-vi.spyOn(api, 'chatSlotReasoningEffort').mockResolvedValue({ ok: true } as never)
 
 /**
  * The in-session model picker carries two footer rows: an in-place "set as
@@ -38,18 +32,12 @@ const baseProps = {
   filter: '',
   setFilter: vi.fn(),
   onClose: vi.fn(),
-  hasEffort: false,
-  slot: 'dashboard:1',
-  currentEffort: '',
   onListKeyDown: vi.fn(),
 }
 
 function wrap(ui: React.ReactElement) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  // The nested ReasoningEffortDropdown persists picks into the slot store
-  // (#5120), so the tree needs the redux context even where a test never
-  // touches the effort footer. A per-render store (not the app singleton)
-  // keeps one test's persist from leaking into the next.
+  // A per-render store keeps picker state from leaking between cases.
   const store = configureStore({
     reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer },
   })
@@ -100,12 +88,11 @@ describe('ModelEffortDropdown — visible models shortcut', () => {
     expect(screen.getByRole('button', { name: 'Retry' })).toBeDisabled()
   })
 
-  it('is optional and opens management from between the list and effort controls', () => {
+  it('is optional and opens management below the model list', () => {
     const onManageModels = vi.fn()
-    wrap(<ModelEffortDropdown {...baseProps} hasEffort onManageModels={onManageModels} />)
+    wrap(<ModelEffortDropdown {...baseProps} onManageModels={onManageModels} />)
     const button = screen.getByRole('button', { name: 'Manage visible models' })
     expect(screen.getByRole('listbox').compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    expect(button.compareDocumentPosition(screen.getByRole('slider')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     fireEvent.click(button)
     expect(onManageModels).toHaveBeenCalledTimes(1)
     expect(SETTINGS_REGISTRY.some(entry => entry.configKey === 'dashboard.model_picker_hidden_models')).toBe(true)
@@ -116,12 +103,11 @@ describe('ModelEffortDropdown — visible models shortcut', () => {
     expect(screen.queryByRole('button', { name: 'Manage visible models' })).not.toBeInTheDocument()
   })
 
-  it('places the first-use shortcut between models and effort in keyboard order', async () => {
+  it('moves from model search into management in keyboard order', async () => {
     const onListKeyDown = vi.fn()
     wrap(
       <ModelEffortDropdown
         {...baseProps}
-        hasEffort
         onManageModels={vi.fn()}
         onListKeyDown={onListKeyDown}
       />,
@@ -129,20 +115,14 @@ describe('ModelEffortDropdown — visible models shortcut', () => {
     const user = userEvent.setup()
     const input = screen.getByPlaceholderText('Type to filter…')
     const manage = screen.getByRole('button', { name: 'Manage visible models' })
-    const slider = screen.getByRole('slider', { name: 'Reasoning effort' })
     input.focus()
     await user.tab()
     expect(manage).toHaveFocus()
-    await user.tab()
-    expect(slider).toHaveFocus()
-
     const options = screen.getAllByRole('option')
     const last = options[options.length - 1]
     last.focus()
     fireEvent.keyDown(last, { key: 'ArrowDown' })
     expect(manage).toHaveFocus()
-    fireEvent.keyDown(manage, { key: 'ArrowDown' })
-    expect(slider).toHaveFocus()
     fireEvent.keyDown(manage, { key: 'ArrowUp' })
     expect(last).toHaveFocus()
     expect(onListKeyDown).not.toHaveBeenCalled()
@@ -163,11 +143,6 @@ describe('ModelEffortDropdown — global fallback link', () => {
     expect(onSetDefault).toHaveBeenCalledTimes(1)
   })
 
-  it('coexists with the reasoning-effort footer', () => {
-    wrap(<ModelEffortDropdown {...baseProps} hasEffort onSetDefault={vi.fn()} />)
-    expect(screen.getByText('Effort')).toBeInTheDocument()
-    expect(screen.getByText(/Global default for new sessions/)).toBeInTheDocument()
-  })
 })
 
 describe('ModelEffortDropdown — per-agent default row', () => {
@@ -212,23 +187,21 @@ describe('ModelEffortDropdown — per-agent default row', () => {
     expect(onPinToAgent).not.toHaveBeenCalled()
   })
 
-  it('coexists with both other footer rows', () => {
+  it('coexists with the global default footer row', () => {
     wrap(
       <ModelEffortDropdown
         {...baseProps}
-        hasEffort
         agentName="oncall"
         onPinToAgent={vi.fn()}
         onSetDefault={vi.fn()}
       />
     )
-    expect(screen.getByText('Effort')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Set as default model for oncall' })).toBeInTheDocument()
     expect(screen.getByText(/Global default for new sessions/)).toBeInTheDocument()
   })
 })
 
-describe('ModelEffortDropdown — inline effort', () => {
+describe('ModelEffortDropdown — bounded model list', () => {
   it('caps the picker to the viewport and leaves the model list as the flexible scroller', () => {
     const innerHeight = window.innerHeight
     Object.defineProperty(window, 'innerHeight', { configurable: true, value: 320 })
@@ -238,7 +211,6 @@ describe('ModelEffortDropdown — inline effort', () => {
           {...baseProps}
           anchorRect={{ ...baseProps.anchorRect, top: 300 } as DOMRect}
           models={Array.from({ length: 20 }, (_, index) => ({ name: `model-${index}` }))}
-          hasEffort
           onManageModels={vi.fn()}
           onSetDefault={vi.fn()}
         />,
@@ -251,55 +223,10 @@ describe('ModelEffortDropdown — inline effort', () => {
     }
   })
 
-  it('shows the configured default when the slot carries no override', () => {
-    wrap(<ModelEffortDropdown {...baseProps} hasEffort currentEffort="" defaultEffort="high" />)
-    expect(screen.getByText('Default · High')).toBeInTheDocument()
-  })
-
-  it('shows the per-slot override when one is set', () => {
-    wrap(<ModelEffortDropdown {...baseProps} hasEffort currentEffort="low" defaultEffort="high" />)
-    expect(screen.getByText('Low')).toBeInTheDocument()
-  })
-
-  it('falls back to "Default" when neither is set', () => {
-    wrap(<ModelEffortDropdown {...baseProps} hasEffort currentEffort="" defaultEffort="" />)
-    expect(screen.getAllByText('Default').length).toBeGreaterThan(0)
-  })
-
-  it('stays on one page with no drill-in chevron or back row and keeps model search', () => {
-    wrap(<ModelEffortDropdown {...baseProps} hasEffort />)
+  it('contains only model selection and management controls', () => {
+    wrap(<ModelEffortDropdown {...baseProps} />)
     expect(screen.getByPlaceholderText('Type to filter…')).toBeInTheDocument()
-    expect(screen.queryByText('Models')).toBeNull()
-    expect(screen.queryByRole('button', { name: /^Reasoning/ })).toBeNull()
-  })
-
-  it('leaves slider arrow keys to the inline reasoning control', () => {
-    const onListKeyDown = vi.fn()
-    wrap(<ModelEffortDropdown {...baseProps} hasEffort currentEffort="high" onListKeyDown={onListKeyDown} />)
-    fireEvent.keyDown(screen.getByRole('slider', { name: 'Reasoning effort' }), { key: 'ArrowRight' })
-    expect(onListKeyDown).not.toHaveBeenCalled()
-  })
-
-  it('tabs from the filter into the inline slider without closing the picker', async () => {
-    const onListKeyDown = vi.fn()
-    wrap(<ModelEffortDropdown {...baseProps} hasEffort onListKeyDown={onListKeyDown} />)
-    const user = userEvent.setup()
-    const input = screen.getByPlaceholderText('Type to filter…')
-    input.focus()
-    await user.tab()
-    expect(screen.getByRole('slider', { name: 'Reasoning effort' })).toHaveFocus()
-    expect(onListKeyDown).not.toHaveBeenCalled()
-  })
-
-  it('moves ArrowDown from the last model into the inline slider', () => {
-    const onListKeyDown = vi.fn()
-    wrap(<ModelEffortDropdown {...baseProps} hasEffort onListKeyDown={onListKeyDown} />)
-    const options = screen.getAllByRole('option')
-    const last = options[options.length - 1]
-    last.focus()
-    fireEvent.keyDown(last, { key: 'ArrowDown' })
-    expect(screen.getByRole('slider', { name: 'Reasoning effort' })).toHaveFocus()
-    expect(onListKeyDown).not.toHaveBeenCalled()
+    expect(screen.queryByRole('slider')).not.toBeInTheDocument()
   })
 })
 

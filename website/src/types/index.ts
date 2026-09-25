@@ -1012,8 +1012,6 @@ export interface RemoteCrewCapabilities {
    *  the roster read failed — never substitute this machine's default, which
    *  names a crew from a roster the peer does not share. */
   default_agent: string
-  /** The peer's selected ACP backend; empty when the roster read failed. */
-  acp_backend?: string
   models: { model_name: string; display_name: string; description: string; context_window: number }[]
   effort_levels: string[]
   workspaces: { name: string; path: string }[]

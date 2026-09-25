@@ -1,5 +1,7 @@
 """Tests for ACP dynamic config propagation (effort levels, models)."""
 
+import hashlib
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -11,6 +13,7 @@ from kiro_crew.dashboard.chat_persistence import (
     _SAFE_EFFORT_RE,
     get_reasoning_effort_ordered,
     get_reasoning_effort_values,
+    register_reasoning_effort_values,
     update_reasoning_effort_values,
 )
 
@@ -165,13 +168,16 @@ class TestSyncEffortLevels:
 class TestUpdateReasoningEffortValues:
     def setup_method(self):
         import kiro_crew.dashboard.chat_persistence as mod
+
         self._mod = mod
         self._orig_values = mod._reasoning_effort_values.copy()
         self._orig_ordered = mod._reasoning_effort_ordered[:]
+        self._orig_marked = mod._reasoning_effort_marked.copy()
 
     def teardown_method(self):
         self._mod._reasoning_effort_values = self._orig_values
         self._mod._reasoning_effort_ordered = self._orig_ordered
+        self._mod._reasoning_effort_marked = self._orig_marked
 
     def test_updates_values_and_ordered(self):
         update_reasoning_effort_values(["low", "medium", "high", "max"])
@@ -229,6 +235,156 @@ class TestUpdateReasoningEffortValues:
         # …but the ordered DISPLAY list reflects only the latest report.
         assert get_reasoning_effort_ordered() == ["low", "high"]
 
+    def test_remote_registration_does_not_reorder_local_fallback(self):
+        before = get_reasoning_effort_ordered()
+        register_reasoning_effort_values(["minimal", "UPPERCASE", "low\n"])
+        assert "minimal" in get_reasoning_effort_values()
+        assert "UPPERCASE" not in get_reasoning_effort_values()
+        assert "low\n" not in get_reasoning_effort_values()
+        assert get_reasoning_effort_ordered() == before
+
+    def test_selected_dynamic_level_survives_cold_restore(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(self._mod, "config_dir", lambda: tmp_path)
+        self._mod._reasoning_effort_values = set(_REASONING_EFFORT_FALLBACK)
+        # A transcript value alone cannot add an unadvertised level.
+        assert self._mod._validate_reasoning_effort("minimal") == ""
+        self._mod._remember_reasoning_effort_for_restore("minimal")
+        assert not (tmp_path / "crew-panels" / "validated_effort_levels" / "minimal").exists()
+
+        register_reasoning_effort_values(["minimal"])
+        self._mod._remember_reasoning_effort_for_restore("minimal")
+        marker = hashlib.sha256(b"minimal").hexdigest()
+        assert (tmp_path / "crew-panels" / "validated_effort_levels" / marker).is_file()
+
+        # Recreate the cold-start allowlist before ACP/peer capabilities load.
+        self._mod._reasoning_effort_values = set(_REASONING_EFFORT_FALLBACK)
+        marker = self._mod._has_validated_effort_marker("minimal")
+        assert marker is True
+        assert self._mod._validate_reasoning_effort("minimal", persisted_marker=marker) == "minimal"
+        assert "minimal" in get_reasoning_effort_values()
+        assert self._mod._validate_reasoning_effort("extreme") == ""
+
+    def test_windows_reserved_level_uses_portable_marker_name(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(self._mod, "config_dir", lambda: tmp_path)
+        register_reasoning_effort_values(["con"])
+
+        self._mod._remember_reasoning_effort_for_restore("con")
+
+        marker = hashlib.sha256(b"con").hexdigest()
+        assert (tmp_path / "crew-panels" / "validated_effort_levels" / marker).is_file()
+        self._mod._reasoning_effort_values = set(_REASONING_EFFORT_FALLBACK)
+        assert self._mod._has_validated_effort_marker("con")
+        assert self._mod._validate_reasoning_effort("con", persisted_marker=True) == "con"
+
+    def test_durable_marker_count_uses_retention_cap(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(self._mod, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            self._mod,
+            "MAX_RETAINED_REASONING_EFFORT_VALUES",
+            len(_REASONING_EFFORT_FALLBACK) + 1,
+        )
+        self._mod._reasoning_effort_values = set(_REASONING_EFFORT_FALLBACK) | {"turbo", "minimal"}
+
+        self._mod._remember_reasoning_effort_for_restore("turbo")
+        with pytest.raises(ValueError, match="marker limit"):
+            self._mod._remember_reasoning_effort_for_restore("minimal")
+        assert self._mod._has_validated_effort_marker("turbo")
+        assert not self._mod._has_validated_effort_marker("minimal")
+
+    def test_concurrent_marker_writes_share_the_durable_cap(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(self._mod, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            self._mod,
+            "MAX_RETAINED_REASONING_EFFORT_VALUES",
+            len(_REASONING_EFFORT_FALLBACK) + 1,
+        )
+        self._mod._reasoning_effort_values = set(_REASONING_EFFORT_FALLBACK) | {"turbo", "minimal"}
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(self._remember_or_error, ("turbo", "minimal")))
+
+        assert sorted(results) == ["accepted", "rejected"]
+        assert (
+            sum(
+                path.is_file()
+                for path in (tmp_path / "crew-panels" / "validated_effort_levels").iterdir()
+                if path.name != ".lock"
+            )
+            == 1
+        )
+
+    def _remember_or_error(self, level):
+        try:
+            self._mod._remember_reasoning_effort_for_restore(level)
+        except ValueError:
+            return "rejected"
+        return "accepted"
+
+    def test_marked_restore_survives_peer_levels_filling_the_cap(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(self._mod, "config_dir", lambda: tmp_path)
+        register_reasoning_effort_values(["turbo"])
+        self._mod._remember_reasoning_effort_for_restore("turbo")
+
+        self._mod._reasoning_effort_values = set(_REASONING_EFFORT_FALLBACK)
+        self._mod._reasoning_effort_marked = set()
+        monkeypatch.setattr(
+            self._mod,
+            "MAX_RETAINED_REASONING_EFFORT_VALUES",
+            len(_REASONING_EFFORT_FALLBACK) + 1,
+        )
+        assert register_reasoning_effort_values(["minimal"]) == ["minimal"]
+        assert self._mod._has_validated_effort_marker("turbo")
+
+        assert self._mod._validate_reasoning_effort("turbo", persisted_marker=True) == "turbo"
+        assert "turbo" in get_reasoning_effort_values()
+        assert "minimal" not in get_reasoning_effort_values()
+
+    def test_marker_directory_is_inside_existing_hidden_gateway_root(self):
+        from kiro_crew.sandbox import (
+            _CREW_HIDDEN_LEAVES,
+            _CREW_PRECREATE_HIDDEN_DIR_LEAVES,
+        )
+        from kiro_crew.security.paths import _CREW_SECRET_LEAVES
+
+        assert self._mod._VALIDATED_EFFORT_DIR == "crew-panels/validated_effort_levels"
+        assert "crew-panels" in _CREW_HIDDEN_LEAVES
+        assert "crew-panels" in _CREW_PRECREATE_HIDDEN_DIR_LEAVES
+        assert "crew-panels" in _CREW_SECRET_LEAVES
+        assert "validated_effort_levels" not in _CREW_HIDDEN_LEAVES
+
+    def test_linked_gateway_parent_cannot_authorize_effort(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(self._mod, "config_dir", lambda: tmp_path)
+        destination = tmp_path / "destination"
+        destination.mkdir()
+        try:
+            (tmp_path / "crew-panels").symlink_to(destination, target_is_directory=True)
+        except (NotImplementedError, OSError):
+            pytest.skip("directory symlinks are unavailable")
+        register_reasoning_effort_values(["turbo"])
+
+        with pytest.raises(OSError, match="parent is a symlink"):
+            self._mod._remember_reasoning_effort_for_restore("turbo")
+        assert not self._mod._has_validated_effort_marker("turbo")
+        assert not (destination / "validated_effort_levels").exists()
+
+    def test_total_retention_cap_rejects_and_logs_new_levels(self, monkeypatch, caplog):
+        monkeypatch.setattr(
+            self._mod,
+            "MAX_RETAINED_REASONING_EFFORT_VALUES",
+            len(self._mod._reasoning_effort_values) + 1,
+        )
+        before = get_reasoning_effort_ordered()
+        assert register_reasoning_effort_values(["minimal", "turbo"]) == ["minimal"]
+        assert "minimal" in get_reasoning_effort_values()
+        assert "turbo" not in get_reasoning_effort_values()
+        assert get_reasoning_effort_ordered() == before
+        update_reasoning_effort_values(["turbo"])
+        assert get_reasoning_effort_ordered() == before
+        update_reasoning_effort_values(["turbo", "low"])
+        assert "turbo" not in get_reasoning_effort_values()
+        assert get_reasoning_effort_ordered() == ["low"]
+        assert "retained limit" in caplog.text
+
 
 class TestAcpProperties:
     def test_acp_config_options_property(self):
@@ -242,6 +398,7 @@ async def test_api_effort_levels_global_fallback():
     # No ?slot= → serve the process-global ordered fallback list.
     import kiro_crew.dashboard.chat_persistence as mod
     from kiro_crew.dashboard.handlers.agents import api_effort_levels
+
     orig_ordered = mod._reasoning_effort_ordered[:]
     try:
         mod._reasoning_effort_ordered = ["low", "medium", "high", "max"]
@@ -250,6 +407,7 @@ async def test_api_effort_levels_global_fallback():
         resp = await api_effort_levels(request)
         assert resp.status == 200
         import json
+
         body = json.loads(resp.body)
         assert body == ["low", "medium", "high", "max"]
     finally:
@@ -262,6 +420,7 @@ async def test_api_effort_levels_per_slot():
     # win over the process-global fallback (no cross-slot bleed).
     import kiro_crew.dashboard.chat_persistence as mod
     from kiro_crew.dashboard.handlers.agents import api_effort_levels
+
     orig_ordered = mod._reasoning_effort_ordered[:]
     try:
         mod._reasoning_effort_ordered = ["low", "max"]  # global (other slot)
@@ -277,6 +436,7 @@ async def test_api_effort_levels_per_slot():
         resp = await api_effort_levels(request)
         assert resp.status == 200
         import json
+
         assert json.loads(resp.body) == ["low", "medium", "high", "xhigh"]
     finally:
         mod._reasoning_effort_ordered = orig_ordered
@@ -286,6 +446,7 @@ async def test_api_effort_levels_per_slot():
 async def test_api_effort_levels_slot_without_live_provider_falls_back():
     import kiro_crew.dashboard.chat_persistence as mod
     from kiro_crew.dashboard.handlers.agents import api_effort_levels
+
     orig_ordered = mod._reasoning_effort_ordered[:]
     try:
         mod._reasoning_effort_ordered = ["low", "medium", "high", "max"]
@@ -299,6 +460,7 @@ async def test_api_effort_levels_slot_without_live_provider_falls_back():
         resp = await api_effort_levels(request)
         assert resp.status == 200
         import json
+
         assert json.loads(resp.body) == ["low", "medium", "high", "max"]
     finally:
         mod._reasoning_effort_ordered = orig_ordered

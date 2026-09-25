@@ -10540,6 +10540,7 @@
       "could_not_start_a_new_session": "无法启动新会话",
       "could_not_start_session_message_restored": "无法启动新会话：{{error}}。消息已恢复 — 再次发送即可重试。",
       "enter_split_view": "进入分屏视图",
+      "effort_options_unavailable": "无法验证此会话的推理强度选项。连接恢复之前，推理强度控件将不可用。",
       "esc_to_dismiss": "按 Esc 关闭",
       "expand_knowledge_context": "展开知识上下文",
       "failed_to_apply_plan": "应用计划失败",

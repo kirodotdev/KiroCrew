@@ -1,6 +1,6 @@
 import React from 'react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, screen, fireEvent, waitFor } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import { releaseComposerForKeyboardSwitch } from '../pages/chat/composerFocus'
 import { safeSetItem } from '../utils/safeStorage'
@@ -850,6 +850,46 @@ describe('ChatInput', () => {
 
   // ── Independent model and reasoning effort controls ──
   describe('reasoning effort button', () => {
+    it('names the effort setting and value even on a compact shelf', () => {
+      const original = globalThis.ResizeObserver
+      let resizeShelf: ((width: number) => void) | undefined
+      globalThis.ResizeObserver = class {
+        constructor(private callback: ResizeObserverCallback) {}
+        observe(target: Element) {
+          if (target.getAttribute('data-testid') === 'composer-context-shelf') {
+            resizeShelf = width => this.callback([{ contentRect: { width } } as ResizeObserverEntry], this as unknown as ResizeObserver)
+          }
+        }
+        unobserve() {}
+        disconnect() {}
+      } as unknown as typeof ResizeObserver
+      try {
+        renderWithProviders(
+          <ChatInput {...defaultProps} modelName="gpt-6-sol" reasoningEffort="high"
+            separateEffort onModelClick={vi.fn()} onReasoningEffortClick={vi.fn()} />
+        )
+        act(() => resizeShelf?.(320))
+        const chip = screen.getByTestId('composer-effort-chip')
+        expect(chip).toHaveAttribute('title', 'Reasoning effort: High')
+        expect(chip).toHaveTextContent('Effort: High')
+        act(() => resizeShelf?.(157))
+        expect(chip).not.toHaveTextContent('Effort: High')
+        expect(chip).toHaveAttribute('title', 'Reasoning effort: High')
+        act(() => resizeShelf?.(600))
+        expect(chip).toHaveTextContent('Effort: High')
+      } finally {
+        globalThis.ResizeObserver = original
+      }
+    })
+
+    it('names the inherited setting in the resting state', () => {
+      renderWithProviders(
+        <ChatInput {...defaultProps} modelName="gpt-6-sol" reasoningEffort=""
+          separateEffort onModelClick={vi.fn()} onReasoningEffortClick={vi.fn()} />
+      )
+      expect(screen.getByTestId('composer-effort-chip')).toHaveTextContent('Effort: Default')
+    })
+
     it('opens effort without opening the model picker', () => {
       const onModelClick = vi.fn()
       const onReasoningEffortClick = vi.fn()

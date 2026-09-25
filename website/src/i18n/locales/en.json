@@ -6496,6 +6496,7 @@
       "could_not_switch_variant": "Couldn't switch version",
       "side_chat_pane_gone": "Couldn't open a Side Chat for that pane — its session is no longer available: {{error}}",
       "enter_split_view": "Enter split view",
+      "effort_options_unavailable": "Could not verify this session's reasoning effort options. The effort control is unavailable until the connection recovers.",
       "esc_to_dismiss": "Esc to dismiss",
       "failed_to_apply_plan": "Failed to apply plan",
       "filter_agents": "Filter agents",

@@ -130,25 +130,6 @@ class TestPayloadShapes:
 
         assert data["default_agent"] == "coder"
 
-    async def test_the_peers_backend_is_carried_beside_its_roster(self, monkeypatch):
-        _enable_instances(monkeypatch)
-        replies = _all_ok(
-            **{
-                "/api/agents": (
-                    True,
-                    {
-                        "agents": [{"name": "coder"}],
-                        "default_agent": "coder",
-                        "acp_backend": "codex",
-                    },
-                ),
-            }
-        )
-
-        data = await _body(await hi.api_instances_capabilities(_request(_state(replies))))
-
-        assert data["acp_backend"] == "codex"
-
     async def test_an_unreadable_roster_reports_no_default_agent(self, monkeypatch):
         """ "" rather than a guess: the caller must not substitute the local default."""
         _enable_instances(monkeypatch)
@@ -185,11 +166,27 @@ class TestPayloadShapes:
 
     async def test_effort_levels_keep_only_strings(self, monkeypatch):
         _enable_instances(monkeypatch)
-        state = _state(_all_ok(**{"/api/effort-levels": (True, ["low", 7, None, "high"])}))
+        register_levels = MagicMock(side_effect=lambda values: values)
+        monkeypatch.setattr(hi, "register_reasoning_effort_values", register_levels)
+        state = _state(_all_ok(**{"/api/effort-levels": (True, ["low", 7, None, "high", "HIGH"])}))
 
         data = await _body(await hi.api_instances_capabilities(_request(state)))
 
         assert data["effort_levels"] == ["low", "high"]
+        register_levels.assert_called_once_with(["low", "high"])
+
+    async def test_presession_effort_levels_use_the_live_cap(self, monkeypatch, caplog):
+        _enable_instances(monkeypatch)
+        levels = [f"level{i:02d}" for i in range(33)]
+        register_levels = MagicMock(side_effect=lambda values: values)
+        monkeypatch.setattr(hi, "register_reasoning_effort_values", register_levels)
+        state = _state(_all_ok(**{"/api/effort-levels": (True, [None] * 32 + levels)}))
+
+        data = await _body(await hi.api_instances_capabilities(_request(state)))
+
+        assert data["effort_levels"] == levels[:32]
+        register_levels.assert_called_once_with(levels[:32])
+        assert "Dropped 1 peer pre-session effort capability level" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -203,6 +200,26 @@ class TestVersionGate:
         assert data["version"] == kiro_crew.__version__
         assert data["local_version"] == kiro_crew.__version__
         assert data["version_match"] is True
+
+    async def test_patch_compatible_peer_registers_advertised_effort(self, monkeypatch):
+        _enable_instances(monkeypatch)
+        monkeypatch.setattr(kiro_crew, "__version__", "0.8.0")
+        register_levels = MagicMock(side_effect=lambda values: values)
+        monkeypatch.setattr(hi, "register_reasoning_effort_values", register_levels)
+        state = _state(
+            _all_ok(
+                **{
+                    "/api/version": (True, {"version": "0.8.7"}),
+                    "/api/effort-levels": (True, ["minimal"]),
+                }
+            )
+        )
+
+        data = await _body(await hi.api_instances_capabilities(_request(state)))
+
+        assert data["version_match"] is True
+        assert data["effort_levels"] == ["minimal"]
+        register_levels.assert_called_once_with(["minimal"])
 
     async def test_a_skewed_peer_reports_no_match(self, monkeypatch):
         """Surfaced BEFORE the first send, which is the point of shipping it.

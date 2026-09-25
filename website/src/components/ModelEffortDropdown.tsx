@@ -3,7 +3,6 @@ import { Settings2, Pin, Check, Ban, ChevronRight, LoaderCircle } from 'lucide-r
 import { Btn, Input } from './ui'
 import ErrorNotice from './ErrorNotice'
 import ModelDropdownList, { type ModelItem } from './ModelDropdownList'
-import ReasoningEffortDropdown from './ReasoningEffortDropdown'
 
 import { useImeGuard } from '../hooks/useImeGuard'
 import { i18nT } from '../i18n/t'
@@ -32,19 +31,8 @@ interface Props {
   retryingModels?: boolean
   filter: string
   setFilter: (v: string) => void
-  onClose: () => void
   modelVisibilityError?: boolean
   onRetryModelVisibility?: () => void
-  hasEffort: boolean
-  slot: string | null
-  currentEffort: string
-  /** Configured default effort for new sessions. Shown in the footer when the
-   *  slot carries no override, so the row reflects what a turn would run at. */
-  defaultEffort?: string
-  /** Effort levels to offer instead of this machine's — set for a session whose
-   *  turns run on a peer crew. Forwarded verbatim to the slider; see
-   *  `ReasoningEffortDropdown`'s `levelsOverride`. */
-  effortLevelsOverride?: string[]
   onListKeyDown: (e: React.KeyboardEvent) => void
   /** Deep-link to the Settings row that sets the GLOBAL fallback model — the
    *  tier that applies to agents pinning no model of their own. Optional so
@@ -77,12 +65,12 @@ interface Props {
 }
 
 const WIDTH = 340
-/** Model picker with reasoning effort embedded below the searchable model list. */
+/** Searchable model picker. Effort lives in its own composer control. */
 export default function ModelEffortDropdown({
   anchorRect, dropdownRef, inputRef, models, activeModel, onSelectModel,
-  filter, setFilter, onClose, hasEffort, slot, currentEffort, onListKeyDown, onSetDefault, onManageModels,
+  filter, setFilter, onListKeyDown, onSetDefault, onManageModels,
   modelVisibilityError = false, onRetryModelVisibility,
-  defaultEffort = '', effortLevelsOverride, onPinToAgent, agentName = '', pinModelName = '',
+  onPinToAgent, agentName = '', pinModelName = '',
   pinModelUnavailable = false, pinnedToAgent = false, modelsLoading = false,
   modelsFailed = false, onRetryModels, retryingModels = false,
 }: Props) {
@@ -93,8 +81,7 @@ export default function ModelEffortDropdown({
   const maxHeight = Math.max(0, anchorRect.top - 12)
 
   return (
-    // The dialog delegates list navigation from its filter and option rows, but
-    // leaves the nested slider/switch to their native keyboard handlers.
+    // The dialog delegates list navigation from its filter and option rows.
     // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
     <div
       ref={dropdownRef}
@@ -103,39 +90,23 @@ export default function ModelEffortDropdown({
       tabIndex={-1}
       onKeyDown={event => {
         const target = event.target as HTMLElement
-        // This picker embeds native controls below the list. Tab must advance
-        // into those controls instead of using the listbox hook's compact-menu
-        // behavior, which closes menus that contain options only.
+        // Tab advances into the optional management action when present.
         if (event.key === 'Tab') {
           if (!ime.claimKey(event)) return
           if (!event.shiftKey && target.tagName === 'INPUT') {
             const nextControl = event.currentTarget.querySelector<HTMLElement>(
-              '[data-model-picker-manage], [role="slider"]',
+              '[data-model-picker-manage]',
             )
             if (nextControl) {
               event.preventDefault()
               event.stopPropagation()
               nextControl.focus()
             }
-          } else if (!event.shiftKey && target.closest('[data-model-picker-manage]')) {
-            const slider = event.currentTarget.querySelector<HTMLElement>('[role="slider"]')
-            if (slider) {
-              event.preventDefault()
-              event.stopPropagation()
-              slider.focus()
-            }
           }
           return
         }
         if (target.closest('[data-model-picker-manage]')) {
-          if (event.key === 'ArrowDown') {
-            const slider = event.currentTarget.querySelector<HTMLElement>('[role="slider"]')
-            if (slider) {
-              event.preventDefault()
-              event.stopPropagation()
-              slider.focus()
-            }
-          } else if (event.key === 'ArrowUp') {
+          if (event.key === 'ArrowUp') {
             const options = Array.from(
               event.currentTarget.querySelectorAll<HTMLElement>('[role="option"]'),
             )
@@ -148,12 +119,11 @@ export default function ModelEffortDropdown({
           }
           return
         }
-        if (target.closest('[role="slider"],[role="switch"]')) return
         if (event.key === 'ArrowDown' && target.getAttribute('role') === 'option') {
           const options = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[role="option"]'))
           if (target === options[options.length - 1]) {
             const nextControl = event.currentTarget.querySelector<HTMLElement>(
-              '[data-model-picker-manage], [role="slider"]',
+              '[data-model-picker-manage]',
             )
             if (nextControl) {
               event.preventDefault()
@@ -218,11 +188,6 @@ export default function ModelEffortDropdown({
               <ModelDropdownList models={models} activeModel={activeModel} onSelect={onSelectModel} loading={modelsLoading} failed={modelsFailed} />
             </div>
             {onManageModels && <ManageModelsFooter onManage={onManageModels} />}
-            {hasEffort && slot && (
-              <div className="mt-0.5 shrink-0 border-t border-border">
-                <ReasoningEffortDropdown slot={slot} currentEffort={currentEffort} defaultEffort={defaultEffort} onClose={onClose} embedded levelsOverride={effortLevelsOverride} />
-              </div>
-            )}
             {onPinToAgent && agentName && (
               <Btn
                 type="button"

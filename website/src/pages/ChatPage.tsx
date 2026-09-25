@@ -251,7 +251,7 @@ import WelcomeView from '../components/WelcomeView'
 import { openPanelView, claimAppAutoOpen } from '../hooks/usePanelTabs'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useAvailableModels } from '../hooks/useAvailableModels'
-import { filterInteractiveModels, modelWithoutEffort, shouldSeparateCodexEffort, useModelPickerConfigured, useModelPickerHiddenModelsQuery } from '../hooks/useInteractiveModels'
+import { filterInteractiveModels, legacyCodexEffort, modelWithoutEffort, shouldSeparateModelEffort, switchGroupedModel, useModelPickerConfigured, useModelPickerHiddenModelsQuery } from '../hooks/useInteractiveModels'
 import { isUnpinnedModel, JEV_ROUTE_MODEL, jevRouteOffered, jevRouteShownModel, withJevRoute } from '../lib/jevRoute'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAgents } from '../hooks/useAgents'
@@ -918,10 +918,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const { open: agentDropdown, setOpen: setAgentDropdown, filter: agentFilter, setFilter: setAgentFilter, dropdownRef: agentDropdownRef, inputRef: agentInputRef, filtered: filteredAgentsByName } = useFilteredDropdown(effectiveAgents)
   const filteredAgents = filteredAgentsByName
   const localModels = useAvailableModels()
-  const backendConfigQ = useQuery<{ agent?: { acp_backend?: string } }>({
-    queryKey: ['kirocrewConfig'],
-    queryFn: () => api.kirocrewConfig(),
-  })
   // A peer-bound session's shelf must offer the PEER's rosters. Both hooks above
   // read THIS machine same-origin, so a remote session left on them would list
   // crews and models that do not exist over there — accepted by the picker, then
@@ -942,10 +938,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const selectionCapabilitiesQ = useQuery({
     queryKey: ['slot-selection-capabilities', activeSlot],
     queryFn: () => api.chatSlotSelectionCapabilities(activeSlot!),
-    enabled: !!activeSlot,
+    enabled: !!activeSlot && typeof api.chatSlotSelectionCapabilities === 'function',
     // A new ACP session may not exist when its slot first appears. Recheck
     // until the agent reports its config options, then refresh less often.
-    refetchInterval: query => query.state.data?.known ? 30_000 : 2_000,
+    // A missing/non-ACP peer can remain unknown indefinitely. Probe quickly
+    // during session startup, then back off instead of proxying every 2s.
+    refetchInterval: query => query.state.data?.known || query.state.dataUpdateCount + query.state.errorUpdateCount >= 5 ? 30_000 : 2_000,
   })
   const selectionCapabilities = selectionCapabilitiesQ.data?.known
     ? selectionCapabilitiesQ.data
@@ -954,13 +952,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const hiddenModelIds = hiddenModelsQ.data
   const modelPickerConfigured = useModelPickerConfigured()
   const availableModels = effectiveModels
-  // The backend ID is authoritative. A non-Codex harness may advertise the
-  // same bracketed model shape without accepting Codex's base-model/effort split.
-  const activeBackend = selectionCapabilities?.backend ?? (remoteCrew.isRemote
-    ? remoteCrew.capabilities?.acp_backend
-    : backendConfigQ.data?.agent?.acp_backend)
-  const codexPairModels = (!selectionCapabilities || selectionCapabilities.model_effort_pair_ids === true)
-    && shouldSeparateCodexEffort(activeBackend, effectiveModels)
+  // The server owns the backend-specific model ID convention, including while
+  // the ACP session is still starting. Never infer it from bracketed IDs alone.
+  const codexPairModels = shouldSeparateModelEffort(
+    selectionCapabilitiesQ.data?.model_effort_pair_ids, effectiveModels,
+  )
   // Whether the picker may offer `Auto (Jev)` (see `lib/jevRoute.ts`): the fleet's
   // answer AND the owner's keystone consent, both required. Two reads the page
   // already makes for other reasons, so the row costs no new request.
@@ -3090,27 +3086,50 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       return
     }
     try {
-      // performSlotSwitch owns the whole protocol: per-slot+field serialized
-      // dispatch, latest-request-wins adjudication, hung-request timeout, and
-      // exactly-one store write on the authoritative value (#4523). The store
-      // write is deliberately NOT awaited on the server's slots rebroadcast:
-      // that push is coalesced and never arrives with the websocket down.
-      await performSlotSwitch('model', activeSlot, modelName,
-        async () => {
-          // The response's `model` is the stored value (deprecated ids are
-          // remapped server-side), so prefer it over the requested name.
-          const r = await api.chatSlotModel(activeSlot, modelName)
-          return r?.model ?? modelName
-        },
+      const slotState = store.getState().dashboard.slots.find(s => s.key === activeSlot)
+      const legacyEffort = legacyCodexEffort(
+        slotState?.model || '', slotState?.reasoning_effort || '', codexPairModels,
+      )
+      await switchGroupedModel(legacyEffort, async level => {
+        // Existing Codex slots may still pin model[max]. Move that level into
+        // the separate effort field before a grouped row sends the bare model.
+        // A failed effort write aborts the model pick instead of silently
+        // resetting an owner's previous selection.
+        let normalizedModel: string | undefined
+        await performSlotSwitch('reasoning_effort', activeSlot, level,
+          async () => {
+            const r = await api.chatSlotReasoningEffort(activeSlot, level)
+            normalizedModel = r?.model
+            return r?.reasoning_effort ?? level
+          },
+          (value) => dispatch(updateSlot({
+            key: activeSlot,
+            reasoning_effort: value,
+            ...(normalizedModel ? { model: normalizedModel } : {}),
+          })))
+      }, async () => {
+        // performSlotSwitch owns the whole protocol: per-slot+field serialized
+        // dispatch, latest-request-wins adjudication, hung-request timeout, and
+        // exactly-one store write on the authoritative value (#4523). The store
+        // write is deliberately NOT awaited on the server's slots rebroadcast:
+        // that push is coalesced and never arrives with the websocket down.
+        await performSlotSwitch('model', activeSlot, modelName,
+          async () => {
+            // The response's `model` is the stored value (deprecated ids are
+            // remapped server-side), so prefer it over the requested name.
+            const r = await api.chatSlotModel(activeSlot, modelName)
+            return r?.model ?? modelName
+          },
           // The routing flag is written from the REQUEST, not from the response's
           // `model`: the gateway resolves the sentinel to `auto`, so the stored
           // model cannot tell a routed pick from a plain Auto one. Written on
           // every pick, because picking a concrete model is what clears it.
-        (value) => dispatch(updateSlot({
-          key: activeSlot,
-          model: value,
-          jev_route: modelName === JEV_ROUTE_MODEL,
-        })))
+          (value) => dispatch(updateSlot({
+            key: activeSlot,
+            model: value,
+            jev_route: modelName === JEV_ROUTE_MODEL,
+          })))
+      })
       queryClient.invalidateQueries({ queryKey: ['slot-selection-capabilities', activeSlot] })
     } catch (e) {
       // Same failure surface as the agent switch beside this: the shared
@@ -3126,7 +3145,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // notice toast above, never by a menu left open. Reasoning-effort edits
     // live on the drill-in page and keep the menu open on their own.
     // setPendingModel is a stable useState setter.
-  }, [activeSlot, dispatch, queryClient, setPendingModel])
+  }, [activeSlot, codexPairModels, dispatch, queryClient, setPendingModel])
   // A pick from the picker: a row click or Enter on the sole filtered match.
   // Closes the menu and, when the composer held focus at open time, hands
   // focus back to it (see `modelPickerReturnsFocusRef`). The picker's other
@@ -3870,7 +3889,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // a bare `auto` for a session running one specific model.
     codexPairModels ? modelWithoutEffort(currentSlot?.served_model || '') : currentSlot?.served_model,
   )
-  const effortSupported = provider.capabilities.reasoningEffort && (
+  const effortSupported = provider.capabilities.reasoningEffort && !selectionCapabilitiesQ.isError && (
     selectionCapabilities
       ? selectionCapabilities.effort_supported === true
       : modelSupportsEffort(shownModel === 'auto' ? '' : shownModel)
@@ -3921,7 +3940,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Effort actually in force for the active slot: per-slot override, else the
   // configured default. Display only — the slot's raw value still drives the
   // picker so "no override" stays distinguishable from an explicit pick.
-  const effectiveEffort = currentSlot?.reasoning_effort || defaultEffort
+  const effectiveEffort = currentSlot?.reasoning_effort || legacyCodexEffort(
+    currentSlot?.model || '', '', codexPairModels,
+  ) || defaultEffort
   // Branch label for the active project chip. The user can check out a
   // different branch outside the dashboard at any time, so this refetches on a
   // slow interval and on window focus rather than being read once. A failure
@@ -6799,6 +6820,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           className="mx-4 mt-2 mb-0 animate-rise"
           testId="sid-error"
         />
+        {/* No hand-off: navigating away would discard the unsent composer draft. */}
+        <ErrorNotice
+          message={activeSlot && provider.capabilities.reasoningEffort && selectionCapabilitiesQ.isError
+            ? i18nT('pages.chatPage.effort_options_unavailable') : ''}
+          className="mx-4 mt-2 mb-0 animate-rise"
+          testId="effort-capabilities-error"
+        />
         <ErrorNotice
           title={actionError?.title}
           message={actionError?.message}
@@ -7988,14 +8016,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 onRetryModels={() => remoteCrew.refetch()}
                 filter={modelFilter}
                 setFilter={setModelFilter}
-                onClose={() => setModelDropdown(false)}
                 modelVisibilityError={hiddenModelsQ.isError}
                 onRetryModelVisibility={() => hiddenModelsQ.refetch()}
-                hasEffort={false}
-                slot={activeSlot}
-                currentEffort={currentSlot?.reasoning_effort || ''}
-                defaultEffort={defaultEffort}
-                effortLevelsOverride={effortLevelsOverride}
                 onManageModels={modelPickerConfigured ? undefined : () => {
                   setModelDropdown(false)
                   navigate(settingsPath({ tab: 'chat', highlight: 'key:dashboard.model_picker_hidden_models' }))
@@ -8072,7 +8094,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             {/* Reasoning effort dropdown portal */}
             {reasoningEffortDropdown && reasoningEffortBtnRect && activeSlot && effortSupported && createPortal(
               <div ref={reasoningEffortDropdownRef} className="fixed z-[9999] animate-slide-up" style={(() => { const left = Math.max(8, Math.min(reasoningEffortBtnRect.left, window.innerWidth - 220)); return { bottom: window.innerHeight - reasoningEffortBtnRect.top + 4, left: isMobile ? 8 : left, ...(isMobile ? { right: 8, maxWidth: 'calc(100vw - 16px)' } : {}) } })()}>
-                <ReasoningEffortDropdown slot={activeSlot} currentEffort={currentSlot?.reasoning_effort || ''} defaultEffort={defaultEffort} levelsOverride={effortLevelsOverride} onClose={() => setReasoningEffortDropdown(false)} />
+                <ReasoningEffortDropdown slot={activeSlot} currentEffort={currentSlot?.reasoning_effort || legacyCodexEffort(currentSlot?.model || '', '', codexPairModels)} defaultEffort={defaultEffort} levelsOverride={effortLevelsOverride} onClose={() => setReasoningEffortDropdown(false)} />
               </div>,
               document.body
             )}

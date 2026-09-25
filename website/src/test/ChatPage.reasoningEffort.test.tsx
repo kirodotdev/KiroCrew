@@ -163,6 +163,18 @@ describe('ReasoningEffortDropdown', () => {
     await vi.waitFor(() => expect(store.getState().dashboard.slots.find(s => s.key === 's1')?.reasoning_effort).toBe('xhigh'))
   })
 
+  it('updates the model row when an effort pick normalizes a legacy Codex pair', async () => {
+    mockApi.chatSlotReasoningEffort.mockResolvedValueOnce({ ok: true, reasoning_effort: '', model: 'gpt-6-sol' })
+    const { store } = renderDropdown({ currentEffort: 'high' })
+    const slider = await screen.findByRole('slider', { name: 'Reasoning effort' })
+    await vi.waitFor(() => expect(slider.getAttribute('aria-valuemax')).toBe('4'))
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Use model default' }))
+
+    await vi.waitFor(() => expect(mockApi.chatSlotReasoningEffort).toHaveBeenCalledWith('s1', ''))
+    await vi.waitFor(() => expect(store.getState().dashboard.slots.find(s => s.key === 's1')?.model).toBe('gpt-6-sol'))
+  })
+
   it('stages the pick synchronously so a cycle press inside the debounce window sees it (#5120)', async () => {
     // The persist is debounced 150ms (one write per drag). Without staging,
     // an Alt+Shift+D press right after a dropdown pick reads a base that

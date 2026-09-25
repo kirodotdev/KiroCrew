@@ -10836,6 +10836,7 @@
       "could_not_start_a_new_session": "Não foi possível iniciar uma nova sessão",
       "could_not_start_session_message_restored": "Não foi possível iniciar uma nova sessão: {{error}}. Sua mensagem foi restaurada — envie novamente para tentar de novo.",
       "enter_split_view": "Entrar na visualização dividida",
+      "effort_options_unavailable": "Não foi possível verificar as opções de esforço de raciocínio desta sessão. O controle de esforço ficará indisponível até que a conexão seja restabelecida.",
       "esc_to_dismiss": "Esc para descartar",
       "expand_knowledge_context": "Expandir o contexto de conhecimento",
       "failed_to_apply_plan": "Falha ao aplicar o plano",

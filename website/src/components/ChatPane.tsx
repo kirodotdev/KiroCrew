@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { X, LoaderCircle } from 'lucide-react'
 import { SplitGlyph } from './SplitGlyph'
-import { useQuery, useMutation } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useModelsDegraded } from '../providers/modelListHealth'
 import ChatMessageList from '../app-sdk/ChatMessageList'
 import type { VirtualTranscriptHandle } from '../app-sdk/ChatMessageList'
@@ -35,6 +35,7 @@ import { agentSwitchFailureMessage } from '../utils/agentSwitchFeedback'
 import { agentOrDefaultLabel } from '../utils/agentLabel'
 import { useRemoteCapabilities } from '../hooks/useRemoteCapabilities'
 import ModelDropdownList from './ModelDropdownList'
+import ReasoningEffortDropdown from './ReasoningEffortDropdown'
 import { ManageModelsFooter } from './ModelEffortDropdown'
 import { settingsPath } from './settingsPath'
 import { SlotProvider } from '../providers/SlotContext'
@@ -45,7 +46,8 @@ import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useAnchoredTriggerRect } from '../hooks/useAnchoredTriggerRect'
 import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
 import { useAvailableModels } from '../hooks/useAvailableModels'
-import { filterInteractiveModels, useModelPickerConfigured, useModelPickerHiddenModelsQuery } from '../hooks/useInteractiveModels'
+import { filterInteractiveModels, legacyCodexEffort, modelWithoutEffort, shouldSeparateModelEffort, switchGroupedModel, useModelPickerConfigured, useModelPickerHiddenModelsQuery } from '../hooks/useInteractiveModels'
+import { modelSupportsEffort } from '../lib/effort'
 import { isUnpinnedModel, JEV_ROUTE_MODEL, jevRouteOffered, jevRouteShownModel, withJevRoute } from '../lib/jevRoute'
 import { usePlanActionMutation, isPlanAction } from '../hooks/usePlanActionMutation'
 import { useQueuedMessageActions, queuedSendStash } from '../hooks/useQueuedMessageActions'
@@ -557,6 +559,7 @@ export default function ChatPane({
   // review). Mirrors ChatPage's `effectiveDefaultAgent`; '' for a peer whose
   // capabilities have not loaded, which yields no false marker.
   const paneRemoteCrew = useRemoteCapabilities(paneSlot)
+  const queryClient = useQueryClient()
   const paneEffectiveDefaultAgent = paneRemoteCrew.isRemote
     ? (paneRemoteCrew.capabilities?.default_agent || '')
     : defaultAgent
@@ -581,6 +584,16 @@ export default function ChatPane({
       contextWindow: model.context_window || undefined,
     }))
   }, [paneRemoteCrew.isRemote, paneRemoteCrew.capabilities, localModels])
+  const selectionCapabilitiesQ = useQuery({
+    queryKey: ['slot-selection-capabilities', slotKey],
+    queryFn: () => api.chatSlotSelectionCapabilities(slotKey),
+    enabled: !!paneSlot && typeof api.chatSlotSelectionCapabilities === 'function',
+    refetchInterval: query => query.state.data?.known || query.state.dataUpdateCount + query.state.errorUpdateCount >= 5 ? 30_000 : 2_000,
+  })
+  const selectionCapabilities = selectionCapabilitiesQ.data?.known ? selectionCapabilitiesQ.data : undefined
+  const codexPairModels = shouldSeparateModelEffort(
+    selectionCapabilitiesQ.data?.model_effort_pair_ids, effectiveModels,
+  )
   const hiddenModelsQ = useModelPickerHiddenModelsQuery()
   const hiddenModelIds = hiddenModelsQ.data
   const modelPickerConfigured = useModelPickerConfigured()
@@ -605,17 +618,31 @@ export default function ChatPane({
       filterInteractiveModels(effectiveModels, hiddenModelIds, [
         paneSlot?.model || '',
         paneSlot?.served_model || '',
-      ]),
+      ], codexPairModels),
       jevRouteOn,
       jevRouteLabel,
     ),
-    [effectiveModels, hiddenModelIds, paneSlot?.model, paneSlot?.served_model, jevRouteOn, jevRouteLabel],
+    [effectiveModels, hiddenModelIds, paneSlot?.model, paneSlot?.served_model, jevRouteOn, jevRouteLabel, codexPairModels],
   )
   const modelDD = useFilteredDropdown(modelPickerModels)
+  const [reasoningEffortDropdown, setReasoningEffortDropdown] = useState(false)
+  const reasoningEffortDropdownRef = useRef<HTMLDivElement>(null)
   // Picker anchors: keep each portaled menu glued to the ChatInput chip that
   // opened it while the menu is open (#10616, same class as #10580).
   const { rect: agentBtnRect, anchorTo: anchorAgentBtn } = useAnchoredTriggerRect(agentDD.open)
   const { rect: modelBtnRect, anchorTo: anchorModelBtn } = useAnchoredTriggerRect(modelDD.open)
+  const { rect: reasoningEffortBtnRect, anchorTo: anchorReasoningEffortBtn } = useAnchoredTriggerRect(reasoningEffortDropdown)
+  useEffect(() => {
+    if (!reasoningEffortDropdown) return
+    const closeOutside = (event: MouseEvent) => {
+      if (reasoningEffortDropdownRef.current?.contains(event.target as Node)) return
+      const rect = reasoningEffortBtnRect
+      if (rect && event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom) return
+      setReasoningEffortDropdown(false)
+    }
+    document.addEventListener('mousedown', closeOutside)
+    return () => document.removeEventListener('mousedown', closeOutside)
+  }, [reasoningEffortDropdown, reasoningEffortBtnRect])
   // See ChatPage: display what will actually run, not a pin the account lost
   // access to. The slot's own `model_withheld` verdict answers that when the
   // backend has one; the degraded flag gates only the list-membership fallback —
@@ -623,18 +650,37 @@ export default function ChatPane({
   // entitlement — and is subscribed to, since it can flip while the served list
   // stays identical.
   const _modelsDegraded = useModelsDegraded(provider.id)
+  const displayModels = codexPairModels
+    ? filterInteractiveModels(availableModels, [], [], true)
+    : availableModels
   const shownModel = displayModel(
-    paneSlot?.model || '',
-    availableModels,
+    codexPairModels ? modelWithoutEffort(paneSlot?.model || '') : paneSlot?.model || '',
+    displayModels,
     _modelsDegraded,
     paneSlot?.model_withheld,
-    paneSlot?.served_model || '',
+    codexPairModels ? modelWithoutEffort(paneSlot?.served_model || '') : paneSlot?.served_model || '',
   )
+  const effortSupported = provider.capabilities.reasoningEffort && !selectionCapabilitiesQ.isError && (
+    selectionCapabilities
+      ? selectionCapabilities.effort_supported === true
+      : modelSupportsEffort(shownModel === 'auto' ? '' : shownModel)
+  )
+  const effortLevelsOverride = selectionCapabilities
+    ? selectionCapabilities.effort_levels
+    : paneRemoteCrew.isRemote ? (paneRemoteCrew.capabilities?.effort_levels ?? []) : undefined
+  const { data: defaultEffort = '' } = useQuery({
+    queryKey: ['default-effort', provider.id],
+    queryFn: () => provider.resolveDefaultEffort(),
+    enabled: provider.capabilities.reasoningEffort,
+  })
+  const effectiveEffort = paneSlot?.reasoning_effort || legacyCodexEffort(
+    paneSlot?.model || '', '', codexPairModels,
+  ) || defaultEffort
   // What the pin alone would say; differing from `shownModel` means the chip
   // is naming the served default an inheriting slot runs on (see ChatPage).
   const _pinShownModel = displayModel(
-    paneSlot?.model || '',
-    availableModels,
+    codexPairModels ? modelWithoutEffort(paneSlot?.model || '') : paneSlot?.model || '',
+    displayModels,
     _modelsDegraded,
     paneSlot?.model_withheld,
   )
@@ -696,24 +742,43 @@ export default function ChatPane({
   const switchModel = useCallback(async (name: string) => {
     setSwitchError('')
     try {
-      // performSlotSwitch owns the whole protocol: serialized dispatch,
-      // latest-request-wins adjudication, hung-request timeout, and exactly
-      // one store write on the authoritative value (#4523) — the pane must
-      // not depend on the coalesced slots rebroadcast to see its own pick.
-      await performSlotSwitch('model', slotKey, name,
-        async () => {
-          const r = await api.chatSlotModel(slotKey, name)
-          return r?.model ?? name
-        },
+      const legacyEffort = legacyCodexEffort(
+        paneSlot?.model || '', paneSlot?.reasoning_effort || '', codexPairModels,
+      )
+      await switchGroupedModel(legacyEffort, async level => {
+        let normalizedModel: string | undefined
+        await performSlotSwitch('reasoning_effort', slotKey, level,
+          async () => {
+            const response = await api.chatSlotReasoningEffort(slotKey, level)
+            normalizedModel = response?.model
+            return response?.reasoning_effort ?? level
+          },
+          value => dispatch(updateSlot({
+            key: slotKey,
+            reasoning_effort: value,
+            ...(normalizedModel ? { model: normalizedModel } : {}),
+          })))
+      }, async () => {
+        // performSlotSwitch owns the whole protocol: serialized dispatch,
+        // latest-request-wins adjudication, hung-request timeout, and exactly
+        // one store write on the authoritative value (#4523) — the pane must
+        // not depend on the coalesced slots rebroadcast to see its own pick.
+        await performSlotSwitch('model', slotKey, name,
+          async () => {
+            const r = await api.chatSlotModel(slotKey, name)
+            return r?.model ?? name
+          },
           // The routing flag is written from the REQUEST, not from the response's
           // `model`: the gateway resolves the sentinel to `auto`, so the stored
           // model cannot tell a routed pick from a plain Auto one. Written on
           // every pick, because picking a concrete model is what clears it.
-        (value) => dispatch(updateSlot({
-          key: slotKey,
-          model: value,
-          jev_route: name === JEV_ROUTE_MODEL,
-        })))
+          (value) => dispatch(updateSlot({
+            key: slotKey,
+            model: value,
+            jev_route: name === JEV_ROUTE_MODEL,
+          })))
+      })
+      queryClient.invalidateQueries({ queryKey: ['slot-selection-capabilities', slotKey] })
     } catch (e) {
       // Same failure surface as switchAgent above: the shared notice toast,
       // plus the in-pane notice (the toast alone would be the only report of
@@ -725,7 +790,7 @@ export default function ChatPane({
       // eslint-disable-next-line no-console
       console.error('[ChatPane] switchModel failed', e)
     }
-  }, [dispatch, slotKey])
+  }, [codexPairModels, dispatch, paneSlot?.model, paneSlot?.reasoning_effort, queryClient, slotKey])
 
   // Roving-focus keyboard nav for the pickers (mirrors ChatPage / StyledSelect):
   // ArrowUp/Down across options, Enter/Space select, Escape/Tab close + return
@@ -1763,6 +1828,15 @@ export default function ChatPane({
           message={switchError}
           onDismiss={() => setSwitchError('')}
         />
+        {/* No hand-off: this pane holds an unsent draft. A failed ACP capability
+            read hides the stale control; the query retries in place. */}
+        <ErrorNotice
+          variant="inline"
+          className="mx-4 mt-2"
+          testId="chat-pane-effort-capabilities-error"
+          message={provider.capabilities.reasoningEffort && selectionCapabilitiesQ.isError
+            ? i18nT('pages.chatPage.effort_options_unavailable') : ''}
+        />
         {/* No hand-off: the composer draft is untouched by a failed stop; the
             turn is still running, so the Stop button stays for a retry. */}
         <ErrorNotice
@@ -1827,6 +1901,12 @@ export default function ChatPane({
           agentIsInheritedDefault={!paneSlot?.agent && !!paneEffectiveDefaultAgent}
           agentSource={installedAgents.find((a) => a.name === paneAgentName)?.source}
           modelName={shownModel}
+          reasoningEffort={effectiveEffort}
+          separateEffort={effortSupported}
+          onReasoningEffortClick={effortSupported ? (rect, trigger) => {
+            anchorReasoningEffortBtn(rect, trigger)
+            setReasoningEffortDropdown(!reasoningEffortDropdown)
+          } : undefined}
           modelIsInheritedDefault={shownModel !== 'auto' && shownModel !== _pinShownModel}
           // See ChatPage: the slot's RAW model, because `shownModel` substitutes
           // the served id and would hide every routed turn.
@@ -2015,6 +2095,25 @@ export default function ChatPane({
               modelDD.setOpen(false)
               navigate(settingsPath({ tab: 'chat', highlight: 'key:dashboard.model_picker_hidden_models' }))
             }} />}
+          </div>,
+          document.body,
+        )}
+        {reasoningEffortDropdown && reasoningEffortBtnRect && effortSupported && createPortal(
+          <div
+            ref={reasoningEffortDropdownRef}
+            className="fixed z-[9999] animate-slide-up"
+            style={{
+              bottom: window.innerHeight - reasoningEffortBtnRect.top + 4,
+              left: Math.max(8, Math.min(reasoningEffortBtnRect.left, window.innerWidth - Math.min(240, window.innerWidth - 16) - 8)),
+            }}
+          >
+            <ReasoningEffortDropdown
+              slot={slotKey}
+              currentEffort={paneSlot?.reasoning_effort || legacyCodexEffort(paneSlot?.model || '', '', codexPairModels)}
+              defaultEffort={defaultEffort}
+              levelsOverride={effortLevelsOverride}
+              onClose={() => setReasoningEffortDropdown(false)}
+            />
           </div>,
           document.body,
         )}
