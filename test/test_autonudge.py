@@ -1267,6 +1267,46 @@ async def test_an_oversized_stored_pr_baseline_is_bounded_by_the_loader(tmp_path
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stored", [5, True, "comment:1", {"comment:1": 1}, None])
+async def test_a_malformed_pr_baseline_never_disables_the_loop(tmp_path, stored):
+    """The loop must survive a baseline the store can hold but the writer never emits.
+
+    Iterating the stored value directly raises ``TypeError`` for a non-iterable, and the
+    loader has no handler for it, so the whole record is skipped and an active watch is
+    never rearmed -- losing the watch, not merely the baseline. A string or a mapping is
+    worse than a crash: both iterate, so their characters or keys are retained as remark
+    ids and a real remark then reads as already seen. The container is checked for the
+    one type the writer emits, matching the sibling boundaries in this same function.
+    """
+    from kiro_crew import autonudge as _an
+
+    async def on_fire(loop):
+        return True
+
+    record = {
+        "id": "monitor91",
+        "slot_key": "chat-1-123",
+        "message": "watch https://github.com/acme/widgets/pull/42",
+        "idle_secs": 300,
+        "active": True,
+        "judge_pr_seen": {"digest": "abc123", "remarks": stored},
+    }
+    (tmp_path / "autonudge.json").write_text(json.dumps({"loops": [record]}), encoding="utf-8")
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    try:
+        await service.start()
+        loop = service._loops.get("monitor91")
+        assert loop is not None, "a malformed baseline must not cost the loop"
+        assert loop.active, "and the watch stays armed"
+        seen = loop.judge_pr_seen
+        assert seen["remarks"] == [], "nothing is retained from a non-list"
+        assert seen["digest"] == "abc123", "while the valid field beside it survives"
+        assert _an._bounded_judge_pr_seen({"remarks": stored})["remarks"] == []
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
 async def test_a_failed_clear_write_leaves_the_debt_cleared(tmp_path, monkeypatch):
     """A rollback here would restore a debt a live observation just disproved.
 

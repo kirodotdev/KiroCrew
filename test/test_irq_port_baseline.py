@@ -576,9 +576,34 @@ def test_every_gh_call_carries_the_watch_audit_tag_and_a_bounded_timeout(monkeyp
     transport = gh_pr._Transport("github.com")
     assert transport.call(["pr", "view", "42"]).ok
     assert seen["audit_caller"] == "core:babysit-pr-watch"
-    assert 0 < seen["timeout"] <= gh_pr._GH_TIMEOUT_SECS
+    assert seen["timeout"] == gh_pr._GH_TIMEOUT_SECS
     assert seen["pin_host"] == "github.com"
     assert seen["argv"][0] == "/usr/bin/gh", "the validated absolute path, not a PATH lookup"
+
+
+def test_a_nearly_spent_budget_shortens_the_call_below_the_ceiling(monkeypatch):
+    """The per-call timeout is the SMALLER of the ceiling and what the tick has left.
+
+    The ceiling alone would let a hung call outlive the budget it is bounded by, so
+    the call is given only the remaining wall clock once that is the smaller number.
+    This is its own case rather than a relaxation of the ceiling pin above: the two
+    assert different things, and folding them into one inequality would accept any
+    positive timeout and stop pinning either.
+    """
+    seen: dict = {}
+
+    def _fake(argv, **kwargs):
+        seen.update(kwargs)
+        return types.SimpleNamespace(returncode=0, stdout="{}", stderr="")
+
+    monkeypatch.setattr(gh_pr, "resolve_gh", lambda: "/usr/bin/gh")
+    monkeypatch.setattr(gh_pr, "run_gh", _fake)
+
+    transport = gh_pr._Transport("github.com", budget_secs=2.0)
+    assert transport.call(["pr", "view", "42"]).ok
+    assert seen["timeout"] < gh_pr._GH_TIMEOUT_SECS, "the ceiling is not what bounds it here"
+    assert seen["timeout"] <= 2.0, "and it is bounded by what the tick actually has left"
+    assert seen["timeout"] > 0, "a spent budget refuses the call rather than passing zero"
 
 
 def test_a_runner_failure_reads_as_one_unavailable_reading_not_a_crash(monkeypatch):

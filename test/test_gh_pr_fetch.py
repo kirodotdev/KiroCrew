@@ -27,6 +27,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from kiro_crew import irq
+from kiro_crew.monitoring import models
 from kiro_crew.probes import gh_pr
 
 
@@ -147,6 +148,21 @@ class _Forge:
         pages = [rows[i : i + size] for i in range(0, len(rows), size)] or [[]]
         self.check_pages = [_reply({"total_count": total, "check_runs": page}) for page in pages]
         return self
+
+
+def _bare_observation(**fields):
+    """A reading built directly, for assertions about what ``as_facts`` RETAINS."""
+    base = {
+        "repo": "acme/widgets",
+        "pr": 42,
+        "host": "github.com",
+        "status": gh_pr.STATUS_OK,
+        "observed_at": 1_000.0,
+        "state": "OPEN",
+        "head": "a" * 40,
+    }
+    base.update(fields)
+    return gh_pr.PrObservation(**base)
 
 
 def _core_calls(forge: "_Forge") -> int:
@@ -891,6 +907,287 @@ class TestWhatPeopleSaidIsCarried:
         assert gh_pr.sanitize_body("a\n\n\n\n\nb") == "a\n\nb"
         assert gh_pr.sanitize_body(None) == ""
         assert gh_pr.sanitize_body(12) == ""
+
+    def test_the_retained_buckets_are_bounded_like_the_canonical_record(self) -> None:
+        """These identities are third-party and they are KEPT, so they need a bound.
+
+        The facts become the durable monitor record and are rewritten every tick, and a
+        fork matrix names its own workflows, so an unbounded list is provider-chosen
+        text in the record. The caps are the canonical writer's, because one population
+        with two bounds drifts and the reader holding the smaller one disagrees about
+        what a whole board is.
+        """
+        per_bucket = gh_pr.MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET
+        chars = gh_pr.MAX_MONITOR_CHECK_IDENTITY_CHARS
+        shared = "w" * (chars + 40)
+        rows = [
+            gh_pr.CheckRow(f"CI / lane{i:04d}", f"lane{i:04d}", "failing", "")
+            for i in range(per_bucket + 25)
+        ]
+        rows.append(gh_pr.CheckRow(f"{shared}/one", "one", "pending", ""))
+        rows.append(gh_pr.CheckRow(f"{shared}/two", "two", "pending", ""))
+        observation = _bare_observation(checks=tuple(rows), checks_complete=True)
+        checks = observation.as_facts()["checks"]
+
+        assert len(checks["failed"]) == per_bucket, "an over-full bucket is sliced"
+        assert all(len(name) <= chars for names in checks.values() for name in names)
+        pending = checks["pending"]
+        assert len(pending) == 2
+        assert len(set(pending)) == 2, "a clip must not collapse two lanes into one"
+        assert all(name[chars - 17] == "#" for name in pending), "each keeps a digest suffix"
+        assert "checks:incomplete" in checks["unknown"], "truncation is said out loud"
+
+    def test_a_whole_small_board_is_left_alone(self) -> None:
+        """The bound may not invent a truncation marker on a board that fits."""
+        observation = _bare_observation(
+            checks=(gh_pr.CheckRow("CI / Lint", "Lint", "failing", ""),),
+            checks_complete=True,
+        )
+        checks = observation.as_facts()["checks"]
+        assert checks["failed"] == ["CI / Lint"]
+        assert "checks:incomplete" not in checks["unknown"]
+        assert checks["unknown"] == []
+
+    def test_displaced_rows_do_not_make_a_measured_board_read_short(self) -> None:
+        """A displaced row carries no verdict, so any number of them leaves the board whole.
+
+        One cancelled large matrix that was never re-run puts hundreds of rows in the
+        displaced bucket while every live lane is still measured. Counting those rows in
+        the board-wide overflow test would stamp a fully-read board incomplete, and the
+        judge would then be told a lane is unknown that does not exist -- which is the
+        outcome ``models.py`` names as forbidden for this population.
+        """
+        per_bucket = gh_pr.MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET
+        rows = [
+            gh_pr.CheckRow(f"CI / stale{i:04d}", f"stale{i:04d}", "noise", "")
+            for i in range(per_bucket + 40)
+        ]
+        rows.append(gh_pr.CheckRow("CI / Lint", "Lint", "passing", ""))
+        observation = _bare_observation(checks=tuple(rows), checks_complete=True)
+        facts = observation.as_facts()
+        checks = facts["checks"]
+
+        assert facts["checks_complete"] is True, "every live lane was measured"
+        assert "checks:incomplete" not in checks["unknown"], (
+            "the board-wide marker must not be spent on displaced rows -- a reader "
+            "would take it for a live lane nobody read"
+        )
+        assert checks["unknown"] == [], "and no lane may be fabricated in it"
+        assert checks["passed"] == ["CI / Lint"]
+
+    def test_an_over_full_displaced_bucket_says_so_inside_itself(self) -> None:
+        """Its cut spends the canonical displaced sentinel, not the board-wide one.
+
+        A saturated list with no sentinel reads as the whole list, and the count derived
+        from it as the whole count. The sentinel goes inside the bucket because these
+        rows carry no verdict, so losing some of them leaves the board fully measured --
+        the same trade the canonical writer makes.
+        """
+        per_bucket = gh_pr.MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET
+        rows = [
+            gh_pr.CheckRow(f"CI / stale{i:04d}", f"stale{i:04d}", "noise", "")
+            for i in range(per_bucket + 40)
+        ]
+        observation = _bare_observation(checks=tuple(rows), checks_complete=True)
+        facts = observation.as_facts()
+        displaced = facts["checks"][models.PULL_REQUEST_SUPERSEDED_CHECK_FIELD]
+
+        assert len(displaced) == per_bucket, "the displaced bucket is cut at the cap"
+        assert displaced[-1] == models.PULL_REQUEST_SUPERSEDED_INCOMPLETE_IDENTITY, (
+            "the last slot says the list was clipped, in the spelling the compact "
+            "reader already knows"
+        )
+        assert facts["checks_complete"] is True, "and the board stays measured"
+
+    def test_a_displaced_bucket_that_fits_gets_no_sentinel(self) -> None:
+        """The cut must not be announced on a bucket that was never cut."""
+        observation = _bare_observation(
+            checks=(gh_pr.CheckRow("CI / stale", "stale", "noise", ""),),
+            checks_complete=True,
+        )
+        displaced = observation.as_facts()["checks"][models.PULL_REQUEST_SUPERSEDED_CHECK_FIELD]
+        assert displaced == ["CI / stale"]
+        assert models.PULL_REQUEST_SUPERSEDED_INCOMPLETE_IDENTITY not in displaced
+
+    def test_only_the_clip_marks_a_body_clipped(self) -> None:
+        """Normalisation shortens too, so length alone cannot say the body was cut.
+
+        A CRLF pair becomes one newline, a run of blank lines collapses, and outer
+        whitespace goes -- so comparing against what the forge returned marks any
+        comment written in a web editor as truncated. That flag is durable and renders
+        to the judge as a clipped body, which invites a reader to discount prose that
+        is in fact complete.
+        """
+        for whole in (
+            "line one\r\nline two\r\nline three",
+            "a\n\n\n\n\nb",
+            "   padded on both sides   ",
+            "plain",
+        ):
+            text, clipped, digest = gh_pr._sanitized_body_with_clip(whole)
+            assert text, whole
+            assert clipped is False, whole
+            assert digest, whole
+
+        over = "x" * (gh_pr._MAX_BODY_CHARS + 10)
+        text, clipped, _ = gh_pr._sanitized_body_with_clip(over)
+        assert clipped is True, "a body past the limit is genuinely cut"
+        assert len(text) == gh_pr._MAX_BODY_CHARS
+
+        exact = "y" * gh_pr._MAX_BODY_CHARS
+        _text, clipped, _digest = gh_pr._sanitized_body_with_clip(exact)
+        assert clipped is False, "a body exactly at the limit is not cut"
+
+    def test_the_digest_describes_the_whole_body_not_the_kept_prefix(self) -> None:
+        """An edit past the clip boundary has to change the digest, or the wake is lost.
+
+        The kept prefix of a long comment is byte-identical after its tail is edited, so
+        a digest taken from the clipped text reads as an unchanged remark -- and the
+        reading built from it matches the last one, which suppresses the very wake the
+        edit is asking for.
+        """
+        head = "please look at this" + "x" * gh_pr._MAX_BODY_CHARS
+        before_text, before_clipped, before_digest = gh_pr._sanitized_body_with_clip(
+            head + " and the original tail"
+        )
+        after_text, after_clipped, after_digest = gh_pr._sanitized_body_with_clip(
+            head + " and now it asks for a change"
+        )
+
+        assert before_clipped is True and after_clipped is True, "both are past the limit"
+        assert before_text == after_text, (
+            "the kept prefix is identical, which is exactly why a digest of it cannot "
+            "see the edit"
+        )
+        assert before_digest != after_digest, "the whole-body digest must see the edit"
+
+    def test_an_edited_tail_changes_the_published_remark_digest(self) -> None:
+        """The same property through the facts, which is where the core reads it."""
+        head = "please look" + "y" * gh_pr._MAX_BODY_CHARS
+
+        def digest_for(body: str) -> str:
+            text, clipped, digest = gh_pr._sanitized_body_with_clip(body)
+            remark = gh_pr.Remark(
+                kind="comment",
+                ident="comment:1",
+                author="a-reviewer",
+                at="2026-01-01T00:00:00Z",
+                age_s=1.0,
+                body=text,
+                clipped=clipped,
+                whole_body_digest=digest,
+            )
+            observation = _bare_observation(remarks=(remark,))
+            return str(observation.as_facts()["remarks"][0]["body_digest"])
+
+        assert digest_for(head + " tail one") != digest_for(
+            head + " tail two"
+        ), "an edit past the clip must reach the facts the core compares"
+
+    def test_every_string_the_facts_retain_is_bounded(self) -> None:
+        """The invariant, walked over the WHOLE dict rather than field by field.
+
+        The facts become the durable monitor record and are re-serialised every tick, so
+        any string a third party names is unbounded text on disk until something clips
+        it. Four rounds of review on this file each found one more such field, which is
+        what a per-field assertion buys: a fifth field added later passes every existing
+        test. This walks every string the dict holds, at any depth, so a new one is
+        caught by a test nobody has to remember to update.
+
+        The longest legitimate value is a check identity, whose own bound is larger than
+        the retained-field bound because it spends room on a collision digest -- so the
+        ceiling here is the larger of the two.
+        """
+        flood = "Z" * 4000
+        rows = [gh_pr.CheckRow(f"{flood}/lane{i}", f"lane{i}", "failing", "") for i in range(3)]
+        remark = gh_pr.Remark(
+            kind="comment",
+            ident=f"comment:{flood}",
+            author=flood,
+            at=flood,
+            age_s=1.0,
+            verdict=flood,
+            body=flood,
+            clipped=True,
+            whole_body_digest=gh_pr._body_digest(flood),
+        )
+        observation = _bare_observation(
+            state=flood,
+            mergeability=flood,
+            merge_state=flood,
+            review_decision=flood,
+            head=flood,
+            checks=tuple(rows),
+            checks_complete=True,
+            remarks=(remark,),
+            incomplete=(flood,),
+        )
+        facts = observation.as_facts()
+
+        ceiling = max(
+            gh_pr._MAX_RETAINED_FIELD_CHARS,
+            gh_pr.MAX_MONITOR_CHECK_IDENTITY_CHARS,
+            gh_pr._MAX_BODY_CHARS,
+        )
+
+        def walk(node: object, path: str) -> list[str]:
+            if isinstance(node, str):
+                return [f"{path} ({len(node)} chars)"] if len(node) > ceiling else []
+            if isinstance(node, dict):
+                return [b for k, v in node.items() for b in walk(v, f"{path}.{k}")]
+            if isinstance(node, (list, tuple)):
+                return [b for i, v in enumerate(node) for b in walk(v, f"{path}[{i}]")]
+            return []
+
+        unbounded = walk(facts, "facts")
+        assert not unbounded, (
+            "every string the reading retains must be clipped at the point of retention "
+            f"-- these are not: {unbounded}"
+        )
+
+        # Control: the flood really was long enough to trip the ceiling, so an empty
+        # offender list means the clipping happened rather than that nothing was tested.
+        assert len(flood) > ceiling, "the probe value has to exceed the ceiling"
+        assert facts["remarks"][0]["id"].startswith("comment:Z"), "and it reached the dict"
+
+    def test_the_total_budget_reclip_keeps_the_whole_body_digest(self) -> None:
+        """The second clip must not be mistaken for an edit, nor hide one.
+
+        The total-body budget re-clips a remark that does not fit beside its
+        NEIGHBOURS, which is pressure from them rather than a change to its own text.
+        Recomputing the digest there would make a busy tick look like every comment had
+        been edited, and taking it from the twice-clipped text would hide a real edit
+        past that shorter cut. The single-remark path never reaches this branch, so it
+        cannot pin either direction.
+        """
+        long_body = "z" * gh_pr._MAX_BODY_CHARS
+        rows = [
+            {
+                "id": f"IC_{i}",
+                "createdAt": _iso(10.0 + i),
+                "author": {"login": "a-reviewer"},
+                "viewerDidAuthor": False,
+                "body": f"{long_body} tail {i}",
+            }
+            for i in range(6)
+        ]
+        remarks, _total = gh_pr._remarks(
+            {"comments": rows, "reviews": []}, datetime.now(timezone.utc).timestamp()
+        )
+
+        reclipped = [r for r in remarks if r.clipped and len(r.body) < gh_pr._MAX_BODY_CHARS]
+        assert reclipped, (
+            "the total-body budget has to have re-clipped at least one remark, or this "
+            "test is not exercising the branch it is about"
+        )
+        for remark in reclipped:
+            body_index = int(remark.ident.split("_")[1])
+            whole = f"{long_body} tail {body_index}"
+            assert remark.whole_body_digest == gh_pr._body_digest(whole), (
+                "a re-clipped remark keeps the digest of its WHOLE body, so neighbour "
+                "pressure is not reported as an edit and a real edit is not hidden"
+            )
+            assert remark.whole_body_digest != gh_pr._body_digest(remark.body)
 
     def test_a_quiet_tick_leaves_a_digest_of_what_was_screened(self, monkeypatch) -> None:
         """A wrong quiet has to be examinable, and the bodies are gone after the tick.

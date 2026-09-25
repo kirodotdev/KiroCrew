@@ -347,34 +347,146 @@ _PR_BODIES: dict[str, dict[str, str]] = {}
 #: no decision and the reading it belongs to is already gone.
 MAX_BODY_STASHES = 64
 
+#: Loops whose stash was dropped to hold the cap, oldest first. It holds ids, not
+#: bodies, and is capped by the same number, so it cannot become the thing that grows.
+#: A notice dropped in its turn means that loop has not published across two full
+#: rotations of the stash, which is far past any tick that could still read it.
+_PR_BODIES_DROPPED: dict[str, None] = {}
+
+#: How many stashes have been dropped since this process started. Counted because a
+#: bound that discards has to be a number a reader can see rather than something
+#: inferred from a body that is missing.
+_PR_BODIES_DROPPED_TOTAL = 0
+
+#: Notices the notice store itself could not keep. The store is bounded like the stash
+#: it reports on, so its own overflow discards a loss record -- and a forgotten record
+#: would let its loop read missing prose as a whole reading, which is the very thing
+#: the record exists to prevent. While this is nonzero the owner of the forgotten
+#: notice is unknown, so EVERY take reports a loss: the identity is gone but the fact
+#: that one happened is not, and firing is the only direction that cannot withhold a
+#: wake.
+_PR_BODIES_FORGOTTEN = 0
+
+#: Takes counted since the forgotten state was set, which is what ENDS it. Draining the
+#: pending notices is not enough on its own: a loop removed while it still owns one
+#: never takes it, the store never empties, and every other loop would keep reading
+#: short for the life of the process -- every gated watch firing every interval. Past a
+#: rotation's worth of takes the unknown notices cannot still belong to the rotation
+#: that justified answering for them, so the state is spent whether or not the stuck
+#: notice ever goes.
+_PR_BODIES_FORGOTTEN_TAKES = 0
+
 
 def publish_pr_bodies(loop_id: str, bodies: Mapping[str, str]) -> None:
     """Hold one tick's remark bodies for the judge collector to pick up."""
+    global _PR_BODIES_DROPPED_TOTAL, _PR_BODIES_FORGOTTEN, _PR_BODIES_FORGOTTEN_TAKES
     key = str(loop_id or "")
     if not key:
         return
+    # Cleared on EVERY publish, including the empty-bodies path below: this loop has
+    # been heard from, so a notice about a stash it lost earlier is spent. Leaving it
+    # for the empty case would keep the marker across every later tick whose remarks
+    # carry no prose, and each of those would then claim a loss that did not happen --
+    # a fabricated "not whole" reading, which the default brief turns into a delivered
+    # turn on evidence of nothing.
+    _PR_BODIES_DROPPED.pop(key, None)
     if not bodies:
         _PR_BODIES.pop(key, None)
         return
+    # Removed before it is written, never assigned in place: a dict keeps a key's
+    # ORIGINAL position when only its value is replaced, so assigning would leave the
+    # first loop this process ever saw permanently at the front of the queue and make
+    # it the victim of every eviction however recently it published. Re-inserting
+    # orders the stash by publish recency, which is what "oldest" has to mean for the
+    # cap to drop a stash nobody is waiting for.
+    _PR_BODIES.pop(key, None)
     _PR_BODIES[key] = {str(k): str(v) for k, v in bodies.items() if isinstance(v, str) and v}
     while len(_PR_BODIES) > MAX_BODY_STASHES:
-        _PR_BODIES.pop(next(iter(_PR_BODIES)), None)
+        dropped = next(iter(_PR_BODIES))
+        _PR_BODIES.pop(dropped, None)
+        _PR_BODIES_DROPPED[dropped] = None
+        _PR_BODIES_DROPPED_TOTAL += 1
+        logger.warning(
+            "autonudge judge: dropped the stashed remark bodies for loop %s to hold the "
+            "%d-stash cap (%d dropped since start); that loop's next tick reads as not "
+            "whole rather than as having nothing to say",
+            dropped,
+            MAX_BODY_STASHES,
+            _PR_BODIES_DROPPED_TOTAL,
+        )
+        while len(_PR_BODIES_DROPPED) > MAX_BODY_STASHES:
+            forgotten = next(iter(_PR_BODIES_DROPPED))
+            _PR_BODIES_DROPPED.pop(forgotten, None)
+            _PR_BODIES_FORGOTTEN += 1
+            _PR_BODIES_FORGOTTEN_TAKES = 0
+            logger.warning(
+                "autonudge judge: could not keep the loss notice for loop %s (%d "
+                "forgotten); until the pending notices drain, every tick reports its "
+                "reading as not whole rather than risk withholding a wake",
+                forgotten,
+                _PR_BODIES_FORGOTTEN,
+            )
 
 
-def take_pr_bodies(loop_id: str) -> dict[str, str]:
-    """This tick's remark bodies, removing them. ``{}`` when none were published."""
-    return _PR_BODIES.pop(str(loop_id or ""), {})
+def take_pr_bodies(loop_id: str) -> tuple[dict[str, str], bool]:
+    """This tick's remark bodies and whether a stash for *loop_id* was dropped.
+
+    Both are removed. ``({}, False)`` means nothing was published, which is a
+    different fact from ``({}, True)`` -- the second says prose existed and the cap
+    discarded it, and the caller owes the tick a fire rather than a quiet.
+
+    A loss the notice store itself could not keep makes this answer ``True`` for every
+    loop until the pending notices drain. The forgotten record's owner is unknown by
+    then, and the only answer that cannot withhold a wake from whoever it was is to
+    treat each reading as short.
+    """
+    global _PR_BODIES_FORGOTTEN, _PR_BODIES_FORGOTTEN_TAKES
+    key = str(loop_id or "")
+    bodies = _PR_BODIES.pop(key, {})
+    dropped = _PR_BODIES_DROPPED.pop(key, "absent") is None
+    if _PR_BODIES_FORGOTTEN:
+        dropped = True
+        _PR_BODIES_FORGOTTEN_TAKES += 1
+        # Spent on EITHER condition. The pending notices draining is the clean case: the
+        # unknown ones belonged to the same rotation as the known ones. A rotation's
+        # worth of takes is the backstop for the case that does not arrive -- a loop
+        # removed while it still owns a notice never takes it, so the store never empties
+        # and without this every other loop would read short for the life of the process.
+        if not _PR_BODIES_DROPPED or _PR_BODIES_FORGOTTEN_TAKES > MAX_BODY_STASHES:
+            _PR_BODIES_FORGOTTEN = 0
+            _PR_BODIES_FORGOTTEN_TAKES = 0
+    return bodies, dropped
 
 
-def with_remark_bodies(observation: Mapping[str, Any], bodies: Mapping[str, str]) -> dict[str, Any]:
+def with_remark_bodies(
+    observation: Mapping[str, Any],
+    bodies: Mapping[str, str],
+    bodies_dropped: bool = False,
+) -> dict[str, Any]:
     """*observation* with each remark's body filled in, as a copy.
 
     A COPY, because the observation handed in is the durable record: merging bodies
     into it in place is exactly how prose reaches the disk. The remark list is
     rebuilt rather than mutated for the same reason -- the entries inside a shallow
     copy are still the record's own dicts.
+
+    *bodies_dropped* says the cap discarded this loop's stash. It is expressed as a
+    reading that is not whole, which is the machinery a short fetch already uses, so
+    the tick fires instead of screening: prose the judge never saw must not read to it
+    as a remark with nothing in it. It is marked on the COPY only -- the durable
+    record describes the fetch, and this loss happened after it.
     """
     payload = dict(observation)
+    if bodies_dropped:
+        # Function-local, as this module's other reaches into ``probes`` are: it sits on
+        # the gateway boot path, and the reader's own spelling of the status is worth
+        # more than a second copy of the string here.
+        from kiro_crew.probes.gh_pr import STATUS_PARTIAL
+
+        payload["observation_status"] = STATUS_PARTIAL
+        reasons = payload.get("incomplete")
+        reasons = list(reasons) if isinstance(reasons, (list, tuple)) else []
+        payload["incomplete"] = [*reasons, "remark bodies dropped to hold the stash cap"]
     raw = payload.get("remarks")
     if not isinstance(raw, (list, tuple)):
         return payload
@@ -388,6 +500,29 @@ def with_remark_bodies(observation: Mapping[str, Any], bodies: Mapping[str, str]
             row["body"] = body
         filled.append(row)
     payload["remarks"] = filled
+    return payload
+
+
+def payload_for_judge(
+    observation: Mapping[str, Any],
+    bodies: Mapping[str, str],
+    bodies_dropped: bool = False,
+) -> dict[str, Any] | None:
+    """The merged payload, or ``None`` when the merge left the reading not whole.
+
+    The caller's wholeness guard runs against the reading as FETCHED, and this merge
+    can make it short: a dropped stash means prose a reviewer wrote never reached the
+    judge. A payload that only became partial here would otherwise sail past a gate
+    that had already let the fetched reading through, and a QUIET verdict drawn from it
+    would suppress a wake that was owed.
+
+    The decision lives here rather than at the call site because the call site is a
+    closure inside the gateway's wiring, where nothing can reach it to pin either
+    direction.
+    """
+    payload = with_remark_bodies(observation, bodies, bodies_dropped)
+    if pr_target_is_unread(payload):
+        return None
     return payload
 
 
@@ -545,14 +680,20 @@ def _remark_items(
         if entry.get("clipped"):
             lead = f"{lead} (body clipped)"
         rendered = f"{lead}: {text}" if text.strip() else f"{lead}, no body text"
-        items.append(
-            {
-                "source": f"pr:{target} by {author}",
-                "kind": kind,
-                "age_s": _age_seconds_of(entry.get("age_s"), entry.get("at"), clock),
-                "text": rendered,
-            }
-        )
+        row: dict[str, Any] = {
+            "source": f"pr:{target} by {author}",
+            "kind": kind,
+            "age_s": _age_seconds_of(entry.get("age_s"), entry.get("at"), clock),
+            "text": rendered,
+        }
+        # Also carried as a FLAG, not only inside the rendered words, because the screen
+        # downstream has to act on it and cannot parse prose. A remark body the scrub
+        # refuses is refused again on every tick for as long as the remark stays in the
+        # horizon; without this the tick could not tell "we just lost something new"
+        # from "we lost the same thing we already answered about hours ago".
+        if isinstance(first_seen, bool):
+            row["first_seen_this_tick"] = first_seen
+        items.append(row)
     return items
 
 

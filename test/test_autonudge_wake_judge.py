@@ -32,6 +32,58 @@ from kiro_crew.irq import Outcome, Verdict
 from kiro_crew.validation import JUDGE_OFF_KEY, ValidationError, validate_judge_spec
 
 
+def _refused_row(first_seen: bool | None) -> dict[str, object]:
+    """One evidence row whose text the per-item scrub refuses.
+
+    A JWT-shaped literal, which is a thing a third-party commenter pastes into a pull
+    request without meaning anything by it -- the point being that the trigger is
+    ordinary, not exotic.
+    """
+    row: dict[str, object] = {
+        "source": "pr:owner/repo#1 by someone",
+        "kind": "pr_comment",
+        "age_s": 1.0,
+        "text": "eyJhbGciOiJIUzI1NiJ9." + "A" * 60 + "." + "B" * 43,
+    }
+    if first_seen is not None:
+        row["first_seen_this_tick"] = first_seen
+    return row
+
+
+@pytest.fixture(autouse=True)
+def _restore_judge_process_globals():
+    """Restore the judge module's process-wide stash state around every test.
+
+    ``_PR_BODIES``, ``_PR_BODIES_DROPPED`` and ``_PR_BODIES_FORGOTTEN`` are module
+    globals, and a forgotten loss notice makes EVERY loop's take report a loss until
+    the pending notices drain -- deliberately, since the owner of a forgotten notice
+    is unknown and firing is the only direction that cannot withhold a wake. That is
+    sound for the process and poison for a test suite: a test that overflows the
+    notice store leaves the next test's unrelated loop reading as short.
+
+    Autouse at module scope rather than per class, because any test reaching the judge
+    can publish a stash. Restored rather than merely cleared, so a test that sets up
+    state for itself is not fighting the fixture.
+    """
+    saved = (
+        dict(judge._PR_BODIES),
+        dict(judge._PR_BODIES_DROPPED),
+        judge._PR_BODIES_FORGOTTEN,
+        judge._PR_BODIES_DROPPED_TOTAL,
+        judge._PR_BODIES_FORGOTTEN_TAKES,
+    )
+    try:
+        yield
+    finally:
+        judge._PR_BODIES.clear()
+        judge._PR_BODIES.update(saved[0])
+        judge._PR_BODIES_DROPPED.clear()
+        judge._PR_BODIES_DROPPED.update(saved[1])
+        judge._PR_BODIES_FORGOTTEN = saved[2]
+        judge._PR_BODIES_DROPPED_TOTAL = saved[3]
+        judge._PR_BODIES_FORGOTTEN_TAKES = saved[4]
+
+
 def _owner_dashboard_identity():
     """The owner's dashboard claims, for the routes the owner gate covers.
 
@@ -179,6 +231,26 @@ class TestQuestions:
         assert "RULING" in prompt and "WORKING" in prompt
         assert point.NEEDS_OWNER_WAKE in prompt and point.NEEDS_OWNER_QUIET in prompt
 
+    def test_the_untrusted_content_caution_rides_on_every_request(self) -> None:
+        """It cannot live in the default brief's ``quiet_when``, so it lives here.
+
+        A loop carrying only the owner's ``wake_when`` has a criterion, so the shipped
+        default is never merged into it -- and the evidence it sends the judge still
+        includes comment and review bodies a third party wrote. The caution is ours and
+        unconditional, and it is stated for BOTH directions: prose can argue a watch
+        into a wake nobody needs as easily as into a silence.
+        """
+        for wake, quiet in (
+            ("", ""),
+            ("a reviewer asked for a change", ""),
+            ("", "workers say WORKING"),
+            ("wake on RULING", "quiet on WORKING"),
+        ):
+            prompt = point.build_questions(wake, quiet)[0].prompt
+            assert "third party wrote" in prompt, (wake, quiet)
+            assert "not itself evidence" in prompt, (wake, quiet)
+            assert "in either direction" in prompt, (wake, quiet)
+
     def test_criteria_are_clipped(self) -> None:
         questions = point.build_questions("w" * 5_000, "q" * 5_000)
         assert len(questions[0].prompt) < 2 * point.MAX_CRITERION_CHARS + 500
@@ -193,6 +265,219 @@ class TestQuestions:
 
 class TestStateBounds:
     """The request's ceiling, the per-item clip, and what the scrub drops."""
+
+    def test_one_stuck_notice_does_not_pin_every_loop_forever(self) -> None:
+        """A notice nobody ever takes must not make the whole gateway fire forever.
+
+        The forgotten state is spent when the pending notices drain, on the reasoning
+        that the unknown ones belong to the same rotation as the known ones. A loop
+        removed while it still owns a notice breaks that: nothing ever takes its notice,
+        the store never empties, and every OTHER loop's take keeps reporting a loss --
+        so every gated pull-request watch fires every interval, permanently. Neither
+        loop-removal site clears the stash, and the judge module exposes no cleanup, so
+        the stuck notice is reachable rather than theoretical.
+
+        A rotation's worth of takes is the bound: past it, the unknown notices cannot
+        still belong to the rotation the reasoning appeals to.
+        """
+        judge._PR_BODIES.clear()
+        judge._PR_BODIES_DROPPED.clear()
+        judge._PR_BODIES_FORGOTTEN = 0
+        cap = judge.MAX_BODY_STASHES
+
+        # Overflow the notice store, which is what sets the forgotten state.
+        for i in range(cap * 2 + 2):
+            judge.publish_pr_bodies(f"loop-{i}", {"comment:1": "prose"})
+        assert judge._PR_BODIES_FORGOTTEN > 0, "the notice store overflowed"
+
+        # Every notice is taken EXCEPT one, whose loop was removed and never returns.
+        pending = list(judge._PR_BODIES_DROPPED)
+        assert len(pending) > 1, "more than one notice is pending"
+        for key in pending[1:]:
+            judge.take_pr_bodies(key)
+        assert pending[0] in judge._PR_BODIES_DROPPED, "one notice is stuck"
+
+        # A rotation's worth of takes by unrelated loops. Past that, no take may still
+        # be answering for a loss whose rotation is long over.
+        for i in range(cap + 1):
+            judge.take_pr_bodies(f"unrelated-{i}")
+
+        _, dropped = judge.take_pr_bodies("an-innocent-loop")
+        assert dropped is False, (
+            "a single stuck notice must not keep every loop's reading short -- that is "
+            "every gated watch firing every interval for the life of the process"
+        )
+
+    def test_a_publish_with_no_bodies_also_spends_the_loss_notice(self) -> None:
+        """Being heard from at all spends the notice, prose or no prose.
+
+        A loop whose stash was evicted keeps its marker until it publishes again. If the
+        empty-bodies path skipped the clearing, every later tick whose remarks carry no
+        prose would claim a loss that did not happen -- a fabricated "not whole" reading,
+        which the default brief turns into a delivered turn on evidence of nothing.
+        """
+        judge._PR_BODIES.clear()
+        judge._PR_BODIES_DROPPED.clear()
+        judge._PR_BODIES_FORGOTTEN = 0
+        cap = judge.MAX_BODY_STASHES
+
+        judge.publish_pr_bodies("victim", {"review:R1": "prose"})
+        for i in range(cap):
+            judge.publish_pr_bodies(f"other-{i}", {"comment:1": "x"})
+        assert "victim" in judge._PR_BODIES_DROPPED, "it was evicted"
+
+        # A tick whose remarks carry no bodies at all.
+        judge.publish_pr_bodies("victim", {})
+
+        stashed, dropped = judge.take_pr_bodies("victim")
+        assert stashed == {}, "there was nothing to stash"
+        assert (
+            dropped is False
+        ), "and nothing was lost this tick, so the reading must not be stamped short"
+
+    def test_a_dropped_stash_withholds_the_payload_from_the_judge(self) -> None:
+        """The caller's wholeness guard already ran, against the reading as FETCHED.
+
+        A payload that only becomes short at the merge would sail past that gate, and a
+        QUIET drawn from it suppresses a wake that was owed. The decision lives in this
+        module rather than at the call site because the call site is a closure inside
+        the gateway's wiring that no test can reach.
+        """
+        observation = {"observation_status": "ok", "remarks": [{"id": "review:R1"}]}
+
+        whole = judge.payload_for_judge(observation, {"review:R1": "please guard it"}, False)
+        assert whole is not None, "a whole reading is handed to the judge"
+        assert whole["remarks"][0]["body"] == "please guard it"
+
+        assert judge.payload_for_judge(observation, {}, True) is None, (
+            "a dropped stash withholds the payload instead of judging prose the judge "
+            "never received"
+        )
+        assert observation["observation_status"] == "ok", "the durable record is untouched"
+
+    def test_a_notice_the_store_could_not_keep_still_reports_a_loss(self) -> None:
+        """The notice store is bounded too, and its overflow discards a loss record.
+
+        A forgotten record would let its loop read missing prose as a whole reading,
+        which is the one thing the record exists to prevent. The owner is unknown once
+        the record is gone, so every take reports a loss until the pending notices
+        drain: the identity is lost, the fact is not, and firing is the only direction
+        that cannot withhold a wake from whoever it was.
+        """
+        judge._PR_BODIES.clear()
+        judge._PR_BODIES_DROPPED.clear()
+        judge._PR_BODIES_FORGOTTEN = 0
+        cap = judge.MAX_BODY_STASHES
+
+        # Enough distinct loops that the notice store itself has to overflow.
+        for i in range(cap * 2 + 2):
+            judge.publish_pr_bodies(f"loop-{i}", {"comment:1": "prose"})
+        assert judge._PR_BODIES_FORGOTTEN > 0, "the notice store overflowed"
+
+        # A loop with no notice of its own still hears about a loss.
+        _, dropped = judge.take_pr_bodies("a-loop-with-no-notice")
+        assert dropped is True, (
+            "with a record forgotten the owner is unknown, so no take may claim it was " "whole"
+        )
+
+    def test_the_forgotten_state_is_spent_once_the_notices_drain(self) -> None:
+        """It must terminate, or every loop fires for the life of the process."""
+        judge._PR_BODIES.clear()
+        judge._PR_BODIES_DROPPED.clear()
+        judge._PR_BODIES_FORGOTTEN = 0
+        cap = judge.MAX_BODY_STASHES
+
+        for i in range(cap * 2 + 2):
+            judge.publish_pr_bodies(f"loop-{i}", {"comment:1": "prose"})
+        assert judge._PR_BODIES_FORGOTTEN > 0
+
+        # Drain every pending notice.
+        for key in list(judge._PR_BODIES_DROPPED):
+            judge.take_pr_bodies(key)
+
+        _, dropped = judge.take_pr_bodies("someone-else")
+        assert dropped is False, "once nothing is pending the unknown set is spent too"
+        assert judge._PR_BODIES_FORGOTTEN == 0
+
+    def test_the_body_stash_evicts_by_publish_recency_not_by_first_sight(self) -> None:
+        """A dict keeps a key's original position, so assigning would pick one victim forever.
+
+        The loop this process saw first would sit at the front of the queue for the
+        life of the gateway and lose its stash to every eviction, however recently it
+        published -- while the genuinely abandoned stashes the cap exists to reclaim
+        sat behind it untouched.
+
+        The republish has to happen while the key is STILL PRESENT. Re-adding a key
+        that was already evicted lands it at the back either way, so a sequence that
+        evicts first cannot tell the two behaviours apart.
+        """
+        judge._PR_BODIES.clear()
+        judge._PR_BODIES_DROPPED.clear()
+        cap = judge.MAX_BODY_STASHES
+
+        judge.publish_pr_bodies("first-ever", {"comment:1": "the earliest loop"})
+        for i in range(cap - 1):
+            judge.publish_pr_bodies(f"other-{i}", {"comment:1": "x"})
+        assert len(judge._PR_BODIES) == cap, "exactly at the cap, so nothing has been dropped"
+        assert "first-ever" in judge._PR_BODIES, "and it is still present, at the front"
+
+        # Republished while present: its position must follow this publish, not its first.
+        judge.publish_pr_bodies("first-ever", {"comment:1": "still here"})
+        # One more entry forces exactly one eviction, taken from the front.
+        judge.publish_pr_bodies("newcomer", {"comment:1": "y"})
+
+        stashed, dropped = judge.take_pr_bodies("first-ever")
+        assert stashed == {"comment:1": "still here"}, (
+            "a loop that republished must not be the victim -- its position has to "
+            "follow its last publish, not its first"
+        )
+        assert dropped is False
+        assert "other-0" not in judge._PR_BODIES, "the least recently published one went instead"
+        assert len(judge._PR_BODIES) <= cap, "and the cap still holds"
+
+    def test_a_dropped_stash_is_counted_and_makes_the_next_tick_read_unwhole(self) -> None:
+        """Prose the judge never saw must not reach it as a remark with nothing in it.
+
+        A silent eviction is indistinguishable from a review that carried no body, so
+        the loop that lost its stash would be screened quiet on evidence it never got.
+        The loss is expressed as a reading that is not whole, which already forces a
+        fire, and it is counted so the overflow is a number rather than an inference.
+        """
+        judge._PR_BODIES.clear()
+        judge._PR_BODIES_DROPPED.clear()
+        before = judge._PR_BODIES_DROPPED_TOTAL
+        cap = judge.MAX_BODY_STASHES
+
+        judge.publish_pr_bodies("victim", {"review:R1": "please guard the windows branch"})
+        for i in range(cap):
+            judge.publish_pr_bodies(f"other-{i}", {"comment:1": "x"})
+
+        stashed, dropped = judge.take_pr_bodies("victim")
+        assert stashed == {}, "its bodies are gone"
+        assert dropped is True, "and the loss is reported rather than looking like silence"
+        assert judge._PR_BODIES_DROPPED_TOTAL == before + 1, "the overflow is counted"
+
+        observation = {"observation_status": "ok", "remarks": [{"id": "review:R1"}]}
+        payload = judge.with_remark_bodies(observation, stashed, dropped)
+        assert judge.pr_target_is_unread(payload) is True, "so the tick fires"
+        assert any("stash cap" in str(r) for r in payload["incomplete"]), "and says why"
+        assert observation["observation_status"] == "ok", "the durable record is untouched"
+
+    def test_a_republish_spends_the_notice_about_an_earlier_loss(self) -> None:
+        """A loop holding fresh prose is owed no forced fire for a stash it replaced."""
+        judge._PR_BODIES.clear()
+        judge._PR_BODIES_DROPPED.clear()
+        cap = judge.MAX_BODY_STASHES
+
+        judge.publish_pr_bodies("victim", {"review:R1": "old prose"})
+        for i in range(cap):
+            judge.publish_pr_bodies(f"other-{i}", {"comment:1": "x"})
+        assert "victim" in judge._PR_BODIES_DROPPED, "it was evicted"
+
+        judge.publish_pr_bodies("victim", {"review:R2": "new prose"})
+        stashed, dropped = judge.take_pr_bodies("victim")
+        assert stashed == {"review:R2": "new prose"}
+        assert dropped is False, "the publish repaired the loss, so nothing is owed"
 
     def test_state_fits_the_ceiling_and_drops_oldest_first(self) -> None:
         evidence = [
@@ -310,6 +595,64 @@ class TestStateBounds:
         screened, dropped = point.screen_evidence(items)
         assert len(screened) == point.MAX_EVIDENCE_ITEMS
         assert dropped == 5
+
+    def test_a_fresh_scrub_refusal_is_counted_as_fresh(self) -> None:
+        """The case the FALLBACK branch exists for: a loss arriving now may be actionable.
+
+        Gating the branch on freshness must not weaken this direction. An item refused on
+        the tick it first arrives is evidence the judge never saw, so the tick holds
+        something it cannot send and must not read as calm.
+        """
+        refusals: dict[str, int] = {}
+        point.screen_evidence([_refused_row(first_seen=True)], refusals)
+        assert refusals.get("scrubbed") == 1, "the scrub refused the item"
+        assert refusals.get("scrubbed_fresh") == 1, "and it counts as a fresh loss"
+
+    def test_a_repeated_scrub_refusal_is_not_counted_as_fresh(self) -> None:
+        """The defect this closes: the same refused body must not fire for hours.
+
+        A remark stays inside the horizon for the full remark window, and the scrub
+        refuses its body on every tick it is read. The pinned board and state rows keep
+        the delta non-empty, so the refusal branch is reached every tick. Counting a
+        repeated refusal as fresh made one commenter's long URL spend the caller's whole
+        budget re-reporting a loss the loop had already fired for.
+        """
+        refusals: dict[str, int] = {}
+        point.screen_evidence([_refused_row(first_seen=False)], refusals)
+        assert refusals.get("scrubbed") == 1, "still counted in the total, for the trace"
+        assert not refusals.get("scrubbed_fresh"), (
+            "a refusal on prose already answered is not a fresh loss -- counting it fires "
+            "the loop every interval for as long as the remark stays in the horizon"
+        )
+
+    def test_an_unstamped_row_is_treated_as_fresh(self) -> None:
+        """An absent flag means the reading could not say, and firing is the safe way.
+
+        An older build's reading carries no flag at all. Reading that as 'already seen'
+        would withhold a wake on evidence that may be new, so an unknown resolves to
+        fresh.
+        """
+        refusals: dict[str, int] = {}
+        point.screen_evidence([_refused_row(first_seen=None)], refusals)
+        assert refusals.get("scrubbed_fresh") == 1, "an unknown stamp reads as fresh"
+
+    def test_the_remark_item_carries_the_stamp_as_a_flag(self) -> None:
+        """The screen acts on the flag, so rendering it into prose alone is not enough."""
+        items = judge._remark_items(
+            {
+                "remarks": [
+                    {"kind": "comment", "author": "a", "body": "x", "first_seen_this_tick": False},
+                    {"kind": "comment", "author": "b", "body": "y", "first_seen_this_tick": True},
+                    {"kind": "comment", "author": "c", "body": "z"},
+                ]
+            },
+            "owner/repo#1",
+            1_800_000_000.0,
+        )
+        assert [i.get("first_seen_this_tick") for i in items] == [False, True, None], (
+            "the flag rides on the row, and an absent one stays absent rather than being "
+            "asserted either way"
+        )
 
     def test_a_pinned_summary_outlives_a_comment_body(self) -> None:
         """The order the char budget gives items up in, and why it is not age.
@@ -498,6 +841,55 @@ class TestEmptyDelta:
         assert verdict.outcome is Outcome.FALLBACK
         assert "could not read every target" in verdict.body
 
+    def test_a_fresh_scrub_refusal_fires_the_tick(self) -> None:
+        """A loss arriving now may be the actionable half, so the tick must not read calm.
+
+        A survivor keeps the delta non-empty, so the empty-delta branch above cannot
+        answer this one -- it reaches the scrub branch, which fires.
+        """
+        rows = [
+            _refused_row(first_seen=True),
+            {
+                "source": "pr:owner/repo#1",
+                "kind": point.KIND_PR_STATE,
+                "age_s": 1.0,
+                "text": "open, mergeable",
+            },
+        ]
+        verdict = asyncio.run(point.judge_tick("watch", evidence=rows, dropped=0))
+        assert verdict.outcome is Outcome.FALLBACK
+        assert "could not send every evidence item" in verdict.body
+
+    def test_a_repeated_scrub_refusal_does_not_fire_the_tick(self) -> None:
+        """The defect this closes, pinned at the verdict rather than at the counter.
+
+        The refused body is prose the judge was already asked about on an earlier tick.
+        The pinned state row keeps the delta non-empty every tick, so gating this branch
+        on the TOTAL refusal count fires every cadence interval for as long as the remark
+        stays in the horizon -- one commenter's long URL draining the caller's whole
+        budget re-reporting a loss it already fired for.
+
+        Dropping the freshness gate makes this test fail, which is the point of it.
+        """
+        rows = [
+            _refused_row(first_seen=False),
+            {
+                "source": "pr:owner/repo#1",
+                "kind": point.KIND_PR_STATE,
+                "age_s": 1.0,
+                "text": "open, mergeable",
+            },
+        ]
+        trace: dict[str, object] = {}
+        verdict = asyncio.run(point.judge_tick("watch", evidence=rows, dropped=0, trace=trace))
+        # The body, not the outcome: with no provider configured this tick answers
+        # FALLBACK for its own reason further down, and that is fine. What must not
+        # happen is taking the PARTIAL-SHED exit, and the body is what names it.
+        assert "could not send every evidence item" not in verdict.body, (
+            "a refusal on already-answered prose must not take the partial-shed exit -- "
+            "the pinned rows make this branch reachable on every tick for hours"
+        )
+
     def test_a_quiet_empty_delta_reports_zero_items_and_no_answers(self) -> None:
         """The notice and the verdict record are built from the trace on this path too.
 
@@ -525,6 +917,41 @@ class TestEmptyDelta:
 
 class TestJudgeTickFallsOpen:
     """Every failure path reaches FALLBACK, which fires the loop."""
+
+    def test_a_partial_scrub_shed_falls_back_rather_than_asking_a_half_question(self) -> None:
+        """The surviving summaries are exactly the evidence that answers "nothing to do".
+
+        A scrub that takes one comment body leaves the pinned board and state rows
+        standing, so the delta is non-empty and the tick would put its question to a
+        judge with the actionable half missing. The judge can then answer QUIET on
+        evidence that never included the request.
+        """
+        trace: dict[str, Any] = {}
+        verdict = asyncio.run(
+            point.judge_tick(
+                "watch",
+                evidence=[
+                    {
+                        "source": "pr:acme/widgets#1",
+                        "kind": point.KIND_PR_CHECKS,
+                        "age_s": 1.0,
+                        "text": "failed 1 (CI / Lint) passed 40",
+                    },
+                    {
+                        "source": "pr:acme/widgets#1",
+                        "kind": point.KIND_PR_COMMENT,
+                        "age_s": 2.0,
+                        "text": "please rotate AKIA" + "D" * 16,
+                    },
+                ],
+                trace=trace,
+            )
+        )
+        assert (
+            verdict.outcome is Outcome.FALLBACK
+        ), "something got through, so the total-shed branch cannot catch this"
+        assert "every evidence item" in verdict.body
+        assert trace["evidence_items"] == 1, "and the count reports only what could be sent"
 
     def test_a_fallback_publishes_the_screened_count(self) -> None:
         """A scrubbed-away tick reports zero items, not the input's length.
@@ -3003,7 +3430,9 @@ class TestTheReadingHappensBeforeTheJudge:
         assert facts["remarks"][0]["author"] == "a-reviewer"
         assert facts["remarks"][0]["first_seen_this_tick"] is True
         assert "body" not in facts["remarks"][0], "a durable record carries no prose"
-        assert _judge.take_pr_bodies(loop.id) == {"review:R1": "please guard the windows branch"}
+        stashed, dropped = _judge.take_pr_bodies(loop.id)
+        assert stashed == {"review:R1": "please guard the windows branch"}
+        assert dropped is False, "nothing was evicted, so the tick is owed no forced fire"
 
     def test_an_unjudged_fetcher_tick_delivers_rather_than_counting_quiet(
         self, tmp_path, monkeypatch
@@ -3022,6 +3451,165 @@ class TestTheReadingHappensBeforeTheJudge:
         )
         assert calls == [loop.id]
         assert quiet is False, "an unowned quiet delivers rather than being charged as quiet"
+
+    def test_an_update_accepted_mid_tick_is_not_reverted(self, tmp_path) -> None:
+        """The staged copy is taken UNDER the lock, and that placement is the argument.
+
+        ``_apply_staged_monitor`` copies every field of the staged loop back over the
+        live one, so a copy taken before the lock reverts an update accepted in between
+        -- in memory and on disk alike, since the snapshot written carries the stale
+        value too and leaves nothing to recover from.
+        """
+
+        async def on_fire(loop: NudgeLoop) -> bool:
+            return True
+
+        service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+        loop = self._judged_pr_loop()
+        service._loops[loop.id] = loop
+        state = loop.monitor
+        assert state is not None
+
+        async def scenario() -> None:
+            # The ONE window an update can land in is while this tick waits for the
+            # lock: the update path takes the same lock, so it is otherwise strictly
+            # before or after. Hold the lock the way ``update`` does, let the tick
+            # block on it, apply the change, and release.
+            entered = asyncio.Event()
+            proceed = asyncio.Event()
+            applied: list[str] = []
+
+            async def updater() -> None:
+                async with service._lock:
+                    entered.set()
+                    await proceed.wait()
+                    loop.idle_secs = 4242
+                    applied.append("idle_secs")
+
+            updating = asyncio.ensure_future(updater())
+            await entered.wait()
+            publishing = asyncio.ensure_future(
+                service._publish_pr_observation(loop, state, self._observation())
+            )
+            # Nothing in that method awaits before the lock, so a waiter ON the lock
+            # is positive proof the tick reached it and got no further. Waiting for
+            # that rather than spinning a fixed number of times is the difference
+            # between pinning the window and releasing before the tick arrives.
+            for _ in range(200):
+                if getattr(service._lock, "_waiters", None):
+                    break
+                await asyncio.sleep(0)
+            assert getattr(
+                service._lock, "_waiters", None
+            ), "the tick must be waiting for the lock before the update lands"
+            proceed.set()
+            published = await publishing
+            await updating
+            assert applied == ["idle_secs"], "the update must have landed while the tick waited"
+            assert loop.idle_secs == 4242, "an update accepted mid-tick is not reverted"
+            assert published is not None, "and the reading is still kept"
+            assert state.last_observation, "and published to live readers"
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            service.stop()
+
+    def test_a_retarget_mid_tick_keeps_no_reading(self, tmp_path) -> None:
+        """Revalidated UNDER the lock, because the subject can change while it waits.
+
+        A retarget makes this reading one of a subject the loop does not watch, so
+        keeping it would screen the new subject against the old one's board. Nothing
+        is kept and the tick fires, the answer every uncertain path here resolves to.
+        """
+
+        async def on_fire(loop: NudgeLoop) -> bool:
+            return True
+
+        service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+        loop = self._judged_pr_loop()
+        service._loops[loop.id] = loop
+        state = loop.monitor
+        assert state is not None
+        assert not state.last_observation, "nothing is published before the tick runs"
+
+        async def scenario() -> None:
+            entered = asyncio.Event()
+            proceed = asyncio.Event()
+            applied: list[str] = []
+
+            async def retarget() -> None:
+                async with service._lock:
+                    entered.set()
+                    await proceed.wait()
+                    state.target = "acme/widgets#43"
+                    applied.append("target")
+
+            retargeting = asyncio.ensure_future(retarget())
+            await entered.wait()
+            publishing = asyncio.ensure_future(
+                service._publish_pr_observation(loop, state, self._observation())
+            )
+            for _ in range(200):
+                if getattr(service._lock, "_waiters", None):
+                    break
+                await asyncio.sleep(0)
+            assert getattr(
+                service._lock, "_waiters", None
+            ), "the tick must be waiting for the lock before the retarget lands"
+            proceed.set()
+            published = await publishing
+            await retargeting
+            assert applied == ["target"], "the retarget must have landed while it waited"
+            assert published is None, "a reading of a dropped subject is not kept"
+            assert not state.last_observation, "so nothing reaches live readers either"
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            service.stop()
+
+    def test_a_replaced_question_drops_the_pr_baseline(self, tmp_path) -> None:
+        """The baseline is the reading a VERDICT was reached on, so it dies with it.
+
+        That verdict answered the question an update has just replaced. Carrying the
+        digest forward lets an unchanged board screen the NEW criteria quiet without
+        ever putting them to the judge, bounded only by the streak floor. An update
+        that changes neither the instruction nor the criteria leaves it alone.
+        """
+        baseline = {"digest": "d" * 16, "remarks": ["r1"]}
+
+        async def main() -> None:
+            svc = AutoNudgeService(base_dir=tmp_path)
+            try:
+                loop = await svc.add(
+                    "chat-1-1",
+                    "Watch https://github.com/acme/widgets/pull/42 until green",
+                    idle_secs=60,
+                    judge={"wake_when": "a review asks for a change"},
+                )
+
+                loop.judge_pr_seen = dict(baseline)
+                revised = await svc.update(loop.id, judge={"wake_when": "a check goes red"})
+                assert revised is not None
+                assert revised.judge_pr_seen == {}, "replaced criteria drop the baseline"
+
+                loop.judge_pr_seen = dict(baseline)
+                moved = await svc.update(
+                    loop.id,
+                    message="Watch https://github.com/acme/widgets/pull/43 until green",
+                )
+                assert moved is not None
+                assert moved.judge_pr_seen == {}, "a replaced instruction drops it too"
+
+                loop.judge_pr_seen = dict(baseline)
+                untouched = await svc.update(loop.id, idle_secs=120)
+                assert untouched is not None
+                assert untouched.judge_pr_seen == baseline, "an interval change leaves it"
+            finally:
+                svc.stop()
+
+        asyncio.run(main())
 
     def test_a_failed_persist_publishes_nothing_and_fires(self, tmp_path, monkeypatch) -> None:
         """The durable record owns this state, so the write is a precondition.
@@ -3109,6 +3697,142 @@ class TestTheReadingHappensBeforeTheJudge:
         finally:
             service.stop()
 
+    def test_a_retarget_during_the_judge_leaves_the_baseline_cleared(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The baseline answers a question an update is allowed to replace mid-tick.
+
+        A retarget clears ``judge_pr_seen`` deliberately, because a digest earned under
+        the old question would screen the new one quiet. The commit runs past an await
+        the update lands inside, so an unconditional commit puts the cleared value back
+        and suppresses the watch the owner just re-aimed until the streak floor. Same
+        comparison the judge call already makes twice, applied to the baseline.
+        """
+        import kiro_crew.autonudge as _an
+
+        async def on_fire(loop: NudgeLoop) -> bool:
+            return True
+
+        reading = self._observation()
+
+        def _poll(identity, message, probe):
+            probe.observation = reading
+            return _an.irq.Verdict(Outcome.QUIET, "pinned")
+
+        monkeypatch.setattr(_an.irq, "poll", _poll)
+        service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+        loop = self._judged_pr_loop()
+        service._loops[loop.id] = loop
+
+        async def _retarget_then_answer(inner: NudgeLoop) -> bool | None:
+            # What ``update`` does to a retargeted loop, at the point it really lands:
+            # inside the await, after the reading was staged against the old message.
+            inner.message = "Watch https://github.com/acme/widgets/pull/43 until green"
+            inner.judge_pr_seen = {}
+            return None
+
+        service._judge_tick_is_quiet = _retarget_then_answer  # type: ignore[method-assign]
+        try:
+            assert asyncio.run(service._monitor_tick_is_quiet(loop)) is False
+            assert loop.judge_pr_seen == {}, "a re-aimed loop keeps its baseline cleared"
+        finally:
+            service.stop()
+
+    def test_the_baseline_is_committed_with_an_awaited_write(self, tmp_path, monkeypatch) -> None:
+        """The stored record is this baseline's authority, so memory may not run ahead of it.
+
+        The awaited judge write inside the judge call has already landed a snapshot
+        holding the OLD baseline. A scheduled write that has not landed when the process
+        stops therefore leaves disk claiming the old baseline while this tick has already
+        screened against the new one, and every remark it passed on reads as new after
+        the restart.
+
+        Pinned by WHAT THE WRITE SEES rather than by counting calls: the judge call makes
+        awaited writes of its own, so a call count cannot tell them from this one. A
+        write that observes the committed baseline can only have happened after the
+        commit, which is exactly the ordering at issue.
+        """
+        import kiro_crew.autonudge as _an
+
+        async def on_fire(loop: NudgeLoop) -> bool:
+            return True
+
+        reading = self._observation()
+
+        def _poll(identity, message, probe):
+            probe.observation = reading
+            return _an.irq.Verdict(Outcome.QUIET, "pinned")
+
+        monkeypatch.setattr(_an.irq, "poll", _poll)
+        service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+        loop = self._judged_pr_loop()
+        service._loops[loop.id] = loop
+
+        seen_baselines: list[dict] = []
+
+        async def _spy_persist(inner: NudgeLoop) -> bool:
+            seen_baselines.append(dict(inner.judge_pr_seen or {}))
+            return True
+
+        async def _answer(inner: NudgeLoop) -> bool | None:
+            return None
+
+        service._persist_judge_state = _spy_persist  # type: ignore[method-assign]
+        service._judge_tick_is_quiet = _answer  # type: ignore[method-assign]
+        try:
+            asyncio.run(service._monitor_tick_is_quiet(loop))
+            assert loop.judge_pr_seen, "the tick staged a baseline to commit"
+            assert any(seen for seen in seen_baselines), (
+                "a durable write must have been AWAITED while the committed baseline was "
+                "in place -- a scheduled write leaves the old baseline on disk"
+            )
+            assert (
+                seen_baselines[-1] == loop.judge_pr_seen
+            ), "and the write that saw it carries exactly what memory holds"
+        finally:
+            service.stop()
+
+    def test_a_baseline_whose_write_does_not_land_is_dropped(self, tmp_path, monkeypatch) -> None:
+        """Memory may not claim what disk does not.
+
+        Keeping the commit after a refused write is the same defect from the other side:
+        this tick screened against a baseline the record does not hold, so a restart
+        re-reads the remarks it passed on -- except nothing ever fires to reveal it,
+        because memory believes they are seen. Dropping the commit costs a turn and
+        withholds nothing, which is the only safe direction.
+        """
+        import kiro_crew.autonudge as _an
+
+        async def on_fire(loop: NudgeLoop) -> bool:
+            return True
+
+        reading = self._observation()
+
+        def _poll(identity, message, probe):
+            probe.observation = reading
+            return _an.irq.Verdict(Outcome.QUIET, "pinned")
+
+        monkeypatch.setattr(_an.irq, "poll", _poll)
+        service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+        loop = self._judged_pr_loop()
+        service._loops[loop.id] = loop
+
+        async def _refuse(inner: NudgeLoop) -> bool:
+            return False
+
+        async def _answer(inner: NudgeLoop) -> bool | None:
+            return None
+
+        service._persist_judge_state = _refuse  # type: ignore[method-assign]
+        service._judge_tick_is_quiet = _answer  # type: ignore[method-assign]
+        try:
+            asyncio.run(service._monitor_tick_is_quiet(loop))
+            assert (
+                loop.judge_pr_seen == {}
+            ), "a baseline whose write was refused must not stay in memory"
+        finally:
+            service.stop()
+
     def test_an_unchanged_reading_is_quiet_even_with_no_judge(self, tmp_path, monkeypatch) -> None:
         """The one judge-less quiet that is earned rather than assumed.
 
@@ -3135,6 +3859,31 @@ class TestTheReadingHappensBeforeTheJudge:
         assert (
             self._two_ticks(tmp_path, monkeypatch, first, changed) is False
         ), "a reading whose board moved must not be charged as quiet"
+
+    def test_two_identical_partial_readings_are_not_an_earned_quiet(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A digest match means an unchanged SUBJECT only if the subject was read whole.
+
+        A fetch that fails the same way twice produces byte-identical facts describing
+        only the rows it reached, so the match says the read half did not change and
+        nothing at all about the half that was not. A red required status sitting there
+        would be withheld to the streak floor. Wholeness is decided by the same
+        ``pr_target_is_unread`` rule the drop path uses, so the two cannot disagree.
+        """
+        from kiro_crew.probes import gh_pr
+
+        partial = self._observation(
+            status=gh_pr.STATUS_PARTIAL,
+            incomplete=("check runs: page 2 of 3 unread",),
+        )
+        again = self._observation(
+            status=gh_pr.STATUS_PARTIAL,
+            incomplete=("check runs: page 2 of 3 unread",),
+        )
+        assert (
+            self._two_ticks(tmp_path, monkeypatch, partial, again) is False
+        ), "an incomplete reading cannot earn the judge-less quiet however stable it is"
 
     def test_the_digest_ignores_when_the_reading_was_taken(self) -> None:
         """Otherwise the comparison never holds once.

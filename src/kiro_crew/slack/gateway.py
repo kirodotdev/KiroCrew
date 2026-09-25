@@ -8256,7 +8256,15 @@ class GatewayOrchestrator:
                 # only, and the record the copy is taken from carries who said
                 # something and when, never what -- so filling them in place is
                 # exactly how review prose would reach the disk.
-                payload = _judge.with_remark_bodies(observed, _judge.take_pr_bodies(loop.id))
+                stashed, stash_dropped = _judge.take_pr_bodies(loop.id)
+                payload = _judge.payload_for_judge(observed, stashed, stash_dropped)
+                if payload is None:
+                    logger.debug(
+                        "AutoNudge: loop %s lost its stashed remark bodies -- counting "
+                        "the target as unread rather than judging prose the judge never got",
+                        loop.id,
+                    )
+                    return None
                 # ``last_observed_at`` is a SIBLING field of the fact object, not a key
                 # inside it, so the collector cannot age the reading without being
                 # handed it.

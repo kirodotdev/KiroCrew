@@ -245,7 +245,8 @@ def _bounded_judge_pr_seen(raw: object) -> dict:
     if isinstance(digest, str) and digest.strip():
         out["digest"] = digest.strip()[:_JUDGE_PR_SEEN_DIGEST_CHARS]
     ids: list[str] = []
-    for ident in raw.get("remarks") or []:
+    stored_ids = raw.get("remarks")
+    for ident in stored_ids if isinstance(stored_ids, list) else []:
         if len(ids) >= _JUDGE_PR_SEEN_REMARKS:
             break
         if isinstance(ident, str) and ident.strip():
@@ -3185,6 +3186,7 @@ class AutoNudgeService:
                     # returns the history untouched.
                     loop.judge_quiet_streak = 0
                     loop.judge_cursors = {}
+                    loop.judge_pr_seen = {}
                     loop.judge_last_verdict = {}
                     loop.judge_recent_verdicts = []
                     # The instruction IS the target, so a changed instruction can
@@ -3278,12 +3280,17 @@ class AutoNudgeService:
                 # Both the streak and the read cursors are reset with it, because they
                 # are facts about the OLD brief: a streak earned under one set of
                 # criteria must not count toward the floor under another, and a cursor
-                # belongs to a target list that may have just changed. Resetting costs
-                # at most one re-read; keeping them could hold a loop quiet on a brief
-                # nobody armed.
+                # belongs to a target list that may have just changed. The pull-request
+                # baseline goes for the same reason and matters most: it records the
+                # reading a VERDICT was reached on, and that verdict answered the
+                # question being replaced, so keeping it would let an unchanged board
+                # screen the new criteria quiet without ever putting them to the judge.
+                # Resetting costs at most one re-read; keeping them could hold a loop
+                # quiet on a brief nobody armed.
                 loop.judge = scrubbed_judge_spec(judge)
                 loop.judge_quiet_streak = 0
                 loop.judge_cursors = {}
+                loop.judge_pr_seen = {}
                 loop.judge_last_verdict = {}
                 # The labelled history goes too: every label in it was earned against
                 # the criteria being replaced, so carrying it forward would show the
@@ -6122,10 +6129,18 @@ class AutoNudgeService:
         # Both comparisons are against the last reading this loop reached a VERDICT on,
         # never against the last one it merely published. An empty digest means the
         # comparison could not be made, and an unanswerable comparison is not a match.
+        # A match also requires the reading to be WHOLE, decided by the one function
+        # that already owns that question: two byte-identical PARTIAL readings agree
+        # only about the half that was read, so treating them as an unchanged subject
+        # would withhold a red lane sitting in the half that was not.
         judged = loop.judge_pr_seen if isinstance(loop.judge_pr_seen, dict) else {}
         this_digest = _pr_facts_digest(facts)
         prior_digest = str(judged.get("digest") or "")
-        unchanged = bool(this_digest) and this_digest == prior_digest
+        unchanged = (
+            bool(this_digest)
+            and this_digest == prior_digest
+            and not judge.pr_target_is_unread(facts)
+        )
         judged_remarks = judged.get("remarks")
         seen = {
             str(ident) for ident in (judged_remarks if isinstance(judged_remarks, list) else [])
@@ -6139,16 +6154,38 @@ class AutoNudgeService:
                 ident = str(row.get("id", ""))
                 ids.append(ident)
                 row["first_seen_this_tick"] = ident not in seen
-        staged = deepcopy(loop)
-        staged_state = staged.monitor
-        if staged_state is None:
-            return None
-        staged_state.last_observation = facts
-        staged_state.last_observed_at = float(
-            getattr(observation, "observed_at", 0.0) or time.time()
-        )
+        observed_at = float(getattr(observation, "observed_at", 0.0) or time.time())
+        binding = (monitor.kind, monitor.target)
         try:
             async with self._lock:
+                # Re-read under the lock. Every check above was made while an update
+                # could still land, and this one decides whether the reading belongs to
+                # this loop at all: a retarget makes it a reading of a subject the loop
+                # does not watch, and publishing it would screen the new subject against
+                # the old one's board.
+                if (
+                    loop.monitor is not monitor
+                    or loop.id not in self._loops
+                    or (monitor.kind, monitor.target) != binding
+                ):
+                    logger.info(
+                        "AutoNudge: loop %s changed before its reading was kept -- firing",
+                        loop.id,
+                    )
+                    return None
+                # STAGED UNDER THE LOCK, and that placement is the whole correctness
+                # argument. ``_apply_staged_monitor`` copies EVERY field of the staged
+                # loop back over the live one, so a copy taken before the lock would
+                # revert any update accepted in between -- in memory and on disk, since
+                # the snapshot written would be the stale one too, with nothing to
+                # recover from. Copying here means no update can land between the copy
+                # and the write.
+                staged = deepcopy(loop)
+                staged_state = staged.monitor
+                if staged_state is None:
+                    return None
+                staged_state.last_observation = facts
+                staged_state.last_observed_at = observed_at
                 await self._persist_staged_monitor_locked(loop, staged)
         except asyncio.CancelledError:
             raise
@@ -6187,11 +6224,15 @@ class AutoNudgeService:
         is what every tick costs today. So every uncertain path resolves toward
         spending, and only a positive "nothing happened" from the kernel skips.
 
-        The kernel call is offloaded to a thread because observing runs ``gh``
-        as a subprocess with a 25s timeout. On the event loop that would freeze
-        chat, the channel transports and the liveness probes for as long as one
-        slow GitHub call takes.
+        The kernel call is offloaded to a thread because observing runs ``gh`` as a
+        subprocess -- several of them, since one reading fetches the pull request, its
+        check runs and its commit statuses, and paginates the last two. Each call is
+        capped individually, but what the thread is held for is the whole reading's
+        budget, ``gh_pr._TICK_BUDGET_SECS``. On the event loop that would freeze chat,
+        the channel transports and the liveness probes for that long.
         """
+        from kiro_crew import autonudge_judge as judge
+
         monitor = loop.monitor
         # Whether the typed probe below will actually observe this tick -- and so
         # whether a TERMINAL can still be detected for it. Only a loop whose probe
@@ -6355,8 +6396,9 @@ class AutoNudgeService:
             # toward anyway.
             monitor.poll_in_flight = False
 
-        # The poll above is a real await -- it runs ``gh`` in a thread for up to
-        # 25 seconds -- so the loop can be RETARGETED while it is in flight:
+        # The poll above is a real await -- it runs ``gh`` in a thread for as long as
+        # the reading's whole budget, ``gh_pr._TICK_BUDGET_SECS``, not the per-call cap
+        # -- so the loop can be RETARGETED while it is in flight:
         # ``update(message=...)`` rebinds the monitor to a different pull request,
         # or clears it. Acting on this verdict now would apply an observation of
         # the OLD subject to the new one, and the terminal branch would deactivate
@@ -6391,6 +6433,17 @@ class AutoNudgeService:
         reading_unchanged = False
         #: What ``judge_pr_seen`` becomes, but only once a verdict exists.
         staged_pr_seen: dict = {}
+        #: The question that baseline answers, captured BEFORE the reading is published
+        #: and re-checked before it is committed. An ``update`` that retargets the
+        #: message or replaces the criteria CLEARS the baseline, deliberately, because a
+        #: digest earned under the old question would screen the new one quiet. The
+        #: commit below runs after an await the update lands inside, so committing
+        #: unconditionally would put the cleared baseline straight back and suppress the
+        #: watch the owner just re-aimed until the streak floor. Same comparison the
+        #: judge call makes twice for the same reason, on the verdict rather than on the
+        #: baseline.
+        staged_for_spec = judge.spec_of(loop)
+        staged_for_message = loop.message
         #: The record refused this tick's reading. Carried rather than returned on the
         #: spot, because a terminal debt a live reading DISPROVES has to be cleared on
         #: the way past -- returning here would leave that debt standing and let the
@@ -6637,7 +6690,34 @@ class AutoNudgeService:
             # the await and nothing here runs, which is what leaves the baseline as it
             # was and the new remark still unseen.
             if staged_pr_seen:
-                loop.judge_pr_seen = staged_pr_seen
+                if judge.spec_of(loop) == staged_for_spec and loop.message == staged_for_message:
+                    loop.judge_pr_seen = staged_pr_seen
+                    # AWAITED here, not left to the scheduled write below. The stored
+                    # record is this baseline's authority -- the loader restores it from
+                    # the snapshot -- and the awaited judge write inside the call above
+                    # has already landed one holding the OLD baseline. A scheduled write
+                    # that has not landed when the process stops therefore leaves disk
+                    # claiming the old baseline while this tick has already screened
+                    # against the new one, and every remark it passed on reads as new
+                    # after the restart. Awaiting it here covers every branch below,
+                    # which each return after a scheduled write of their own.
+                    if not await self._persist_judge_state(loop):
+                        # Memory may not claim what disk does not. Dropping the commit
+                        # leaves the baseline exactly as the stored record has it, so the
+                        # next tick re-reads these remarks -- which costs a turn and
+                        # withholds nothing, the only safe direction here.
+                        loop.judge_pr_seen = {}
+                        logger.warning(
+                            "AutoNudge: loop %s judged but its pull-request baseline did "
+                            "not persist -- leaving the stored baseline in force",
+                            loop.id,
+                        )
+                else:
+                    logger.info(
+                        "AutoNudge: loop %s was re-aimed while this tick judged -- "
+                        "leaving its pull-request baseline cleared",
+                        loop.id,
+                    )
             if judged is False:
                 # The judge overrides the probe's quiet on evidence the probe cannot
                 # read, so this tick spends a turn and is accounted for as one.
@@ -6655,13 +6735,16 @@ class AutoNudgeService:
                 # no collector, and this point's egress scope, which is fail-closed and
                 # ungranted on a stock install. So an unowned quiet DELIVERS.
                 #
-                # EXCEPT where the reading is byte-identical to the previous one, which
-                # is the one judge-less quiet that is earned rather than assumed: no
-                # criterion ABOUT the subject can have become true while the subject did
-                # not change, so nothing is being withheld. That keeps the cost promise
-                # true for a watch on a machine with no judge -- an unchanged board is
-                # still free -- and the streak floor still covers a criterion about
-                # elapsed time, which is the one kind a digest cannot see.
+                # EXCEPT where the reading is byte-identical to the previous one AND
+                # read the subject whole, which is the one judge-less quiet that is
+                # earned rather than assumed: no criterion ABOUT the subject can have
+                # become true while the subject did not change, so nothing is being
+                # withheld. Wholeness is half of that claim -- two identical PARTIAL
+                # readings agree only about the part that was read -- so the match is
+                # taken against a whole reading or not at all. That keeps the cost
+                # promise true for a watch on a machine with no judge -- an unchanged
+                # board is still free -- and the streak floor still covers a criterion
+                # about elapsed time, which is the one kind a digest cannot see.
                 #
                 # Keyed on the published reading rather than on the loop's shape,
                 # because that is what says this probe judges nothing: a classifying

@@ -59,6 +59,12 @@ from urllib.parse import urlparse
 
 from kiro_crew.github_runner import resolve_gh, run_gh
 from kiro_crew.irq import Probe, Tick, sanitize_label
+from kiro_crew.monitoring.models import (
+    MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET,
+    MAX_MONITOR_CHECK_IDENTITY_CHARS,
+    PULL_REQUEST_SUPERSEDED_CHECK_FIELD,
+    PULL_REQUEST_SUPERSEDED_INCOMPLETE_IDENTITY,
+)
 from kiro_crew.monitoring.pull_request import (
     ProviderErrorKind,
     classify_provider_error_text,
@@ -189,18 +195,72 @@ _RETRYABLE_RE = re.compile(
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
+#: How long any provider-chosen string may be once the reading RETAINS it. The facts
+#: become the durable monitor record and are re-serialised every tick, so a field a
+#: third party names -- a forge node id, a timestamp as the forge spelled it, a state
+#: word -- is unbounded text on disk until something clips it. One constant for the
+#: whole population: a second number would drift, and the reader holding the smaller
+#: one would disagree about what it is looking at.
+_MAX_RETAINED_FIELD_CHARS = 200
+
+
+def _bounded_field(value: object) -> str:
+    """One retained provider-chosen string, clipped to :data:`_MAX_RETAINED_FIELD_CHARS`.
+
+    Every string in the facts that a third party can choose passes through here at the
+    point of RETENTION, which is the only place that can hold for fields added later.
+    No digest suffix, unlike a check identity: these are ids and short state words
+    whose prefix is already distinguishing, and a clip long enough to matter means the
+    forge sent something no reader was going to use anyway.
+    """
+    text = str(value or "")
+    return text[:_MAX_RETAINED_FIELD_CHARS]
+
+
+def _bounded_check_identity(identity: str) -> str:
+    """One check identity, clipped to the canonical bound with a digest suffix.
+
+    The suffix is what keeps clipping from COLLIDING: two workflow names sharing a
+    long prefix would otherwise clip to the same string and read as one lane, which
+    is the failure a bound is supposed to avoid rather than introduce.
+    """
+    if len(identity) <= MAX_MONITOR_CHECK_IDENTITY_CHARS:
+        return identity
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+    return f"{identity[: MAX_MONITOR_CHECK_IDENTITY_CHARS - len(digest) - 1]}#{digest}"
+
+
+def _sanitized_body_with_clip(value: object, limit: int = _MAX_BODY_CHARS) -> tuple[str, bool, str]:
+    """*value* as bounded plain text, whether the CLIP shortened it, and its whole digest.
+
+    The normalisation shortens as well: a CRLF pair becomes one newline, runs of blank
+    lines collapse, and surrounding whitespace goes. So a length comparison against
+    what the forge returned marks any comment written in a web editor as truncated,
+    and that flag is durable -- it rides in the facts and renders to the judge as a
+    clipped body. Only the final slice truncates, so only the final slice sets it.
+
+    The digest is taken from the WHOLE normalised text, before the slice, and only the
+    digest leaves here -- never the text beyond the clip. A digest of the kept prefix
+    would be blind to an edit past the clip boundary, which is exactly the edit that
+    asks for something in a long comment.
+    """
+    if not isinstance(value, str) or not value:
+        return "", False, ""
+    text = _CONTROL_RE.sub(" ", value.replace("\r\n", "\n").replace("\r", "\n"))
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return text[:limit], len(text) > limit, _body_digest(text)
+
+
 def sanitize_body(value: object, limit: int = _MAX_BODY_CHARS) -> str:
     """*value* as bounded plain text, or ``""``.
 
     Control characters go, runs of blank lines collapse, and the result is clipped
     to *limit*. The judge's own per-item scrub is what decides whether a body may
-    be sent; this only makes it safe to hold, log and render.
+    be sent; this only makes it safe to hold, log and render. A caller that also
+    needs to know whether the clip fired reads :func:`_sanitized_body_with_clip`,
+    which this delegates to so the normalisation has one implementation.
     """
-    if not isinstance(value, str) or not value:
-        return ""
-    text = _CONTROL_RE.sub(" ", value.replace("\r\n", "\n").replace("\r", "\n"))
-    text = re.sub(r"\n{3,}", "\n\n", text).strip()
-    return text[:limit]
+    return _sanitized_body_with_clip(value, limit)[0]
 
 
 def _age_secs(raw: object, clock: float | None = None) -> float | None:
@@ -257,6 +317,11 @@ class Remark:
         body: Bounded plain text, possibly empty -- a review may carry a state
             and no prose.
         clipped: True when *body* is shorter than what the forge returned.
+        whole_body_digest: Digest of the WHOLE normalised body, taken before the
+            clip. It is what tells an edited remark from an unchanged one, and a
+            digest of the clipped text could not: editing a long comment past the
+            clip boundary leaves the kept prefix byte-identical, so the reading
+            would match and the wake it asks for would be suppressed.
     """
 
     kind: str
@@ -267,6 +332,7 @@ class Remark:
     verdict: str = ""
     body: str = ""
     clipped: bool = False
+    whole_body_digest: str = ""
 
 
 @dataclass(frozen=True)
@@ -336,6 +402,63 @@ class PrObservation:
         """The check identities in one bucket, sorted for a stable reading."""
         return tuple(sorted(row.name for row in self.checks if row.bucket == name))
 
+    def _bounded_buckets(self) -> dict[str, list[str]]:
+        """The buckets as RETAINED, bounded the way the canonical writer bounds them.
+
+        These identities are third-party strings -- a contributor names their own
+        workflows and jobs -- and they are kept, not merely rendered: the facts become
+        the durable monitor record and are rewritten on every tick. A fork matrix can
+        carry up to ``_MAX_CHECK_PAGES * _CHECK_PAGE_SIZE`` rows, so an unbounded list
+        here puts hundreds of kilobytes of provider-chosen text into that record.
+
+        The caps and the overflow marker are the canonical writer's own names rather
+        than new literals, because this is one population with one bound: two numbers
+        for it would drift, and the reader holding the smaller one would disagree about
+        what a complete board is. Truncation is said out loud in the retained dict, so
+        a reader cannot mistake a clipped board for a whole one.
+
+        The displaced bucket is bounded on its own terms, the way the canonical writer
+        bounds it. A displaced row carries no verdict, so however many of them a head
+        accumulates every live row is still measured: they are kept OUT of the overflow
+        test, because a board whose live lanes were all read is complete beside any
+        number of them. And their own cut spends its last slot on the canonical
+        displaced sentinel rather than on the board-wide one, so a reader sees that
+        THIS list was clipped without being told the board was short.
+        """
+        live = {
+            "failed": list(self.bucket("failing")),
+            "pending": list(self.bucket("pending")),
+            "passed": list(self.bucket("passing")),
+            "unknown": list(self.bucket("unknown")),
+        }
+        displaced = list(self.bucket("noise"))
+        overflow = not self.checks_complete or any(
+            len(values) > MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET for values in live.values()
+        )
+        bounded = {
+            state: [
+                _bounded_check_identity(value)
+                for value in values[:MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET]
+            ]
+            for state, values in live.items()
+        }
+        if overflow:
+            bounded["unknown"] = [
+                *bounded["unknown"][: MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET - 1],
+                "checks:incomplete",
+            ]
+        bounded_displaced = [
+            _bounded_check_identity(value)
+            for value in displaced[:MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET]
+        ]
+        if len(displaced) > MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET:
+            bounded_displaced = [
+                *bounded_displaced[: MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET - 1],
+                PULL_REQUEST_SUPERSEDED_INCOMPLETE_IDENTITY,
+            ]
+        bounded[PULL_REQUEST_SUPERSEDED_CHECK_FIELD] = bounded_displaced
+        return bounded
+
     def as_facts(self) -> dict[str, object]:
         """The durable half: typed facts and remark metadata, no bodies.
 
@@ -357,35 +480,32 @@ class PrObservation:
             "target": self.subject,
             "observation_status": self.status,
             "observed_at": self.observed_at,
-            "state": self.state,
-            "mergeability": self.mergeability,
-            "merge_state": self.merge_state,
-            "review_decision": self.review_decision,
-            "head_revision": self.head,
-            "checks": {
-                "failed": list(self.bucket("failing")),
-                "pending": list(self.bucket("pending")),
-                "passed": list(self.bucket("passing")),
-                "unknown": list(self.bucket("unknown")),
-                "superseded": list(self.bucket("noise")),
-            },
+            "state": _bounded_field(self.state),
+            "mergeability": _bounded_field(self.mergeability),
+            "merge_state": _bounded_field(self.merge_state),
+            "review_decision": _bounded_field(self.review_decision),
+            "head_revision": _bounded_field(self.head),
+            "checks": self._bounded_buckets(),
             "checks_complete": self.checks_complete,
             "checks_declared": self.checks_declared,
             "checks_read": self.checks_read,
             "remarks": [
                 {
                     "kind": remark.kind,
-                    "id": remark.ident,
-                    "author": remark.author,
-                    "at": remark.at,
+                    "id": _bounded_field(remark.ident),
+                    "author": _bounded_field(remark.author),
+                    "at": _bounded_field(remark.at),
                     "age_s": round(remark.age_s, 3),
-                    "verdict": remark.verdict,
+                    "verdict": _bounded_field(remark.verdict),
                     # Read by the core's reading-digest: an EDITED body changes this
                     # and so changes the reading, which is what stops an edit that asks
-                    # for something being taken for an unchanged subject. A character
-                    # count would say nothing this does not -- different text is a
-                    # different digest -- and ``clipped`` already says the body was cut.
-                    "body_digest": _body_digest(remark.body),
+                    # for something being taken for an unchanged subject. Taken from the
+                    # WHOLE body before either clip, because a digest of the kept prefix
+                    # is identical after an edit past the clip boundary -- the long
+                    # comment whose tail now asks for something would read as unchanged.
+                    # A character count would say nothing this does not, and ``clipped``
+                    # already says the body was cut.
+                    "body_digest": remark.whole_body_digest,
                     "clipped": remark.clipped,
                 }
                 for remark in self.remarks
@@ -395,7 +515,7 @@ class PrObservation:
         if self.draft is not None:
             facts["draft"] = self.draft
         if self.incomplete:
-            facts["incomplete"] = list(self.incomplete)
+            facts["incomplete"] = [_bounded_field(note) for note in self.incomplete]
         return facts
 
     def bodies(self) -> dict[str, str]:
@@ -866,7 +986,7 @@ def _remarks(data: dict, clock: float) -> tuple[tuple[Remark, ...], int]:
         total += 1
         if age > DEFAULT_REMARK_HORIZON_SECS:
             continue
-        body = sanitize_body(raw.get("body"))
+        body, body_clipped, body_digest = _sanitized_body_with_clip(raw.get("body"))
         collected.append(
             Remark(
                 kind="comment",
@@ -875,7 +995,8 @@ def _remarks(data: dict, clock: float) -> tuple[tuple[Remark, ...], int]:
                 at=str(raw.get("createdAt") or ""),
                 age_s=age,
                 body=body,
-                clipped=len(str(raw.get("body") or "")) > len(body),
+                clipped=body_clipped,
+                whole_body_digest=body_digest,
             )
         )
     for raw in data.get("reviews") or []:
@@ -888,7 +1009,7 @@ def _remarks(data: dict, clock: float) -> tuple[tuple[Remark, ...], int]:
         total += 1
         if age > DEFAULT_REMARK_HORIZON_SECS:
             continue
-        body = sanitize_body(raw.get("body"))
+        body, body_clipped, body_digest = _sanitized_body_with_clip(raw.get("body"))
         collected.append(
             Remark(
                 kind="review",
@@ -898,7 +1019,8 @@ def _remarks(data: dict, clock: float) -> tuple[tuple[Remark, ...], int]:
                 age_s=age,
                 verdict=sanitize_label(raw.get("state")) or "REVIEW",
                 body=body,
-                clipped=len(str(raw.get("body") or "")) > len(body),
+                clipped=body_clipped,
+                whole_body_digest=body_digest,
             )
         )
     collected.sort(key=lambda remark: remark.age_s)
@@ -920,6 +1042,11 @@ def _remarks(data: dict, clock: float) -> tuple[tuple[Remark, ...], int]:
                 remark.verdict,
                 remark.body[:room],
                 True,
+                # Carried, not recomputed: this is the SECOND clip on the same body and
+                # the digest has to keep describing the whole one. Recomputing it here
+                # would make the budget's own pressure look like an edited comment, and
+                # taking it from the twice-clipped text would hide a real edit.
+                remark.whole_body_digest,
             )
         spent += len(remark.body)
         kept.append(remark)
