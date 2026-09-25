@@ -50,6 +50,109 @@ _ACTIVITY_LIMIT = 50
 # allocation per page, which is the point -- it is not a cap on the answer.
 _ACTIVITY_PAGE = 500
 
+#: ``asOfSeq`` for a member whose log does not exist yet. The log's own empty
+#: position, since ``last_seq`` answers 0 for an empty log and a recorded event
+#: starts at 1, so this is an ATTRIBUTABLE baseline: the client clears whatever
+#: stale row the slug still holds and keeps applying live frames, every one of
+#: which outranks it under higher-seq-wins.
+_SEQ_NO_LOG = 0
+
+#: ``asOfSeq`` for a slug that cannot be attributed AT ALL -- two members fold to
+#: it, its log records a different member, or the read failed. Negative is not a
+#: position: the client clears the slug and then REFUSES its live frames until a
+#: roster read carries a real sequence. Right for a refusal, and wrong for a member
+#: that merely has no log yet, whose frames must still land. The two cases share a
+#: shape (no values) and differ only here, which is why they are named rather than
+#: written as literals at each exit.
+_SEQ_UNATTRIBUTABLE = -1
+
+
+def _roster_only(snap: dict) -> dict:
+    """*snap* narrowed to the one view a roster ROW renders.
+
+    The list paints one thing per member -- the roster line -- while the activity,
+    wake and driving views belong to the drawer, which opens for a single member at
+    a time and reads them from that member's own route. Shipping all four on the
+    list makes every row carry three views nothing on it reads, and the cost of
+    each is the fold it walks.
+
+    ``asOfSeq`` is carried through unchanged because it is a property of the LOG,
+    not of the subset: the client seeds each key at that sequence under its
+    higher-seq-wins rule, so a live frame that already moved a row past it keeps
+    winning, and a key absent from this block leaves whatever the client holds for
+    it untouched.
+    """
+    from kiro_crew.eventlog import types as eventlog_types
+
+    values = snap.get("values", {}) if isinstance(snap, dict) else {}
+    roster = values.get(eventlog_types.PROJ_ROSTER) if isinstance(values, dict) else None
+    return {
+        "asOfSeq": (
+            snap.get("asOfSeq", _SEQ_UNATTRIBUTABLE)
+            if isinstance(snap, dict)
+            else _SEQ_UNATTRIBUTABLE
+        ),
+        "values": {} if roster is None else {eventlog_types.PROJ_ROSTER: roster},
+    }
+
+
+def _logged_slugs(svc) -> set[str]:
+    """Every member that ALREADY has a log, without creating one for any member.
+
+    A read of the roster must not bring a member's log into existence: opening the
+    page is not an event in that member's life, and a create per row is one
+    directory, one header write and one fsync each. ``slugs()`` answers from the
+    store's own unit listing -- one pass for the whole roster rather than a probe
+    per row -- and is the same enumeration the subscribe baseline trusts to say
+    which members have a cursor at all.
+
+    An unreadable store yields the empty set, which is indistinguishable from a
+    store holding no logs at all -- so a row this listing omits is checked against
+    the filesystem (:func:`_absence_is_confirmed`) before it is served as a member
+    that has simply never been written about. A store fault stays a display
+    degradation rather than a failed endpoint, but it degrades to a CLEARED row
+    instead of a stale one.
+    """
+    try:
+        return set(svc.slugs())
+    except Exception:
+        logger.debug("member log enumeration failed", exc_info=True)
+        return set()
+
+
+def _absence_is_confirmed(slug: str) -> bool:
+    """Is *slug*'s log genuinely ABSENT, rather than merely unprovable?
+
+    Asked only for a slug the enumeration did not return, because a slug missing
+    from that listing is not by itself evidence of absence: ``unit_ids`` answers
+    the empty list for a root it refuses and SKIPS a unit whose header it cannot
+    read, cannot parse, or that does not fold back to the directory holding it. So
+    one unreadable header, or one fault iterating the root, presents as "this
+    member has no log".
+
+    The distinction decides which sequence the row is served at, and only one of
+    the two is safe to guess. An empty baseline keeps every cached row ABOVE it and
+    goes on accepting live frames, so reporting an unreadable log that way leaves a
+    stale roster row and stale drawer views on display as though current. The
+    refusal sentinel clears the slug unconditionally, which is the honest answer
+    when the log cannot be read.
+
+    ``crew_log_dir`` re-asks what the listing swallowed, and its own rules are what
+    make the answer trustworthy in both directions: an ABSENT root is the ordinary
+    fresh-install case and is not an error, while a linked or off-tree root raises
+    and a child under an unreadable root cannot be stat'd. Anything that cannot
+    answer is reported as not-confirmed, so the uncertain case takes the sentinel
+    that clears rather than the one that preserves.
+    """
+    try:
+        from kiro_crew.crew_log.schema import KIND_MEMBER
+        from kiro_crew.crew_log.store import crew_log_dir
+
+        return not crew_log_dir(KIND_MEMBER, slug).exists()
+    except Exception:
+        logger.debug("member log absence unprovable for %r", slug, exc_info=True)
+        return False
+
 
 def _parse_activity_ts(raw: str) -> float:
     """Epoch seconds from an activity record's ISO-8601 ``ts``, or 0.0.
@@ -403,6 +506,20 @@ async def api_members(request: web.Request) -> web.Response:
             out[row["slot_key"]] = (msg_ts or mt, preview, stopped, exhaustive)
         return out
 
+    # Which members have a log, enumerated ONCE for this whole request. Both
+    # closures below need it, and `slugs()` is uncached: it walks the member-kind
+    # root and reads a header per member, so asking twice pays the whole-roster
+    # enumeration twice for one answer that cannot change between them within a
+    # request. Hoisted here rather than memoized inside the helper, because a
+    # process-lifetime cache would have to be invalidated by every writer, and a
+    # request is exactly the window where one reading is correct.
+    def _logged_slugs_now() -> set[str]:
+        from kiro_crew.eventlog.service import get_service
+
+        return _logged_slugs(get_service())
+
+    logged = await asyncio.to_thread(_logged_slugs_now)
+
     def _observe_rosters() -> dict[str, dict]:
         # The roster projection as it stood BEFORE the transcript read below.
         # `reconcile_member_preview` corrects the folded preview to what the
@@ -412,13 +529,19 @@ async def api_members(request: web.Request) -> web.Response:
         # it) or newer than the read (so the correction is stale and refused).
         # Observing AFTER the read would let a message in between be read as
         # unchanged and then overwritten by the older transcript answer.
+        #
+        # Scoped to the members that correction can REACH: it is attempted only for
+        # a slug whose row holds a slot key (a row without one never enters
+        # `preview_authoritative`) and whose log already exists (a member with no
+        # log has no folded preview to drift). Observing the rest costs a fold each
+        # to produce a value nothing compares.
         from kiro_crew.eventlog.service import get_service
 
         svc = get_service()
         seen: dict[str, dict] = {}
         for row in rows:
             slug = row["slug"]
-            if slug in seen:
+            if slug in seen or not row["slot_key"] or slug not in logged:
                 continue
             try:
                 snap = svc.snapshot(slug)
@@ -466,14 +589,18 @@ async def api_members(request: web.Request) -> web.Response:
         if stopped:
             row["last_message_stopped"] = True
 
-    # Per-member event-log projections + lazy config reconcile. Off-loop
-    # because ensure/append/snapshot are synchronous file IO (one fsync per
-    # append). Best-effort: a logging fault never breaks the roster, so a
-    # member whose log cannot be reconciled falls back to an empty projection
-    # rather than failing the endpoint. The config-derived row fields are
-    # sourced from the reconciled roster view — after reconcile they equal the
-    # live config, so a hand-edited config is corrected in the log AND the row
-    # stays byte-identical to what it would have carried straight from cfg.
+    # Per-member event-log projections. Off-loop because snapshot is synchronous
+    # file IO. Best-effort: a logging fault never breaks the roster, so a member
+    # whose log cannot be read falls back to an empty projection rather than
+    # failing the endpoint.
+    #
+    # A READ, for the member logs that already exist. The config-derived row fields
+    # above come straight from the config this request loaded, so they are right for
+    # every member whether or not a log exists; what the projection adds is the
+    # log's own record of them, which the client prefers when present because a
+    # pushed `member_projection` frame has to be able to move a row. Keeping the two
+    # in step is the reconcile's job, which runs for every member whose log exists
+    # and returns before writing when the two already agree.
     agent_cfgs = {row["name"]: cfg.agents.get(row["name"]) for row in rows}
 
     def _project_rows() -> dict[str, dict]:
@@ -501,13 +628,40 @@ async def api_members(request: web.Request) -> web.Response:
                         slug,
                         slug_rows[slug],
                     )
-                    out[slug] = {"asOfSeq": -1, "values": {}}
+                    out[slug] = {"asOfSeq": _SEQ_UNATTRIBUTABLE, "values": {}}
                     continue
-                # Hand over the config this read already loaded: ensure resolves a
-                # placeholder header name, and `name == slug` is true for any member
-                # whose name IS its own fold, so without this the roster would load
-                # the config once per row off the loop.
-                svc.ensure(slug, row["name"], cfg)
+                # No log yet: the row is served from live config alone and nothing is
+                # written. A member with no log has no recorded state that can be
+                # stale, so there is nothing here for either reconcile to correct --
+                # and creating the log to record that would make merely LOOKING at
+                # the roster the event that brings every member's log into being.
+                #
+                # An EMPTY BASELINE, not the refusal sentinel: this member is named,
+                # addressable and has simply not been written about yet, so the row
+                # must keep accepting the live frames that arrive the moment it is.
+                # Only for an absence the filesystem CONFIRMS, though: the listing
+                # drops a log whose header it cannot prove, and an empty baseline
+                # preserves every cached row above it, so guessing here would leave
+                # a stale row on display as though it were current.
+                if slug not in logged:
+                    if _absence_is_confirmed(slug):
+                        out[slug] = {"asOfSeq": _SEQ_NO_LOG, "values": {}}
+                        continue
+                    # A directory the listing did not account for is either a log
+                    # created SINCE the listing was taken -- this member's first
+                    # event, whose own frame is already on its way to the client --
+                    # or one the store will not prove. The two need opposite
+                    # answers, and only a fresh listing tells them apart: it is the
+                    # question "will the store stand behind this log", which is what
+                    # a snapshot cannot answer, because a damaged header line is
+                    # skipped on load and the surviving events still fold to a real
+                    # sequence. Asked for this slug alone, and reaching here is rare:
+                    # a member who has never been written about has no directory.
+                    if slug not in _logged_slugs(svc):
+                        out[slug] = {"asOfSeq": _SEQ_UNATTRIBUTABLE, "values": {}}
+                        continue
+                    # The store proves it now, so it is an ordinary readable log and
+                    # takes the ordinary path below.
                 # A slug is LOSSY, and colliding names are supported: `Review_Agent`
                 # and `review-agent` both fold to `review-agent`, and each activity
                 # entry keeps the exact name so attribution survives. What does NOT
@@ -517,28 +671,34 @@ async def api_members(request: web.Request) -> web.Response:
                 # The header names the member the log belongs to, so a row that is
                 # not that member is served an empty projection instead of a wrong
                 # one. Logged at warning level because a blank row needs its reason.
-                # A header holding the SLUG is exempt: `ensure` writes the header only
+                # A header holding the SLUG is exempt: the header is written only
                 # while the log is fresh, so a writer with no name in hand (the
                 # message path passes None) locks the slug in as the name for good.
                 # That placeholder names nobody, and a slug is a lossy fold, so it
                 # differs from almost every real name -- reading it as a second member
                 # would blank a member's own state over a value that never was a name.
-                logged = svc.logged_name(slug)
-                if logged is not None and logged != row["name"] and logged != slug:
+                logged_name = svc.logged_name(slug)
+                if logged_name is not None and logged_name not in (row["name"], slug):
                     logger.warning(
                         "member slug %r logs %r, so %r gets no projection; "
                         "rename one member so their slugs differ",
                         slug,
-                        logged,
+                        logged_name,
                         row["name"],
                     )
-                    out[slug] = {"asOfSeq": -1, "values": {}}
+                    out[slug] = {"asOfSeq": _SEQ_UNATTRIBUTABLE, "values": {}}
                     continue
                 snap = svc.snapshot(slug)
-                values = snap.get("values", {}) if isinstance(snap, dict) else {}
                 agent_cfg = agent_cfgs.get(row["name"])
                 appended = False
+                # Every read, for every member whose log exists. The reconcile
+                # compares the folded roster against the live config and returns
+                # before writing when they match, so a config that has not drifted
+                # costs one field comparison -- and a config edited by hand rather
+                # than through the dashboard reaches the log on the next read with
+                # nothing to remember between requests.
                 if agent_cfg is not None:
+                    values = snap.get("values", {}) if isinstance(snap, dict) else {}
                     appended = (
                         eventlog_hooks.reconcile_member_config(
                             slug, row["name"], agent_cfg, values.get("roster", {})
@@ -552,8 +712,9 @@ async def api_members(request: web.Request) -> web.Response:
                 # the roster observed BEFORE the transcript read (not this
                 # later snapshot), so a message that spoke in between refuses
                 # the correction instead of being overwritten by it.
+                preview_appended = False
                 if row["slot_key"] in preview_authoritative:
-                    appended = (
+                    preview_appended = bool(
                         eventlog_hooks.reconcile_member_preview(
                             slug,
                             row["name"],
@@ -561,16 +722,19 @@ async def api_members(request: web.Request) -> web.Response:
                             row.get("last_active_ts"),
                             observed_rosters.get(slug, {}),
                         )
-                        or appended
                     )
-                if appended:
+                if appended or preview_appended:
                     # Re-snapshot only when a reconcile appended (the roster
                     # fields would otherwise be stale for this response).
                     snap = svc.snapshot(slug)
-                out[slug] = snap if isinstance(snap, dict) else {"asOfSeq": -1, "values": {}}
+                out[slug] = (
+                    snap
+                    if isinstance(snap, dict)
+                    else {"asOfSeq": _SEQ_UNATTRIBUTABLE, "values": {}}
+                )
             except Exception:
                 logger.debug("member projections failed for %r", slug, exc_info=True)
-                out[slug] = {"asOfSeq": -1, "values": {}}
+                out[slug] = {"asOfSeq": _SEQ_UNATTRIBUTABLE, "values": {}}
         return out
 
     projections = await asyncio.to_thread(_project_rows)
@@ -578,12 +742,14 @@ async def api_members(request: web.Request) -> web.Response:
     # WS push: a projection block carries agent-authored free-text (an activity
     # record's `project`, message previews) and `svc.snapshot()` returns it raw,
     # so the credential + exfiltration-URL chain has to run before it crosses to
-    # the browser or the roster list leaks what the sibling reads scrub.
+    # the browser or the roster list leaks what the sibling reads scrub. Narrowed to
+    # the roster view FIRST so the chain runs over what the row ships rather than
+    # over three views the row discards afterwards.
     from kiro_crew.eventlog.service import _redact_projection_value
 
     for row in rows:
-        block = projections.get(row["slug"], {"asOfSeq": -1, "values": {}})
-        row["projections"] = _redact_projection_value(block)
+        block = projections.get(row["slug"], {"asOfSeq": _SEQ_UNATTRIBUTABLE, "values": {}})
+        row["projections"] = _redact_projection_value(_roster_only(block))
 
     return web.json_response({"members": rows})
 
@@ -985,6 +1151,140 @@ async def api_member_thread(request: web.Request) -> web.Response:
         await asyncio.to_thread(_emit_binding)
 
     return web.json_response({"slot_key": slot.key, "slug": slug, "member": member_name})
+
+
+async def api_member_projections(request: web.Request) -> web.Response:
+    """GET /api/members/{slug}/projections?member=<name> — one member's folded views.
+
+    What the detail drawer mounts on. The roster list carries only the view a list
+    ROW paints; the drawer paints the activity timeline, the patrol state and the
+    driven-slot list, and it is open for exactly one member at a time, so it reads
+    them here instead of every row carrying three views nothing on it reads.
+
+    Serves the WHOLE snapshot rather than a named subset: the drawer reads three
+    views today, the projection set is extensible (an app contributes its own
+    ``<app>/<name>`` key), and a per-key allowlist here would silently withhold a
+    view the moment one is added. The block is the same shape the roster ships and
+    the same shape a ``member_projection`` frame carries, so the client seeds it
+    through one code path.
+
+    ``member`` (query, REQUIRED) is the exact crew name, for the same reason the
+    activity read requires it: a slug is a lossy fold, two names can share one log,
+    and a whole-member projection served on the wrong name renders one member's work
+    as another's. The name is checked against the log's own header, and a mismatch
+    answers 409 rather than a blank body -- the drawer has to be able to say WHY it
+    is empty.
+
+    A member with no log answers an empty BASELINE (``asOfSeq`` 0, no values),
+    which is exactly what the roster sends for the same member, and the read does
+    not create one: opening a drawer is not an event in that member's life. The
+    negative sentinel is kept for a slug that cannot be attributed, because the
+    client stops applying live frames to those and a member about to be written
+    about for the first time must keep receiving them.
+
+    Redacted through the projection chain before it leaves, the same as the roster
+    block, the ``/history`` read and the WS push.
+    """
+    denied = await _deny_app_caller(request, "members.projections")
+    if denied is not None:
+        return denied
+    slug = request.match_info["slug"]
+    try:
+        members_mod.validate_slug(slug)
+    except MemberSlugError:
+        return web.json_response(
+            {"error": "invalid member slug", "code": "invalid_member_slug"}, status=400
+        )
+    member = request.query.get("member", "")
+    if not member or not _AGENT_NAME_RE.match(member):
+        return web.json_response(
+            {"error": "member query parameter required", "code": "missing_member"}, status=400
+        )
+
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    # The member has to OWN the slug, not merely fail to collide with it. Three
+    # separate questions, and the same order the briefing read asks them in: does
+    # this name derive this slug, does the name exist in config, and is it the only
+    # name deriving the slug. Without the first, `?member=` is free to name a
+    # SECOND member while the path names a log: a log whose header holds the slug
+    # placeholder passes the header check below for any name, and the reconcile
+    # would then append the named member's config fields into another member's log
+    # and record the pass as done. The header check cannot stand in for this --
+    # it asks which member the log RECORDS, and the placeholder records nobody.
+    try:
+        if members_mod.member_slug(member, cfg) != slug:
+            return web.json_response(
+                {"error": "member does not match slug", "code": "member_slug_mismatch"}, status=400
+            )
+    except MemberSlugError:
+        return web.json_response(
+            {"error": "member does not match slug", "code": "member_slug_mismatch"}, status=400
+        )
+    if member not in cfg.agents:
+        return web.json_response(
+            {"error": "no crew member for this slug", "code": "member_not_found"}, status=404
+        )
+    # Two rows folding to one slug is the case the roster blanks for BOTH of them,
+    # and it has to blank here too: neither member can be told apart in a slug-keyed
+    # log, so serving either one's views under this slug is a guess.
+    # `_member_names_for_slug` is the addressability question, which is the one being
+    # asked -- whether this ROUTE can name a single member behind the slug.
+    if _member_names_for_slug(cfg, slug) != [member]:
+        return web.json_response(
+            {"error": "member slug is shared", "code": "member_slug_shared"}, status=409
+        )
+
+    def _read() -> dict | None:
+        from kiro_crew.eventlog.service import _redact_projection_value, get_service
+
+        svc = get_service()
+        if slug not in _logged_slugs(svc):
+            if _absence_is_confirmed(slug):
+                # Empty baseline, for the reason the roster read gives at the same
+                # exit: a member with no log is attributable, so its frames must
+                # still land.
+                return {"asOfSeq": _SEQ_NO_LOG, "values": {}}
+            if slug not in _logged_slugs(svc):
+                # The listing omits a log whose header it cannot prove, and a fresh
+                # listing still omits this one, so this is a failed READ of the one
+                # member the request is about. Raising takes the route's own 500,
+                # which the drawer renders as an error instead of painting an
+                # affirmative "nothing scheduled" over state it could not read.
+                raise OSError(f"member log for {slug!r} is present but cannot be proved")
+            # The store proves it now -- a log created since the first listing --
+            # so it reads like any other.
+        logged_name = svc.logged_name(slug)
+        if logged_name is not None and logged_name not in (member, slug):
+            return None
+        snap = svc.snapshot(slug)
+        # A PURE read, and deliberately no config reconcile. The reconcile compares a
+        # config this request loaded against the folded roster and appends what
+        # differs, so a save that lands between the load and the snapshot is undone by
+        # an append carrying the older values. The roster read is where that
+        # comparison belongs -- it runs for every logged member on every poll, and the
+        # correcting append raises the log's sequence, so the corrected value outranks
+        # an uncorrected one under the client's higher-seq-wins rule. Doing it here as
+        # well buys one member's correction and costs a second writer on a read path.
+        if not isinstance(snap, dict):
+            return {"asOfSeq": _SEQ_UNATTRIBUTABLE, "values": {}}
+        return {
+            "asOfSeq": snap.get("asOfSeq", _SEQ_UNATTRIBUTABLE),
+            "values": _redact_projection_value(snap.get("values", {})),
+        }
+
+    try:
+        block = await asyncio.to_thread(_read)
+    except Exception:
+        logger.debug("member projections read failed for %r", slug, exc_info=True)
+        return web.json_response(
+            {"error": "could not read member projections", "code": "member_projections_failed"},
+            status=500,
+        )
+    if block is None:
+        return web.json_response(
+            {"error": "member slug logs another member", "code": "member_slug_foreign"}, status=409
+        )
+    return web.json_response(block)
 
 
 async def api_member_activity(request: web.Request) -> web.Response:

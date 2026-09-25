@@ -26,6 +26,12 @@ vi.mock('../../api/client', () => ({
     members: vi.fn(),
     memberThread: vi.fn(),
     memberActivity: vi.fn(() => Promise.resolve({ slug: '', member: '', capped: false, entries: [] })),
+    // The open member's folded views. The roster list carries the `roster` view
+    // alone, so the drawer's activity timeline and patrol state read their
+    // baseline here. Resolved-and-empty is the state every case not about those
+    // blocks wants, and the patrol tile waits for this read before it forms a
+    // verdict — an unstubbed reject would leave every drawer case racing it.
+    memberProjections: vi.fn(() => Promise.resolve({ asOfSeq: 0, values: {} })),
     // The Notes tab's read. "No notes yet" is the state every case not about
     // Notes wants: an empty state, not an alert.
     memberBriefing: vi.fn(() => Promise.resolve({ slug: '', member: '', supported: true, text: '', updated_ts: null, redacted: false, truncated: false })),
@@ -272,6 +278,11 @@ beforeEach(() => {
   // the quiet defaults.
   vi.mocked(api.memberActivity).mockImplementation(() =>
     Promise.resolve({ slug: '', member: '', capped: false, entries: [] }),
+  )
+  // The patrol tile waits for this read before it forms a verdict, so a case
+  // that holds it open would leave every later drawer on the skeleton.
+  vi.mocked(api.memberProjections).mockImplementation(() =>
+    Promise.resolve({ asOfSeq: 0, values: {} }),
   )
   // The flag case above turns reply threads ON for one test; back to the default.
   vi.mocked(api.kirocrewConfig).mockImplementation(() => Promise.resolve({}))
@@ -2073,6 +2084,55 @@ describe('MembersPage auto patrol (monitor loop status)', () => {
     expect(cycles).toHaveTextContent('61')
     expect(cycles).toHaveTextContent(/no limit/i)
     expect(cycles).not.toHaveTextContent('61/0')
+  })
+
+  it('waits for the durable wake baseline instead of reading an empty registry as nothing scheduled', async () => {
+    // The verdict reads two sources: the live registry for presence, and the
+    // `wake` projection for a stop that outlives it. The projection arrives with
+    // the open member's own read, so a verdict formed before that read lands
+    // shows "nothing scheduled" for a member the log records as STOPPED -- the
+    // exact reading the durable record exists to prevent. Held open here so the
+    // window is observable rather than a race.
+    let release!: (v: { asOfSeq: number; values: Record<string, unknown> }) => void
+    ;(api.memberProjections as ReturnType<typeof vi.fn>).mockReturnValue(
+      new Promise((resolve) => {
+        release = resolve
+      }),
+    )
+    ;(api.autonudgeList as ReturnType<typeof vi.fn>).mockResolvedValue({ enabled: true, loops: [] })
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    await openWorkLog()
+
+    // While the read is in flight the tile shows its skeleton and commits to no
+    // verdict -- in particular not the "nothing scheduled" one.
+    await waitFor(() => expect(screen.getByTestId('member-patrol-loading')).toBeInTheDocument())
+    expect(screen.queryByTestId('member-patrol-status')).toBeNull()
+
+    release({ asOfSeq: 4, values: { wake: { patrol: 'stopped', stopped_reason: 'runtime_budget' } } })
+
+    // Once it lands the durable stop is what renders, reason and all.
+    await waitFor(() => expect(screen.queryByTestId('member-patrol-loading')).toBeNull())
+    expect(screen.getByTestId('member-patrol-status')).toHaveTextContent(/stopped/i)
+    expect(screen.getByTestId('member-patrol-reason')).toBeInTheDocument()
+  })
+
+  it('a FAILED projections read shows the error, never "nothing scheduled"', async () => {
+    // The same window as the test above, ending the other way. A read that fails
+    // is also no longer in flight, so a readiness test asking only whether the
+    // request settled opens the gate on a baseline that never arrived -- and the
+    // tile then states the one thing it cannot know, that nothing is scheduled.
+    // Three states, and a failure is its own: skeleton, error, or a verdict.
+    ;(api.memberProjections as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('projections read failed'),
+    )
+    ;(api.autonudgeList as ReturnType<typeof vi.fn>).mockResolvedValue({ enabled: true, loops: [] })
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    await openWorkLog()
+
+    await waitFor(() => expect(screen.getByTestId('member-patrol-error')).toBeInTheDocument())
+    expect(screen.queryByTestId('member-patrol-status')).toBeNull()
   })
 
   it('a banner, when set, is what the instruction row shows', async () => {

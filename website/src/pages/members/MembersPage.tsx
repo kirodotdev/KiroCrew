@@ -54,6 +54,7 @@ import { crewDisplayName } from '../../components/AgentSelector'
 import {
   MEMBERS_ROSTER_QUERY_KEY,
   memberActivityQueryKey,
+  memberProjectionsQuery,
   memberThreadQueryKey,
   membersRosterQuery,
   type MemberThreadOutcome,
@@ -1420,6 +1421,25 @@ export default function MembersPage() {
   const drivingExpanded = drivingExpandedFor === activeMemberKey
   const visibleDriving = drivingExpanded ? drivingSessions : drivingSessions.slice(0, DRIVING_VISIBLE)
 
+  const activeSlug = active?.slug ?? ''
+  const activeMemberName = active?.name ?? ''
+  // The open member's folded views, seeded into the projection store this page
+  // already reads through `useMemberProjection`. The roster list carries the
+  // `roster` view alone because that is the only one a list ROW paints, so the
+  // blocks below — the activity timeline and the patrol state — have no baseline
+  // until this read lands or a live frame arrives. Without it a member who has
+  // not moved since the gateway started opens to an empty drawer.
+  //
+  // Enabled for ONE member at a time, which is the whole shape of the change: the
+  // views are read for whoever is open rather than for all of them on every list
+  // request. Withheld for a colliding slug on the same ground `projectionSlug`
+  // withholds there — a slug two rows share cannot say which member the views
+  // describe, and the route answers 409 rather than guessing.
+  const projectionsEnabled = !!projectionSlug(activeSlug) && !!activeMemberName
+  const projectionsQuery = useQuery({
+    ...memberProjectionsQuery(activeSlug, activeMemberName),
+    enabled: projectionsEnabled,
+  })
   // Recent-activity pointers for the Work log tab, read when it is on
   // screen for a member and cached per exact member NAME, not slug — slugs are
   // lossy, and the whole point of the backend's member filter is that two
@@ -1430,8 +1450,6 @@ export default function MembersPage() {
   // render the affirmative "no activity"; a refetch error after a good read
   // keeps the last entries. The finite staleTime is the roster's: a return to
   // the summary shows the cached pointers and refreshes them behind.
-  const activeSlug = active?.slug ?? ''
-  const activeMemberName = active?.name ?? ''
   const activityQuery = useQuery({
     queryKey: memberActivityQueryKey(activeSlug, activeMemberName),
     queryFn: () => api.memberActivity(activeSlug, activeMemberName),
@@ -1722,6 +1740,24 @@ export default function MembersPage() {
   // stop, else the loop record's own field.
   const patrolStoppedReason =
     (activeWake?.patrol === 'stopped' ? activeWake.stopped_reason : undefined) ?? activePatrol?.stopped_reason
+  // The verdict reads TWO sources, so the readout is ready only when both have
+  // answered: the live loop registry for presence, and the durable `wake`
+  // projection for a stop that outlives the registry. The projection arrives with
+  // the open member's own read, and a verdict formed before it lands would show
+  // `none` — "nothing scheduled" — for a member the log records as stopped, which
+  // is the exact reading the durable record exists to prevent. The same three
+  // states the activity read keeps, for the same reason: no answer yet is pending,
+  // failed with no answer is an error, and only an answer is ready. Not-fetching
+  // cannot stand in for answered — a failed read is also not in flight, and
+  // treating it as ready renders the affirmative "nothing scheduled" off a
+  // baseline that never arrived. A withheld read (colliding slug, no member) is
+  // never pending, so it waits for nothing; a refetch error after a good answer
+  // keeps that answer.
+  const projectionsPending =
+    projectionsEnabled && projectionsQuery.data === undefined && !projectionsQuery.isError
+  const projectionsFailed =
+    projectionsEnabled && projectionsQuery.data === undefined && projectionsQuery.isError
+  const patrolReadoutReady = patrol.loaded && !projectionsPending
   // Clock for the "next wake" countdown, ticking only while the summary shows
   // an active loop — the same deadline-preserving reading the composer's goal
   // chip renders (see nextCycleText), on a coarser tick.
@@ -2677,12 +2713,12 @@ export default function MembersPage() {
             />
             <span className="flex-1">{t('pages.membersPage.patrol_title')}</span>
           </div>
-          {!patrol.loaded ? (
+          {!patrolReadoutReady ? (
             <div className="mb-4 space-y-1.5" data-testid="member-patrol-loading" aria-hidden>
               <div className="h-3 rounded bg-bg-hover animate-pulse" />
               <div className="h-3 w-3/4 rounded bg-bg-hover animate-pulse" />
             </div>
-          ) : patrol.failed ? (
+          ) : patrol.failed || projectionsFailed ? (
             /* The shared notice, not a hand-rolled alert: it keeps the
                structured error context and the agent hand-off. askAgent is
                safe here — a read failure on a drawer that holds no draft. */

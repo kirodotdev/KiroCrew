@@ -3853,6 +3853,16 @@ export const api = {
       capped: boolean
       entries: MemberActivityEntry[]
     }>,
+  // The open member's folded projection views. The roster list carries only the
+  // `roster` view each list row paints; the drawer paints activity, wake and
+  // driving, and it is open for one member at a time, so it reads the whole block
+  // here rather than making every row in the list carry three views nothing on it
+  // reads. `member` is the exact crew name because the server checks it against
+  // the log's own header (slugs are lossy, so two crews can share one).
+  memberProjections: (slug: string, member: string) =>
+    fetch(
+      '/api/members/' + encodeURIComponent(slug) + '/projections?member=' + encodeURIComponent(member),
+    ).then(j) as Promise<ProjectionsBlock>,
   // The crew's published webview: metadata plus the composed document. Read
   // through this layer rather than a component-local `fetch`, like every sibling
   // above -- the members page's tests stub THIS module, so a hand-rolled fetch was

@@ -16,6 +16,16 @@ roster refetch. `GET /api/members` remains the cold-start baseline and a
 finite-stale registry read, and the activity query remains the source of
 loading/error state and its `capped` flag.
 
+The roster read is a **pure read**. It creates no log for any member: a member
+with no log is served from live config with an empty baseline, because opening a
+page is not an event in that member's life and a create per row is a directory, a
+header write and an fsync each. Each roster row also carries the `roster` view
+ALONE, the one view a list row paints; the activity timeline, the patrol state and
+the driven-slot list belong to the detail drawer, which is open for one member at a
+time and reads them from `GET /api/members/{slug}/projections`. The cost of a view
+is the fold it walks, so carrying four per row made the roster scale with every
+member's event count rather than with the number of members.
+
 ## 2. Storage and the envelope
 
 Each member's log is a `member`-kind **crew log**, so it lives at `<data_home>/crew-log/members/<store name>/log.jsonl`, where `<store name>` is the readable-plus-digest fold of the slug that every crew log uses. `kiro_crew.eventlog.log` is an adapter over `kiro_crew.crew_log.store`; the bytes, the locking, the durability, the torn-tail repair and retention all belong to that store, which already owns them for the `crew` and `session` kinds.
@@ -39,8 +49,10 @@ Writes are serialized per member in-process and across processes by the store's 
 
 Discovering member logs through `MemberEventLogService.slugs()` reads only each
 log's header line, so that directory scan follows the number of members rather
-than the size of their logs. This is service-level log discovery; the full roster
-request separately ensures and folds each configured row. A slug comes from the
+than the size of their logs. This is service-level log discovery, and it is also
+what the roster read enumerates with: one pass answers which members have a log at
+all, so a row whose member has none is served an empty baseline without probing,
+and without creating, per row. A slug comes from the
 header rather than the directory name, and only when it folds back to the directory
 it was found in — the fold is not reversible, and a directory carrying another
 unit's id must not be enumerated as that other unit.
@@ -98,7 +110,31 @@ An open span whose owner is gone is closed by the reader, not by a bystander wri
 
 ## 6. Transport
 
-`GET /api/members` rows carry `projections: {asOfSeq, values}` — the baseline.
+`GET /api/members` rows carry `projections: {asOfSeq, values}` — the baseline,
+narrowed to the `roster` view. `asOfSeq` is carried through that narrowing
+UNCHANGED, because it is a property of the log rather than of the subset: the client
+seeds each key at that sequence under higher-seq-wins, so a live frame that already
+moved a row past it keeps winning, and a key absent from the narrowed block leaves
+whatever the client holds for it untouched.
+
+`GET /api/members/{slug}/projections?member=<name>` serves ONE member's whole
+snapshot, which is what the detail drawer mounts on. It serves the whole snapshot
+rather than a named subset: the drawer reads three views today, the projection set
+is extensible (an app contributes its own `<app>/<name>` key), and a per-key
+allowlist would silently withhold a view the moment one is added. `member` is
+required for the same reason the activity read requires it — a slug is a lossy fold,
+two names can share one log, and a whole-member projection served on the wrong name
+renders one member's work as another's. The route proves the member OWNS the slug
+before reading: the name derives this slug, the name exists in config, and it is the
+only name that derives it. Without the first of those, `member` could name a second
+member while the path names a log, so the answer would be one member's whole folded
+state served under another's name. The route writes NOTHING -- not even a config
+correction. That comparison needs a config loaded earlier in the request, so an append
+carrying it can undo a save that landed since; the roster read owns it, running for
+every logged member on every poll, and its correcting append raises the log's sequence
+so the corrected value outranks an uncorrected one under the client's higher-seq-wins
+rule. Like the roster read, it also creates nothing.
+
 This tree currently exposes no raw-envelope HTTP read for member logs;
 `MemberEventLogService.history()` is an internal page API.
 
@@ -115,7 +151,7 @@ Two WebSocket frames, both `{type, data}` like every other broadcast and both cl
 
 | frame | data | client rule |
 |---|---|---|
-| `members_subscribed` | `{lastSeqs: {slug: seq}}`, sent once to a new owner socket right after the connect snapshot | drop held rows whose `seq` exceeds `lastSeq`, plus cached slugs omitted from the readable baseline; refetch the roster if anything was dropped |
+| `members_subscribed` | `{lastSeqs: {slug: seq}}`, sent once to a new owner socket right after the connect snapshot | drop held rows whose `seq` exceeds `lastSeq`, plus cached slugs omitted from the readable baseline; if anything was dropped, repair BOTH reads that own those values, because the truncation drops every key a slug holds while a roster row carries the `roster` view alone. Each is RESET rather than invalidated: invalidating a query with no enabled observer only marks it stale, so its pre-rollback block stays cached and the next mount seeds the store at the sequence the server just rolled back, after which higher-seq-wins rejects the authoritative lower-seq baseline and the rolled-back value repaints as live. Neither read is exempt — the per-member one is disabled while no member is open, and the roster's only observer away from the members page is the crewmates gate, which holds it enabled only while eligible |
 | `member_projection` | `{slug, key, value, seq}` — a whole projected value, emitted only when a unit's view changed | higher `seq` wins; a replay or a stale frame is dropped without checking contiguity |
 
 The two rules are deliberately different. A whole-value frame needs no gap detection because a stale frame is simply lost to a newer one; only a delta channel would need a contiguity check, and this transport carries none.
@@ -126,10 +162,21 @@ Sending the baseline before registration does not fix it: the connect snapshot i
 
 ## 7. Client
 
-`website/src/state/memberProjectionStore.ts` holds `Map<slug, Map<key, {value, seq}>>` under those two rules; `seed()` applies an ATTRIBUTABLE baseline through the same higher-seq-wins path and never truncates, so a live frame that raced ahead of the baseline keeps winning. An UNATTRIBUTABLE one is the exception, and the distinction is the sequence: `asOfSeq < 0` is not a position but the sentinel `api_members` emits when it will not attribute the slug — a shared slug, a header naming another member, or a failed read. Every real row's seq is above it, so comparing them would keep the whole cache, which for a collision is the OTHER member's projection. That block therefore clears the slug unconditionally and marks it refused, which also drops the live frames `apply()` would otherwise take: the roster is the only surface that checks attribution, while the publish and the on-connect replay both read a snapshot straight out of the service. The mark lifts on the next baseline carrying a real sequence. `useMemberProjection(slug, key)` binds a component through `useSyncExternalStore`; `useMemberRosterViews(slugs)` gives the page one referentially stable map for derived values — the starred count and filter, search and sort — so a pushed frame moves the row, the chip and the filter together.
+`website/src/state/memberProjectionStore.ts` holds `Map<slug, Map<key, {value, seq}>>` under those two rules; `seed()` applies an ATTRIBUTABLE baseline through the same higher-seq-wins path and never truncates, so a live frame that raced ahead of the baseline keeps winning. A member with NO log yet is one of those attributable baselines: it answers `asOfSeq` 0, the log's own empty position (`last_seq` answers 0 for an empty log and a recorded event starts at 1), so the row clears cleanly and every real frame outranks it. An UNATTRIBUTABLE one is the exception, and the distinction is the sequence: `asOfSeq < 0` is not a position but the sentinel `api_members` emits when it will not attribute the slug — a shared slug, a header naming another member, or a failed read. Every real row's seq is above it, so comparing them would keep the whole cache, which for a collision is the OTHER member's projection. That block therefore clears the slug unconditionally and marks it refused, which also drops the live frames `apply()` would otherwise take: the roster is the only surface that checks attribution, while the publish and the on-connect replay both read a snapshot straight out of the service. The mark lifts on the next baseline carrying a real sequence. Since every member begins without a log, reporting that state as a refusal would mute every row on a fresh install and drop the first frame written about each member, which is why the two cases are named constants in the handler rather than one repeated literal. The empty baseline is served only for an absence the filesystem CONFIRMS, because `unit_ids` omits a unit whose header it cannot read, parse, or fold back to its own directory, and answers the empty list for a root it refuses — so an absence from that listing is not by itself evidence of absence, and the baseline is the wrong guess: it preserves every cached row above it, which for a log that exists is exactly the stale state the read failed to see. `api_members` therefore checks the unit directory (`crew_log_dir`, which treats an absent root as the ordinary fresh-install case and raises on a linked or off-tree one) and, for a directory the listing did not account for, RE-ASKS the listing before answering. That second question is the one that matters: such a directory is either a log created SINCE the listing was taken -- this member's first event, whose own frame is already travelling to the client -- or a log the store will not prove, and the two need opposite answers. A snapshot cannot separate them, because a damaged header line is skipped on load and the surviving events still fold to a real sequence; only the listing answers whether the store will stand behind the log. One it now proves reads like any other; one it still omits takes the refusal sentinel. `GET /api/members/{slug}/projections` follows the same two steps and answers 500 for the unprovable case rather than an empty block: the whole request is one member, and an empty answer there paints an affirmative "no patrol scheduled" over a state the read could not reach. `useMemberProjection(slug, key)` binds a component through `useSyncExternalStore`; `useMemberRosterViews(slugs)` gives the page one referentially stable map for derived values — the starred count and filter, search and sort — so a pushed frame moves the row, the chip and the filter together.
 
 `MembersPage` overlays projected roster fields on the `GET /api/members` query,
-whose 30-second stale floor still provides cold-start and focus refresh. Recent
+whose 30-second stale floor still provides cold-start and focus refresh. The open
+member's other three views arrive from its own `GET /api/members/{slug}/projections`
+read, into the same store, so the drawer's consumers read the store and which request
+filled it is not theirs to know. The two reads enter it differently, though, and the
+difference is authority: the roster read `seed()`s, which is what lifts an
+unattributable mark; the per-member read applies its values key by key through
+`apply()`, which respects that mark and never clears it. React Query re-runs a select
+over whatever block is cached, so a block held from before a refusal would otherwise
+be replayed after it, restoring the pre-failure values and re-admitting live frames
+while the query's data stays defined and no error state shows. Contributing through
+`apply()` is idempotent under higher-seq-wins, so the replay changes nothing, and
+attribution stays the roster's to decide. Recent
 activity comes from the pushed projection when present, while the per-member
 activity query remains for loading/error state, its `capped` flag, and older-gateway
 fallback. The patrol block has two sources with two roles: the live auto-nudge
@@ -137,6 +184,15 @@ registry is presence (a loop it holds as active is active), while the `wake`
 projection is the durable record, so a stop the registry has forgotten still
 renders with its reason. The registry query remains only for detail fields the
 projection does not carry (interval, cycle counts, next wake) and no longer polls.
+
+Because `wake` is durable and the registry is only presence, the patrol tile must
+not form a verdict before the drawer's own read lands: a verdict formed early reads
+`none` — "nothing scheduled" — for a member the log records as stopped, which is the
+reading the durable record exists to prevent. The tile therefore waits on that read
+having ANSWERED, not on a request being in flight. Those are different tests: a
+failed read is also not in flight, and a background revalidation is in flight while a
+good answer is already held. A failed first read renders the shared error notice
+instead of a verdict.
 
 ## 8. Migration
 
@@ -178,8 +234,15 @@ without replaying completed work. Once the activity read completes, the service
 durably creates `.legacy-activity-folded` inside the fenced unit directory before
 retiring the source files by rename; the binding and rules sources remain because
 their own events gate re-import. `api_members` reconciles the folded roster against
-the agents config on read, so a hand edit becomes one `member/config` event with the
-fields that differed. It reconciles the roster's `last_message` the same way
+the agents config, so a hand edit becomes one `member/config` event with the
+fields that differed. That reconcile runs on every read, for every member whose log
+exists: `reconcile_member_config` compares the folded roster against the live config
+and returns before writing when the two agree, so an unchanged config costs one field
+comparison per member and nothing is remembered between requests. A member with no
+log has no folded state to be stale, so neither reconcile runs for one, which is what
+keeps the roster read free of writes.
+
+It reconciles the roster's `last_message` the same way
 (`eventlog_hooks.reconcile_member_preview`): the transcript's speech-only read is the
 authority, so a fold still quoting a machinery preview written before the preview
 became speech-only gets one correcting `member/message` — carrying the empty string
@@ -386,8 +449,8 @@ the activity fold's one-time completion without shifting later event numbers.
 which is the whole reason the completion marker lives in the fenced log root -- so
 the party the marker defends against also chooses what KIND of thing sits there. A
 plain `open` trusts that choice: a FIFO blocks until a writer appears, and no writer
-ever has to. The read runs inside `ensure` under the per-slug lock the roster request
-path holds, and the hang happens BEFORE the marker can be written, so the FIFO
+ever has to. The read runs inside `ensure` under the per-slug lock its caller holds,
+and the hang happens BEFORE the marker can be written, so the FIFO
 survives a restart and the marker never lands. The service therefore calls
 `platform_compat.open_file_no_reparse(..., nonblocking=True)`: POSIX adds
 `O_NONBLOCK` and `O_NOFOLLOW`, while Windows opens the reparse point itself with

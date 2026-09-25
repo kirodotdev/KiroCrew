@@ -107,4 +107,47 @@ describe('useWebSocket member projection frames', () => {
     })
     expect(memberProjectionStore.get('oncall', 'roster')).toBeUndefined()
   })
+
+  it('a truncation RESETS both the roster and the per-member projections', () => {
+    // The truncation drops EVERY key a slug holds, while each read owns only
+    // some of them: a roster row carries `roster`, and the open member's
+    // activity, wake and driving views come from its own per-member read. The
+    // two query keys are SIBLINGS under ['kirocrew-agents'], so repairing one
+    // does not match the other, and the drawer would stay blank until something
+    // else happened to refetch it.
+    //
+    // Both are RESET rather than invalidated, because invalidating a query with no
+    // enabled observer only marks it stale, leaving its pre-rollback block in
+    // cache; the next mount seeds that block at the rolled-back sequence, and
+    // higher-seq-wins then rejects the authoritative lower-seq baseline, so the
+    // stale values repaint with no way back. Neither read is exempt: the
+    // per-member one is disabled while no member is open, and the roster's only
+    // observer away from the members page is the crewmates gate, which holds it
+    // `enabled: eligible`.
+    const invalidated: unknown[] = []
+    const reset: unknown[] = []
+    const iSpy = vi.spyOn(qc, 'invalidateQueries').mockImplementation((arg) => {
+      invalidated.push((arg as { queryKey?: unknown } | undefined)?.queryKey)
+      return Promise.resolve()
+    })
+    const rSpy = vi.spyOn(qc, 'resetQueries').mockImplementation((arg) => {
+      reset.push((arg as { queryKey?: unknown } | undefined)?.queryKey)
+      return Promise.resolve()
+    })
+    const ws = open()
+    act(() => {
+      ws.simulateMessage({ type: 'member_projection', data: { slug: 'oncall', key: 'wake', value: { patrol: 'stopped' }, seq: 9 } })
+      ws.simulateMessage({ type: 'members_subscribed', data: { lastSeqs: { oncall: 5 } } })
+    })
+    const projections = JSON.stringify(['kirocrew-agents', 'member-projections'])
+    const roster = JSON.stringify(['kirocrew-agents', 'members-roster'])
+    expect(reset.map((k) => JSON.stringify(k))).toContain(projections)
+    expect(reset.map((k) => JSON.stringify(k))).toContain(roster)
+    // Marking either query stale is exactly what leaves the rolled-back block
+    // reachable, so it must not be the call used for either of them.
+    expect(invalidated.map((k) => JSON.stringify(k))).not.toContain(projections)
+    expect(invalidated.map((k) => JSON.stringify(k))).not.toContain(roster)
+    iSpy.mockRestore()
+    rSpy.mockRestore()
+  })
 })
