@@ -1970,10 +1970,11 @@ class TelegramDispatcher:
 
         class _Surface:
             label = "telegram"
-            # ``chat_id`` alone, deliberately: ``edit_message`` addresses a message by
-            # its id within its chat, so two surfaces differing only by Topic reach the
-            # same message and must compare EQUAL. ``thread`` routes a send, which the
-            # bubble's own retained surface already carries.
+            # ``chat_id`` alone, deliberately: a forum route's ``comp`` is
+            # ``"{chat_id}:{thread}"``, so ``_session_key`` already gives each Topic its
+            # own entry and no two Topics ever share a bubble for this key to keep
+            # apart. ``thread`` routes a send, which the bubble's own retained surface
+            # already carries.
             address_key = receipt_address_key("telegram", chat_id)
 
             async def send_receipt(self, body: str) -> Any | None:

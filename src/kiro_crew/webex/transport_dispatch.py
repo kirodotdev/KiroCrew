@@ -311,6 +311,18 @@ _APPROVALS = PendingApprovals("webex")
 #: tells the two route kinds apart everywhere one is read.
 _SPACE_ROUTE_PREFIX = "space:"
 
+#: The thread component of a receipt address when the bubble sits in the room
+#: ROOT rather than under a thread -- either because ``reply_in_thread`` is off,
+#: or because the message it receipts arrived outside any thread.
+#:
+#: A stand-in is required rather than an empty component:
+#: :func:`~kiro_crew.messaging.queue_receipt.receipt_address_key` reads an empty
+#: part as UNKNOWN and returns no address at all, which opens no bubble. A room
+#: root IS a nameable conversation, so it gets a name. The colon keeps it out of
+#: the value space it shares: a Webex message id is an opaque base64 blob with no
+#: colon, so no real thread root can collide with this.
+_ROOT_THREAD = "root:none"
+
 
 def _route_of(inbound: "WebexInbound") -> str:
     """The conversation *inbound* belongs to.
@@ -1232,11 +1244,16 @@ class WebexDispatcher:
 
         class _Surface:
             label = "webex"
-            # The room alone: ``edit_message`` takes the message id plus the room, and
-            # ``parent_id`` only threads a SEND. Every member of a group space therefore
-            # produces the SAME key, which is what lets a second member's mid-turn
-            # message update the one shared bubble.
-            address_key = receipt_address_key("webex", room_id)
+            # The room AND the thread this receipt's own send threads under. A group
+            # space routes as ``space:{room_id}``, so two threads in one room share one
+            # session key and therefore one queue entry -- and an entry's bubble may
+            # only show what arrived where the bubble lives. A room-only key would
+            # answer "same conversation" for a message in a sibling thread and render
+            # its text into the bubble sitting in this one.
+            #
+            # Every member of one thread still produces the SAME key, which is what
+            # lets a second member's mid-turn message update the one shared bubble.
+            address_key = receipt_address_key("webex", room_id, parent_id or _ROOT_THREAD)
 
             async def send_receipt(self, body: str) -> Any | None:
                 # A receipt quotes the message it queued, so it carries user text

@@ -1667,7 +1667,8 @@ A refused **grow** needs nothing further: that message is still queued, which is
 exactly what the entry's lines track, so the registry and the queue still agree and
 the next message's edit re-renders the whole list. Only a transition whose messages
 have already LEFT the queue can strand a bubble, and for those the entry is KEPT and
-becomes **terminal**, carrying `final_body` -- the record it owes. A terminal entry is
+becomes **terminal**, carrying `owed_bodies` -- the records it owes, oldest first. A
+terminal entry is
 not live (`has_receipt` reports it absent) and is never grown, because growing it
 would put already-answered text back under `⏳ Queued` beside the new message; the
 next mid-turn message writes the owed record first and opens a FRESH bubble. The body
@@ -1675,13 +1676,29 @@ travels with the entry so a retry writes the record that transition computed, an
 later transition never recomputes it: writing `🛑 Cancelled` over an owed
 `▶️ Now answering` would say the opposite of what happened, permanently.
 
+More than one record can be owed at once, and that is the point of a list. A
+transition meeting an entry that already owes one is meeting a channel that is usually
+still refusing, so its own record has nowhere to go either; a single slot dropped it on
+the floor, and since those messages had already left the queue and a retired key is
+revisited by nothing, that record reached nobody ever. It JOINS the debt instead, behind
+the older one. The list is capped at `RECEIPT_MAX_OWED` at the same seam that stores a
+body, so an outage cannot grow it without bound; on overflow the OLDEST is released,
+because the newest record is the one that corrects what the reader can currently see.
+What is released is COUNTED at that same seam and named on the next record to reach the
+reader, since a shortened list is otherwise indistinguishable from a burst that produced
+no such records at all.
+
 The key is released only once the record is on the bubble, because that entry is the
 bubble's only handle. Editing is tried first, so the record lands in the bubble the
 reader is already looking at; when the bubble refuses edits the record is POSTED as a
 new message instead, since past a per-message edit cap no edit of that id will ever
 land and retrying alone would owe the record for the life of the process. The stale
 bubble still reading `⏳ Queued` and the posted record are together true; a silent
-bubble alone is not.
+bubble alone is not. Several owed records publish OLDEST FIRST -- only the oldest can
+take the bubble, since there is one bubble and the rest arrived after it, so each later
+one is posted beneath it. Each leaves the debt only once it LANDS, one at a time, so a
+failure part-way through keeps exactly what has not reached anybody and republishes
+nothing.
 
 Both of those writes go through `opened_on`, the surface the bubble was OPENED on,
 and never through the surface of the transition that happens to retry it. That is the
@@ -1943,21 +1960,35 @@ transition is ever handed an id minted in a different chat -- `edit_message`
 addresses a message by its per-chat id pair, and in another conversation the same
 number is an unrelated message. That address also decides where the POST lands: it
 arrives as a fresh notified message, and on a channel with forum Topics in the Topic's
-own send address rather than the parent chat. A terminal entry keeps only the body it
+own send address rather than the parent chat. A terminal entry keeps only the records it
 owes -- `terminalize` drops `lines` at the same moment, so the bound on what is
 retained is applied where the retention happens rather than at a render site below it,
-and the body is already bounded by the item cap and the per-item truncation. A retained
+each body is already bounded by the item cap and the per-item truncation, and how MANY
+are held is bounded at that same seam. A retained
 entry is not live and is never grown, so a later burst opens a fresh bubble instead of
-joining this one.
+joining this one. A mid-turn message meeting a terminal entry therefore gets no bubble
+of its own yet and its line is not recorded either: no path reads a terminal entry's
+lines, so keeping them would change nothing a reader sees while holding a verbatim burst
+for as long as the channel refuses. Nothing is lost by that -- the caller enqueued
+before calling and the drain renders its record from what it dequeued -- and the
+residual is one missing `⏳ Queued` acknowledgement.
 
 Retiring an owed record does not retire the transition that retried it. A drain
 meeting a terminal entry publishes the OLDER record first -- writing this turn's words
 over what happened would say the opposite, permanently -- and once that lands the
 bubble is spent, so this turn's own record has no bubble left to edit and is POSTED
-beside it. Returning there instead would lose the drained burst's receipt for good: a
+beside it. The entry REMEMBERS that, because publishing a debt is resumable: a channel
+that recovers part-way lands the oldest record and then refuses the next, and a later
+retry that edited would erase the record the reader can already see and show the two in
+the wrong order. Publication is what spends the bubble, by either route -- a record that
+had to be posted sits BELOW the bubble, so the bubble is no longer ahead of it.
+Returning there instead would lose the drained burst's receipt for good: a
 retired key is revisited by nothing, and those messages have already left the queue.
-The post is withheld when the drain belongs to a different chat, because then its body
-is that chat's text.
+When the older record cannot be published at all, this turn's record is RETAINED behind
+it rather than dropped: that failure already tried an edit and a post, so a post for
+this body would fail the same way, and the debt is the only thing left that can carry
+it. The post, and that retention, are both withheld when the drain belongs to a
+different chat, because then its body is that chat's text.
 
 Which conversation a shared bubble belongs to is NOT settled here: it stays with the
 receipt registry's own key, which is `session_key` alone (#12575). What IS settled is

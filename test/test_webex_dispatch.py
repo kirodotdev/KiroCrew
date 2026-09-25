@@ -15,6 +15,7 @@ from kiro_crew.messaging.link import ChannelLink
 from kiro_crew.messaging.queue_drain import tag_entry
 from kiro_crew.session_allocation import SessionClosingError
 from kiro_crew.webex import cards
+from kiro_crew.webex import client as webex_client
 from kiro_crew.webex import transport_dispatch as webex_dispatch
 from kiro_crew.webex.client import WebexInbound
 from kiro_crew.webex.commands import (
@@ -1279,6 +1280,74 @@ class TestApprovals:
 # ------------------------------------------------------------------
 # Mid-turn queue + drain
 # ------------------------------------------------------------------
+
+
+class TestAReceiptAddressNamesTheThreadItLivesIn:
+    """Two threads of one room share a session key, so the ADDRESS must part them.
+
+    A group space routes as ``space:{room_id}``, so every thread in it lands on one
+    queue entry and one bubble. The bubble hangs under the thread its first send
+    threaded into, and it may only ever show what arrived there -- a room-only
+    address answers "same conversation" for a sibling thread and renders that
+    thread's text where the other thread's readers are.
+    """
+
+    def _surface(self, *, parent: str, email: str = _EMAIL, threaded: bool = True):
+        cfg = _cfg_queue()
+        cfg.webex.reply_in_thread = threaded
+        d = _dispatcher(FakeSessions(FakeProvider([])), FakeCtx(), FakeClient(), cfg=cfg)
+        return d._receipt_surface(
+            WebexInbound(
+                person_email=email, room_id="ROOM", text="x", room_type="group", parent_id=parent
+            )
+        )
+
+    def test_two_threads_of_one_room_are_two_addresses(self) -> None:
+        """The fixed disclosure: thread B must not be addressed to thread A's bubble."""
+        a = self._surface(parent="THREAD_A")
+        b = self._surface(parent="THREAD_B")
+        assert a.address_key != b.address_key
+
+    def test_one_thread_is_one_address_for_every_member(self) -> None:
+        """Still SHARED within a thread, which is the whole point of a space bubble.
+
+        A second member's mid-turn message must keep updating the one bubble, so the
+        address may not narrow to the sender.
+        """
+        mine = self._surface(parent="THREAD_A")
+        theirs = self._surface(parent="THREAD_A", email="other@example.com")
+        assert mine.address_key == theirs.address_key
+        assert mine.address_key
+
+    def test_the_room_root_is_a_named_address_not_an_unknown_one(self) -> None:
+        """A receipt outside any thread still needs an address, or no bubble opens.
+
+        ``receipt_address_key`` reads an empty part as UNKNOWN and returns ``""``, and
+        a surface with no address opens nothing -- so the root case would have lost
+        its receipts entirely rather than merely sharing one.
+        """
+        root = self._surface(parent="")
+        assert root.address_key
+        assert root.address_key != self._surface(parent="THREAD_A").address_key
+
+    def test_without_threaded_replies_the_whole_room_is_one_address(self) -> None:
+        """With ``reply_in_thread`` off every send lands in the room root.
+
+        The address tracks where the bubble actually IS, so two threads then share
+        one address -- the same place their receipts share.
+        """
+        a = self._surface(parent="THREAD_A", threaded=False)
+        b = self._surface(parent="THREAD_B", threaded=False)
+        assert a.address_key == b.address_key
+        assert a.address_key == self._surface(parent="", threaded=False).address_key
+
+    def test_the_root_stand_in_cannot_be_mistaken_for_a_thread(self) -> None:
+        """A real thread root is an opaque base64 id, which has no colon in it."""
+        assert webex_dispatch._ROOT_THREAD
+        assert ":" in webex_dispatch._ROOT_THREAD
+        real = webex_client.hydra_id("2f1e6d5c-4b3a-2918-0706-f5e4d3c2b1a0")
+        assert ":" not in real
+        assert self._surface(parent=real).address_key != self._surface(parent="").address_key
 
 
 class TestQueueAndDrain:

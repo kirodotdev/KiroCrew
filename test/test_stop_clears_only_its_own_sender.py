@@ -808,7 +808,7 @@ class TestAnOwedRecordOnlyAddressesTheBubbleItBelongsTo:
                 opened_by=ALICE,
                 lines=[ReceiptLine(owner=ALICE, text="alice asked")],
             )
-            receipt.final_body = receipt_text(["alice asked"], answering=True)
+            receipt.terminalize(receipt_text(["alice asked"], answering=True))
             queue._receipts["s"] = receipt
             bobs_chat = _Surface("bob")
             async with queue.lock:
@@ -1058,7 +1058,7 @@ class TestATerminalEntryKeepsOnlyWhatItOwes:
             return queue
 
         receipt = asyncio.run(go())._receipts["s"]
-        assert receipt.owes_record and receipt.final_body
+        assert receipt.owes_record and receipt.owed_bodies
         assert receipt.lines == [], "the burst is not retained beside the body it produced"
 
     def test_a_refused_partial_cancel_keeps_the_body_and_drops_the_lines(self) -> None:
@@ -1070,7 +1070,7 @@ class TestATerminalEntryKeepsOnlyWhatItOwes:
             return queue
 
         receipt = asyncio.run(go())._receipts["s"]
-        assert receipt.owes_record and receipt.final_body
+        assert receipt.owes_record and receipt.owed_bodies
         assert receipt.lines == []
 
     def test_a_refused_whole_session_cancel_keeps_the_body_and_drops_the_lines(self) -> None:
@@ -1082,7 +1082,7 @@ class TestATerminalEntryKeepsOnlyWhatItOwes:
             return queue
 
         receipt = asyncio.run(go())._receipts["s"]
-        assert receipt.owes_record and receipt.final_body
+        assert receipt.owes_record and receipt.owed_bodies
         assert receipt.lines == []
 
 

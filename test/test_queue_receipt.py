@@ -17,6 +17,7 @@ from typing import Any
 import kiro_crew.messaging.queue_receipt as Q
 from kiro_crew.messaging.queue_receipt import (
     RECEIPT_MAX_ITEMS,
+    RECEIPT_MAX_OWED,
     ReceiptQueue,
     receipt_address_key,
     receipt_text,
@@ -44,7 +45,9 @@ class _Surface:
         self.edit_refuses = edit_refuses
         #: Answer None: silence, which is not a reported failure.
         self.edit_answers_none = edit_answers_none
-        self._send_fails_after = send_fails_after
+        #: Sends past this many fail. Public so a test can lift the outage part-way and
+        #: watch what the registry does once the channel answers again.
+        self.send_fails_after = send_fails_after
         #: Which conversation this surface writes to. Two surfaces sharing it address
         #: one chat; an empty one cannot name its address at all.
         self.address_key = receipt_address_key("fake", address) if address else ""
@@ -53,7 +56,7 @@ class _Surface:
 
     async def send_receipt(self, body: str) -> Any | None:
         self.sent.append(body)
-        if self._send_fails_after is not None and len(self.sent) > self._send_fails_after:
+        if self.send_fails_after is not None and len(self.sent) > self.send_fails_after:
             return None
         return self._send_id
 
@@ -189,7 +192,7 @@ class TestATransitionIsPublishedOnlyWhenItLands:
 
         asyncio.run(go())
         assert q._receipts["s"].owes_record
-        assert q._receipts["s"].final_body == receipt_text(["a"], answering=True)
+        assert q._receipts["s"].owed_bodies == [receipt_text(["a"], answering=True)]
         # Not LIVE though -- it cannot be grown.
         assert not q.has_receipt("s")
 
@@ -242,7 +245,7 @@ class TestATransitionIsPublishedOnlyWhenItLands:
                 await q.finish_cancelled_locked("s", s)
 
         asyncio.run(go())
-        assert q._receipts["s"].final_body == receipt_text(["a"], cancelled=True)
+        assert q._receipts["s"].owed_bodies == [receipt_text(["a"], cancelled=True)]
 
 
 class TestAnOwedRecordIsTheOneThatWasOwed:
@@ -302,7 +305,7 @@ class TestAnOwedRecordIsTheOneThatWasOwed:
 
         asyncio.run(go())
         assert q._receipts["s"].owes_record, "the record is still owed, so the key is held"
-        assert q._receipts["s"].final_body == receipt_text(["a"], answering=True)
+        assert q._receipts["s"].owed_bodies == [receipt_text(["a"], answering=True)]
 
     def test_a_bubble_that_refuses_edits_gets_the_record_posted(self) -> None:
         """Past Webex's per-message edit cap no edit of that id ever lands, so retrying
@@ -475,26 +478,34 @@ class TestAnAddressKeyNamesOneConversation:
         assert nameless.sent == [], "nothing is posted without an address to post to"
         assert not queue.has_receipt("s")
 
-    def test_final_body_is_only_set_through_terminalize(self) -> None:
+    def test_owed_bodies_is_only_written_through_terminalize(self) -> None:
         """The retention bound lives at ONE seam, so a fourth transition inherits it.
 
-        ``terminalize`` sets the owed body AND drops ``lines``; an assignment anywhere
-        else would retain a whole burst verbatim for the life of the process, which is
-        the defect this pin exists to stop coming back.
+        ``terminalize`` appends the owed body, caps how many are held, AND drops
+        ``lines``; a write anywhere else would retain a whole burst verbatim, or an
+        uncapped list of records, for the life of the process -- the defect this pin
+        exists to stop coming back.
         """
         src = Path(Q.__file__).with_suffix(".py").read_text(encoding="utf-8")
         tree = ast.parse(src)
         offenders = []
         for node in ast.walk(tree):
-            if not isinstance(node, ast.Assign):
-                continue
-            for target in node.targets:
-                if isinstance(target, ast.Attribute) and target.attr == "final_body":
-                    offenders.append(node.lineno)
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Attribute) and target.attr == "owed_bodies":
+                        offenders.append(node.lineno)
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "append"
+                and isinstance(node.func.value, ast.Attribute)
+                and node.func.value.attr == "owed_bodies"
+            ):
+                offenders.append(node.lineno)
         # The one inside terminalize is the seam itself.
         assert len(offenders) == 1, (
-            "final_body is assigned outside terminalize, so that site retains every "
-            f"queued message verbatim: lines {offenders}"
+            "owed_bodies is written outside terminalize, so that site retains records "
+            f"with no cap and a burst verbatim beside them: lines {offenders}"
         )
         seam = [
             n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "terminalize"
@@ -552,3 +563,339 @@ class TestAnAddressKeyNamesOneConversation:
             if "receipt_address_key(" not in src:
                 missing.append(path.parent.name)
         assert not missing, f"{missing} build a receipt surface without an address key"
+
+
+class TestSeveralOwedRecordsSurviveInOrder:
+    """A transition meeting an unpublishable debt keeps its OWN record too.
+
+    The channel that refused the earlier record is usually still refusing, so a single
+    owed slot meant the later transition's record was dropped with nothing left to
+    publish it: the messages had already left the queue and a retired key is revisited
+    by nothing, so that record reached nobody, ever.
+    """
+
+    def test_a_drain_meeting_an_unpublishable_debt_keeps_both_records(self) -> None:
+        """The fixed loss. Neither record has a channel, so both wait for one."""
+
+        async def go() -> ReceiptQueue:
+            queue = ReceiptQueue()
+            chat = _Surface(edit_refuses=True, send_fails_after=1)
+            async with queue.lock:
+                await queue.create_or_grow_locked("s", chat, "first", "alice")
+                # Refused edit AND refused post: the entry goes terminal owing this one.
+                await queue.flip_answering_locked("s", chat, ["first"])
+                await queue.create_or_grow_locked("s", chat, "second", "alice")
+                await queue.flip_answering_locked("s", chat, ["second"])
+            return queue
+
+        receipt = asyncio.run(go())._receipts["s"]
+        assert receipt.owed_bodies == [
+            receipt_text(["first"], answering=True),
+            receipt_text(["second"], answering=True),
+        ], "the second drain's record is kept behind the first, not dropped"
+
+    def test_a_cross_address_drain_keeps_only_the_older_record(self) -> None:
+        """The branch that matches but must NOT change.
+
+        ``answered`` belongs to a different conversation under a shared key. Retaining it
+        here would post that chat's text into this bubble later, which is the disclosure
+        the address rule exists to stop, and nothing is stranded: the drain answers one
+        envelope at a time, so this bubble's own messages are still queued.
+        """
+
+        async def go() -> ReceiptQueue:
+            queue = ReceiptQueue()
+            alice = _Surface(edit_refuses=True, send_fails_after=1, address="alice")
+            bob = _Surface(address="bob")
+            async with queue.lock:
+                await queue.create_or_grow_locked("s", alice, "alice asked", "alice")
+                await queue.flip_answering_locked("s", alice, ["alice asked"])
+                await queue.flip_answering_locked("s", bob, ["bob asked"])
+            return queue
+
+        receipt = asyncio.run(go())._receipts["s"]
+        assert receipt.owed_bodies == [receipt_text(["alice asked"], answering=True)]
+        assert all("bob asked" not in b for b in receipt.owed_bodies)
+
+    def test_the_oldest_record_takes_the_bubble_and_the_rest_are_posted_beneath(self) -> None:
+        """Order is the order they happened: one bubble, and the rest arrive after it."""
+
+        async def go() -> _Surface:
+            queue = ReceiptQueue()
+            chat = _Surface(edit_refuses=True, send_fails_after=1)
+            async with queue.lock:
+                await queue.create_or_grow_locked("s", chat, "first", "alice")
+                await queue.flip_answering_locked("s", chat, ["first"])
+                await queue.create_or_grow_locked("s", chat, "second", "alice")
+                await queue.flip_answering_locked("s", chat, ["second"])
+                # The channel answers again, and a clear retries what is owed.
+                chat.edit_refuses = False
+                chat.send_fails_after = None
+                await queue.finish_cancelled_locked("s", chat)
+            return chat
+
+        chat = asyncio.run(go())
+        first = receipt_text(["first"], answering=True)
+        second = receipt_text(["second"], answering=True)
+        assert chat.edits[-1] == (7, first), "the oldest record goes into the bubble"
+        assert chat.sent[-1] == second, "the later record is posted beneath it"
+
+    def test_recovery_releases_the_key_once_everything_owed_has_published(self) -> None:
+        """A debt is held while it is unpublished, and released once it publishes."""
+
+        async def go() -> ReceiptQueue:
+            queue = ReceiptQueue()
+            chat = _Surface(edit_refuses=True, send_fails_after=1)
+            async with queue.lock:
+                await queue.create_or_grow_locked("s", chat, "first", "alice")
+                await queue.flip_answering_locked("s", chat, ["first"])
+                await queue.create_or_grow_locked("s", chat, "second", "alice")
+                await queue.flip_answering_locked("s", chat, ["second"])
+                chat.edit_refuses = False
+                chat.send_fails_after = None
+                await queue.create_or_grow_locked("s", chat, "third", "alice")
+            return queue
+
+        queue = asyncio.run(go())
+        assert "s" in queue._receipts, "the third message opens a fresh bubble"
+        assert not queue._receipts["s"].owes_record, "nothing is still owed"
+
+    def test_a_body_leaves_the_debt_only_once_it_has_landed(self) -> None:
+        """Partial progress is kept, so a published record is never published twice."""
+
+        async def go() -> tuple[ReceiptQueue, _Surface]:
+            queue = ReceiptQueue()
+            chat = _Surface(edit_refuses=True, send_fails_after=1)
+            async with queue.lock:
+                await queue.create_or_grow_locked("s", chat, "first", "alice")
+                await queue.flip_answering_locked("s", chat, ["first"])
+                await queue.create_or_grow_locked("s", chat, "second", "alice")
+                await queue.flip_answering_locked("s", chat, ["second"])
+                # Edits work again, so the oldest lands in the bubble; sends still fail,
+                # so the later one does not.
+                chat.edit_refuses = False
+                await queue.finish_cancelled_locked("s", chat)
+            return queue, chat
+
+        queue, chat = asyncio.run(go())
+        assert queue._receipts["s"].owed_bodies == [
+            receipt_text(["second"], answering=True)
+        ], "the record that landed is released; the one that did not is kept"
+
+    def test_the_number_of_owed_records_is_capped_at_the_retention_point(self) -> None:
+        """An outage cannot grow the debt without bound.
+
+        The OLDEST is released on overflow: the newest record is the one that corrects
+        what the reader can currently see.
+        """
+
+        async def go() -> ReceiptQueue:
+            queue = ReceiptQueue()
+            chat = _Surface(edit_refuses=True, send_fails_after=1)
+            async with queue.lock:
+                await queue.create_or_grow_locked("s", chat, "m0", "alice")
+                for n in range(RECEIPT_MAX_OWED + 2):
+                    await queue.flip_answering_locked("s", chat, [f"m{n}"])
+                    await queue.create_or_grow_locked("s", chat, f"m{n + 1}", "alice")
+            return queue
+
+        receipt = asyncio.run(go())._receipts["s"]
+        assert len(receipt.owed_bodies) == RECEIPT_MAX_OWED
+        newest = RECEIPT_MAX_OWED + 1
+        assert receipt.owed_bodies[-1] == receipt_text([f"m{newest}"], answering=True)
+        assert receipt.owed_bodies[0] == receipt_text(
+            [f"m{newest - RECEIPT_MAX_OWED + 1}"], answering=True
+        ), "the oldest was released, not the newest"
+
+    def test_a_terminal_entry_retains_no_lines_however_many_messages_arrive(self) -> None:
+        """The other half of the bound, and why the grow records nothing while terminal.
+
+        A mid-turn message meeting a terminal entry gets no bubble, and its line is not
+        kept: no path reads a terminal entry's lines, so keeping them would change
+        nothing a reader sees while holding a verbatim burst for the whole outage.
+        """
+
+        async def go() -> ReceiptQueue:
+            queue = ReceiptQueue()
+            chat = _Surface(edit_refuses=True, send_fails_after=1)
+            async with queue.lock:
+                await queue.create_or_grow_locked("s", chat, "first", "alice")
+                await queue.flip_answering_locked("s", chat, ["first"])
+                for n in range(6):
+                    await queue.create_or_grow_locked("s", chat, f"during outage {n}", "alice")
+            return queue
+
+        receipt = asyncio.run(go())._receipts["s"]
+        assert receipt.lines == []
+        assert all("during outage" not in b for b in receipt.owed_bodies)
+
+
+class TestOnePublishedRecordSpendsTheBubble:
+    """There is one bubble and it holds the OLDEST record, so nothing may edit it twice.
+
+    A debt is published one body at a time and a body leaves the debt only when it lands,
+    so a channel that recovers part-way leaves the bubble already carrying a record while
+    later bodies are still owed. Editing the next one in would erase the record the reader
+    can see and put the two out of order.
+    """
+
+    @staticmethod
+    async def _two_owed(chat: _Surface) -> ReceiptQueue:
+        """A terminal entry owing two records, neither published."""
+        queue = ReceiptQueue()
+        async with queue.lock:
+            await queue.create_or_grow_locked("s", chat, "first", "alice")
+            await queue.flip_answering_locked("s", chat, ["first"])
+            await queue.flip_answering_locked("s", chat, ["second"])
+        return queue
+
+    def test_a_landed_edit_stops_the_next_record_editing_over_it(self) -> None:
+        """The fixed loss: the second record posts beneath the first, never over it."""
+
+        async def go() -> _Surface:
+            chat = _Surface(edit_refuses=True, send_fails_after=1)
+            queue = await self._two_owed(chat)
+            chat.edit_refuses = False  # the channel takes edits again, posts still refused
+            async with queue.lock:
+                await queue.finish_cancelled_locked("s", chat)
+                await queue.finish_cancelled_locked("s", chat)
+            return chat
+
+        chat = asyncio.run(go())
+        first = receipt_text(["first"], answering=True)
+        second = receipt_text(["second"], answering=True)
+        assert any(body == first for _, body in chat.edits), "the oldest took the bubble"
+        assert all(
+            body != second for _, body in chat.edits
+        ), "the second record must never be edited onto the bubble the first one holds"
+        assert second in chat.sent, "it is offered beneath the bubble instead"
+
+    def test_a_posted_record_also_spends_the_bubble(self) -> None:
+        """Publication, not the path it took, is what uses the bubble up.
+
+        A record that had to be POSTED sits BELOW the bubble, so editing the next one into
+        the bubble would show the reader the second record above the first.
+        """
+
+        async def go() -> _Surface:
+            chat = _Surface(edit_refuses=True, send_fails_after=1)
+            queue = await self._two_owed(chat)
+            # Counted from the sends the outage already spent: a fixed number here is
+            # already past, and every post would go on failing.
+            chat.send_fails_after = len(chat.sent) + 1
+            async with queue.lock:
+                await queue.finish_cancelled_locked("s", chat)
+                chat.edit_refuses = False
+                await queue.finish_cancelled_locked("s", chat)
+            return chat
+
+        chat = asyncio.run(go())
+        second = receipt_text(["second"], answering=True)
+        assert receipt_text(["first"], answering=True) in chat.sent, "the oldest was posted"
+        assert all(
+            body != second for _, body in chat.edits
+        ), "a posted record still spends the bubble, so the next one may not edit it"
+
+    def test_an_unpublished_debt_may_still_take_the_bubble(self) -> None:
+        """The branch that matches but must NOT change.
+
+        Nothing reached the reader, so the bubble still says "Queued" and is the right
+        place for the oldest record the moment the channel answers.
+        """
+
+        async def go() -> _Surface:
+            chat = _Surface(edit_refuses=True, send_fails_after=1)
+            queue = ReceiptQueue()
+            async with queue.lock:
+                await queue.create_or_grow_locked("s", chat, "first", "alice")
+                await queue.flip_answering_locked("s", chat, ["first"])
+                chat.edit_refuses = False
+                await queue.finish_cancelled_locked("s", chat)
+            return chat
+
+        chat = asyncio.run(go())
+        assert (7, receipt_text(["first"], answering=True)) in chat.edits
+
+
+class TestReleasedRecordsAreCounted:
+    """A shortened debt must not pass for a burst that produced no such records.
+
+    The cap releases the oldest, and a released record leaves no other trace: the list
+    simply gets shorter. So the number released travels with the entry and is named on the
+    next record that reaches the reader.
+    """
+
+    OMITTED = "earlier record(s) omitted"
+
+    @staticmethod
+    async def _overflowed(chat: _Surface, drains: int) -> ReceiptQueue:
+        queue = ReceiptQueue()
+        async with queue.lock:
+            await queue.create_or_grow_locked("s", chat, "first", "alice")
+            for n in range(drains):
+                await queue.flip_answering_locked("s", chat, [f"drain {n}"])
+        return queue
+
+    def test_the_cap_counts_what_it_releases(self) -> None:
+        async def go() -> ReceiptQueue:
+            return await self._overflowed(_Surface(edit_refuses=True, send_fails_after=1), 6)
+
+        receipt = asyncio.run(go())._receipts["s"]
+        assert len(receipt.owed_bodies) == RECEIPT_MAX_OWED
+        assert receipt.omitted_records == 2, "six records owed, four retained, two counted"
+
+    def test_the_count_is_named_once_and_then_cleared(self) -> None:
+        async def go() -> tuple[_Surface, ReceiptQueue]:
+            chat = _Surface(edit_refuses=True, send_fails_after=1)
+            queue = await self._overflowed(chat, 6)
+            chat.edit_refuses = False
+            chat.send_fails_after = None
+            # Only what lands counts as said: every write above was refused, and a refused
+            # attempt reached nobody.
+            chat.edits, chat.sent = [], []
+            async with queue.lock:
+                await queue.finish_cancelled_locked("s", chat)
+            return chat, queue
+
+        chat, queue = asyncio.run(go())
+        published = [body for _, body in chat.edits if self.OMITTED in body]
+        published += [body for body in chat.sent if self.OMITTED in body]
+        assert len(published) == 1, "said out loud exactly once, not on every record"
+        assert "2 earlier record(s) omitted" in published[0]
+        assert "s" not in queue._receipts, "the whole debt published, so the key is released"
+
+    def test_the_count_never_accumulates_into_the_retained_body(self) -> None:
+        """The report is rendered at publish time, so a refused attempt leaves no trace.
+
+        Writing it into the retained body instead would append one more phrase on every
+        attempt, growing a field whose whole point is to be bounded.
+        """
+
+        async def go() -> ReceiptQueue:
+            chat = _Surface(edit_refuses=True, send_fails_after=1)
+            queue = await self._overflowed(chat, 6)
+            # One more refused attempt, with nothing appended after it: a body polluted
+            # here is one the cap will not go on to release, so it stays to be seen.
+            async with queue.lock:
+                await queue.finish_cancelled_locked("s", chat)
+            return queue
+
+        receipt = asyncio.run(go())._receipts["s"]
+        assert all(self.OMITTED not in body for body in receipt.owed_bodies)
+        assert receipt.omitted_records == 2, "the count lives in its own field, not in a body"
+
+    def test_nothing_released_says_nothing(self) -> None:
+        """The count is a report of a real loss, so an intact debt must not carry one."""
+
+        async def go() -> _Surface:
+            chat = _Surface(edit_refuses=True, send_fails_after=1)
+            queue = await self._overflowed(chat, 2)
+            chat.edit_refuses = False
+            chat.send_fails_after = None
+            async with queue.lock:
+                await queue.finish_cancelled_locked("s", chat)
+            return chat
+
+        chat = asyncio.run(go())
+        assert all(self.OMITTED not in body for _, body in chat.edits)
+        assert all(self.OMITTED not in body for body in chat.sent)
