@@ -30,6 +30,7 @@ Routes (as seen by the backend after prefix stripping by gateway):
 from __future__ import annotations
 
 import asyncio
+import importlib
 import logging
 import os
 import sys
@@ -57,17 +58,37 @@ _COMPONENTS = (
     worktree_ops,
     http_api,
 )
-_EXPORT_OWNERS = {name: component for component in _COMPONENTS for name in component.__all__}
+#: Legacy attribute -> the dotted NAME of the component that owns it. A mapping of
+#: resolved module OBJECTS would be a second storage location for the owner beside
+#: ``sys.modules``, and the two can disagree: purging a component and importing it
+#: again -- an idiom this suite uses in twenty files -- leaves such a mapping reading
+#: and forwarding writes to the discarded module while a direct importer holds the
+#: fresh one. A dotted name cannot go stale; :func:`_owner` resolves it per use.
+_EXPORT_OWNERS = {
+    name: component.__name__ for component in _COMPONENTS for name in component.__all__
+}
 if sum(len(component.__all__) for component in _COMPONENTS) != len(_EXPORT_OWNERS):
     raise RuntimeError("duplicate Dev Fleet compatibility export owner")
 
 
+def _owner(name: str) -> ModuleType | None:
+    """Return the component that owns *name*, or ``None`` if it is not re-exported.
+
+    ``importlib.import_module`` answers from ``sys.modules``, so a replaced or
+    reimported component is seen at once, and it waits on that module's import lock
+    while its body is still running rather than handing back a half-built module.
+    """
+    module_name = _EXPORT_OWNERS.get(name)
+    if module_name is None:
+        return None
+    return importlib.import_module(module_name)
+
+
 def __getattr__(name: str):
     """Resolve legacy server attributes from their canonical component owner."""
-    try:
-        owner = _EXPORT_OWNERS[name]
-    except KeyError as exc:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
+    owner = _owner(name)
+    if owner is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     return getattr(owner, name)
 
 
@@ -79,14 +100,14 @@ class _CompatibilityModule(ModuleType):
     """Forward legacy attribute mutation to the canonical component owner."""
 
     def __setattr__(self, name: str, value: object) -> None:
-        owner = _EXPORT_OWNERS.get(name)
+        owner = _owner(name)
         if owner is None:
             super().__setattr__(name, value)
         else:
             setattr(owner, name, value)
 
     def __delattr__(self, name: str) -> None:
-        owner = _EXPORT_OWNERS.get(name)
+        owner = _owner(name)
         if owner is None:
             super().__delattr__(name)
         else:
