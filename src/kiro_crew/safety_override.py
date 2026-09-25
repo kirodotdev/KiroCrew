@@ -7,13 +7,16 @@ Provides a ``SafetyOverride`` class with two kinds of grant:
   default 6 h, hard ceiling 24 h) and automatically expires. A 5-minute grace
   window after expiry allows renew() to reactivate without a full
   re-activation flow.
-- **Declared** — ``agent.dangerously_skip_permissions: true`` in operator-owned
-  config (the camelCase and legacy ``yolo`` spellings are also read). A standing
-  instruction, so it does NOT expire: it is re-established and re-audited on
-  every startup (state is in-memory), cleared the moment the operator picks
-  another approval mode, and deniable by the enterprise governance ceiling via
-  the ``yolo_duration`` scope's ``permanent`` member — which downgrades it to the
-  ad-hoc duration.
+- **Declared** -- ``{"enabled": true}`` in the keystone ``standing_approval.json``,
+  read through :func:`standing_grant_declared`. A standing instruction, so it does
+  NOT expire: it is re-established and re-audited on every startup (state is
+  in-memory), cleared the moment the operator picks another approval mode, and
+  deniable by the enterprise governance ceiling via the ``yolo_duration`` scope's
+  ``permanent`` member, which downgrades it to the ad-hoc duration. The keystone
+  rather than ``config.json`` because that document is readable inside the agent
+  sandbox and the protection available to it covers a path rather than the file
+  behind it; ``agent.dangerously_skip_permissions`` is still read there, to warn an
+  operator whose declaration has not moved yet.
 
 Per-surface TTLs (30 min Slack / 6 h dashboard / 24 h config) were removed: the
 same operator re-enabling the same grant got a different lifetime depending on
@@ -25,6 +28,8 @@ All state changes are logged to the Security Event Log (SEL).
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -40,7 +45,7 @@ from pathlib import Path
 from typing import Optional
 
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.config.loader import config_dir
+from kiro_crew.config.loader import config_dir, standing_approval_path
 from kiro_crew.platform.context import (
     current_context,
     register_ceiling_install_hook,
@@ -2204,6 +2209,154 @@ def apply_config_duration() -> int:
     so.adhoc_until_shutdown = until_shutdown
     so.adhoc_ttl = ttl
     return 0 if until_shutdown else ttl
+
+
+#: Domain separator for the standing grant's provenance MAC. Keyed under the SAME host
+#: secret ``dashboard.token_secret`` already protects, so the anchor predates this change
+#: and is already unreadable from a sandbox -- which is the property that makes the MAC
+#: work at all (see :func:`standing_grant_declared`). Domain-separated so a MAC minted for
+#: this document can never be replayed as one of the tag store's row MACs, or the reverse.
+_STANDING_GRANT_MAC_DOMAIN: bytes = b"kirocrew.standing-approval.v1\0"
+
+
+def _standing_grant_payload(enabled: bool) -> bytes:
+    """The exact bytes the provenance MAC covers.
+
+    Canonical and minimal: only the decision is signed, so a MAC cannot be carried over to
+    a document whose posture differs, and nothing else in the file can change what the MAC
+    attests to.
+    """
+    return json.dumps({"enabled": bool(enabled)}, sort_keys=True, separators=(",", ":")).encode()
+
+
+def standing_grant_mac(enabled: bool) -> str:
+    """Mint the provenance MAC for a standing-grant document.
+
+    PUBLIC because the operator-facing writer (``kirocrew security standing-approval``)
+    needs it, and it is the only writer: an operator cannot hand-compute this, which is the
+    point -- the file has to be produced by something running as the gateway's own user
+    with the host secret readable, and a sandboxed process is neither.
+    """
+    from kiro_crew.dashboard import token_secret
+
+    return hmac.new(
+        token_secret._get_secret(),
+        _STANDING_GRANT_MAC_DOMAIN + _standing_grant_payload(enabled),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def standing_grant_declared() -> bool:
+    """True when the operator has recorded a STANDING, never-expiring auto-approve grant.
+
+    The single declaration of that question, so the dashboard and the headless
+    ``--slack-only`` startup cannot come to answer it differently. The authority is the
+    keystone ``standing_approval.json`` (see
+    ``config.loader.standing_approval_path``), never ``config.json``.
+
+    Why the keystone and not the config key: ``config.json`` is agent-READABLE
+    in-sandbox by design, and no path-based control refuses a shell write to it -- the
+    read+write floor excludes it so that reading config stays routine, and the bash gate
+    matches no paths. A grant that survives a restart cannot rest on that. The keystone is
+    bind-MASKED instead, so a sandboxed process cannot open it: it can neither read the
+    grant nor obtain a ``link(2)`` source for it.
+
+    **A valid provenance MAC is required, and that closes the one window the mask cannot.**
+    The mask exists only on a release that knows this leaf, so on an EARLIER release the
+    name is ordinary and writable -- a sandboxed agent could plant ``enabled: true`` there
+    and wait for the upgrade to adopt it. The MAC is keyed under the host secret
+    ``dashboard.token_secret`` manages, which predates this change and is already
+    unreadable from a sandbox, so a planted document cannot carry a valid one. That is the
+    whole reason the anchor is an EXISTING protected key rather than a value this change
+    mints: anything minted later could itself have been planted first.
+
+    **Fails soft to NO GRANT**, in every direction: absent file, unreadable file,
+    malformed JSON, a document that is not an object, an ``enabled`` that is anything other
+    than the boolean ``true``, a missing MAC, and a MAC that does not verify. That is the
+    only safe direction here, because the failure mode being avoided is granting authority
+    nobody asked for. ``true`` is required exactly, so a truthy string or a non-empty list
+    does not become a grant by accident.
+
+    An operator who still has ``agent.dangerously_skip_permissions`` set in
+    ``config.json`` gets a WARNING naming the command to run, and no grant. The session's
+    own ad-hoc auto-approve toggle is untouched: it is a live operator action with a
+    duration, not a document, so it never routed through here.
+    """
+    path = standing_approval_path()
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False
+    except OSError:
+        logger.warning("Standing auto-approve grant not read at %s; treating it as no grant", path)
+        return False
+    try:
+        doc = json.loads(raw)
+    except ValueError:
+        logger.warning(
+            "Standing auto-approve grant at %s is not valid JSON; treating it as no grant",
+            path,
+        )
+        return False
+    if not isinstance(doc, dict):
+        logger.warning(
+            "Standing auto-approve grant at %s is not an object; treating it as no grant",
+            path,
+        )
+        return False
+    if doc.get("enabled") is not True:
+        return False
+    mac = doc.get("mac")
+    if not isinstance(mac, str):
+        logger.warning(
+            "Standing auto-approve grant at %s carries no provenance; treating it as no "
+            "grant. Record it with: kirocrew security standing-approval --enable",
+            path,
+        )
+        return False
+    try:
+        expected = standing_grant_mac(True)
+    except Exception:  # noqa: BLE001 - an unreadable host secret must not grant
+        logger.warning(
+            "Standing auto-approve grant at %s could not be verified; treating it as no grant",
+            path,
+        )
+        return False
+    # Compare BYTES. ``hmac.compare_digest`` refuses two ``str`` arguments when either
+    # holds a non-ASCII character, and raises ``TypeError`` rather than answering False.
+    # ``mac`` is untrusted text out of a JSON document, so a planted "caf\u00e9" would
+    # escape a function whose contract is to fail soft to NO GRANT and would abort gateway
+    # startup through the two ``to_thread`` callers. ``surrogatepass`` covers the lone
+    # surrogate ``json.loads`` accepts; ``expected`` is a hexdigest, hence ASCII.
+    if not hmac.compare_digest(mac.encode("utf-8", "surrogatepass"), expected.encode("ascii")):
+        logger.warning(
+            "Standing auto-approve grant at %s does not verify against this installation; "
+            "treating it as no grant. Record it with: kirocrew security standing-approval "
+            "--enable",
+            path,
+        )
+        return False
+    return True
+
+
+def warn_if_config_declares_standing_grant(declared_in_config: bool) -> None:
+    """Tell an operator whose standing grant is written in ``config.json``.
+
+    Called once per startup by each gate that reads the keystone. Says the three things
+    such an operator needs: the key does not grant, which file to write, and what they
+    have until they write it.
+    """
+    if not declared_in_config or standing_grant_declared():
+        return
+    logger.warning(
+        "agent.dangerously_skip_permissions is set in config.json, which does not install "
+        "a standing grant: that document is agent-readable in-sandbox and no path-based "
+        "control refuses a shell write to it. Record the grant with "
+        "`kirocrew security standing-approval --enable` (it writes %s with this "
+        "installation's provenance). Until then approvals are requested normally, and the "
+        "dashboard's timed auto-approve toggle still works.",
+        standing_approval_path(),
+    )
 
 
 def grant_declared_yolo() -> ActivationResult:

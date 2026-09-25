@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import contextlib
 import dataclasses
+import hmac
 import importlib
 import importlib.util
 import inspect
@@ -16,6 +17,7 @@ import re
 import shutil
 import stat
 import sys
+import tempfile
 import time as _time
 import traceback
 import urllib.error
@@ -65,6 +67,7 @@ from kiro_crew.apps.plugin_import import (
     read_manifest_name,
 )
 from kiro_crew.apps.scaffold import scaffold_app
+from kiro_crew.atomic_write import fsync_dir
 from kiro_crew.cli_server import _marker_port, resolve_client_port
 from kiro_crew.config import config_dir
 from kiro_crew.config.loader import (
@@ -80,6 +83,7 @@ from kiro_crew.config.loader import (
     materialize_workspace_dir,
     read_config_for_update,
     read_local_secret,
+    standing_approval_path,
     update_config_locked,
 )
 from kiro_crew.cron import (
@@ -96,7 +100,7 @@ from kiro_crew.cron import (
 )
 from kiro_crew.cron_script import resolve_script_path
 from kiro_crew.cron_trigger import trigger_cron_job
-from kiro_crew.dashboard import tailnet, tailnet_serve
+from kiro_crew.dashboard import tailnet, tailnet_serve, token_secret
 from kiro_crew.dashboard.origin import parse_dashboard_url
 from kiro_crew.embeddings import (
     get_shared_embedder,
@@ -135,6 +139,8 @@ from kiro_crew.memory_stores import (
 from kiro_crew.platform import redact_log_via_context
 from kiro_crew.port_resolution import resolve_client_port_ex
 from kiro_crew.project_scope import scope_is_admissible, scope_selector_is_inadmissible
+from kiro_crew.safety_override import standing_grant_mac
+from kiro_crew.sandbox import _STANDING_APPROVAL_STAGING_LEAF
 from kiro_crew.secrets.migrate import (
     MigrationConflictError,
     format_report,
@@ -2330,11 +2336,173 @@ def parse_time_selector(raw: str, *, now: datetime | None = None) -> datetime | 
     return parsed.astimezone(timezone.utc)
 
 
+def _publish_standing_grant(path: "Path", document: dict) -> bool:
+    """Publish the standing-grant document through its MASKED staging directory.
+
+    NOT ``atomic_write``: that stages its temp with ``mkstemp`` in the TARGET's parent, and
+    the target's parent is the crew data-home root, which is visible and writable in every
+    sandbox. The temp's inode BECOMES this document, so a sibling temp is a name a
+    concurrent namespace can ``link(2)`` and then write the grant through -- the exact
+    shape ``sandbox._STANDING_APPROVAL_STAGING_LEAF`` exists to avoid, and the same reason
+    the live-target pointer stages through a masked directory rather than beside itself.
+
+    ``mkstemp`` creates at 0600, so the document is owner-only from creation and there is
+    no widen-then-narrow window for the lockdown-before-publish rule to be right about.
+    ``os.replace`` then publishes atomically over any previous grant.
+
+    Returns False when the staging directory is not a usable directory, which is the
+    fail-closed direction: no grant rather than one published through a path whose shape is
+    not what it is supposed to be.
+    """
+    staging = config_dir() / _STANDING_APPROVAL_STAGING_LEAF
+    staging.mkdir(parents=True, mode=0o700, exist_ok=True)
+    if not staging.is_dir() or staging.is_symlink():
+        print(f"❌ Refusing to record the grant: {staging} is not a directory.")
+        return False
+    payload = json.dumps(document, indent=2, sort_keys=True) + "\n"
+    fd, tmp = tempfile.mkstemp(dir=str(staging), prefix="grant-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # lockdown-ok: mkstemp creates this at 0600 inside a bind-MASKED directory, so the
+        # document is owner-only from creation and the temp is never a name a sandboxed
+        # process can see or link. atomic_write cannot be used here because it stages in the
+        # target's own parent, which is the agent-visible data-home root.
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+    # The rename is a DIRECTORY mutation, so the new entry is not durable until the
+    # directory is synced. Success is reported to the operator only after this, since a
+    # grant that vanishes on power loss would leave them believing approvals are skipped.
+    with contextlib.suppress(OSError):
+        fsync_dir(path.parent, best_effort=True)
+    return True
+
+
+def _standing_grant_key_is_persisted() -> bool:
+    """True when the host signing secret is the one on disk, not an ephemeral fallback.
+
+    ``token_secret`` degrades to ``os.urandom`` when ``token_signing.key`` is unwritable or
+    too short, which is right for session tokens (they die at restart anyway) and wrong
+    here: a MAC minted under an ephemeral secret does not verify in the NEXT process, so the
+    operator's grant would be accepted at write time and silently refused at every startup
+    afterwards. Compared by BYTES against the file rather than trusted from a flag, because
+    the degradation is what has to be detected and a flag would have to be kept in sync
+    with every path that degrades.
+    """
+    # ``_get_secret()`` FIRST, because on a fresh install it is what CREATES the key file:
+    # reading the path before that would find nothing and report an ephemeral secret for
+    # every first run, refusing a grant the host can perfectly well verify.
+    in_memory = token_secret._get_secret()
+    try:
+        on_disk = (config_dir() / token_secret._SECRET_KEY_FILE).read_bytes()
+    except OSError:
+        return False
+    if len(on_disk) < token_secret._MIN_KEY_BYTES:
+        return False
+    return hmac.compare_digest(on_disk, in_memory)
+
+
+def _standing_approval(args: argparse.Namespace) -> None:
+    """Record or withdraw the STANDING auto-approve grant, with provenance.
+
+    The only writer of ``standing_approval.json``, and it has to be one: the document
+    carries a MAC keyed under the host secret, which an operator cannot hand-compute and a
+    sandboxed process cannot read. That is what stops a grant planted before this release
+    knew the leaf from being adopted at the next startup.
+
+    Run on the gateway HOST as the gateway's own user. There is deliberately no dashboard
+    writer and no API route: a browser-reachable control over a never-expiring
+    skip-every-approval grant is the surface this design removes, not one it adds.
+
+    Both mutations are SEL-audited, and the ENABLE audit is CRITICAL and runs BEFORE the
+    write: a record that appears only after the authorization exists cannot be the thing
+    that authorized it, and a critical write is synchronous, so an unwritable audit log
+    refuses the grant instead of publishing one with no permission-decision record. The
+    WITHDRAWAL audits after the fact and best-effort on purpose: refusing to withdraw when
+    the sink is down would keep alive an authorization the operator has asked to end, which
+    is the wrong direction to fail in.
+    """
+    path = standing_approval_path()
+    if getattr(args, "disable", False):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            print("No standing auto-approve grant was recorded; nothing to withdraw.")
+            return
+        except OSError as exc:
+            # A directory or an unreadable entry at this name is not a grant, and a
+            # traceback is not a refusal: say what is in the way and what clears it.
+            print(f"❌ Could not withdraw the grant: {exc}.")
+            print(f"   Remove or replace {path} by hand, then run this again.")
+            return
+        # The unlink is a DIRECTORY mutation, so the entry's removal is not durable until
+        # the directory itself is synced. Reporting success before that could tell an
+        # operator a never-expiring grant is gone and have it reappear after power loss.
+        with contextlib.suppress(OSError):
+            fsync_dir(path.parent, best_effort=True)
+        with contextlib.suppress(Exception):
+            sel().log_api_access(
+                caller="cli",
+                operation="safety_override:standing_grant_withdraw",
+                outcome="withdrawn",
+                source="cli",
+                resources=str(path),
+            )
+        print(f"✅ Standing auto-approve grant withdrawn ({path}).")
+        print("   Approvals are requested normally from the next restart.")
+        return
+    if not getattr(args, "enable", False):
+        print("Pass --enable to record a standing grant, or --disable to withdraw one.")
+        print(f"   Document: {path}")
+        return
+    if not _standing_grant_key_is_persisted():
+        print("❌ Refusing to record the grant: this installation's signing key is not")
+        print("   persisted, so the provenance would not verify at the next startup and")
+        print(f"   the grant would be silently refused. Fix {config_dir()}/token_signing.key")
+        print("   (owner-only, at least 32 bytes) and run this again.")
+        return
+    try:
+        # ``critical=True`` is what makes this a gate rather than a hope: without it the
+        # logger ENQUEUES and an append failure (unwritable SEL file, full disk, a sibling
+        # holding the chain lock) is swallowed in the writer thread, so the grant would
+        # publish with no permission-decision record. Critical writes synchronously and
+        # re-raises, which the refusal below turns into "no grant".
+        sel().log_api_access(
+            caller="cli",
+            operation="safety_override:standing_grant_record",
+            outcome="enabled",
+            source="cli",
+            resources=str(path),
+            critical=True,
+        )
+    except Exception as exc:  # noqa: BLE001 - no grant without a record of it
+        print(f"❌ Refusing to record the grant: the audit log could not be written ({exc}).")
+        return
+    document = {"enabled": True, "mac": standing_grant_mac(True)}
+    try:
+        published = _publish_standing_grant(path, document)
+    except OSError as exc:
+        print(f"❌ Could not write the grant document ({exc}).")
+        return
+    if not published:
+        return
+    print(f"✅ Standing auto-approve grant recorded ({path}).")
+    print("   It takes effect at the next gateway restart and does not expire.")
+    print("   Withdraw it with: kirocrew security standing-approval --disable")
+
+
 def _security(args: argparse.Namespace) -> None:
     """Security audit and deny list commands."""
 
     action = getattr(args, "sec_action", None)
-    if action == "deny-list":
+    if action == "standing-approval":
+        _standing_approval(args)
+    elif action == "deny-list":
         print("🔒 Built-in deny patterns (always enforced):")
         for p in BUILTIN_DENY_PATTERNS:
             print(f"  ✗ {p}")

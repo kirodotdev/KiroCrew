@@ -1806,7 +1806,8 @@ Consequences, and they are the point:
   silently-inert bug this design exists to kill, now with the settings UI
   affirming that the value took effect.
 - **A reload that can widen approvals is audited.** `HookManager` follows
-  `hooks.*` live, and `config.json` is writable by an auto-approved agent shell,
+  `hooks.*` live, and a write to `config.json` from outside the sandbox needs no
+  restart to take effect,
   so its applier SEL-logs an `auto_approve_tools` / `auto_approve_sources` /
   `auto_approve_subagent_*` change (`hook_manager.reconfigure`,
   `auto_approve_changed`, counts and flag names only) the way the channel
@@ -1916,7 +1917,7 @@ class AgentConfig:
     sandbox: str = "auto"          # default "auto" (namespace on Linux, seatbelt on macOS; delegates to kiro-cli's internal sandbox on macOS when enabled); "off" skips Kiro Crew's sandbox
     sandbox_allow_no_isolation: bool = False  # SEC-009: acknowledge running un-isolated when no sandbox backend exists; false = loud SECURITY warning, true = info-level
     soft_stop_budget_secs: float = 10.0  # seconds to wait for cooperative cancel before hard kill [0.5, 60.0]
-    dangerously_skip_permissions: bool = False  # persistent all-tool approval; restart required
+    dangerously_skip_permissions: bool = False  # legacy; the grant is on the keystone
     yolo_duration: str = "6h"      # duration for ad-hoc auto-approval; 30m|1h|6h|12h|24h|until_shutdown
     max_subagents: int = 0         # 0 = auto-size from host memory and learned per-agent cost; fixed pins load in [3, 64]
     subagent_auto_max: int = 32    # ceiling on the auto-sized cap (max_subagents=0 only). Load-time clamped to [3, 64]
@@ -2281,12 +2282,15 @@ Consent to send message text and skill descriptions to Jev lives **outside
 ```
 
 `endpoint` is the `provider.endpoint` the owner consented to; the gate sends only
-while the configured endpoint still equals it, because that field is in this
-agent-writable file too. Same reasoning as `computer_use.json` above: `config.json` is a `VISIBLE` leaf the
-agent's shell can write, and every `decisions.*` field is hot-applied by the live
-watcher, so an `enabled` toggle here would let a prompt-injected agent start the
-egress of its own conversation without a restart. Reads fail soft to `{}` → **not
-consented**, and only a literal `true` consents. The only writer is the owner-only,
+while the configured endpoint still equals it, because that field is in this file
+too, whose writers are the gateway and the operator's terminal rather than the
+keystone's single owner-gated PUT. Same reasoning as `computer_use.json` above:
+`config.json` is not sealed in the sandbox and is off the read+write floor, so the
+agent can both READ it and write it from a shell, and every
+`decisions.*` field is hot-applied by the live watcher. An authorization to send the
+owner's conversation off the machine belongs where both halves hold and a single
+owner-gated handler is the only writer, so it is not a field here. Reads fail soft to
+`{}` → **not consented**, and only a literal `true` consents. The only writer is the owner-only,
 browser-called `PUT /api/decisions/consent` (`dashboard/handlers/decisions.py`);
 `PATCH /api/config/kirocrew` refuses `decisions.enabled`, and an `enabled` key written
 into the section by hand is inert — the parsed dataclass has no such attribute. See

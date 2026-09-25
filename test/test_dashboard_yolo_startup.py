@@ -26,6 +26,19 @@ def _cfg(yolo: bool, duration: str = "6h") -> SimpleNamespace:
     )
 
 
+def _declared(yolo: bool):
+    """Record a STANDING grant where the startup path reads it.
+
+    The authority is the keystone ``standing_approval.json``, not the config key: the
+    config document is agent-readable in-sandbox, so the only protection it can carry is
+    a read-only seal, and a seal covers a path while the inode behind it stays reachable
+    under a second name. A test that means "the operator declared a standing grant"
+    therefore has to say so at the keystone. The config flag stays in ``_cfg`` because
+    the startup path still reads it -- to tell an operator who has not migrated yet.
+    """
+    return patch("kiro_crew.dashboard.server.standing_grant_declared", return_value=yolo)
+
+
 def setup_function() -> None:
     reset_singleton()
 
@@ -37,7 +50,7 @@ def teardown_function() -> None:
 def test_declared_yolo_does_not_expire() -> None:
     """Declared YOLO does not lapse after 24h and revert to Normal."""
     state = _make_state()
-    with patch("kiro_crew.safety_override.sel"):
+    with patch("kiro_crew.safety_override.sel"), _declared(True):
         _apply_startup_yolo(state, _cfg(yolo=True))
 
     so = safety_override()
@@ -59,7 +72,7 @@ def test_declared_yolo_does_not_expire() -> None:
 def test_declared_yolo_is_cleared_by_choosing_another_mode() -> None:
     """Permanence must never mean unrevokable."""
     state = _make_state()
-    with patch("kiro_crew.safety_override.sel"):
+    with patch("kiro_crew.safety_override.sel"), _declared(True):
         _apply_startup_yolo(state, _cfg(yolo=True))
         safety_override().deactivate("dashboard")
 
@@ -110,7 +123,7 @@ def test_apply_startup_yolo_noop_when_config_false() -> None:
 def test_apply_startup_yolo_logs_sel() -> None:
     """Activation emits SEL audit event via safety_override module."""
     state = _make_state()
-    with patch("kiro_crew.safety_override.sel") as mock_sel:
+    with patch("kiro_crew.safety_override.sel") as mock_sel, _declared(True):
         _apply_startup_yolo(state, _cfg(yolo=True))
 
     mock_sel.return_value.log_api_access.assert_called()
@@ -123,10 +136,13 @@ def test_apply_startup_yolo_logs_sel() -> None:
 def test_apply_startup_yolo_handles_exception_gracefully() -> None:
     """If the grant raises, startup continues without YOLO."""
     state = _make_state()
-    with patch(
-        "kiro_crew.dashboard.server.grant_declared_yolo",
-        side_effect=RuntimeError("boom"),
-    ) as mock_grant:
+    with (
+        patch(
+            "kiro_crew.dashboard.server.grant_declared_yolo",
+            side_effect=RuntimeError("boom"),
+        ) as mock_grant,
+        _declared(True),
+    ):
         _apply_startup_yolo(state, _cfg(yolo=True))
 
     mock_grant.assert_called_once()
@@ -136,7 +152,7 @@ def test_apply_startup_yolo_handles_exception_gracefully() -> None:
 def test_apply_startup_yolo_refuses_when_sel_fails() -> None:
     """SEL audit failure must prevent activation (fail-closed)."""
     state = _make_state()
-    with patch("kiro_crew.safety_override.sel") as mock_sel:
+    with patch("kiro_crew.safety_override.sel") as mock_sel, _declared(True):
         mock_sel.return_value.log_api_access.side_effect = RuntimeError("sel down")
         _apply_startup_yolo(state, _cfg(yolo=True))
     assert safety_override().is_active() is False

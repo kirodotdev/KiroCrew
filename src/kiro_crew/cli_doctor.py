@@ -2624,6 +2624,59 @@ def _doctor_sandbox_backend(issues: list[str]) -> None:
             )
 
 
+def _doctor_standing_approval_leaf(issues: list[str]) -> None:
+    """Report a standing-grant leaf whose shape will refuse every Linux agent spawn.
+
+    The sibling of :func:`_doctor_live_target_pointer`, for the leaf carrying the standing
+    auto-approve posture, and here for the same reason: rsnapshot and other hard-link
+    snapshot tools raise link counts on documents in the data home, and a dotfile manager
+    may keep this one as a link into its own tree. Nobody did anything wrong, and the first
+    symptom is that every agent stops starting.
+
+    Linux only, for the reason that section gives: a macOS Seatbelt profile denies by path
+    rule and never needs a mount target, so naming it there would report an outage that
+    will not happen.
+
+    The sentence is the launcher's own (``sandbox.standing_approval_unfitness``), not a
+    paraphrase, so an operator who sees this line and later hits the refusal reads one
+    diagnosis rather than two.
+    """
+    if not sys.platform.startswith("linux"):
+        return
+    try:
+        unfit = sandbox.standing_approval_unfitness()
+    except Exception as exc:  # noqa: BLE001 — doctor must survive a broken probe
+        print("\nStanding Auto-Approve Grant")
+        print(f"  grant:       ⚠️  could not check ({_safe_display(exc)})")
+        return
+    if unfit is None:
+        return
+    try:
+        confined = sandbox.credential_mask_applies(sandbox.configured_sandbox_mode())
+    except Exception:  # noqa: BLE001 — an unreadable mode must not hide the leaf
+        confined = True
+    print("\nStanding Auto-Approve Grant")
+    if confined:
+        print(f"  grant:       ❌ agent spawns will be REFUSED — {unfit.path}")
+    else:
+        print(f"  grant:       ⚠️  unfit, and will refuse spawns once confined — {unfit.path}")
+    # Whole tokens: the remedy names a path and a ``find`` invocation the operator copies.
+    _print_wrapped(unfit.detail)
+    if confined:
+        _print_wrapped(
+            "Until this is fixed every agent spawn on this host fails closed, and the "
+            "only other notice is a warning in the gateway log."
+        )
+        issues.append("standing auto-approve grant")
+    else:
+        _print_wrapped(
+            "This leaf is not what stops a spawn on this host: the launcher reaches the "
+            "mask it would break only when it WRAPS a child, and this host hands the "
+            "command over unwrapped or refuses it for a different reason. Fix it before "
+            "the host starts confining spawns, or the first one that does fails closed."
+        )
+
+
 def _doctor_live_target_pointer(issues: list[str]) -> None:
     """Report a live-target pointer that will refuse the next agent spawn.
 
@@ -4831,6 +4884,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     # who just read the backend verdict is the one who needs to know a spawn will be
     # refused for a reason the backend line cannot express.
     _doctor_live_target_pointer(issues)
+    _doctor_standing_approval_leaf(issues)
 
     # ── Memory pressure preparedness (swap / userspace OOM killer) ──
     _doctor_memory_pressure(issues)

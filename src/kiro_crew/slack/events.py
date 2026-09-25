@@ -59,7 +59,12 @@ from kiro_crew.messaging.identity import channel_inbound_permitted
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.platform import current_context, safe_context_call
 from kiro_crew.platform.interfaces import InterceptDecision
-from kiro_crew.safety_override import safety_override, yolo_policy_permits
+from kiro_crew.safety_override import (
+    safety_override,
+    standing_grant_declared,
+    warn_if_config_declares_standing_grant,
+    yolo_policy_permits,
+)
 from kiro_crew.security import (
     redact_credentials,
     redact_exfiltration_urls,
@@ -920,7 +925,17 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
     set_tracking_channels(orch._tracking_channels)
     set_open_channels(orch._open_channels)
     set_owner_id(orch._owner_id)
-    if orch._cfg.agent.dangerously_skip_permissions:
+    # Same authority as the dashboard startup path, read from the keystone rather than
+    # the agent-readable config document, so a headless gateway cannot end up with a
+    # standing grant the dashboard would refuse.
+    #
+    # Both off-loop, for the reason the grant call beside them already is: reading the
+    # keystone touches the filesystem and resolves the host signing secret, which on a cold
+    # or contended key creates the file under a lock -- blocking work that would stall every
+    # gateway task if it ran on the loop.
+    declared_in_config = orch._cfg.agent.dangerously_skip_permissions
+    await asyncio.to_thread(warn_if_config_declares_standing_grant, declared_in_config)
+    if await asyncio.to_thread(standing_grant_declared):
         # grant_declared_yolo walks the profiles dir — blocking, so off-loop.
         await asyncio.to_thread(set_yolo_mode, True)
     set_orch_cfg(orch._cfg)

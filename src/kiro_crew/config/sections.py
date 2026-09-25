@@ -1205,12 +1205,14 @@ class AgentConfig:
         default=False,
         metadata=_meta(
             "Dangerously Skip Permissions",
-            "Skip EVERY tool approval confirmation, permanently. Declaring it here "
-            "is a standing instruction: the grant does not expire and is "
-            "re-established on every startup. This is the advanced, "
-            "config-file-only escape hatch — there is deliberately no dashboard "
-            "toggle for it. An enterprise policy can forbid it, which falls back "
-            "to the ad-hoc duration below.",
+            "Skip EVERY tool approval confirmation, permanently. DEPRECATED here: "
+            "declaring it in this file no longer installs the grant, because this "
+            "document is readable in the agent sandbox and its protection covers a "
+            "path rather than the file behind it. Record the grant on the gateway "
+            "host with `kirocrew security standing-approval --enable` instead, which "
+            "writes standing_approval.json with this installation's provenance; startup "
+            "logs the command. An enterprise policy can forbid a never-expiring grant, "
+            "which falls back to the ad-hoc duration below.",
             restart=True,
         ),
     )

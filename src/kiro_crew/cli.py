@@ -1894,6 +1894,14 @@ Examples:
     sel_parser.add_argument("--since", default="", help=f"Only entries at or after {_time_help}")
     sel_parser.add_argument("--until", default="", help=f"Only entries before {_time_help}")
     sec_sub.add_parser("verify", help="Verify security event log HMAC integrity")
+    standing = sec_sub.add_parser(
+        "standing-approval",
+        help="Record or withdraw the standing (never-expiring) auto-approve grant",
+    )
+    standing.add_argument(
+        "--enable", action="store_true", help="Record the grant for this installation"
+    )
+    standing.add_argument("--disable", action="store_true", help="Withdraw the grant")
 
     # policy — governance model inspection (read-only; MCP-safe)
     tn_parser = cli_help.add_command(sub, "tailnet")

@@ -244,6 +244,33 @@ _LIVE_TARGET_LEAF: str = "live_target.json"
 #: reason as ``_MD_NOTEBOOK_STAGING_LEAF`` / ``aws-control-staging``.
 _LIVE_TARGET_STAGING_LEAF: str = "live-target-staging"
 
+#: The STANDING auto-approve grant's own leaf. ``safety_override`` reads it at every
+#: startup and, when it says enabled, installs a grant with no expiry -- so this one
+#: document decides whether one session's elevation is the host's default.
+#:
+#: Not a key in ``config.json``. That document is off the read+write floor on purpose,
+#: because reading config in-sandbox is routine, and it is not sealed either, since an
+#: in-sandbox ``kirocrew config set`` is a documented verb -- so no path-based control
+#: refuses a shell write to it. A seal would not have sufficed anyway: it covers a PATH,
+#: not the inode behind it, while the
+#: data-home root stays writable. A second name to that inode therefore remains a way to
+#: write the posture. This leaf is MASKED instead, which is the placement that answers
+#: both halves: an agent cannot open it, so it can neither read the grant nor obtain a
+#: ``link(2)`` source for it, and :func:`_refuse_aliased_masked_leaves` refuses a symlink
+#: rather than sealing a referent. Masking is available here and not for ``config.json``
+#: for one measurable reason: this leaf has no in-sandbox reader at all, while the config
+#: document is resolved per call by the subagent cap, the quarantine threshold and the
+#: browser and monitoring paths.
+#:
+#: Same class of control as ``browser-mode-enabled``, and the same treatment.
+_STANDING_APPROVAL_LEAF: str = "standing_approval.json"
+
+#: Where that grant's absent-equivalent document is staged before it is linked into place.
+#: A whole-directory mask, for the reason :data:`_LIVE_TARGET_STAGING_LEAF` states: a temp
+#: beside the target would be a visible name whose inode BECOMES the keystone, so an agent
+#: that linked the temp would hold a writable second path to the document that grants.
+_STANDING_APPROVAL_STAGING_LEAF: str = "standing-approval-staging"
+
 #: The md-notebook builtin's name, and its own state files under the crew data home.
 #: Named so the mask, the backend carve-out that lifts it, and the materialiser that
 #: gives it a mount target cannot drift apart on a literal.
@@ -455,6 +482,17 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # Where that pointer's absent-equivalent stub is staged before being linked in; a
     # whole-directory mask so the in-flight temp is never a visible, linkable name.
     _LIVE_TARGET_STAGING_LEAF,
+    # The standing auto-approve grant, masked for the reason its own entry states: the
+    # value decides whether one session's elevation becomes the host default, and unlike
+    # the config document it has no in-sandbox reader, so hiding it costs nothing. Given a
+    # mount target before every spawn by
+    # :func:`_materialize_standing_approval_mask_target`, because an ABSENT file cannot be
+    # masked and the data-home root is writable in-sandbox -- and an absent grant name is
+    # the default state on every host, which is what makes that materialiser load-bearing
+    # here rather than a refinement.
+    _STANDING_APPROVAL_LEAF,
+    # Its staging directory, whole-directory masked for the same reason as the pointer's.
+    _STANDING_APPROVAL_STAGING_LEAF,
     "backup",
     "mcp-apps",
     # Published crew webview records. Same model as the entries above, and named
@@ -1550,6 +1588,11 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # agent reads it and drives the loopback /approve to self-grant. Precreated
     # (empty, 0o700) before every spawn so the mask always has a name to bind over.
     "file-delivery-consent-pending",
+    # The standing-approval grant's staging directory, by the same rule: a direct child of
+    # the data home, absent on a host that has never recorded a grant, and the temp staged
+    # inside it becomes the keystone's inode -- so the mask must hold before the first
+    # publish rather than after it.
+    "standing-approval-staging",
     "appearance-library",
     "quarantined-clones",
     # md-notebook's write-staging directory, for the same reason and by the same rule: a
@@ -1670,6 +1713,25 @@ assert set(_MD_NOTEBOOK_PRECREATE_CONTENT) == set(_MD_NOTEBOOK_STATE_LEAVES)
 #: the reason the leaf name is (this module does not import the config-loader chain);
 #: ``test_sandbox_dev_fleet_live_target.py`` pins the two equal.
 _LIVE_TARGET_PRECREATE_CONTENT: bytes = b'{\n  "checkout": null\n}\n'
+
+#: The standing auto-approve grant's absent-equivalent document, and the argument the
+#: pre-create list asks each masked file leaf to supply for itself.
+#:
+#: It is absent-equivalent by the grant's own rule rather than by coincidence: the reader
+#: (``safety_override.standing_grant_declared``) answers NO GRANT for an absent file, for
+#: an unreadable one, and for a document whose ``enabled`` is anything but ``true``. So a
+#: sandbox pinned at this stub reads exactly what it would read with no file at all -- no
+#: startup warning, nothing withheld that was granted, and no way for the stub itself to
+#: become an authorization.
+#:
+#: The direction matters, and it is the safe one. A stale or empty read here can only ever
+#: subtract a grant, never add one, which is why publishing a stub is sound while
+#: publishing one for a DENY list would not be.
+#:
+#: Spelled as a literal for the reason the leaf name is: this module does not import the
+#: config-loader chain. ``test_config_standing_trust_surface.py`` pins the stub and the
+#: reader's answer together, so the two cannot drift.
+_STANDING_APPROVAL_PRECREATE_CONTENT: bytes = b'{\n  "enabled": false\n}\n'
 
 #: What a materialised ceiling holds — the empty JSON object every reader above
 #: already treats as its absent default. NOT a zero-byte file, which is not valid
@@ -2682,67 +2744,211 @@ def _materialize_live_target_mask_target() -> str | None:
     never removes — an existing regular file is left byte-for-byte alone, whether it holds
     a real pin or this stub. Returns the path if it published one.
     """
+    return _materialize_masked_file_leaf(
+        leaf=_LIVE_TARGET_LEAF,
+        staging_leaf=_LIVE_TARGET_STAGING_LEAF,
+        content=_LIVE_TARGET_PRECREATE_CONTENT,
+        what="live-target pointer",
+        # ANY symlink refuses, dangling or resolving, and in ONE sentence. A resolving
+        # link is the attack entry rather than just a dangling one: a mount follows its
+        # target, so the mask would bind over the referent while the lexical name stayed
+        # an agent-replaceable link in a writable directory.
+        #
+        # This refuses a SUPERSET of what the two generic helpers
+        # (``_refuse_if_dangling_symlink`` then ``_refuse_if_symlink_leaf``) refused
+        # between them, so nothing is admitted that they rejected. The pointer gets its
+        # own because the sentence is shared with ``live_target_pointer_unfitness``, so
+        # doctor's pre-spawn warning and this refusal cannot describe one file two ways.
+        refuse_symlink=_refuse_if_live_target_symlink,
+        irregular_detail=_live_target_irregular_detail,
+        multilink_detail=_live_target_multilink_detail,
+        unmaskable=(
+            "Launching anyway would leave the pointer maskless in every agent namespace, "
+            "where writing it selects the code the gateway starts next."
+        ),
+    )
+
+
+def _materialize_standing_approval_mask_target() -> str | None:
+    """Publish the standing auto-approve grant's absent-equivalent document so its mask mounts.
+
+    Why it is load-bearing rather than a refinement: an absent grant is an UNMASKED grant,
+    and absent is the DEFAULT state -- a host that has never recorded one has no such file.
+    The data-home root is writable in every sandbox, so without this an agent creates the
+    document and the next startup reads its own grant back as the operator's standing
+    instruction. :data:`_STANDING_APPROVAL_PRECREATE_CONTENT` carries the
+    absent-equivalence argument.
+
+    A pre-existing HARDLINK refuses, like a symlink and for a sharper reason: the second
+    name is a writable path to the very document a startup reads a grant from, so
+    tolerating it would leave the authorization writable through an alias the mask does not
+    cover. The cost is real -- a link count above one is left by ordinary operation
+    (``cp -al``, rsnapshot, a dotfile manager) and a refusal here stops every sandboxed
+    spawn on the host -- so it is paid with a notice rather than a surprise:
+    :func:`standing_approval_unfitness` reports the same sentence to ``kirocrew doctor``
+    before a spawn ever meets it, which is the arrangement the live-target pointer already
+    uses for the identical trade.
+    """
+    return _materialize_masked_file_leaf(
+        leaf=_STANDING_APPROVAL_LEAF,
+        staging_leaf=_STANDING_APPROVAL_STAGING_LEAF,
+        content=_STANDING_APPROVAL_PRECREATE_CONTENT,
+        what="standing auto-approve grant",
+        refuse_symlink=_refuse_if_standing_approval_symlink,
+        irregular_detail=_standing_approval_irregular_detail,
+        multilink_detail=_standing_approval_multilink_detail,
+        unmaskable=(
+            "Launching anyway would leave the grant maskless in every agent namespace, "
+            "where writing it makes one session's elevation the default for every later "
+            "session."
+        ),
+    )
+
+
+def standing_approval_unfitness() -> LiveTargetUnfitness | None:
+    """Classify the LIVE standing-grant leaf the way a spawn would, WITHOUT spawning.
+
+    The sibling of :func:`live_target_pointer_unfitness`, for the leaf that now carries the
+    standing auto-approve posture, and it exists for the same reason: the refusal is
+    otherwise the operator's only notice and it arrives too late and in the wrong place. A
+    hard link on a document in the data home is ordinary operation for a snapshot tool or a
+    dotfile manager, so the condition appears without anybody doing anything wrong, and the
+    first symptom is that agents stop starting.
+
+    ``None`` means nothing to report: a healthy leaf, an absent one (the publisher supplies
+    the absent-equivalent stub), or no data home yet.
+
+    Shares the refusal's own sentences rather than paraphrasing them, so doctor's warning
+    and the spawn's error cannot drift into describing one file two ways.
+
+    Read-only and total: it never creates, moves or removes anything, and a data home it
+    cannot resolve or stat is reported as nothing rather than as a fault. The LEAF itself is
+    the exception: if it exists but cannot be stat'd the ``OSError`` propagates, because
+    ``None`` here means FIT and a leaf whose shape is unknown may still refuse every spawn.
+    """
     try:
         root = str(config_dir())
-    except Exception:  # pragma: no cover - defensive; a spawn must not fail on this
-        logger.debug("could not resolve the crew data home for live-target masking")
+    except Exception:  # pragma: no cover - defensive; doctor must survive a bad home
+        logger.debug("could not resolve the crew data home for standing-approval fitness")
         return None
     if not os.path.isdir(root):
         return None
-    target = os.path.join(root, _LIVE_TARGET_LEAF)
-    # ANY symlink refuses, dangling or resolving, and in ONE sentence. A resolving link
-    # is the attack entry rather than just a dangling one: a mount follows its target, so
-    # the mask would bind over the referent while the lexical name stayed an
-    # agent-replaceable link in a writable directory. Refused before the isfile check,
-    # exactly as the directory materialiser refuses before its isdir check.
-    #
-    # This refuses a SUPERSET of what the two generic helpers
-    # (``_refuse_if_dangling_symlink`` then ``_refuse_if_symlink_leaf``) refused between
-    # them, so nothing is admitted that they rejected. The pointer gets its own for two
-    # reasons: those helpers say "the masked DIRECTORY <path> is a SYMLINK", which names
-    # the wrong kind of thing for a JSON document an operator is about to go look at; and
-    # the sentence is shared with ``live_target_pointer_unfitness`` so doctor's
-    # pre-spawn warning and this refusal cannot come to describe one file two ways.
-    _refuse_if_live_target_symlink(target)
+    target = os.path.join(root, _STANDING_APPROVAL_LEAF)
+    try:
+        st = os.lstat(target)
+    except FileNotFoundError:
+        # Absent is FIT: the publisher writes the absent-equivalent stub.
+        return None
+    if stat.S_ISLNK(st.st_mode):
+        points_at = "(unreadable)"
+        with contextlib.suppress(OSError):
+            points_at = os.readlink(target)
+        return LiveTargetUnfitness(
+            path=target, detail=_standing_approval_symlink_detail(target, points_at)
+        )
+    if not stat.S_ISREG(st.st_mode):
+        return LiveTargetUnfitness(path=target, detail=_standing_approval_irregular_detail(target))
+    if st.st_nlink != 1:
+        return LiveTargetUnfitness(
+            path=target, detail=_standing_approval_multilink_detail(target, st.st_nlink)
+        )
+    return None
+
+
+def _materialize_masked_file_leaf(
+    *,
+    leaf: str,
+    staging_leaf: str,
+    content: bytes,
+    what: str,
+    refuse_symlink: "Callable[[str], None]",
+    irregular_detail: "Callable[[str], str]",
+    multilink_detail: "Callable[[str, int], str]",
+    unmaskable: str,
+) -> str | None:
+    """Give one masked FILE leaf a mount target, and refuse rather than launch without one.
+
+    The FILE counterpart of :func:`_materialize_maskable_dirs`, shared by every masked leaf
+    that needs one so the publish sequence exists once. It relies on the property both
+    callers have: the leaf is a DIRECT child of the data home, so there is no
+    agent-writable intermediate component for a planted link to redirect, and no
+    per-component descent is needed -- the whole hazard
+    :func:`_materialize_md_notebook_mask_targets` walks chains to avoid.
+
+    Why at all: the launcher's ``SENSITIVE_FILES`` loop guards on ``isfile``, so an absent
+    leaf is an UNMASKED leaf for every namespace already running, and the crew data home is
+    writable at OS level. An agent in such a namespace can simply CREATE the file.
+    Publishing it first makes the mask non-vacuous, so every namespace binds over the name
+    from the outset.
+
+    Linux spawn path only, at the same site as the other materialisers: a Seatbelt deny is
+    a path rule that already holds for a name which does not exist yet, so macOS needs
+    nothing here. The LIVE data home only (``config_dir()``), and an absent data home is
+    left absent.
+
+    **Fail-closed**, like the directory materialiser and for the same reason: launching
+    with the leaf maskless is the exposure this exists to prevent. Never truncates and
+    never removes -- an existing regular file is left byte-for-byte alone, whether it holds
+    real content or the stub. Returns the path if it published one.
+
+    Each caller supplies its own refusal prose, because an operator reading it is about to
+    go look at THAT file: a message naming the wrong document sends them to the wrong
+    place.
+    """
+    try:
+        root = str(config_dir())
+    except Exception:  # pragma: no cover - defensive; a spawn must not fail on this
+        logger.debug("could not resolve the crew data home for %s masking", what)
+        return None
+    if not os.path.isdir(root):
+        return None
+    target = os.path.join(root, leaf)
+    # Refused before the isfile check, exactly as the directory materialiser refuses
+    # before its isdir check.
+    refuse_symlink(target)
     if os.path.exists(target):
-        _refuse_unless_sole_regular_link(target)
+        _refuse_unless_sole_regular_link(
+            target, irregular_detail=irregular_detail, multilink_detail=multilink_detail
+        )
         return None
     # The temp is staged in a MASKED directory, never beside the target: the data-home
     # root is visible in every sandbox, so a temp there is a name a concurrent namespace
-    # can ``link(2)`` — and a bind mask covers a path, not the inode behind it. The
+    # can ``link(2)`` -- and a bind mask covers a path, not the inode behind it. The
     # staging directory is precreated (``_CREW_PRECREATE_HIDDEN_DIR_LEAVES``); it is a
     # direct child of the data home, so its own chain has no agent-writable component.
-    staging = os.path.join(root, _LIVE_TARGET_STAGING_LEAF)
+    staging = os.path.join(root, staging_leaf)
     try:
         os.makedirs(staging, mode=0o700, exist_ok=True)
     except OSError as exc:
         raise SandboxCeilingUnsealable(
-            f"cannot create {staging} to stage the live-target pointer's mask target: {exc}"
+            f"cannot create {staging} to stage the {what}'s mask target: {exc}"
         ) from exc
     if not stat.S_ISDIR(os.lstat(staging).st_mode):
         raise SandboxCeilingUnsealable(
-            f"{staging} is not a directory; refusing to stage the live-target pointer's "
-            "mask target through it"
+            f"{staging} is not a directory; refusing to stage the {what}'s mask target "
+            "through it"
         )
-    if _publish_empty_ceiling(target, staging, content=_LIVE_TARGET_PRECREATE_CONTENT):
-        # ``os.link`` publishes by adding a second name to the temp's inode, and the
-        # temp is unlinked right after — so a link count above one here means someone
-        # else linked the inode in the window, and a mask over THIS name would not
-        # cover THEIR path to the bytes the gateway executes.
-        _refuse_unless_sole_regular_link(target)
+    if _publish_empty_ceiling(target, staging, content=content):
+        # ``os.link`` publishes by adding a second name to the temp's inode, and the temp
+        # is unlinked right after -- so a link count above one HERE means someone else
+        # linked the inode in the window, and a mask over THIS name would not cover THEIR
+        # path to the bytes.
+        _refuse_unless_sole_regular_link(
+            target, irregular_detail=irregular_detail, multilink_detail=multilink_detail
+        )
         return target
     # A lost publish race is benign only if the winner cleared the same bar. Publishing is
     # ``os.link``, which fails EEXIST rather than clobbering, so the ordinary loser finds a
     # regular, singly-linked file here; anything else means the name is not maskable.
     try:
-        _refuse_unless_sole_regular_link(target)
+        _refuse_unless_sole_regular_link(
+            target, irregular_detail=irregular_detail, multilink_detail=multilink_detail
+        )
         return None
     except FileNotFoundError:
         pass
     raise SandboxCeilingUnsealable(
-        f"cannot give the live-target pointer's mask a mount target at {target}. "
-        "Launching anyway would leave the pointer maskless in every agent namespace, "
-        "where writing it selects the code the gateway starts next."
+        f"cannot give the {what}'s mask a mount target at {target}. {unmaskable}"
     )
 
 
@@ -2812,6 +3018,38 @@ class LiveTargetUnfitness(NamedTuple):
 # invocation the operator is meant to COPY, and ``repr`` would quote the whole value and
 # escape its separators -- the same "two unusable fragments" outcome ``keep_tokens_whole``
 # exists to prevent. Stripping control sequences leaves an ordinary path byte-identical.
+def _refuse_if_standing_approval_symlink(target: str) -> None:
+    """Refuse the spawn when the standing grant's path is a symlink of any kind.
+
+    The sibling of :func:`_refuse_if_live_target_symlink`, and separate for the same
+    reason: the shared directory-leaf helper says "the masked directory", and this target
+    is a JSON document an operator is about to go look at.
+
+    Both link shapes, dangling and resolving. A resolving one is the entry that matters: a
+    mount follows its target, so the mask would bind the referent while the lexical name
+    stayed replaceable in a writable directory, and a process that replaces it chooses the
+    document the next startup reads a grant from.
+
+    Refused rather than removed: ``lstat`` then ``unlink`` is not atomic, so removing it
+    here would race whoever put it there.
+    """
+    try:
+        info = os.lstat(target)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise SandboxCeilingUnsealable(
+            f"cannot stat the standing auto-approve grant {safe_terminal_line(target)} to "
+            f"check for a symlink: {safe_terminal_line(str(exc))}"
+        ) from exc
+    if not stat.S_ISLNK(info.st_mode):
+        return
+    points_at = "(unreadable)"
+    with contextlib.suppress(OSError):
+        points_at = os.readlink(target)
+    raise SandboxCeilingUnsealable(_standing_approval_symlink_detail(target, points_at))
+
+
 def _live_target_irregular_detail(target: str) -> str:
     """The refusal sentence for a non-regular file at the pointer's path."""
     return (
@@ -2869,7 +3107,58 @@ def _live_target_symlink_detail(target: str, points_at: str) -> str:
     )
 
 
-def _refuse_unless_sole_regular_link(target: str) -> None:
+def _standing_approval_irregular_detail(target: str) -> str:
+    """The refusal sentence for a non-regular file at the standing grant's path."""
+    return (
+        f"cannot mask {safe_terminal_line(target)}: a non-regular file (a link, FIFO, "
+        "socket, or device node) is sitting at the standing auto-approve grant's path. "
+        "The launcher's isdir/isfile loops classify neither, so its mask would be "
+        "silently skipped for every sandbox. Remove or replace it with a regular file."
+    )
+
+
+def _standing_approval_multilink_detail(target: str, links: int) -> str:
+    """The sentence for a standing-grant document reachable under more than one name.
+
+    Names the ``find`` invocation for the same reason the pointer's does: a hard link is
+    left by ordinary operation (``cp -al``, rsnapshot, a dotfile manager), so an operator
+    who meets this has no way to know which OTHER path shares the inode.
+    """
+    return (
+        f"the standing auto-approve grant {safe_terminal_line(target)} has {links} hard "
+        "links, so the mask over this name leaves another path to the same document. A "
+        "process that can write through that path can record a grant with no expiry. "
+        "List the names under the data home with the command "
+        f"find {shlex.quote(safe_terminal_line(os.path.dirname(target)))} -samefile "
+        f"{shlex.quote(safe_terminal_line(target))} "
+        "-- that searches the data home only, so if it reports just this file, run it "
+        "again from the mount point holding it with -xdev added. Then remove the extra "
+        "link(s)."
+    )
+
+
+def _standing_approval_symlink_detail(target: str, points_at: str) -> str:
+    """The refusal sentence for a symlink squatting the standing grant's path.
+
+    Wording of its own rather than the shared directory-leaf refusal's, which says "the
+    masked directory" and names the wrong kind of thing for a JSON document an operator
+    is about to go look at.
+    """
+    return (
+        f"cannot mask {safe_terminal_line(target)}: the standing auto-approve grant is a "
+        f"SYMLINK -> {safe_terminal_line(points_at)}. "
+        "A mask binds over the link's target, not the name, so the name stays replaceable "
+        "in a writable directory and a sandboxed process could put its own document "
+        "there. Replace it with a regular file, and restart."
+    )
+
+
+def _refuse_unless_sole_regular_link(
+    target: str,
+    *,
+    irregular_detail: "Callable[[str], str]" = _live_target_irregular_detail,
+    multilink_detail: "Callable[[str, int], str]" = _live_target_multilink_detail,
+) -> None:
     """Raise unless *target* is a regular file with exactly one hard link.
 
     Two refusals, one reason each. A non-regular file (FIFO, socket, device): the
@@ -2880,14 +3169,15 @@ def _refuse_unless_sole_regular_link(target: str) -> None:
     temp, or left by an operator's ``ln``. ``FileNotFoundError`` propagates so a
     publish-race caller can tell "gone" from "unfit".
 
-    The sentences come from the module-level formatters so ``kirocrew doctor`` can report
-    the same condition, in the same words, BEFORE a spawn refuses on it.
+    The sentences come from formatters, defaulting to the live-target pointer's, so
+    ``kirocrew doctor`` can report the same condition in the same words BEFORE a spawn
+    refuses on it, and so a second leaf reads about itself rather than about the pointer.
     """
     st = os.lstat(target)
     if not stat.S_ISREG(st.st_mode):
-        raise SandboxCeilingUnsealable(_live_target_irregular_detail(target))
+        raise SandboxCeilingUnsealable(irregular_detail(target))
     if st.st_nlink != 1:
-        raise SandboxCeilingUnsealable(_live_target_multilink_detail(target, st.st_nlink))
+        raise SandboxCeilingUnsealable(multilink_detail(target, st.st_nlink))
 
 
 def live_target_pointer_unfitness() -> LiveTargetUnfitness | None:
@@ -7110,6 +7400,11 @@ def namespace_argv(
     # creatable from any sandbox simply because the data-home ROOT is writable there and
     # an absent name has no mask. Publishing the stub first makes the mask non-vacuous.
     _materialize_live_target_mask_target()
+    # The standing auto-approve grant needs one for the same reason and a narrower one: it
+    # is absent on every host that has never recorded a grant, the data-home root is
+    # writable in-sandbox, and writing that document makes one session's elevation the
+    # default for every later session.
+    _materialize_standing_approval_mask_target()
     # LAST of the pre-spawn checks, and last on purpose: every masked leaf's NAME must be
     # the name the mask binds, and the leaves above have already answered for themselves
     # with sentences tailored to what they hold. This pass covers the rest -- the masked

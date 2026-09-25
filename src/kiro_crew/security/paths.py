@@ -578,11 +578,14 @@ _CREW_SECRET_LEAVES: list[str] = [
     # Same class of control as ``denied_commands.json`` directly above, and here
     # for the same reason: flipping ``enabled`` grants full desktop observation
     # plus keystroke/click synthesis into the operator's real applications — a
-    # security ceiling, not a preference. Storing it in the agent-readable
-    # ``config.json`` would leave it writable by any auto-approved agent shell,
-    # so it lives here and gets read+write protection on the tool path
-    # (``is_sensitive_path``) and read-only mounting by the OS sandbox for the
-    # shell. The dashboard PUT handler is the only writer and it opens the path
+    # security ceiling, not a preference. Storing it in ``config.json`` would put it
+    # in a document the agent can READ in-sandbox -- that document is off this
+    # read+write floor on purpose, because reading config there is routine, and the
+    # bash gate matches no paths, so no path-based control answers a shell write
+    # there at all. A ceiling belongs
+    # where both halves hold, so it lives here and gets read+write protection on the
+    # tool path (``is_sensitive_path``) and read-only mounting by the OS sandbox for
+    # the shell. The dashboard PUT handler is the only writer and it opens the path
     # directly, not through this gate, so the operator's Settings toggle still works.
     "computer_use.json",
     # Browser Mode's durable ENABLE gate. Same class of control as
@@ -606,7 +609,8 @@ _CREW_SECRET_LEAVES: list[str] = [
     # pages. They are here rather than in ``config.json`` for two concrete
     # reasons — an app's ``data/config.json`` is served over
     # ``/api/apps/<name>/config`` WITHOUT session auth, and ``config.json``
-    # itself is writable by any auto-approved agent shell. The read+write
+    # itself is a document the agent can READ in-sandbox, since it is off this
+    # floor so that reading config stays routine. The read+write
     # keystone floor is the only placement where the agent can neither read the
     # tokens nor overwrite them. The authenticated dashboard PUT handler is the
     # sole writer and opens the path directly, so Settings still works.
@@ -621,7 +625,8 @@ _CREW_SECRET_LEAVES: list[str] = [
     # defeats the app's central safety property (``effective = min(app_mode, rule_mode)``
     # is only a ceiling if the agent cannot raise it). Here for the same
     # reasons as the secrets leaf directly above — served unauthenticated over
-    # ``/config`` and writable by any auto-approved shell in ``config.json`` — so it moves
+    # ``/config``, and agent-READABLE in ``config.json``, which sits off this floor so
+    # that reading config stays routine -- so it moves
     # to the read+write keystone floor. Dashboard PUT is the sole writer and opens the
     # path directly.
     "ops_mission_control_policy.json",
@@ -659,6 +664,27 @@ _CREW_SECRET_LEAVES: list[str] = [
     # working; there is deliberately no CLI verb to fence.
     "file_delivery_consent.json",
     "ssh_auth_sock_consent.json",
+    # The STANDING auto-approve grant: the document ``safety_override`` reads at every
+    # startup to decide whether a never-expiring, skip-every-approval grant is installed.
+    # Same class of control as ``computer_use.json`` above, and for a sharper reason -- a
+    # grant an agent could write is not merely a feature it turns on for itself, it is the
+    # removal of the approval step that would have caught everything else it does next.
+    # It is here rather than in ``config.json`` because that document sits off this floor
+    # on purpose (reading config in-sandbox is routine) and is not sealed either, since an
+    # in-sandbox ``kirocrew config set`` is a documented verb -- so no path-based control
+    # refuses a shell write to it. A seal would not have sufficed anyway: it covers a path
+    # while the inode behind it stays reachable under a second name in a writable root.
+    # This leaf has NO in-sandbox reader at all -- the
+    # gateway process is the only party that consults it -- so it is also bind-masked in
+    # ``sandbox._CREW_HIDDEN_LEAVES``, and the mask is what makes the name unopenable
+    # rather than merely unwritable. The sole writer is ``kirocrew security
+    # standing-approval --enable``, running as the gateway's own user: the document carries
+    # a provenance ``mac`` over the host signing secret, so a hand-written file is refused.
+    "standing_approval.json",
+    # Where that grant's absent-equivalent document is staged before being linked into
+    # place. A whole DIRECTORY, because the temp's inode BECOMES the grant: a visible temp
+    # name would be a writable second path to the document that authorizes.
+    "standing-approval-staging",
     # The single-use step-up nonce that authorizes RECORDING a flagged-file
     # delivery grant. A whole DIRECTORY, not a leaf file, because arming writes a
     # sibling ``.tmp`` and renames it into place. It lives in its OWN top-level
