@@ -32,24 +32,105 @@ crew log; when it did not, the next cold start resumes the same id via `session/
 `CrewLog.exists` decides between create and open and a resumed session never truncates it.
 
 A create that a slot's PREVIOUS crew log already exists behind is the supersede case, and
-the successor records it: `session/opened.data.previous = {sid}`. The id is the slot's own
-newest crew log, read from the store: the units whose header names this slot, ordered by the
-`previous` edges those units already recorded, with the crew log nothing cites being the one
-the slot is on (`session_tree.slot_chain_head`). The store is the authority because it is the
-only source that survives the process that wrote it -- every gateway asks the same units and
-gets the same answer. A unit whose header is proved but whose own announce has not landed
-counts as a crew log the slot opened with its edge not yet recorded, since the create
-publishes the header first; leaving it out would answer the crew log before it.
-`SessionManager.mapped_sid`, the slot's session mapping read without pruning, is the fallback
-for a slot with no unit yet -- its first crew log, or a launch with the crew log off. It cannot
-be the authority: an allocation whose replay is still pending holds the prior resumable id in
-the mapping deliberately, so that a restart can still resume it, and the mapping is then a
-generation behind. Latching it would make two successive crew logs cite one predecessor while
-the crew log between them is cited by nobody -- the one chain gap a walker steps over with no
-signal, since both neighbours are well formed. The store read is BLOCKING (a listing cached
-against the root's identity, plus a line pair per unit of the slot) so the turn coroutine hops
-a thread for it, and it is keyed by the SLOT rather than the session key, which is what a
-unit's header records. The Discord and Telegram dispatchers open their
+the successor records it: `session/opened.data.previous = {sid}`. Three sources answer it, in
+order, and each covers a window the next cannot.
+
+FIRST, the store the slot last handed to a `session/opened`, recorded on the slot as that
+entry's edge is spent. It is first because it is the only source that can name a crew log whose
+unit is not on disk yet: `on_session_opened` hands the create to the writer thread, so between
+an allocation and that job running there is no unit for any reader to find, and a slot's second
+allocation inside that window would otherwise name the crew log before the first one and leave
+it cited by nobody.
+
+SECOND, the slot's own newest unit IN THE STORE: the units whose header names this slot,
+ordered by the `previous` edges those units already recorded, with the crew log nothing cites
+being the one the slot is on (`session_tree.slot_chain_head`). This is the DURABLE source, and
+it is what a gateway that restarted has: the record above died with the process that held it.
+This read has THREE answers, and the third is the load-bearing one. A unit naming this slot is
+the answer when exactly one unit of the slot is uncited, or when exactly one uncited unit
+records an edge. "No crew log" covers a slot with no unit, a store that is not at the name --
+nothing is held by a directory that is not there, and that is the ordinary launch of a crew log
+switched off -- a slot whose uncited units all STATE they have no predecessor, and a slot with an
+uncited unit whose announce was read and says NOTHING about a predecessor either way, which is
+the state every store written before these keys existed is in. Anything else is
+UNDECIDED: a listing that could not be made, a unit that would not read, an uncited unit whose
+announce was never read at all, an uncited unit whose announce RECORDS an undetermined
+predecessor, more than one uncited unit recording an edge, a cycle. The
+listing is taken STRICTLY for that reason: an ordinary one silently omits
+a unit whose header will not prove while it already holds entries, and omitting the newest one
+makes the unit before it look uncited.
+
+Those five states are what the fold branches on, and they are exhaustive over what an announce
+can say: it NAMES a predecessor, STATES there is none, STATES one it could not determine, was
+not read at all, or was read and said nothing. The last two are both silences and they get
+OPPOSITE answers, which is the distinction this read turns on. An unread announce refuses,
+because it becomes readable later and the refusal costs one citation. A silence the announce
+itself carries never becomes anything else, so refusing on it would be permanent -- no edge
+would ever be written, each create would add one more unrankable unit, and the caller's next
+source would stay suppressed for the life of the slot; it hands over instead, which is also how
+such a store starts describing itself, with nothing rewriting the units already on disk.
+
+UNDECIDED writes NO edge -- but it DOES write
+`previous_undecided` on the announce, and a store the read proves is the slot's first writes
+`previous_none`. Neither is decoration, and neither meaning may rest on a key being ABSENT: the
+two silences above are byte-identical without them, so the state that must refuse would read as
+the state that may be passed over, and a later fold would elect the unit before it, writing by
+another route the citation this read declined to guess. It must not fall through to
+the mapping, which is the source this read was preferred over, and it must not be broken by
+`header.createdAt`, a wall
+clock that hands the newer crew log the earlier stamp after a backward step. One citation lost
+while a record is incomplete is recoverable by the next allocation; a wrong one in an append-only
+entry is not -- but UNDECIDED must not be answered where it would be PERMANENT either, which is
+why a store recording no succession hands over rather than refusing. Nothing latches a refusal:
+the listing re-checks a child it could not prove on
+every call, so the read answers again as soon as the bytes do. The read is BLOCKING (a listing
+cached against the root's identity, plus a line pair per unit of the slot) so the turn coroutine
+hops a thread for it, and it is keyed by the
+SLOT rather than the session key, which is what a unit's header records.
+
+THIRD, `SessionManager.mapped_sid`, the slot's session mapping read without pruning, for a slot
+the store says has NO unit at all -- its first crew log, or a launch with the crew log off. An
+UNDECIDED store read does not reach it, and neither does a decided-empty one whose edge is TAKEN
+inside that pending window: allocation holds the prior
+resumable id in the mapping deliberately, so that a restart can still resume it, and the mapping
+is then a generation behind. Latching it would make two successive crew logs cite one
+predecessor while the crew log between them is cited by nobody -- the one chain gap a walker
+steps over with no signal, since both neighbours are well formed. That combination is reachable
+on an upgraded slot whose crew logs all predate this edge: the store has no succession to order
+them by, so it answers "no succession", and the mapping is the only source left -- which is
+exactly why it must not be cited while it is knowingly holding the older generation. The log
+records a break for that one create instead, and only when the mapping names an id at all, since
+a break claims a predecessor EXISTS.
+
+The window is asked about at the TAKE and not at the read, and the placement is the whole
+correctness of it. The marker saying replay is owed is an attribute of a live session, and this
+read runs before the turn's session is allocated -- so asked from there it answers "no replay
+owed" both when none is owed and when there is no session to ask, and the second is a COLD
+START, which is the restart the durable tier exists to survive and the state in which the
+mapping is most likely to be holding the older generation. So a mapped id comes back flagged
+provisional, and the slot downgrades it to a break as the edge is handed to an entry, where a
+session exists and the answer means what it says. The flag rides with the id and not beside it:
+the slot's own record outranks a mapped id, and a latch whose record wins drops the flag with
+it, because what is latched is then this process's own statement rather than the mapping's.
+
+The DECIDED empty splits in two, and flattening them writes a false statement. Either the store
+holds no unit of this slot at all, so the absence of a predecessor is the whole truth and the
+entry may STATE it; or it holds units it could not rank -- units written before these keys
+existed, several each stating they start the chain -- where the mapping coming back empty says
+only that the mapping had nothing to give. The second is no finding about the slot, so that
+create writes NO predecessor key and reads as the legacy silence it is. Reported as a finding it
+would have a log with earlier siblings declare itself their chain start, which a later fold is
+then entitled to pass over. Only the COMPLETE absence reaches `previous_none`.
+
+The reason travelling with the id carries the same three values for the same purpose: a
+determination either way, or nothing determined. A latch that could not read the store carries no
+information about its CONTENTS, so a later latch that read it successfully supersedes that
+refusal -- left standing, the entry reports a predecessor as existing-but-unnameable for a slot
+the gateway determined has none. A later latch that determined nothing may erase a refusal, which
+loses one break and writes nothing false, and may never manufacture the statement neither latch
+made.
+
+The Discord and Telegram dispatchers open their
 OWN sessions' crew logs (`messaging.dispatch.open_turn_crew_log`) and hold no slot record to
 prefer, so they take the ALLOCATION's own capture of the mapping: `SessionAllocationService`
 reads `mapped_sid` inside the registration's critical section -- under its lock, before the
@@ -57,17 +138,15 @@ new sid is mapped -- and stamps it on the registered session, exposed as
 `SessionManager.allocation_predecessor(key)` for the caller to consume after the claim. A
 read taken before `get_or_create` could be staled by a concurrent turn on the same key that
 allocates an intermediate session and has it recycled while the reader waits inside the
-allocation for the turn permit; the boundary's own capture cannot be. The replay-pending
-generation gap above applies to that capture as it does to the fallback. `mapped_sid` rather
-OWN sessions' crew logs (`messaging.dispatch.open_turn_crew_log`) and hold no slot record to
-prefer, so they take the ALLOCATION's own capture of the mapping: `SessionAllocationService`
-reads `mapped_sid` inside the registration's critical section -- under its lock, before the
-new sid is mapped -- and stamps it on the registered session, exposed as
-`SessionManager.allocation_predecessor(key)` for the caller to consume after the claim. A
-read taken before `get_or_create` could be staled by a concurrent turn on the same key that
-allocates an intermediate session and has it recycled while the reader waits inside the
-allocation for the turn permit; the boundary's own capture cannot be. The replay-pending
-generation gap above applies to that capture as it does to the fallback. `mapped_sid` rather
+allocation for the turn permit; the boundary's own capture cannot be. That capture is a read of
+the mapping, so it carries the same two limits as this fallback -- the replay-pending generation
+gap, and no store tier above it. It also DETERMINES nothing: it hands over whichever id the
+capture holds, and that id is empty whenever the mapping entry is gone while the slot's units
+remain. So those creates pass no determination and their units carry no predecessor key of any
+kind, which reads as the legacy silence it is. The alternative -- reading the empty id as a
+finding -- would have the entry declare a slot with units to be its own first store, in an
+append-only record, and a later fold would pass over it: the defect this section closes, written
+from the other side. `mapped_sid` rather
 than `resumable_sid`: the latter asks "can this id still be resumed", so it stats the ACP
 transcript on the calling thread (a sync store read the turn coroutine must not make) and
 PRUNES the entry when that file is gone or empty, which erases the id exactly when the two
@@ -88,7 +167,7 @@ unset here -- see "Reconnect is not resume" below for what it is for.
 
 | Fact | Site | Data |
 |---|---|---|
-| `session/opened` | after `get_or_create`, on create or re-attach only -- the dashboard runner on every turn, and the Discord and Telegram dispatchers for their OWN sessions (`messaging.dispatch.open_turn_crew_log`, before `TurnDriver.run`; a dashboard session resumed into a chat is left to the runner that holds its lineage) | agent, slot key, model, `model_requested` when a tier resolved one, cwd, `resumed`; `previous {sid}` on a CREATE whose slot already wrote a different crew log, taken from the slot's own newest unit IN THE STORE -- the unit no other unit of that slot cites as `previous`, read off the event loop and keyed by the slot rather than the session key -- and falling back to `mapped_sid` (in-memory, non-pruning) for a slot with no unit yet; the store is the authority because it survives the process that wrote it, and the mapping cannot be because a replay-pending allocation holds the prior resumable id there on purpose, which would name a generation behind and leave the crew log between cited by nobody; latched on the slot by whichever allocation observes it FIRST -- the eager prefetch maps its own session over the key before the first turn runs, so a turn reading the mapping for itself would answer the successor and write no edge; the latch is write-once and is spent on one entry; the channel dispatchers, which hold no slot record, consume the ALLOCATION's own capture instead (`SessionManager.allocation_predecessor`, read by `SessionAllocationService` inside the registration's critical section from `mapped_sid` -- live id or the `discarded_sid` stash a recycle leaves -- and handed over through `messaging.dispatch.predecessor_sid` after the claim), so no read of the mapping around `get_or_create` remains to be staled by a concurrent turn's allocate-and-recycle; recorded only when the named crew log's own header names this slot, read at emit time, so a stale or recycled mapping entry yields no edge; `parent {slot, sid?}` when `session_create` made the session IN THIS GATEWAY PROCESS (`_lineage_minted`) -- the creator's key from the slot's `_created_by`, and the creator's ACP session id FROZEN at mint (`_created_by_sid`) from the live caller handle, present when the caller had a session at that moment; a slot restored from transcript metadata writes no `parent` |
+| `session/opened` | after `get_or_create`, on create or re-attach only -- the dashboard runner on every turn, and the Discord and Telegram dispatchers for their OWN sessions (`messaging.dispatch.open_turn_crew_log`, before `TurnDriver.run`; a dashboard session resumed into a chat is left to the runner that holds its lineage) | agent, slot key, model, `model_requested` when a tier resolved one, cwd, `resumed`; `previous {sid}` on a CREATE whose slot already wrote a different crew log, resolved in three tiers -- the store the slot last handed to a `session/opened` (recorded on the slot as that edge is spent, and the only source that can name a crew log whose create is still queued to the writer thread), then the slot's own newest unit IN THE STORE (the unit no other unit of that slot cites as `previous`, read off the event loop and keyed by the slot rather than the session key, which is the DURABLE answer a restart has), then `mapped_sid` (in-memory, non-pruning) for a slot with no unit at all; the mapping cannot be higher because a replay-pending allocation holds the prior resumable id there on purpose, which would name a generation behind and leave the crew log between cited by nobody, and inside that window it is not cited -- the log records `previous_undecided` instead, and a store the read proves is the slot's first records `previous_none`, because a silence the announce carries and a silence that is merely the absence of every key demand opposite treatment from a later fold. The window is asked about where a SESSION EXISTS to answer, as the edge is taken, not where the id is read: the marker is an attribute of a live session and the read runs before this turn's session is allocated, so asking there answers "no replay owed" both when none is owed and when there is nobody to ask -- and the second is a cold start, the restart this whole read exists to survive. So the mapped id is latched PROVISIONAL and downgraded to a break at the take; the slot's own record is never provisional, and a latch whose record wins over a mapped id drops the flag with it. `previous_none` is the LOOKER's statement, written only for a caller that passed a determination, and only when the store's answer is COMPLETE -- no unit of the slot at all. A store holding units it could not rank hands the question on WITHOUT a determination, so an empty mapping there is no finding about the slot and the create writes no key; the channel dispatchers hand over one captured id and determine nothing, so their units carry no predecessor key either. Both read as the legacy silence they are, rather than declaring a slot with units to be its own first store; latched on the slot by whichever allocation observes it FIRST -- the eager prefetch maps its own session over the key before the first turn runs, so a turn reading the mapping for itself would answer the successor and write no edge; the latch is write-once and is spent on one entry; the channel dispatchers, which hold no slot record, consume the ALLOCATION's own capture instead (`SessionManager.allocation_predecessor`, read by `SessionAllocationService` inside the registration's critical section from `mapped_sid` -- live id or the `discarded_sid` stash a recycle leaves -- and handed over through `messaging.dispatch.predecessor_sid` after the claim), so no read of the mapping around `get_or_create` remains to be staled by a concurrent turn's allocate-and-recycle; recorded only when the named crew log's own header names this slot, read at emit time, so a stale or recycled mapping entry yields no edge; `parent {slot, sid?}` when `session_create` made the session IN THIS GATEWAY PROCESS (`_lineage_minted`) -- the creator's key from the slot's `_created_by`, and the creator's ACP session id FROZEN at mint (`_created_by_sid`) from the live caller handle, present when the caller had a session at that moment; a slot restored from transcript metadata writes no `parent` |
 | `turn/started` | after every dispatch gate, immediately before the stream opens | turn ordinal, actor, prompt depth |
 | `turn/refused` | each gate that refuses the dispatch | turn ordinal, actor, `reason`, prompt depth |
 | `turn/completed` | the `EVENT_COMPLETE` arm, beside `_emit_turn_metric`; the turn's `finally` when no terminal event arrived | the four `TurnUsage` token counts, credits, `duration_ms`, `stop_reason`, model, provider -- or `stop_reason: "failed"` with `error` and no usage |

@@ -916,6 +916,59 @@ def test_a_record_names_no_previous_when_its_entry_omits_the_key() -> None:
     record = session_tree.opened_record(directory, header, entry)
     assert record is not None
     assert record.previous_sid is None
+    # The announce was read and says NOTHING about a predecessor. That is the state a
+    # log written before these keys existed is in, and it is not a statement.
+    assert record.previous_edge == session_tree.EDGE_LEGACY
+
+
+def test_an_announce_that_states_no_predecessor_is_not_a_legacy_silence() -> None:
+    """The positive statement, which is the only thing a ranking fold may pass over.
+
+    A log that merely omits every predecessor key is indistinguishable from one the
+    old gateway wrote when it could not name a predecessor, so passing over that one
+    elects the log before it and orphans it. Saying so is what separates the two.
+    """
+    handle = _log("sid-declared-first", "chat-1")
+    handle.append(
+        "session/opened",
+        {
+            "agent": "kirocrew",
+            "slot": "chat-1",
+            "model": "opus",
+            "cwd": "/w",
+            "owner": "raymond",
+            "resumed": False,
+            "previous_none": True,
+        },
+        src=GATEWAY,
+    )
+    directory = crew_store.unit_dir_for(lg.KIND_SESSION, "sid-declared-first")
+    header, entry, _ = crew_store.read_head(crew_store.oldest_segment(directory))
+    record = session_tree.opened_record(directory, header, entry)
+    assert record is not None
+    assert record.previous_sid is None
+    assert record.previous_edge == session_tree.EDGE_NONE
+
+
+def test_a_first_entry_that_is_not_the_announce_leaves_the_edge_unread() -> None:
+    """Retention took the creating segment, so no announce is there to read.
+
+    ``previous_sid`` is ``None`` here exactly as it is for a log that states it has no
+    predecessor, and the three must not be confused: this one has no announce, so the
+    record is incomplete and a fold refuses until it is readable; a log that STATES it
+    has none may be passed over; a log that is merely silent goes to the mapping.
+    """
+    handle = _log("sid-truncated", "chat-1")
+    handle.append("session/turn", {"slot": "chat-1"}, src=GATEWAY)
+    directory = crew_store.unit_dir_for(lg.KIND_SESSION, "sid-truncated")
+    header, entry, _ = crew_store.read_head(crew_store.oldest_segment(directory))
+    record = session_tree.opened_record(directory, header, entry)
+    assert record is not None
+    assert record.previous_sid is None
+    assert record.previous_edge == session_tree.EDGE_UNREAD, (
+        "a log whose announce was never read reported a STATED absence of a "
+        "predecessor, so a fold would pass over it and orphan it"
+    )
 
 
 def test_an_oversized_previous_sid_refuses_the_whole_record() -> None:

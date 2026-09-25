@@ -200,6 +200,7 @@ from kiro_crew.dashboard.state import (
     SUBAGENT_SYNTHESIS_PREFIX,
     SUBAGENT_SYNTHESIS_PROMPT,
     TOOL_STALL_RECOVERY_PREFIX,
+    CrewLogPrevious,
     DashboardState,
     _ChatSlot,
     _mark_permission_resolved,
@@ -1415,33 +1416,100 @@ def _agent_fallback_chain() -> tuple[str, ...]:
 #: the turn-close sweep to guess at. A status NOT in here (`in_progress`, `pending`,
 #: an unknown word) leaves the call open, which is the honest reading: the frame did
 #: not say the call was over.
-async def _slot_predecessor_store(sessions: Any, slot: Any, session_key: str) -> str:
-    """The store *slot* was writing before, for its next ``session/opened`` to cite.
+async def _slot_predecessor_store(sessions: Any, slot: Any, session_key: str) -> CrewLogPrevious:
+    """The store *slot* was writing before, for a slot THIS process has not opened one for.
 
-    Two sources, and the order between them is the whole point. The STORE decides:
-    the units under this slot's key and the succession edges they recorded are
-    durable, so this answer does not change when the gateway restarts. The
-    slot-to-session mapping serves only where the store answers nothing -- a slot
-    with no unit yet, or a launch with the crew log off -- because it is a proxy for
-    this question rather than its authority: an allocation whose history replay is
-    pending holds the prior resumable id there deliberately, so for that window the
-    mapping names a generation older than the store the slot is writing, and citing
-    it leaves the store between the two cited by nobody.
+    The fallback pair behind the slot's own record, which the latch prefers and which
+    this deliberately does not consult. That record is the only source that can name a
+    store whose unit is not on disk yet: `on_session_opened` queues the create to the
+    writer thread, so between the allocation and that job running there is nothing for
+    any reader to find, and a slot's second allocation inside that window would
+    otherwise answer the store before the first and orphan it.
 
-    Keyed by ``slot.key`` on the store side and by *session_key* on the mapping
-    side, which are the keys each one actually holds: a unit's header records the
-    SLOT, while a channel-born slot runs its turns on the channel's session key
-    (``effective_session_key``), so reading the units under the session key would
-    find none for exactly those slots.
+    What the record cannot do is survive its process, which is where these two come in.
+    The STORE decides between them: the units under this slot's key, ordered by the
+    succession edges they recorded, are durable, so a gateway that restarts reads the
+    same answer the process before it held. The slot-to-session mapping serves only
+    where the store DEFINITELY has nothing -- a slot with no unit, a launch with the
+    crew log off -- because it is a proxy for this question rather than an answer to
+    it: an allocation whose history replay is pending holds the prior resumable id
+    there deliberately, so for that window the mapping names a generation older than
+    the store the slot is writing.
+
+    Keyed by ``slot.key`` on the store side and by *session_key* on the mapping side,
+    which are the keys each one actually holds: a unit's header records the SLOT, while
+    a channel-born slot runs its turns on the channel's session key
+    (``effective_session_key``), so reading the units under the session key would find
+    none for exactly those slots.
 
     The store read hops a thread. ``mapped_sid`` is one dict lookup, no disk and no
     mutation, and it is the non-pruning accessor on purpose: ``resumable_sid`` stats
     the ACP transcript and PRUNES the entry when that file is gone, which erases the
     id exactly when the two stores disagree -- a crew log unit can outlive a
     truncated transcript, and that unit is the one whose tail most needs closing.
+
+    An UNDECIDED store read gets no mapping. The two empties are different facts: no
+    unit at all is a definite answer and the mapping is the only source left, while
+    "the units could not be read, or do not say" means falling back would hand the
+    edge to the source this read was preferred over -- a generation behind inside the
+    replay window, and frozen into an append-only entry with no second chance. So
+    that case names no store AND reports itself undecided, which the announce records
+    as a chain BREAK: one citation lost while the fault lasts, and the log says so,
+    rather than claiming to be the slot's first store and inviting a later fold to
+    elect the store before it.
+
+    The mapping's one bad state is handled where it is ANSWERABLE, not here. It is
+    knowingly not ordering while an allocation holds the prior resumable id for an
+    ACP provider that defers promotion, so a decided-empty store read plus a pending
+    replay means neither source can say which store is current -- reachable on an
+    upgraded slot whose stores all predate this edge, where the successor citing the
+    mapping orphans the store between them, which is this defect. But the marker
+    saying replay is owed belongs to a LIVE session, and this runs before this turn's
+    session is allocated, so asking from here answers "no replay owed" both when none
+    is owed and when there is no session to ask -- and the second is a cold start,
+    which is the restart this read exists to survive. So the mapped id comes back
+    flagged ``from_mapping`` and the slot downgrades it to a break as the edge is
+    taken, after the session exists. A named id still proves a predecessor EXISTS,
+    which is why that case records a break rather than nothing; an empty mapping
+    names none, and claiming one would be a false statement of its own.
     """
-    derived = await asyncio.to_thread(crew_log_emit.slot_previous_store, slot.key)
-    return derived or sessions.mapped_sid(session_key)
+    if getattr(slot, "_crew_log_opened_sid", "") or getattr(slot, "_crew_log_previous_sid", ""):
+        # Tier 1 already answers, and the latch prefers it over anything returned here,
+        # so the two reads below would be spent on a value that is then discarded. It
+        # is not a cheap discard: the store read lists the session root and reads a
+        # line pair per unit of the slot, so paying it on every warm turn grows with
+        # the store rather than with this slot. Undecided is false because nothing was
+        # read to be undecided ABOUT -- the record, not a refusal, is what answers.
+        return CrewLogPrevious(sid="", undecided=False)
+    derived, decided, complete = await asyncio.to_thread(
+        crew_log_emit.slot_previous_store, slot.key
+    )
+    if derived:
+        return CrewLogPrevious(sid=derived, undecided=False)
+    if decided:
+        # The store has no succession to read, so the mapping is the only source left
+        # -- which is the whole migration path for an upgraded slot. It is handed back
+        # PROVISIONAL rather than cited here, because the one state in which it is
+        # knowingly not ordering cannot be read from this point: allocation holds the
+        # prior resumable id for a provider that defers promotion, the marker saying so
+        # is an attribute of a live session, and this runs before this turn's session
+        # exists. Asking here returns "no replay owed" both when none is and when there
+        # is nobody to ask, and the second is a cold start -- the case where the mapping
+        # is most likely to be holding the older generation, and the restart this whole
+        # read exists to survive. The decision is made as the edge is taken.
+        #
+        # ``complete`` decides whether an EMPTY mapping is a finding. When the store
+        # holds no unit of this slot, nothing has a predecessor to hide and the pair
+        # states the slot's first store. When it holds units it could not rank, the
+        # mapping having nothing to give is not a fact about this slot, so nothing is
+        # determined and the entry writes no key -- which is what makes it read as the
+        # legacy silence it is instead of declaring itself a chain start.
+        return CrewLogPrevious(
+            sid=sessions.mapped_sid(session_key),
+            undecided=False if complete else None,
+            from_mapping=True,
+        )
+    return CrewLogPrevious(sid="", undecided=True)
 
 
 def _crew_log_model(slot: Any, fallback: str = "") -> str:
@@ -7068,13 +7136,17 @@ async def _spawn_admitted_prefetch(
         # the failure this edge exists to remove. The latch is write-once, so a turn that
         # observes afterwards cannot replace this with the successor's id.
         #
-        # Same source as the turn site, and the source is the STORE: the units this
-        # slot's own key names, ordered by the succession edges they recorded, with
-        # the slot-to-session mapping as the fallback where they answer nothing. A
-        # record on the slot cannot serve it -- it dies with the process, and the
-        # window where the mapping alone is left is the replay-pending one, where
-        # the mapping is deliberately a generation behind.
-        slot.latch_crew_log_previous(await _slot_predecessor_store(sessions, slot, session_key))
+        # The fallback pair the latch uses when this slot has no record of its own:
+        # the units this slot's key names, ordered by the succession edges they
+        # recorded, with the slot-to-session mapping behind them. Durable, so a
+        # gateway that restarts inside a replay-pending window reads the store the
+        # slot was really on instead of the mapping's generation-older answer.
+        _previous = await _slot_predecessor_store(sessions, slot, session_key)
+        slot.latch_crew_log_previous(
+            _previous.sid,
+            undecided=_previous.undecided,
+            from_mapping=_previous.from_mapping,
+        )
         # speculative=True keeps the one-shot first-turn flag armed for
         # the real first message (atomically, at registration) and
         # refuses resumable keys — unless allow_resume opted in, in
@@ -10914,12 +10986,18 @@ async def _run_chat(
         #
         # What the mapping cannot answer is a replay-pending allocation, which keeps
         # the prior resumable id here so a restart can still resume it. The mapping
-        # is then a generation behind the store the slot is writing. So the
-        # AUTHORITY is the slot's own units, read off the loop through
-        # `_slot_predecessor_store` -- durable, so the answer does not change when
-        # the gateway restarts, which a record held on the slot could not promise.
+        # is then a generation behind the store the slot is writing. So the slot's
+        # own units are read first, off the loop through `_slot_predecessor_store`,
+        # and they are durable -- which is what makes the answer survive a restart.
+        # Ahead of BOTH sits the slot's own record of the store it opened, which the
+        # latch prefers: this process's `session/opened` is queued to the writer
+        # thread, so a second allocation inside that window finds no unit on disk and
+        # only the record can name the store it must cite.
+        _previous = await _slot_predecessor_store(state.sessions, slot, session_key)
         slot.latch_crew_log_previous(
-            await _slot_predecessor_store(state.sessions, slot, session_key)
+            _previous.sid,
+            undecided=_previous.undecided,
+            from_mapping=_previous.from_mapping,
         )
         # ONE allocation site (the crew-log latch above must sit right before
         # it): the cold-start branch claims under the lock without waiting for
@@ -11204,6 +11282,18 @@ async def _run_chat(
         # this read still owes is the BEGINNING -- the value a later move is a move
         # from.
         _class_memory, _class_app, _class_channel = _crew_log_class(state, slot)
+        # Read-and-clear, ONE handover: the sid and the reason it may be empty are one
+        # statement about this slot's predecessor, so they cannot be taken apart.
+        #
+        # The replay marker is asked HERE and not at the latch, because only here is
+        # there a session to ask: the latch runs before allocation, and a missing
+        # session reads as "no replay owed", which is exactly the cold start where the
+        # mapping is most likely to be holding the older generation. One dict lookup,
+        # no disk. It bears only on an id the mapping supplied.
+        _crew_log_replay_owed = state.sessions.provider_switch_replay_pending(session_key) is True
+        _crew_log_edge = slot.take_crew_log_previous(
+            now_writing=_crew_log_sid, replay_pending=_crew_log_replay_owed
+        )
         crew_log_emit.on_session_opened(
             _crew_log_sid,
             agent=slot.agent or "",
@@ -11227,10 +11317,13 @@ async def _run_chat(
             # writes one only on a CREATE naming a different store, so handing
             # the value over on a re-attach costs nothing and leaving it behind
             # would make the slot's next store cite this store's predecessor
-            # instead of this store. Nothing is recorded in exchange: this entry
-            # IS the record of which store the slot is now on, and the slot's next
-            # allocation reads it back from the store rather than from memory.
-            previous_sid=slot.take_crew_log_previous(),
+            # instead of this store. `now_writing` records which store the slot
+            # is on while THIS process lives, which is what the slot's next
+            # allocation names before the store can answer: the create below is
+            # queued to the writer thread, so until that job runs there is no
+            # unit for a reader to find.
+            previous_sid=_crew_log_edge.sid,
+            previous_undecided=_crew_log_edge.undecided,
         )
         agent_label = kiro_agent or slot.agent or "default"
         # The label states what the session RUNS on, so a withheld pin reports the

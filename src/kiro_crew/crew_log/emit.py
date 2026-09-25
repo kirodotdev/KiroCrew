@@ -3060,8 +3060,8 @@ def _candidate_is_same_slot(candidate_sid: str, slot: str) -> bool:
     return unit_header_slot(_KIND, candidate_sid) == slot
 
 
-def slot_previous_store(slot: str) -> str:
-    """The crew log *slot* is writing NOW, which its next one cites as ``previous``.
+def slot_previous_store(slot: str) -> "tuple[str, bool, bool]":
+    """The crew log *slot* is writing NOW, as ``(sid, decided, complete)``.
 
     Read from the store, so it survives the process that wrote it. Every gateway
     process asking this question of the same slot gets the same answer: the units
@@ -3069,22 +3069,38 @@ def slot_previous_store(slot: str) -> str:
     restart reads them exactly as the process before it would have. The
     slot-to-session mapping cannot answer it -- an allocation whose history replay
     is pending holds the prior resumable id there on purpose, so for that window the
-    mapping names a generation older than the store the slot is writing, and citing
-    it would leave the store between the two cited by nobody.
+    mapping names a generation older than the store the slot is writing.
 
-    Blocking, and gated: ``""`` whenever the crew log is off, which is also what
-    keeps the storage subsystem unimported on a flag-off launch. The caller hops a
-    thread for it (:func:`~kiro_crew.crew_log.session_tree.slot_chain_head` lists
-    the store and reads a line pair per unit of the slot).
+    FOUR answers, because a caller must tell three kinds of empty apart. A ``sid``
+    names the store. ``decided`` false is "the units could not be read, or do not
+    say" -- a unit that would not open, more than one uncited unit -- and falling
+    back THERE would hand the edge to the very source this read was preferred over,
+    which inside the replay window is a generation behind. The honest outcome is no
+    edge: one citation lost transiently, rather than a wrong citation frozen into an
+    append-only entry.
 
-    ``""`` also for a slot with no unit yet -- its first store, or one whose units
-    this data home does not hold -- and the caller decides what to fall back on.
+    The two DECIDED empties differ by ``complete``, and a caller that flattens them
+    writes a false statement. Complete means the store holds no unit of this slot at
+    all, so the absence of a predecessor is the whole truth and the caller may state
+    it. Incomplete means the store holds units it cannot rank -- units written before
+    these keys existed, or several each stating they start the chain -- so the caller
+    may consult its next source and may state NOTHING, because an empty answer from
+    that source means only that it had nothing to give, not that this slot has no
+    earlier store.
+
+    Blocking, and gated: a launch with the crew log off answers ``("", True, True)``,
+    which is also what keeps the storage subsystem unimported there -- no unit exists,
+    so there is nothing indeterminate about it and the absence is complete. The caller
+    hops a thread for this
+    (:func:`~kiro_crew.crew_log.session_tree.slot_chain_head` lists the store and
+    reads a line pair per unit of the slot).
     """
     if not slot or not enabled():
-        return ""
+        return ("", True, True)
     from kiro_crew.crew_log.session_tree import slot_chain_head
 
-    return slot_chain_head(slot)
+    head = slot_chain_head(slot)
+    return (head.sid, head.decided, head.complete)
 
 
 def on_session_opened(
@@ -3104,6 +3120,7 @@ def on_session_opened(
     channel: bool = False,
     workspace: str = "",
     previous_sid: str = "",
+    previous_undecided: bool | None = None,
 ) -> None:
     """Create the crew log if this session has none, then echo its header.
 
@@ -3311,6 +3328,24 @@ def on_session_opened(
                 else ""
             ),
         )
+        # Buffered beside the id above and gated the same way, because it answers the
+        # same question: what this entry says about the slot's earlier store. It is
+        # only meaningful when NOTHING was named -- a named edge already says the
+        # predecessor is known -- so a caller passing both leaves the id winning.
+        #
+        # THREE values, not two, and the third is the one that keeps this honest. A
+        # caller that looked reports what it found; a caller that never looked passes
+        # nothing, and this entry then says nothing either way. Collapsing the last
+        # two would make the emitter state a conclusion on behalf of a caller that
+        # never reached one, which is the same defect as reading an absent key as a
+        # conclusion, written from the other side.
+        determined = announce.setdefault(
+            "previous_determined", bool(created and previous_undecided is not None)
+        )
+        unresolved = announce.setdefault(
+            "previous_unresolved",
+            bool(created and previous_undecided is True and not superseded),
+        )
         if not announce.setdefault("owed", created or bool(resumed)):
             # Nothing new to say about the OPENING, which is what this entry
             # records. A class that has moved since the last statement of it is
@@ -3344,6 +3379,34 @@ def on_session_opened(
             # No ``slot`` inside: it is the slot in ``data.slot``, and repeating it
             # would invite a reader to trust a second copy of one fact.
             data["previous"] = {"sid": superseded}
+        elif unresolved:
+            # A predecessor EXISTS and could not be named. Recorded BESIDE the
+            # citation rather than as an empty one, because ``previous.sid`` is
+            # required and a citation naming nothing would be a weaker promise for
+            # every reader of it. This is a third thing from the two a reader already
+            # tells apart: a named edge, and neither key, which means this log starts
+            # the slot's chain. Without it this log would read as that chain start,
+            # and a fold ranking the slot's logs would pass over it and elect the log
+            # before it -- the citation this read refused to guess, written anyway by
+            # another route and frozen into an append-only entry.
+            data["previous_undecided"] = True
+        elif created and determined and not previous_sid:
+            # The caller LOOKED and there is no predecessor: this is the slot's first
+            # store. Stated rather than left to the absence of the other two keys,
+            # because a store written before any of these keys existed also has none of
+            # them -- and ITS omission may equally be a predecessor the gateway of the
+            # day failed to name. Only a store that says this may be passed over when a
+            # later reader ranks the slot's stores. A named predecessor that was
+            # REJECTED for belonging to another slot says nothing either way, so it
+            # falls through to writing no key at all.
+            #
+            # ``determined`` is what makes the claim answerable for, and it is not a
+            # formality: a caller that hands over an id it read from one source and
+            # never established whether a predecessor exists would otherwise have this
+            # entry declare, in an append-only record, that the slot has none. An empty
+            # id from such a caller means "I have nothing to give you", which is the
+            # unexplained silence this key exists to be distinguished FROM.
+            data["previous_none"] = True
         if parent_slot:
             # Written only when there IS a creator, and ``sid`` only when the
             # creator still had a live handle: an empty string in either place

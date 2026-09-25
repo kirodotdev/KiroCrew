@@ -83,6 +83,8 @@ entry's write is the point the interrupted-turn repair runs.
 | `resumed` | bool | required | `true` when this claim re-attached to an existing crew log. | |
 | `class` | object | when the gateway could read the slot's memory mode | What kind of session this log belongs to: `memory` (the slot's memory mode, required inside the object), `app` (the app that owns it, when one does), `channel` (`true` when its conversation is published to a messaging channel), `workspace` (the workspace it belongs to). | |
 | `previous` | object | | `{sid}` — the crew log the SAME slot was writing before this one. Present only on a crew log that was just created while the slot already had one, and only when that crew log's own header names this slot. Absent on the slot's first crew log, on every re-attach, when the gateway could not name the predecessor, and when the named crew log's header does not name this slot or cannot be read. | |
+| `previous_none` | bool | when the gateway determined the slot has NO earlier crew log | `true` only in that case: this crew log starts the slot's chain, and says so. The ABSENCE of every predecessor key cannot say it, because a crew log written before these keys existed also has none of them and ITS omission may equally be a predecessor the gateway of the day failed to name. A reader ranking a slot's crew logs may pass over a crew log that states this, and may not pass over one that merely omits everything. Absent when `previous` names one, when `previous_undecided` reports one it could not determine, and when a named predecessor was rejected for belonging to another slot. Also absent on a create whose opener DETERMINED nothing: one that hands over a captured id and no finding either way writes no key here, because an empty id from such an opener means only that it had nothing to give, and reading that as a conclusion would declare a slot with earlier crew logs to be its own first. Equally absent when the store read HANDED the question on instead of answering it -- units of the slot exist and could not be ranked -- because the next source coming back empty is not a finding about this slot either. | |
+| `previous_undecided` | bool | when a predecessor exists and could not be determined | `true` only in that case, and it is `previous_none` that states the opposite, so neither meaning rests on a key being absent. The two demand opposite treatment from a reader ranking a slot's crew logs: a stated first crew log may be passed over, an undetermined one may not, because passing over it elects the crew log before it and freezes a citation the gateway declined to guess. Absent when `previous` names one, and on a crew log that states it has none. | |
 | `parent` | object | when `session_create` made this session | The creating session, recorded on the child. | |
 | `parent.slot` | string | required inside `parent` | The creating session's slot key. | |
 | `parent.sid` | string | optional | The creator's ACP session id frozen at mint time; absent when no live handle was available or the retained id was unusable. | |
@@ -136,14 +138,17 @@ same-slot rule below rather than trusting it. It reports WHY it stopped, and onl
 `first` means it reached the slot's first crew log; no shipped route calls it yet.
 
 `previous` always names a crew log of the SAME slot, and that is verified rather
-than assumed. The id is the slot's own newest unit in the store: the unit whose
-header names this slot and that no other unit of that slot cites as `previous`,
-latched by whichever allocation observes it first. The store is the authority
-because it is the only source that outlives the gateway process that wrote it, and
-it cannot disagree with the units because it IS the units; the read is blocking, so
-the turn hops a thread for it. The slot-to-session mapping, read without pruning,
-is the fallback for a slot with no unit yet, and it cannot be the
-authority: an allocation whose replay is still pending holds the prior resumable
+than assumed. The id comes from three sources in order, latched by whichever
+allocation observes it first. The store this slot last handed to a
+`session/opened`, recorded on the slot as that edge is spent, is first: the create
+is queued to a writer thread, so it is the only source that can name a crew log
+whose unit is not on disk yet. The slot's own newest unit in the store — the unit
+whose header names this slot and that no other unit of the slot cites as
+`previous` — is next, and it is the durable one, read off the event loop because
+it is blocking; it answers "undecided" when the units cannot be read or do not say,
+and then no edge is written. The slot-to-session mapping, read without pruning, is
+last, for a slot the store says has no unit at all, and it cannot be
+higher: an allocation whose replay is still pending holds the prior resumable
 id in the mapping on purpose, so that a restart can still resume it, and the
 mapping is then a generation behind — two successive crew logs would cite one
 predecessor and the crew log between them would be cited by nobody, which a chain

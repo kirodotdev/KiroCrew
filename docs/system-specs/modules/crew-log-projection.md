@@ -803,20 +803,96 @@ why it was recorded.
 **The head the walk starts from comes from the edges too.** `fold_slot_head` answers a
 slot's newest log as the log no other log of that slot cites as `previous`, and
 `slot_chain_head` reads that from the units on disk for a caller holding only the slot
-key -- which is what the emitter's `previous` edge is taken from, so the id a successor
-cites is the store's own answer rather than a gateway process's memory of it. That is
-what closes the gap this section used to record: the id was held in the process that
-wrote it, and a restart inside a replay-pending allocation was left with the mapping's
-behind-by-one answer, so two successive logs cited one predecessor and the log between
-them was cited by nobody.
+key. That is the DURABLE half of what the emitter's `previous` edge is taken from, and it
+is what closes the gap this section used to record: the id was held only in the process
+that wrote it, so a restart inside a replay-pending allocation was left with the
+mapping's behind-by-one answer, two successive logs cited one predecessor, and the log
+between them was cited by nobody. The slot's own record still sits AHEAD of this read and
+is not replaced by it -- a create is queued to the writer thread, so a log whose unit has
+not landed yet is nameable only there.
 
-One uncited log IS the answer and the stamp is not consulted at all. SEVERAL uncited
-logs mean the record is already incomplete -- an announce that has not landed or cannot
-be read, an edge that was never recorded, a predecessor retention has removed -- and
-only there does `created_at`, then the id, place them. Their succession DEPTHS must not,
-and the reason is worth stating because the opposite reading is intuitive: depth orders
-logs inside ONE chain, so a freshly created log with no edge yet (depth 0) would lose to
-the head of a long chain (depth 5) although it is the newer store by every other reading.
+Exactly one uncited log IS the answer, and no clock takes part. SEVERAL uncited logs mean
+the record is already incomplete -- an announce that has not landed or cannot be read, an
+edge that was never recorded, a predecessor retention has removed -- and the answer there
+depends on WHY, which needs distinctions `previous.sid` being absent cannot make on its
+own. There are five, and they are exhaustive over what an announce can say. It NAMES a
+predecessor. It STATES the slot had no earlier store, which the gateway writes as
+`previous_none`, so this log starts its chain and a ranking fold may pass over it. It
+STATES a predecessor exists that the store read could not determine, written as
+`previous_undecided`, which a fold may NOT pass over, because passing over it elects the
+log before it and freezes the citation the gateway declined to guess. It was never read at
+all -- retention took the creating segment, a process died between create and announce, the
+log is admitted on its header alone. Or it was read and says NOTHING either way, which is
+every log written before these two keys existed, and also a log whose named predecessor was
+rejected for belonging to another slot.
+
+Both fields exist because neither meaning may rest on a key being absent. The last two
+states are both silences, they demand OPPOSITE answers, and without the fields they are
+byte-identical -- so the omission is the defect rather than a smaller version of it.
+
+`previous_none` is the LOOKER's statement and is written only for a create whose caller
+determined something. An opener that hands over one captured id and no finding either way
+-- a channel dispatcher, which holds no slot record and makes no store read -- writes no
+predecessor key at all, and its log is read as the legacy silence it is. The captured id is
+empty whenever the mapping entry is gone while the slot's units remain, so reading that
+emptiness as a finding would have the entry declare a slot with earlier stores to be its own
+first: the same conflation as reading an absent key as a conclusion, arriving from the write
+side.
+
+The same rule binds THIS fold's own answer, which is why "no log" carries a second bit. Two
+different facts reach it: the store holds no unit of the slot, or it holds units this fold
+could not rank. Both license the caller's next source; only the first licenses a STATEMENT.
+An empty answer from that next source is a finding about the slot when nothing of the slot
+is on disk, and is merely "I had nothing to give" when its units are sitting there. A caller
+that flattens the two records `previous_none` on a log whose siblings are uncited beside it,
+and every later fold passes over it, which is this section's defect written from the other
+end.
+
+An uncited log whose announce was not read, or which states an undetermined predecessor,
+settles the answer to UNDECIDED by itself, however many stated ones sit beside it: passing
+over it is what orphans a store the slot has certainly opened. Both refusals are also
+RECOVERABLE -- the unread one answers as soon as the announce lands, the undecided one costs
+one citation rather than a wrong one.
+
+A silence the announce ITSELF carries is "no log", NOT UNDECIDED, and the difference is
+permanence. An unread announce becomes readable; a log that was read and said nothing never
+becomes anything else, so refusing on it would suppress the caller's next source for the
+life of the slot, no edge would ever be written, and every create would add one more
+unrankable log. Handing over instead is also how such a store starts describing itself,
+with nothing rewriting the logs already on disk: the edge the next create records is the
+first thing a later read can rank by. This is the state every store written before the edge
+existed is in, so it is the ordinary case on an upgraded gateway rather than an exotic one.
+
+Among logs that all STATE their situation, what ranks is the edges -- exactly one uncited
+log carrying an edge is the answer, several are UNDECIDED, and every one of them stating it
+has no predecessor is "no log" for the same reason as above.
+
+`created_at` must not break a tie:
+it is wall clock, so a backward step across a restart hands the newer log the earlier
+stamp and the pick inverts, permanently, because the id goes into an append-only entry.
+Succession DEPTH cannot stand in either, and the reason is worth stating because the
+opposite reading is intuitive: depth orders logs inside ONE chain, so a freshly created
+log with no edge yet (depth 0) would lose to the head of a long chain (depth 5) although
+it is the newer store by every other reading.
+
+One unit the reader cannot read is UNDECIDED for the same reason, not a head folded from
+the units that did read, and a transient `OSError` there is ordinary operation rather than
+an exotic combination. The distinction between the two empties is what a caller acts on:
+"no log" is a fact it may answer from another source, UNDECIDED means it writes no edge
+at all -- one citation lost while the fault lasts, rather than a wrong one forever.
+
+The LISTING that names the slot's units is under the same rule, and is read STRICTLY.
+An ordinary listing is a read and answers the shorter truth: a unit whose header cannot
+be proved while it already holds entries is left out of it silently. The unit likeliest
+to be in that state is the newest one, and left out it makes the unit BEFORE it look
+uncited -- so the fold would elect a head a generation back and freeze it. A listing that
+cannot be made is therefore UNDECIDED, not a short listing.
+
+Exactly one strict refusal is "no log" instead: the store is not at the name at all.
+Nothing is held by a directory that is not there, so "no unit" is complete rather than
+short, and that is the ordinary launch -- a crew log switched off, or one whose first unit
+has yet to be created. Answering UNDECIDED there would leave the mapping, the only source
+such a launch has, unreachable for every slot for good.
 
 No shipped route calls this walk yet; closing a superseded log's own interrupted turn
 and tool calls is a WRITE into another log and is tracked with the rest of the supersede

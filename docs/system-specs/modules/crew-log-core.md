@@ -344,18 +344,42 @@ same slot was writing before. Same citation shape as `parent`, written once at c
 rewritten, absent rather than empty when there is nothing to name -- the slot's first crew log, a
 predecessor the gateway could not name, and one whose own header does not name this slot are all
 "nothing to follow". No `slot` is repeated inside it,
-because it is the slot in `data.slot`. The id is the slot's own newest unit in the store --
-the unit no other unit of that slot cites as `previous`. The store is the authority because
-it is the only source that outlives the gateway process that wrote it, and it cannot
-disagree with the units because it IS the units. The persisted slot-to-session mapping,
-read without pruning, is the fallback for a slot with no unit yet -- its first crew log, or
-a launch with the crew log off. It cannot be the authority: an allocation whose replay is still
+because it is the slot in `data.slot`. The id is resolved in three tiers. The store this slot
+last handed to a `session/opened`, recorded on the slot as that entry's edge is spent, is
+first: the create is queued to a writer thread, so it is the only source that can name a crew
+log whose unit is not on disk yet. The slot's own newest unit IN THE STORE -- the unit no other
+unit of that slot cites as `previous` -- is next, and it is the durable one: the record above
+dies with its process, and this does not. It answers UNDECIDED when the units cannot be listed
+or read, or do not say which is newest, and no edge is written then -- but the entry does record
+`previous_undecided`, and an entry the read proves is the slot's first records `previous_none`,
+because neither meaning may rest on a key being ABSENT. A log that merely omits every
+predecessor key is one written before these keys existed, and its silence is equally "I am
+first" and "I could not tell": without the two fields the state a later fold must refuse on is
+byte-identical to the state it may pass over, and passing over it elects the log before it.
+The persisted
+slot-to-session mapping,
+read without pruning, is last, for a slot the store says has no unit at all -- which includes a
+store that is not at the name, the ordinary launch of a crew log switched off, and a slot whose
+units all predate this edge and so record no succession to read. It cannot be
+higher, and inside the replay-pending window it is not cited at all: an allocation whose
+replay is still
 pending holds the prior resumable id in the mapping on purpose, so that a restart can still
 resume it, and the mapping is then a generation
 behind -- two successive crew logs would cite one predecessor
 and the crew log between them would be cited by nobody, the one chain gap a reader cannot see.
+Whether that window is open is asked where a SESSION EXISTS to answer, as the edge is handed to
+an entry, and not where the id is read: the marker belongs to a live session, the read runs
+before this turn's session is allocated, and asked from there it answers "no replay owed" both
+when none is owed and when there is nobody to ask -- the second being a cold start, which is the
+restart this whole tier exists to survive. So a mapped id is carried provisional and becomes a
+recorded break at that point instead; what this process itself recorded is never provisional.
 A successful resume answers the same id and the emitter writes no edge,
 since a crew log cannot be its own predecessor.
+
+An empty answer from that mapping is a FINDING only when the store holds no unit of the slot at
+all. When it holds units this read could not rank, the mapping having nothing to give says nothing
+about the slot, so the entry records no predecessor key rather than stating it has none -- which
+would let a later fold pass over a log whose siblings sit uncited beside it.
 
 The edge is a citation and nothing else. Recording it opens no store for writing but this session's
 own, and no writer here appends to the crew log it names. It does READ that crew log's header, because

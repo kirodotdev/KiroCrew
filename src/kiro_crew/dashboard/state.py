@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, NamedTuple, TypeVar
 
 from aiohttp import web
 
@@ -2250,6 +2250,39 @@ def mint_tags_revision() -> str:
     return f"{epoch:016d}.{seq:020d}-{uuid.uuid4().hex[:8]}"
 
 
+class CrewLogPrevious(NamedTuple):
+    """What a `session/opened` should say about the store its slot was writing.
+
+    Three states, because an empty ``sid`` carries two different facts and a log
+    that records the wrong one reads as something it is not. ``sid`` set is the
+    predecessor, named. Empty with ``undecided`` false says the slot has no earlier
+    store, which makes this log a chain START. Empty with ``undecided`` true says it
+    HAS one that could not be determined, so the log is a chain BREAK -- a later
+    fold may pass over a chain start when ranking, and must refuse on a break rather
+    than electing the log before it.
+
+    A FOURTH state keeps those two honest: ``undecided`` ``None`` says nothing was
+    determined either way. A source can come back empty because it looked and there
+    is nothing, or because it had nothing to give -- a store holding units it cannot
+    rank, handing the question on. Only the first is a finding about the slot.
+    Recording the second as one would have a log with earlier siblings declare itself
+    their chain start, in an append-only entry, and a later fold would pass over it.
+
+    ``from_mapping`` says the ``sid`` came from the slot's session mapping rather
+    than from the slot's own record or its units. That matters because the mapping
+    is a generation behind while an allocation holds the prior resumable id for a
+    provider that defers promotion, and whether it is doing so CANNOT be read where
+    the resolver runs: the marker is an attribute of a live session, and the
+    resolver runs before the session for this turn exists. A flagged id is
+    therefore provisional, and the decision to cite it or record a break is made
+    where the marker is answerable.
+    """
+
+    sid: str
+    undecided: bool | None
+    from_mapping: bool = False
+
+
 class SlotOrigin:
     """Slot creation origin — who initiated the slot.
 
@@ -2407,6 +2440,9 @@ class _ChatSlot:
         "served_model",
         "_session_requested_model",
         "_crew_log_previous_sid",
+        "_crew_log_previous_undecided",
+        "_crew_log_previous_from_mapping",
+        "_crew_log_opened_sid",
         "reasoning_effort",
         "autocompact_pct",
         "mode",
@@ -2675,6 +2711,30 @@ class _ChatSlot:
         # than an earlier store. Cleared once `session/opened` has carried it, so
         # the next supersede of this slot latches afresh. "" = nothing to follow.
         self._crew_log_previous_sid: str = ""
+        # Whether the resolver COULD NOT NAME this slot's predecessor, as opposed to
+        # there being none. Both leave the id above empty and they are different
+        # facts: the first says an edge exists and is unrecorded, the second says the
+        # log is a chain start. The announce writes them differently so a later fold
+        # can pass over the chain start and refuse on the unrecorded one. ``None`` is
+        # the third fact and the default: nothing was determined either way, so the
+        # announce states nothing -- which is what a source handing the question on
+        # leaves behind, and what a slot no resolver has answered for holds.
+        self._crew_log_previous_undecided: bool | None = None
+        # Whether the id above came from the slot's SESSION MAPPING rather than from
+        # this process's own record of the store the slot is on. A mapped id is
+        # provisional, because the mapping is deliberately a generation behind while
+        # an allocation holds the prior resumable id for a provider that defers
+        # promotion -- and whether it is doing so cannot be read when the id is
+        # latched, since the marker belongs to a session that does not exist yet.
+        # The edge is downgraded to a break as it is taken, where the answer is real.
+        self._crew_log_previous_from_mapping: bool = False
+        # The store a `session/opened` of this slot was last written FOR, recorded
+        # as the edge above is handed over. It is what the slot's next allocation
+        # names as its predecessor: the mapping can be a generation behind while a
+        # replay is pending, and the store's own units carry a wall-clock stamp and
+        # are written by a background writer that may not have run yet. "" = this
+        # process has not opened a crew log for this slot.
+        self._crew_log_opened_sid: str = ""
         # The model id the live session resolved to, for a slot that is
         # inheriting rather than pinning. "" = unknown. Written through
         # `record_served_model`.
@@ -4353,7 +4413,9 @@ class _ChatSlot:
         """
         self.served_model = model_id or ""
 
-    def latch_crew_log_previous(self, sid: str) -> None:
+    def latch_crew_log_previous(
+        self, sid: str, *, undecided: bool | None = None, from_mapping: bool = False
+    ) -> None:
         """Remember the crew log store this slot was writing, if none is remembered.
 
         Called by every site that is about to ALLOCATE a session for this slot,
@@ -4366,36 +4428,123 @@ class _ChatSlot:
         cite, and an empty ``sid`` latches nothing rather than latching a store
         with no name.
 
-        ``sid`` is the predecessor the caller RESOLVED, not a source to choose
-        between: the store's own units decide it and the slot-to-session mapping
-        serves only where they answer nothing, and both of those live outside this
-        object. Nothing about which store the slot is on is kept here, deliberately.
-        A record on the slot is lost with the process that holds it, and the one
-        window where it is the only source -- a replay-pending allocation, whose
-        mapping is deliberately a generation behind -- is exactly the window a
-        restart lands in. The latch is per-handover state, spent inside one turn
-        (:meth:`take_crew_log_previous`), and holds nothing a later process needs.
-        """
-        if sid and not self._crew_log_previous_sid:
-            self._crew_log_previous_sid = sid
+        ``sid`` is what the slot's MAPPING answers, and the mapping is a proxy for
+        this question rather than its authority. An allocation whose history replay
+        is pending keeps the prior resumable id there deliberately, so that the id
+        a restart can resume stays durable -- and for that window the mapping names
+        a generation OLDER than the newest store this slot wrote. Latching it makes
+        two successive stores cite one predecessor and leaves the store between
+        them cited by nobody, which is the single chain gap a walker cannot detect:
+        both neighbours are well formed and neither says a store is missing.
 
-    def take_crew_log_previous(self) -> str:
-        """The latched predecessor store id, clearing it as it is handed over.
+        So what this slot last handed to a `session/opened` decides, and ``sid``
+        serves only when that is empty -- a slot this process has not yet opened a
+        crew log for. The slot's own record is the authority because it is the
+        statement of the writer itself, taken at the moment the store became this
+        slot's current one, which no other source observes: the mapping tracks
+        resumability instead, and the store's own units carry a wall-clock stamp
+        and are written by a background writer that has not run yet.
+        """
+        if self._crew_log_previous_sid:
+            return
+        chosen = self._crew_log_opened_sid or sid
+        if chosen:
+            self._crew_log_previous_sid = chosen
+            # The flag describes THIS latch, so the winning branch clears it rather
+            # than leaving an earlier one's reason standing. An earlier latch can have
+            # set it with no sid -- the prefetch's store read refused while this turn's
+            # resolver then named one -- and the two halves leave together, so a stale
+            # true would hand the entry a named edge reported undetermined, which is a
+            # pair the entry's own reader is promised never to see.
+            self._crew_log_previous_undecided = False
+            # Provisional only when the MAPPING supplied the id. The slot's own record
+            # wins over ``sid`` here, and that record is this process's own statement
+            # about which store the slot is on, so it is never provisional. Set on this
+            # branch ALONE, which is what makes it mean "a mapped id is latched": an
+            # answer naming nothing has no provenance to record, and flagging it would
+            # have the take write a break claiming a predecessor exists.
+            self._crew_log_previous_from_mapping = bool(
+                from_mapping and not self._crew_log_opened_sid
+            )
+            return
+        # Nothing nameable. ``undecided`` says WHY, and only here can it be known:
+        # the resolver that could not read the store is the one caller that can tell
+        # "this slot has no earlier store" from "it has one I could not name" from
+        # "nothing here determined either".
+        #
+        # ASSIGNED, not merely set. Two latches before one entry is owed is ordinary,
+        # since the eager prefetch and the turn each run their own resolver, and a
+        # later answer supersedes an earlier one: a prefetch whose store read REFUSED
+        # carries no information about the content, so leaving its refusal standing
+        # would have the entry report a predecessor as existing-but-unnameable for a
+        # slot the turn's own successful read determined has none. The branch above
+        # does the same for the reason beside a named id.
+        self._crew_log_previous_undecided = undecided
+
+    def take_crew_log_previous(
+        self, *, now_writing: str, replay_pending: bool = False
+    ) -> "CrewLogPrevious":
+        """The latched predecessor edge, clearing it as it is handed over.
 
         Read-and-clear, because the value is owed to exactly one
         ``session/opened``: leaving it behind would make the NEXT store of this
         slot cite a predecessor two links back and skip the store between them,
-        which is the one thing a chain walker cannot detect. Returns ``""`` when
-        nothing is latched, which the emitter reads as "no edge to write".
+        which is the one thing a chain walker cannot detect. An empty ``sid`` with
+        ``undecided`` false is "no edge to write".
 
-        Nothing is recorded in exchange. Which store the slot is now on is read
-        back from that store's own unit when the next allocation asks, so the entry
-        this value goes into IS the record, and there is no second copy of it here
-        to be lost on a restart or to disagree with the units.
+        Both halves leave in ONE call for the same reason ``now_writing`` does: the
+        sid and the reason it is empty are one statement, and a caller that could
+        take the sid alone would write a log that claims to be a chain start when
+        the truth is that its predecessor was never determined.
+
+        ``replay_pending`` is asked HERE, not where the id was read, and the
+        placement is the point. A latch happens before this turn's session is
+        allocated, and the replay marker is an attribute of a live session, so a
+        resolver asking it gets "no replay owed" both when none is owed and when
+        there is nobody to ask -- and the second of those is a cold start, which is
+        precisely when the mapping is most likely to be holding the older
+        generation. By the time an entry is taken the session exists, so the answer
+        means what it says. It applies only to an id the MAPPING supplied: the
+        slot's own record is this process's statement about which store it is on.
+
+        ``now_writing`` is the store that entry is FOR, and recording it here is
+        what lets the slot's next allocation name a predecessor without consulting
+        anything outside this process. It is recorded whether or not an entry is
+        written, since it states which store the slot is on rather than what was
+        appended.
         """
-        sid = self._crew_log_previous_sid
+        edge = CrewLogPrevious(
+            sid=self._crew_log_previous_sid, undecided=self._crew_log_previous_undecided
+        )
+        if self._crew_log_previous_from_mapping and replay_pending:
+            # The mapping supplied this id and it is knowingly a generation behind:
+            # allocation holds the prior resumable id there for a provider that
+            # defers promotion. Citing it makes two successive stores name one
+            # predecessor and leaves the store between them cited by nobody. The id
+            # still PROVES a predecessor exists, so the honest entry is a break.
+            #
+            # No emptiness test beside the flag, because the flag is set only where a
+            # sid was latched: an answer that named nothing is not provenance, it is
+            # the absence of one, and a break claiming a predecessor exists must not
+            # be written for it.
+            #
+            # The downgrade happens here rather than where the id was read because
+            # only here is the question answerable. The marker lives on a live
+            # session, the resolver runs BEFORE this turn's session exists, and a
+            # missing session reads as "no replay owed" -- which is exactly the
+            # cold-start case where the mapping is most likely to be holding the
+            # older generation.
+            edge = CrewLogPrevious(sid="", undecided=True)
         self._crew_log_previous_sid = ""
-        return sid
+        # Cleared to "nothing determined", not to "determined there is none": with the
+        # edge spent, no resolver has answered for whatever store this slot opens next,
+        # and an entry written before one does must state nothing rather than claim to
+        # start the slot's chain.
+        self._crew_log_previous_undecided = None
+        self._crew_log_previous_from_mapping = False
+        if now_writing:
+            self._crew_log_opened_sid = now_writing
+        return edge
 
     def forget_session_model_state(self) -> None:
         """Drop every fact that described the session being torn down.

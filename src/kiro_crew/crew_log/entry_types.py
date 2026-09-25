@@ -517,6 +517,43 @@ _SESSION_TYPES: tuple[EntryType, ...] = (
                 ),
             ),
             Field(
+                "previous_none",
+                JSON_BOOL,
+                note=(
+                    "True when the gateway determined this store has NO predecessor -- it "
+                    "is the slot's first. Written because the ABSENCE of every predecessor "
+                    "key cannot say that: a store written before these keys existed also "
+                    "has none of them, and its omission may equally be a predecessor the "
+                    "old gateway failed to name. A reader ranking a slot's stores may pass "
+                    "over a store that states this, and may not pass over one that merely "
+                    "omits everything, because that one's omission is unexplained. Absent "
+                    "when ``previous`` names one, when ``previous_undecided`` reports one "
+                    "it could not determine, and on a store whose named predecessor was "
+                    "rejected for belonging to another slot. Also absent -- deliberately "
+                    "-- on a create whose caller DETERMINED nothing: an opener handed one "
+                    "captured id and no finding either way writes no key here, because an "
+                    "empty id from such a caller means only that it had nothing to give, "
+                    "and reading that as a conclusion would have this entry declare a slot "
+                    "with earlier stores to be its own first. The same holds for a store "
+                    "read that HANDED the question on rather than answering it: units of "
+                    "the slot exist and could not be ranked, so the next source coming "
+                    "back empty is not a finding about this slot either."
+                ),
+            ),
+            Field(
+                "previous_undecided",
+                JSON_BOOL,
+                note=(
+                    "True when a predecessor EXISTS and the gateway could not determine "
+                    "it, which ``previous`` being absent cannot express: that also "
+                    "describes the slot's FIRST store. The two demand opposite treatment "
+                    "from a reader ranking a slot's stores -- a first store may be passed "
+                    "over, an undetermined one may not, because passing over it elects "
+                    "the store before it and freezes a citation the gateway declined to "
+                    "guess. Absent when the predecessor is named, and on a first store."
+                ),
+            ),
+            Field(
                 "parent",
                 JSON_OBJECT,
                 fields=(
