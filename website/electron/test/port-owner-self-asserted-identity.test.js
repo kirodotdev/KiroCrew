@@ -9,11 +9,13 @@ const path = require("node:path");
 // asserts the two questions stay separate -- that nothing deciding mere
 // occupancy reaches its verdict through a process's claim about what it is.
 //
-// The sites are enumerated from the SOURCE by the shape of each comparison, not
-// listed here: a comparison against a sentinel is resolved back to the probe
-// that produced its left operand, and the pairing is what is asserted. A site
-// added later is therefore covered without editing this file, and a site
-// switched back to the identity probe fails it.
+// The decisions are listed out below rather than discovered by parsing the
+// source. A list is honest about what it covers, and it is safe here because of
+// the guard that follows it: every comparison against one of these sentinels
+// must be CLAIMED by an entry in a list, and one that is not claimed fails the
+// pin. So a fifth decision cannot join the file quietly -- it reddens this test
+// and someone has to decide which list it belongs in. Unclassifiable means deny,
+// not allow, which is the same rule the rest of this surface follows.
 
 const ROOT = path.join(__dirname, "..");
 
@@ -29,87 +31,156 @@ function code(file) {
 const SUPERVISOR = code("gateway-supervisor.js");
 const STOP = code("gateway-stop.js");
 
-// A verdict about occupancy. "none" belongs here because it is the identity
-// classifier's own occupancy value: comparing its answer against "none" is the
-// exact shape this separation removes, so it must never resolve to that probe.
-const OCCUPANCY_SENTINELS = new Set(["free", "bound", "none"]);
-// A verdict about who the holder is. Reaching one of these through the
-// occupancy probe would be a decision the occupancy probe cannot make.
-const IDENTITY_SENTINELS = new Set(["kirocrew", "service", "foreign"]);
-
 const OCCUPANCY_PROBE = "probeGatewayPortBinding";
 const IDENTITY_PROBE = "probeGatewayPortOwner";
-const PROBES = `(?:${OCCUPANCY_PROBE}|${IDENTITY_PROBE})`;
 
-/**
- * The probe whose result `operand` carries, or null when it carries none.
- *
- * Two shapes reach a comparison: the call inline in the comparison itself, and
- * a binding assigned from the call and compared afterwards. For the second the
- * nearest PRECEDING assignment wins, which is what a reader of the statement
- * sequence would also take it to mean.
- *
- * An assignment counts only when the probe call is the assigned value itself. A
- * probe called inside another call's arguments -- a callback handed to a waiter,
- * say -- says nothing about what that waiter returns, so matching it would
- * attribute an unrelated verdict to a probe and let a real regression pass.
- */
-function probeBehind(operand, offset) {
-  const inline = operand.match(new RegExp(`await\\s+(${PROBES})\\s*\\(`));
-  if (inline) return inline[1];
-  const name = operand.trim().replace(/^\(+|\)+$/g, "").trim();
-  if (!/^[A-Za-z_$][\w$]*$/.test(name)) return null;
-  const decl = new RegExp(`(?:const|let|var)\\s+${name}\\s*=`, "g");
-  let found = null;
-  for (let m = decl.exec(SUPERVISOR); m; m = decl.exec(SUPERVISOR)) {
-    if (m.index > offset) break;
-    const probe = probeAtTopLevelOf(m.index + m[0].length);
-    if (probe !== undefined) found = probe;
-  }
-  return found;
-}
+// Every sentinel either probe can answer with, plus the owner vocabulary. An
+// occurrence of any of these as a string LITERAL is a port judgement until a
+// list says otherwise. Literals rather than `===` comparisons on purpose: a
+// `switch` writes `case "none":` and an array writes a bare `"none"`, so a guard
+// that only understood `===` would let exactly the shapes it exists to catch
+// through.
+const SENTINELS = ["free", "bound", "none", "unknown", "kirocrew", "service", "foreign"];
 
-/**
- * The probe awaited at nesting depth zero of the statement starting at `from`,
- * null when that statement awaits none, and undefined when `from` does not begin
- * a statement that terminates.
- */
-function probeAtTopLevelOf(from) {
-  let depth = 0;
-  for (let i = from; i < SUPERVISOR.length; i += 1) {
-    const ch = SUPERVISOR[i];
-    if (ch === "(" || ch === "[" || ch === "{") depth += 1;
-    else if (ch === ")" || ch === "]" || ch === "}") depth -= 1;
-    else if (ch === ";" && depth === 0) return null;
-    else if (depth === 0 && SUPERVISOR.startsWith("await", i)) {
-      const here = SUPERVISOR.slice(i).match(new RegExp(`^await\\s+(${PROBES})\\s*\\(`));
-      if (here) return here[1];
-    }
-  }
-  return undefined;
-}
+// THE FOUR OCCUPANCY DECISIONS. Each entry is the exact source text and the
+// exact number of times it appears, so a site that is reworded stops matching
+// and the guard below then reports it as unclaimed.
+const OCCUPANCY_SITES = [
+  {
+    what: "waitForPortFree takes one reading of the port",
+    code: 'const binding = await probeGatewayPortBinding(PORT);',
+    times: 1,
+  },
+  {
+    what: "waitForPortFree: the port has cleared",
+    code: 'if (binding === "free") return true;',
+    times: 1,
+  },
+  {
+    what: "waitForPortFree: the probe could not look, so fall back to HTTP",
+    code: 'if (binding === "unknown") {',
+    times: 1,
+  },
+  {
+    what: "the boot and liveness service-rebind waits, textually identical",
+    code: 'isPortBound: async () => (await probeGatewayPortBinding(PORT)) !== "free",',
+    times: 2,
+  },
+  {
+    what: "drain completion; carries an identity comparison on the same line",
+    code: 'if (localOwner !== "service" || (await probeGatewayPortBinding(PORT)) === "free") {',
+    times: 1,
+  },
+];
 
-/** Every sentinel comparison in the supervisor that resolves to a probe. */
-function adjudicatedComparisons() {
+// The identity judgements. These MAY rest on the holder's command line -- that
+// is the weakness #13826 records and #13862 must close -- and they are listed
+// so the guard can tell them from an occupancy decision that has drifted.
+const IDENTITY_SITES = [
+  {
+    what: "the exported primary-port probe hands the verdict to the IPC gate",
+    code: 'return probeGatewayPortOwner(PORT);',
+    times: 1,
+  },
+  {
+    what: "boot: probe the holder, unless a configured remote host makes it a tunnel",
+    code: 'const localOwner = remoteHost ? "foreign" : await probeGatewayPortOwner(PORT);',
+    times: 1,
+  },
+  {
+    what: "boot: a service-managed holder may be rebound by its manager",
+    code: 'if (localOwner === "service") {',
+    times: 1,
+  },
+  {
+    what: "liveness: re-validate whoever rebound the port through the boot decision",
+    code: 'const owner = await probeGatewayPortOwner(PORT);',
+    times: 1,
+  },
+  {
+    what: "token prompt: same short-circuit, for the port that returned the 403",
+    code: 'const localOwner = remoteHost\n          ? "foreign"\n          : await probeGatewayPortOwner(promptPort);',
+    times: 1,
+  },
+];
+
+// Sentinel literals that are not about a port at all. Listed, because the guard
+// cannot tell them apart by shape and must not guess.
+const NON_PORT_SITES = [
+  {
+    what: "the gatewayOwnership vocabulary's initial value, not a port reading",
+    code: 'let gatewayOwnership = "none";',
+    times: 1,
+  },
+  {
+    what: "the HTTP readiness probe's own error result",
+    code: 'req.on("error", () => resolve("unknown"));',
+    times: 1,
+  },
+  {
+    what: "the HTTP readiness probe's own timeout result",
+    code: 'req.on("timeout", () => { req.destroy(); resolve("unknown"); });',
+    times: 1,
+  },
+  {
+    what: "readiness, short-circuited for a remote host; not an owner verdict",
+    code: 'const readiness = remoteHost ? "unknown" : await fetchGatewayReadiness();',
+    times: 1,
+  },
+  {
+    what: "classifyStartFailure's own verdict vocabulary, unrelated to any port",
+    code: 'if (verdict === "none") {',
+    times: 1,
+  },
+];
+
+const ALL_SITES = [...OCCUPANCY_SITES, ...IDENTITY_SITES, ...NON_PORT_SITES];
+
+/** Byte spans of every occurrence of `needle` in the supervisor. */
+function spansOf(needle) {
   const out = [];
-  const cmp = /([\w$)\s.]*?(?:await\s+\w+\s*\([^()]*\)\s*\)*|[A-Za-z_$][\w$]*))\s*[!=]==\s*"([a-z-]+)"/g;
-  for (let m = cmp.exec(SUPERVISOR); m; m = cmp.exec(SUPERVISOR)) {
-    const sentinel = m[2];
-    const kind = OCCUPANCY_SENTINELS.has(sentinel)
-      ? "occupancy"
-      : IDENTITY_SENTINELS.has(sentinel) ? "identity" : null;
-    if (!kind) continue;
-    const probe = probeBehind(m[1], m.index);
-    if (!probe) continue;
-    out.push({ probe, sentinel, kind });
+  for (let at = SUPERVISOR.indexOf(needle); at !== -1; at = SUPERVISOR.indexOf(needle, at + 1)) {
+    out.push([at, at + needle.length]);
   }
   return out;
 }
 
-/** The body of `name` in `source`, by brace balance from its declaration. The
- *  parameter list is skipped by paren balance first: both probes destructure
- *  their dependencies, so the first brace after the name belongs to a
- *  parameter, not to the body whose contents are being asserted. */
+/** 1-based line number of `offset`. */
+function lineOf(offset) {
+  return SUPERVISOR.slice(0, offset).split("\n").length;
+}
+
+/** Every sentinel string literal in the supervisor, whatever syntax holds it. */
+function sentinelLiterals() {
+  const out = [];
+  const re = new RegExp(`"(${SENTINELS.join("|")})"`, "g");
+  for (let m = re.exec(SUPERVISOR); m; m = re.exec(SUPERVISOR)) {
+    out.push({ sentinel: m[1], offset: m.index, line: lineOf(m.index) });
+  }
+  return out;
+}
+
+/**
+ * Every place either probe is CALLED, excluding the declarations.
+ *
+ * This is the guard that no syntax can slip. A verdict can only enter the file
+ * by calling a probe, and a call has exactly one shape -- where the comparison
+ * that follows has many, which is how an object-map lookup on bare keys walked
+ * past a scan that read string literals.
+ */
+function probeCalls() {
+  const out = [];
+  const re = new RegExp(`\\b(${OCCUPANCY_PROBE}|${IDENTITY_PROBE})\\s*\\(`, "g");
+  for (let m = re.exec(SUPERVISOR); m; m = re.exec(SUPERVISOR)) {
+    if (/\bfunction\s+$/.test(SUPERVISOR.slice(Math.max(0, m.index - 16), m.index))) continue;
+    out.push({ probe: m[1], offset: m.index, line: lineOf(m.index) });
+  }
+  return out;
+}
+
+/** The body of `name` in `source`. The parameter list is skipped by paren
+ *  balance first: both probes destructure their dependencies, so the first brace
+ *  after the name belongs to a parameter, not to the body being asserted. */
 function bodyOf(source, name) {
   const start = source.search(new RegExp(`\\bfunction\\s+${name}\\s*\\(`));
   assert.notStrictEqual(start, -1, `${name} must exist`);
@@ -150,41 +221,65 @@ const SELF_ASSERTED_IDENTITY = [
 ];
 
 describe("port occupancy is decided without a process's self-asserted identity", () => {
-  test("every occupancy comparison resolves to the occupancy probe", () => {
-    const wrong = adjudicatedComparisons()
-      .filter((c) => c.kind === "occupancy" && c.probe !== OCCUPANCY_PROBE);
+  test("every listed site is present in the source exactly as often as claimed", () => {
+    const wrong = ALL_SITES
+      .map((s) => ({ what: s.what, found: spansOf(s.code).length, want: s.times }))
+      .filter((s) => s.found !== s.want);
     assert.deepStrictEqual(
       wrong,
       [],
-      "an occupancy verdict is being read from the identity probe, so a same-user "
-      + "process can move it by choosing its argv: "
-      + wrong.map((c) => `${c.probe} vs "${c.sentinel}"`).join(", "),
+      "a listed site no longer matches the source. Update the list and re-read what "
+      + "the site now decides: "
+      + wrong.map((s) => `${s.what} (found ${s.found}, expected ${s.want})`).join("; "),
     );
   });
 
-  test("every identity comparison resolves to the identity probe", () => {
-    const wrong = adjudicatedComparisons()
-      .filter((c) => c.kind === "identity" && c.probe !== IDENTITY_PROBE);
+  test("no occupancy decision names the identity probe", () => {
+    const wrong = OCCUPANCY_SITES.filter((s) => s.code.includes(IDENTITY_PROBE));
     assert.deepStrictEqual(
-      wrong,
+      wrong.map((s) => s.what),
       [],
-      "an identity verdict is being read from the occupancy probe, which cannot "
-      + "answer it: "
-      + wrong.map((c) => `${c.probe} vs "${c.sentinel}"`).join(", "),
+      "an occupancy decision reads the identity probe, whose POSIX verdict comes "
+      + "from the holder's argv, so a same-user process can move it",
+    );
+    const reading = OCCUPANCY_SITES.filter((s) => s.code.includes(OCCUPANCY_PROBE));
+    assert.ok(
+      reading.length >= 3,
+      `only ${reading.length} listed occupancy sites read ${OCCUPANCY_PROBE}; the list `
+      + "has lost its subject",
     );
   });
 
-  test("the enumeration adjudicates both probes, so a pass is not vacuous", () => {
-    const seen = adjudicatedComparisons();
-    const byKind = (k) => seen.filter((c) => c.kind === k).length;
-    assert.ok(
-      byKind("occupancy") > 0,
-      `no occupancy comparison was resolved; the scan found ${seen.length} in total`,
+  // THE GUARD, in two nets. The first is the one that cannot be evaded.
+  test("no probe CALL is unclaimed by a list", () => {
+    const claimed = ALL_SITES.flatMap((s) => spansOf(s.code).map((span) => span));
+    const unclaimed = probeCalls().filter(
+      (c) => !claimed.some((span) => c.offset >= span[0] && c.offset < span[1]),
     );
-    assert.ok(
-      byKind("identity") > 0,
-      `no identity comparison was resolved; the scan found ${seen.length} in total`,
+    assert.deepStrictEqual(
+      unclaimed.map((c) => `line ${c.line}: ${c.probe}`),
+      [],
+      "a probe is called somewhere no list claims. A verdict can only enter this "
+      + "file through a call, so this is the net that holds whatever syntax the "
+      + "comparison is written in. Add the site to OCCUPANCY_SITES or "
+      + "IDENTITY_SITES; if it decides mere occupancy it must read " + OCCUPANCY_PROBE,
     );
+    assert.ok(probeCalls().length > 0, "the call scan found no probe calls at all");
+  });
+
+  test("no sentinel literal is unclaimed by a list", () => {
+    const claimed = ALL_SITES.flatMap((s) => spansOf(s.code).map((span) => span));
+    const unclaimed = sentinelLiterals().filter(
+      (c) => !claimed.some((span) => c.offset >= span[0] && c.offset < span[1]),
+    );
+    assert.deepStrictEqual(
+      unclaimed.map((c) => `line ${c.line}: "${c.sentinel}"`),
+      [],
+      "the port vocabulary appears somewhere no list claims. This pin cannot tell "
+      + "what that use is, so it FAILS rather than passing it: add it to "
+      + "OCCUPANCY_SITES, IDENTITY_SITES or NON_PORT_SITES",
+    );
+    assert.ok(sentinelLiterals().length > 0, "the literal scan found nothing at all");
   });
 
   test("the occupancy probe reads no command line", () => {
