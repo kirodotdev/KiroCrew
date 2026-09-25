@@ -1553,7 +1553,7 @@ class TestGatewayServers:
 
         seen: dict[str, bool] = {}
 
-        def _record(names, *, sharing_on, forward_declared_env):  # type: ignore[no-untyped-def]
+        def _record(names, *, sharing_on, forward_declared_env, probe_current=None):  # type: ignore[no-untyped-def]
             seen["forward"] = forward_declared_env
             return list(names), []
 
@@ -2862,3 +2862,111 @@ class TestStubEligibility:
         )
         assert eligible == []
         assert skipped == [{"name": "ghost-mcp", "reason": "unknown"}]
+
+
+class TestShareabilityRefusesAProbeFromBeforeAnEdit:
+    """``probe_metadata`` is keyed by name, so the verdict readers gate it.
+
+    Each test pins one call site. Reverting that site's ``probe_current``
+    argument leaves the verdict grounded in the previous target's handshake,
+    and only a test that goes through the site can see it.
+    """
+
+    _ROW = {
+        "agents": {"alpha"},
+        "transport": "stdio",
+        "entry_poolable": False,
+        "env_names": set(),
+        "launch_ids": {"x"},
+    }
+
+    def test_a_refused_probe_reads_as_never_probed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _seed_probe(monkeypatch, "a-mcp")
+        args = dict(is_stdio=True, env_names=(), observed_hazards=(), preflight=None)
+        measured = mcp_mod._assess_server("a-mcp", **args).to_dict()
+        refused = mcp_mod._assess_server("a-mcp", probe_current=False, **args).to_dict()
+        monkeypatch.setattr(mcp_mod, "probe_metadata", lambda n: None)
+        never = mcp_mod._assess_server("a-mcp", **args).to_dict()
+        # Guard the guard: the seeded probe has to change the verdict at all.
+        assert measured != never
+        assert refused == never
+
+    @pytest.mark.asyncio
+    async def test_the_rows_endpoint_passes_the_edit_check_through(
+        self, monkeypatch: pytest.MonkeyPatch, routed_allowlist
+    ) -> None:
+        routed_allowlist([])
+        monkeypatch.setattr(mcp_mod, "_collect_server_rows", lambda: {"a-mcp": dict(self._ROW)})
+        monkeypatch.setattr(mcp_mod, "_load_shareability_state", lambda: ({}, {}))
+        monkeypatch.setattr(mcp_mod, "_probe_currency", lambda: {"a-mcp": False})
+        seen: dict[str, Any] = {}
+        real = mcp_mod._assess_server
+
+        def spy(name: str, **kw: Any):
+            seen[name] = kw.get("probe_current")
+            return real(name, **kw)
+
+        monkeypatch.setattr(mcp_mod, "_assess_server", spy)
+
+        await mcp_mod.api_mcp_gateway_servers(_request())
+
+        assert seen == {"a-mcp": False}
+
+    @pytest.mark.asyncio
+    async def test_the_stub_write_passes_the_edit_check_through(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import kiro_crew.agent as agent_mod
+        import kiro_crew.config.loader as loader
+        from kiro_crew.mcp_gateway.shareability import ShareVerdict, Strength
+
+        cfg_path = tmp_path / "config.json"
+        agents = tmp_path / "agents"
+        agents.mkdir()
+        (agents / "a.json").write_text(
+            json.dumps({"name": "alpha", "mcpServers": {"a-mcp": {"command": "run"}}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", agents)
+        monkeypatch.setattr(loader, "config_path", lambda: cfg_path)
+        monkeypatch.setattr(mcp_mod, "_probe_currency", lambda: {"a-mcp": False})
+        seen: dict[str, Any] = {}
+
+        def spy(name: str, **kw: Any) -> ShareVerdict:
+            seen[name] = kw.get("probe_current")
+            return ShareVerdict(
+                name=name,
+                strength=Strength.MEASURED,
+                recommend_stub=True,
+                recommend_share=False,
+                reasons=(),
+            )
+
+        monkeypatch.setattr(mcp_mod, "_assess_server", spy)
+        cfg_path.write_text(json.dumps({"mcp_gateway": {"enabled": False, "stub_servers": []}}))
+
+        resp = await mcp_mod.api_mcp_gateway_set_stub(
+            _request({"names": ["a-mcp"], "stub": True, "resolve_eligibility": True})
+        )
+
+        assert resp.status == 200
+        assert seen == {"a-mcp": False}
+
+    def test_probe_currency_compares_against_the_current_config(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import kiro_crew.mcp_discovery as disc
+
+        disc._probe_cache.clear()
+        try:
+            disc._cache_probe(McpServerInfo(name="edited", command="old-bin", status="ok"))
+            disc._cache_probe(McpServerInfo(name="same", command="bin", status="ok"))
+            servers = [
+                McpServerInfo(name="edited", command="new-bin"),
+                McpServerInfo(name="same", command="bin"),
+            ]
+            monkeypatch.setattr(disc, "list_servers", lambda *a, **k: list(servers))
+
+            assert mcp_mod._probe_currency() == {"edited": False, "same": True}
+        finally:
+            disc._probe_cache.clear()

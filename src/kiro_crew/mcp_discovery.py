@@ -42,6 +42,7 @@ from kiro_crew.env import (
     spec_path_key,
 )
 from kiro_crew.hooks import safe_read_file
+from kiro_crew.mcp_gateway.hashing import hash_command, hash_effective_env
 from kiro_crew.mcp_grant import grant_observed
 from kiro_crew.mcp_provenance import ABSENT, resolve_write
 from kiro_crew.mcp_utils import kiro_entry_client_id, kiro_entry_scopes, mcp_server_alias
@@ -398,13 +399,134 @@ class _ProbeResult:
     # all of its life showing the vaguer wording.
     auth_challenge: bool = False
     auth_grant_present: bool | None = None
+    # Fingerprint of the config inputs this answer was probed UNDER, so an entry
+    # cannot outlive the configuration that produced it. The cache is keyed on
+    # the server NAME alone, and a name is not an identity: editing a command,
+    # an argument or a non-secret env value leaves the name untouched, and two
+    # install forms of one logical server can canonicalize to the same name
+    # while pointing at different targets. See :func:`_probe_identity`.
+    identity: str = ""
 
 
 # Module-level probe cache: server name → result
 _probe_cache: dict[str, _ProbeResult] = {}
 
 
-def _get_cached(name: str) -> tuple[str, list[str], str, float, str]:
+def _probe_identity(server: McpServerInfo) -> str:
+    """Fingerprint the config inputs a probe's ANSWER depends on.
+
+    Local servers hash command, args and non-secret env through the same
+    helpers that build the corresponding ``PoolKey`` dimensions, so a config
+    edit the pool would route to a different backend also invalidates the
+    entry here. Remote servers hash the url and the header NAMES: a changed
+    header VALUE is a credential rotation against the same endpoint, not a
+    different server, and ``auth_challenge`` is already re-derived on every
+    remote probe. The url is hashed rather than embedded because a url can
+    carry a credential in its userinfo or query string (see
+    ``redact_exfiltration_urls``), and an identity string travels with the
+    cached entry.
+
+    Local and remote are decided by ``McpServerInfo.is_remote`` — the same
+    property ``probe_server`` dispatches on. A spec carrying BOTH a url and a
+    command is probed as local, so fingerprinting it as remote would leave an
+    edit to its command invisible to this cache: the original bug, surviving
+    for exactly the shape that looks most like a misconfiguration.
+
+    Every input is coerced before hashing. ``_server_from_spec`` passes
+    on-disk JSON through unvalidated, so ``env`` can be null, ``args`` can hold
+    non-strings, and ``command`` can be any type; and ``probe_all`` is required
+    to fail one malformed server in isolation (see its own docstring). Raising
+    here would instead take out ``list_servers()`` and with it every other
+    server's probe, turning one bad row into a dead endpoint.
+
+    ``args`` is hashed as the probe will SPAWN it, not as a well-formed spec
+    would hold it. ``probe_server`` builds its argv as
+    ``[resolved, *(server.args or [])]``, so a string splats into one argument
+    per character and a dict into its keys; ``mcp_gateway.evaluate.identity_for``
+    takes ``list(server.args or [])``, which splats the same way. Hashing any non-list
+    as empty would make every edit to such a value invisible here, which is the
+    bug this function exists to close. A non-iterable value is hashed by
+    ``repr``, so editing it still changes the identity; the probe's own splat
+    raises on it.
+
+    Every string is passed through :func:`_hashable_text` first, because JSON
+    permits an unpaired ``\\uD800`` escape and ``str.encode("utf-8")`` raises on
+    the lone surrogate ``json.loads`` produces from it. ``str()`` coerces the
+    type, not the code points.
+
+    Secret env values are excluded by ``hash_effective_env`` rather than by a
+    filter here, so the hashed set is the forwardable set by construction. Only
+    ``ENV_SCRUB_PREFIXES`` keys are excluded, so rotating a credential held in
+    an unprefixed key does invalidate the entry. That is the trade
+    ``PoolKey.effective_env_hash`` already makes.
+
+    It deliberately does NOT pass ``identity_keys``, so a rotating-secret key
+    an operator named in ``mcp_gateway.pool_identity_env`` stays out of THIS
+    hash. The pool needs that value because the value decides which backend is
+    the right backend; a tool list is a claim about what the endpoint
+    advertises, and rotating a credential does not change that. So the two
+    hashes agree on the default set and diverge only on named keys, on purpose
+    — the same split ``mcp_gateway.evaluate.identity_for`` makes, for the same
+    reason. The cost of the divergence is bounded to those named keys: a
+    changed value re-partitions the pool without invalidating this entry, so
+    the tool list served is the one the other value's backend advertised.
+
+    ceiling: identity covers command, args, url, header names and non-secret
+    env, NOT the target binary's bytes. An in-place binary upgrade therefore
+    does not invalidate a probe entry; the pool's own ``binary_version``
+    dimension covers that case for execution. Fold ``binary_fingerprint`` in
+    here only off the ``GET /api/mcp`` read path — it content-hashes the
+    binary, and this function runs once per server per request.
+    """
+    if server.is_remote:
+        headers = server.headers if isinstance(server.headers, dict) else {}
+        url = _hashable_text(server.url or "")
+        return f"remote:{hash_command(url, sorted(_hashable_text(k) for k in headers))}"
+    raw_args = server.args or []
+    try:
+        args = [_hashable_text(a) for a in raw_args]
+    except TypeError:
+        args = [_hashable_text(repr(raw_args))]
+    env = server.env if isinstance(server.env, dict) else {}
+    command_hash = hash_command(_hashable_text(server.command or ""), args)
+    env_hash = hash_effective_env({_hashable_text(k): _hashable_text(v) for k, v in env.items()})
+    return f"local:{command_hash}\0{env_hash}"
+
+
+def _hashable_text(value: object) -> str:
+    """*value* as a string that always encodes to UTF-8.
+
+    A lone surrogate becomes its ``\\udXXX`` escape text, so two values that
+    differ only in which surrogate they hold still hash differently. The one
+    collision is with a config that spells that escape out as literal text,
+    and conflating those two costs one extra probe at most.
+    """
+    return str(value).encode("utf-8", "backslashreplace").decode("utf-8")
+
+
+def cached_probe_is_current(server: McpServerInfo) -> bool:
+    """True if the cached probe entry for *server* was probed under its config.
+
+    For callers that keep their OWN longer-lived copy of a probe result and
+    fall back to it when this module reports ``outdated`` or ``unknown``. Their
+    copy is keyed on the server name too, so without this check gating
+    ``_get_cached`` accomplishes nothing: the identity mismatch is reported,
+    and then the caller's own name-keyed copy puts the previous target's tools
+    straight back onto the row.
+
+    No cached entry returns True — there is no claim to contradict, and a
+    caller with a result this module never saw (a probe whose own cache write
+    was skipped) keeps its previous behaviour rather than losing the row.
+    """
+    cached = _probe_cache.get(server.name)
+    if cached is None:
+        return True
+    return cached.identity == _probe_identity(server)
+
+
+def _get_cached(
+    name: str, expected_identity: str | None = None
+) -> tuple[str, list[str], str, float, str]:
     """Return (status, tools, error, probed_at_wall, probe_mode) from cache.
 
     If within TTL: returns original status + tools.
@@ -414,9 +536,21 @@ def _get_cached(name: str) -> tuple[str, list[str], str, float, str]:
     The wall-clock timestamp and probe mode are returned even for an expired
     entry — "outdated" is exactly the state where WHEN it was last true is the
     most useful thing the UI can say.
+
+    An *expected_identity* that does not match the entry's is treated as NOT
+    CACHED rather than as expired, because the two states differ in what the
+    tool list is evidence OF. An expired entry was true of this server and has
+    merely aged, which is why "outdated" still carries its tools. A
+    fingerprint mismatch means the entry describes a target the current config
+    does not point at, so its tools are not stale evidence about this server
+    — they are evidence about a different one, and reporting them would attach
+    a real tool list to a server that was never asked. A caller holding only a
+    name passes nothing, which skips the identity check.
     """
     cached = _probe_cache.get(name)
     if cached is None:
+        return "unknown", [], "", 0.0, "handshake"
+    if expected_identity is not None and cached.identity != expected_identity:
         return "unknown", [], "", 0.0, "handshake"
     age = time.monotonic() - cached.probed_at
     if age <= _PROBE_TTL_SECS:
@@ -461,10 +595,16 @@ def _cache_probe(server: McpServerInfo) -> None:
     the preserved tools points to when they were actually observed, not to
     the unrelated timeout that came later. A server that has never had a
     successful probe has no prior shape to fall back to, so it gets the
-    failure's own (empty) shape — there is nothing stale to protect.
+    failure's own (empty) shape — there is nothing stale to protect. A prior
+    entry probed under a DIFFERENT configuration is not a prior shape for this
+    server either: its tools describe whatever the old command or url pointed
+    at, so it is dropped rather than preserved. See :func:`_probe_identity`.
     """
     server.probed_at = time.time()
+    identity = _probe_identity(server)
     prior = _probe_cache.get(server.name)
+    if prior is not None and prior.identity != identity:
+        prior = None
     probe_failed = server.status in ("error", "needs_auth")
     if probe_failed and prior is not None:
         tools = list(prior.tools)
@@ -495,6 +635,7 @@ def _cache_probe(server: McpServerInfo) -> None:
         probe_mode=server.probe_mode,
         auth_challenge=server.auth_challenge,
         auth_grant_present=server.auth_grant_present,
+        identity=identity,
     )
 
 
@@ -1447,7 +1588,10 @@ def list_servers() -> list[McpServerInfo]:
 
     # 4. Merge cached probe results
     for s in servers.values():
-        status, tools, error, probed_at, probe_mode = _get_cached(s.name)
+        # The identity is computed from the row just built out of CURRENT config,
+        # so an entry probed under an edited command, url or env is not served.
+        identity = _probe_identity(s)
+        status, tools, error, probed_at, probe_mode = _get_cached(s.name, identity)
         s.status = status
         s.tools = tools
         s.error = error
@@ -1457,8 +1601,14 @@ def list_servers() -> list[McpServerInfo]:
         # tuple, and taken even from an expired entry: a server that demanded
         # OAuth an hour ago still demands it, so the wording should not regress
         # to the vaguer form the moment the TTL lapses.
+        #
+        # Expired is not the same as mismatched, though, and this read has to
+        # apply the identity check too: a remote moved from endpoint A to
+        # endpoint B would otherwise render B as "sign-in required" on the
+        # strength of A's handshake, which is the one wording the user cannot
+        # tell apart from a real challenge.
         cached = probe_metadata(s.name)
-        if cached is not None:
+        if cached is not None and cached.identity == identity:
             s.auth_challenge = cached.auth_challenge
             s.auth_grant_present = cached.auth_grant_present
 

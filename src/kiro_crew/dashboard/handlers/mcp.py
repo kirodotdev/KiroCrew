@@ -7,7 +7,7 @@ import json
 import logging
 import re
 import time
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
@@ -39,6 +39,8 @@ from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.mcp_discovery import (
     SCOPE_KIRO_GLOBAL,
     SCOPE_KIROCREW,
+    McpServerInfo,
+    cached_probe_is_current,
     managed_server_is_session_bound,
     probe_metadata,
     redact_mcp_error,
@@ -646,6 +648,55 @@ def _arm_reprobe(request: web.Request) -> None:
     task.add_done_callback(state._background_tasks.discard)
 
 
+# Server name -> the cached identity a config-edit re-probe was last armed
+# against. See ``_edited_since_probe``.
+_mcp_reprobe_armed_for: dict[str, str] = {}
+
+
+def _edited_since_probe(servers: list[McpServerInfo]) -> dict[str, str]:
+    """Rows whose cached probe predates a config edit, not yet re-probed for it.
+
+    A config edit makes the discovery cache refuse its entry, so the row reads
+    ``unknown`` with no tools. The name is still in the handler cache, so the
+    unseen-name check never fires, and without this the row stays empty until
+    the handler TTL lapses.
+
+    Returned rather than recorded: the caller records them only once it has
+    actually armed a probe, so a request that finds one already in flight does
+    not mark the edit handled by a probe that read the config before it.
+
+    Keyed on the CACHED identity, so each edit arms at most once. Some rows are
+    never re-probed by ``probe_all`` (a quarantined server is left out of the
+    spawn set), so their entry stays mismatched indefinitely; comparing against
+    the current config instead would re-arm a full fan-out on every request for
+    as long as that lasts.
+    """
+    live = {s.name for s in servers if not s.disabled}
+    for name in [n for n in _mcp_reprobe_armed_for if n not in live]:
+        del _mcp_reprobe_armed_for[name]
+    targets: dict[str, str] = {}
+    for srv in servers:
+        if srv.disabled or cached_probe_is_current(srv):
+            continue
+        meta = probe_metadata(srv.name)
+        if meta is not None and _mcp_reprobe_armed_for.get(srv.name) != meta.identity:
+            targets[srv.name] = meta.identity
+    return targets
+
+
+def _probe_currency() -> dict[str, bool]:
+    """Name -> whether the discovery cache's entry fits the current config. BLOCKING.
+
+    For readers that take probe metadata by NAME alone, such as
+    ``_assess_server``: without it they ground a verdict about the configured
+    target in a handshake with the previous one. A name absent here has no row
+    in ``list_servers()`` to compare against, and callers keep reading it.
+    """
+    from kiro_crew.mcp_discovery import list_servers
+
+    return {s.name: cached_probe_is_current(s) for s in list_servers()}
+
+
 def _annotate_quarantine(rows: list[dict[str, Any]]) -> None:
     """Stamp ``probeFailures`` / ``probeFailing`` onto rows that have a record.
 
@@ -827,8 +878,17 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
     for s in servers:
         d = s.to_dict()
         # Prefer handler cache status over discovery cache "outdated"
+        #
+        # Gated on the discovery cache's own identity check. This cache is keyed
+        # on the server NAME, same as that one, and it outlives the discovery
+        # TTL on purpose — so on a config edit it is the path that would put the
+        # PREVIOUS target's tools back onto the row, one layer above the check
+        # that just refused them. "unknown" is exactly what a refused entry
+        # reports, so without the gate the edit is invisible here for as long as
+        # this cache holds, and the row renders "ok" with no probedAt: an
+        # undated Online, which is the state ``probed_at`` exists to rule out.
         cached = cached_by_name.get(s.name)
-        if cached and d["status"] in ("outdated", "unknown"):
+        if cached and d["status"] in ("outdated", "unknown") and cached_probe_is_current(s):
             d["status"] = cached.get("status", d["status"])
             d["tools"] = cached.get("tools", d["tools"])
             d["error"] = cached.get("error", d["error"])
@@ -872,9 +932,11 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
     # Placing the whole decision after the last await makes the test/set/create
     # sequence atomic on a single-threaded loop, so all three hold by
     # construction rather than by bookkeeping.
-    if stale and not _mcp_probe_in_progress:
+    edited = _edited_since_probe(servers)
+    if (stale or edited) and not _mcp_probe_in_progress:
         _mcp_probe_in_progress = True
         _arm_reprobe(request)
+        _mcp_reprobe_armed_for.update(edited)
     return web.json_response(result)
 
 
@@ -1120,8 +1182,24 @@ async def api_mcp_probe_cached(request: web.Request) -> web.Response:
     global _mcp_probe_in_progress
     stale = time.time() - _mcp_probe_ts > _MCP_PROBE_CACHE_SECS
 
+    # Read only when there is something to gate, so an empty cache adds no
+    # yield point (see the quarantine read below).
+    servers: list[McpServerInfo] = []
+    if _mcp_probe_cache:
+        from kiro_crew.mcp_discovery import list_servers
+
+        servers = await asyncio.to_thread(list_servers)
+    by_name = {s.name: s for s in servers}
+
     result: list[dict] = []
     for cached in _mcp_probe_cache:
+        # Same name-keyed copy ``api_mcp_servers`` gates, served whole here. An
+        # entry probed under a config other than its row's current one describes a
+        # different target, so it is left out, which is how this endpoint
+        # already reports a server with no probe result.
+        srv = by_name.get(str(cached.get("name") or ""))
+        if srv is not None and not cached_probe_is_current(srv):
+            continue
         item = dict(cached)
         # The cache is populated from to_dict(), which already redacts headers
         # and errors — this pass is defense-in-depth for any future cache
@@ -1139,9 +1217,11 @@ async def api_mcp_probe_cached(request: web.Request) -> web.Response:
         await asyncio.to_thread(_annotate_quarantine, result)
     # Decided and armed after the last await -- same three constraints as the
     # servers endpoint.
-    if stale and not _mcp_probe_in_progress:
+    edited = _edited_since_probe(servers)
+    if (stale or edited) and not _mcp_probe_in_progress:
         _mcp_probe_in_progress = True
         _arm_reprobe(request)
+        _mcp_reprobe_armed_for.update(edited)
     return web.json_response(result)
 
 
@@ -3324,6 +3404,7 @@ def _stub_eligibility(
     *,
     sharing_on: bool,
     forward_declared_env: bool,
+    probe_current: Mapping[str, bool] | None = None,
 ) -> tuple[list[str], list[dict[str, str]]]:
     """Decide which of *names* the evidence allows stubbing. BLOCKING.
 
@@ -3424,6 +3505,7 @@ def _stub_eligibility(
             observed_hazards=observed.get(name, ()),
             preflight=preflight,
             identity_keys=pool_identity_env_keys(),
+            probe_current=(probe_current or {}).get(name, True),
         )
         allowed = verdict.recommend_share if sharing_on else verdict.recommend_stub
         if not allowed:
@@ -3471,6 +3553,7 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
     # dashboard and every chat sharing it, and would also let two rows in one
     # payload disagree about the same file.
     observed, preflights = await asyncio.to_thread(_load_shareability_state)
+    probe_current = await asyncio.to_thread(_probe_currency)
 
     result: list[dict[str, Any]] = []
     for name in sorted(rows):
@@ -3534,6 +3617,7 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
                     # applies, enforced at the other place the information exists.
                     preflight=(preflights.get(name) if len(row["launch_ids"]) <= 1 else None),
                     identity_keys=identity_keys,
+                    probe_current=probe_current.get(name, True),
                 ).to_dict(),
             }
         )
@@ -3580,6 +3664,7 @@ def _assess_server(
     observed_hazards: tuple[str, ...],
     preflight: tuple[bool, bool] | None,
     identity_keys: Collection[str] = (),
+    probe_current: bool = True,
 ) -> ShareVerdict:
     """Build evidence for one row and hand it to the verdict engine.
 
@@ -3588,8 +3673,12 @@ def _assess_server(
     Probe metadata comes from the in-memory discovery cache rather than a fresh
     probe — starting a server to render a table would spawn every configured MCP
     on every page load, and probing is deliberately an explicit user action.
+
+    *probe_current* False means that cache entry was taken under a config other
+    than the row's current one (see ``_probe_currency``), so it is read as no
+    measurement: the same fail-closed answer as never having probed.
     """
-    meta = probe_metadata(name)
+    meta = probe_metadata(name) if probe_current else None
     return assess(
         ShareEvidence(
             name=name,
@@ -3759,6 +3848,12 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
                 status=409,
             )
 
+        # Read here, off the loop, so ``list_servers()`` and its own config reads
+        # stay out of the locked read-modify-write below.
+        probe_current = (
+            await asyncio.to_thread(_probe_currency) if resolve_eligibility and stub else {}
+        )
+
         # Carries the compare-and-set outcome out of the mutate callback. Raising
         # through ``update_config_locked`` would abort the write, which is the
         # behaviour wanted, but it would also lose the value the caller must be
@@ -3788,6 +3883,7 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
                 written, skipped = _stub_eligibility(
                     names,
                     sharing_on=sharing_on,
+                    probe_current=probe_current,
                     # Effective value, read the same way as ``enabled`` just above:
                     # the overlay wins, because that is what the rewriter will see.
                     # Taking the base value alone would let a base ``true`` plus an

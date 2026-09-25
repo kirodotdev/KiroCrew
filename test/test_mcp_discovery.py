@@ -28,10 +28,12 @@ from kiro_crew.mcp_discovery import (
     _load_mcp_json_by_source,
     _note_denied_env,
     _probe_cache,
+    _probe_identity,
     _probe_remote,
     _read_jsonrpc_response,
     _read_stdio_jsonrpc_response,
     _scope_priority,
+    cached_probe_is_current,
     discover_servers_to_sync,
     list_servers,
     probe_metadata,
@@ -1830,6 +1832,146 @@ class TestProbeCache:
         *_rest, probe_mode = _get_cached("managed-srv")
         assert probe_mode == "declared"
 
+    def test_edited_command_is_not_served_from_cache(self) -> None:
+        """A name is not an identity: an edited command must not inherit the answer.
+
+        The entry is reported as NOT CACHED rather than "outdated", because its
+        tools are not aged evidence about this server -- they describe whatever
+        the previous command pointed at.
+        """
+        good = McpServerInfo(name="srv", command="old-bin", status="ok", tools=["a", "b"])
+        _cache_probe(good)
+
+        edited = McpServerInfo(name="srv", command="new-bin")
+        status, tools, error, at, mode = _get_cached("srv", _probe_identity(edited))
+        assert status == "unknown"
+        assert tools == []
+        assert error == ""
+        assert at == 0.0
+        assert mode == "handshake"
+
+        # Unchanged config still gets its answer -- the guard must not invalidate
+        # every entry it inspects.
+        status, tools, _error, _at, _mode = _get_cached("srv", _probe_identity(good))
+        assert status == "ok"
+        assert tools == ["a", "b"]
+
+    def test_edited_env_is_not_served_from_cache(self) -> None:
+        """Env is part of the identity, since it selects what the target does."""
+        good = McpServerInfo(
+            name="srv", command="bin", env={"PROFILE": "staging"}, status="ok", tools=["a"]
+        )
+        _cache_probe(good)
+        edited = McpServerInfo(name="srv", command="bin", env={"PROFILE": "prod"})
+        status, tools, _error, _at, _mode = _get_cached("srv", _probe_identity(edited))
+        assert status == "unknown"
+        assert tools == []
+
+    def test_name_only_caller_keeps_previous_behavior(self) -> None:
+        """Callers holding only a name pass no identity and are unaffected."""
+        good = McpServerInfo(name="srv", command="bin", status="ok", tools=["a"])
+        _cache_probe(good)
+        status, tools, _error, _at, _mode = _get_cached("srv")
+        assert status == "ok"
+        assert tools == ["a"]
+
+    def test_failed_probe_does_not_inherit_a_different_targets_tools(self) -> None:
+        """The preservation path is identity-scoped, not name-scoped.
+
+        Without this, editing a server's command and then failing to reach the
+        NEW target would report the OLD target's tool list as this server's.
+        """
+        good = McpServerInfo(name="srv", command="old-bin", status="ok", tools=["a", "b"])
+        _cache_probe(good)
+        failed_new_target = McpServerInfo(
+            name="srv", command="new-bin", status="error", error="timeout"
+        )
+        _cache_probe(failed_new_target)
+
+        status, tools, error, _at, _mode = _get_cached("srv")
+        assert status == "error"
+        assert error == "timeout"
+        assert tools == []  # NOT ["a", "b"]
+
+        meta = probe_metadata("srv")
+        assert meta is not None
+        assert meta.tool_annotations == []
+        assert meta.identity == _probe_identity(failed_new_target)
+
+    def test_failed_probe_same_identity_still_preserves(self) -> None:
+        """Regression guard: identity scoping must not defeat the preservation."""
+        good = McpServerInfo(name="srv", command="bin", status="ok", tools=["a", "b"])
+        _cache_probe(good)
+        failed = McpServerInfo(name="srv", command="bin", status="error", error="timeout")
+        _cache_probe(failed)
+        status, tools, error, _at, _mode = _get_cached("srv")
+        assert status == "error"
+        assert error == "timeout"
+        assert tools == ["a", "b"]
+
+    def test_remote_url_edit_invalidates_but_header_value_does_not(self) -> None:
+        """A rotated credential is the same endpoint; a new url is not.
+
+        Header VALUES are deliberately outside the identity: rotating a token
+        against the same server would otherwise discard a correct tool list on
+        every rotation.
+        """
+        good = McpServerInfo(
+            name="remote", url="https://a.example/mcp", headers={"Authorization": "Bearer old"},
+            status="ok", tools=["a"],
+        )
+        _cache_probe(good)
+
+        rotated = McpServerInfo(
+            name="remote", url="https://a.example/mcp", headers={"Authorization": "Bearer new"}
+        )
+        status, tools, _error, _at, _mode = _get_cached("remote", _probe_identity(rotated))
+        assert status == "ok"
+        assert tools == ["a"]
+
+        moved = McpServerInfo(
+            name="remote", url="https://b.example/mcp", headers={"Authorization": "Bearer old"}
+        )
+        status, tools, _error, _at, _mode = _get_cached("remote", _probe_identity(moved))
+        assert status == "unknown"
+        assert tools == []
+
+    def test_identity_excludes_scrubbed_secret_env_values(self) -> None:
+        """Rotating a SCRUBBED secret must not invalidate an identical target.
+
+        ``hash_effective_env`` owns which keys are secret -- today the
+        ``ENV_SCRUB_PREFIXES`` set. This pins that the identity is built on top
+        of that decision rather than hashing raw env, so the cache and the pool
+        always agree on what counts as the same target.
+        """
+        a = McpServerInfo(
+            name="srv", command="bin", env={"OAUTH_CLIENT_SECRET": "aaa", "MODE": "x"}
+        )
+        b = McpServerInfo(
+            name="srv", command="bin", env={"OAUTH_CLIENT_SECRET": "bbb", "MODE": "x"}
+        )
+        assert _probe_identity(a) == _probe_identity(b)
+
+    def test_identity_changes_for_a_non_scrubbed_env_value(self) -> None:
+        """A non-prefixed value IS identity-relevant, and that is deliberate.
+
+        Consequence worth stating: rotating a credential held in a key outside
+        ``ENV_SCRUB_PREFIXES`` (``API_TOKEN``, say) discards a good tool list.
+        That is the same trade ``PoolKey.effective_env_hash`` already makes, and
+        agreeing with the pool is the point -- a cache that considered two
+        configurations identical while the pool ran them as separate backends
+        would serve one backend's tools as the other's.
+        """
+        a = McpServerInfo(name="srv", command="bin", env={"API_TOKEN": "aaa"})
+        b = McpServerInfo(name="srv", command="bin", env={"API_TOKEN": "bbb"})
+        assert _probe_identity(a) != _probe_identity(b)
+
+    def test_local_and_remote_identities_never_collide(self) -> None:
+        """A url row and a command row for one name are different targets."""
+        local = McpServerInfo(name="srv", command="bin")
+        remote = McpServerInfo(name="srv", url="https://a.example/mcp")
+        assert _probe_identity(local) != _probe_identity(remote)
+
     def test_list_servers_merges_cache(self, tmp_path, monkeypatch) -> None:
         agent_dir = tmp_path / "agents"
         agent_dir.mkdir()
@@ -1850,6 +1992,165 @@ class TestProbeCache:
         servers = list_servers()
         assert servers[0].status == "ok"
         assert servers[0].tools == ["a"]
+
+
+class TestProbeIdentityWiring:
+    """The identity check as reached THROUGH ``list_servers``.
+
+    ``TestProbeCache`` covers ``_probe_identity`` and ``_get_cached`` directly,
+    which leaves the wiring untested: with every one of those assertions green,
+    dropping the ``_probe_identity`` argument at the ``_get_cached`` call site
+    restores the original bug and nothing fails. These tests hold that call
+    site, the ``probe_metadata`` read beside it, and the input coercion that
+    running on real on-disk specs requires.
+    """
+
+    def setup_method(self) -> None:
+        _clear_cache()
+
+    def teardown_method(self) -> None:
+        _clear_cache()
+
+    @staticmethod
+    def _configure(tmp_path, monkeypatch, spec: dict) -> None:
+        """Point ``list_servers`` at a single-server config built from *spec*."""
+        agent_dir = tmp_path / "agents"
+        agent_dir.mkdir(exist_ok=True)
+        (agent_dir / "defaults.json").write_text(json.dumps({"mcpServers": {"srv": spec}}))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (tmp_path / "absent",))
+        monkeypatch.setattr("kiro_crew.mcp_discovery.Path.home", lambda: tmp_path)
+
+    def test_edited_command_is_not_served_by_list_servers(self, tmp_path, monkeypatch) -> None:
+        """The user-visible bug, end to end.
+
+        Reverted (``_get_cached(s.name)`` without the identity), this returns
+        the old command's tools under the new command's row.
+        """
+        self._configure(tmp_path, monkeypatch, {"command": "old-bin"})
+        _cache_probe(
+            McpServerInfo(name="srv", command="old-bin", status="ok", tools=["old_tool"])
+        )
+        assert list_servers()[0].tools == ["old_tool"]
+
+        self._configure(tmp_path, monkeypatch, {"command": "new-bin"})
+        row = list_servers()[0]
+        assert row.status == "unknown"
+        assert row.tools == []
+
+    def test_auth_challenge_is_not_inherited_across_a_config_edit(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """``probe_metadata`` is a second read of the same entry, and needs the
+        same gate: endpoint B must not render "sign-in required" on the
+        strength of endpoint A's handshake."""
+        self._configure(tmp_path, monkeypatch, {"url": "https://a.example/mcp"})
+        _cache_probe(
+            McpServerInfo(
+                name="srv",
+                url="https://a.example/mcp",
+                status="needs_auth",
+                auth_challenge=True,
+                auth_grant_present=False,
+            )
+        )
+        assert list_servers()[0].auth_challenge is True
+
+        self._configure(tmp_path, monkeypatch, {"url": "https://b.example/mcp"})
+        row = list_servers()[0]
+        assert row.auth_challenge is False
+        assert row.auth_grant_present is None
+
+    @pytest.mark.parametrize(
+        "spec",
+        [
+            pytest.param({"command": "bin", "env": None}, id="env-null"),
+            pytest.param({"command": "bin", "args": None}, id="args-null"),
+            pytest.param({"command": "bin", "args": [1, 2]}, id="args-non-string"),
+            pytest.param({"command": "bin", "args": "abc"}, id="args-string"),
+            pytest.param({"command": "bin", "args": 5}, id="args-non-iterable"),
+            pytest.param({"command": "bin", "args": ["\ud800"]}, id="args-lone-surrogate"),
+            pytest.param({"command": "bin", "env": {"N": "\udfff"}}, id="env-lone-surrogate"),
+            pytest.param({"command": "bin", "env": {"\ud800": "v"}}, id="env-key-lone-surrogate"),
+            pytest.param({"url": "https://a.example/\ud800"}, id="url-lone-surrogate"),
+            pytest.param(
+                {"url": "https://a.example", "headers": {"\ud800": "v"}},
+                id="header-lone-surrogate",
+            ),
+            pytest.param({"command": "bin", "env": {"N": 1}}, id="env-non-string-value"),
+            pytest.param({"command": None}, id="command-null"),
+            pytest.param({"url": "https://a.example", "headers": None}, id="headers-null"),
+            pytest.param({"url": "https://a.example", "headers": {"H": None}}, id="header-null"),
+        ],
+    )
+    def test_a_malformed_spec_does_not_break_the_server_list(
+        self, tmp_path, monkeypatch, spec
+    ) -> None:
+        """One bad row must fail in isolation, as ``probe_all`` guarantees.
+
+        ``_server_from_spec`` passes on-disk JSON through unvalidated, so every
+        one of these shapes reaches ``_probe_identity``. Uncoerced, each raises
+        inside ``list_servers`` and takes the whole endpoint — and every other
+        server's probe — down with it.
+        """
+        self._configure(tmp_path, monkeypatch, spec)
+        rows = list_servers()
+        assert [r.name for r in rows] == ["srv"]
+
+    def test_string_args_are_fingerprinted_as_the_probe_spawns_them(self) -> None:
+        """``probe_server`` spawns ``[resolved, *args]``, so a string splats into
+        characters. Hashing a non-list as empty would make an edit to it
+        invisible to this cache: the original bug, for that shape."""
+
+        def ident(args: object) -> str:
+            return _probe_identity(McpServerInfo(name="srv", command="bin", args=args))
+
+        assert ident("abc") != ident("abd")
+        assert ident("abc") == ident(["a", "b", "c"])
+        assert ident(5) != ident(6)
+
+    def test_distinct_lone_surrogates_fingerprint_differently(self) -> None:
+        def ident(arg: str) -> str:
+            return _probe_identity(McpServerInfo(name="srv", command="bin", args=[arg]))
+
+        assert ident("\ud800") != ident("\ud801")
+
+    def test_a_spec_with_both_url_and_command_is_fingerprinted_as_local(self) -> None:
+        """Identity must dispatch the way ``probe_server`` dispatches.
+
+        ``McpServerInfo.is_remote`` is ``bool(url) and not command``, so a spec
+        carrying both is probed as LOCAL. Fingerprinting it as remote would
+        ignore its command, leaving an edit to the thing actually being run
+        invisible to this cache.
+        """
+        before = McpServerInfo(name="srv", command="old-bin", url="https://a.example/mcp")
+        after = McpServerInfo(name="srv", command="new-bin", url="https://a.example/mcp")
+        assert _probe_identity(before).startswith("local:")
+        assert _probe_identity(before) != _probe_identity(after)
+
+    def test_remote_identity_does_not_embed_the_url(self) -> None:
+        """A url can carry a credential in its userinfo or query string, and the
+        identity travels with the cached entry, so it is hashed like the local
+        branch rather than stored verbatim."""
+        secret = "https://user:pw@a.example/mcp?token=swordfish"
+        identity = _probe_identity(McpServerInfo(name="srv", url=secret))
+        assert "swordfish" not in identity
+        assert "pw" not in identity
+        assert identity.startswith("remote:")
+
+    def test_cached_probe_is_current_reports_a_match(self) -> None:
+        server = McpServerInfo(name="srv", command="bin", status="ok", tools=["t"])
+        _cache_probe(server)
+        assert cached_probe_is_current(McpServerInfo(name="srv", command="bin")) is True
+
+    def test_cached_probe_is_current_reports_a_mismatch(self) -> None:
+        _cache_probe(McpServerInfo(name="srv", command="bin", status="ok", tools=["t"]))
+        assert cached_probe_is_current(McpServerInfo(name="srv", command="other")) is False
+
+    def test_cached_probe_is_current_with_nothing_cached(self) -> None:
+        """No entry is no claim to contradict, so a caller holding its own copy
+        keeps its previous behaviour instead of losing the row."""
+        assert cached_probe_is_current(McpServerInfo(name="srv", command="bin")) is True
 
 
 class TestReadJsonrpcResponse:

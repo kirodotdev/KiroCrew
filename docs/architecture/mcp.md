@@ -375,6 +375,18 @@ Probes run from `POST /api/mcp/probe`:
   are cached for `_PROBE_TTL_SECS` (1800s), after which status reads as
   "outdated" — with `probedAt` preserved, because *when it was last true* is
   the most useful thing an outdated row can say.
+- The cache is keyed by server name, and each entry also records a fingerprint
+  of the config it was probed under (`_probe_identity`: command, args as the
+  probe spawns them, and non-secret env for a local server; url and header
+  names for a remote one). An entry whose fingerprint does not match the current
+  config reads as NOT cached (`unknown`, no tools, no `probedAt`) rather than
+  `outdated`: an expired entry was true of this server, a mismatched one
+  describes a different target. Every reader that takes an entry by name
+  applies that check: `list_servers()` compares the fingerprint for tools and
+  `authChallenge`, and the handler-side readers call `cached_probe_is_current`
+  (`GET /api/mcp`'s handler-cache overlay, `GET /api/mcp/probe`, and the
+  shareability verdict). A failed probe after an edit does not inherit the
+  previous target's tools.
 - The handshake response is kept, not just the tool names: advertised
   `capabilities`, the `protocolVersion` the server ANSWERED with, `serverInfo`,
   and per-tool `annotations`. These feed the shareability verdict (below); the
@@ -468,8 +480,9 @@ Probes run from `POST /api/mcp/probe`:
   error or a broken mount. Reporting an unanswerable lookup as `false` would tell
   the owner of an already-authorized server to sign in again, so the three-valued
   result is preserved to the wire rather than flattened. Each probe clears both
-  fields before it runs: the probe cache is keyed by NAME, so a row whose url was
-  edited would otherwise inherit the previous endpoint's verdict.
+  fields before it runs, and `list_servers()` re-attaches them from the cache only
+  when the entry's config fingerprint matches, so a row whose url was edited does
+  not inherit the previous endpoint's verdict from either side.
 
   One degradation is NOT covered by that, and the limit is worth stating. The
   lookup mirrors kiro-cli's own cache-key derivation and artifact layout, both
@@ -557,7 +570,11 @@ Probes run from `POST /api/mcp/probe`:
 
 `GET /api/mcp` also kicks off a background re-probe when it sees a server that
 is not in the probe cache yet, so a freshly added server transitions from
-"Unknown" on the next page load rather than waiting out the TTL.
+"Unknown" on the next page load rather than waiting out the TTL. It and
+`GET /api/mcp/probe` do the same for a server whose config was edited since its
+last probe, once per edit: the arming is keyed on the stale entry's fingerprint,
+so a row `probe_all` never re-probes (a quarantined server) cannot re-arm the
+fan-out on every request.
 
 `_fix_stale_managed_command()` re-resolves the `kirocrew` binary on every
 `list_servers()` call, because the stored absolute path goes stale after an
