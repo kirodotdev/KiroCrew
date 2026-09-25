@@ -96,7 +96,21 @@ export const CHUNK_BUDGETS = {
   // module: the chunk holds the same 13 catalogs plus the entry, so shrinking
   // remains unavailable for the reason stated above. Back to the 5% convention
   // over that measurement.
-  all: 12870 * KB, // measured 12254.6 KB on main @ 34fe0de33e 2026-09-21 (5.0% headroom)
+  // Re-measured 2026-09-24: the 5.0% headroom is spent and main's tip alone
+  // (origin/main @ a992d5cda5, no PR code in the tree) builds the chunk at
+  // 13,181,750 B (12872.8 KB) against the 12870 KB ceiling -- 2,870 B OVER, so
+  // the gate had begun failing on the merge ref of every open PR (first seen on
+  // #13506 and #13471). Same recurrence as every note above, and the fourth
+  // time it has landed this way. Attribution measured, not assumed: this is a
+  // clean worktree of origin/main with nothing added, and the analyze build
+  // reproduces the failure on main alone. The chunk still holds moduleCount 14
+  // -- the same 13 shipped catalogs plus the `src/i18n/all.ts` entry -- with no
+  // new library or surface: 69 commits touched website/src/i18n/ since the
+  // 34fe0de33e baseline, all ordinary translated product copy, and no lazy
+  // import() boundary can move a catalog string out of `all`, so shrinking is
+  // not available for the reason stated above. Back to the 5% convention over
+  // that measurement.
+  all: 13517 * KB, // measured 12872.8 KB on origin/main @ a992d5cda5 2026-09-24 (5.0% headroom)
 
   // The i18n RUNTIME — the i18next singleton, `initI18n`, the English catalog —
   // named after `src/i18n/t.ts`. Held separately from `all` above because
