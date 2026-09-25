@@ -483,7 +483,7 @@ class TestQueuedDepthEmission:
             await asyncio.sleep(0)
 
         asyncio.run(run())
-        assert ("subagent_queued", "dashboard:s1", {"queued": 2}) in events
+        assert ("subagent_queued", "dashboard:s1", {"queued": 2, "seq": 1}) in events
 
     def test_emit_queue_depth_zero_when_parent_drained(self) -> None:
         import asyncio
@@ -606,7 +606,10 @@ class TestQueuedReasonOnTheEvent:
             return events
 
         events = asyncio.run(run())
-        assert events and events[-1] == {"queued": 1, "reason": "concurrency_limit"}
+        assert events
+        last = dict(events[-1])
+        assert isinstance(last.pop("seq"), int)
+        assert last == {"queued": 1, "reason": "concurrency_limit"}
 
     def test_adaptive_cap_at_zero_is_labelled_as_such(self, monkeypatch) -> None:
         """Cap 0 is the one queue the concurrency text cannot explain: nothing is
@@ -662,12 +665,13 @@ class TestQueuedReasonOnTheEvent:
         events = asyncio.run(run())
         assert events[0] == {
             "queued": 1,
+            "seq": 1,
             "reason": "low_memory",
             "available_gb": 3.2,
             "required_gb": 4.5,
         }
-        assert events[1] == events[0]
-        assert events[2] == {"queued": 0}
+        assert events[1] == {**events[0], "seq": 2}
+        assert events[2] == {"queued": 0, "seq": 3}
 
 
 class TestQueuedIdentityRoundTrip:

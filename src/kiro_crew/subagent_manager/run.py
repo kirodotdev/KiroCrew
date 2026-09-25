@@ -792,7 +792,7 @@ class RunEventCoordinator(ManagerComponent):
         it is remembered per parent and rides on every later emit for that
         parent -- the drain's and the cancel path's re-emits carry no verdict of
         their own -- until the parent's depth reaches 0, when it is forgotten
-        and the event is once again the bare ``{"queued": 0}``. Absent on an
+        and the event is once again the bare ``{"queued": 0, "seq": N}``. Absent on an
         event exactly when nothing was labelled, so a client reading only the
         count is unaffected and one reading the reason never sees a stale one.
 

@@ -1379,10 +1379,14 @@ async def api_spawn_list(request: web.Request) -> web.Response:
     # the next reconnect; the chip's reconcile poll corrects it from here.
     # ``queued_seq`` orders this answer against those events. A scoped caller
     # only learns the depth of its own session, the same rule as the list.
+    # The seq is read BEFORE the count: an emit scheduled during the awaited
+    # store read then carries a higher seq than this answer, so the client
+    # lets that newer frame win instead of pinning this answer over it.
     parent = request.query.get("parent", "")
     if parent and (scope is None or parent == caller):
+        queued_seq = state.subagents.queue_depth_seq
         body["queued"] = await state.subagents.queued_count_for_async(parent)
-        body["queued_seq"] = state.subagents.queue_depth_seq
+        body["queued_seq"] = queued_seq
     return web.json_response(body)
 
 

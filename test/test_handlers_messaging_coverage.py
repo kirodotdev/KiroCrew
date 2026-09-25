@@ -785,6 +785,20 @@ class TestApiSpawnList:
         assert body["queued"] == 0 and body["queued_seq"] == 41
         mgr.queued_count_for_async.assert_awaited_once_with("dashboard:chat-1")
 
+    def test_queued_seq_is_read_before_the_awaited_count(self) -> None:
+        """An emit scheduled while the count awaits the store takes a newer seq;
+        pairing this answer with THAT seq would let it override the newer frame."""
+        mgr = _mgr(queue_depth_seq=7)
+
+        async def _count(_parent: str) -> int:
+            mgr.queue_depth_seq = 8  # an emit scheduled during the store read
+            return 1
+
+        mgr.queued_count_for_async = _count
+        req = _Req(_state(subagents=mgr), query={"parent": "dashboard:chat-1"})
+        body = _payload(_run(mod.api_spawn_list, req))
+        assert body["queued"] == 1 and body["queued_seq"] == 7
+
     def test_without_parent_query_the_payload_is_unchanged(self) -> None:
         mgr = _mgr(queued_count_for_async=AsyncMock(return_value=3))
         body = _payload(_run(mod.api_spawn_list, _Req(_state(subagents=mgr))))
