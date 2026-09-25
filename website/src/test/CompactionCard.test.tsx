@@ -99,6 +99,8 @@ describe('isSystemNoticeRow', () => {
     expect(isSystemNoticeRow(msg('assistant', { meta: { kind: 'compaction' } }))).toBe(true)
     expect(isSystemNoticeRow(msg('assistant', { kind: 'session_reload' }))).toBe(true)
     expect(isSystemNoticeRow(msg('assistant', { meta: { kind: 'session_reload' } }))).toBe(true)
+    expect(isSystemNoticeRow(msg('assistant', { kind: 'scheduled_message_dropped' }))).toBe(true)
+    expect(isSystemNoticeRow(msg('assistant', { meta: { kind: 'scheduled_message_dropped' } }))).toBe(true)
   })
 
   it('never matches an untagged assistant row (even with compaction-shaped text), a tagged non-assistant row, or an unknown kind', () => {
@@ -252,6 +254,18 @@ describe('registry resolution', () => {
     expect(container.querySelector('[data-testid="notice-card"]')).not.toBeNull()
     expect(container.querySelector('[data-testid="compaction-card"]')).toBeNull()
     expect(screen.getByText('Reloading session: relaunching the agent process.')).toBeInTheDocument()
+  })
+
+  it('SystemNoticeRow localizes a dropped scheduled message from its machine code', () => {
+    const dropped = msg('assistant', {
+      content: '',
+      meta: { kind: 'scheduled_message_dropped', loop_id: 'loop-1' },
+    })
+    const { container } = render(<SystemNoticeRow message={dropped} />)
+    expect(container.querySelector('[data-testid="notice-card"]')).not.toBeNull()
+    expect(screen.getByText(
+      'This scheduled message was not sent because its saved text could not be read. Re-type the message and schedule it again.',
+    )).toBeInTheDocument()
   })
 
   it('renders the card, not markdown prose, through the row set', () => {

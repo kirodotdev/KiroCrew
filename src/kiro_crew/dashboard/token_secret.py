@@ -147,10 +147,7 @@ def _unlink_if_same_file(key_path: Path, created_stat: os.stat_result) -> None:
         # Already gone (a sibling cleaned it up, or it never landed) — nothing
         # of ours to remove.
         return
-    if (
-        on_disk.st_dev == created_stat.st_dev
-        and on_disk.st_ino == created_stat.st_ino
-    ):
+    if on_disk.st_dev == created_stat.st_dev and on_disk.st_ino == created_stat.st_ino:
         try:
             os.unlink(key_path)
         except OSError:
@@ -237,9 +234,7 @@ def _create_key_in_place(key_path: Path) -> bytes | None:
         while mv:
             n = os.write(fd, mv)
             if n == 0:
-                raise OSError(
-                    "short write persisting token signing key (wrote 0 bytes)"
-                )
+                raise OSError("short write persisting token signing key (wrote 0 bytes)")
             mv = mv[n:]
         # Cross-restart persistence is the entire reason this file
         # exists, so flush the bytes to stable storage before we treat
@@ -379,9 +374,7 @@ def _load_or_create_secret() -> bytes:
             # path). It also matches the suffix atomic_write's own mkstemp temp
             # already uses. test_token_auth.py pins this against the real
             # predicate so a rename cannot silently leave the fence behind.
-            staged = key_path.with_name(
-                f".{key_path.name}.{os.getpid()}.{os.urandom(8).hex()}.tmp"
-            )
+            staged = key_path.with_name(f".{key_path.name}.{os.getpid()}.{os.urandom(8).hex()}.tmp")
             key = os.urandom(_MIN_KEY_BYTES)
             try:
                 # restrict_to_owner (rather than mode=0o600 alone) is what

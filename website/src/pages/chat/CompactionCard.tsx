@@ -257,7 +257,8 @@ export default CompactionCard
  * painting as a reply.
  */
 export function SystemNoticeRow({ message, disclosureKey }: { message: ChatMessage; disclosureKey?: string }) {
-  if (noticeKindOf(message) === 'compaction') {
+  const kind = noticeKindOf(message)
+  if (kind === 'compaction') {
     return (
       <CompactionCard
         content={message.content}
@@ -267,6 +268,9 @@ export function SystemNoticeRow({ message, disclosureKey }: { message: ChatMessa
         keepRecord={decisionStripFieldOf(message)}
       />
     )
+  }
+  if (kind === 'scheduled_message_dropped') {
+    return <NoticeCard content={i18nT('components.chatInput.schedule_message_dropped')} />
   }
   return <NoticeCard content={message.content} />
 }

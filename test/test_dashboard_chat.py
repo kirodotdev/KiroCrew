@@ -13171,6 +13171,168 @@ class TestWidgetOriginAutoRunGuard:
         stage_loop_mock.assert_called_once()
         assert slot._auto_run is True
 
+    @staticmethod
+    def _scheduled_admission():
+        return {
+            "queued_containment": {
+                "linked": False,
+                "mirrored": False,
+                "ephemeral": False,
+                "app": False,
+                "unattended": False,
+                "workspace": "default",
+                "mirror_identity": "",
+            }
+        }
+
+    @staticmethod
+    async def _complete_chat(_state, target, _message, **_kwargs):
+        target.append("done", "", "done")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("message", ["go", "go all"])
+    async def test_scheduled_relay_go_text_is_an_ordinary_turn(
+        self, tmp_path, monkeypatch, message
+    ):
+        """Unattended text cannot start or auto-approve an orchestrator stage."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("scheduled-go", mode="orchestrator")
+        stage_loop_mock = AsyncMock()
+        run_chat_mock = AsyncMock(side_effect=self._complete_chat)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._stage_loop", stage_loop_mock)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", run_chat_mock)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post(
+                "/api/chat?relay=1",
+                json={
+                    "message": message,
+                    "slot": slot.key,
+                    "containment_admission": self._scheduled_admission(),
+                },
+            )
+            assert response.status == 200
+            await response.read()
+
+        stage_loop_mock.assert_not_called()
+        run_chat_mock.assert_awaited_once()
+        assert slot._auto_run is False
+
+    @pytest.mark.asyncio
+    async def test_ordinary_live_relay_go_all_still_escalates(self, tmp_path, monkeypatch):
+        """A live user relayed from the owner retains textual Go authority."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("live-relay-go", mode="orchestrator")
+        stage_loop_mock = AsyncMock()
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._stage_loop", stage_loop_mock)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post(
+                "/api/chat?relay=1", json={"message": "go all", "slot": slot.key}
+            )
+            assert response.status == 200
+
+        stage_loop_mock.assert_called_once()
+        assert slot._auto_run is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("message", ["go all", "stop this plan"])
+    async def test_scheduled_relay_control_cannot_bypass_a_pending_stage(
+        self, tmp_path, monkeypatch, message
+    ):
+        """Pending-stage admission treats unattended control text as non-privileged."""
+        from kiro_crew.context_management import MAX_STAGE_ROUNDS, OrchestrationTracker
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("scheduled-pending", mode="orchestrator")
+        slot.stage_boundary.stage = 1
+        tracker = OrchestrationTracker(stage_timeout_seconds=30)
+        for _ in range(MAX_STAGE_ROUNDS):
+            tracker.record_round(1)
+        slot._orch_tracker = tracker
+        stage_loop_mock = AsyncMock()
+        run_chat_mock = AsyncMock()
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._stage_loop", stage_loop_mock)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", run_chat_mock)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post(
+                "/api/chat?relay=1",
+                json={
+                    "message": message,
+                    "slot": slot.key,
+                    "containment_admission": self._scheduled_admission(),
+                },
+            )
+            assert response.status == 409
+            assert (await response.json())["code"] == "remote_turn_busy"
+
+        stage_loop_mock.assert_not_called()
+        run_chat_mock.assert_not_called()
+        assert tracker.stopped is False
+        assert slot._auto_run is False
+        assert slot._queue == []
+
+    @pytest.mark.asyncio
+    async def test_scheduled_relay_stop_text_is_an_ordinary_turn(self, tmp_path, monkeypatch):
+        """An idle unattended relay cannot stop an escalated orchestrator."""
+        from kiro_crew.context_management import MAX_STAGE_ROUNDS, OrchestrationTracker
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("scheduled-stop", mode="orchestrator")
+        tracker = OrchestrationTracker(stage_timeout_seconds=30)
+        for _ in range(MAX_STAGE_ROUNDS):
+            tracker.record_round(1)
+        slot._orch_tracker = tracker
+        run_chat_mock = AsyncMock(side_effect=self._complete_chat)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", run_chat_mock)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post(
+                "/api/chat?relay=1",
+                json={
+                    "message": "stop this plan",
+                    "slot": slot.key,
+                    "containment_admission": self._scheduled_admission(),
+                },
+            )
+            assert response.status == 200
+            await response.read()
+
+        assert tracker.stopped is False
+        assert slot._plan_cancelled is False
+        run_chat_mock.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_ordinary_live_relay_stop_still_stops(self, tmp_path, monkeypatch):
+        """A live user relayed from the owner retains textual Stop authority."""
+        from kiro_crew.context_management import MAX_STAGE_ROUNDS, OrchestrationTracker
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("live-relay-stop", mode="orchestrator")
+        tracker = OrchestrationTracker(stage_timeout_seconds=30)
+        for _ in range(MAX_STAGE_ROUNDS):
+            tracker.record_round(1)
+        slot._orch_tracker = tracker
+        run_chat_mock = AsyncMock()
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", run_chat_mock)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post(
+                "/api/chat?relay=1", json={"message": "stop this plan", "slot": slot.key}
+            )
+            assert response.status == 200
+            assert (await response.json()).get("stopped") is True
+
+        assert tracker.stopped is True
+        assert slot._plan_cancelled is True
+        run_chat_mock.assert_not_called()
+
     @pytest.mark.asyncio
     async def test_widget_origin_normal_message_unaffected(self, tmp_path, monkeypatch):
         """A widget-origin turn whose text isn't go/go-all runs a normal turn."""

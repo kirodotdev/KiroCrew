@@ -236,20 +236,81 @@ class TestTheSendPathHonoursIt:
         assert mirror_is_paused(state, "dashboard:s2") is True
 
     def test_the_turn_path_asks_before_resolving_its_slack_target(self):
-        """Structural: the gate must sit on the chokepoint, not on each sender.
+        """Pause, selection, authorization, and delivery share one exact target.
 
-        Leaving `_mirror_thread`/`_mirror_chan` empty is what silences the echo,
-        the tool stream, the reply and the stream teardown together. Asserted on
-        source order because the alternative is four independent gates that drift.
+        The selector reads the binding once, authorizes those coordinates, and
+        returns those same coordinates to the turn path. A separate lookup after
+        the pause check can rebind the send to an identity the authorization did
+        not inspect, so this pins both sides of the handoff structurally.
         """
+        import ast
         import inspect
+        import textwrap
 
         from kiro_crew.dashboard import chat_runner
 
-        src = inspect.getsource(chat_runner)
-        gate = src.index("and not slack_mirror_is_paused(state, session_key)")
-        resolve = src.index("_mirror_thread, _mirror_chan = state.sessions.get_slack_link")
-        assert gate < resolve, "the pause gate must precede link resolution"
+        def one(tree, node_type, normalized):
+            matches = [
+                node
+                for node in ast.walk(tree)
+                if isinstance(node, node_type) and ast.unparse(node) == normalized
+            ]
+            assert len(matches) == 1, f"expected one AST node: {normalized}"
+            return matches[0]
+
+        selector_tree = ast.parse(
+            textwrap.dedent(inspect.getsource(chat_runner._select_slack_mirror_target))
+        )
+        pause_gate = one(
+            selector_tree,
+            ast.If,
+            "if slack_mirror_is_paused(state, session_key):\n    return None",
+        )
+        lookup = one(selector_tree, ast.Call, "sessions.get_slack_link(session_key)")
+        selection = one(selector_tree, ast.Assign, "selected = (thread_ts, channel_id)")
+        selected_link = one(
+            selector_tree,
+            ast.Assign,
+            "selected_link = ChannelLink(SLACK_NAMESPACE, channel_id, thread_ts)",
+        )
+        authorization_gate = one(
+            selector_tree,
+            ast.If,
+            "if cross_surface_withheld(state, slot, selected_mirror=selected_link):\n"
+            "    return None",
+        )
+        selected_return = one(selector_tree, ast.Return, "return selected")
+        assert (
+            pause_gate.lineno
+            < lookup.lineno
+            < selection.lineno
+            < selected_link.lineno
+            < authorization_gate.lineno
+            < selected_return.lineno
+        ), "the selected coordinates must be paused, authorized, and returned in order"
+
+        module_tree = ast.parse(inspect.getsource(chat_runner))
+        turn_selection = one(
+            module_tree,
+            ast.Assign,
+            "_selected_slack_target = _select_slack_mirror_target(state, slot, session_key)",
+        )
+        turn_use = one(
+            module_tree,
+            ast.Assign,
+            "_mirror_thread, _mirror_chan = _selected_slack_target",
+        )
+        second_lookups = [
+            node
+            for node in ast.walk(module_tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get_slack_link"
+            and turn_selection.lineno < node.lineno < turn_use.lineno
+        ]
+        assert (
+            not second_lookups
+        ), "the turn path must consume the selected target without re-resolving"
 
     def test_both_cross_surface_legs_are_gated(self):
         """The user echo and the assistant reply both stop, or the remote

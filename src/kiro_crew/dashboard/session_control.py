@@ -750,6 +750,11 @@ def _probe_channel_mirror(state: "DashboardState", slot: "_ChatSlot") -> str | N
         return None
     if not link:
         return ""
+    return _channel_mirror_identity(link)
+
+
+def _channel_mirror_identity(link: Any) -> str:
+    """Stable audience identity for one selected outbound mirror link."""
     return (
         f"{getattr(link, 'channel_type', '')}"
         f":{getattr(link, 'channel_id', '') or ''}"
@@ -1015,7 +1020,36 @@ def containment_snapshot(
     and drain for a TAGGED entry — it is carried for the unmarked fail-closed
     path, where the baseline is all-False and any held constraint must count.
     """
-    probed = _probe_channel_mirror(state, slot)
+    return _containment_snapshot_from_mirror_probe(
+        slot,
+        _probe_channel_mirror(state, slot),
+        on_probe_failure=on_probe_failure,
+    )
+
+
+def containment_snapshot_for_selected_mirror(
+    slot: "_ChatSlot", selected_mirror: Any
+) -> dict[str, Any]:
+    """Containment snapshot bound to the exact mirror an egress sink selected.
+
+    The caller sends only to *selected_mirror*. This function deliberately does
+    not consult ``SessionMap``: a concurrent rebind may change the live mapping,
+    but it cannot substitute a different audience between this authorization and
+    the send. All non-mirror constraints remain live slot reads and the existing
+    :func:`newly_held_constraints` policy decides the result unchanged.
+    """
+    identity = "" if selected_mirror is None else _channel_mirror_identity(selected_mirror)
+    return _containment_snapshot_from_mirror_probe(
+        slot,
+        identity,
+        on_probe_failure=False,
+    )
+
+
+def _containment_snapshot_from_mirror_probe(
+    slot: "_ChatSlot", probed: str | None, *, on_probe_failure: bool
+) -> dict[str, Any]:
+    """Build one containment snapshot from an already-selected mirror identity."""
     snap: dict[str, Any] = {
         "linked": bool(getattr(slot, "linked_session_key", "")),
         "mirrored": on_probe_failure if probed is None else bool(probed),

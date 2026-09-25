@@ -3142,6 +3142,13 @@ class TestRunGateway:
 class TestInitAutonudge:
     """AutoNudge service initialization."""
 
+    def test_startup_has_no_scheduled_process_proof_or_generation_cleanup(self):
+        run_source = inspect.getsource(GatewayOrchestrator.run)
+        init_source = inspect.getsource(GatewayOrchestrator._init_autonudge)
+        assert "autonudge_selfarm." not in run_source
+        assert "scheduled_provenance_cleanup" not in init_source
+        assert "process_census" not in run_source + init_source
+
     @pytest.mark.asyncio
     async def test_disabled_when_feature_flag_off(self):
         orch = _make_orchestrator()

@@ -2446,6 +2446,7 @@ class _ChatSlot:
         "_dirty_gen",
         "_metadata_persist_inflight",
         "_guarded_history_writes",
+        "_history_persist_lock",
         "_orch_tracker",
         "_plan_cancelled",
         "_auto_run",
@@ -2961,6 +2962,9 @@ class _ChatSlot:
         # retraction of this slot's name must order itself after the real write,
         # so it waits on these futures, which complete with the worker.
         self._guarded_history_writes: set[Any] = set()
+        # Serializes every history snapshot-to-commit span with corrective row
+        # deletion. Reentrant because locked persistence helpers can compose.
+        self._history_persist_lock = threading.RLock()
         self._orch_tracker: Any = None  # OrchestrationTracker, set by gateway
         # Plan-cancel latch closing the cancel/Go race: the Cancel
         # handler can only stop a tracker that exists, but _stage_loop creates

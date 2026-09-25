@@ -740,6 +740,8 @@ async def api_crons_create(request: web.Request) -> web.Response:
     if timezone_val and not is_valid_timezone(timezone_val):
         safe_tz, _ = redact_credentials(redact_exfiltration_urls(timezone_val)[0])
         return web.json_response({"error": f"invalid timezone: {safe_tz!r}"}, status=400)
+    # ``at`` jobs already receive zero jitter in ``CronService._compute_jitter``.
+    # Keep the persisted strict flag caller-controlled like every other kind.
     strict_schedule = body.get("strict_schedule", False)
     hide_in_chat = body.get("hide_in_chat", False)
     # A job created on a full context pays for memory, lessons, steering, skills
@@ -1062,11 +1064,18 @@ async def api_cron_update(request: web.Request) -> web.Response:
         kwargs["channel"] = ch
         if ch and (len(ch) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(ch)):
             return web.json_response({"error": "invalid channel ID format"}, status=400)
-    # Schedule: accept cron_expr or every (seconds)
+    # Schedule: accept cron_expr, every (seconds), or the same one-shot
+    # spellings as create. The shared resolver preserves precedence and bounds.
     if "cron" in body:
         kwargs["cron_expr"] = body["cron"]
     if "every" in body:
         kwargs["every_secs"] = body["every"]
+    if any(key in body for key in ("at", "delay", "at_time")):
+        at_ts, at_err = _resolve_one_shot_at(body)
+        if at_err is not None:
+            return at_err
+        if at_ts is not None:
+            kwargs["at_ts"] = at_ts
     if "timezone" in body:
         tz_val = (body["timezone"] or "").strip()
         if tz_val and not is_valid_timezone(tz_val):
@@ -2995,6 +3004,10 @@ async def api_crons(request: web.Request) -> web.Response:
             )[0],
             "cron_expr": j.schedule.cron_expr if j.schedule.kind == "cron" else None,
             "every_secs": j.schedule.every_secs if j.schedule.kind == "every" else None,
+            # Machine-readable one-shot parity with the two recurring kinds.
+            # The formatted schedule remains display copy; clients edit this
+            # absolute value instead of attempting to parse localized prose.
+            "at_ts": j.schedule.at_ts if j.schedule.kind == "at" else None,
             "created_ts": j.created_ts or None,
             "last_status": j.last_status,
             # The installed app that owns this job, or None for a person-owned

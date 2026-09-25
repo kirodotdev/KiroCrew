@@ -736,8 +736,9 @@ async def relay_remote_turn(
     message: str,
     *,
     chunks: AsyncIterator[bytes] | None = None,
-) -> None:
-    """Run one turn for *slot* on its bound peer, replaying the result locally.
+    containment_admission: dict[str, Any] | None = None,
+) -> bool:
+    """Replay one peer turn and return whether its positive terminator arrived.
 
     *chunks* exists for tests: pass an async byte iterator to drive the replay
     without a tunnel. In production it is ``None`` and the stream comes from the
@@ -789,7 +790,12 @@ async def relay_remote_turn(
     peer_reached = False
     try:
         if chunks is None:
-            chunks = _peer_turn_chunks(state, slot, message)
+            chunks = _peer_turn_chunks(
+                state,
+                slot,
+                message,
+                containment_admission=containment_admission,
+            )
         buffer = bytearray()
         saw_terminator = False
         async for chunk in chunks:
@@ -881,15 +887,23 @@ async def relay_remote_turn(
     # executor-aware queue dispatcher (routing ANY non-local executor, not just
     # this one), a change to the shared local turn path and a decision of its own
     # rather than a tail-call here — so the honest 409 stands until then.
+    return saw_terminator
 
 
 async def _peer_turn_chunks(
-    state: "DashboardState", slot: "_ChatSlot", message: str
+    state: "DashboardState",
+    slot: "_ChatSlot",
+    message: str,
+    *,
+    containment_admission: dict[str, Any] | None = None,
 ) -> AsyncIterator[bytes]:
     """Stream the peer's SSE response for one turn, chunk by chunk."""
     mgr = await _require_manager(state)
     await ensure_version_parity(mgr, slot.instance_id)
-    body = json.dumps({"message": message, "slot": slot.remote_slot}).encode()
+    payload: dict[str, Any] = {"message": message, "slot": slot.remote_slot}
+    if containment_admission is not None:
+        payload["containment_admission"] = containment_admission
+    body = json.dumps(payload).encode()
     # ``relay=1`` asks the peer to mirror its WebSocket frames onto this stream;
     # without it the reply carries the prose and none of the tool activity.
     async with mgr.proxy_request(

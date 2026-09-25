@@ -1364,8 +1364,10 @@ class TestSelfArmTrustRecord:
     def _home(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
         from kiro_crew import autonudge_selfarm
 
+        autonudge_selfarm._reset_scheduled_messages_for_tests()
         monkeypatch.setattr(autonudge_selfarm, "data_home", lambda: tmp_path)
-        return tmp_path
+        yield tmp_path
+        autonudge_selfarm._reset_scheduled_messages_for_tests()
 
     def test_record_lives_under_trust_and_round_trips(self, tmp_path: Path) -> None:
         from kiro_crew import autonudge_selfarm as sa
@@ -1423,6 +1425,56 @@ class TestSelfArmTrustRecord:
         path.write_text(json.dumps({"loops": {"x": "not a dict"}}))
         assert sa.is_recorded_self_arm("x", "y") is False
         sa.forget_self_arm("x")  # never raises
+
+    def test_self_arm_read_failure_refuses_without_raising(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import autonudge_selfarm as sa
+
+        sa.record_self_arm("abc12345", "member-conductor")
+        monkeypatch.setattr(
+            Path,
+            "read_text",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("temporary failure")),
+        )
+        assert sa.is_recorded_self_arm("abc12345", "member-conductor") is False
+
+    def test_scheduled_content_round_trips_and_cas_refreshes(self) -> None:
+        from kiro_crew import autonudge_selfarm as sa
+
+        record_id = "scheduled-message:abc12345"
+        sa.record_scheduled_message(record_id, "chat-1-1", "original bytes", 2_000.0)
+
+        original = sa.read_scheduled_message(record_id, "chat-1-1")
+        assert original == sa.ScheduledMessageProvenance(
+            slot_key="chat-1-1",
+            message="original bytes",
+            scheduled_at=2_000.0,
+        )
+        assert sa.read_scheduled_message(record_id, "chat-2-2") is None
+        assert sa.read_scheduled_message("abc12345", "chat-1-1") is None
+        assert sa.is_recorded_self_arm(record_id, "chat-1-1") is False
+
+        assert sa.replace_scheduled_message(record_id, original, "edited bytes", 3_000.0)
+        assert sa.read_scheduled_message(record_id, "chat-1-1") == (
+            sa.ScheduledMessageProvenance(
+                slot_key="chat-1-1",
+                message="edited bytes",
+                scheduled_at=3_000.0,
+            )
+        )
+        assert not sa.replace_scheduled_message(record_id, original, "stale overwrite", 4_000.0)
+
+    def test_self_arm_shape_and_lookup_remain_compatible(self) -> None:
+        from kiro_crew import autonudge_selfarm as sa
+
+        sa.record_self_arm("abc12345", "member-conductor")
+        sa.record_scheduled_message("scheduled-message:abc12345", "chat-1-1", "later", 2_000.0)
+
+        assert sa.is_recorded_self_arm("abc12345", "member-conductor") is True
+        assert sa.read_scheduled_message("abc12345", "member-conductor") is None
+        raw = json.loads(sa.self_arm_record_path().read_text())
+        assert set(raw["loops"]["abc12345"]) == {"slot_key", "armed_ts"}
 
 
 class TestFireTimeGuardRequiresTheTrustRecord(TestFireTimeModeRecheck):
@@ -1520,25 +1572,46 @@ def test_removing_any_loop_revokes_its_trust_entry_after_the_commit(
     survives a failed save must keep the entry it needs to fire, or a
     persistence hiccup would silently strand a member's own loop."""
     from kiro_crew import autonudge_selfarm
+    from kiro_crew.autonudge import scheduled_message_trust_id
 
-    revoked: list[str] = []
-    monkeypatch.setattr(autonudge_selfarm, "forget_self_arm", revoked.append)
+    forgotten: list[str] = []
+    deleted_scheduled: list[str] = []
+    monkeypatch.setattr(autonudge_selfarm, "forget_self_arm", forgotten.append)
+    monkeypatch.setattr(
+        autonudge_selfarm,
+        "delete_scheduled_message_record",
+        deleted_scheduled.append,
+    )
     svc = AutoNudgeService(base_dir=tmp_path)
     try:
         armed = NudgeLoop(id="self0001", slot_key="member-a", message="m", self_armed=True)
         plain = NudgeLoop(id="plain002", slot_key="chat-1-1", message="m")
         failing = NudgeLoop(id="self0003", slot_key="member-c", message="m", self_armed=True)
+        scheduled = NudgeLoop(
+            id="scheduled4",
+            slot_key="chat-1-2",
+            message="",
+            scheduled_message=True,
+            scheduled_at=time.time() + 60,
+        )
         svc._loops.update({armed.id: armed, plain.id: plain, failing.id: failing})
         saves: list[str] = []
         monkeypatch.setattr(svc, "_save", lambda: saves.append("saved"))
-        # No running event loop here, so the sync fallback revokes inline.
+        # No running event loop here, so the sync fallback revokes inline after save.
         assert svc.remove_sync(plain.id, persist=True, emit=False) is plain
-        assert revoked == ["plain002"], "revocation must not trust the store's self_armed bit"
+        assert forgotten == ["plain002"]
+        assert deleted_scheduled == [scheduled_message_trust_id("plain002")]
+
         # persist=False: the caller owns the commit and revokes afterwards.
         assert svc.remove_sync(armed.id, persist=False, emit=False) is armed
-        assert revoked == ["plain002"]
+        assert forgotten == ["plain002"]
+        assert deleted_scheduled == [scheduled_message_trust_id("plain002")]
         svc._revoke_self_arm_for(armed)
-        assert revoked == ["plain002", "self0001"]
+        assert forgotten == ["plain002", "self0001"]
+        assert deleted_scheduled == [
+            scheduled_message_trust_id("plain002"),
+            scheduled_message_trust_id("self0001"),
+        ]
 
         # persist=True with a failing save: the row is still stored -> no revoke.
         def _boom() -> None:
@@ -1547,11 +1620,35 @@ def test_removing_any_loop_revokes_its_trust_entry_after_the_commit(
         monkeypatch.setattr(svc, "_save", _boom)
         with pytest.raises(OSError):
             svc.remove_sync(failing.id, persist=True, emit=False)
-        assert revoked == ["plain002", "self0001"]
-        # persist=True with a good save: revoked after the commit.
+        assert forgotten == ["plain002", "self0001"]
+        assert deleted_scheduled == [
+            scheduled_message_trust_id("plain002"),
+            scheduled_message_trust_id("self0001"),
+        ]
+
+        # persist=True with a good save: both revocations happen after commit.
         svc._loops[failing.id] = failing
         monkeypatch.setattr(svc, "_save", lambda: saves.append("saved"))
         assert svc.remove_sync(failing.id, persist=True, emit=False) is failing
-        assert revoked == ["plain002", "self0001", "self0003"]
+        assert forgotten == ["plain002", "self0001", "self0003"]
+        assert deleted_scheduled == [
+            scheduled_message_trust_id("plain002"),
+            scheduled_message_trust_id("self0001"),
+            scheduled_message_trust_id("self0003"),
+        ]
+
+        # A scheduled removal revokes memory before durable commit. Its delayed
+        # post-commit cleanup must still clear ordinary self-arm trust but skip
+        # the already-revoked scheduled record.
+        trust_id = scheduled_message_trust_id(scheduled.id)
+        autonudge_selfarm.delete_scheduled_message_record(trust_id)
+        svc._revoke_self_arm_for(scheduled, scheduled_memory_already_revoked=True)
+        assert forgotten == ["plain002", "self0001", "self0003", "scheduled4"]
+        assert deleted_scheduled == [
+            scheduled_message_trust_id("plain002"),
+            scheduled_message_trust_id("self0001"),
+            scheduled_message_trust_id("self0003"),
+            trust_id,
+        ]
     finally:
         svc.stop()

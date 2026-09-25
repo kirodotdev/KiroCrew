@@ -400,7 +400,8 @@ export interface CronJob {
   id: string; name: string; message: string
   enabled: boolean; schedule: string; last_status: string
   cron_expr?: string | null; every?: number | null; every_secs?: number | null
-  at?: number | null; created_ts?: number | null
+  /** Absolute epoch-seconds fire time for a one-shot job. */
+  at?: number | null; at_ts?: number | null; created_ts?: number | null
   agent?: string; model?: string; channel?: string; approval_mode?: string; silent?: boolean
   /** Crews a sequence job runs, in order. Takes PRECEDENCE over `agent` at run
    *  time, so any consumer attributing a job to a crew must read this first. */
