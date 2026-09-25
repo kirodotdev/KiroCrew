@@ -9750,7 +9750,8 @@
       "chatFooter": {
         "compacting": "压缩中…",
         "killing": "正在终止…",
-        "stopping": "正在停止…"
+        "stopping": "正在停止…",
+        "thinking": "思考中…"
       },
       "chatNavPanel": {
         "link": "链接",

@@ -10024,7 +10024,8 @@
       "chatFooter": {
         "compacting": "Compactando…",
         "killing": "Forzando el cierre…",
-        "stopping": "Deteniendo…"
+        "stopping": "Deteniendo…",
+        "thinking": "Pensando…"
       },
       "chatNavPanel": {
         "link": "Enlace",

@@ -9887,7 +9887,8 @@
       "chatFooter": {
         "compacting": "Wird verdichtet…",
         "killing": "Wird beendet…",
-        "stopping": "Wird gestoppt…"
+        "stopping": "Wird gestoppt…",
+        "thinking": "Denkt nach…"
       },
       "chatNavPanel": {
         "link": "Link",

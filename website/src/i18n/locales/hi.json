@@ -9887,7 +9887,8 @@
       "chatFooter": {
         "compacting": "संक्षिप्त किया जा रहा है…",
         "killing": "समाप्त किया जा रहा है…",
-        "stopping": "रोका जा रहा है…"
+        "stopping": "रोका जा रहा है…",
+        "thinking": "सोच रहा है…"
       },
       "chatNavPanel": {
         "link": "लिंक",

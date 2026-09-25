@@ -299,33 +299,50 @@ const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole
         ) : !regenerating && state === 'compacting' ? (
           <span className="text-muted text-[13px] font-mono animate-pulse"><Hourglass className="lucide-inline" /> {i18nT('pages.chat.chatFooter.compacting')}</span>
         ) : (
-          // Both branches render THEME-SUPPLIED components (a whole replacement
-          // loader, or the icons the carousel cycles). A throwing one must not
-          // escape: unguarded it reaches the route-level ErrorBoundary and swaps
-          // the entire chat UI for the error card. The loader is decorative, so
-          // failing it closed to nothing is strictly better than losing the chat.
-          // `fallback={null}` is honoured explicitly (ErrorBoundary tests
-          // `'fallback' in props`), so this renders nothing rather than a card.
-          <ErrorBoundary fallback={null}>
-            {loader.kind === 'custom'
-              // The theme replaced the whole loader — it owns its size and motion.
-              ? <loader.Component />
-              : loader.kind === 'image'
-                // The pack shipped a single image — rendered on its own, self-
-                // animating if it's an animated WebP/APNG/GIF or SVG. Sized to a
-                // carousel slot (14px) with object-contain so an intrinsically
-                // large image cannot expand the footer band; decorative, so
-                // aria-hidden + no alt.
-                ? <img
-                    className="kp"
-                    src={loader.src}
-                    alt=""
-                    aria-hidden="true"
-                    draggable={false}
-                    style={{ width: 14, height: 14, objectFit: 'contain' }}
-                  />
-                : <SwapCarousel icons={loader.icons} />}
-          </ErrorBoundary>
+          // The plain running state. The artwork (mascot carousel / theme loader /
+          // pack image) is DECORATIVE — aria-hidden, no alt — so on its own it
+          // gives a sighted user nothing to read and assistive tech nothing to
+          // announce, and when the images fail to paint the user is left staring
+          // at broken-image glyphs unsure whether the turn is working (#13779).
+          // A visible, localized "Thinking…" label sits beside it: it reads the
+          // same as the sidebar row and matches how the stopping / compacting
+          // branches present, so the indicator is never a bare glyph row. The row
+          // is the accessible status; the artwork stays hidden from it.
+          <div
+            className="inline-flex items-center gap-2"
+            role="status"
+            aria-label={i18nT('pages.chat.chatFooter.thinking')}
+          >
+            {/* Both branches render THEME-SUPPLIED components (a whole replacement
+                loader, or the icons the carousel cycles). A throwing one must not
+                escape: unguarded it reaches the route-level ErrorBoundary and
+                swaps the entire chat UI for the error card. The loader is
+                decorative, so failing it closed to nothing is strictly better
+                than losing the chat. `fallback={null}` is honoured explicitly
+                (ErrorBoundary tests `'fallback' in props`), so this renders
+                nothing rather than a card — and the label below still shows. */}
+            <ErrorBoundary fallback={null}>
+              {loader.kind === 'custom'
+                // The theme replaced the whole loader — it owns its size and motion.
+                ? <loader.Component />
+                : loader.kind === 'image'
+                  // The pack shipped a single image — rendered on its own, self-
+                  // animating if it's an animated WebP/APNG/GIF or SVG. Sized to a
+                  // carousel slot (14px) with object-contain so an intrinsically
+                  // large image cannot expand the footer band; decorative, so
+                  // aria-hidden + no alt.
+                  ? <img
+                      className="kp"
+                      src={loader.src}
+                      alt=""
+                      aria-hidden="true"
+                      draggable={false}
+                      style={{ width: 14, height: 14, objectFit: 'contain' }}
+                    />
+                  : <SwapCarousel icons={loader.icons} />}
+            </ErrorBoundary>
+            <span className="text-muted text-[13px] font-mono">{i18nT('pages.chat.chatFooter.thinking')}</span>
+          </div>
         )}
       </div>
     </div>

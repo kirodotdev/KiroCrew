@@ -82,6 +82,42 @@ describe('ChatFooter', () => {
     expect(screen.getByText(/Compacting…/)).toBeInTheDocument()
   })
 
+  // #13779: the plain running state must expose a READABLE, localized indicator,
+  // not only the decorative (aria-hidden, alt="") mascot carousel. When the pose
+  // images fail to paint, the icon-only footer left a first-time user staring at
+  // broken-image glyphs unsure whether the turn was working; assistive tech got
+  // nothing either. A visible "Thinking…" label beside the carousel fixes both.
+  it('shows a readable localized "Thinking…" label while running', () => {
+    render(<ChatFooter {...base} running={true} lastRole="user" />)
+    expect(screen.getByText('Thinking…')).toBeInTheDocument()
+  })
+
+  it('exposes the running indicator as an accessible status', () => {
+    render(<ChatFooter {...base} running={true} lastRole="user" />)
+    // role=status carries an accessible name even though the pose art is
+    // aria-hidden, so a screen reader announces the turn is in progress.
+    expect(screen.getByRole('status')).toHaveAccessibleName('Thinking…')
+  })
+
+  it('keeps the mascot carousel AND the label together while running', () => {
+    const { container } = render(<ChatFooter {...base} running={true} lastRole="user" />)
+    // The label never replaces the artwork — the carousel stays for users where
+    // the poses render; the text is an additional, always-readable fallback.
+    expect(container.querySelector('.csb4')).toBeInTheDocument()
+    expect(screen.getByText('Thinking…')).toBeInTheDocument()
+  })
+
+  // Even if the theme loader/artwork collapses to nothing (ErrorBoundary
+  // fallback={null} on a throwing custom loader), the readable label survives, so
+  // the running state is never a truly empty or glyph-only footer.
+  it('still shows the label when the theme artwork fails closed', () => {
+    const Boom = () => { throw new Error('theme loader exploded') }
+    registerThemeBranding({ 'seam-13779-boom': { loader: Boom } })
+    document.documentElement.setAttribute('data-theme', 'seam-13779-boom-dark')
+    render(<ChatFooter {...base} running={true} lastRole="user" />)
+    expect(screen.getByText('Thinking…')).toBeInTheDocument()
+  })
+
   it('renders 4 slots, each with both cross-fade layers', () => {
     const { container } = render(<ChatFooter {...base} running={true} lastRole="user" />)
     const slots = Array.from(container.querySelectorAll('.csb4 .slot'))

@@ -6207,7 +6207,8 @@
       "chatFooter": {
         "compacting": "Compacting…",
         "killing": "Killing…",
-        "stopping": "Stopping…"
+        "stopping": "Stopping…",
+        "thinking": "Thinking…"
       },
       "chatNavPanel": {
         "no_links_found": "No links found",
