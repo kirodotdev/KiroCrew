@@ -404,7 +404,14 @@ class AcpWorker(Worker):
         if self._client is None or not self._client.is_ready:
             await self.start()
         assert self._client is not None
-        return await self._client.send_message(prompt, timeout=timeout)
+        try:
+            return await self._client.send_message(prompt, timeout=timeout)
+        except Exception:
+            # A timed-out turn is still running in the child, so a reused client
+            # answers "Prompt already in progress". Prompts are self-contained,
+            # so drop the client on any failure and let acquire respawn it.
+            await self.shutdown()
+            raise
 
     async def shutdown(self) -> None:
         if self._protected_pid is not None:
