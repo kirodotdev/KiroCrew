@@ -238,19 +238,37 @@ class TestBindOriginMirror:
         assert bind_origin_mirror(sess, key="k", location=_HERE) is False
         assert sess.mirror_links["k"] == chosen
 
-    def test_the_unrouted_slack_placeholder_does_not_block_the_bind(self) -> None:
-        """``set_channel`` writes the namespaced bucket into ``slack_channel_id``.
-
-        ``get_mirror_link`` synthesizes a Slack link from that field whenever no
-        explicit mirror row exists, so the first turn of every new channel session
-        reads one back. An empty thread is Slack's own clear sentinel and never
-        enters the reverse index, so nothing can be delivered through it — it is
-        bookkeeping, not a binding.
+    def test_the_first_turns_bucket_row_does_not_block_the_bind(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """``set_channel`` writes the namespaced bucket into ``slack_channel_id``
+        with no thread, so every new channel session carries that row on its first
+        turn. It is not a binding: an empty thread is Slack's own clear sentinel and
+        never enters the reverse index, so nothing can be delivered through it. The
+        STORE reads it as no mirror -- ``SessionMap.get_mirror_link`` never
+        synthesizes a Slack mirror without a thread -- so this reader carries no
+        copy of that rule and sees ``None``. A Slack binding that names a thread is
+        deliberate and is left alone like any other.
         """
+        from kiro_crew.session_map import SessionMap
+
+        monkeypatch.setattr("kiro_crew.session_map.config_dir", lambda: tmp_path)
+        store = SessionMap()
         sess = _Sessions()
-        sess.mirror_links["k"] = ChannelLink("slack", channel_id="discord:c1")
-        assert bind_origin_mirror(sess, key="k", location=_HERE) is True
-        assert sess.mirror_links["k"] == _HERE
+        sess.get_mirror_link = store.get_mirror_link  # type: ignore[method-assign]
+        sess.set_mirror_link = store.set_mirror_link  # type: ignore[method-assign]
+        key = "discord:kirocrew:direct:u1"
+        store.set_slack_link(key, "", "discord:u1")
+        assert store.get_mirror_link(key) is None
+        assert bind_origin_mirror(sess, key=key, location=_HERE) is True
+        assert store.get_mirror_link(key) == _HERE
+
+        threaded = "discord:kirocrew:direct:u2"
+        store.set_slack_link(threaded, "1786300000.000100", "C0OPS")
+        assert bind_origin_mirror(sess, key=threaded, location=_HERE) is False
+        assert store.get_mirror_link(threaded) == ChannelLink(
+            "slack", channel_id="C0OPS", thread_id="1786300000.000100"
+        )
 
     def test_a_unified_bucket_is_never_bound(self) -> None:
         """``dm_scope="unified"`` collapses every user's DMs into one bucket.

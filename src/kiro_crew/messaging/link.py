@@ -628,24 +628,6 @@ def rebind_conversation_location(
     )
 
 
-def _is_unrouted_slack_placeholder(link: ChannelLink) -> bool:
-    """True for a Slack link that names no thread, i.e. one nobody chose.
-
-    ``set_channel`` writes the conversation's namespaced bucket
-    (``discord:<id>``) into the legacy ``slack_channel_id`` field, and
-    :meth:`SessionMap.get_mirror_link` synthesizes a Slack ``ChannelLink`` from
-    that field whenever no explicit ``mirror`` row exists — so the first turn of
-    a new channel session reads back a Slack link it never asked for.
-
-    A threadless Slack row is not a routable mirror: an empty ``thread_ts`` is
-    Slack's own clear sentinel and never enters ``_thread_to_session``, so
-    nothing can be delivered through it. A real Slack mirror always names its
-    thread, which is why the thread — not the channel type — is what separates
-    bookkeeping from a binding.
-    """
-    return link.channel_type == SLACK_NAMESPACE and not link.thread_id
-
-
 def bind_origin_mirror(sessions: Any, *, key: str, location: ChannelLink) -> bool:
     """Bind the conversation a session is being READ in as its own outbound mirror.
 
@@ -668,10 +650,10 @@ def bind_origin_mirror(sessions: Any, *, key: str, location: ChannelLink) -> boo
     left alone — whichever conversation and whichever CHANNEL it names. The
     dashboard can point a session's mirror at any surface, so a channel
     conversation whose owner aimed it elsewhere keeps that target; overwriting it
-    would silently redirect their replies into this chat. The one exception is the
-    unrouted Slack placeholder (:func:`_is_unrouted_slack_placeholder`) — the
-    first turn of a new channel session always reads one back, and it is
-    bookkeeping surfacing through the synthesis path rather than a choice.
+    would silently redirect their replies into this chat. The threadless Slack row
+    the first turn's ``set_channel`` leaves in the legacy field is not a binding
+    and never reads back as one: ``SessionMap.get_mirror_link`` filters it at the
+    source, so this reader sees ``None`` for a conversation nobody has bound.
 
     Honours the persisted opt-out the in-channel unlink writes: without it, "off"
     would last exactly until the user's next message, because an entry with no
@@ -716,8 +698,7 @@ def bind_origin_mirror(sessions: Any, *, key: str, location: ChannelLink) -> boo
         return False
     if sessions.mirror_opt_out(key):
         return False
-    existing = sessions.get_mirror_link(key)
-    if existing is not None and not _is_unrouted_slack_placeholder(existing):
+    if sessions.get_mirror_link(key) is not None:
         return False
     try:
         sessions.set_mirror_link(key, location)

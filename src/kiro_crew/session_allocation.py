@@ -1065,6 +1065,26 @@ class SessionAllocationService:
     def mapped_sid(self, key: str) -> str:
         return self._owner._session_map.mapped_sid(self._owner._fold_key(key))
 
+    def allocation_predecessor(self, key: str) -> str:
+        """The store *key*'s live session superseded, or ``""``.
+
+        The id the mapping named -- live, or the stash a recycle left -- at the
+        instant this boundary registered the key's live session, read under the same
+        lock and in the same tick as the registration itself and stamped on the
+        session (``_Session.predecessor_sid``). That is what makes it safe to
+        consume after ``get_or_create`` returns: a caller that read the mapping
+        around its own call could be suspended inside the allocation while a
+        concurrent turn on the key allocated and recycled an intermediate session,
+        and would then cite the store before that one. Read off the live session,
+        like ``requested_model``, so a warm claim reads the value its session was
+        registered with and ordinary teardown releases it -- a table keyed by
+        session key would grow by one entry per ``/new`` or generation rotation for
+        the life of the gateway. Empty for a key with no live session, and for a
+        session whose registration found no earlier store.
+        """
+        session = self._sessions.get(self._owner._fold_key(key))
+        return session.predecessor_sid if session is not None else ""
+
     def mapped_session_keys(self) -> frozenset[str]:
         return frozenset(self._owner._session_map.mapped_sids_by_key())
 
@@ -2022,6 +2042,18 @@ class SessionAllocationService:
                         agent=session_agent or "",
                     )
                     session.capability_member = preparation.member
+                    # The store this cold start supersedes, captured HERE -- inside
+                    # the registration's critical section, before this session is
+                    # registered and before its sid is mapped (or its mapping
+                    # deferred). ``mapped_sid`` still answers a recycled id from the
+                    # stash the recycle left, so this names the store the key was
+                    # last serving whatever ended it. A caller reading the mapping
+                    # around its own ``get_or_create`` cannot get this right: it may
+                    # be suspended inside the allocation while a concurrent turn on
+                    # the key allocates and recycles an intermediate session, and
+                    # would then cite the store before that one. Stamped on the
+                    # session, like ``requested_model``, so teardown releases it.
+                    session.predecessor_sid = owner._session_map.mapped_sid(key)
                     # The id the provider above was constructed with, kept
                     # readable for the allocation's caller. ``model`` is resolved
                     # from config when the caller passed none, and that resolution

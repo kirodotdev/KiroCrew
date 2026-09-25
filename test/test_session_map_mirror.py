@@ -139,12 +139,21 @@ class TestLegacyFallback:
         got = session_map.get_mirror_link("dashboard:chat-1")
         assert got == ChannelLink(channel_type="slack", channel_id="C9", thread_id="ts-9")
 
-    def test_channel_only_legacy_link(self, session_map):
+    def test_a_threadless_slack_row_is_not_a_mirror(self, session_map):
+        """``set_channel`` stamps a channel conversation's namespaced bucket into
+        the legacy ``slack_channel_id`` field with no thread, and ``clear_mirror_link``
+        pops only ``mirror`` -- so every new channel session on its first turn, and
+        every unlinked one afterwards, carries exactly this row. An empty
+        ``thread_ts`` is Slack's clear sentinel and never enters the thread index, so
+        nothing can be delivered through it: the store filters it here, once, instead
+        of handing every reader a Slack link nobody chose."""
         session_map.set("dashboard:chat-1", "sid-abc")
         session_map._data["dashboard:chat-1"]["slack_channel_id"] = "C9"
         session_map._data["dashboard:chat-1"]["slack_thread_ts"] = None
-        got = session_map.get_mirror_link("dashboard:chat-1")
-        assert got == ChannelLink(channel_type="slack", channel_id="C9", thread_id=None)
+        assert session_map.get_mirror_link("dashboard:chat-1") is None
+        session_map.set_slack_link("discord:agent:direct:7:gen1", "", "discord:7")
+        assert session_map.get_slack_link("discord:agent:direct:7:gen1") == ("", "discord:7")
+        assert session_map.get_mirror_link("discord:agent:direct:7:gen1") is None
 
 
 class TestGetMirrorLinkNone:

@@ -221,6 +221,41 @@ def test_mirror_unchanged_identity_still_drains(tmp_path):
     assert [q["content"] for q in slot._queue] == ["same audience"]
 
 
+def test_mirror_unlinked_while_queued_is_a_narrowing_and_drains(tmp_path, _inline_audit):
+    """A mirror that goes AWAY while the entry waits is a narrowing, not a
+    retarget: every room the delivery can now reach was admitted. The composed
+    identity (mirror row + Slack thread) must not turn the thread's unlink into a
+    ``mirror_retarget`` drop of a delivery whose audience only shrank -- while a
+    rebind to a DIFFERENT thread is a room the admission never saw and drops."""
+    state = _make_state(tmp_path)
+    slot = _busy(state.get_or_create_slot("chat-1"))
+    key = slot_history_key(slot)
+    state.sessions.set_mirror_link(key, "C0AUDIENCE_A", "1700000000.000400")
+    state.sessions.set_slack_link(key, "1700000000.000700", "C0OPSROOM")
+    slot.enqueue_or_run_prompt("meant for both rooms", _never_runs, state)
+    assert _snapshot_of(slot._queue[0])["mirror_identity"] == (
+        "slack:C0AUDIENCE_A:1700000000.000400|slack:C0OPSROOM:1700000000.000700"
+    )
+
+    assert state.sessions.clear_slack_link(key) is True
+    cr._drop_stale_admissions(state, slot)
+
+    assert [q["content"] for q in slot._queue] == ["meant for both rooms"]
+    assert [m for m in slot.messages if m.get("role") == "notice"] == []
+    assert _inline_audit.log_tool_invocation.call_count == 0
+
+    state.sessions.set_slack_link(key, "1700000000.000800", "C0OPSROOM")
+    cr._drop_stale_admissions(state, slot)
+
+    assert slot._queue == []
+    notices = [m for m in slot.messages if m.get("role") == "notice"]
+    assert notices and "retargeted" in notices[-1]["content"]
+    assert (
+        "mirror_retarget"
+        in _inline_audit.log_tool_invocation.call_args.kwargs["metadata"]["newly_held"]
+    )
+
+
 def test_unchanged_containment_drains(tmp_path):
     """No containment change, no drop — including a constraint that already
     held at admission (a channel-born session keeps its queue)."""
