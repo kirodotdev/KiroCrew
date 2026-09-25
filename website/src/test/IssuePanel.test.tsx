@@ -144,9 +144,11 @@ describe('IssuePanel', () => {
 
   // #8487: a linked change's lifecycle `state` used to print the raw wire value
   // lowercased with a CSS `capitalize`. A mapped lifecycle value now renders
-  // from the catalog; an unmapped provider-specific state (e.g. a Jira workflow
-  // state) keeps its lowercased raw form, since it has no catalog entry.
-  it('renders a linked change state from the catalog, raw-lowercased when unmapped', async () => {
+  // from the catalog (casing from the catalog, no `capitalize`); an unmapped
+  // provider-specific state (e.g. a Jira workflow state) is untranslated by
+  // design and KEEPS its `capitalize`, so it does not read all-lowercase next
+  // to the catalog-cased siblings.
+  it('renders a mapped state from the catalog and keeps capitalize on the unmapped raw fallback', async () => {
     const jiraLinked: IssueSource = {
       ...openIssue,
       linkedChanges: [
@@ -161,10 +163,15 @@ describe('IssuePanel', () => {
     await screen.findByText('Crash on empty label list')
 
     fireEvent.click(screen.getByRole('tab', { name: /Linked/ }))
-    // Mapped: catalog label.
-    expect(screen.getByText('Merged')).toBeInTheDocument()
-    // Unmapped: the raw value, lowercased (no catalog key to translate to).
-    expect(screen.getByText('in review')).toBeInTheDocument()
+    // Mapped: catalog label, casing from the catalog — no `capitalize`.
+    const mapped = screen.getByText('Merged')
+    expect(mapped).toBeInTheDocument()
+    expect(mapped.className).not.toContain('capitalize')
+    // Unmapped: the raw value (lowercased text node), but `capitalize` restored
+    // so it renders "In Review", not "in review", beside the mapped siblings.
+    const raw = screen.getByText('in review')
+    expect(raw).toBeInTheDocument()
+    expect(raw.className).toContain('capitalize')
   })
 
   it('hides the Linked tab when the provider reported no linked changes', async () => {

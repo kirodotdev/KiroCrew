@@ -267,11 +267,17 @@ function IssueBody({
                 {change.state && (() => {
                   const wire = change.state.toLowerCase()
                   const key = CHANGE_STATE_LABEL_KEY[wire]
-                  // A mapped lifecycle value renders from the catalog; an
-                  // unmapped provider-specific state (e.g. a Jira workflow
-                  // state) keeps its raw lowercased form. `i18nT` only ever
-                  // sees a resolvable literal key, so the key gate stays static.
-                  return <span className="shrink-0">{key ? i18nT(key) : wire}</span>
+                  // A mapped lifecycle value renders from the catalog, which
+                  // decides its casing — so NO `capitalize` there. An unmapped
+                  // provider-specific state (e.g. a Jira workflow state) is
+                  // untranslated by design and keeps its raw lowercased form;
+                  // it DOES get `capitalize`, or it would read all-lowercase
+                  // ("in progress") next to catalog-cased siblings ("Open").
+                  // `i18nT` only ever sees a resolvable literal key, so the key
+                  // gate stays static.
+                  return key
+                    ? <span className="shrink-0">{i18nT(key)}</span>
+                    : <span className="shrink-0 capitalize">{wire}</span>
                 })()}
               </div>
             </div>
