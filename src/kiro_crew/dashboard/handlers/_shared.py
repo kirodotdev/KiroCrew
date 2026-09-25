@@ -2262,6 +2262,7 @@ def _collect_skills_under(
     out: dict[str, Path],
     depth: int,
     allow_leaf_symlink: bool = False,
+    mtimes: dict[Path, int | None] | None = None,
 ) -> None:
     """Add every ``<dir>/SKILL.md`` at or under *directory* to *out*.
 
@@ -2274,9 +2275,17 @@ def _collect_skills_under(
     the resolver refuses, and its ``skill://`` URI would name a file outside the
     root.
     Sensitive paths are rejected before and after symlink resolution.
+
+    *mtimes*, when given, receives the modification time of every directory
+    this walk reads -- *directory* itself and each skill directory whose
+    ``SKILL.md`` it checks -- taken BEFORE the read, so a change that lands
+    between the stat and the read still shows as a change afterwards. It is
+    what :meth:`SkillCatalogSnapshot.changed` compares against.
     """
     if depth <= 0:
         return
+    if mtimes is not None:
+        mtimes[directory] = _dir_mtime_ns(directory)
     try:
         entries = sorted(directory.iterdir())
     except OSError:
@@ -2299,6 +2308,8 @@ def _collect_skills_under(
             continue
         if not _leaf_is_contained(entry_resolved, root_resolved, allow_leaf_symlink):
             continue
+        if mtimes is not None:
+            mtimes[entry] = _dir_mtime_ns(entry)
         skill_md = entry / "SKILL.md"
         if skill_md.is_file():
             try:
@@ -2311,8 +2322,97 @@ def _collect_skills_under(
             out.setdefault(prefix + entry.relative_to(root).as_posix(), skill_md)
         else:
             _collect_skills_under(
-                entry, root, root_resolved, prefix, out, depth - 1, allow_leaf_symlink
+                entry, root, root_resolved, prefix, out, depth - 1, allow_leaf_symlink, mtimes
             )
+
+
+def _dir_mtime_ns(path: Path) -> int | None:
+    """``st_mtime_ns`` of *path*, or ``None`` when it cannot be stat'ed (absent)."""
+    try:
+        return path.stat().st_mtime_ns
+    except OSError:
+        return None
+
+
+# A directory's mtime comes from the kernel's coarse clock (a jiffy on Linux; a
+# whole second on some filesystems, two on FAT), so a change landing in the same
+# tick as the one a walk recorded leaves the mtime equal. A directory modified
+# this close to the walk is therefore treated as changed rather than trusted.
+_CATALOG_SETTLE_NS = 2_000_000_000
+
+
+class SkillCatalogSnapshot(NamedTuple):
+    """One walk of the skill roots: its keys, and what it read to build them.
+
+    ``entries`` is the catalog (see :func:`enumerate_skill_catalog`).
+    ``dir_mtimes`` is the modification time of every directory the walk read
+    (each root, absent ones as ``None``; each category directory it descended
+    into; each skill directory whose ``SKILL.md`` it checked), and
+    ``walked_at_ns`` the wall clock when the walk began.
+    """
+
+    entries: dict[str, Path]
+    dir_mtimes: dict[Path, int | None]
+    walked_at_ns: int
+
+    def changed(self) -> bool:
+        """Whether the skill roots may hold a different catalog now.
+
+        One ``stat`` per directory the walk read and no walk: ``True`` when any
+        of them has a different mtime (a skill directory created or removed, a
+        ``SKILL.md`` added to or taken from one, a root that appeared), or when
+        one was modified within :data:`_CATALOG_SETTLE_NS` of the walk, where an
+        equal mtime cannot prove nothing landed. ``False`` means the snapshot's
+        ``entries`` are still what a walk would return.
+        """
+        settled_before = self.walked_at_ns - _CATALOG_SETTLE_NS
+        for path, recorded in self.dir_mtimes.items():
+            current = _dir_mtime_ns(path)
+            if current != recorded:
+                return True
+            if current is not None and current >= settled_before:
+                return True
+        return False
+
+
+def walk_skill_catalog(state: DashboardState, session_key: str = "") -> SkillCatalogSnapshot:
+    """Walk the skill roots once; return the catalog with its staleness stamp.
+
+    The walk :func:`enumerate_skill_catalog` performs, plus the directory mtimes
+    :meth:`SkillCatalogSnapshot.changed` needs. A caller that must answer off a
+    catalog some time after it walked (the agent PATCH's receipt) keeps the
+    snapshot and re-walks only when the check says the roots moved. The check is
+    worth carrying because a walk is two orders of magnitude dearer than it: each
+    entry passes the sensitive-path check on top of its ``resolve`` calls, so a
+    200-skill tree walks in hundreds of milliseconds and re-checks in about one
+    (``test/skill_catalog_walk_bench.py`` measures both).
+    """
+    catalog: dict[str, Path] = {}
+    mtimes: dict[Path, int | None] = {}
+    walked_at_ns = time.time_ns()
+    for prefix, root in _skill_key_roots(state, session_key):
+        if is_sensitive_path(str(root)):
+            continue
+        if not root.is_dir():
+            # Recorded as absent so a root created later reads as a change.
+            mtimes[root] = None
+            continue
+        try:
+            root_resolved = root.resolve(strict=True)
+        except OSError:
+            mtimes[root] = None
+            continue
+        _collect_skills_under(
+            root,
+            root,
+            root_resolved,
+            prefix,
+            catalog,
+            _SKILL_NEST_DEPTH,
+            prefix == LEAF_SYMLINK_PREFIX,
+            mtimes,
+        )
+    return SkillCatalogSnapshot(catalog, mtimes, walked_at_ns)
 
 
 def enumerate_skill_catalog(state: DashboardState, session_key: str = "") -> dict[str, Path]:
@@ -2335,25 +2435,10 @@ def enumerate_skill_catalog(state: DashboardState, session_key: str = "") -> dic
     It is additionally the single source of truth for BOTH directions of the
     key <-> URI mapping, so they cannot disagree: a mapping written against a
     symlinked skill directory inverts back to the same key it was written from.
+
+    The walk itself is :func:`walk_skill_catalog`; this is its catalog alone.
     """
-    catalog: dict[str, Path] = {}
-    for prefix, root in _skill_key_roots(state, session_key):
-        if is_sensitive_path(str(root)) or not root.is_dir():
-            continue
-        try:
-            root_resolved = root.resolve(strict=True)
-        except OSError:
-            continue
-        _collect_skills_under(
-            root,
-            root,
-            root_resolved,
-            prefix,
-            catalog,
-            _SKILL_NEST_DEPTH,
-            prefix == LEAF_SYMLINK_PREFIX,
-        )
-    return catalog
+    return walk_skill_catalog(state, session_key).entries
 
 
 def _skill_uri_for_path(skill_md: Path) -> str:
@@ -2434,7 +2519,11 @@ def skill_uri_for_key(
 
 
 def agent_skill_views(
-    data: dict[str, Any], agent_path: Path, state: DashboardState, session_key: str = ""
+    data: dict[str, Any],
+    agent_path: Path,
+    state: DashboardState,
+    session_key: str = "",
+    catalog: dict[str, Path] | None = None,
 ) -> tuple[list[str], list[str]]:
     """``(catalog_keys, unmanaged_uris)`` for *data*, from ONE catalog walk.
 
@@ -2443,15 +2532,18 @@ def agent_skill_views(
     enumerated skill accounts for) which are shown read-only and preserved on
     every write. Both are order-preserving; keys are de-duplicated.
 
+    Pass *catalog* (from :func:`enumerate_skill_catalog`) to reuse a walk the
+    caller already did instead of enumerating the roots again.
+
     Filesystem-heavy (it enumerates the skill roots) — callers on the asyncio
     event loop MUST run this off the loop.
     """
-    catalog = enumerate_skill_catalog(state, session_key)
+    entries = catalog if catalog is not None else enumerate_skill_catalog(state, session_key)
     keys: list[str] = []
     unmanaged: list[str] = []
     seen: set[str] = set()
     for uri in skill_resource_uris(data):
-        key = skill_key_for_uri(uri, agent_path, state, catalog)
+        key = skill_key_for_uri(uri, agent_path, state, entries)
         if key is None:
             unmanaged.append(uri)
         elif key not in seen:
@@ -2461,15 +2553,20 @@ def agent_skill_views(
 
 
 def agent_skill_keys(
-    data: dict[str, Any], agent_path: Path, state: DashboardState, session_key: str = ""
+    data: dict[str, Any],
+    agent_path: Path,
+    state: DashboardState,
+    session_key: str = "",
+    catalog: dict[str, Path] | None = None,
 ) -> list[str]:
     """Catalog keys for the skills *data* maps, de-duplicated, order-preserving.
 
     Only catalog-resolvable entries are returned — this is the set the Agent
     Templates editor owns and can rewrite. Wildcard / hand-authored URIs are
     excluded here and reported separately by :func:`agent_unmanaged_skill_uris`.
+    Pass *catalog* to reuse one walk, as for :func:`agent_skill_views`.
     """
-    return agent_skill_views(data, agent_path, state, session_key)[0]
+    return agent_skill_views(data, agent_path, state, session_key, catalog)[0]
 
 
 def agent_unmanaged_skill_uris(
@@ -2490,12 +2587,21 @@ def apply_skill_mapping(
     state: DashboardState,
     keys: list[str],
     session_key: str = "",
-) -> tuple[list[str], list[str]]:
+) -> tuple[list[str], list[str], list[str], SkillCatalogSnapshot]:
     """Rewrite *data*'s ``skill://`` resources to *keys*, in place.
 
-    Returns ``(applied_keys, unknown_keys)``. Nothing is written when
-    *unknown_keys* is non-empty — the caller rejects the whole request so a
-    typo'd key can never partially apply.
+    Returns ``(applied_keys, unknown_keys, applied_uris, snapshot)``. ``applied_uris[i]``
+    is the ``skill://`` resource written for ``applied_keys[i]``, in request order --
+    the one statement of which entries of the rewritten list are the managed ones,
+    resolved against the same catalog walk that validated the keys, so a caller
+    that must re-apply the request's order onto a later read of the spec never
+    has to guess it from the list's shape. ``snapshot`` is that walk itself, with
+    the stamp :meth:`SkillCatalogSnapshot.changed` reads, so the caller can resolve
+    what it finally writes (:func:`agent_skill_keys` takes ``snapshot.entries``)
+    against the snapshot the keys were validated with, and walk the roots a second
+    time only when they moved in between. Nothing is written when *unknown_keys*
+    is non-empty -- the caller rejects the whole request so a typo'd key can never
+    partially apply.
 
     Invariants:
 
@@ -2511,7 +2617,8 @@ def apply_skill_mapping(
     # One enumeration for the whole write: every key resolved and every existing
     # URI inverted against the SAME snapshot, so a concurrent skill add/remove
     # cannot make the two halves disagree mid-request.
-    catalog = enumerate_skill_catalog(state, session_key)
+    snapshot = walk_skill_catalog(state, session_key)
+    catalog = snapshot.entries
     for key in keys:
         if key in seen:
             continue
@@ -2523,7 +2630,7 @@ def apply_skill_mapping(
         applied.append(key)
         uris.append(uri)
     if unknown:
-        return applied, unknown
+        return applied, unknown, uris, snapshot
 
     resources = data.get("resources") or []
     if not isinstance(resources, list):
@@ -2543,7 +2650,7 @@ def apply_skill_mapping(
         # key is absent/empty), and an agent with nothing mapped should fall
         # back to those defaults — so drop the key instead of writing [].
         data.pop("resources", None)
-    return applied, unknown
+    return applied, unknown, uris, snapshot
 
 
 def list_skill_tree(skill_root: Path) -> list[dict[str, Any]]:
