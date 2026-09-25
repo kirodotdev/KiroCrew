@@ -1044,3 +1044,238 @@ test("linux refuses the respawn too, where unverifiedIncumbent is false by desig
   assert.ok(logs.some((line) => line.includes("could not capture the incumbent PID on :5476")));
   assert.deepStrictEqual(quits, []);
 });
+
+function staleRestartHarness({ accepted, draining, response = 0, missingDrainSnapshot = false, incumbentAlive = false, unknownVersion = false, parentPidOne = false, updatedAfterRequest = false, restartTransport = "", healthGapOnce = false, splashReady = null }) {
+  const requests = [];
+  const dialogs = [];
+  const statuses = [];
+  let healthChecksAfterRequest = 0;
+  let drainProbes = 0;
+  let restartRequested = false;
+  const baseFs = harness().fsMod;
+  const instance = harness({
+    app: { isPackaged: true, getVersion: () => "0.7.1" },
+    timers: restartTransport ? {
+      setTimeoutFn(fn) { queueMicrotask(fn); return 1; },
+      clearTimeoutFn() {},
+    } : undefined,
+    mainWindow: {
+      isDestroyed: () => false,
+      webContents: {
+        async loadFile(file) {
+          statuses.push(`splash:loading:${file}`);
+          await splashReady;
+          statuses.push("splash:ready");
+        },
+        send: (channel, message) => statuses.push(`${channel}:${message}`),
+      },
+    },
+    fsMod: {
+      ...baseFs,
+      readFileSync(file) {
+        if (String(file).endsWith(".local_secret")) return "test-secret";
+        return baseFs.readFileSync(file);
+      },
+    },
+    processRef: {
+      platform: "darwin", arch: "arm64", env: {}, resourcesPath: "/virtual/resources",
+      kill() {
+        if (draining && !incumbentAlive) throw Object.assign(new Error("exited"), { code: "ESRCH" });
+      },
+    },
+    httpMod: {
+      get(url, _options, callback) {
+        requests.push(url);
+        const req = new EventEmitter();
+        req.destroy = () => {};
+        queueMicrotask(() => {
+          const res = new EventEmitter();
+          res.statusCode = draining && url.endsWith("/api/ready") ? 503 : 200;
+          res.resume = () => {};
+          callback(res);
+          if (restartRequested && url.endsWith("/api/health")) healthChecksAfterRequest += 1;
+          res.emit("data", restartRequested && url.endsWith("/api/health")
+            && (unknownVersion || (healthGapOnce && healthChecksAfterRequest === 1))
+            ? "invalid-health"
+            : JSON.stringify(url.endsWith("/api/token/local")
+              ? { token: "test-token" }
+              : url.endsWith("/api/ready") ? { shutting_down: draining }
+                : { app: "kirocrew", version: updatedAfterRequest && restartRequested ? "0.7.1" : "0.7.0" }));
+          res.emit("end");
+        });
+        return req;
+      },
+      request(_options, callback) {
+        const req = new EventEmitter();
+        req.destroy = () => {};
+        req.end = () => queueMicrotask(() => {
+          restartRequested = true;
+          requests.push("POST /api/restart");
+          if (restartTransport) req.emit(restartTransport, new Error("lost restart response"));
+          else callback({ statusCode: accepted ? 200 : 403, resume() {} });
+        });
+        return req;
+      },
+    },
+    execFileFn(file, args, _options, callback) {
+      if (file.endsWith("lsof")) {
+        if (requests.some((url) => url.endsWith("/api/ready"))) drainProbes += 1;
+        const socketGap = healthGapOnce && healthChecksAfterRequest === 1;
+        callback(null, socketGap || (draining && drainProbes >= (missingDrainSnapshot ? 1 : 2)) ? "" : "123", "");
+      } else if (args.includes("ppid=")) callback(null, parentPidOne ? "1" : "99", "");
+      else callback(null, "/virtual/resources/backend-dist/bin/python -m kiro_crew gateway", "");
+    },
+    dialog: { async showMessageBox(options) { dialogs.push(options); return { response }; } },
+  });
+  return { ...instance, requests, dialogs, statuses };
+}
+
+test("a refused stale restart still waits for a draining gateway and spawns after exit", async () => {
+  const state = staleRestartHarness({ accepted: false, draining: true });
+  await state.supervisor.start();
+  assert.ok(state.requests.some((url) => url.endsWith("/api/ready")));
+  assert.equal(state.spawnCalls.length, 1);
+  assert.equal(state.dialogs.length, 0);
+});
+
+test("an accepted stale restart timeout rechecks readiness and requires acknowledgment of the version warning", async (t) => {
+  let now = 0;
+  t.mock.method(Date, "now", () => { now += 31_000; return now; });
+  const state = staleRestartHarness({ accepted: true, draining: false });
+  assert.equal(await state.supervisor.start(), true);
+  assert.ok(state.requests.some((url) => url.endsWith("/api/ready")));
+  assert.equal(state.spawnCalls.length, 0);
+  assert.equal(state.dialogs.length, 1);
+  assert.match(state.dialogs[0].detail, /0\.7\.1/);
+  assert.match(state.dialogs[0].detail, /0\.7\.0/);
+  assert.match(state.dialogs[0].detail, /gateway is still running version 0\.7\.0/);
+  assert.match(state.dialogs[0].detail, /To finish the update, quit Kiro Crew/);
+  assert.doesNotMatch(state.dialogs[0].detail, /save your work/i);
+  assert.match(state.dialogs[0].detail, /Continue will try to connect to the existing gateway/);
+  assert.match(state.dialogs[0].detail, /updated features may be unavailable/);
+  assert.doesNotMatch(state.dialogs[0].detail, /service/);
+  assert.ok(state.statuses.includes("status:Restarting the gateway to finish the update…"));
+  assert.match(state.dialogs[0].detail, /kirocrew stop --port 5476/);
+  assert.deepEqual(state.dialogs[0].buttons, ["Continue with existing gateway", "Quit"]);
+  assert.equal(state.dialogs[0].cancelId, 0);
+});
+
+test("a PPID-1 gateway warning handles both a detached orphan and a service", async (t) => {
+  let now = 0;
+  t.mock.method(Date, "now", () => { now += 31_000; return now; });
+  const state = staleRestartHarness({ accepted: true, draining: false, parentPidOne: true });
+  assert.equal(await state.supervisor.start(), true);
+  assert.equal(state.dialogs.length, 1);
+  // Ownership observes PPID 1 for either case; stopping is valid for both,
+  // and service recovery applies only if the user observes an automatic restart.
+  assert.match(state.dialogs[0].detail, /Run “kirocrew stop --port 5476” in Terminal\. If the gateway starts again automatically, stop or update the service that restarts it\./);
+  assert.doesNotMatch(state.dialogs[0].detail, /If a service manages|service managing this gateway/);
+});
+
+test("an unreachable gateway version is identified as unconfirmed in the warning", async (t) => {
+  let now = 0;
+  t.mock.method(Date, "now", () => { now += 31_000; return now; });
+  const state = staleRestartHarness({ accepted: true, draining: false, unknownVersion: true });
+  assert.equal(await state.supervisor.start(), true);
+  assert.equal(state.dialogs.length, 1);
+  assert.match(state.dialogs[0].detail, /gateway version could not be confirmed/);
+  assert.match(state.dialogs[0].detail, /last seen at 0\.7\.0/);
+});
+
+
+test("an accepted restart timeout still completes a confirmed drain before spawning", async (t) => {
+  let now = 0;
+  t.mock.method(Date, "now", () => { now += 31_000; return now; });
+  const state = staleRestartHarness({ accepted: true, draining: true });
+  await state.supervisor.start();
+  assert.ok(state.requests.some((url) => url.endsWith("/api/ready")));
+  assert.equal(state.spawnCalls.length, 1);
+  assert.equal(state.dialogs.length, 0);
+});
+
+
+test("a stale restart renders the splash before sending status and polling recovery", async (t) => {
+  let now = 0;
+  t.mock.method(Date, "now", () => { now += 31_000; return now; });
+  let finishSplash;
+  const splashReady = new Promise((resolve) => { finishSplash = resolve; });
+  const state = staleRestartHarness({ accepted: true, draining: false, splashReady });
+  const start = state.supervisor.start();
+  await flush();
+  assert.ok(state.statuses.includes("splash:loading:/virtual/electron/loading.html"));
+  assert.equal(state.requests.filter((url) => url.endsWith("/api/health")).length, 1,
+    "the recovery poll waits until the splash has loaded");
+  assert.ok(!state.statuses.includes("status:Restarting the gateway to finish the update…"));
+  finishSplash();
+  assert.equal(await start, true);
+  assert.ok(state.statuses.indexOf("splash:ready")
+    < state.statuses.indexOf("status:Restarting the gateway to finish the update…"));
+});
+
+for (const restartTransport of ["timeout", "error"]) {
+  test(`a restart ${restartTransport} waits through a PID-preserving update before connecting`, async (t) => {
+    let now = 0;
+    t.mock.method(Date, "now", () => { now += 1_000; return now; });
+    const state = staleRestartHarness({
+      draining: false, restartTransport, updatedAfterRequest: true, healthGapOnce: true,
+    });
+    assert.equal(await state.supervisor.start(), true);
+    assert.equal(state.spawnCalls.length, 0, "the still-live incumbent must not get a second gateway");
+    assert.equal(state.dialogs.length, 0, "the updated gateway needs no warning");
+    assert.equal(state.requests.filter((url) => url === "POST /api/restart").length, 1);
+    assert.ok(state.statuses.includes("status:Restarting the gateway to finish the update…"));
+  });
+}
+
+test("a restart timeout with a persistently old gateway waits then warns without spawning", async (t) => {
+  let now = 0;
+  t.mock.method(Date, "now", () => { now += 16_000; return now; });
+  const state = staleRestartHarness({ draining: false, restartTransport: "timeout" });
+  assert.equal(await state.supervisor.start(), true);
+  assert.equal(state.spawnCalls.length, 0);
+  assert.equal(state.dialogs.length, 1);
+  assert.match(state.dialogs[0].detail, /gateway is still running version 0\.7\.0/);
+  assert.ok(state.logs.some((entry) => entry.includes("within the recovery window")));
+  assert.equal(state.requests.filter((url) => url === "POST /api/restart").length, 1);
+});
+
+for (const unknownVersion of [false, true]) {
+  test(`a refused stale restart warns before reuse (unknownVersion=${unknownVersion})`, async () => {
+    const state = staleRestartHarness({ accepted: false, draining: false, unknownVersion });
+    assert.equal(await state.supervisor.start(), true);
+    assert.equal(state.spawnCalls.length, 0);
+    assert.equal(state.dialogs.length, 1);
+    assert.match(state.dialogs[0].detail, unknownVersion
+      ? /gateway version could not be confirmed/
+      : /gateway is still running version 0\.7\.0/);
+    assert.ok(state.requests.some((url) => url.endsWith("/api/ready")));
+  });
+}
+
+test("a refused stale restart warning honors Quit instead of reusing the gateway", async () => {
+  const state = staleRestartHarness({ accepted: false, draining: false, response: 1 });
+  assert.equal(await state.supervisor.start(), false);
+  assert.equal(state.spawnCalls.length, 0);
+  assert.equal(state.dialogs.length, 1);
+});
+
+test("a refused restart does not warn when the gateway independently reaches the installed version", async () => {
+  const state = staleRestartHarness({ accepted: false, draining: false, updatedAfterRequest: true });
+  assert.equal(await state.supervisor.start(), true);
+  assert.equal(state.spawnCalls.length, 0);
+  assert.equal(state.dialogs.length, 0);
+});
+
+for (const incumbentAlive of [true, false]) {
+  test(`a missing drain snapshot retains the captured incumbent identity (alive=${incumbentAlive})`, async (t) => {
+    let now = 0;
+    t.mock.method(Date, "now", () => { now += 31_000; return now; });
+    const state = staleRestartHarness({
+      accepted: true, draining: true, missingDrainSnapshot: true, incumbentAlive,
+    });
+    await state.supervisor.start();
+    assert.ok(state.requests.some((url) => url.endsWith("/api/ready")));
+    assert.equal(state.spawnCalls.length, incumbentAlive ? 0 : 1);
+    assert.equal(state.dialogs.length, incumbentAlive ? 1 : 0);
+  });
+}

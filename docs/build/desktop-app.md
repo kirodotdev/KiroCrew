@@ -372,8 +372,41 @@ When the app starts, [`main.js`](../../website/electron/main.js) composes the
 desktop lifecycle and delegates gateway ownership to
 [`gateway-supervisor.js`](../../website/electron/gateway-supervisor.js). The
 supervisor first checks whether a gateway is already running. An existing
-gateway—including a local SSH forward to a remote gateway—is reused. Otherwise
-it locates the backend binary via
+gateway—including a local SSH forward to a remote gateway—is reused. If a
+same-family local gateway on a fixed-path POSIX install (such as macOS) is
+positively identified as running from this app's current bundled backend path
+and reports an older version than the installed app, the shell
+asks that gateway to restart itself through the authenticated restart route.
+Before waiting for the replacement, the shell loads the splash and then displays
+“Restarting the gateway to finish the update…” so cold startup shows its progress.
+The gateway drains its sessions and re-execs the installed backend; the shell
+polls for the new version before connecting, including while an in-place exec
+keeps its PID alive but has not rebound its socket. A lost or timed-out restart
+response also gets this bounded wait, since the request may have been accepted.
+An explicit HTTP refusal skips that wait. A timeout rechecks readiness
+and waits for a draining gateway before adoption, while preserving local
+ownership for bounded reconnect recovery. If a requested restart still cannot
+confirm the installed version, including when the request was refused, a warning
+stays visible until the user chooses to continue with the existing gateway or
+quit; it names both versions and explains
+how to stop the gateway before reopening the app. PPID-1 owners may be detached
+orphans or managed services, so their guidance adds a service recovery step only
+if the gateway starts again automatically after stopping it. Other local owners
+see only the stop command. The warning explains that continuing tries the
+existing gateway and updated features may be unavailable.
+The warning distinguishes a confirmed old version from an unreachable version;
+dismissing it continues with the existing gateway. An independently updated
+gateway or a completed drain does not show this warning. If the listener
+disappears before the drain snapshot, the shell keeps watching the initially
+identified PID until it exits or serves the new version.
+Windows and an AppImage replaced at a different mount path retain the existing
+reuse behavior. A service-managed gateway may rebind the port, while a detached
+gateway that exits without a manager is replaced by the shell. An unverified
+owner, a separate CLI installation, a remote tunnel, or a newer gateway keeps
+the existing reuse behavior. A restart refusal never authorizes force-stopping
+the listener. The shell attempts this recovery only once per launch.
+
+When no gateway is running, the supervisor locates the backend binary via
 [`find-bin.js`](../../website/electron/find-bin.js), spawns it as `kirocrew
 gateway --no-open`, polls `/api/status`, and loads the dashboard once it is
 healthy.

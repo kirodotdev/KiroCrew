@@ -16,18 +16,18 @@
  * mirroring auto-update.js channelForVersion), the running gateway's
  * /api/health payload ({ok, app, version}), and who LOCALLY owns the port's
  * LISTEN socket. Legacy gateways (health without identity fields) and
- * source-run dev gateways keep today's reuse behavior — the guard only
- * interposes when BOTH sides are positively identified, their families differ,
- * AND the port is held by a local KiroCrew process. That last input is what
- * separates a local rival from a REMOTE gateway forwarded in over `ssh -L`,
- * which the health payload alone cannot distinguish.
+ * source-run dev gateways keep today's reuse behavior. The guard interposes
+ * when two positively identified local installs belong to different families,
+ * or when an older same-family gateway is positively tied to this app's
+ * bundled backend. The local-owner input separates these from a REMOTE gateway
+ * forwarded in over `ssh -L`, which the health payload cannot distinguish.
  *
  * Pure logic only — the Electron shell (main.js) owns the dialog, the
  * quit-by-name AppleScript (bundle id is shared, so targeting must be by
  * app NAME), the port-owner probe, and the port-free wait.
  */
 
-const { channelForVersion } = require("./auto-update");
+const { channelForVersion, isNewerVersion } = require("./auto-update");
 
 // The endpoint that carries the gateway's identity fields ({app, version}).
 // MUST be /api/health -- the shell's liveness probe uses /api/status, whose
@@ -104,15 +104,18 @@ function identityFamily(version) {
  * @param {{ok?:boolean, app?:string, version?:string}|null} remoteHealth
  *        parsed /api/health JSON, or null when unreachable/unparseable
  * @param {object} [opts]
- * @param {"kirocrew"|"foreign"|"none"|"unknown"} [opts.localOwner="unknown"]
+ * @param {"kirocrew"|"service"|"foreign"|"none"|"unknown"} [opts.localOwner="unknown"]
  *        who LOCALLY owns the port's LISTEN socket (classifyPortOwner in
  *        gateway-stop.js). Defaults to "unknown" so a caller that forgets to
  *        pass it fails SAFE (reuse) rather than inheriting the old
  *        evict-on-payload-alone behavior.
+ * @param {boolean} [opts.bundledGateway=false] the listener's executable was
+ *        positively identified beneath this desktop install's backend-dist.
  * @returns {{action:"reuse", reason:string} |
+ *           {action:"restart-stale", oldVersion:string, reason:string} |
  *           {action:"takeover-prompt", otherFamily:"prod"|"nightly", otherVersion:string}}
  */
-function decideGatewayAction(ownVersion, remoteHealth, { localOwner = "unknown" } = {}) {
+function decideGatewayAction(ownVersion, remoteHealth, { localOwner = "unknown", bundledGateway = false } = {}) {
   const own = identityFamily(ownVersion);
   // A shell we can't classify never evicts anyone.
   if (own === null) return { action: "reuse", reason: "unclassified-shell" };
@@ -123,9 +126,17 @@ function decideGatewayAction(ownVersion, remoteHealth, { localOwner = "unknown" 
     return { action: "reuse", reason: "unidentified-gateway" };
   }
   const remote = identityFamily(remoteHealth.version);
-  if (remote === null || remote === own) {
-    return { action: "reuse", reason: remote === own ? "same-family" : "dev-gateway" };
+  if (remote === own) {
+    // An app replacement can leave a detached gateway running the old bundle.
+    // Ask that exact local bundled gateway to restart itself; never restart a
+    // tunnel, a separate CLI/service install, or a newer gateway on downgrade.
+    if (bundledGateway && (localOwner === "kirocrew" || localOwner === "service")
+        && isNewerVersion(ownVersion, remoteHealth.version) === true) {
+      return { action: "restart-stale", oldVersion: remoteHealth.version, reason: "same-family" };
+    }
+    return { action: "reuse", reason: "same-family" };
   }
+  if (remote === null) return { action: "reuse", reason: "dev-gateway" };
   // Cross-family: the payload says "a rival KiroCrew owns the port". That is
   // necessary but NOT sufficient to evict, because the payload is identical
   // whether the responder is a local install or a REMOTE gateway forwarded
