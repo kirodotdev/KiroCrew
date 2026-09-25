@@ -389,6 +389,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402
     EMPTY_RUNG_REPLAY,
     FALSE_TOOL_BLOCKER_REPLAY_KIND,
     MODEL_UNENTITLED_KIND,
+    SESSION_START_FAILED_KIND,
     STAGE_DELIVERY_KINDS,
     SUBAGENT_COMPLETION_KIND,
     SYNTHETIC_RECOVERY_KIND,
@@ -5670,12 +5671,17 @@ def _note_cycle_start_failure(slot_key: str, exc: BaseException, *, self_wake: b
 def _terminal_error_meta(exc: BaseException) -> dict[str, object] | None:
     """Row-level kind for a terminal ACP error, or None for a plain error row.
 
-    Three structural tags, all set by ``_raise_acp_error`` from the raw frame
-    and read here without looking at the prose: a model-entitlement rejection
+    Four structural tags, read here without looking at the prose. Three are set
+    by ``_raise_acp_error`` from the raw frame: a model-entitlement rejection
     (``rejected_model`` / ``advertised``), a sign-in failure (``auth_required``)
     and a spent plan allowance (``usage_limit``). The entitlement verdict wins
     when it is set, because its fix (pick a served model) is the one the prose
-    describes; the other two are exclusive at raise time.
+    describes; the other two are exclusive at raise time. The fourth,
+    ``session_start_failed``, is set at the ACP session-start timeout raise
+    sites on BOTH exception families (``AcpError`` on the dedicated client,
+    ``AcpRequestTimeout`` on the shared runtime, which share no base -- hence
+    ``getattr``) and ranks last: a start that failed because the process is
+    signed out has a fix, and that fix is what the card should show.
     """
     unentitled = _model_unentitled_meta(exc)
     if unentitled is not None:
@@ -5684,6 +5690,8 @@ def _terminal_error_meta(exc: BaseException) -> dict[str, object] | None:
         return {"kind": AUTH_REQUIRED_KIND}
     if getattr(exc, "usage_limit", False):
         return {"kind": USAGE_LIMIT_KIND}
+    if getattr(exc, "session_start_failed", False) is True:
+        return {"kind": SESSION_START_FAILED_KIND}
     return None
 
 
@@ -18535,6 +18543,14 @@ async def _run_chat(
         _err_meta: dict | None = None
         if isinstance(exc, (_MemoryUnavailable, UnknownMemoryStore)):
             _err_meta = {"code": "memory_unavailable"}
+        else:
+            # A session start on the SHARED runtime lands here (see the sibling
+            # note below), and its ``session_start_failed`` tag is what lets the
+            # Continue endpoint count consecutive failed starts: the start
+            # registered no session, so ``record_failure`` a few lines down
+            # returns False and counts nothing. Every other exception reaching
+            # this arm carries none of the tags and keeps its plain row.
+            _err_meta = _terminal_error_meta(exc)
         slot.append("error", _err_text, "msg msg-err", meta=_err_meta)
         # The SIBLING of the tagged-start report in the AcpError branch above.
         # A session start on the SHARED runtime raises AcpRequestTimeout /

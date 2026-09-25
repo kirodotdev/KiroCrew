@@ -163,6 +163,18 @@ METHOD_AGENT_SWITCHED = "_kiro.dev/agent/switched"
 METHOD_MCP_OAUTH_REQUEST = "_kiro.dev/mcp/oauth_request"
 METHOD_MCP_SERVER_INITIALIZED = "_kiro.dev/mcp/server_initialized"
 METHOD_MCP_SERVER_INIT_FAILURE = "_kiro.dev/mcp/server_init_failure"
+#: Appended to a session-start timeout's MCP progress when EVERY server the
+#: session put on the wire has reported READY -- a roster member that reported
+#: an init failure is named in the ``failed:`` bucket instead, and then the
+#: stall may well be in it. The count before it covers only the session-injected
+#: roster -- on kiro-cli the broker stubs Kiro Crew injects -- not the agent
+#: spec's own servers and not the backend's session-start steps after MCP init;
+#: without this note a complete count read as "MCP is up, so MCP is the
+#: problem". The fraction already says every server reported, so the note adds
+#: only the conclusion. One string for both start paths
+#: (``AcpRuntime._mcp_init_progress`` and ``AcpClient._mcp_timeout_progress``)
+#: so their messages cannot drift.
+MCP_ROSTER_COMPLETE_NOTE = "the stall is later in session startup, not in those servers"
 METHOD_KAS_MCP_STATUS = "_kiro/mcp/status"
 METHOD_KAS_TOOLS_CHANGED = "_kiro/tools/didChange"
 METHOD_SUBAGENT_LIST_UPDATE = "_kiro.dev/subagent/list_update"

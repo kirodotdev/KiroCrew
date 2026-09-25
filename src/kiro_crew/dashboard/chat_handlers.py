@@ -98,6 +98,7 @@ from kiro_crew.dashboard.chat_title import _maybe_auto_title
 from kiro_crew.dashboard.chat_utils import (
     _MANUAL_CONTINUE_MSG,
     _MANUAL_RESUME_MSG,
+    SESSION_START_FAILED_KIND,
     SLOT_DETAIL_MAX_LIMIT,
     SYNTHETIC_RECOVERY_KIND,
     _broadcast_expired_oauth_banners,
@@ -4947,6 +4948,14 @@ async def api_chat_slot_continue(request: web.Request) -> web.Response:
     slow the press was refused with a 503 forever while typing the same request by
     hand worked. The unequal treatment of two paths that dispatch the same turn is
     the bug; the transcript's own error card is the report either way.
+
+    The one refusal that reads the transcript's content is a different thing
+    from a readiness gate: ``session_start_repeat`` fires only when the slot's
+    OWN tail holds two ``session_start_failed`` error rows with nothing but
+    recovery rows between them -- the same start, re-issued by Resume, failed
+    twice. That is not a probe that can be wrong forever; it is the record of
+    what this endpoint itself just did twice. A typed message stays allowed and
+    resets the count, so the refusal never latches the slot.
     """
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
@@ -5042,6 +5051,30 @@ async def api_chat_slot_continue(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "nothing to continue", "code": "slot_empty"}, status=409
             )
+        # The same session start has already failed twice in a row with nothing
+        # but Resume presses between the attempts. Continue would re-issue the
+        # identical ``session/new`` a third time: the turn has no registered
+        # session, so it starts one, and nothing about the request changed
+        # since the last two walls. This is the one refusal that reads the
+        # transcript's CONTENT rather than its shape, and it is not a
+        # readiness gate (see the docstring): the evidence is the slot's own
+        # two tagged rows, not a probe that can be wrong forever, and typing a
+        # message is still allowed -- a user row ends the streak, so a typed
+        # retry that fails once gets its Resume back. The first failure keeps
+        # today's behaviour exactly: one Resume, same continuation, same words.
+        failures = session_start_failure_streak(slot.messages)
+        if failures >= _SESSION_START_REPEAT_REFUSAL_AT:
+            return web.json_response(
+                {
+                    "error": (
+                        f"the agent session failed to start {failures} times in a "
+                        "row; Resume would run the same start again. Restart the "
+                        "gateway (kirocrew restart), then send your message again."
+                    ),
+                    "code": "session_start_repeat",
+                },
+                status=409,
+            )
 
         # _is_interrupted does not AUTHORIZE the continue — it only picks which
         # body to inject. Both are true statements about their own case, and
@@ -5081,6 +5114,70 @@ async def api_chat_slot_continue(request: web.Request) -> web.Response:
         logger.info("continue: queue entry consumed by a concurrent dequeue (slot %s)", name)
     state.push_slots_update()
     return web.json_response({"ok": True, "slot": slot.key})
+
+
+#: Consecutive tagged session-start failures at which Continue stops re-running
+#: the start. Two, not one: a single timed-out start is host weather and the
+#: first Resume is exactly the retry it deserves; the second identical failure
+#: is the signal that nothing a retry can change is wrong. Mirrored by
+#: ``SESSION_START_REPEAT_REFUSAL_AT`` in ``website/src/pages/chat/ErrorCard.tsx``.
+_SESSION_START_REPEAT_REFUSAL_AT = 2
+
+#: ``inject`` kinds that begin a turn of their own rather than continuing the
+#: one above them -- the mirror of ``INJECT_KIND_OPENS_TURN`` in
+#: ``website/src/pages/chat/RecoveryCard.tsx`` (``recovery`` and
+#: ``user_replay`` continue the same turn and are deliberately absent).
+_TURN_OPENING_INJECT_KINDS = frozenset({"cron", "synthesis"})
+
+
+def session_start_failure_streak(messages: list[dict]) -> int:
+    """How many session starts in a row failed at the tail of *messages*.
+
+    Walks back from the newest row counting ``error`` rows stamped with
+    ``SESSION_START_FAILED_KIND`` (the structural tag ``chat_runner`` writes
+    from the exception, never from the prose). Every row that is not the
+    conversation's floor is walked past -- the ``inject`` row a Resume press
+    lands as, tool rows, notices -- so two failures separated only by the user
+    pressing Resume are consecutive. The walk stops at the first row that IS
+    new information: a user or assistant row with content (a typed retry is a
+    new attempt and starts the count over), an error row of any OTHER kind (a
+    connection-lost row is a different failure, not a third start), or a row
+    that OPENS a turn of its own -- a nudge, a sub-agent completion, or an
+    ``inject`` whose kind begins new work (``_TURN_OPENING_INJECT_KINDS``,
+    the mirror of ``INJECT_KIND_OPENS_TURN`` in ``RecoveryCard.tsx``) -- since
+    a failure before such a row belongs to a different turn and must not cost
+    this turn its first Resume. A ``recovery`` inject resumes the SAME turn and
+    is walked past, which is what makes two Resume-separated failures
+    consecutive.
+
+    The transcript is the count because nothing else can hold it: a start
+    that never answered registered no session, so the per-session
+    ``consecutive_failures`` counter in ``SessionManager.record_failure`` is
+    never reached for it. Mirrors ``sessionStartFailureStreak`` in
+    ``website/src/pages/chat/ErrorCard.tsx``; the two must agree, or the card
+    hides a Resume the server would have honoured (or offers one it refuses).
+    """
+    streak = 0
+    for m in reversed(messages):
+        role = m.get("role")
+        meta = m.get("meta")
+        if role == "error":
+            kind = meta.get("kind") if isinstance(meta, dict) else None
+            if kind == SESSION_START_FAILED_KIND:
+                streak += 1
+                continue
+            break
+        if is_stop_event_row(m):
+            break
+        if role in ("nudge", "subagent"):
+            break
+        if role == "inject" and (
+            isinstance(meta, dict) and meta.get("injectKind") in _TURN_OPENING_INJECT_KINDS
+        ):
+            break
+        if role in ("user", "assistant") and m.get("content") and not is_system_notice(role, meta):
+            break
+    return streak
 
 
 def _has_conversation(slot: _ChatSlot) -> bool:

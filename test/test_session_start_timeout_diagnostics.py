@@ -79,7 +79,7 @@ async def test_session_new_timeout_names_the_servers_that_never_reported():
 
     text = str(caught.value)
     assert "timed out after 90s" in text  # the budget survives
-    assert "2/4 MCP server(s) reported" in text
+    assert "2/4 session-injected MCP server(s) reported" in text
     assert "no report from gamma, delta" in text
     # The servers that DID report are not the ones to chase.
     assert "no report from alpha" not in text
@@ -155,7 +155,7 @@ async def test_session_new_timeout_counts_reports_when_the_roster_is_unknown():
     with pytest.raises(AcpRequestTimeout) as caught:
         await rt.create_session(mcp_servers=[])
 
-    assert "1 MCP server(s) reported, roster unknown" in str(caught.value)
+    assert "1 MCP server report(s), roster unknown" in str(caught.value)
 
 
 @pytest.mark.asyncio
@@ -321,8 +321,56 @@ async def test_reports_outside_the_roster_never_produce_an_impossible_ratio():
         await rt.create_session(mcp_servers=_roster("in-roster"))
 
     text = str(caught.value)
-    assert "1/1 MCP server(s) reported" in text
+    assert "1/1 session-injected MCP server(s) reported" in text
     assert "2/1" not in text and "3/1" not in text
+
+
+@pytest.mark.asyncio
+async def test_a_complete_roster_says_the_stall_is_not_in_those_servers():
+    """A bare ``4/4 ... reported`` reads as "all MCP is up, so it is an MCP problem".
+
+    The count covers only the servers this session put on the wire -- on kiro-cli
+    the broker stubs Kiro Crew injects -- not the agent spec's own servers, and
+    not the backend's session-start steps after MCP init. A field report was
+    triaged as an MCP failure on the strength of that suffix alone. When every
+    injected server HAS reported, the text says so and says what it does not
+    cover, so the reader is not sent to chase MCP.
+    """
+    rt = _runtime()
+    _stage(rt, METHOD_MCP_SERVER_INITIALIZED, "alpha")
+    _stage(rt, METHOD_MCP_SERVER_INITIALIZED, "beta")
+    _timeout(rt)
+
+    with pytest.raises(AcpRequestTimeout) as caught:
+        await rt.create_session(mcp_servers=_roster("alpha", "beta"))
+
+    text = str(caught.value)
+    assert "2/2 session-injected MCP server(s) reported" in text
+    assert "the stall is later in session startup, not in those servers" in text
+    assert "no report from" not in text
+    # The plain ``N/N MCP server(s) reported`` shape is gone: it is what read as
+    # "MCP is the problem".
+    assert "2/2 MCP server(s) reported" not in text
+
+
+@pytest.mark.asyncio
+async def test_a_roster_member_that_failed_withholds_the_not_in_those_servers_verdict():
+    """A failed init is a report, so the member is not chased as silent -- but the
+    stall may be IN that server, so the "not in those servers" note must not
+    follow a ``failed:`` entry that names a roster member."""
+    rt = _runtime()
+    _stage(rt, METHOD_MCP_SERVER_INITIALIZED, "alpha")
+    _stage(rt, METHOD_MCP_SERVER_INIT_FAILURE, "beta", error="boom")
+    _timeout(rt)
+
+    with pytest.raises(AcpRequestTimeout) as caught:
+        await rt.create_session(mcp_servers=_roster("alpha", "beta"))
+
+    text = str(caught.value)
+    assert "2/2 session-injected MCP server(s) reported" in text
+    assert "no report from" not in text
+    assert "failed: beta (boom)" in text
+    assert "not in those servers" not in text
 
 
 @pytest.mark.asyncio
@@ -336,7 +384,7 @@ async def test_an_out_of_roster_failure_is_still_named():
         await rt.create_session(mcp_servers=_roster("in-roster"))
 
     text = str(caught.value)
-    assert "0/1 MCP server(s) reported" in text
+    assert "0/1 session-injected MCP server(s) reported" in text
     assert "failed: from-agent-spec (boom)" in text
 
 

@@ -385,7 +385,7 @@ async def test_a_settled_collector_leaks_no_frames_into_the_next_start(answer_la
 
         with pytest.raises(AcpSessionStartTimeout) as second:
             await rt.create_session(cwd="/w", mcp_servers=_roster("alpha"))
-        assert "0/1 MCP server(s) reported" in str(second.value)
+        assert "0/1 session-injected MCP server(s) reported" in str(second.value)
         assert "no report from alpha" in str(second.value)
         assert rt._session_inits_in_flight == 0
         # Settle the second collector too, so no task outlives the test.

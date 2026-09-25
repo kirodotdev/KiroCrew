@@ -24,7 +24,7 @@ import { join } from 'node:path'
 import type { ReactElement } from 'react'
 import type { ChatMessage } from '../types'
 import { mergeRenderers, resolveRenderer, type MessageRenderContext } from '../app-sdk/messageRenderers'
-import { createTranscriptRenderers, featureRequestRefusalIsNewest } from '../pages/chat/transcriptRenderers'
+import { createTranscriptRenderers, featureRequestRefusalIsNewest, sessionStartRepeatIsNewest } from '../pages/chat/transcriptRenderers'
 import { FEATURE_REQUEST_FORM_URL, FEATURE_REQUEST_ROW_META_KEY } from '../prompts/featureRequest'
 import { isWorkflowRunTool } from '../pages/chat/WorkflowRunCard'
 import { isSpawnRunTool } from '../pages/chat/SubagentRunCard'
@@ -366,6 +366,77 @@ describe('a usage-limit error row that refuses the seeded feature-request turn o
     it('is false for a #4198 refused-send row and for a transcript with no error row', () => {
       expect(featureRequestRefusalIsNewest([seedRow, msg('error', { content: 'Message could not be sent: x' })])).toBe(false)
       expect(featureRequestRefusalIsNewest([seedRow])).toBe(false)
+    })
+  })
+})
+
+describe('a session start that failed twice in a row swaps Resume for the restart remedy', () => {
+  const TIMEOUT = 'Request session/new timed out after 90s (4/4 session-injected MCP server(s) reported)'
+  const failed = () => msg('error', { content: TIMEOUT, meta: { kind: 'session_start_failed' } })
+  // The `inject` row a Resume press lands as (the RecoveryCard row).
+  const resumed = () => msg('inject', { content: '[Continue — requested by the user] …', meta: { injectKind: 'recovery' } })
+  const recoverable = { slot: 's1', continuable: true, interrupted: true, onContinue: () => undefined }
+
+  it('keeps the first failure exactly as today: Resume offered, no restart hint', () => {
+    const rows = [msg('user', { content: 'hi' }), failed()]
+    const el = render(rows[1], recoverable, { index: 1, messages: rows }) as ReactElement
+    expect(el.props.onContinue).toBeTypeOf('function')
+    expect(el.props.sessionStartRepeat).toBe(false)
+  })
+
+  it('withholds Resume on the second consecutive failure and flags the row for the restart hint', () => {
+    const rows = [msg('user', { content: 'hi' }), failed(), resumed(), failed()]
+    const el = render(rows[3], recoverable, { index: 3, messages: rows }) as ReactElement
+    expect(el.props.onContinue).toBeUndefined()
+    expect(el.props.sessionStartRepeat).toBe(true)
+  })
+
+  it('leaves the OLDER failure row as settled prose (no hint, no Resume)', () => {
+    const rows = [msg('user', { content: 'hi' }), failed(), resumed(), failed()]
+    const el = render(rows[1], recoverable, { index: 1, messages: rows }) as ReactElement
+    expect(el.props.onContinue).toBeUndefined()
+    expect(el.props.sessionStartRepeat).toBe(false)
+  })
+
+  it('a typed retry starts the count over, so one failure after it gets Resume back', () => {
+    const rows = [msg('user', { content: 'hi' }), failed(), resumed(), failed(), msg('user', { content: 'again' }), failed()]
+    const el = render(rows[5], recoverable, { index: 5, messages: rows }) as ReactElement
+    expect(el.props.onContinue).toBeTypeOf('function')
+    expect(el.props.sessionStartRepeat).toBe(false)
+  })
+
+  it('an untagged timeout row is never counted -- the kind decides, not the prose', () => {
+    const untagged = () => msg('error', { content: TIMEOUT })
+    const rows = [msg('user', { content: 'hi' }), untagged(), resumed(), untagged()]
+    const el = render(rows[3], recoverable, { index: 3, messages: rows }) as ReactElement
+    expect(el.props.onContinue).toBeTypeOf('function')
+    expect(el.props.sessionStartRepeat).toBe(false)
+  })
+
+  it('reads the kind from the rebuilt carrier too', () => {
+    const rebuilt = () => msg('error', { content: TIMEOUT, kind: 'session_start_failed' })
+    const rows = [msg('user', { content: 'hi' }), rebuilt(), resumed(), rebuilt()]
+    const el = render(rows[3], recoverable, { index: 3, messages: rows }) as ReactElement
+    expect(el.props.sessionStartRepeat).toBe(true)
+    expect(el.props.onContinue).toBeUndefined()
+  })
+
+  describe('sessionStartRepeatIsNewest — the composer stands down with the card', () => {
+    it('is true exactly when the newest card withholds Resume', () => {
+      expect(sessionStartRepeatIsNewest([msg('user', { content: 'hi' }), failed()])).toBe(false)
+      expect(sessionStartRepeatIsNewest([msg('user', { content: 'hi' }), failed(), resumed(), failed()])).toBe(true)
+    })
+
+    it('is false once a later turn opens or the assistant answers', () => {
+      const base = [msg('user', { content: 'hi' }), failed(), resumed(), failed()]
+      expect(sessionStartRepeatIsNewest([...base, msg('user', { content: 'again' })])).toBe(false)
+      expect(sessionStartRepeatIsNewest([...base, msg('assistant', { content: 'ok' })])).toBe(false)
+      expect(sessionStartRepeatIsNewest([...base, msg('inject', { content: 'cron', meta: { injectKind: 'cron' } })])).toBe(false)
+    })
+
+    it('never fires on an untagged timeout row', () => {
+      const untagged = () => msg('error', { content: TIMEOUT })
+      expect(sessionStartRepeatIsNewest([msg('user', { content: 'hi' }), untagged(), resumed(), untagged()])).toBe(false)
     })
   })
 })

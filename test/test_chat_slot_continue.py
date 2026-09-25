@@ -15,8 +15,12 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_crew.dashboard.chat_handlers import _is_interrupted, api_chat_slot_continue
-from kiro_crew.dashboard.chat_utils import SYNTHETIC_RECOVERY_KIND
+from kiro_crew.dashboard.chat_handlers import (
+    _is_interrupted,
+    api_chat_slot_continue,
+    session_start_failure_streak,
+)
+from kiro_crew.dashboard.chat_utils import SESSION_START_FAILED_KIND, SYNTHETIC_RECOVERY_KIND
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
 
@@ -439,3 +443,175 @@ class TestChatSlotContinue:
         body = slot._queue[0]["content"]
         assert "already done above" not in body
         assert "if nothing was done yet" in body
+
+
+_START_TIMEOUT = (
+    "Request session/new timed out after 90s (4/4 session-injected MCP server(s) reported)"
+)
+
+
+def _start_failed(slot: _ChatSlot) -> None:
+    """Append the terminal error row a session start that timed out leaves behind.
+
+    Same shape ``chat_runner`` writes: an ``error`` row stamped with the
+    structural ``session_start_failed`` kind, decided from the exception's tag
+    and never from the prose.
+    """
+    slot.append("error", _START_TIMEOUT, "msg msg-err", meta={"kind": SESSION_START_FAILED_KIND})
+
+
+def _resumed(slot: _ChatSlot) -> None:
+    """Append the ``inject`` row a Resume press lands as (the RecoveryCard row)."""
+    slot.append(
+        "inject",
+        "[Continue — requested by the user] …",
+        "msg msg-inject",
+        meta={"injectKind": "recovery"},
+    )
+
+
+class TestSessionStartFailureStreak:
+    """The predicate mirrors `sessionStartFailureStreak` in website/src/lib/chatErrorRecovery.ts."""
+
+    def test_no_failures(self):
+        slot = _ChatSlot("s")
+        slot.append("user", "hi", "msg msg-u")
+        assert session_start_failure_streak(slot.messages) == 0
+
+    def test_one_failure(self):
+        slot = _ChatSlot("s")
+        slot.append("user", "hi", "msg msg-u")
+        _start_failed(slot)
+        assert session_start_failure_streak(slot.messages) == 1
+
+    def test_resume_rows_between_failures_do_not_break_the_streak(self):
+        slot = _ChatSlot("s")
+        slot.append("user", "hi", "msg msg-u")
+        _start_failed(slot)
+        _resumed(slot)
+        _start_failed(slot)
+        _resumed(slot)
+        _start_failed(slot)
+        assert session_start_failure_streak(slot.messages) == 3
+
+    def test_a_new_user_message_resets_the_streak(self):
+        # Typing again is a deliberate retry with a new request behind it, so the
+        # count starts over; only the failures since that row are consecutive.
+        slot = _ChatSlot("s")
+        slot.append("user", "hi", "msg msg-u")
+        _start_failed(slot)
+        _resumed(slot)
+        _start_failed(slot)
+        slot.append("user", "try again", "msg msg-u")
+        _start_failed(slot)
+        assert session_start_failure_streak(slot.messages) == 1
+
+    def test_a_different_error_kind_ends_the_streak(self):
+        # Two errors in a row are not two SESSION-START failures: a plain
+        # connection-lost row between them is a different failure, so the
+        # start-specific guidance must not fire on it.
+        slot = _ChatSlot("s")
+        slot.append("user", "hi", "msg msg-u")
+        _start_failed(slot)
+        slot.append("error", "⟳ Connection lost — please retry.", "msg msg-err")
+        assert session_start_failure_streak(slot.messages) == 0
+        _start_failed(slot)
+        assert session_start_failure_streak(slot.messages) == 1
+
+    def test_a_turn_opening_row_ends_the_streak(self):
+        # A failure that belongs to an EARLIER turn must not cost this turn its
+        # first Resume: a cron injection, a synthesis row, a nudge or a sub-agent
+        # completion each begin new work, so the walk stops there. A `recovery`
+        # inject (the Resume row) continues the same turn and is walked past.
+        for opener in (
+            lambda slot: slot.append(
+                "inject", '[Cron notification from "job"] …', "x", meta={"injectKind": "cron"}
+            ),
+            lambda slot: slot.append("inject", "synthesis", "x", meta={"injectKind": "synthesis"}),
+            lambda slot: slot.append("nudge", "[auto-nudge cycle 2]", "x"),
+            lambda slot: slot.append("subagent", "[Subagent completion event] …", "x"),
+        ):
+            slot = _ChatSlot("s")
+            slot.append("user", "hi", "msg msg-u")
+            _start_failed(slot)
+            opener(slot)
+            _start_failed(slot)
+            assert session_start_failure_streak(slot.messages) == 1
+
+    def test_an_untagged_timeout_row_is_not_counted(self):
+        # The kind is the discriminator, never the prose: a row that merely SAYS
+        # "timed out" (an older gateway's row, or a copy edit) counts for nothing.
+        slot = _ChatSlot("s")
+        slot.append("user", "hi", "msg msg-u")
+        slot.append("error", _START_TIMEOUT, "msg msg-err")
+        assert session_start_failure_streak(slot.messages) == 0
+
+
+class TestChatSlotContinueAfterRepeatedStartFailures:
+    @pytest.mark.asyncio
+    async def test_first_resume_after_a_start_failure_is_unchanged(self, _patched):
+        # ONE failed start is exactly what Resume exists for: the first press
+        # queues the same continuation it always did, with the resume wording.
+        slot = _ChatSlot("s")
+        slot.append("user", "do the thing", "msg msg-u")
+        _start_failed(slot)
+        state = _mock_state(slot)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/s/continue")
+            assert resp.status == 200, await resp.text()
+        _patched.assert_awaited_once()
+        assert len(slot._queue) == 1
+        assert slot._queue[0]["kind"] == SYNTHETIC_RECOVERY_KIND
+        assert "was interrupted before it finished" in slot._queue[0]["content"]
+
+    @pytest.mark.asyncio
+    async def test_second_consecutive_start_failure_refuses_the_rerun(self, _patched):
+        # The loop from the field report: Resume -> same session/new -> same 90s
+        # wall -> Resume. Continue has no new information on the second press
+        # (nothing changed between the two identical starts), so re-issuing the
+        # start is refused and the response names the remedy.
+        slot = _ChatSlot("s")
+        slot.append("user", "do the thing", "msg msg-u")
+        _start_failed(slot)
+        _resumed(slot)
+        _start_failed(slot)
+        state = _mock_state(slot)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/s/continue")
+            assert resp.status == 409
+            body = await resp.json()
+        assert body["code"] == "session_start_repeat"
+        assert "kirocrew restart" in body["error"]
+        assert not slot._queue
+        _patched.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_typed_message_after_the_refusal_starts_the_count_over(self, _patched):
+        # The refusal is not a latch on the slot. Typing is still allowed and IS
+        # a new attempt; if that one fails once, Resume is offered again.
+        slot = _ChatSlot("s")
+        slot.append("user", "do the thing", "msg msg-u")
+        _start_failed(slot)
+        _resumed(slot)
+        _start_failed(slot)
+        slot.append("user", "once more", "msg msg-u")
+        _start_failed(slot)
+        state = _mock_state(slot)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/s/continue")
+            assert resp.status == 200, await resp.text()
+        assert len(slot._queue) == 1
+
+    @pytest.mark.asyncio
+    async def test_two_unrelated_errors_are_not_a_start_failure_streak(self, _patched):
+        # A connection-lost row followed by a start timeout is two different
+        # failures; the guidance is specific to the SAME start failing twice.
+        slot = _ChatSlot("s")
+        slot.append("user", "do the thing", "msg msg-u")
+        slot.append("error", "⟳ Connection lost — please retry.", "msg msg-err")
+        _resumed(slot)
+        _start_failed(slot)
+        state = _mock_state(slot)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/s/continue")
+            assert resp.status == 200, await resp.text()

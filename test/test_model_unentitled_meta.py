@@ -211,3 +211,39 @@ def test_auth_required_tag_is_reserved_for_host_auth_callback_backends():
         _raise_acp_error(frame)
     assert getattr(excinfo.value, "auth_required", False) is False
     assert AcpAuthRequired("signed out").auth_required is False
+
+
+# ---- the session-start tag ---------------------------------------------------
+
+
+def test_terminal_error_meta_reads_the_session_start_failed_tag_on_both_families():
+    # The two ACP exception families share no base; both carry the tag and both
+    # must yield the kind, so the Continue guard counts a start that failed on
+    # the shared runtime the same as one on a dedicated client.
+    from kiro_crew.acp.client import AcpTimeoutError
+    from kiro_crew.acp.runtime import AcpRequestTimeout, AcpSessionStartTimeout
+    from kiro_crew.dashboard.chat_runner import _terminal_error_meta
+    from kiro_crew.dashboard.chat_utils import SESSION_START_FAILED_KIND
+
+    runtime_side = AcpSessionStartTimeout("session/new timed out after 90s", collector=None)
+    assert _terminal_error_meta(runtime_side) == {"kind": SESSION_START_FAILED_KIND}
+
+    client_side = AcpTimeoutError(message="ACP session/new timed out after 90s")
+    assert _terminal_error_meta(client_side) is None  # untagged: an ordinary timeout
+    client_side.session_start_failed = True
+    assert _terminal_error_meta(client_side) == {"kind": SESSION_START_FAILED_KIND}
+
+    # A timeout on any OTHER request is not a session start.
+    assert _terminal_error_meta(AcpRequestTimeout("Request session/prompt timed out")) is None
+
+
+def test_terminal_error_meta_lets_the_actionable_kinds_outrank_a_start_failure():
+    # A start that failed BECAUSE the process is signed out has a fix (sign in);
+    # that verdict, not the generic start-failure count, is what the card shows.
+    from kiro_crew.dashboard.chat_runner import _terminal_error_meta
+    from kiro_crew.dashboard.chat_utils import AUTH_REQUIRED_KIND
+
+    e = AcpError("not signed in", transient=False)
+    e.session_start_failed = True
+    e.auth_required = True
+    assert _terminal_error_meta(e) == {"kind": AUTH_REQUIRED_KIND}

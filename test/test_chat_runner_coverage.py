@@ -4756,6 +4756,51 @@ class TestSessionClosingQuietAbort:
         state.sessions.record_failure.assert_not_awaited()
 
 
+class TestSessionStartFailureRowKind:
+    """A session start that timed out leaves a row the Continue guard can count.
+
+    ``record_failure`` cannot count this failure: it increments a counter on the
+    REGISTERED session, and a start that never answered registered none, so the
+    call returns False and nothing anywhere remembers that the start failed.
+    The structural ``session_start_failed`` row kind is that memory -- decided
+    from the exception's tag (set at the ACP raise sites on both exception
+    families), never from the prose, so the Continue endpoint and the error card
+    can count consecutive failed starts without matching on message wording.
+    """
+
+    @pytest.mark.asyncio
+    async def test_shared_runtime_start_timeout_row_carries_the_kind(self, tmp_path):
+        from kiro_crew.acp.runtime import AcpSessionStartTimeout
+        from kiro_crew.dashboard.chat_utils import SESSION_START_FAILED_KIND
+
+        state, _client = _runner_state(tmp_path)
+        state.sessions.get_or_create = AsyncMock(
+            side_effect=AcpSessionStartTimeout(
+                "Request session/new timed out after 90s "
+                "(4/4 session-injected MCP server(s) reported)",
+                collector=None,
+            )
+        )
+        slot = _slot()
+
+        await _drive(state, slot, "hello")
+
+        error = next(row for row in slot.messages if row["role"] == "error")
+        assert "timed out after 90s" in error["content"]  # the prose is untouched
+        assert error["meta"]["kind"] == SESSION_START_FAILED_KIND
+
+    @pytest.mark.asyncio
+    async def test_an_untagged_failure_keeps_a_plain_error_row(self, tmp_path):
+        state, _client = _runner_state(tmp_path)
+        state.sessions.get_or_create = AsyncMock(side_effect=RuntimeError("something else"))
+        slot = _slot()
+
+        await _drive(state, slot, "hello")
+
+        error = next(row for row in slot.messages if row["role"] == "error")
+        assert "kind" not in (error.get("meta") or {})
+
+
 class TestRunChatWakaTimeCodingAccounting:
     @staticmethod
     def _wakatime_config():

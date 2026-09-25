@@ -2580,6 +2580,54 @@ TIMES OUT is indistinguishable from signed-out, so on a host where the
 while typing the same request by hand still worked. `test_not_readiness_gated`
 pins it.
 
+**The one refusal that reads the transcript's content: `session_start_repeat`
+(409).** A session start that timed out (`session/new` on the shared runtime, or
+on a dedicated client) leaves a turn with NO registered session, so
+`SessionManager.record_failure` — a per-session circuit breaker — returns False
+and counts nothing, and the runner's terminal branch used to leave a plain error
+row. Continue then re-issued the identical start with no exit condition: measured
+on an operator host as the loop `Request session/new timed out after 90s` →
+"Continued at your request" → the same timeout, indefinitely, with the terminal
+(`kirocrew restart`) as the only way out and nothing on the card saying so. The
+runner now stamps that row with the structural `chat_utils.SESSION_START_FAILED_KIND`
+(`session_start_failed`), decided from the exception's `session_start_failed` tag
+on both ACP exception families (`_terminal_error_meta`; the generic terminal arm
+consults it too, because a shared-runtime start lands there), never from the
+prose. `chat_handlers.session_start_failure_streak` counts those rows back from
+the tail, walking past everything that is not the conversation's floor (the
+`recovery` inject a Resume lands as, tool rows, notices) and stopping at a user
+or assistant row with content, a Stop card, an error of any OTHER kind, or a row
+that OPENS a turn of its own — a `nudge`, a `subagent` completion, or an
+`inject` whose kind is in `_TURN_OPENING_INJECT_KINDS` (`cron`, `synthesis`;
+the mirror of `INJECT_KIND_OPENS_TURN` in `RecoveryCard.tsx`) — because a
+failure before such a row belongs to a different turn and must not cost this
+turn its first Resume; at `_SESSION_START_REPEAT_REFUSAL_AT` (2) Continue
+answers 409 `session_start_repeat` with a message naming `kirocrew restart`,
+and queues nothing (the body carries no count: the card decides from its own
+transcript scan and never reads this response). This is not a readiness gate in the sense above: the
+evidence is the slot's own two tagged rows — the record of what this endpoint
+itself just did twice — not a probe that can be wrong forever, and a typed
+message stays allowed and ENDS the streak, so a typed retry that fails once gets
+its Resume back and the refusal never latches the slot. **The first failure is
+unchanged in every respect**: one Resume, the same continuation, the same
+words. The frontend mirrors the scan (`pages/chat/ErrorCard.tsx::sessionStartFailureStreak`,
+`SESSION_START_REPEAT_REFUSAL_AT`, beside the sibling row-kind predicates, and
+reading `injectOpensTurn` for the turn-opener rule): on the NEWEST error row
+only, at the same count, `transcriptRenderers` withholds `onContinue` and sets
+`ErrorCard.sessionStartRepeat`, which renders the backend's sentence unchanged
+plus one hint line (`pages.chat.errorCard.session_start_repeat_hint`) at body
+weight with the command as a `<code>` chip — it is the card's only remaining
+next step, so it is not a muted footnote; an older start-failure row is settled
+history and renders as plain prose. Pinned by `test_chat_slot_continue.py::TestSessionStartFailureStreak` /
+`::TestChatSlotContinueAfterRepeatedStartFailures`,
+`test_chat_runner_coverage.py::TestSessionStartFailureRowKind`, and the
+frontend `ErrorCard.test.tsx` / `transcriptRenderers.test.tsx` suites. Not done
+here, tracked separately: the chat path passes no `late_adopter` to
+`create_session`, so a `session/new` answer that arrives seconds after the
+budget is torn down by the `StartCollector` rather than handed to the slot (the
+subagent path already adopts, `subagent_manager/run.py`); binding a late handle
+to a slot is a lifecycle change wider than this guard.
+
 **The destructive reruns are the exception and still fail closed.** `regenerate`,
 `edit-resend`, and `rewind` truncate `slot.messages` and **persist** the result
 (`_save_slot_to_history`, `_pending_rewrite`) *before* dispatching the background

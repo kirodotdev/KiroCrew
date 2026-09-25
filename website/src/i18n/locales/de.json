@@ -9941,7 +9941,8 @@
         "sign_in": "Bei Kiro anmelden",
         "sign_in_hint": "Öffne Einstellungen → Übersicht → Kiro-Anmeldung, melde dich erneut an und sende deine Nachricht noch einmal.",
         "feature_request_form": "Formular für Funktionsvorschläge öffnen",
-        "feature_request_form_hint": "Dein monatliches Kontingent ist aufgebraucht — reiche deinen Vorschlag stattdessen auf GitHub über dieses Formular ein. Dieses Formular umgeht den Agenten: Es öffnet das GitHub-Issue-Formular, das du selbst ausfüllst, und verbraucht nichts von deinem monatlichen Kontingent."
+        "feature_request_form_hint": "Dein monatliches Kontingent ist aufgebraucht — reiche deinen Vorschlag stattdessen auf GitHub über dieses Formular ein. Dieses Formular umgeht den Agenten: Es öffnet das GitHub-Issue-Formular, das du selbst ausfüllst, und verbraucht nichts von deinem monatlichen Kontingent.",
+        "session_start_repeat_hint": "Die Agent-Sitzung konnte mehrmals hintereinander nicht gestartet werden; Fortsetzen würde nur denselben Start wiederholen. Starte das Gateway in einem Terminal mit {{command}} neu und sende deine Nachricht noch einmal."
       },
       "folderPanel": {
         "clear_search": "Suche löschen",

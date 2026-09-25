@@ -3283,6 +3283,21 @@ AUTH_REQUIRED_KIND = "auth_required"
 #: copy edit or a translation moves).
 USAGE_LIMIT_KIND = "usage_limit"
 
+#: Row-level kind for the terminal `error` row a SESSION START that never
+#: answered produces (``session/new`` / ``session/load`` timed out -- the
+#: ``session_start_failed`` tag both ACP exception families carry). Unlike the
+#: three kinds above a retry CAN help here once: a cold start under load is
+#: host weather, so the first Resume keeps its button and its behaviour. What
+#: the kind exists for is the SECOND failure in a row. A start that timed out
+#: registered no session, so ``SessionManager.record_failure`` has nothing to
+#: count against and every Resume re-issued the identical ``session/new`` with
+#: no exit condition -- the transcript IS the count. The Continue endpoint
+#: refuses the re-run once two tagged rows sit at the tail with nothing but
+#: recovery rows between them, and the error card swaps Resume for the remedy
+#: (restart the gateway). Decided from the exception's tag, never from the
+#: prose, which a reword or a translation moves.
+SESSION_START_FAILED_KIND = "session_start_failed"
+
 #: Structural queue-entry kinds for system injections.  Classification by kind
 #: tag — set at enqueue time — is unforgeable: a user typing the same prefix
 #: text will not have the kind tag and will correctly classify as plain input.

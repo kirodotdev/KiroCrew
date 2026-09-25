@@ -8461,7 +8461,7 @@ class TestWaitForResponseDeferral:
             [{"name": "ready"}, {"name": "broken"}, {"name": "silent"}]
         )
 
-        assert "2/3 MCP server(s) reported" in progress
+        assert "2/3 session-injected MCP server(s) reported" in progress
         assert "no report from silent" in progress
         assert "failed: broken" in progress
         assert "supersecret" not in progress

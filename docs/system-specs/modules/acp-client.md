@@ -1433,6 +1433,32 @@ session-start timeout's progress and hide the servers that never reported for it
 Both holders are bounded (`_INIT_NOTIFICATION_BUFFER_LIMIT`) and claim by the
 session id inside the frame, so no frame can reach two sessions.
 
+**What the progress suffix counts, and says it counts.** The roster
+`_mcp_init_progress` (and the dedicated client's `_mcp_timeout_progress`) reports
+against is the `mcpServers` array the session put ON THE WIRE — on kiro-cli the
+broker stubs Kiro Crew injects (`pooled_session_servers`), never the agent spec's
+own servers, which the backend starts itself and which are not in the roster; and
+nothing after MCP init inside the backend's session start is observable from the
+runtime at all. A suffix of the bare shape `4/4 MCP server(s) reported` was
+therefore read as "all MCP is up, so MCP is the problem", and a field report of a
+90 s `session/new` was triaged as an MCP failure on the strength of that suffix
+alone. The count is now labelled `N/M session-injected MCP server(s) reported`
+(same numerator and denominator as before, so a grep on the fraction still
+works), a partial roster still lists `no report from …`, and a COMPLETE roster is
+followed by `types.MCP_ROSTER_COMPLETE_NOTE` — "the stall is later in session
+startup, not in those servers" (the fraction already says every server reported,
+so the note carries only the conclusion; what the count does not cover is
+documented here, not in the error line). The note is withheld when a roster
+member reported an init FAILURE: that member counts as reported, so it is not
+chased as silent, but it is named under `failed:` and the stall may be in it.
+One string for both start paths so the two messages cannot drift. With NO roster (an empty `mcpServers` array) the reports can only
+belong to the agent spec's own servers or a concurrent start, so that branch
+says `N MCP server report(s), roster unknown` and does not claim them as
+session-injected. The `failed:` and `awaiting authorization:` buckets are
+unchanged: an out-of-roster server is still named there, where naming it is the
+point. Pinned by
+`test_session_start_timeout_diagnostics.py::test_a_complete_roster_says_the_stall_is_not_in_those_servers`.
+
 **One permit is reserved for a start that has not gone out.** A collector holding
 its permit is the intended back-pressure — the backend really is still working on
 that request — but at `session_start_concurrency = 2` two collectors hold the

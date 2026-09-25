@@ -4276,7 +4276,8 @@
         "feature_request_form": "Open the feature request form",
         "feature_request_form_hint": "Your monthly usage is used up — file your request on GitHub with this form instead. This form skips the agent: it opens the GitHub issue form for you to fill in yourself and uses none of your monthly usage.",
         "sign_in": "Sign in to Kiro",
-        "sign_in_hint": "Open Settings → Overview → Kiro sign-in and sign in again, then send your message again."
+        "sign_in_hint": "Open Settings → Overview → Kiro sign-in and sign in again, then send your message again.",
+        "session_start_repeat_hint": "The agent session has failed to start more than once in a row, so resuming would only run the same start again. Restart the gateway from a terminal with {{command}}, then send your message again."
       },
       "crewLog": {
         "section_status": "Status",
