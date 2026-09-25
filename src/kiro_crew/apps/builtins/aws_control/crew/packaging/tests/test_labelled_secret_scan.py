@@ -40,12 +40,12 @@ def test_a_labelled_secret_is_a_finding(text):
 def test_the_local_subset_catches_it_without_the_canonical_detector(monkeypatch):
     """The fallback branch must not be the weak one.
 
-    ``_CANONICAL_CREDENTIAL_RE`` is None wherever ``kiro_crew`` is not importable --
+    ``_CANONICAL_CREDENTIAL_HIT`` is None wherever ``kiro_crew`` is not importable --
     which is the container-adjacent case this module is built to survive -- so the
     local patterns have to find it on their own.
     """
     mod = load_build()
-    monkeypatch.setattr(mod, "_CANONICAL_CREDENTIAL_RE", None)
+    monkeypatch.setattr(mod, "_CANONICAL_CREDENTIAL_HIT", None)
     leaks = mod.scan_text(f"SecretAccessKey={_DOC_SECRET}", "prompt")
     kinds = {leak.kind for leak in leaks}
     assert "aws-secret-labelled" in kinds, kinds
@@ -56,6 +56,61 @@ def test_the_key_id_pattern_still_works():
     mod = load_build()
     kinds = {leak.kind for leak in mod.scan_text(_DOC_KEY_ID, "prompt")}
     assert "aws-access-key" in kinds, kinds
+
+
+_TAG = "[REDACTED: credential]"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        f"aws_secret_access_key={_TAG}",
+        f'SecretAccessKey="{_TAG}"',
+        f"aws_session_token: '{_TAG}' # rotated",
+        f'{{"SessionToken": "{_TAG}", "Expiration": "2030-01-01T00:00:00Z"}}',
+        f'{{"text": "aws_secret_access_key=\\"{_TAG}\\""}}',
+        f"aws_secret_access_key={_TAG}{_TAG}",
+    ],
+)
+def test_a_stored_skill_the_redactor_already_cleaned_is_not_a_finding(line, monkeypatch):
+    """Skills are stored already redacted, and the redactor keeps the key that names a
+    value: a cleaned skill reads ``aws_secret_access_key=[REDACTED: credential]``. The
+    labelled pattern runs on every line whether or not the canonical detector loads, and
+    a copy that matched the tag's ``[REDACTED:`` head as the value aborted the crew build
+    on text that holds no secret -- with hand-editing the file the only way out. A tag
+    run that FILLS the value (bare, quoted by the same quote, escaped inside a JSON
+    string, or a run of two) is declined, on both branches."""
+    mod = load_build()
+    assert mod.scan_text(line, "skill") == [], line
+    monkeypatch.setattr(mod, "_CANONICAL_CREDENTIAL_HIT", None)
+    assert mod.scan_text(line, "skill") == [], line
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        f'aws_secret_access_key="{_TAG} {_DOC_SECRET}"',
+        f'aws_secret_access_key=\'{_TAG}"{_DOC_SECRET}"',
+        f"SessionToken={_TAG}{_DOC_SECRET}",
+        f"aws_secret_access_key={_TAG.lower()}",
+        # An escape pair glued to the tag, a doubled quote taken for the close, and
+        # a secret written with escaped slashes (PHP-style JSON), heading included.
+        f"aws_secret_access_key={_TAG}\\/{_DOC_SECRET}",
+        f"aws_secret_access_key='{_TAG}''{_DOC_SECRET}'",
+        f'{{"SecretAccessKey": "\\/{_DOC_SECRET[:12]}\\/{_DOC_SECRET[12:]}"}}',
+        f"aws_secret_access_key={_DOC_SECRET[:12]}\\/{_DOC_SECRET[12:]}",
+    ],
+)
+def test_a_tag_that_does_not_fill_its_value_is_still_a_finding(line, monkeypatch):
+    """The exemption is byte identity of the WHOLE value with a registered tag run:
+    a tag heading a quoted value, a run closed by the other quote kind, glued bytes
+    (an escape pair included), a run closed by a doubled quote and a tag in another
+    case are values, and findings, on both branches -- and a secret whose ``/`` an
+    encoder escaped is a finding whole, however the escape sits."""
+    mod = load_build()
+    monkeypatch.setattr(mod, "_CANONICAL_CREDENTIAL_HIT", None)
+    kinds = {leak.kind for leak in mod.scan_text(line, "skill")}
+    assert "aws-secret-labelled" in kinds, (line, kinds)
 
 
 @pytest.mark.parametrize(

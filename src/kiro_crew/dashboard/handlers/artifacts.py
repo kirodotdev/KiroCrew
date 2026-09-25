@@ -91,7 +91,7 @@ from kiro_crew.publish_provider import (
 )
 from kiro_crew.security import (
     _B64_CHUNK_RE,
-    _HARD_CREDENTIAL_RE,
+    hard_credential_hit,
     is_sensitive_path,
     redact_credentials,
     redact_exfiltration_urls,
@@ -509,15 +509,20 @@ def _id_embeds_hard_credential(value: str) -> bool:
     text. A benign high-entropy id decodes to non-credential bytes (or fails to
     decode), so this preserves the exemption while closing the encoded-token
     hole. Only the hard floor is applied to the decoded bytes — NOT the entropy
-    heuristic — so a benign id that merely *looks* base64 is not rewritten."""
-    if _HARD_CREDENTIAL_RE.search(value):
+    heuristic — so a benign id that merely *looks* base64 is not rewritten. The
+    floor is ``hard_credential_hit``: the unambiguous markers (an AWS key id, an
+    SSH or PEM header, a Slack token) plus a LABELLED AWS value read through the
+    redactor's scanner -- the labelled forms live there, not in the bare marker
+    regex, so a reader of the regex alone lets ``aws_secret_access_key=<v>``
+    through (`test_nested_external_id_with_a_labelled_secret_is_replaced`)."""
+    if hard_credential_hit(value):
         return True
     for m in _B64_CHUNK_RE.finditer(value):
         try:
             decoded = base64.b64decode(m.group(), validate=True).decode("utf-8", errors="ignore")
         except Exception:
             continue
-        if _HARD_CREDENTIAL_RE.search(decoded):
+        if hard_credential_hit(decoded):
             return True
     return False
 

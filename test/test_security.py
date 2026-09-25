@@ -1339,6 +1339,236 @@ class TestTokenParamValueRedaction:
             assert result == text
             assert warnings == []
 
+    def test_a_tag_with_glued_bytes_is_a_value_not_a_tag(self) -> None:
+        """Trust is byte identity of the ENTIRE value: a registered tag with bytes
+        glued to its `]` is redacted whole, with the warning `scrub_reason` gates
+        on, and the result is a fixed point. A tag followed by a value boundary is
+        a bare tag with an ordinary tail."""
+        from kiro_crew.security import CREDENTIAL_REDACTION_TAGS
+
+        for tag in CREDENTIAL_REDACTION_TAGS:
+            glued = f"{tag}{self._OPAQUE}"
+            result, warnings = redact_credentials(f"?token={glued}&x=1")
+            assert result == "?token=[REDACTED: credential]&x=1", tag
+            assert self._OPAQUE not in result
+            assert warnings == [f"Redacted token parameter value ({len(glued)} chars)"]
+            again, more = redact_credentials(result)
+            assert again == result and more == []
+
+            tailed = f"?token={tag} and more text"
+            assert redact_credentials(tailed) == (tailed, [])
+
+    def test_a_complete_tag_ending_a_stream_chunk_holds_its_anchor(self) -> None:
+        """The whole-value rule must hold across a chunk boundary that falls
+        exactly after a tag's `]`. A tag standing whole as the parameter value
+        is a fixed point only while nothing is glued to it, so a chunk ending
+        in `?token=[REDACTED: credential]` cannot commit anchor and tag: the
+        next chunk may open with the glued bytes, which arrive anchor-less and
+        would stream raw. The next byte decides -- a boundary byte releases a
+        bare tag with an ordinary tail, a value byte joins the run the anchor
+        already holds."""
+        from kiro_crew.security import CREDENTIAL_REDACTION_TAGS, StreamRedactor, redact
+
+        def stream(*chunks: str) -> str:
+            redactor = StreamRedactor()
+            pieces = [redactor.feed(chunk) for chunk in chunks]
+            pieces.append(redactor.flush())
+            assert all(self._OPAQUE not in piece for piece in pieces), pieces
+            return "".join(pieces)
+
+        for tag in CREDENTIAL_REDACTION_TAGS:
+            # Glued continuation: one credential, redacted whole, as the batch
+            # redactor writes it for the joined text.
+            for anchor in ("?token=", "see path?a=1&token=", '{"u": "?token='):
+                joined = f"{anchor}{tag}{self._OPAQUE} tail"
+                expected = redact(joined)
+                assert self._OPAQUE not in expected, joined
+                assert stream(f"{anchor}{tag}", f"{self._OPAQUE} tail") == expected, joined
+                assert stream(f"{anchor}{tag}", self._OPAQUE, " tail") == expected, joined
+                assert stream(f"{anchor}{tag}Xk9f", f"{self._OPAQUE[4:]} tail") == expected, joined
+
+            # A value byte OUTSIDE `_CRED_CLASS` glued to the tag (`!` is a legal
+            # `_TOKEN_PARAM_VALUE_CLASS` byte) ends the natural cred run, so
+            # only the tag-aware anchor keeps this tail in progress.
+            banged = f"?token={tag}!{self._OPAQUE} tail"
+            expected = redact(banged)
+            assert self._OPAQUE not in expected, banged
+            assert stream(f"?token={tag}!", f"{self._OPAQUE} tail") == expected, banged
+            assert stream(f"?token={tag}", f"!{self._OPAQUE} tail") == expected, banged
+
+            # Boundary continuation: a bare tag with an ordinary tail is released
+            # unchanged -- the hold costs one chunk of latency, never a byte.
+            redactor = StreamRedactor()
+            held = redactor.feed(f"?token={tag}")
+            released = redactor.feed(" and more text")
+            assert held + released + redactor.flush() == f"?token={tag} and more text"
+
+            # Stream end right after the tag: the flush releases the bare tag.
+            redactor = StreamRedactor()
+            assert redactor.feed(f"?token={tag}") + redactor.flush() == f"?token={tag}"
+
+    def test_a_partial_tag_ending_a_stream_chunk_holds_its_anchor(self) -> None:
+        """A chunk boundary INSIDE a tag standing as the parameter value must hold
+        from `token=` as well. The value class stops at the tag's interior
+        space, and the tag atom needs the complete literal, so a buffer ending
+        `?token=[REDACTED: ` -- any strict prefix of a tag past that space --
+        was no in-progress anchor at all: the canonical-tag hold pulled the cut
+        back only to the `[`, `?token=` was committed, and the next chunk's
+        completed tag plus the secret glued to it arrived anchor-less, where
+        pass 4 has no `token=` to key on, and streamed raw. A strict tag
+        prefix standing as the value is a STRONG in-progress anchor, held from
+        `token=` until a terminator, exactly like `?token=<opaque>`."""
+        from kiro_crew.security import CREDENTIAL_REDACTION_TAGS, StreamRedactor, redact
+        from kiro_crew.security.redaction import _TOKEN_PARAM_PARTIAL_RE
+
+        def stream(*chunks: str) -> str:
+            redactor = StreamRedactor()
+            pieces = [redactor.feed(chunk) for chunk in chunks]
+            pieces.append(redactor.flush())
+            assert all(self._OPAQUE not in piece for piece in pieces), pieces
+            return "".join(pieces)
+
+        for tag in CREDENTIAL_REDACTION_TAGS:
+            for cut in range(1, len(tag)):
+                head, rest = tag[:cut], tag[cut:]
+                partial = _TOKEN_PARAM_PARTIAL_RE.search(f"?token={head}")
+                assert partial is not None and partial.group("eq") is not None, (tag, cut)
+                for anchor in ("?token=", "see path?a=1&token=", '{"u": "?token='):
+                    joined = f"{anchor}{tag}{self._OPAQUE} tail"
+                    expected = redact(joined)
+                    assert self._OPAQUE not in expected, joined
+                    assert stream(f"{anchor}{head}", f"{rest}{self._OPAQUE} tail") == expected, (
+                        joined,
+                        cut,
+                    )
+                    assert stream(f"{anchor}{head}", rest, f"{self._OPAQUE} tail") == expected, (
+                        joined,
+                        cut,
+                    )
+
+                # The tag completed by the next chunk with a boundary tail is a
+                # bare tag with an ordinary tail: released unchanged.
+                redactor = StreamRedactor()
+                out = redactor.feed(f"?token={head}") + redactor.feed(f"{rest} and more")
+                assert out + redactor.flush() == f"?token={tag} and more", (tag, cut)
+
+                # Stream end inside the tag: the flush hands the held text to the
+                # batch redactor whole, which judges the prefix as the value it
+                # is (a tag's head is not a tag, so pass 4 claims it).
+                redactor = StreamRedactor()
+                assert redactor.feed(f"?token={head}") + redactor.flush() == redact(
+                    f"?token={head}"
+                ), (tag, cut)
+
+    def test_a_boundary_inside_the_second_tag_of_a_run_holds_its_anchor(self) -> None:
+        """Two adjacent tags inside one `token=` value are one run the atom
+        reads whole, so a chunk boundary inside the SECOND tag -- past a complete
+        first tag -- is held from `token=` exactly as a boundary inside the first:
+        the strict prefix may follow a run of whole tags. Without it the run plus
+        prefix matched no in-progress alternative, `?token=<tag>` was committed
+        and the next chunk's completed tag with the secret glued to it arrived
+        anchor-less."""
+        from kiro_crew.security import CREDENTIAL_REDACTION_TAGS, StreamRedactor, redact
+        from kiro_crew.security.redaction import _TOKEN_PARAM_PARTIAL_RE
+
+        def stream(*chunks: str) -> str:
+            redactor = StreamRedactor()
+            pieces = [redactor.feed(chunk) for chunk in chunks]
+            pieces.append(redactor.flush())
+            assert all(self._OPAQUE not in piece for piece in pieces), pieces
+            return "".join(pieces)
+
+        for first in CREDENTIAL_REDACTION_TAGS:
+            for tag in CREDENTIAL_REDACTION_TAGS:
+                for cut in (len(tag) // 2, len(tag) - 1):
+                    head, rest = tag[:cut], tag[cut:]
+                    partial = _TOKEN_PARAM_PARTIAL_RE.search(f"?token={first}{head}")
+                    assert partial is not None and partial.group("eq") is not None, (
+                        first,
+                        tag,
+                        cut,
+                    )
+                    joined = f"?token={first}{tag}{self._OPAQUE} tail"
+                    expected = redact(joined)
+                    assert self._OPAQUE not in expected, joined
+                    assert (
+                        stream(f"?token={first}{head}", f"{rest}{self._OPAQUE} tail") == expected
+                    ), (
+                        first,
+                        tag,
+                        cut,
+                    )
+                    # A run completed with a boundary tail is a run of bare tags
+                    # with an ordinary tail: released unchanged.
+                    redactor = StreamRedactor()
+                    out = redactor.feed(f"?token={first}{head}") + redactor.feed(f"{rest} and more")
+                    assert out + redactor.flush() == f"?token={first}{tag} and more", (
+                        first,
+                        tag,
+                        cut,
+                    )
+
+    def test_a_tag_run_past_the_fail_closed_cap_keeps_the_discard_through_the_tag(self) -> None:
+        """A `token=` value can exceed the 4096-char fail-closed ceiling while it
+        is a run of whole tags with a chunk boundary inside the next one. The
+        ceiling then drops the tail and arms the token-parameter discard, which
+        read value-class bytes only: the completed tag's interior space in the
+        next chunk ended the discard, and the secret glued to the tag's `]`
+        arrived anchor-less and streamed raw. The discard now reads the batch
+        grammar's value shape -- class bytes and whole tags -- and keeps a
+        strict tag prefix buffered at a chunk tail, so the tag is read whole
+        and the bytes glued to it are dropped with it. A prefix the next chunk
+        breaks is ordinary value bytes, and the space behind them the
+        terminator it always was."""
+        from kiro_crew.security import (
+            _STREAM_HOLDBACK_JWT_MAX,
+            CREDENTIAL_REDACTION_TAGS,
+            StreamRedactor,
+        )
+        from kiro_crew.security.redaction import _REDACTED_CREDENTIAL_TAG
+
+        def stream(*chunks: str) -> str:
+            redactor = StreamRedactor()
+            pieces = [redactor.feed(chunk) for chunk in chunks]
+            pieces.append(redactor.flush())
+            assert all(self._OPAQUE not in piece for piece in pieces), pieces
+            return "".join(pieces)
+
+        for tag in CREDENTIAL_REDACTION_TAGS:
+            run = tag * (_STREAM_HOLDBACK_JWT_MAX // len(tag) + 2)
+            assert len(run) > _STREAM_HOLDBACK_JWT_MAX
+            space = tag.index(" ") + 1  # the cut right after the interior space
+            for cut in sorted({1, len(tag) // 2, space - 1, space, space + 2, len(tag) - 1}):
+                head, rest = tag[:cut], tag[cut:]
+                # The arming chunk ends inside the tag that follows the run; the
+                # next chunk completes it with the secret glued to its `]`.
+                out = stream(f"?token={run}{head}", f"{rest}{self._OPAQUE} tail")
+                assert out == f"{_REDACTED_CREDENTIAL_TAG} tail", (tag, cut, out)
+                # The completed tag, more whole tags and the secret in separate
+                # chunks: every one is the continuation of the same value.
+                out = stream(f"?token={run}{head}", rest, tag, self._OPAQUE, " tail")
+                assert out == f"{_REDACTED_CREDENTIAL_TAG} tail", (tag, cut, out)
+                # The arming chunk ends on a whole tag, so the boundary inside
+                # the next tag falls while the discard is already running.
+                out = stream(f"?token={run}", head, f"{rest}{self._OPAQUE} tail")
+                assert out == f"{_REDACTED_CREDENTIAL_TAG} tail", (tag, cut, out)
+                # A prefix the next chunk breaks: its bytes are value bytes up to
+                # the first space, which terminates the value as it always did.
+                broken = f"{head}xyz tail"
+                out = stream(f"?token={run}", head, "xyz tail")
+                assert out == f"{_REDACTED_CREDENTIAL_TAG}{broken[broken.index(' '):]}", (
+                    tag,
+                    cut,
+                    out,
+                )
+
+            # Stream end inside the kept prefix: the flush drops it with the
+            # value it belonged to, exactly as a discard ends at stream end.
+            redactor = StreamRedactor()
+            armed = redactor.feed(f"?token={run}{tag[: space + 2]}")
+            assert armed == _REDACTED_CREDENTIAL_TAG
+            assert redactor.flush() == ""
+
     def test_blocking_surface_unchanged(self) -> None:
         """Redaction-only: `_contains_fixed_credential` gates request-BLOCKING
         decisions in `exfil.py` and must not learn the parameter name -- a
@@ -8513,17 +8743,40 @@ class TestStreamRedactor:
         assert joined == f"?token={REDACTED_CREDENTIAL_TAG} credential]"
 
     def test_flush_preserves_an_incomplete_canonical_tag_prefix(self) -> None:
+        """An incomplete tag with NO anchor ahead of it is held by the canonical-tag
+        hold alone and flushes as the ordinary text it is. Standing as a
+        `token=` value, the same prefix is held WITH its anchor, and `flush()`
+        hands the pair to the batch pass, which judges the prefix as the opaque
+        value it is -- the stream writes what the batch redactor writes for the
+        whole text, never a value the batch pass would have claimed."""
         tag = REDACTED_CREDENTIAL_TAG
         prefix = tag[: tag.index("credential") + 2]
-        assert "".join(self._run((f"?token={prefix}",))) == f"?token={prefix}"
+        assert "".join(self._run((f"see {prefix}",))) == f"see {prefix}"
+        assert "".join(self._run((f"?token={prefix}",))) == security.redact(f"?token={prefix}")
+        assert "".join(self._run((f"?token={prefix}",))) == f"?token={tag} cr"
 
     def test_canonical_tag_holdback_never_authorizes_a_drop(self, monkeypatch) -> None:
+        """The canonical-tag hold is not a credential anchor: an incomplete tag with
+        no `token=` ahead of it cannot raise a cap or fail closed, however small
+        the caps. Standing as a `token=` value, a strict tag prefix is the value
+        of a STRONG in-progress anchor and is bounded exactly as an opaque value
+        of the same length is -- the two fail closed together or not at all."""
         monkeypatch.setattr(security, "_STREAM_HOLDBACK_MAX", 4)
         monkeypatch.setattr(security, "_STREAM_HOLDBACK_JWT_MAX", 8)
         tag = REDACTED_CREDENTIAL_TAG
-        text = f"?token={tag[: tag.index('credential') + 2]}"
+        prefix = tag[: tag.index("credential") + 2]
         redactor = security.StreamRedactor(redactor=lambda value: value)
-        assert redactor.feed(text) + redactor.flush() == text
+        assert redactor.feed(f"see {prefix}") + redactor.flush() == f"see {prefix}"
+
+        opaque = "Xk9fQ2mP4nR7s"
+        assert len(opaque) == len(prefix)
+        as_tag_prefix = security.StreamRedactor(redactor=lambda value: value)
+        as_opaque = security.StreamRedactor(redactor=lambda value: value)
+        assert (
+            as_tag_prefix.feed(f"?token={prefix}") + as_tag_prefix.flush()
+            == as_opaque.feed(f"?token={opaque}") + as_opaque.flush()
+            == REDACTED_CREDENTIAL_TAG
+        )
 
     def test_entity_equals_empty_value_not_corrupted_across_chunks(self) -> None:
         joined = "".join(self._run(("open ?token&#", "61;", "&x=1 done")))

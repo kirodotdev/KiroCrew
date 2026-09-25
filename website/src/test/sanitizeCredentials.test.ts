@@ -10,7 +10,7 @@
  *  class either way, so a whole token can never match as one run.
  */
 import { describe, it, expect } from 'vitest'
-import { sanitizeCredentials } from '../utils/sanitize'
+import { sanitizeCredentials, scanWork } from '../utils/sanitize'
 
 // Same token shape the backend tests pin (`test_security.py`), so every copy of
 // the pattern stays locked to one generator.
@@ -136,5 +136,293 @@ describe('sanitizeCredentials: JWT family', () => {
       expect(out).not.toContain(LINK_SIG)
       expect(out).not.toContain('eyJzdWIi')
     }
+  })
+})
+
+describe('sanitizeCredentials: key-anchored AWS spellings', () => {
+  const TAG = '[REDACTED: credential]'
+
+  it('keeps the key and separator and replaces only the value', () => {
+    expect(sanitizeCredentials('aws_secret_access_key=test-secret-not-a-credential-0123')).toBe(
+      'aws_secret_access_key=[REDACTED]',
+    )
+    expect(sanitizeCredentials('SessionToken: test-session-not-a-credential-0123 # x')).toBe(
+      'SessionToken: [REDACTED] # x',
+    )
+    expect(sanitizeCredentials('AccessKeyId = test-key-id-not-a-credential-0123')).toBe(
+      'AccessKeyId = [REDACTED]',
+    )
+  })
+
+  it("is a fixed point over the backend's own redacted output", () => {
+    for (const line of [
+      `aws_secret_access_key=${TAG}`,
+      `SessionToken: ${TAG} # trailing`,
+      `AccessKeyId = [REDACTED: encoded credential]`,
+      `{"aws_secret_access_key": "${TAG}"}`,
+    ]) {
+      expect(sanitizeCredentials(line)).toBe(line)
+    }
+  })
+
+  it("is a fixed point over the backend's QUOTED output, key kept outside the quotes", () => {
+    // The backend replaces only the value and keeps the quotes around it, so a
+    // redacted `.env` / shell / YAML / JSON pair reaches this mirror with the
+    // key OUTSIDE the quotes and the tag INSIDE them. The key group has to
+    // admit that opening quote (and the quote after a JSON key) exactly as the
+    // backend's label rule does, or the value group starts at the `"`, the tag
+    // atom fails, and the mirror re-collapses certified-clean text to
+    // `aws_secret_access_key=[REDACTED] credential]"`.
+    for (const line of [
+      `aws_secret_access_key="${TAG}"`,
+      `SessionToken='${TAG}' # trailing`,
+      `AccessKeyId: "[REDACTED: encoded credential]"`,
+      `"aws_secret_access_key": "${TAG}",`,
+      `aws_secret_access_key: "${TAG}"\nnext: line`,
+    ]) {
+      expect(sanitizeCredentials(line)).toBe(line)
+    }
+  })
+
+  it('replaces a quoted plaintext value inside its quotes', () => {
+    expect(sanitizeCredentials('aws_secret_access_key="test-secret-not-a-credential-0123"')).toBe(
+      'aws_secret_access_key="[REDACTED]"',
+    )
+    expect(sanitizeCredentials('{"SessionToken": "test-session-not-a-credential-0123", "r": 1}')).toBe(
+      '{"SessionToken": "[REDACTED]", "r": 1}',
+    )
+    expect(sanitizeCredentials("AccessKeyId='test-key-id-not-a-credential-0123'")).toBe(
+      "AccessKeyId='[REDACTED]'",
+    )
+  })
+
+  it('reads an escape pair inside the value as the value, as the backend does', () => {
+    // PHP's `json_encode` and several Java serializers write every `/` of a base64
+    // secret as `\/`; a class that stopped at the backslash left `\/<rest>` on
+    // screen and matched a value heading with `\/` not at all. An escaped QUOTE
+    // is not a value pair: it closes a pair embedded in a string literal.
+    expect(sanitizeCredentials('aws_secret_access_key=wJalrXUt\\/K7MDENG\\/bPxRfiCYEXAMPLEKEY')).toBe(
+      'aws_secret_access_key=[REDACTED]',
+    )
+    expect(sanitizeCredentials('{"SecretAccessKey": "\\/abcdEFGH1234\\/wxyzABCD5678\\/qrstUVWX90ab"}')).toBe(
+      '{"SecretAccessKey": "[REDACTED]"}',
+    )
+    expect(sanitizeCredentials('SessionToken=abc\\\\def\\u002fghi-not-a-credential-0123 tail')).toBe(
+      'SessionToken=[REDACTED] tail',
+    )
+    expect(sanitizeCredentials('{"text": "aws_secret_access_key=\\"test-secret-not-a-credential-0123\\" x"}')).toBe(
+      '{"text": "aws_secret_access_key=\\"[REDACTED]\\" x"}',
+    )
+  })
+
+  it('consumes escaped whitespace heading a value with the value', () => {
+    // A serializer writes a value that begins with a line break as `\n<v>`;
+    // the head is leading whitespace in the value's encoding, not a byte that
+    // ends the value before it began.
+    expect(sanitizeCredentials('{"aws_secret_access_key": "\\ntest-secret-not-a-credential-0123"}')).toBe(
+      '{"aws_secret_access_key": "[REDACTED]"}',
+    )
+    expect(sanitizeCredentials('SessionToken=\\t\\ntest-session-not-a-credential-0123 tail')).toBe(
+      'SessionToken=[REDACTED] tail',
+    )
+  })
+
+  it('consumes an escaped line break heading a value inside a JSON string, as the backend does', () => {
+    // Inside a `"` literal the pair `\n` is one inner line break token. Read as
+    // the value's END it left the whole value standing behind it in plaintext;
+    // it is the enclosing encoding's whitespace, consumed as the value's head
+    // like `\t` is, and the `\r` spelling with it.
+    expect(
+      sanitizeCredentials('{"text": "aws_secret_access_key=\\ntest-secret-not-a-credential-0123 more", "keep": 1}'),
+    ).toBe('{"text": "aws_secret_access_key=[REDACTED] more", "keep": 1}')
+    expect(sanitizeCredentials('{"text": "SessionToken: \\rtest-session-not-a-credential-0123", "keep": 1}')).toBe(
+      '{"text": "SessionToken: [REDACTED]", "keep": 1}',
+    )
+  })
+
+  it('reads a run of structural bytes heading a bare value as the value, as the backend does', () => {
+    // The base's value class admits `]` and a backslash, so `]]<secret>` and
+    // `,]<secret>` are values to it; a judgement of the first byte alone took
+    // `]` after `]` as nothing value-like and left the secret standing. The run
+    // is read whole and the byte after it decides: a value byte, and the run is
+    // the value's head; a quote, a close or whitespace, and no value opens.
+    expect(sanitizeCredentials('aws_secret_access_key=]]test-secret-not-a-credential-0123')).toBe(
+      'aws_secret_access_key=[REDACTED]',
+    )
+    expect(sanitizeCredentials('SessionToken=,]test-session-not-a-credential-0123 tail')).toBe(
+      'SessionToken=[REDACTED] tail',
+    )
+    expect(sanitizeCredentials('aws_secret_access_key=]\\test-secret-not-a-credential-0123')).toBe(
+      'aws_secret_access_key=[REDACTED]',
+    )
+    expect(sanitizeCredentials('{"text": "aws_secret_access_key=},}test-secret-not-a-credential-0123 more", "keep": 1}')).toBe(
+      '{"text": "aws_secret_access_key=[REDACTED] more", "keep": 1}',
+    )
+    expect(sanitizeCredentials('{"text": "aws_secret_access_key=]]", "keep": 1}')).toBe(
+      '{"text": "aws_secret_access_key=]]", "keep": 1}',
+    )
+    expect(sanitizeCredentials('aws_secret_access_key=,] next word')).toBe('aws_secret_access_key=,] next word')
+  })
+
+  it('reads a run of bare anchors in linear work: the cron message cap on the main thread', () => {
+    // `secretaccesskey=` repeated to the 50,000-character cron message cap is
+    // one unquoted run in which every anchor after the first begins inside the
+    // value the first one claims. Scanning each nested anchor afresh read the
+    // rest of the run once per anchor (quadratic: seconds of a frozen dashboard
+    // for one SchedulePage render), and the backend leaves this payload alone
+    // (its anchors are case-sensitive, this mirror's are not), so it reaches the
+    // page. An anchor inside the last unquoted run is answered from that run's
+    // end, the backend's `_KeyedValueScans` memo; the result is the same one
+    // tag. The work is counted, not timed: `scanWork.steps` is one step per
+    // inner token read. A linear scan reads each byte once, 16 steps per
+    // 16-byte anchor; the rescan read 24,993 per anchor on this payload. The
+    // bound is twice the linear measure, and no clock is read.
+    const anchor = 'secretaccesskey='
+    const count = 3125
+    const payload = anchor.repeat(count)
+    expect(payload.length).toBe(50_000)
+    scanWork.steps = 0
+    const out = sanitizeCredentials(payload)
+    expect(out).toBe(`${anchor}[REDACTED]`)
+    expect(scanWork.steps, `${scanWork.steps} inner token reads for ${count} anchors`).toBeLessThanOrEqual(
+      32 * count,
+    )
+  })
+
+  it('claims a quoted value through doubled and escaped interior quotes, as the backend does', () => {
+    // A doubled quote (YAML/SQL `''`, CSV `""`) and a backslash-escaped quote are
+    // INTERIOR to a quoted value, never its close: the whole scalar is one value.
+    // The mirror used to stop at the first quote byte and show the second
+    // fragment of a concatenated secret (GPT 6.1, `sanitize.ts`).
+    const s1 = 'ABCDEFGHIJKLMNOPQRST'
+    const s2 = 'UVWXYZ0123456789abcd'
+    expect(sanitizeCredentials(`AWS_SECRET_ACCESS_KEY="${s1}""${s2}"`)).toBe('AWS_SECRET_ACCESS_KEY="[REDACTED]"')
+    expect(sanitizeCredentials(`AWS_SECRET_ACCESS_KEY='${s1}''${s2}'`)).toBe("AWS_SECRET_ACCESS_KEY='[REDACTED]'")
+    expect(sanitizeCredentials(`aws_secret_access_key="${s1}\\"${s2}" tail`)).toBe('aws_secret_access_key="[REDACTED]" tail')
+    // An unterminated quote claims the line and the close is written, as the backend does.
+    expect(sanitizeCredentials(`aws_secret_access_key="${s1} ${s2}\nnext: line`)).toBe(
+      'aws_secret_access_key="[REDACTED]"\nnext: line',
+    )
+    // The backend's own redacted output stays a fixed point.
+    expect(sanitizeCredentials('aws_secret_access_key="[REDACTED: credential]"')).toBe(
+      'aws_secret_access_key="[REDACTED: credential]"',
+    )
+  })
+
+  it('redacts the key line after an empty-valued key line, as the backend does', () => {
+    // An INI or YAML credentials file with one empty entry: the anchor's
+    // trailing whitespace crosses the line break, so the first key's value is
+    // read as the NEXT key's name, and the next key's anchor begins inside that
+    // claim. The mirror skipped every anchor that began inside an earlier claim
+    // and rendered the second value in plaintext (Opus 5.5, `sanitize.ts`); the
+    // backend skips only a value COVERED by an earlier claim and claims the part
+    // of a straddling value that lies past it, so both values are redacted.
+    const secret = 'test-value-not-a-credential-0123'
+    for (const text of [
+      `aws_access_key_id = \naws_secret_access_key = ${secret}\n`,
+      `aws_access_key_id:\naws_secret_access_key: ${secret}\n`,
+      `aws_access_key_id = \naws_secret_access_key = "${secret} PART2"\n`,
+      `AccessKeyId=\nSessionToken=${secret}\n`,
+    ]) {
+      const out = sanitizeCredentials(text)
+      expect(out).not.toContain(secret)
+      expect(out).not.toContain('PART2')
+      expect(sanitizeCredentials(out)).toBe(out)
+    }
+    expect(sanitizeCredentials(`aws_access_key_id = \naws_secret_access_key = ${secret}\n`)).toBe(
+      'aws_access_key_id = \n[REDACTED] = [REDACTED]\n',
+    )
+  })
+
+  it('reads a pair embedded in an enclosing string literal through its escaping', () => {
+    // JSON-encoded text an LLM prints back (a persisted entry, a serialized
+    // log) carries the pair's quotes ESCAPED: `key=\"<v>\"`. The label quote
+    // may be written that way and a backslash is never a value byte -- the
+    // backend's `_LABEL_QUOTE` and `_AWS_VALUE_CLASS` -- so the backend's
+    // redacted output embedded that way is a fixed point here (a class that
+    // admitted the backslash read the one-byte `\` as the value and
+    // re-collapsed it to `key=[REDACTED]"[REDACTED: credential]\"`), and a
+    // live pair embedded that way is replaced inside its escaped quotes.
+    const embedded = JSON.stringify({ text: `aws_secret_access_key="${TAG}"`, r: 'x' })
+    expect(embedded).toContain('\\"')
+    expect(sanitizeCredentials(embedded)).toBe(embedded)
+    expect(sanitizeCredentials(JSON.stringify({ text: `{"SessionToken": "${TAG}"}` }))).toBe(
+      JSON.stringify({ text: `{"SessionToken": "${TAG}"}` }),
+    )
+    expect(
+      sanitizeCredentials(JSON.stringify({ text: 'aws_secret_access_key="test-secret-not-a-credential-0123"' })),
+    ).toBe(JSON.stringify({ text: 'aws_secret_access_key="[REDACTED]"' }))
+    expect(
+      sanitizeCredentials(JSON.stringify({ text: '"AccessKeyId": "test-key-id-not-a-credential-0123"' })),
+    ).toBe(JSON.stringify({ text: '"AccessKeyId": "[REDACTED]"' }))
+  })
+
+  it('leaves a run of whole tags alone and redacts a run with glued bytes', () => {
+    // Two credentials that stood side by side inside one value are two adjacent
+    // tags in the backend's output; the mirror reads the run whole instead of
+    // re-collapsing its head at the second tag's interior space.
+    const encoded = '[REDACTED: encoded credential]'
+    for (const line of [
+      `aws_secret_access_key=${TAG}${TAG}`,
+      `aws_secret_access_key="${TAG}${encoded}"`,
+      `SessionToken: ${TAG}${TAG} # trailing`,
+    ]) {
+      expect(sanitizeCredentials(line)).toBe(line)
+    }
+    const glued = `aws_secret_access_key=${TAG}${TAG}test-secret-not-a-credential-0123`
+    expect(sanitizeCredentials(glued)).toBe('aws_secret_access_key=[REDACTED]')
+  })
+
+  it('is a fixed point over its own output', () => {
+    const once = sanitizeCredentials('aws_session_token=test-session-not-a-credential-0123')
+    expect(sanitizeCredentials(once)).toBe(once)
+  })
+
+  it('redacts a value that only resembles a tag', () => {
+    for (const lookalike of [
+      '[REDACTEDtest-secret-not-a-credential-0123',
+      '[REDACTED:credential]test-secret-not-a-credential-0123',
+      '[redacted:test-secret-not-a-credential-0123',
+    ]) {
+      const out = sanitizeCredentials(`aws_secret_access_key=${lookalike}`)
+      expect(out).toBe('aws_secret_access_key=[REDACTED]')
+      expect(out).not.toContain('test-secret-not-a-credential-0123')
+    }
+  })
+
+  it('reads a base64-encoded labelled pair as an encoded credential', () => {
+    // The key-anchored spellings left CRED_PATTERNS for the keyed walk, and the
+    // decode path checked the decoded bytes against CRED_PATTERNS alone -- a
+    // base64 chunk of `SessionToken=<v>` (a cron message, a provider id) decoded
+    // to a labelled pair the decode path no longer saw, and the chunk stayed on
+    // screen reversible. The decode path reads the keyed walk too.
+    for (const pair of [
+      'SessionToken=FQoGZXIvYXdzEBYaDF-not-a-credential-0123',
+      'aws_secret_access_key: "test-secret-not-a-credential-0123456"',
+      '{"AccessKeyId": "test-key-id-not-a-credential-0123456789"}',
+    ]) {
+      const encoded = btoa(pair)
+      expect(encoded.length).toBeGreaterThanOrEqual(40)
+      const out = sanitizeCredentials(`id=${encoded} tail`)
+      expect(out).toBe('id=[REDACTED: encoded credential] tail')
+    }
+  })
+
+  it('leaves a base64-encoded redacted pair alone: the decode path shares the tag rule', () => {
+    const encoded = btoa('aws_secret_access_key=[REDACTED] rest of a cleaned line')
+    expect(encoded.length).toBeGreaterThanOrEqual(40)
+    expect(sanitizeCredentials(`id=${encoded}`)).toBe(`id=${encoded}`)
+  })
+})
+
+describe('sanitizeCredentials: a tag with bytes glued to it is a value', () => {
+  it('redacts the whole glued value and leaves a boundary-separated tail alone', () => {
+    const glued = 'aws_secret_access_key=[REDACTED: credential]test-secret-not-a-credential-0123'
+    const out = sanitizeCredentials(glued)
+    expect(out).toBe('aws_secret_access_key=[REDACTED]')
+    expect(out).not.toContain('test-secret-not-a-credential-0123')
+
+    const tailed = 'aws_secret_access_key=[REDACTED: credential] tail-not-a-value'
+    expect(sanitizeCredentials(tailed)).toBe(tailed)
   })
 })

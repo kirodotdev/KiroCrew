@@ -512,6 +512,78 @@ def assert_rejected_without_backtracking(
         previous = (n, cost)
 
 
+def lines_executed_in(module, run) -> int:
+    """How many lines of *module* execute while ``run()`` runs: a DETERMINISTIC
+    measure of algorithmic work, for a complexity guard on Python code.
+
+    :func:`assert_rejected_without_backtracking` measures thread CPU, which is
+    the right instrument for a regex that runs in C; a scan written in Python
+    costs coverage's tracer on every line, and under it the shipped
+    ``redact_credentials`` measured 2.1-3.3 s of thread CPU on a 20 000-unit
+    pump against that helper's 2.0 s budget -- a red with the property intact.
+    A count of executed lines is the same number on every runner, loaded or
+    not, traced or not: a linear algorithm executes about twice as many lines
+    for twice the input, a quadratic one about four times as many, and the
+    guard asserts the ratio (:func:`assert_linear_work`). Counted with
+    ``sys.monitoring`` (3.12+), on a tool id of its own, so coverage's tracer
+    -- ``sys.settrace`` here -- is neither displaced nor read; events from other
+    files are disabled at their first line, so the count costs about one
+    callback per line of *module*.
+    """
+    monitoring = sys.monitoring
+    tool = next(i for i in range(6) if monitoring.get_tool(i) is None)
+    target = module.__file__
+    count = 0
+
+    def on_line(code, _line_number):
+        nonlocal count
+        if code.co_filename != target:
+            return monitoring.DISABLE
+        count += 1
+        return None
+
+    monitoring.use_tool_id(tool, "lines-executed-in")
+    monitoring.register_callback(tool, monitoring.events.LINE, on_line)
+    monitoring.set_events(tool, monitoring.events.LINE)
+    try:
+        run()
+    finally:
+        monitoring.set_events(tool, 0)
+        monitoring.register_callback(tool, monitoring.events.LINE, None)
+        monitoring.free_tool_id(tool)
+        monitoring.restart_events()
+    return count
+
+
+#: The most a doubling of the input may multiply the executed-line count of a
+#: linear algorithm by. Linear work is ``a*n + b`` lines, so the ratio is under
+#: 2 and approaches it from below; quadratic work is about 4 (measured 4.00 for
+#: the repeated-key shape at 200 and 400 units; 2.00 for the linear shapes).
+LINEAR_WORK_DOUBLING_RATIO = 2.5
+
+
+def assert_linear_work(module, build, run, sizes=(100, 200, 400)) -> None:
+    """Assert ``run(build(n))`` does linear work in *module* over *sizes*.
+
+    ``build(n)`` returns an input with an ``n``-unit pump; ``run(text)`` is the
+    operation under guard. Each size must execute at most
+    ``LINEAR_WORK_DOUBLING_RATIO`` times the lines of the size before it (sizes
+    double). Deterministic: no clock is read.
+    """
+    previous: tuple[int, int] | None = None
+    for n in sizes:
+        text = build(n)
+        count = lines_executed_in(module, lambda: run(text))
+        if previous is not None:
+            assert count <= LINEAR_WORK_DOUBLING_RATIO * previous[1], (
+                f"{n} units executed {count} lines of {module.__name__} against "
+                f"{previous[1]} at {previous[0]} units -- {count / previous[1]:.2f}x "
+                f"for {n // previous[0]}x the input, past the "
+                f"{LINEAR_WORK_DOUBLING_RATIO}x a linear scan stays under"
+            )
+        previous = (n, count)
+
+
 def cap_project_root_walk(monkeypatch, ceiling: pathlib.Path) -> None:
     """Make ``kiro_crew.artifact_source`` see NO project root above ``ceiling``.
 

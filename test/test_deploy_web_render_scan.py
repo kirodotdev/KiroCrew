@@ -74,6 +74,30 @@ def test_scan_flags_aws_access_key():
     assert any(f.kind == "credential" for f in findings)
 
 
+def test_scan_does_not_flag_the_redactors_own_output():
+    """The redactor keeps the key that names a value and replaces the value alone,
+    so rendered output it already cleaned reads `aws_secret_access_key=[REDACTED:
+    credential]` -- a line the raw patterns match again. The scan reads the
+    redactor's live matches instead: cleaned text is not a finding, the secret it
+    replaced is, and a tag with bytes glued to it is a value and is."""
+    from kiro_crew.security import REDACTED_CREDENTIAL_TAG, redact_credentials
+
+    secret = "aws_secret_access_key=test-secret-not-a-credential-0123\n"
+    assert any(f.kind == "credential" for f in scan_content(secret))
+
+    cleaned, warnings = redact_credentials(secret)
+    assert warnings and cleaned == f"aws_secret_access_key={REDACTED_CREDENTIAL_TAG}\n"
+    assert [f for f in scan_content(cleaned) if f.kind == "credential"] == []
+    assert [
+        f
+        for f in scan_content(f'"SecretAccessKey": "{REDACTED_CREDENTIAL_TAG}"\n')
+        if f.kind == "credential"
+    ] == []
+
+    glued = f"aws_secret_access_key={REDACTED_CREDENTIAL_TAG}test-secret-not-a-credential-0123\n"
+    assert any(f.kind == "credential" for f in scan_content(glued))
+
+
 def test_scan_flags_internal_host_and_arn():
     text = "see https://w.amazon.com/bin/foo and arn:aws:s3:::secret-bucket/x"
     kinds = {f.kind for f in scan_content(text)}

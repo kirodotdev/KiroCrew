@@ -118,10 +118,9 @@ scan_source_dir() {
     CRED_HITS=$(python3 - "$src_dir" <<'PYEOF'
 import sys, os
 from pathlib import Path
-from kiro_crew.security import get_credential_patterns, is_sensitive_path
+from kiro_crew.security import contains_credential, is_sensitive_path
 
 target = Path(sys.argv[1])
-patterns = [p for p in get_credential_patterns()]
 hits = []
 for root, dirs, files in os.walk(target):
     dirs[:] = [d for d in dirs if d != '.git']
@@ -147,10 +146,13 @@ for root, dirs, files in os.walk(target):
             data = fpath.read_text(errors='ignore')
         except (OSError, UnicodeDecodeError):
             continue
-        for pat in patterns:
-            if pat.search(data):
-                hits.append(str(fpath))
-                break
+        # The redactor's presence check, not the raw patterns: the redactor
+        # keeps the key that names a value, so text it already cleaned reads
+        # `aws_secret_access_key=[REDACTED: credential]` and the raw patterns
+        # would call it live -- this scan would then refuse a deploy for text
+        # that holds no secret, with "cannot be overridden" as the only answer.
+        if contains_credential(data):
+            hits.append(str(fpath))
 if hits:
     for h in hits:
         print(h)

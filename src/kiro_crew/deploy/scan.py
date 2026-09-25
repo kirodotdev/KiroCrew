@@ -5,9 +5,10 @@ scanned for secrets + internal-data leaks. On any finding the caller
 **blocks-and-warns** (shows what/where, requires explicit "publish anyway") —
 it never silently redacts. Best-effort detection, not a guarantee.
 
-Reuses KiroCrew's existing credential regexes (``security.get_credential_patterns()``)
-and adds internal-data heuristics (internal hosts, ARNs, account ids) plus
-deploy-specific patterns (private-key headers, GitHub PATs, OpenAI/Stripe keys).
+Reuses Kiro Crew's existing credential regexes through ``security.credential_matches()``
+(the canonical patterns, minus the redactor's own tags standing as values) and adds
+internal-data heuristics (internal hosts, ARNs, account ids) plus deploy-specific
+patterns (private-key headers, GitHub PATs, OpenAI/Stripe keys).
 """
 from __future__ import annotations
 
@@ -15,12 +16,9 @@ import logging
 import re
 from dataclasses import dataclass
 
-from kiro_crew.security import get_credential_patterns
+from kiro_crew.security import credential_matches
 
 logger = logging.getLogger(__name__)
-
-# Canonical credential patterns from the security module (single combined regex).
-_CANONICAL_CRED = get_credential_patterns()
 
 # Deploy-specific patterns that MUST be covered even if the canonical set evolves.
 # These are a SUPERSET of the canonical set — covers base64-encoded AKIA keys,
@@ -119,15 +117,17 @@ def scan_content(text: str) -> list[Finding]:
     def _capped() -> bool:
         return len(findings) >= _MAX_FINDINGS
 
-    # Canonical credential patterns (from kiro_crew.security).
-    for pat in _CANONICAL_CRED:
-        for m in pat.finditer(text):
-            if _capped():
-                break
-            findings.append(Finding("credential", _mask_credential(m.group(0)),
-                                    _line_of_fast(line_offsets, m.start()), severity="credential"))
+    # Canonical credential patterns (from kiro_crew.security), read through the
+    # redactor's own live-match rule: the redactor keeps the key that names a
+    # value and replaces the value alone, so text it already cleaned reads
+    # `aws_secret_access_key=[REDACTED: credential]` -- a line the RAW patterns
+    # match again. `credential_matches` skips a tag standing as the value, the
+    # way pass 1 does, and reports everything else the patterns find.
+    for m in credential_matches(text):
         if _capped():
             break
+        findings.append(Finding("credential", _mask_credential(m.group(0)),
+                                _line_of_fast(line_offsets, m.start()), severity="credential"))
 
     # Deploy-specific extras (private key header, GitHub PAT, Stripe/OpenAI).
     if not _capped():

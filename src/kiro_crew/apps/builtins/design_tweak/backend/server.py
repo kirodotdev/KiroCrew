@@ -55,6 +55,7 @@ from kiro_crew.platform_compat import (
 )
 from kiro_crew.security import (
     DENIED_ROOT_PARTS,
+    credential_matches,
     get_credential_patterns,
     is_sensitive_path,
     path_contains_sensitive,
@@ -75,6 +76,7 @@ _RUNTIME_COMPAT_IMPORTS = (
     _html,
     address_covers_loopback,
     cast,
+    credential_matches,
     get_credential_patterns,
     get_ppid,
     glob,

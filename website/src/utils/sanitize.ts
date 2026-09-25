@@ -3,11 +3,466 @@
 import { i18nT } from '../i18n/t'
 
 // ── Credential patterns (matches redact_credentials in security.py) ──
+//
+// The three AWS key-value spellings are KEY-ANCHORED: they begin at the key
+// naming the secret. Like the backend, only the VALUE is replaced -- the key,
+// separator and quotes stay, so a redacted line still says what was redacted --
+// and a value that IS a registered redaction tag (or a run of them) filling it is
+// left alone (`isRedactionTag`), so this mirror is a fixed point over the
+// backend's own output (`key=[REDACTED: credential]`) instead of re-collapsing
+// it to `[REDACTED] credential]`. Where the value begins and ends is read by
+// `scanKeyedValue`, a port of the backend's `scan_keyed_value`: one explicit
+// scanner, one token per step, with the opener (bare or escaped), the
+// escaped-whitespace head, the tag run, the escape pair, the doubled quote and
+// the line end as its rules. A regex stood here before and was patched by hand
+// for every new encoding the backend learned, and the copies drifted: a doubled
+// or escaped interior quote ended the mirror's value early and showed the second
+// fragment of a concatenated secret. `test/sanitizeCredentials.fixture.test.ts`
+// pins this port to the backend's generated fixture, so the two cannot drift
+// again. Every other pattern IS the secret and is replaced whole.
+const REDACTION_TAGS = ['[REDACTED]', '[REDACTED: credential]', '[REDACTED: encoded credential]']
+const WHITESPACE_ESCAPE_LETTERS = new Set(['n', 'r', 't', 'f', 'v'])
+const QUOTES = new Set(['"', "'"])
+const UNQUOTED_TERMINATORS = new Set([',', '}'])
+// Structural bytes where a value would start (see noValueOpensAt).
+const NO_VALUE_OPENERS = new Set([',', '}', ']'])
+
+// The PREFIX run the structural byte at `i` heads (the backend's `_prefix_run_end`):
+// further structural bytes, a backslash paired with a structural byte or another
+// backslash (the escaped encoding's inner `\\` among them), and the enclosing
+// encoding's escaped whitespace between them, read whole before the value is
+// judged: the base's value class admits `]` and a backslash, so `key=]]<secret>`
+// is a value to it, and a judgement of the first byte alone left the secret after
+// the pair standing. A backslash pair never heads a run: there it is the value's
+// first byte, so the caller asks only at a structural byte.
+function prefixRunEnd(text: string, i: number, enclosing: string): number {
+  const n = text.length
+  for (;;) {
+    let j = i
+    while (j < n) {
+      const [kind, width] = innerToken(text, j, false, '', enclosing)
+      if (kind === 'char' && width === 1 && NO_VALUE_OPENERS.has(text[j])) j += 1
+      else if (
+        kind === 'backslash' &&
+        (width === 2 || NO_VALUE_OPENERS.has(text[j + 1]) || text[j + 1] === '\\')
+      )
+        j += 2
+      else break
+    }
+    while (j < n) {
+      const [kind, width] = innerToken(text, j, false, '', enclosing)
+      if ((kind === 'space' || kind === 'break') && width === 2) {
+        j += width
+        continue
+      }
+      if (kind !== 'backslash' || j + width >= n) break
+      const [letterKind, letterWidth] = innerToken(text, j + width, false, '', enclosing)
+      if (letterKind !== 'char' || !WHITESPACE_ESCAPE_LETTERS.has(text[j + width])) break
+      j += width + letterWidth
+    }
+    if (j === i) return i
+    i = j
+  }
+}
+
+// Whether NO value opens at the structural byte at `i`, where an unquoted value
+// would start: past the prefix run it heads nothing value-like follows (whitespace,
+// a line break, a quote, a close, or a bare backslash before one of those); a value
+// byte after the run makes the run the value's head. A run reaching the text's end
+// is decided by the caller before this is asked.
+function noValueOpensAt(text: string, i: number, enclosing: string): boolean {
+  const j = prefixRunEnd(text, i, enclosing)
+  const [kind] = innerToken(text, j, false, '', enclosing)
+  if (kind === 'backslash') return QUOTES.has(text[j + 1]) || isWhitespace(text[j + 1])
+  return kind !== 'char'
+}
+
+// The quote state of a line's prefix, the backend's `_advance_line_state`: the
+// kind of the string literal open at its end ('' for none), whether its last
+// byte is a backslash still escaping the next one, the kind a quote just closed
+// (a doubled quote reopens it as an escaped interior quote), and the last byte.
+// A raw line break resets it; outside a literal a quote opens one only when the
+// byte before it is not a word byte (an apostrophe inside a word is prose), and
+// a backslash escapes the next byte; inside, a backslash escapes, the same kind
+// closes, the other kind is a byte of the literal.
+interface LineState {
+  kind: string
+  escaped: boolean
+  closed: string
+  last: string
+  inner: string
+}
+const LINE_START: LineState = { kind: '', escaped: false, closed: '', last: '', inner: '' }
+
+function isWordByte(c: string): boolean {
+  return /[\p{L}\p{N}_]/u.test(c)
+}
+
+function advanceLineState(state: LineState, text: string, start: number, end: number): LineState {
+  let { kind, escaped, closed, last, inner } = state
+  for (let i = start; i < end; i++) {
+    const c = text[i]
+    if (c === '\r' || c === '\n') {
+      kind = ''
+      escaped = false
+      closed = ''
+      inner = ''
+    } else if (escaped) {
+      escaped = false
+      if (kind && QUOTES.has(c)) {
+        // An escaped quote inside a literal delimits the INNER literal of the
+        // escaped encoding: it opens one, and the same escaped quote closes it.
+        const delim = '\\' + c
+        if (!inner) inner = delim
+        else if (inner === delim) inner = ''
+      }
+    } else if (c === '\\') {
+      escaped = true
+      closed = ''
+    } else if (kind) {
+      if (c === kind) {
+        kind = ''
+        closed = c
+        inner = ''
+      }
+    } else if (closed && c === closed) {
+      kind = c
+      closed = ''
+    } else if (QUOTES.has(c) && !(last !== '' && isWordByte(last))) {
+      kind = c
+      closed = ''
+    } else {
+      closed = ''
+    }
+    last = c
+  }
+  return { kind, escaped, closed, last, inner }
+}
+
+// The backend's `_enclosing_at`: the literals enclosing `at`, innermost last --
+// the outer literal's bare quote, then the inner literal's escaped delimiter
+// when one is open -- read back along the line from its start.
+function enclosingAt(text: string, at: number): string {
+  const lineStart = Math.max(text.lastIndexOf('\n', at - 1), text.lastIndexOf('\r', at - 1)) + 1
+  const state = advanceLineState(LINE_START, text, lineStart, at)
+  return state.kind + state.inner
+}
+
+// The innermost enclosing delimiter as written, and the context left once it closes.
+function innermost(enclosing: string): [string, string] {
+  if (enclosing.length >= 3 && enclosing[enclosing.length - 2] === '\\') {
+    return [enclosing.slice(-2), enclosing.slice(0, -2)]
+  }
+  return [enclosing.slice(-1), '']
+}
+
+// The backend's `_LABEL_QUOTE`: an optional quote closing a JSON key, bare or
+// escaped as it reads inside an enclosing string literal. The key anchor ends at
+// the separator; the opener belongs to the scanner.
+const KEY_ANCHOR = new RegExp(
+  `(?:SecretAccessKey|aws_secret_access_key|SessionToken|aws_session_token|AccessKeyId|aws_access_key_id)(?:\\\\?["'])?\\s*[:=]\\s*`,
+  'gi',
+)
+
+interface KeyedValue {
+  start: number
+  end: number
+  closes: boolean
+  opener: string
+}
+
+function isWhitespace(c: string): boolean {
+  return /\s/.test(c)
+}
+
+function tagRunEnd(text: string, i: number): number {
+  for (;;) {
+    const tag = REDACTION_TAGS.find((candidate) => text.startsWith(candidate, i))
+    if (tag === undefined) return i
+    i += tag.length
+  }
+}
+
+// The inner token at `i` in the value's encoding -- what one byte of the value
+// reads as. Bare encoding: every token is one byte. Escaped encoding (the pair is
+// written inside an enclosing string literal, `key=\"<v>\"`): a backslash and
+// the byte after it are ONE inner token, and a bare quote of the literal's own
+// kind is the literal's end. A bare quote of the kind `enclosing` the pair (the
+// literal the look-back found the key inside) is the enclosing literal's end in
+// either encoding. Kinds: backslash, quote, break (a line break), close (the
+// enclosing literal's end), space, char, partial.
+/** The scanner's WORK, counted deterministically: one step per inner token read
+ *  (`innerToken`, the scanner's only per-byte advance). A test bounds the steps a
+ *  payload costs instead of reading a clock, which a loaded runner moves; the
+ *  counter is reset by the test that reads it and is never read in production. */
+export const scanWork = { steps: 0 }
+
+function innerToken(
+  text: string,
+  i: number,
+  escaped: boolean,
+  literalQuote: string,
+  enclosing: string,
+): [string, number] {
+  scanWork.steps++
+  const c = text[i]
+  if (c === '\\') {
+    if (i + 1 >= text.length) return ['partial', 1]
+    if (escaped || enclosing.startsWith('"') || enclosing.length >= 3) {
+      // The pair is ONE token, read before any delimiter test: inside a
+      // backslash-escaping literal (a `"` literal or an escaped inner one) every
+      // byte is in the literal's encoding whatever quote opens the value; a bare
+      // `'` literal has no escapes of its own.
+      const nxt = text[i + 1]
+      if (nxt === '\r' || nxt === '\n') return ['backslash', 1] // no encoding pairs a backslash with a raw line break
+      if (nxt === '\\') return ['backslash', 2]
+      if (QUOTES.has(nxt)) {
+        if (enclosing.length >= 3 && nxt === enclosing[enclosing.length - 1]) return ['close', 2] // the inner literal's escaped delimiter
+        return ['quote', 2]
+      }
+      if (nxt === 'n' || nxt === 'r') return ['break', 2]
+      if (nxt === 't' || nxt === 'f' || nxt === 'v') return ['space', 2]
+      return ['char', 2]
+    }
+    return ['backslash', 1]
+  }
+  if ((escaped && c === literalQuote) || (enclosing !== '' && c === enclosing[0])) return ['close', 1]
+  if (c === '\r' || c === '\n') return ['break', 1]
+  if (isWhitespace(c)) return ['space', 1]
+  if (QUOTES.has(c)) return ['quote', 1]
+  return ['char', 1]
+}
+
+// The backend's `scan_keyed_value`, byte for byte: the value of a key-anchored
+// pair whose separator ends at `at`, inside the literal `enclosing` (read back
+// along the line when not given). Every rule is a STOPPING rule, so an unknown
+// spelling costs an over-redaction, never a byte left standing.
+/** The quote OPENING a value at `at`, as written: bare, escaped, or none (the
+ *  backend's `_opener_at`). */
+function openerAt(text: string, at: number): string {
+  const n = text.length
+  if (at < n && QUOTES.has(text[at])) return text[at]
+  if (at + 1 < n && text[at] === '\\' && QUOTES.has(text[at + 1])) return text.slice(at, at + 2)
+  return ''
+}
+
+export function scanKeyedValue(text: string, at: number, enclosing?: string): KeyedValue {
+  if (enclosing === undefined) enclosing = enclosingAt(text, at)
+  const n = text.length
+  let opener = openerAt(text, at)
+  const [innermostDelim, outer] = innermost(enclosing)
+  if (enclosing !== '' && opener === enclosing[0] && text[at + 1] === opener) {
+    // A doubled quote of the enclosing literal's kind where the value would open
+    // is that literal's escaped interior quote: the value's own quote, as
+    // written, and the same doubled pair closes it.
+    opener = opener + opener
+  } else if (enclosing !== '' && (opener === innermostDelim || opener === enclosing[0])) {
+    // The enclosing literal's own close stands where the value would open
+    // (`{"template":"key=","keep":1}`, one level down the inner literal's `\"`,
+    // and the outer literal's bare quote closes everything): the assignment
+    // inside the literal is empty, and what follows the close is in the context
+    // outside it.
+    return scanKeyedValue(text, at + opener.length, opener === innermostDelim ? outer : '')
+  }
+  const escaped = opener.startsWith('\\')
+  const literalQuote = opener ? opener[opener.length - 1] : ''
+  const start = at + opener.length
+  let i = start
+  // The head: escaped whitespace, unbounded, consumed with the value.
+  for (;;) {
+    if (i >= n) break
+    const [kind, width] = innerToken(text, i, escaped, literalQuote, enclosing)
+    if ((kind === 'space' || kind === 'break') && width === 2) {
+      // The enclosing encoding's escaped whitespace, a line break among it, is
+      // whitespace to the anchor; read as the value's end it left the whole
+      // value standing behind it.
+      i += width
+      continue
+    }
+    if (kind !== 'backslash' || i + width >= n) break
+    const [letterKind, letterWidth] = innerToken(text, i + width, escaped, literalQuote, enclosing)
+    if (letterKind !== 'char' || !WHITESPACE_ESCAPE_LETTERS.has(text[i + width])) break
+    i += width + letterWidth
+  }
+  if (!opener) {
+    while (i < n) {
+      const run = tagRunEnd(text, i)
+      if (run > i) {
+        i = run
+        continue
+      }
+      const [kind, width] = innerToken(text, i, false, '', enclosing)
+      if (kind === 'partial') return { start, end: i, closes: true, opener: '' }
+      if (kind === 'char' && i === start && NO_VALUE_OPENERS.has(text[i])) {
+        // The token past the PREFIX run decides: the text's end (the next byte
+        // would), whitespace, a quote or a close, and no value opens; a value
+        // byte, and the run is the value's head, consumed with it.
+        const run = prefixRunEnd(text, i, enclosing)
+        if (run >= n || (text[run] === '\\' && run + 1 >= n)) {
+          return { start, end: i, closes: true, opener: '' }
+        }
+        if (noValueOpensAt(text, i, enclosing)) return { start, end: i, closes: true, opener: '' }
+        i = run
+        continue
+      }
+      if (
+        kind === 'space' ||
+        kind === 'break' ||
+        kind === 'close' ||
+        kind === 'quote' ||
+        (kind === 'char' && i > start && UNQUOTED_TERMINATORS.has(text[i]))
+      ) {
+        return { start, end: i, closes: true, opener: '' }
+      }
+      if (kind === 'backslash') {
+        // A pair token is a byte of the value; a BARE backslash reads the byte
+        // after it (a lone one at the text's end is `partial` above): a quote or
+        // raw whitespace ends the value, any other pair is the value's, the
+        // two-byte spelling `\n` of a decoded URL path among them.
+        const nxt = text[i + 1]
+        if (width === 1 && (QUOTES.has(nxt) || isWhitespace(nxt))) {
+          return { start, end: i, closes: true, opener: '' }
+        }
+        i += 2
+        continue
+      }
+      i += width
+    }
+    return { start, end: n, closes: true, opener: '' }
+  }
+  while (i < n) {
+    const run = tagRunEnd(text, i)
+    if (run > i) {
+      i = run
+      continue
+    }
+    const [kind, width] = innerToken(text, i, escaped, literalQuote, enclosing)
+    if (kind === 'close' && width === 1 && text[i + 1] === text[i]) {
+      // A doubled quote of the enclosing literal's kind is an escaped interior
+      // quote of that literal (a YAML single-quoted scalar spells `''`). When the
+      // value opened with that doubled pair it is the value's own quote: doubled
+      // again it is the value's escaped interior quote, alone it is the close.
+      if (opener === text[i] + text[i]) {
+        if (text.slice(i + 2, i + 4) === opener) {
+          i += 4
+          continue
+        }
+        return { start, end: i, closes: true, opener }
+      }
+      i += 2
+      continue
+    }
+    if (kind === 'partial' || kind === 'break' || kind === 'close') return { start, end: i, closes: false, opener }
+    if (kind === 'backslash') {
+      const j = i + width
+      if (j >= n) return { start, end: i, closes: false, opener }
+      const [nxtKind, nxtWidth] = innerToken(text, j, escaped, literalQuote, enclosing)
+      if (nxtKind === 'break') {
+        i = j // a backslash does not escape a line break, raw or inner
+        continue
+      }
+      if (nxtKind === 'partial') return { start, end: j, closes: false, opener }
+      if (nxtKind === 'close' && nxtWidth === 1) {
+        // A bare quote of the enclosing kind after a backslash is the enclosing
+        // literal's close in every encoding (lower depth after an inner backslash;
+        // a `'` literal has no escapes at all).
+        // Escapes pair up at the value's own depth: after the escaped encoding's
+        // inner backslash (`\\`) a BARE quote is the enclosing literal's close,
+        // never the escaped token; doubled, its escaped interior quote.
+        if (text[j + 1] === text[j]) {
+          i = j + 2
+          continue
+        }
+        return { start, end: j, closes: false, opener }
+      }
+      i = j + nxtWidth // the escaped token is interior, an enclosing quote included
+      continue
+    }
+    if (kind === 'quote' && text.slice(i, i + width) === opener) {
+      const j = i + width
+      if (j < n && text.slice(j, j + width) === opener) {
+        // A doubled quote is an escaped interior quote, never the close.
+        i = j + width
+        continue
+      }
+      return { start, end: i, closes: true, opener }
+    }
+    // A quote of the other kind is a byte of the value: the literal that could
+    // end the line here is the enclosing one, and its quote reads as `close`.
+    i += width
+  }
+  return { start, end: n, closes: false, opener }
+}
+
+// Trust is byte identity of the ENTIRE value with a RUN of one or more of the
+// tag literals above (this mirror's own, and the two the backend's
+// `CREDENTIAL_REDACTION_TAGS` registers), never a shape and never a prefix:
+// `[REDACTED<secret>` is a value and is redacted like any other, and so is
+// `[REDACTED: credential]<secret>` -- and so is a run with bytes glued to its
+// last `]`. No tag is a substring of another, so the parse of a run is unique.
+function isRedactionTag(value: string): boolean {
+  return value.length > 0 && tagRunEnd(value, 0) === value.length
+}
+
+// The key-anchored pass: every AWS key anchor, its value read by the scanner,
+// replaced by the tag with the opener kept and -- when the quote never closed on
+// its line -- the close WRITTEN as the backend writes it, so the output is a
+// closed pair a re-screen leaves alone. Coverage is judged on the VALUE, as the
+// backend's pass 1 judges it: a value covered whole by an earlier claim is
+// skipped, and a value that straddles the claim's end is claimed from there.
+// Skipping every anchor that BEGAN inside an earlier claim let one slip: an
+// anchor whose trailing whitespace crosses a line break reads the next key's
+// name as its value (`aws_access_key_id = \naws_secret_access_key = <v>`), and
+// the next key's anchor, beginning inside that claim, was skipped with its
+// value past it left in plaintext while the backend redacted it.
+function redactKeyedValues(text: string): string {
+  let out = ''
+  let cursor = 0
+  KEY_ANCHOR.lastIndex = 0
+  let state = LINE_START
+  let pos = 0
+  // The last UNQUOTED scan, remembered (the backend's `_KeyedValueScans`): an
+  // anchor that begins inside the run it read -- a key repeated as its own
+  // value, `secretaccesskey=secretaccesskey=...` -- starts its own scan at a
+  // token boundary of that run and reads the same tokens to the same end, so it
+  // is answered from the memo. Scanning each nested anchor afresh read the rest
+  // of the run once per anchor: a 50,000-character run of bare anchors, the
+  // cron message cap, held the dashboard's main thread for seconds.
+  let bare: KeyedValue | null = null
+  for (const anchor of text.matchAll(KEY_ANCHOR)) {
+    const at = anchor.index + anchor[0].length
+    // The look-back for the literal enclosing the key, advanced from the last
+    // anchor so a line of many anchors is read once (the backend's
+    // `_KeyedValueScans`).
+    state = advanceLineState(state, text, pos, at)
+    pos = at
+    let value: KeyedValue
+    if (bare !== null && bare.start <= at && at < bare.end && openerAt(text, at) === '') {
+      value = { start: at, end: bare.end, closes: true, opener: '' }
+    } else {
+      value = scanKeyedValue(text, at, state.kind + state.inner)
+      if (value.opener === '') bare = value
+    }
+    if (value.end <= value.start) continue
+    if (value.end <= cursor) continue
+    let start = value.start
+    let closes = value.closes
+    if (start < cursor) {
+      // Straddles the earlier claim's end: the part past it is this anchor's.
+      start = cursor
+      closes = true
+    }
+    const body = text.slice(start, value.end)
+    if (isRedactionTag(body) && closes) continue
+    const close = closes ? '' : value.opener
+    out += text.slice(cursor, start) + '[REDACTED]' + close
+    cursor = value.end
+  }
+  return out + text.slice(cursor)
+}
+
 const CRED_PATTERNS: RegExp[] = [
   /(?:AKIA|ASIA)[A-Z0-9]{16}/g,
-  /(?:SecretAccessKey|aws_secret_access_key)\s*[:=]\s*\S+/gi,
-  /(?:SessionToken|aws_session_token)\s*[:=]\s*\S+/gi,
-  /(?:AccessKeyId|aws_access_key_id)\s*[:=]\s*\S+/gi,
   /BEGIN\s(?:RSA|DSA|EC|OPENSSH)\sPRIVATE\sKEY/g,
   /xox[bpas]-[0-9a-zA-Z-]{10,}/g,
   // JWS (3 segments) and compact JWE (5 segments). Post-header segments use `*`,
@@ -89,6 +544,12 @@ const B64_CHUNK = /[A-Za-z0-9+/]{40,}={0,2}/g
 function decodeB64Safe(chunk: string): string {
   try {
     const decoded = atob(chunk)
+    // A labelled pair in the decoded bytes: the keyed walk rewrites a live
+    // value and leaves a tag run filling it alone, the same rule the plaintext
+    // pass applies. The key-anchored spellings live in KEY_ANCHOR, not in
+    // CRED_PATTERNS, so a check of CRED_PATTERNS alone let an encoded
+    // `SessionToken=<v>` through reversible.
+    if (redactKeyedValues(decoded) !== decoded) return decoded
     // Check if decoded content contains credential patterns
     for (const re of CRED_PATTERNS) {
       re.lastIndex = 0
@@ -99,8 +560,9 @@ function decodeB64Safe(chunk: string): string {
 }
 
 export function sanitizeCredentials(text: string): string {
-  let out = text
-  // Plaintext credential patterns
+  // Key-anchored AWS pairs first: the value as the scanner reads it, key kept.
+  let out = redactKeyedValues(text)
+  // Plaintext credential patterns -- each IS the secret and is replaced whole.
   for (const re of CRED_PATTERNS) {
     re.lastIndex = 0
     out = out.replace(re, '[REDACTED]')

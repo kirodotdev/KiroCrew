@@ -464,12 +464,52 @@ def test_credential_scan_is_quiet_on_ordinary_ops_prose(omc):
 
 
 def test_credential_scan_reports_line_numbers_for_a_core_pattern(omc):
-    """The AKIA shape comes from ``security.get_credential_patterns``."""
+    """The AKIA shape comes from the core patterns, read through ``security.contains_credential``."""
     omc.ledger_lines(
         _entry("clean lesson"),
         _entry("assume-role denied", "aws sts assume-role --access-key AKIAIOSFODNN7EXAMPLE"),
     )
     assert ls._credential_bearing_lines() == [2]
+
+
+def test_credential_scan_ignores_an_entry_the_write_path_already_redacted(omc):
+    """The redactor keeps the key that names a value and replaces the value alone, so
+    ``POST /ledger`` stores ``aws_secret_access_key=[REDACTED: credential]``; the raw core
+    patterns match that line's key again, and a presence-only read of them refused every
+    push from the first redacted entry on. The scan reads ``contains_credential``, which
+    applies the redactor's own rule for a tag standing as the value. A tag with bytes glued
+    to it is a value, and is still reported.
+    """
+    from kiro_crew.security import REDACTED_CREDENTIAL_TAG
+
+    omc.ledger_lines(
+        _entry("rotated a leaked pair", f"aws_secret_access_key={REDACTED_CREDENTIAL_TAG}"),
+        _entry("rotated another", f"SecretAccessKey: {REDACTED_CREDENTIAL_TAG} and rotated"),
+        _entry("glued", f"aws_secret_access_key={REDACTED_CREDENTIAL_TAG}AKIAIOSFODNN7EXAMPLE"),
+    )
+    assert ls._credential_bearing_lines() == [3]
+
+
+def test_credential_scan_ignores_a_quoted_entry_the_write_path_already_redacted(omc):
+    """The reviewed shape. A QUOTED pair the write path redacted is stored as
+    ``aws_secret_access_key="[REDACTED: credential]"``, and ``json.dumps`` escapes
+    its quotes on the line: ``aws_secret_access_key=\\"[REDACTED: credential]\\"``.
+    A reader whose label rule knew only a bare quote and whose value class
+    admitted a backslash read the one-byte ``\\`` as the value and refused every
+    later push -- "remove the entries by hand" the only way out. The redactor
+    reads the escaped quote as the label's own and the tag as the value, so the
+    line is clean; a LIVE quoted pair embedded the same way is still reported.
+    """
+    from kiro_crew.security import REDACTED_CREDENTIAL_TAG
+
+    omc.ledger_lines(
+        _entry("rotated a leaked pair", f'aws_secret_access_key="{REDACTED_CREDENTIAL_TAG}"'),
+        _entry("rotated in JSON", f'{{"SessionToken": "{REDACTED_CREDENTIAL_TAG}"}}'),
+        _entry("not yet rotated", 'aws_secret_access_key="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"'),
+    )
+    raw = ledger.ledger_path().read_text(encoding="utf-8")
+    assert '\\"' in raw.splitlines()[0], raw  # the quotes are escaped on the line
+    assert ls._credential_bearing_lines() == [3]
 
 
 def test_credential_scan_also_catches_a_provider_shape_the_core_does_not_know(omc):

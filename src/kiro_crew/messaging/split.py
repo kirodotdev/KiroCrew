@@ -388,7 +388,25 @@ def _flattened_for_any_cut(text: str, redactor: Callable[[str], str]) -> str:
         shown,
         lambda span: _WHITESPACE_RUN.sub("", DISPLAY_MARKUP.sub("", span).replace("#", "")),
     )
-    return redact_for_display(bare, redactor)[0]
+    return _KEY_GLUE_BEFORE_TAG.sub("", redact_for_display(bare, redactor)[0])
+
+
+#: The ``:`` or ``=`` left standing between a key the redactor keeps and the tag
+#: it wrote for the key's value (``SecretAccessKey:[REDACTED: credential]``,
+#: ``token=[REDACTED: credential]``, and a quoted ``"SecretAccessKey":"[REDACTED:
+#: credential]"``, where the opening quote stands between the separator and the
+#: tag). The flatten drops the separator. A redacted pair is a fixed point whole,
+#: but a cut inside its tag leaves ``SecretAccessKey:[R`` -- the key, its
+#: separator and a fragment the redactor reads as a short value -- and a cut at
+#: the tag's one space leaves a join the screen renders as
+#: ``SecretAccessKey:[REDACTED:credential]``, a tag lookalike the redactor
+#: claims. Both are the key's separator doing its work on a piece; neither holds
+#: key material. Without the separator no key-anchored branch matches any
+#: fragment -- the branch needs its ``:`` or ``=`` whether or not a quote
+#: follows -- so the words and the tags survive and every cut reads clean, which
+#: is the one property this form exists for. The quote itself is kept: it is not
+#: what anchors a key.
+_KEY_GLUE_BEFORE_TAG = re.compile(r"""[:=](?=["']?\[REDACTED: (?:encoded )?credential\])""")
 
 
 def _span_whose_whitespace_hides_a_key(
