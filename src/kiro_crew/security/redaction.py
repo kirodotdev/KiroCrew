@@ -936,9 +936,13 @@ _BASELINE_SYMBOL_TABLE_MIN = 37
 #: did before this masker existed.
 _MASKED_REGION_CAP = 4096
 
-#: Substituted for every character of a masked table. A tilde, and the property
-#: that matters is which character classes admit it -- in BOTH directions, because
-#: blanking a region can break a match as well as build one.
+#: Substituted for the ALPHANUMERIC characters of a masked table; its punctuation
+#: is copied through untouched. See :func:`_mask_region`, which explains why the
+#: split is there.
+#:
+#: A tilde, and the property that matters is which character classes admit it, in
+#: BOTH directions, because blanking a region can break a match as well as build
+#: one.
 #:
 #: It must be admitted by every value class that can cross the region's boundary.
 #: A credential's match can ANCHOR ACROSS a masked region: the non-text bytes that
@@ -966,6 +970,38 @@ _MASKED_TABLE_FILLER = "~"
 _TEXT_REGION_RE = re.compile(r"[\t\n\r\x20-\x7e]{%d,}" % _BASELINE_SYMBOL_TABLE_MIN)
 
 
+def _mask_region(region: str) -> str:
+    """*region* with its alphanumerics filled and its punctuation copied through.
+
+    A credential's match does not have to lie inside the region, and it can depend
+    on the region in two different ways. One is a value RUN that crosses the
+    boundary, which :data:`_MASKED_TABLE_FILLER` is chosen to survive. The other is
+    a required LITERAL the match borrows FROM the region, and no choice of filler
+    can survive that -- removing the character removes the literal.
+
+    The standard table's printable tail contains ``:``, so a URL can borrow it:
+    ``://[^\\s:/@]*:[^\\s/]+@`` matches with ``[^\\s:/@]*`` running from ``://``
+    into the region, the separator ``:`` being the TABLE's own, and ``[^\\s/]+``
+    running out of the region to the password and its ``@``. Fill the region and no
+    colon follows ``://`` at all, so a password the raw scan refused is delivered.
+
+    Splitting on alphanumeric is what settles this as a rule rather than one more
+    exception. What masking exists to cancel is the table's credential SHAPE, and
+    every unlabelled shape in the catalogue is built from alphanumerics -- six
+    digits then thirty-two letters, a forty-character base64 run. What a pattern
+    can require as a literal is punctuation. So filling only the alphanumerics
+    removes the whole shape while leaving every literal the region could ever lend,
+    which for this constant is ``%&'()*:`` rather than the one colon that happened
+    to be found.
+
+    The shape really does die: the bot-token form needs ``[0-9]{6,}`` before its
+    colon and the bare-secret form needs forty characters of ``[A-Za-z0-9+/]``, and
+    :data:`_MASKED_TABLE_FILLER` is in neither class, so a region of filler and
+    punctuation matches no detector in this module.
+    """
+    return "".join(_MASKED_TABLE_FILLER if char.isalnum() else char for char in region)
+
+
 def mask_baseline_symbol_tables(text: str) -> str:
     """Blank the standard container symbol tables in *text*, leaving all else.
 
@@ -990,13 +1026,15 @@ def mask_baseline_symbol_tables(text: str) -> str:
     the constant and keeps its whole match.
 
     WHAT THE REMOVAL MAY BREAK is the second bound, and it belongs to
-    :data:`_MASKED_TABLE_FILLER` rather than to the region test. A credential's
-    match can ANCHOR ACROSS a masked region, because the non-text bytes delimiting
-    the region are inside the value classes that carry no literal label, so
-    removing only PUBLIC characters can still destroy a match that spanned them.
-    The filler is chosen so it cannot: every boundary-crossing class admits it, so
-    a crossing match survives, and no contiguous-token class does, so a token run
-    can only shorten.
+    :func:`_mask_region` rather than to the region test. A credential's match can
+    depend on the region without lying inside it: it can ANCHOR ACROSS it, because
+    the non-text bytes delimiting the region are inside the value classes that
+    carry no literal label, and it can BORROW a required literal from it, because
+    the constant contains punctuation such as ``:``. So removing only PUBLIC
+    characters can still destroy a match. Both are closed there: the filler is
+    admitted by every boundary-crossing class and by no contiguous-token class, so
+    a crossing run survives and a token run can only shorten, and only the region's
+    alphanumerics are filled, so every literal it could lend stays in place.
 
     Whole-region equality is what keeps a table from covering for a neighbour.
     Regions are maximal, so a table written next to a credential shares one region
@@ -1028,7 +1066,7 @@ def mask_baseline_symbol_tables(text: str) -> str:
             return text
         start, end = match.span()
         pieces.append(text[cursor:start])
-        pieces.append(_MASKED_TABLE_FILLER * (end - start))
+        pieces.append(_mask_region(text[start:end]))
         cursor = end
     if not pieces:
         return text

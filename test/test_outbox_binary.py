@@ -781,7 +781,10 @@ class TestContainerSymbolTablesAreNotCredentials:
         masked = mask_baseline_symbol_tables(head + table + tail)
         assert masked.startswith(head)
         assert masked.endswith(tail)
-        assert masked[len(head) : len(masked) - len(tail)] == _MASKED_TABLE_FILLER * len(table)
+        region = masked[len(head) : len(masked) - len(tail)]
+        assert len(region) == len(table)
+        expected = "".join(_MASKED_TABLE_FILLER if char.isalnum() else char for char in table)
+        assert region == expected
 
     def test_nothing_is_masked_when_there_is_no_table(self):
         """The buffer comes back ITSELF, which is what lets the gate skip a re-scan."""
@@ -813,6 +816,88 @@ class TestContainerSymbolTablesAreNotCredentials:
             for start in range(len(table) - _BASELINE_SYMBOL_TABLE_MIN + 1)
         ]
         assert any(security.redact(slice_) != slice_ for slice_ in at_floor)
+
+    def test_a_credential_borrowing_the_tables_colon_survives_masking(self):
+        """A match may take a required LITERAL from the region, not just cross it.
+
+        The constant's printable tail contains ``:``, and the URL branch needs one
+        between userinfo and password. So a URL can supply ``://`` itself, let
+        ``[^\\s:/@]*`` run into the region, use the TABLE's colon as the separator,
+        and let ``[^\\s/]+`` run back out to the password and its ``@``. No filler
+        can survive that -- removing the character removes the literal -- so the
+        region's punctuation is copied through instead of being filled.
+        """
+        from kiro_crew.platform import binary_content_is_flagged
+        from kiro_crew.security import redact
+        from kiro_crew.security.redaction import (
+            _BASELINE_SYMBOL_TABLE,
+            mask_baseline_symbol_tables,
+        )
+
+        password = "hunter2hunter2hunter2"
+        raw = (
+            b"\xff\xd8\xff\xe0https://\x80"
+            + _BASELINE_SYMBOL_TABLE.encode("latin-1")
+            + b"\x80"
+            + password.encode()
+            + b"@db.example.com/"
+        )
+        text = raw.decode("latin-1")
+        # The premise: the credential brings NO colon of its own, and is too short
+        # for any contiguous-run detector to catch by itself.
+        assert ":" not in password
+        assert text.count(":") == 2, "one in the scheme, one inside the table"
+        assert len(password) < 40
+        assert redact(text) != text
+        masked = mask_baseline_symbol_tables(text)
+        assert masked is not text, "the region must actually be masked"
+        assert redact(masked) != masked
+        assert binary_content_is_flagged(raw)
+
+    def test_the_constant_can_supply_a_required_literal(self):
+        """Why the punctuation split exists: the table really does carry a ``:``."""
+        from kiro_crew.security.redaction import _BASELINE_SYMBOL_TABLE
+
+        assert ":" in _BASELINE_SYMBOL_TABLE
+
+    def test_masking_fills_alphanumerics_and_keeps_punctuation(self):
+        """The rule, stated over the whole constant rather than over one character.
+
+        Every literal the region could lend stays; the credential shape, which is
+        alphanumeric, goes.
+        """
+        from kiro_crew.security.redaction import (
+            _BASELINE_SYMBOL_TABLE,
+            _MASKED_TABLE_FILLER,
+            mask_baseline_symbol_tables,
+        )
+
+        table = _BASELINE_SYMBOL_TABLE
+        punctuation = {char for char in table if not char.isalnum()}
+        assert punctuation, "the constant must carry punctuation for this to matter"
+        masked = mask_baseline_symbol_tables(f"\x00{table}\x00")
+        region = masked[1:-1]
+        assert len(region) == len(table)
+        for index, char in enumerate(table):
+            expected = _MASKED_TABLE_FILLER if char.isalnum() else char
+            assert region[index] == expected, (index, char)
+        assert not any(char.isalnum() for char in region)
+
+    def test_the_masked_region_still_matches_no_detector(self):
+        """Keeping the punctuation must not revive the false positive.
+
+        The bot-token form needs digits before its colon and the bare-secret form
+        needs forty alphanumerics; the filler is in neither class, so a region of
+        filler plus punctuation is inert.
+        """
+        from kiro_crew.security import redact
+        from kiro_crew.security.redaction import (
+            _BASELINE_SYMBOL_TABLE,
+            mask_baseline_symbol_tables,
+        )
+
+        region = mask_baseline_symbol_tables(f"\x00{_BASELINE_SYMBOL_TABLE}\x00")
+        assert redact(region) == region
 
     def test_the_filler_is_admitted_by_every_boundary_crossing_class(self):
         """What stops blanking from destroying a match that crossed the region.
