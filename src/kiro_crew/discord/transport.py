@@ -26,6 +26,7 @@ from kiro_crew.discord.client import (
     DISCORD_CHUNK_LIMIT,
     DiscordClient,
     DiscordInbound,
+    SendPermission,
 )
 from kiro_crew.messaging.identity import channel_inbound_permitted
 from kiro_crew.messaging.outbound_files import OutboundFile
@@ -385,7 +386,7 @@ class DiscordTransport(MessagingTransport):
             return True
         return bool(principal) and principal in self._allowed
 
-    def _still_may_send_to(self, channel_id: str) -> bool:
+    def _still_may_send_to(self, channel_id: str) -> SendPermission:
         """May a channel the REST ladder already started sending to still be
         written to? Fails closed. Installed on the client as
         ``still_permitted``.
@@ -424,17 +425,25 @@ class DiscordTransport(MessagingTransport):
         delivering to a peer whose authorization may already be gone, which is the
         thing this exists to stop. A caller that needs the send to survive can re-open
         the DM through ``create_dm_channel``, which establishes the pairing.
+
+        Each refusal names its OWN ground, because only here can the two be told
+        apart: a peer the roster refuses is a withdrawal, while an id nothing
+        can place is a destination this process cannot attribute. The caller reports
+        whichever it is, so an operator reading a dropped notification is not told a
+        policy changed when none did.
         """
         if not channel_id:
-            return False
+            return SendPermission.unattributable()
         if channel_id in self._allowed_threads:
-            return True
+            return SendPermission.allow()
         if channel_id in self._allowed_channels:
-            return True
+            return SendPermission.allow()
         peer = self._client.cached_dm_recipient(channel_id)
         if peer is not None:
-            return peer in self._allowed
-        return False
+            if peer in self._allowed:
+                return SendPermission.allow()
+            return SendPermission.revoked()
+        return SendPermission.unattributable()
 
     # -- Lifecycle ----------------------------------------------------------
     async def connect(self) -> None:
