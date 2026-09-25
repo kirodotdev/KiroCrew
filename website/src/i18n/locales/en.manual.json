@@ -4060,7 +4060,10 @@
         "all_tasks_complete": "All tasks complete",
         "current_task": "Current task",
         "aria_collapse_task_list": "{{done}} of {{total}} tasks complete. Collapse task list",
-        "aria_expand_task_list": "{{done}} of {{total}} tasks complete. Expand task list"
+        "aria_expand_task_list": "{{done}} of {{total}} tasks complete. Expand task list",
+        "stopped": "Stopped",
+        "aria_expand_task_list_stopped": "Stopped with {{done}} of {{total}} tasks complete. Expand task list",
+        "aria_collapse_task_list_stopped": "Stopped with {{done}} of {{total}} tasks complete. Collapse task list"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "Collapse model reasoning",
@@ -4468,6 +4471,10 @@
         "rate_right": "Jev read this compaction right",
         "rate_wrong": "Jev read this compaction wrong",
         "not_scored": "(+{{count}} not scored)"
+      },
+      "recoveryCard": {
+        "open_items_follow_up": "task list items still open · follow-up sent automatically",
+        "plan_left_open": "Plan left unfinished"
       }
     },
     "chatPage": {

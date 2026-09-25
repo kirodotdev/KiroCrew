@@ -10198,7 +10198,9 @@
         "tool_call_blocked": "Chiamata allo strumento bloccata",
         "tool_stopped_responding": "Lo strumento ha smesso di rispondere",
         "turn_interrupted": "Turno interrotto",
-        "turn_stalled": "Turno in stallo"
+        "turn_stalled": "Turno in stallo",
+        "plan_left_open": "Piano non completato",
+        "open_items_follow_up": "restano attività aperte nell'elenco · richiesta di seguito inviata automaticamente"
       },
       "sessionColorPicker": {
         "change_your_color_palette_in_display_settings": "Cambia la tua palette di colori nelle impostazioni di visualizzazione",
@@ -10366,10 +10368,13 @@
       "taskProgressBar": {
         "all_tasks_complete": "Tutte le attività completate",
         "aria_collapse_task_list": "{{done}} di {{total}} attività completate. Comprimi l’elenco delle attività",
+        "aria_collapse_task_list_stopped": "Interrotto con {{done}} attività completate su {{total}}. Comprimi l'elenco attività",
         "aria_expand_task_list": "{{done}} di {{total}} attività completate. Espandi l’elenco delle attività",
+        "aria_expand_task_list_stopped": "Interrotto con {{done}} attività completate su {{total}}. Espandi l'elenco attività",
         "current_task": "Attività corrente",
         "more": "altri…",
         "of": "di",
+        "stopped": "Interrotto",
         "task_completion": "Completamento dell'attività"
       },
       "thinkingBlock": {

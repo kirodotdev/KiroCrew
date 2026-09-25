@@ -10336,7 +10336,9 @@
         "tool_call_blocked": "Вызов инструмента заблокирован",
         "tool_stopped_responding": "Инструмент перестал отвечать",
         "turn_interrupted": "Ход прерван",
-        "turn_stalled": "Ход застопорился"
+        "turn_stalled": "Ход застопорился",
+        "plan_left_open": "План не завершён",
+        "open_items_follow_up": "в списке задач остались открытые пункты · уточнение отправлено автоматически"
       },
       "sessionColorPicker": {
         "change_your_color_palette_in_display_settings": "Измените цветовую палитру в настройках отображения",
@@ -10511,10 +10513,13 @@
       "taskProgressBar": {
         "all_tasks_complete": "Все задачи выполнены",
         "aria_collapse_task_list": "Выполнено задач: {{done}} из {{total}}. Свернуть список задач",
+        "aria_collapse_task_list_stopped": "Остановлено: выполнено задач {{done}} из {{total}}. Свернуть список задач",
         "aria_expand_task_list": "Выполнено задач: {{done}} из {{total}}. Развернуть список задач",
+        "aria_expand_task_list_stopped": "Остановлено: выполнено задач {{done}} из {{total}}. Развернуть список задач",
         "current_task": "Текущая задача",
         "more": "ещё…",
         "of": "из",
+        "stopped": "Остановлено",
         "task_completion": "Выполнение задачи"
       },
       "thinkingBlock": {

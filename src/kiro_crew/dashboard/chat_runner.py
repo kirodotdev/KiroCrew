@@ -76,6 +76,7 @@ from kiro_crew.config.loader import (
 from kiro_crew.config.sections import ResolvedBindings
 from kiro_crew.connections import get_visible_providers
 from kiro_crew.constants import (
+    OPTIONS_RE_LINE,
     STEER_NOTICE_BOUND_SECS,
     reflow_and_label_glued_option_marker,
     strip_control_comments,
@@ -192,6 +193,7 @@ from kiro_crew.dashboard.state import (
     NATIVE_SUBAGENT_OUTPUT_TAIL,
     NATIVE_SUBAGENT_TERMINAL_KEEP,
     NATIVE_SUBAGENT_TERMINAL_TTL_SECS,
+    PLAN_RECONCILE_RECOVERY_PREFIX,
     REFUSAL_INBAND_RECOVERY_PREFIX,
     REFUSAL_RECOVERY_PREFIX,
     STALE_RECOVERY_PREFIX,
@@ -304,6 +306,11 @@ from kiro_crew.name_grant import (
     refusal_for_command_off_loop,
     shell_command_for_event,
     should_log_decline,
+)
+from kiro_crew.open_plan import (
+    build_plan_reconcile_body,
+    open_plan_from_todo,
+    should_queue_plan_reconcile,
 )
 from kiro_crew.platform import redact_via_context
 from kiro_crew.providers.base import (
@@ -7857,6 +7864,13 @@ async def _start_next_queued_turn(
             for q in slot._queue
             if q.get("kind") == FALSE_TOOL_BLOCKER_REPLAY_KIND
             or (is_synthetic_payload_item(q) and q.get("content") in _purgeable)
+            # The open-plan follow-up carries counts in its body, so it is
+            # matched by prefix. Still structural: only a synthetic-payload
+            # entry qualifies, never a user who typed the same words.
+            or (
+                is_synthetic_payload_item(q)
+                and str(q.get("content") or "").startswith(PLAN_RECONCILE_RECOVERY_PREFIX)
+            )
         ]
         if superseded:
             for q in superseded:
@@ -9596,6 +9610,19 @@ async def _run_chat(
     # clear, a plan Cancel's owner-scoped discard, a rewind commit's rebuild).
     if not _synthetic_payload:
         slot._empty_episode_productive = False
+        # The open-plan follow-up is one per GENUINE prompt: re-arm it here and
+        # nowhere else, so a runner continuation (the follow-up itself included)
+        # inherits the spent budget and cannot chain a second one.
+        slot._plan_reconcile_used = False
+    # Structural, like the hook-continuation depth: a user who types the prefix
+    # verbatim carries no synthetic payload and is ordinary speech.
+    _is_plan_reconcile_turn = bool(_synthetic_payload) and message.startswith(
+        PLAN_RECONCILE_RECOVERY_PREFIX
+    )
+    # Whether the agent used its todo_list tool during THIS turn. Set on every
+    # todo event, changed or not: re-echoing the same list still means the agent
+    # was working the plan this turn.
+    _turn_todo_touched = False
     # tool_call_id -> DISPLAY TITLE (LLM-authored prose for shell tools; used
     # only for PostToolUse hook name-matching — NOT trustworthy for security).
     _pending_tools: dict[str, str] = {}
@@ -11383,6 +11410,9 @@ async def _run_chat(
                 exclude_last_n=1,
                 folder_path=folder_path,
                 board_tags=board_tags,
+                # Only on a genuine prompt: a runner continuation (the open-plan
+                # follow-up itself included) already says what it needs.
+                open_plan=(None if _synthetic_payload else open_plan_from_todo(slot._todo)),
                 model_window=model_window,
                 # Member DM threads get the four-layer member identity block.
                 # `slot.agent` is the member the human picked (the crew name);
@@ -14985,6 +15015,7 @@ async def _run_chat(
                     fanout_no_owner=event.runtime_global,
                 )
             elif event.kind == EVENT_TODO_UPDATE:
+                _turn_todo_touched = True
                 # Agent's own TODO list. Store on the slot (so /api/chat/slots
                 # and the WS `slots` snapshot rehydrate it after a reconnect),
                 # then push a lightweight delta so the pill updates mid-turn
@@ -17200,6 +17231,72 @@ async def _run_chat(
                     kind=SYNTHETIC_RECOVERY_KIND,
                     payload=RecoveryPayload.CONTINUATION,
                 )
+
+        # ── Open-plan follow-up ────────────────────────────────────────────
+        # The agent's own todo_list still has open items at a normal turn end.
+        # Without this the pill reads "2 of 3" forever and nothing asks the agent
+        # to finish, or to say why not. One follow-up per genuine prompt
+        # (slot._plan_reconcile_used), queued last so any other continuation
+        # queued above wins and this one stands down (see the gate's docstring).
+        # The body carries counts and positions only, never task text.
+        _open_plan = open_plan_from_todo(slot._todo)
+        if _open_plan is not None and should_queue_plan_reconcile(
+            plan=_open_plan,
+            todo_touched_this_turn=_turn_todo_touched,
+            ended_normally=(_stop_reason == STOP_REASON_END_TURN),
+            user_stopped=_stop_pressed() or _should_suppress_requeue(slot),
+            needs_reset=needs_session_reset,
+            already_used=slot._plan_reconcile_used,
+            is_reconcile_turn=_is_plan_reconcile_turn,
+            is_monitor_wake=_is_monitor_wake,
+            in_stage_execution=slot._in_stage_execution,
+            plan_gate_armed=_armed_final,
+            other_continuation_queued=(
+                any(is_synthetic_recovery_item(_it) for _it in slot._queue)
+                or _recovering_promise
+                or _recovering_compaction
+                or _recovering_infra
+                or _retrying_empty
+            ),
+            user_followup_queued=_has_user_queued_followup(slot),
+            pending_steers=bool(getattr(slot, "_pending_steers", None)),
+            # A non-blocking ask_question card is recorded on the slot
+            # (_question_pending) and flagged turn-locally; the state-level map
+            # holds only interaction-coordinator asks. Any of the three means
+            # the agent parked its open items behind the user's answer.
+            handed_to_user=(
+                bool(OPTIONS_RE_LINE.search(assistant_text or ""))
+                or _terminal_question_posted
+                or bool(getattr(slot, "_question_pending", None))
+                or any(
+                    _q.get("slot") == slot.key
+                    for _q in getattr(state, "_pending_questions", {}).values()
+                    if isinstance(_q, dict)
+                )
+            ),
+        ):
+            slot._plan_reconcile_used = True
+            logger.info(
+                "Turn for slot %s ended with %d of %d todo items open -- "
+                "queueing one plan-reconcile follow-up",
+                slot.key,
+                _open_plan.open_count,
+                _open_plan.total,
+            )
+            _queue_recovery(
+                0,
+                f"{PLAN_RECONCILE_RECOVERY_PREFIX}\n{build_plan_reconcile_body(_open_plan)}",
+                kind=SYNTHETIC_RECOVERY_KIND,
+                payload=RecoveryPayload.CONTINUATION,
+            )
+            # The dispatch-point purge in `_start_next_queued_turn` compares these
+            # against the live counters to catch a Stop (or a rebind) that lands
+            # while the follow-up waits. Snapshot them like every sibling arm does:
+            # a snapshot left from an older episode would read as "stopped since
+            # enqueue" and drop this follow-up for a Stop that predates it.
+            slot._promise_only_stop_gen = getattr(slot, "_stop_generation", 0)
+            slot._promise_only_session_stop_gen = _session_stop_generation()
+            slot._promise_only_session_key = effective_session_key(slot)
 
         # ── Bidirectional sync: mirror response to linked Slack thread ──
         # Gated on the SAME audience fence as the channel-neutral leg below. Slack is

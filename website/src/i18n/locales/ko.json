@@ -9922,7 +9922,9 @@
         "continued_by_a_hook": "훅에 의해 계속 진행했습니다",
         "hook_requested_continuing": "훅에서 요청함 · 계속 진행 중",
         "hook_loop_halted": "훅 루프가 중지되었습니다",
-        "nudge_cap_reached": "넛지 한도에 도달함"
+        "nudge_cap_reached": "넛지 한도에 도달함",
+        "plan_left_open": "계획 미완료",
+        "open_items_follow_up": "작업 목록에 미완료 항목 있음 · 후속 요청 자동 전송됨"
       },
       "sessionColorPicker": {
         "change_your_color_palette_in_display_settings": "색상 팔레트는 표시 설정에서 변경할 수 있습니다",
@@ -10076,10 +10078,13 @@
       "taskProgressBar": {
         "all_tasks_complete": "모든 작업이 완료되었습니다",
         "aria_collapse_task_list": "{{total}}개 중 {{done}}개 작업 완료. 작업 목록 접기",
+        "aria_collapse_task_list_stopped": "작업 {{total}}개 중 {{done}}개 완료 후 중단됨. 작업 목록 접기",
         "aria_expand_task_list": "{{total}}개 중 {{done}}개 작업 완료. 작업 목록 펼치기",
+        "aria_expand_task_list_stopped": "작업 {{total}}개 중 {{done}}개 완료 후 중단됨. 작업 목록 펼치기",
         "current_task": "현재 작업",
         "more": "개 더…",
         "of": "/",
+        "stopped": "중단됨",
         "task_completion": "작업 완료 현황"
       },
       "thinkingBlock": {

@@ -10060,7 +10060,9 @@
         "tool_call_blocked": "टूल कॉल अवरुद्ध",
         "tool_stopped_responding": "टूल ने प्रतिक्रिया देना बंद कर दिया",
         "turn_interrupted": "टर्न बाधित हुआ",
-        "turn_stalled": "टर्न रुक गया"
+        "turn_stalled": "टर्न रुक गया",
+        "plan_left_open": "योजना अधूरी रह गई",
+        "open_items_follow_up": "कार्य सूची में आइटम अभी खुले हैं · फ़ॉलो-अप अपने-आप भेजा गया"
       },
       "sessionColorPicker": {
         "change_your_color_palette_in_display_settings": "अपना रंग पैलेट प्रदर्शन सेटिंग्स में बदलें",
@@ -10221,10 +10223,13 @@
       "taskProgressBar": {
         "all_tasks_complete": "सभी टास्क पूर्ण",
         "aria_collapse_task_list": "{{total}} में से {{done}} टास्क पूर्ण। टास्क सूची समेटें",
+        "aria_collapse_task_list_stopped": "{{total}} में से {{done}} कार्य पूरे होने पर रुका। कार्य सूची बंद करो",
         "aria_expand_task_list": "{{total}} में से {{done}} टास्क पूर्ण। टास्क सूची विस्तृत करें",
+        "aria_expand_task_list_stopped": "{{total}} में से {{done}} कार्य पूरे होने पर रुका। कार्य सूची खोलो",
         "current_task": "मौजूदा टास्क",
         "more": "और…",
         "of": "में से",
+        "stopped": "रुका हुआ",
         "task_completion": "कार्य पूर्णता"
       },
       "thinkingBlock": {

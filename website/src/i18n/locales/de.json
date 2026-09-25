@@ -10060,7 +10060,9 @@
         "tool_call_blocked": "Werkzeugaufruf blockiert",
         "tool_stopped_responding": "Werkzeug antwortet nicht mehr",
         "turn_interrupted": "Zug unterbrochen",
-        "turn_stalled": "Zug blockiert"
+        "turn_stalled": "Zug blockiert",
+        "plan_left_open": "Plan nicht abgeschlossen",
+        "open_items_follow_up": "Aufgabenliste hat offene Punkte · Nachfrage automatisch gesendet"
       },
       "sessionColorPicker": {
         "change_your_color_palette_in_display_settings": "Ändern Sie Ihre Farbpalette in den Anzeigeeinstellungen",
@@ -10221,10 +10223,13 @@
       "taskProgressBar": {
         "all_tasks_complete": "Alle Aufgaben abgeschlossen",
         "aria_collapse_task_list": "{{done}} von {{total}} Aufgaben abgeschlossen. Aufgabenliste einklappen",
+        "aria_collapse_task_list_stopped": "Angehalten bei {{done}} von {{total}} erledigten Aufgaben. Aufgabenliste zuklappen",
         "aria_expand_task_list": "{{done}} von {{total}} Aufgaben abgeschlossen. Aufgabenliste aufklappen",
+        "aria_expand_task_list_stopped": "Angehalten bei {{done}} von {{total}} erledigten Aufgaben. Aufgabenliste aufklappen",
         "current_task": "Aktuelle Aufgabe",
         "more": "mehr…",
         "of": "von",
+        "stopped": "Angehalten",
         "task_completion": "Aufgabenabschluss"
       },
       "thinkingBlock": {
