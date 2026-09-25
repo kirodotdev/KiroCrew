@@ -229,6 +229,8 @@ async def cached_status_snapshot(state: DashboardState) -> dict[str, Any]:
     from kiro_crew.dashboard.handlers.updates import status_update_fields
 
     crons, lessons = await _refresh_status_counts(state)
+    # stat + read of the served index.html: one worker hop, never on the loop.
+    bundle_id = await asyncio.to_thread(DashboardState.served_bundle_id)
     # ``status_update_fields()`` is typed ``dict[str, object]``; spreading it
     # into the keyword-only ``status_snapshot`` signature is sound at runtime
     # (every key is a real parameter —
@@ -237,5 +239,6 @@ async def cached_status_snapshot(state: DashboardState) -> dict[str, Any]:
     return state.status_snapshot(
         cron_jobs=crons,
         lessons=lessons,
+        bundle_id=bundle_id,
         **status_update_fields(),  # type: ignore[arg-type]
     )

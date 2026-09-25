@@ -141,6 +141,8 @@ logger = logging.getLogger(__name__)
 #: exactly one served bundle per process, and the snapshot that reads it sits
 #: on the hot status path.
 _BUNDLE_ID_CACHE: dict[str, tuple[tuple[int, int], str]] = {}
+#: The entry point the gateway serves (``server.py``'s ``_DIST_DIR``).
+_SERVED_INDEX = Path(__file__).resolve().parent.parent / "static" / "dist" / "index.html"
 _FOLDER_REPOSITORY = FolderRepository(lambda: logger)
 
 
@@ -5676,7 +5678,7 @@ class DashboardState:
         gateway actually serves (``server.py``'s ``_DIST_DIR``).
         """
         if index is None:
-            index = Path(__file__).resolve().parent.parent / "static" / "dist" / "index.html"
+            index = _SERVED_INDEX
         try:
             st = index.stat()
         except OSError:
@@ -5731,6 +5733,7 @@ class DashboardState:
         update_min_version: str = "",
         update_can_arm: bool = False,
         version_display: str = "",
+        bundle_id: str = "",
     ) -> dict[str, Any]:
         """Core status fields shared by /api/status, SSE, and WebSocket pushes.
 
@@ -5848,7 +5851,8 @@ class DashboardState:
             # one that reaches every open tab, not just the one that clicked
             # Update. Empty when no built bundle is served (dev source tree),
             # which the SPA treats as unknown, never as a change.
-            "bundle_id": self.served_bundle_id(),
+            # Read off the loop by ``cached_status_snapshot``.
+            "bundle_id": bundle_id,
             # Which release lane these bytes came from: "nightly", "insider" or
             # "stable". Shipped as a RESOLVED ANSWER rather than leaving the
             # dashboard to parse `version` itself, because the rule is not
