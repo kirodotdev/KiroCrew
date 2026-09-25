@@ -64,8 +64,10 @@ source, and UTF-16 length limits.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+
+from kiro_crew.messaging.display_safety import canonicalize_display, redact_for_display
 
 __all__ = [
     "split_markdown_safe",
@@ -182,8 +184,63 @@ class _Fence:
 #: can flip the state halfway through itself.
 _Frag = tuple[str, str, bool]
 
+#: A whitespace run holding at least one line break, with the horizontal
+#: whitespace on either side of it. Sealing a chunk trims the whitespace that
+#: ended it and the next chunk starts at the first character after that run, so
+#: this is exactly the span a cut at a line boundary removes from the screen.
+_BREAK_RUN = re.compile(r"[^\S\n]*\n\s*")
 
-def split_markdown_safe(text: str, limit: int, *, reserve: int = 0) -> list[str]:
+
+def _cut_safe_text(text: str, redactor: Callable[[str], str]) -> str:
+    """*text* made safe to cut at ANY boundary this module may choose.
+
+    A caller that scans each produced chunk on its own cannot see a credential
+    the cut severed: neither piece matches, so both are reported clean, and the
+    reader rejoins the halves reading one message and then the next. The scan has
+    to happen while the text is still whole, and against the form a reader ends
+    up seeing rather than the characters as written.
+
+    Two reductions, because a cut removes one thing and a client removes another:
+
+    * **The rendered form.** :func:`~kiro_crew.messaging.display_safety.
+      redact_for_display` scans the literal text and the form the platform
+      renders, so a key broken by markup is a marker before any boundary can
+      land inside it. This alone closes a mid-line hard cut, where the text on
+      each side of the boundary is unchanged.
+    * **The break a seal drops.** A chunk sealed at a line boundary loses the
+      whitespace that ended it, and the next chunk begins at the first character
+      after that whitespace. So on screen the last character before the break
+      sits flush against the first one after it, while the whole text still
+      holds the break between them. A key whose halves straddle a line break is
+      therefore invisible to a scan of the text as written, invisible to a scan
+      of either chunk, and whole in the reader's eye.
+
+    Every break is a candidate boundary, so the second scan reads them all
+    collapsed at once. That is wider than any single cut produces, which is the
+    safe direction: the answer needed is whether this text can be cut at all.
+
+    When the collapsed form holds a credential, the collapsed and redacted form
+    is what comes back, so the message loses its line breaks. That is the trade
+    :func:`~kiro_crew.messaging.display_safety.redact_for_display` already makes
+    when it gives up markup for the same reason -- formatting is worth less than
+    a key -- and it is one-directional: text whose collapsed form holds nothing
+    keeps its breaks, so the common case is byte-for-byte unchanged.
+    """
+    safe = redact_for_display(text, redactor)[0]
+    flush = _BREAK_RUN.sub("", canonicalize_display(safe))
+    scrubbed = redactor(flush)
+    if scrubbed != flush:
+        return scrubbed
+    return safe
+
+
+def split_markdown_safe(
+    text: str,
+    limit: int,
+    *,
+    reserve: int = 0,
+    redactor: Callable[[str], str] | None = None,
+) -> list[str]:
     """Split *text* into chunks of at most ``limit - reserve`` characters.
 
     ``reserve`` holds back capacity for something the caller appends to every
@@ -217,7 +274,20 @@ def split_markdown_safe(text: str, limit: int, *, reserve: int = 0) -> list[str]
     ``limit`` alone — never the remaining room, the reserved closer, or what the
     chunk already holds — so the cut without a clean boundary is reachable only
     for a line longer than ``limit``.
+
+    ``redactor`` makes the cut itself credential-aware, and a caller that
+    delivers each chunk as its own message passes one: the text is reduced by
+    :func:`_cut_safe_text` before any boundary is chosen, so no boundary can hand
+    the reader a key that neither chunk holds. It stays optional, because a
+    caller whose chunks land inside one message severs nothing a reader can
+    rejoin across messages, and it is idempotent, so a caller that already
+    redacted its text pays one scan and keeps its bytes.
     """
+    if redactor is not None:
+        # Ahead of every early return below: a text that fits today's budget is
+        # still the text a smaller budget cuts tomorrow, and the reduction does
+        # not depend on where the boundary lands.
+        text = _cut_safe_text(text, redactor)
     if not text:
         return []
     cap = limit - reserve
@@ -346,7 +416,9 @@ def split_markdown_safe(text: str, limit: int, *, reserve: int = 0) -> list[str]
     return out
 
 
-def chunk_utf8_bytes(text: str, max_bytes: int) -> list[str]:
+def chunk_utf8_bytes(
+    text: str, max_bytes: int, *, redactor: Callable[[str], str] | None = None
+) -> list[str]:
     """Split *text* into chunks of at most *max_bytes* UTF-8 bytes.
 
     Lossless and code-point-safe: the concatenation of the result always equals
@@ -359,7 +431,15 @@ def chunk_utf8_bytes(text: str, max_bytes: int) -> list[str]:
     byte cap use :func:`split_markdown_bytes`, which only falls back here for a
     fragment that admits no clean cut. A non-positive *max_bytes* disables
     chunking, matching ``chunk_text``.
+
+    ``redactor`` carries the same meaning as in :func:`split_markdown_safe`, for
+    the same reason: a byte budget knows nothing about credentials either, so a
+    caller delivering each chunk as its own message passes one. Losslessness is
+    then against the reduced text rather than the argument, and the two differ
+    only for text holding a credential a cut could hand to the reader whole.
     """
+    if redactor is not None:
+        text = _cut_safe_text(text, redactor)
     if not text:
         return []
     if max_bytes <= 0:

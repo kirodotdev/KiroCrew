@@ -299,7 +299,7 @@ def render_chunks(content: str, limit: int = WHATSAPP_CHUNK_LIMIT) -> list[str]:
     text = to_whatsapp_text(content)
     if not text:
         return []
-    return split_markdown_safe(text, limit)
+    return split_markdown_safe(text, limit, redactor=_redact_all)
 
 
 async def render_chunks_off_loop(content: str, limit: int = WHATSAPP_CHUNK_LIMIT) -> list[str]:

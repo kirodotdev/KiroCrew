@@ -393,7 +393,7 @@ class WebexRenderer(Renderer):
         # budget) that a hand-rolled copy of this loop spins forever on. And
         # deliberately the FENCE-BLIND one, not ``split_markdown_bytes``: the
         # answer path above re-seals its own fences.
-        chunks = chunk_utf8_bytes(content, WEBEX_MAX_TEXT) or ["…"]
+        chunks = chunk_utf8_bytes(content, WEBEX_MAX_TEXT, redactor=_redact_all) or ["…"]
         first, rest = chunks[0], chunks[1:]
         delivered = False
         if self._placeholder_id is not None:
