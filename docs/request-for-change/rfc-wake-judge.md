@@ -6,7 +6,7 @@ created: 2026-09-22
 last-audited: 2026-09-23
 audited-at: 2fdadc71ac
 doc-pr: 12735
-implementation-prs: [12776]
+implementation-prs: [12776, 12787, 13759]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -23,34 +23,30 @@ Status: partial. The LLM lane is on main: `decisions/impl_llm.py` answers the
 judge's questions over one tool-less model call, `gate.py` carries `nudge.wake`
 in `DECISION_POINT_NAMES` beside `JUDGE_POINT` and the two lane names, and
 `decisions.nudge_wake.provider` and `.llm_model` are live config keys the config
-route may edit. The judge core is in flight on
-[#12787](https://github.com/kirodotdev/KiroCrew/pull/12787) rather than on main:
+route may edit. The judge core is on main as well, from
+[#12787](https://github.com/kirodotdev/KiroCrew/pull/12787) (merged `2d5a800ee`):
 `decisions/points/nudge_wake.py`, the `nudge_evidence` entry in
 `POINT_SCOPE_KEYS`, the evidence collectors, the autonudge tick hook, `judge` on
-`monitor_start` / `monitor_update` and the transcript notice are all absent from
-main, and so are the skills that author a brief. No `kirocrew-judge` agent
+`monitor_start` / `monitor_update` and the transcript notice are all on the base
+tree. What is still outstanding is the reader placement §8's PR G entry records,
+and the skills
+that author a brief. No `kirocrew-judge` agent
 template is coming: the landed lane runs on the bundled `kirocrew-lite`
 (`JUDGE_AGENT_NAME`), because a judge template would differ from it only in the
 model, which the runner passes per call, and a standing prompt the call already
-states. Code references below were read at `2fdadc71ac`. The sections describing
-the core describe that branch, read at `d81bd0ec17`, and it is a subset of them:
-it carries the transcript-tail and pull-request-probe evidence kinds, states that
-a comment-BODY kind is deliberately absent because its reader publishes only a
-digest, and carries no work-ledger or self collector at all. Its `default_spec()`
-carries the two criteria and not §3.3's untrusted-evidence clause, and its scope
-text is the opt-in wording §7 Q5 is about. That branch is also where §7 Q4 is
-settled, by reading the narrower `judge_evidence_scope_granted` before a lane is
-picked. Re-audit at merge every section whose statement is read off that branch:
-§3.2, §3.3, §3.4, §3.6, §7 Q4 and §8's PR D entry.
+states. Code references below were read at `ccba8886cc`.
 
 ## 1. Problem
 
 An auto-nudge loop (`monitor_start`) fires a full model turn on its owning
-session every interval. For a pull request named by URL, `PrWatchProbe` already
-turns unchanged ticks into free re-arms; for everything else — a conductor
-patrolling worker transcripts, a babysitter reading bot comment bodies, a loop
-watching a log — every tick costs a turn on the main session whether or not the
-new evidence needs it. Measured on this repository today: a conductor watching
+session every interval. A tick whose evidence is TYPED can already be made free:
+a pull-request watch whose bar is a check conclusion returns quiet without
+spending a turn. What costs a turn whether or not the evidence needs it is
+everything a typed reading cannot settle — a conductor patrolling worker
+transcripts, a babysitter reading bot comment bodies, a loop watching a log, and a
+pull-request watch whose owner's bar is a sentence of their own rather than a
+check conclusion. Measured on this
+repository today: a conductor watching
 three workers at 45 min spends ~48 turns over two days to act on about five
 events; ten patrol loops died together on a gateway restart and nobody noticed
 for hours because the only reader was the loop itself. A second measurement, from
@@ -98,13 +94,21 @@ autonudge tick ─▶ evidence collectors ─▶ state (bounded, scrubbed)
         provider failure / invalid answer / timeout ─▶ FALLBACK ─────┘
 ```
 
-TERMINAL is not a judge verdict. Only a typed probe (a merged or closed pull
-request, a work ledger with every item closed) ends a loop; the judge can never
-stop one, so no prose can buy permanent silence.
+TERMINAL is not a judge verdict. The auto-nudge core ends a loop on one typed
+fact it maps itself — a merged or closed pull request — and the judge can never
+stop one, so no prose can buy permanent silence. The reader that supplies that
+fact does not act on it either: it fetches, and the mapping lives in the core.
 
 ### 3.1 The decision point `nudge.wake`
 
-State (one object, ≤ 8 000 chars after scrubbing, oldest evidence dropped first):
+State (one object, ≤ 8 000 chars after scrubbing). The shed rule: the typed
+summaries `pr_state` and `pr_checks` are pinned, and when the budget binds the
+oldest PROSE item goes. Pinned because the built-in criteria are answered from
+them, so shedding them would delete the evidence the question is asked against,
+and because they are bounded and small -- one `pr_checks` item renders a 90-lane
+board in 42 characters -- so they are never the pressure on the budget. Oldest
+prose because a comment body is as old as its comment, while a summary is observed
+on the tick that sends it:
 
 - `loop`: the owner's instruction, truncated to 1 500 chars, and the
   `wake_when` / `quiet_when` text of the brief in force — the built-in one, or
@@ -112,10 +116,14 @@ State (one object, ≤ 8 000 chars after scrubbing, oldest evidence dropped firs
 - `since_last_tick`: a list of evidence items, each `{source, kind, age_s, text}`
   where `source` names the collector and the target (`session:chat-1751`,
   `pr:kirodotdev/KiroCrew#12735`, `work-ledger:it_42`), `kind` is a closed set
-  (`transcript_tail`, `pr_checks`, `pr_comment`, `ledger_event`, `probe`),
-  and `text` is bounded per item (1 000 chars).
-- `last_verdict`: the previous tick's answer and fingerprint, so a judge can see
-  it already passed on this evidence once.
+  (`transcript_tail`, `pr_state`, `pr_checks`, `pr_comment`, `pr_review`), and
+  `text` is bounded per item (1 000 chars). `ledger_event` arrives with the work
+  ledger collector.
+- `last_verdict`: `{outcome, evidence_items, at}` and nothing else -- the previous
+  tick's answer, how many items it rested on, and when. Deliberately text-free and
+  carrying no fingerprint of the evidence, so a judge can see that it already
+  answered on a comparable amount without being handed that evidence again. It
+  cannot establish that the evidence was the SAME evidence.
 
 Questions, asked in parallel, each atomic. The shipped seam speaks Jev's
 `choice` type only (`decisions/types.py`; `_to_wire` refuses anything else), so
@@ -154,12 +162,16 @@ not prompt text.
 
 ### 3.2 Evidence collectors
 
-The tick runs in the gateway (in `AutoNudgeService`, same thread the PR probe
-uses), so collectors read in-process state; no tool call, no model.
+The tick runs in the gateway (in `AutoNudgeService`, ON its event loop, since the
+caller is already a coroutine and the collectors it awaits are async), so
+collectors read in-process state; no tool call, no model. The pull-request fetch is
+the part deliberately pushed off that loop, because a `gh` spawn would block it.
 
-- `pr`: for each PR URL in the message or `judge.targets`, the existing
-  `PrWatchProbe` observation plus new review/issue comment bodies since the
-  last tick (bounded).
+- `pr`: for each PR URL in the message or `judge.targets`, the reading the gh-pr
+  fetcher published this tick — state, mergeability, review decision, head, the
+  deduped check board with its completeness flag, and comment and review bodies
+  (bounded per item and in total). A reading whose own status is not `ok` counts
+  as a target nobody read whole, which fires.
 - `session`: for each `chat-*` key in `judge.targets`, the transcript rows
   appended since the last tick, assistant and tool rows only, last status line
   first. Creator-only: the same check `session_read_message` applies. A target
@@ -196,11 +208,29 @@ The object is optional because the point carries a brief of its own. Once the
 `nudge_evidence` scope is granted on a consented keystone, every gated auto-nudge
 loop is screened, and a loop that arms no `judge` object is screened with the
 built-in brief: **wake**
-when the subject needs its owner — a blocker, a question or a ruling addressed to
-it, a terminal state, or the exit condition the loop's own message states;
-**quiet** when nothing has arrived for the owner since the last tick. An explicit
+when the subject needs its owner — a blocker, a failing check or one whose reading
+is not whole, a question or a ruling addressed to it, a new comment
+or review whose body asks for a change or asks a question, a terminal state, or the
+exit condition the loop's own message states; **quiet** when nothing has arrived
+for the owner since the last tick. An explicit
 `judge` brief overrides the built-in one, so a loop that knows its own subject
 states its own criteria and a loop that says nothing is still screened.
+
+Two of those clauses name what a typed reading cannot settle on its own, and each
+is spelled out rather than left to "a blocker". A comment or review that ASKS sits
+in prose while the lane carrying it reports success, so nothing typed sees it. A
+failing check is the opposite case: entirely typed, and named anyway because it is
+what an owner arming no criteria at all most expects, and resting a red board on
+the judge reading one generic word the way the owner meant it is the wrong bet.
+A reading short of whole is named beside it, since a quiet drawn from half a board
+is a quiet about the wrong half.
+
+The check clause says "failing", not "newly failing", because the state carries the
+CURRENT board and no prior one. What keeps a red board from waking its owner every
+tick is `last_verdict`, which tells the judge it already answered on a comparable
+amount of evidence -- an outcome and an item count, not a fingerprint, so this is a
+weaker signal than a delta and is the honest limit of it. A brief that asked for
+newness would be asking a question the state cannot answer at all.
 
 The built-in brief carries one clause beyond those two, because the loops it
 covers have no author to write it: evidence from a pull-request comment or a
@@ -220,21 +250,23 @@ consent and the scope together, which is also what arms the Jev lane (§7 Q4). Q
 asks how a grant made under the narrower wording is told apart from one made under
 this.
 
-Where the judge sits in the tick decides which loops it can reach. It answers
-before the typed probe guard for a loop whose probe will not run — a conductor
-watching sibling sessions carries no monitor at all, so anything behind a
-monitor's presence would never reach it — and defers to the probe's own quiet
-return for a loop whose probe does run, because only the probe sees a merged or
-closed subject and ends the watch.
+Where the judge sits in the tick decides which loops it can reach. The gh-pr
+reader FETCHES and judges nothing: it hands the whole reading over — state, the
+check board deduped newest-per-name against the API's own `total_count`, comment
+and review bodies — and the judge decides wake or quiet from it. The core maps one
+thing deterministically before the judge is asked: a merged or closed pull request
+ends the watch. A loop whose subject nothing reads — a conductor watching sibling
+sessions carries no monitor at all — is screened on its transcript evidence alone.
 
 Three cases bypass the judge. A loop armed `gate=false` acts while its subject is
 quiet — refreshing a heartbeat, chasing a reviewer who has not replied — so its
 ticks are the work rather than a reaction to evidence, and screening them would
 remove the turns the owner asked for. `judge: false`, the one value the object
 takes beside a brief, is the owner's opt-out for a single loop. And
-`monitor_watch` stays probe-first: a typed provider probe answers the same
-question there without a model, and the judge reads only what a probe cannot
-type. With the scope off, a `judge` object that names no criteria of its own is
+`monitor_watch` stays provider-decided: a typed provider answers its own
+`review_ready` objective there without a model, and its reader produces a comment
+FINGERPRINT rather than bodies, so there is no prose on that path for a judge to
+read. With the scope off, a `judge` object that names no criteria of its own is
 accepted, stored and ignored, so an armed loop survives the switch being toggled;
 one that names criteria is screened on the LLM lane, which this scope does not
 govern, while a pinned `jev` is refused for want of the same grant (§7 Q2). The
@@ -347,8 +379,26 @@ stops one
 | loop | today | with judge (Jev) | with judge (LLM) |
 |---|---|---|---|
 | conductor, 3 workers, 45 min, 48 h | 64 main turns | ~6 main turns + 64 judge calls (~$0.01) | ~6 main turns + 64 small-model calls |
-| PR babysit with bot-comment reading, 5 min | 1 turn / tick | wake only on a new finding | same, seconds slower |
+| PR babysit with bot-comment reading, 5 min | 288 main turns / day | ~a few main turns + one judge call per tick that has new evidence | same, on the small-model lane |
 | judge provider down | — | identical to today (fallback fires) | identical to today |
+
+Every tick with new evidence is screened, so on a busy subject the judge-call
+count approaches the tick count rather than the wake count. A tick whose delta is
+EMPTY costs no provider call at all: `judge_tick` answers QUIET locally when every
+target was read and none had anything new, which is the row above's quiet case.
+
+That local gate has a cost of its own worth recording rather than claiming as pure
+saving. A criterion about an ABSENCE -- "no reviewer has replied in two hours",
+"the branch is still behind its base" -- becomes true on a tick where nothing
+changed, which is exactly the tick the gate answers without asking. So the judge
+cannot serve an absence criterion today, and an owner who needs one arms
+`gate=false` and pays a turn per interval. Closing that means letting a loop mark
+its criteria as time-dependent so an empty delta still reaches the judge, and it is
+not in this design.
+
+The trade on a busy subject is one small-model call per tick against one
+main-session turn per tick: a judge call is a bounded state and a three-question
+answer on the cheapest lane, where a main turn carries the loop's whole context.
 
 ## 5. Security
 
@@ -397,8 +447,8 @@ stops one
 
 - **Event-driven wakes only** ([`rfc-conductor-work-ledger`](rfc-conductor-work-ledger.md)
   Phase 3, and the earlier draft of this RFC's sibling). Correct for typed
-  facts; blind to prose evidence. The two compose: probe first, judge on what
-  the probe cannot type.
+  facts; blind to prose evidence. The two compose: the reader fetches the typed
+  facts, the judge reads them together with the prose.
 - **[`rfc-token-efficient-monitors`](rfc-token-efficient-monitors.md)**
   (in-progress). That RFC's monitor controller is what adds "fingerprints,
   budgets, terminal outcomes, and completed-turn accounting", and it leaves the
@@ -406,7 +456,7 @@ stops one
   replacing it. Terminal outcomes are therefore its vocabulary and not the
   judge's, which is why the mapping in §3.1 gives the judge no terminal verdict.
   The judge adds one decision at the tick and changes none of that controller's
-  typed verdicts; where a typed probe can answer, it answers alone.
+  typed verdicts; `monitor_watch` stays provider-decided.
 - **[`rfc-consolidated-monitor`](rfc-consolidated-monitor.md)** (draft). It
   merges three streams, one of which is `autonudge.py`, and states "the target
   shape, what gets deleted, and the order". The judge is a field on an existing
@@ -461,6 +511,19 @@ stops one
    wider population. Either the scope is versioned, or the wider population needs
    a scope key of its own, which is the mechanism the seam already uses to keep an
    already-consented install inert for a category it never reviewed.
+6. What becomes of a script cron whose driver is retired. DECIDED: it is
+   auto-paused, not deleted. The refusal itself is settled -- the watch identity
+   raises and the kernel ends the run -- but ending it on the kernel's default path
+   REMOVES the registration, and that registration is the only durable record the
+   watch existed. The owner is told: the runner reports the ending with its message
+   and the scheduler delivers that message before removing the job. What no message
+   survives is the fact that a watch was ever armed, so an owner who reads it days
+   later has nothing to look at.
+   The cron layer already offers the alternative. A job whose run keeps failing
+   crosses the auto-pause threshold and then stays LISTED with `auto_paused`, a
+   `last_error` that can name `monitor_start` as the replacement, and an audit
+   entry. Evidence kept, reason readable on the schedule page, and the job fires no
+   more. That is what PR G implements: the refusal stands, the deletion does not.
 
 ## 8. Rollout
 
@@ -482,4 +545,26 @@ stops one
    detail panel. Depends on D's point name and on #12598's card shape.
 3. PR F — skills: `babysit` and `goal-conductor` author `wake_when` /
    `quiet_when` when arming; after D merges.
-4. This RFC lands as `docs/request-for-change/rfc-wake-judge.md`.
+4. PR G — the reader fetches and the judge decides: `probes/gh_pr.py` keeps the
+   transport and drops every wake decision, the whole reading reaches the judge as
+   evidence (`pr_state`, `pr_checks`, `pr_comment`, `pr_review`), the core keeps the
+   one mapping it can act on (a merged or closed pull request ends the watch), and
+   the script-cron driver goes, because a subprocess holds no decisions provider and
+   so cannot reach a judge at all. This is the placement §3.1 rests on rather than a
+   later revision of it: a typed reader that answers first decides the owner's
+   criterion for them, and the criterion is what differs between two loops on one
+   board. Depends on D's decision point and collectors.
+
+   A job a user already registered from the babysit skill's copy-then-register
+   recipe keeps its own copy of the script, so removing the bundled one does not
+   reach it. Those jobs are REFUSED at run rather than left polling: the watch
+   identity raises, and the kernel turns that into one message naming `monitor_start`
+   as the thing to arm instead. The alternative is a cron that fires on schedule,
+   decides nothing and reports nothing, which reads to its owner as a watch still
+   running. `docs/system-specs/modules/babysit-pr-watch.md` carried the guarantee
+   that the adapter remains a compatibility asset for registered jobs; PR G replaces
+   that guarantee with this one and records the refusal there. The refused job is
+   AUTO-PAUSED rather than deleted, per §7 Q6: it stays listed with `auto_paused`
+   and a `last_error` naming the replacement, because removing it would destroy the
+   only durable record that the watch existed.
+5. This RFC lands as `docs/request-for-change/rfc-wake-judge.md`.
