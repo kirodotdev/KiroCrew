@@ -26,6 +26,28 @@ import { normalizeRunSessionKey } from '../apps/workflows/runModel'
 import { anchorForSlot, loadLayout, sessionSlots } from './splitLayoutStore'
 import { TAB_ID } from '../api/tabId'
 import { api } from '../api/client'
+import { setGatewayConnected } from '../utils/errorReport'
+import type { AppDispatch } from '../store'
+
+/**
+ * The store flag and its context-free mirror, moved together or not at all.
+ *
+ * `dashboardSlice.connected` drives store-connected UI; the seam in
+ * `utils/errorReport` drives AskAgentButton, which must stay mountable outside
+ * the Provider (ErrorBoundary fallbacks) and so cannot read the store. A
+ * dispatch site that set one without the other would split the two truths —
+ * these helpers are the only sanctioned way to move the flag, so a future
+ * connect/disconnect site cannot silently skip the mirror.
+ */
+function markGatewayConnected(dispatch: AppDispatch): void {
+  dispatch(sseConnected())
+  setGatewayConnected(true)
+}
+
+function markGatewayDisconnected(dispatch: AppDispatch): void {
+  dispatch(sseDisconnected())
+  setGatewayConnected(false)
+}
 import { AUTONUDGE_LOOPS_QUERY_KEY } from '../components/autoNudgeLoop'
 import { forgetUnobservedMemberThreads } from '../api/membersQuery'
 import { observedPaneSlots } from '../api/slotMessagesQuery'
@@ -1243,7 +1265,7 @@ export function useWebSocket() {
         slotActivityTimerRef.current = null
         slotActivityFlushScheduledRef.current = false
         slotActivityBufRef.current.clear()
-        dispatch(sseConnected())
+        markGatewayConnected(dispatch)
         dispatch(fetchSlots()).finally(() => { reconnectingRef.current = false })
         // A summary regenerated while the socket was down pushed a
         // `session_summary` event nobody received, and the panel does not poll,
@@ -1356,7 +1378,7 @@ export function useWebSocket() {
         return
       }
       wasConnectedRef.current = true
-      dispatch(sseConnected())
+      markGatewayConnected(dispatch)
       seedAutomations()
       // FIRST connect only: App's mount effect already dispatched fetchSlots,
       // and this handler fires strictly after it, so repeating it here is a
@@ -2711,7 +2733,7 @@ export function useWebSocket() {
       // Stale WS (e.g. from StrictMode cleanup) — ignore entirely.
       if (wsRef.current !== ws) return
 
-      dispatch(sseDisconnected())
+      markGatewayDisconnected(dispatch)
       wsRef.current = null
 
       if (closingRef.current) return

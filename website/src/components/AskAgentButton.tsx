@@ -1,5 +1,12 @@
+import { useSyncExternalStore } from 'react'
 import { Sparkles } from 'lucide-react'
-import { findReport, sendErrorToChat, type ErrorReport } from '../utils/errorReport'
+import {
+  findReport,
+  isGatewayConnected,
+  sendErrorToChat,
+  subscribeGatewayConnected,
+  type ErrorReport,
+} from '../utils/errorReport'
 import { buildErrorPrompt } from '../utils/errorReport.prompt'
 
 import { i18nT } from '../i18n/t'
@@ -19,12 +26,15 @@ import { i18nT } from '../i18n/t'
  *    from the error journal by message match, which is what makes this droppable
  *    into the ~80 existing ad-hoc `setError(e.message)` sites unchanged.
  *
- * **Deliberately hook-free.** Its most important callers are ErrorBoundary
+ * **Deliberately context-free.** Its most important callers are ErrorBoundary
  * fallbacks, and a boundary is exactly where the store or router may be the
  * thing that threw — so requiring `<Provider>`/`<Router>` context would make the
  * button unavailable in the case it matters most. Navigation goes through the
  * `installSoftNavigate` seam in `utils/errorReport`, which degrades to a full
- * page load instead of throwing.
+ * page load instead of throwing — and the connectivity gate below reads the
+ * gateway-connectivity seam in the same module rather than the store, for the
+ * same reason. (`useSyncExternalStore` needs no context, so the constraint
+ * holds even though the component is no longer hook-free.)
  */
 export function askAgentPrompt(report: ErrorReport | { message: string }): string {
   return buildErrorPrompt(report, i18nT('components.askAgent.prompt_lead'))
@@ -119,6 +129,10 @@ export default function AskAgentButton({
    */
   tone?: 'danger' | 'warn'
 }) {
+  // Subscribed, not read once: the button must come BACK when the gateway
+  // reconnects, and disappear when it drops, without the caller re-rendering.
+  const gatewayConnected = useSyncExternalStore(subscribeGatewayConnected, isGatewayConnected)
+
   // Render only needs to know whether there is anything to offer. The report is
   // resolved at CLICK time, not here, because of an ordering hazard in the
   // boundaries: React runs getDerivedStateFromError -> renders this fallback ->
@@ -127,6 +141,13 @@ export default function AskAgentButton({
   // with no stack and no component context — and since componentDidCatch writes an
   // instance field rather than state, nothing re-renders to correct it.
   if (!report && !message) return null
+
+  // While the gateway is unreachable the hand-off is a dead end: it delivers
+  // the error to a composer that cannot send ("gateway offline — message will
+  // not send"), and the most likely error on screen right then IS the
+  // connectivity failure itself. Hide rather than disable: a disabled "Ask the
+  // agent" next to "Failed to fetch" reads as one more broken thing.
+  if (!gatewayConnected) return null
 
   const onClick = () => {
     // The gate goes in FRONT of the whole hand-off, staging included: a vetoed
