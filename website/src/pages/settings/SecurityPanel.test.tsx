@@ -2076,3 +2076,78 @@ describe('SecurityPanel — review-round regressions', () => {
     expect(screen.getAllByRole('listbox', { name: 'Security sections' })).toHaveLength(1)
   })
 })
+
+describe('SecurityPanel — deny-when-ungoverned scope label', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(api.deniedCommands as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot())
+    ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockResolvedValue({})
+    ;(api.tailnetStatus as ReturnType<typeof vi.fn>).mockResolvedValue(TAILNET_OFF)
+    ;(api.fileDeliveryConsent as ReturnType<typeof vi.fn>).mockResolvedValue(CONSENT_NONE)
+  })
+
+  const APPROVAL_LABEL = () => i18nT('pages.settings.securityPanel.gov_scope_approval_mode')
+  const COMMANDS_LABEL = () => i18nT('pages.settings.securityPanel.gov_scope_commands')
+  const STEERING_SOURCES_LABEL = () => i18nT('pages.settings.securityPanel.gov_scope_steering_sources')
+  const NOTHING_ALLOWED = () => i18nT('pages.settings.securityPanel.nothing_allowed')
+  const NOT_RESTRICTED = () => i18nT('pages.settings.securityPanel.not_restricted')
+
+  /** The single governance scope row carrying `labelText`, so an assertion cannot
+   *  match another row's value. */
+  function scopeRow(labelText: string): HTMLElement {
+    const el = screen.getByText(labelText).closest('.justify-between')
+    if (!el) throw new Error(`no governance row for "${labelText}"`)
+    return el as HTMLElement
+  }
+
+  it('an ungoverned scope WITHOUT the opt-in flag keeps the "Not restricted" label', async () => {
+    ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(
+      govGoverned({
+        scopes: [
+          { scope: 'approval_mode', archetype: 'ruleset', governed: false, source: 'ungoverned', detail: {} },
+          { scope: 'commands', archetype: 'ruleset', governed: true, source: 'policy', detail: { mode: 'deny', allow_count: 0, deny_count: 2 } },
+        ],
+      }),
+    )
+    renderWithProviders(<SecurityPanel />, { route: '/?section=governance' })
+    await screen.findByText('Policy v1')
+
+    const row = scopeRow(APPROVAL_LABEL())
+    expect(within(row).getByText(NOT_RESTRICTED())).toBeInTheDocument()
+    expect(within(row).queryByText(NOTHING_ALLOWED())).not.toBeInTheDocument()
+  })
+
+  it('a GOVERNED row is decided by its archetype and ignores deny_when_ungoverned', async () => {
+    ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(
+      govGoverned({
+        scopes: [
+          { scope: 'commands', archetype: 'ruleset', governed: true, source: 'policy', deny_when_ungoverned: true, detail: { mode: 'deny', allow_count: 0, deny_count: 2 } },
+        ],
+      }),
+    )
+    renderWithProviders(<SecurityPanel />, { route: '/?section=governance' })
+    await screen.findByText('Policy v1')
+
+    const row = scopeRow(COMMANDS_LABEL())
+    expect(within(row).getByText(/Block-list · 2 rules/)).toBeInTheDocument()
+    expect(within(row).queryByText(NOTHING_ALLOWED())).not.toBeInTheDocument()
+    expect(within(row).queryByText(NOT_RESTRICTED())).not.toBeInTheDocument()
+  })
+
+  it('shows "Nothing allowed" for an ungoverned steering source scope', async () => {
+    ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(
+      govGoverned({
+        scopes: [
+          { scope: 'steering.sources', archetype: 'ruleset', governed: false, source: 'ungoverned', deny_when_ungoverned: true, detail: {} },
+          { scope: 'commands', archetype: 'ruleset', governed: true, source: 'policy', detail: { mode: 'deny', allow_count: 0, deny_count: 2 } },
+        ],
+      }),
+    )
+    renderWithProviders(<SecurityPanel />, { route: '/?section=governance' })
+    await screen.findByText('Policy v1')
+
+    const row = scopeRow(STEERING_SOURCES_LABEL())
+    expect(within(row).getByText(NOTHING_ALLOWED())).toBeInTheDocument()
+    expect(within(row).queryByText(NOT_RESTRICTED())).not.toBeInTheDocument()
+  })
+})
