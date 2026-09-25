@@ -178,7 +178,7 @@ it adds:
 | `[SLACK THREAD CONTEXT]` | thread parent / metadata | Slack threads |
 | `[PROJECT]` | the slot's project dir | every turn, `project` group |
 | `[BOARD]` | slot board tags, sanitized ids | slot carries tags |
-| `[RESOURCES]` | `resource_status.probe` | only when host memory is tight |
+| `[RESOURCES]` | `resource_status.probe` | host memory tight/critical, or the agent slice within `_SLICE_TASKS_TIGHT_RATIO` of its cgroup `pids.max` |
 | `[FOLDER]` | sidebar ancestry | once per session, and after a move |
 | `[THEME PERSONA]` / `$skill` bodies | `request_prefix_context` | dashboard-generated |
 | `[Skill: name]` bodies, `[Relevant skills for this message]` | trigger matching | see below |

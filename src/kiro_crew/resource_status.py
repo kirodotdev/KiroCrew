@@ -30,8 +30,9 @@ Alongside memory the probe reads one more ceiling: the agent slice's TASK count
 against its ``pids.max`` (see :func:`_read_agent_slice_tasks`). The slice's
 memory headroom already reaches the posture through the cgroup-clamped memory
 probe, while its task headroom reached nothing — a breach there fails ``fork()``
-for every agent on the host at once, yet the count that approaches it was
-readable only from ``/sys/fs/cgroup`` by hand. It is REPORTED, never gated: the
+for every agent under that slice at once, yet the count that approaches it was
+readable only from ``/sys/fs/cgroup`` by hand. It reaches the pull tool's report,
+the injected line, and the diagnostics bundle. It is REPORTED, never gated: the
 posture stays a single memory scalar, so :func:`admission_check` and
 :func:`prewarm_allowance` behave exactly as before at any task count.
 """
@@ -45,6 +46,7 @@ import threading
 import time
 from collections.abc import MutableMapping
 from dataclasses import dataclass
+from pathlib import Path
 
 from kiro_crew.config.loader import KiroCrewConfig
 
@@ -107,6 +109,26 @@ _PIDS_CURRENT = "pids.current"
 _PIDS_MAX = "pids.max"
 
 
+def _read_pids_max(path: Path) -> int:
+    """A cgroup ``pids.max`` as ``0`` for no ceiling, the value, or ``-1`` unreadable.
+
+    The shared reader (``sandbox.read_cgroup_int``) folds three outcomes into one
+    ``None``: the kernel's ``max`` sentinel, an absent file, and unparseable
+    content. Every other caller treats all three as "this bound does not
+    constrain", which is right for a bound but wrong for a REPORT: a slice torn
+    down between the directory check and this read would otherwise be published
+    as having no ceiling, which is a reassurance nothing measured. Only the
+    literal sentinel earns ``0`` here.
+    """
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return -1
+    if text == "max":
+        return 0
+    return int(text) if text.isdigit() else -1
+
+
 def _read_agent_slice_tasks() -> tuple[int, int, int]:
     """Agent-slice task count, its ceiling, and this instance's share of it.
 
@@ -129,16 +151,20 @@ def _read_agent_slice_tasks() -> tuple[int, int, int]:
     when this install has no per-instance slice to attribute tasks to.
     """
     try:
+        # Imported inside the function, like the memory probe above, and for the
+        # same reason this module documents as a property: import cheapness.
+        # ``sandbox`` is ~12,600 lines, and several module-scope importers of
+        # ``resource_status`` -- ``context`` on the per-turn path, ``cron``,
+        # ``mcp_tools.spawn``, ``dashboard.cautious_boot`` -- do not import it at
+        # all, so hoisting this would put that cost on every one of them. No
+        # cycle forces the choice: ``sandbox`` never reads this module.
         from kiro_crew import sandbox
 
         slice_dir = sandbox._agents_slice_cgroup_dir()
         if slice_dir is None:
             return -1, -1, -1
         current = sandbox.read_cgroup_int(slice_dir / _PIDS_CURRENT)
-        # read_cgroup_int folds an absent file and the ``max`` sentinel into the
-        # same None. The slice directory existing means the file does too, so
-        # None here is "this slice has no ceiling", not "unreadable".
-        raw_limit = sandbox.read_cgroup_int(slice_dir / _PIDS_MAX)
+        limit = _read_pids_max(slice_dir / _PIDS_MAX)
         child_name = sandbox._agents_slice_name()
         own = -1
         if child_name != sandbox._CGROUP_AGENTS_SLICE:
@@ -150,7 +176,7 @@ def _read_agent_slice_tasks() -> tuple[int, int, int]:
             else:
                 own_current = sandbox.read_cgroup_int(child / _PIDS_CURRENT)
                 own = -1 if own_current is None else own_current
-        return (-1 if current is None else current), (0 if raw_limit is None else raw_limit), own
+        return (-1 if current is None else current), limit, own
     except Exception:  # pragma: no cover - defensive; the probe must never raise
         logger.debug("agent-slice task probe failed", exc_info=True)
         return -1, -1, -1
@@ -197,16 +223,20 @@ class ResourceStatus:
         return self.slice_tasks >= _SLICE_TASKS_TIGHT_RATIO * self.slice_tasks_limit
 
     def slice_tasks_text(self) -> str:
-        """The task reading both surfaces print, so they can never disagree.
+        """The task reading both rendered surfaces print, so they cannot disagree.
 
-        Empty when the count is unreadable, which is what keeps the figure off
-        every non-Linux host and out of every surface rather than printing an
-        "unknown" line nobody can act on.
+        Empty when the count is unreadable, which is what keeps the figure out of
+        the pull tool's report and off the advisory line on a host with no cgroup
+        task ceiling. The diagnostics bundle is separate and carries the ``-1``
+        sentinel instead, because a field reader needs the key present to tell
+        "not measurable here" from a field this version does not serve.
         """
         if self.slice_tasks < 0:
             return ""
-        if self.slice_tasks_limit <= 0:
+        if self.slice_tasks_limit == 0:
             text = f"{self.slice_tasks} tasks, no ceiling set"
+        elif self.slice_tasks_limit < 0:
+            text = f"{self.slice_tasks} tasks, ceiling unreadable"
         else:
             pct = round(100 * self.slice_tasks / self.slice_tasks_limit)
             text = f"{self.slice_tasks} of {self.slice_tasks_limit} tasks ({pct}%)"
@@ -260,19 +290,29 @@ class ResourceStatus:
             return ""
         return (
             f" The agent slice is also near its task ceiling ({self.slice_tasks_text()}); "
-            "past it every agent's fork on this host fails at once, so close idle "
+            "past it every agent under that slice fails to fork at once, so close idle "
             "sessions rather than adding more."
         )
 
     def _tasks_only_line(self) -> str:
-        """The advisory for a host tight on tasks while memory is fine."""
+        """The advisory for a slice tight on tasks while memory is not the constraint.
+
+        The memory half is stated from the posture rather than assumed: a host
+        whose memory probe is unreadable classifies as ``unknown``, which is not
+        under pressure, so this line would otherwise report memory as fine on a
+        reading it never obtained.
+        """
         if not self.slice_tasks_tight:
             return ""
+        if self.posture == POSTURE_UNKNOWN:
+            memory = "Host memory is unreadable here"
+        else:
+            memory = "Host memory is fine"
         return (
-            f"[RESOURCES] Host memory is fine, but the agent slice is near its task "
-            f"ceiling ({self.slice_tasks_text()}). Past it every agent's fork on this "
-            "host fails at once. Avoid large parallel sub-agent waves, close idle "
-            "sessions, and call the resource_status tool to re-check."
+            f"[RESOURCES] {memory}, but the agent slice is near its task ceiling "
+            f"({self.slice_tasks_text()}). Past it every agent under that slice fails to "
+            "fork at once. Avoid large parallel sub-agent waves, close idle sessions, and "
+            "call the resource_status tool to re-check."
         )
 
     def summary_lines(self) -> list[str]:

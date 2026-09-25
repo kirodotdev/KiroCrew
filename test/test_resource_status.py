@@ -301,8 +301,8 @@ def test_prewarm_allowance_tracks_the_advisory_thresholds() -> None:
 
 # ── agent-slice task ceiling ─────────────────────────────────────────────────
 #
-# The slice's pids ceiling is the one whose breach fails fork() for every agent
-# on the host at once, so these cases cover the read, the tight band, both
+# The slice's pids ceiling is the one whose breach fails fork for every agent
+# under that slice at once, so these cases cover the read, the tight band, both
 # render paths, and the invariance the design promises: reported, never gated.
 
 _TOKEN = "kirocrew-agents-abc123def456.slice"
@@ -352,6 +352,29 @@ def test_slice_tasks_max_sentinel_means_no_ceiling(tmp_path, monkeypatch) -> Non
     _patch_slice(monkeypatch, _slice_tree(tmp_path, limit="max\n"))
     current, limit, _own = _REAL_SLICE_PROBE()
     assert (current, limit) == (29500, 0)
+
+
+def test_slice_tasks_unreadable_ceiling_is_not_an_absent_one(tmp_path, monkeypatch) -> None:
+    """A ceiling that cannot be read must not be published as "no ceiling".
+
+    A slice released between the directory check and this read fails the read,
+    and reporting that as an absent limit is a reassurance nothing measured. The
+    two answers are kept distinct: ``0`` is the kernel's sentinel, ``-1`` is a
+    failure.
+    """
+    slice_dir = _slice_tree(tmp_path)
+    (slice_dir / "pids.max").unlink()
+    _patch_slice(monkeypatch, slice_dir)
+    current, limit, _own = _REAL_SLICE_PROBE()
+    assert current == 29500
+    assert limit == -1
+
+
+def test_slice_tasks_unparseable_ceiling_is_unreadable(tmp_path, monkeypatch) -> None:
+    """Content that is neither the sentinel nor digits reads as unknown."""
+    _patch_slice(monkeypatch, _slice_tree(tmp_path, limit="not-a-number\n"))
+    _current, limit, _own = _REAL_SLICE_PROBE()
+    assert limit == -1
 
 
 def test_slice_tasks_absent_slice_is_unknown(monkeypatch) -> None:
@@ -426,12 +449,16 @@ def test_slice_tasks_tight_band(current: int, limit: int, tight: bool) -> None:
 
 
 def test_slice_tasks_text_shapes(monkeypatch) -> None:
-    """The one reading both surfaces print, in its three shapes."""
+    """The one reading both surfaces print, in its four shapes."""
     _tasks(monkeypatch, 29500, 32768, 22000)
     text = rs.probe(_cfg(4.0, 2.0)).slice_tasks_text()
     assert text == "29500 of 32768 tasks (90%), this instance 22000"
     _tasks(monkeypatch, 29500, 0, -1)
     assert rs.probe(_cfg(4.0, 2.0)).slice_tasks_text() == "29500 tasks, no ceiling set"
+    # An unreadable ceiling reads differently from an absent one, so a released
+    # slice is never printed as a slice without a limit.
+    _tasks(monkeypatch, 29500, -1, -1)
+    assert rs.probe(_cfg(4.0, 2.0)).slice_tasks_text() == "29500 tasks, ceiling unreadable"
     _tasks(monkeypatch, -1, -1, -1)
     assert rs.probe(_cfg(4.0, 2.0)).slice_tasks_text() == ""
 
@@ -451,6 +478,23 @@ def test_tasks_tight_raises_the_line_on_ample_memory(monkeypatch) -> None:
     assert "CRITICALLY" not in line
     assert "memory is tight" not in line
     assert "memory is fine" in line
+
+
+def test_tasks_tight_never_claims_memory_it_could_not_read(monkeypatch) -> None:
+    """An unreadable memory probe is not a clean bill of health for memory.
+
+    ``unknown`` is not under pressure, so the task-only line is the branch that
+    renders; it must report memory as unreadable rather than fine, because a
+    reader told memory is fine stops considering it as the constraint.
+    """
+    monkeypatch.setattr(rs, "_read_available_gb", lambda: -1.0)
+    _tasks(monkeypatch, 31000, 32768, 22000)
+    status = rs.probe(_cfg(4.0, 2.0))
+    line = status.context_line()
+    assert status.posture == rs.POSTURE_UNKNOWN
+    assert "31000 of 32768" in line
+    assert "memory is fine" not in line
+    assert "unreadable" in line
 
 
 def test_under_pressure_stays_memory_only(monkeypatch) -> None:
