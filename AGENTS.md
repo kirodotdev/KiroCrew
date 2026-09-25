@@ -123,6 +123,12 @@ Detail and rationale: [security](docs/system-specs/modules/security.md),
   PreToolUse gate even when the kiro agent config granted the call. The evaluator
   is scope-name-agnostic, so adding a scope is a `SCOPE_CATALOG` data change, never
   an evaluator edit.
+- **Custom ACP is the one selectable backend with unverified routing.** Its unasked
+  tool calls reach no Crew approval, hook or deny rule. It is owner-configured only,
+  labelled experimental, needs the credential mask, and under any POLICY ceiling it
+  is selectable only when `agent_backend` names it in an allow entry
+  (`agent_backend_governance._CEILING_MUST_NAME`); a policy that is silent about it
+  denies it.
 - **`CONTRACT_VERSION` stays pinned at 1 pre-launch.**
 - **Never restate the denied-rule count in prose.**
   `test/test_denied_commands_security.py` pins it, and a restated count goes stale

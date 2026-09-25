@@ -440,6 +440,15 @@ floor so the agent cannot read or rewrite its own ceiling. Archetypes,
 composition algebra, scope boundaries and the signed-policy authenticity model
 are in [`../system-specs/modules/governance.md`](../system-specs/modules/governance.md).
 
+**Custom ACP fails closed under a ceiling.** `custom` is the one selectable
+backend with `Routing.UNVERIFIED`: its harness's unasked tool calls reach none of
+the gates above, only the credential mask and the sandbox. So when any POLICY is
+installed, `agent_backend` must name `custom` in an allow entry before it is
+selectable. A policy with no `agent_backend` rule, or a deny-mode rule that does
+not list it, removes it at boot. Fleet admins who want it must add
+`{"agent_backend": {"mode": "allow", "allow": ["custom"]}}` (plus any other
+harness they already allow). With no POLICY at all, it stays selectable.
+
 **Computer use is deliberately not governed.** It is one operator opt-in on a
 keystone file, with refusals enforced in band on the tool dispatch path rather
 than at the fail-open PreToolUse gate. See
