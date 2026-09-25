@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import errno
 import gc
 import hashlib
 import itertools
 import json
 import os
 import shutil
+import stat
 import threading
 import time
 import uuid
@@ -3054,3 +3056,250 @@ def test_census_truncates_wherever_the_reclaim_lease_scan_caps(native_tree, monk
     finally:
         for lease in leases:
             lease.close()
+
+
+# ── A refused unlink is reported, not swallowed ──
+
+
+_dir_fd_seam_only = pytest.mark.skipif(
+    os.name != "posix",
+    reason="these drive the dir_fd unlink seam; Windows unlinks by name and reports the "
+    "parent open instead, so the injected errno never reaches the reporter there",
+)
+
+
+def _seed_backlog(agents, count):
+    """*count* reclaimable legacy aliases, backdated past the minimum age."""
+    return [_legacy_alias(agents, f"{n:024x}") for n in range(count)]
+
+
+@_dir_fd_seam_only
+def test_a_refused_unlink_is_reported_once_per_interval_with_its_count(
+    native_tree, monkeypatch, caplog
+):
+    """Silence here is what sent an outside report after the wrong root cause.
+
+    A permission or read-only refusal answering ``False`` like a deliberate keep,
+    with nothing logged, makes an agents directory this process cannot write look
+    exactly like one with nothing to reclaim. One warning per interval,
+    carrying how many refusals it stands for -- never one line per file.
+    """
+    _home, agents, _project = native_tree
+    backlog = _seed_backlog(agents, 5)
+    monkeypatch.setattr(projection, "_UNLINK_WARNING_LAST", 0.0)
+    monkeypatch.setattr(projection, "_UNLINK_WARNING_SUPPRESSED", 0)
+    monkeypatch.setattr(projection.platform_compat, "IS_WINDOWS", False)
+
+    def refuse(*args, on_error=None, **kwargs):
+        # What pinned_fs.unlink_verified does when the OS refuses the unlink
+        # itself: report through the seam, answer False.
+        assert on_error is not None, "the prune did not ask to hear about a refusal"
+        on_error(PermissionError(13, "Permission denied"))
+        return False
+
+    monkeypatch.setattr(projection.pinned_fs, "unlink_verified", refuse)
+    monkeypatch.setattr(projection.pinned_fs, "supports_pinned_walk", lambda: True)
+    monkeypatch.setattr(projection.os, "supports_dir_fd", {projection.os.unlink})
+    with caplog.at_level("WARNING", logger=projection.logger.name):
+        projection._prune_stale_managed_aliases(agents, _crew_home_id(), keep=set())
+        warnings = [r for r in caplog.records if "cannot remove stale alias" in r.getMessage()]
+        assert len(warnings) == 1, "a refused unlink was either silent or logged per file"
+        assert "unlink refused, EACCES (Permission denied)" in warnings[0].getMessage()
+        assert "is not writable by this process" in warnings[0].getMessage()
+        assert "0 similar refusal(s)" in warnings[0].getMessage()
+        assert all(p.exists() for p in backlog)
+
+        # Past the interval the next refusal reports again, carrying the ones it
+        # swallowed in between.
+        monkeypatch.setattr(
+            projection,
+            "_UNLINK_WARNING_LAST",
+            time.monotonic() - projection._UNLINK_WARNING_INTERVAL_SECS - 1,
+        )
+        projection._prune_stale_managed_aliases(agents, _crew_home_id(), keep=set())
+        warnings = [r for r in caplog.records if "cannot remove stale alias" in r.getMessage()]
+        assert len(warnings) == 2
+        assert "4 similar refusal(s)" in warnings[1].getMessage()
+
+
+@pytest.mark.parametrize(
+    ("exc", "code"),
+    [
+        (FileNotFoundError(errno.ENOENT, "No such file or directory"), "ENOENT"),
+        (OSError(errno.EMFILE, "Too many open files"), "EMFILE"),
+        (OSError(errno.EIO, "Input/output error"), "EIO"),
+    ],
+)
+@_dir_fd_seam_only
+def test_a_refusal_that_is_not_a_permission_problem_is_worded_neutrally(
+    native_tree, monkeypatch, caplog, exc, code
+):
+    """Only EACCES/EPERM/EROFS mean the directory is unwritable.
+
+    A prune in another process can take the file between the walk's stat and this
+    unlink (ENOENT), or the process can be out of descriptors (EMFILE); calling
+    either "the directory is not writable" sends an operator to fix a mount or an
+    owner that is fine. The line still says what failed and with which errno,
+    through the same throttle and count.
+    """
+    _home, agents, _project = native_tree
+    backlog = _seed_backlog(agents, 2)
+    monkeypatch.setattr(projection, "_UNLINK_WARNING_LAST", 0.0)
+    monkeypatch.setattr(projection, "_UNLINK_WARNING_SUPPRESSED", 0)
+    monkeypatch.setattr(projection.platform_compat, "IS_WINDOWS", False)
+
+    def refuse(*args, on_error=None, **kwargs):
+        assert on_error is not None
+        on_error(exc)
+        return False
+
+    monkeypatch.setattr(projection.pinned_fs, "unlink_verified", refuse)
+    monkeypatch.setattr(projection.pinned_fs, "supports_pinned_walk", lambda: True)
+    monkeypatch.setattr(projection.os, "supports_dir_fd", {projection.os.unlink})
+    with caplog.at_level("WARNING", logger=projection.logger.name):
+        projection._prune_stale_managed_aliases(agents, _crew_home_id(), keep=set())
+    warnings = [r for r in caplog.records if "cannot remove stale alias" in r.getMessage()]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert f"unlink refused, {code} ({exc.strerror})" in message
+    assert str(agents) in message and "0 similar refusal(s)" in message
+    assert "not writable" not in message
+    assert projection._UNLINK_WARNING_SUPPRESSED == 1, "the second refusal was not counted"
+    assert all(p.exists() for p in backlog)
+
+
+@_dir_fd_seam_only
+@pytest.mark.parametrize("code", [errno.EPERM, errno.EROFS])
+def test_every_permission_class_errno_is_diagnosed_as_unwritable(
+    native_tree, monkeypatch, caplog, code
+):
+    _home, agents, _project = native_tree
+    _seed_backlog(agents, 1)
+    monkeypatch.setattr(projection, "_UNLINK_WARNING_LAST", 0.0)
+    monkeypatch.setattr(projection, "_UNLINK_WARNING_SUPPRESSED", 0)
+    monkeypatch.setattr(projection.platform_compat, "IS_WINDOWS", False)
+
+    def refuse(*args, on_error=None, **kwargs):
+        on_error(OSError(code, os.strerror(code)))
+        return False
+
+    monkeypatch.setattr(projection.pinned_fs, "unlink_verified", refuse)
+    monkeypatch.setattr(projection.pinned_fs, "supports_pinned_walk", lambda: True)
+    monkeypatch.setattr(projection.os, "supports_dir_fd", {projection.os.unlink})
+    with caplog.at_level("WARNING", logger=projection.logger.name):
+        projection._prune_stale_managed_aliases(agents, _crew_home_id(), keep=set())
+    (warning,) = [r for r in caplog.records if "cannot remove stale alias" in r.getMessage()]
+    assert errno.errorcode[code] in warning.getMessage()
+    assert "is not writable by this process" in warning.getMessage()
+
+
+@_dir_fd_seam_only
+def test_a_refused_lease_unlink_reports_through_the_same_throttle(native_tree, monkeypatch, caplog):
+    """The lease and sidecar unlinks share the alias reporter, not a second one.
+
+    The same read-only or foreign-owned directory that refuses an alias unlink
+    refuses its lease record, holder and ownership sidecar, and a rule applied
+    to one of two paths is the same silence on the other. One reporter, one
+    interval, one suppressed count: a refused lease unlink is the first line,
+    the refused alias unlinks in the same interval are the count on the next.
+    """
+    _home, agents, _project = native_tree
+    backlog = _seed_backlog(agents, 3)
+    monkeypatch.setattr(projection, "_UNLINK_WARNING_LAST", 0.0)
+    monkeypatch.setattr(projection, "_UNLINK_WARNING_SUPPRESSED", 0)
+    monkeypatch.setattr(projection.platform_compat, "IS_WINDOWS", False)
+
+    def refuse(*args, on_error=None, **kwargs):
+        assert on_error is not None, "the lease unlink did not ask to hear about a refusal"
+        on_error(PermissionError(13, "Permission denied"))
+        return False
+
+    monkeypatch.setattr(projection.pinned_fs, "unlink_verified", refuse)
+    monkeypatch.setattr(projection.pinned_fs, "supports_pinned_walk", lambda: True)
+    monkeypatch.setattr(projection.os, "supports_dir_fd", {projection.os.unlink})
+    # Off the prune's walk, so the count below is exactly the alias refusals.
+    lease_dir = agents.parent / "elsewhere" / projection._PROJECTION_LEASE_DIR_NAME
+    lease_dir.mkdir(parents=True)
+    record = lease_dir / f"1-{'ab' * 16}{projection._PROJECTION_LEASE_RECORD_SUFFIX}"
+    record.write_text('{"aliases":[]}')
+    info = os.stat(record)
+    identity = (info.st_dev, info.st_ino)
+    with caplog.at_level("WARNING", logger=projection.logger.name):
+        assert (
+            projection._unlink_projection_lease_if_unchanged(
+                record, identity, what="stale lease record"
+            )
+            is False
+        )
+        warnings = [r for r in caplog.records if "cannot remove" in r.getMessage()]
+        assert len(warnings) == 1, "a refused lease unlink was silent"
+        message = warnings[0].getMessage()
+        assert "stale lease record" in message and record.name in message
+        assert "unlink refused, EACCES (Permission denied)" in message
+        assert "is not writable by this process" in message and str(lease_dir) in message
+        assert "0 similar refusal(s)" in message
+        assert record.exists()
+
+        # Within the interval the alias refusals are swallowed into the SAME count.
+        projection._prune_stale_managed_aliases(agents, _crew_home_id(), keep=set())
+        assert len([r for r in caplog.records if "cannot remove" in r.getMessage()]) == 1
+        assert all(p.exists() for p in backlog)
+        monkeypatch.setattr(
+            projection,
+            "_UNLINK_WARNING_LAST",
+            time.monotonic() - projection._UNLINK_WARNING_INTERVAL_SECS - 1,
+        )
+        assert (
+            projection._unlink_projection_lease_if_unchanged(
+                record, identity, what="stale lease record"
+            )
+            is False
+        )
+        warnings = [r for r in caplog.records if "cannot remove" in r.getMessage()]
+        assert len(warnings) == 2
+        assert "3 similar refusal(s)" in warnings[1].getMessage()
+
+    # An identity change is a deliberate keep and stays silent: no report, no count.
+    caplog.clear()
+    changed = (identity[0], identity[1] + 1)
+    with caplog.at_level("WARNING", logger=projection.logger.name):
+        assert projection._unlink_projection_lease_if_unchanged(record, changed) is False
+    assert not [r for r in caplog.records if "cannot remove" in r.getMessage()]
+    assert projection._UNLINK_WARNING_SUPPRESSED == 0
+
+
+@pytest.mark.skipif(
+    not projection.pinned_fs.supports_pinned_walk() or os.name != "posix",
+    reason="a directory without write permission is a POSIX way to refuse an unlink",
+)
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores directory permission bits"
+)
+def test_a_read_only_agents_directory_produces_the_refusal_warning(
+    native_tree, monkeypatch, caplog
+):
+    """End to end through the real unlink: the reported field case, with no seam.
+
+    The prune classifies the alias as reclaimable, the kernel refuses the unlink,
+    and the warning names the directory -- which is what an operator needs to
+    stop looking for a code bug and fix a mount or an owner.
+    """
+    _home, agents, _project = native_tree
+    backlog = _seed_backlog(agents, 3)
+    monkeypatch.setattr(projection, "_UNLINK_WARNING_LAST", 0.0)
+    monkeypatch.setattr(projection, "_UNLINK_WARNING_SUPPRESSED", 0)
+    original_mode = stat.S_IMODE(os.stat(agents).st_mode)
+    os.chmod(agents, original_mode & ~stat.S_IWUSR)
+    try:
+        with caplog.at_level("WARNING", logger=projection.logger.name):
+            projection._prune_stale_managed_aliases(agents, _crew_home_id(), keep=set())
+    finally:
+        os.chmod(agents, original_mode)
+    warnings = [r for r in caplog.records if "cannot remove stale alias" in r.getMessage()]
+    assert len(warnings) == 1
+    assert str(agents) in warnings[0].getMessage()
+    # The kernel's real answer is EACCES, the one case the line may diagnose as
+    # an unwritable directory.
+    assert "EACCES" in warnings[0].getMessage()
+    assert "is not writable by this process" in warnings[0].getMessage()
+    assert all(p.exists() for p in backlog)

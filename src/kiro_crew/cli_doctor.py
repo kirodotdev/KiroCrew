@@ -4197,6 +4197,64 @@ def _doctor_agents_janitor(issues: list[str], sweep_backups: bool) -> None:
     else:
         print("  janitor:     ✅ no stale temp/backup files to reclaim")
     _doctor_skill_view_census(agents_dir)
+    _doctor_run_dirs()
+
+
+# Unmarked run directories above which the doctor warns. Each is one directory
+# holding one small file; the count matters as a listing cost on the workspace
+# root, which every derived-cwd spawn's ``mkdir`` re-enumerates.
+_RUN_DIR_BACKLOG_WARN = 1000
+
+
+def _doctor_run_dirs() -> None:
+    """Report, in one line, the run directories the gateway's sweep cannot reclaim.
+
+    Advisory and read-only. A subagent or stateless cron run gets a directory
+    under the workspace root that the provider marks at first start and reclaims
+    at shutdown; the gateway sweeps what a dead predecessor of its own data home
+    left. Two figures from one bounded walk, judged by the sweep's own rule:
+    directories from builds that wrote no marker (a name is not provenance, so
+    the sweep deletes nothing it cannot prove Crew made), and marked directories
+    this data home cannot act on -- another data home's, an unreadable marker,
+    or a gateway the pid ledger still retains entries for. Named, never done:
+    the doctor deletes nothing.
+    """
+    from kiro_crew.config.loader import workspace_root
+    from kiro_crew.session_pid import retained_gateway_pids
+    from kiro_crew.session_work_dir import DERIVED_NAME_RE, RUN_DIR_MARKER, count_run_dirs
+
+    try:
+        # Resolve only: the default resolver creates the tree, and a read-only
+        # report must not leave a workspace behind where no gateway ever ran.
+        root = workspace_root(create=False)
+    except OSError:
+        return
+    if not root.is_dir():
+        print("  run dirs:    ✅ no workspace root yet, so no run directories")
+        return
+    try:
+        retained = retained_gateway_pids()
+    except OSError:
+        print("  run dirs:    ⚠️  the session pid ledger cannot be read; census skipped")
+        return
+    census = count_run_dirs(root, retained_gateway_pids=retained)
+    if not census.unmarked and not census.refused:
+        print("  run dirs:    ✅ no run directories left behind that the sweep cannot reclaim")
+        return
+    suffix = "+" if census.floor else ""
+    warn = census.unmarked > _RUN_DIR_BACKLOG_WARN or census.refused > 0
+    print(
+        f"  run dirs:    {'⚠️ ' if warn else '✅'} under {root}: {census.unmarked}{suffix} run"
+        f" director(ies) carry no {RUN_DIR_MARKER} marker (left by a build that wrote none);"
+        f" {census.refused}{suffix} marked director(ies) this data home cannot reclaim (another"
+        f" data home's, an unreadable marker, or a gateway the pid ledger still retains)"
+    )
+    if census.unmarked > _RUN_DIR_BACKLOG_WARN:
+        print(
+            f"{_INDENT}The gateway reclaims only marked run directories. With the gateway"
+            f" stopped, move directories matching {DERIVED_NAME_RE.pattern} that hold only"
+            f" .kiro/settings/cli.json out of {root}; a live run recreates its own."
+        )
 
 
 def _doctor_skill_view_census(agents_dir: Path) -> None:

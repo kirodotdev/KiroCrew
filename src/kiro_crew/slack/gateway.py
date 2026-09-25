@@ -50,6 +50,7 @@ from kiro_crew import (
     dep_sync,
     name_grant,
     platform_compat,
+    session_work_dir,
     shutdown_event,
     work_root,
 )
@@ -94,6 +95,7 @@ from kiro_crew.config.loader import (
     build_provider_factory,
     config_dir,
     data_home,
+    workspace_root,
 )
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.constants import DATA_WARNING, SUBAGENT_COMPLETION_META_KEY, strip_control_comments
@@ -606,6 +608,33 @@ _BACKGROUND_APPROVAL_SOURCES = frozenset({"cron", "heartbeat", "taskrunner", "au
 # Slack Block Kit section.text hard limit is 3000 chars.
 # We split cron output at this boundary so each chunk fits in a section block.
 _CRON_MSG_LIMIT = 3000
+
+
+def _live_session_work_dirs(sessions: Any) -> list[str]:
+    """The work directories of every provider the session registry holds now."""
+    if sessions is None:
+        return []
+    return [
+        path
+        for path in (str(getattr(p, "cwd", "") or "") for p in sessions.active_providers())
+        if path
+    ]
+
+
+def _sweep_predecessor_session_work_dirs(live_work_dirs: list[str]) -> int:
+    """Sweep the run directories a dead predecessor of this data home left, off-loop.
+
+    The evidence is this home's own: its pid ledger (``retained_gateway_pids``,
+    read under the ledger's lock) and *live_work_dirs* from its session
+    registry. An unreadable ledger raises, and the callers then sweep nothing.
+    """
+    from kiro_crew.session_pid import retained_gateway_pids
+
+    return session_work_dir.sweep_predecessor_work_dirs(
+        workspace_root(),
+        retained_gateway_pids=retained_gateway_pids(),
+        live_work_dirs=live_work_dirs,
+    )
 
 
 def _heartbeat_slack_parts(title: str, result_text: str) -> list[str]:
@@ -13979,6 +14008,24 @@ class GatewayOrchestrator:
 
         self._install_shutdown_signal_handlers()
 
+        # The run directories a PREDECESSOR gateway of this data home left behind
+        # (session_work_dir). Ordered after ``cleanup_orphaned_sessions`` above,
+        # which reaped this home's pid ledger -- the ledger's remaining entries
+        # are what the sweep keeps -- and before any session writer below can
+        # create a directory. Past KIROCREW_READY so readiness does not wait for
+        # it (no-new-work-on-gateway-boot-path); off-loop, bounded by entries and
+        # wall clock, fail-open, and skipped in test_mode like the hourly wake.
+        # Nothing this process has marked is ever its business, so the ordering
+        # is for determinism, not safety.
+        if not self._test_mode:
+            try:
+                await asyncio.to_thread(
+                    _sweep_predecessor_session_work_dirs,
+                    _live_session_work_dirs(self.sessions),
+                )
+            except Exception:
+                logger.debug("boot session work-dir sweep failed", exc_info=True)
+
         # TaskRunner + workflow agent calls join the durable task queue and the
         # runner lane now that both consumers exist (the WorkflowService is
         # built by the dashboard server). AFTER the READY print, not before it:
@@ -15462,6 +15509,24 @@ async def run_gateway(
                     await asyncio.to_thread(work_root.sweep_work_root)
                 except Exception:
                     logging.getLogger(__name__).debug("work-root sweep failed", exc_info=True)
+                # The per-run work directories of subagent and stateless cron
+                # sessions ride the same wake. The ordinary end of a run reclaims
+                # its own (AcpProvider.shutdown); the boot sweep took what a dead
+                # predecessor of this data home left, and this re-runs the SAME
+                # predecessor-only rule for whatever its bounds left over. A
+                # directory this process marked is never its business; one a
+                # registered provider names is skipped whatever it holds.
+                # ``orchestrator`` is bound later in this function and read only
+                # here, an hour in.
+                try:
+                    await asyncio.to_thread(
+                        _sweep_predecessor_session_work_dirs,
+                        _live_session_work_dirs(getattr(orchestrator, "sessions", None)),
+                    )
+                except Exception:
+                    logging.getLogger(__name__).debug(
+                        "session work-dir sweep failed", exc_info=True
+                    )
 
         _AGENT_SCRATCH_SWEEP_TASK = asyncio.create_task(
             _run_agent_scratch_sweep(), name="agent-scratch-sweep"

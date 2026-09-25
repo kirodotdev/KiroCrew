@@ -9,6 +9,7 @@ the first prompt. Bounding only the Crew prompt cannot bound that native cost.
 from __future__ import annotations
 
 import copy
+import errno
 import fnmatch
 import hashlib
 import json
@@ -110,6 +111,17 @@ _PRUNE_MAX_SECONDS_PER_RUN = 0.4
 _DRAIN_MAX_BATCHES = 1000
 _DRAIN_IDLE_BATCHES = 3
 _DRAIN_BATCH_PAUSE_SECS = platform_compat._LOCK_POLL_MAX_SECS * 2
+# One warning per this many seconds when an alias unlink is refused by the OS.
+# Silence here is what turned a permission problem into a wrong root cause: a
+# read-only or foreign-owned agents directory made every reclaim a no-op and
+# nothing said so. Per-file logging would flood at backlog scale, so the line
+# carries how many refusals it stands for.
+_UNLINK_WARNING_INTERVAL_SECS = 300.0
+# The refusals that DO mean the directory is not writable by this process. Any
+# other errno (ENOENT after a concurrent prune elsewhere took the file, EMFILE,
+# EIO, ...) is reported by name without that diagnosis, which would send an
+# operator to fix a mount or an owner that is fine.
+_UNWRITABLE_ERRNOS: frozenset[int] = frozenset({errno.EACCES, errno.EPERM, errno.EROFS})
 # The ONE window the re-preparation contract does not cover, and the only thing
 # this age excludes. A publisher from a build that predates the lease holds no
 # lease, so between its write and kiro-cli reading `--agent` its alias looks
@@ -264,8 +276,17 @@ def _ensure_projection_metadata_directory(directory: Path) -> Path:
     return metadata_dir
 
 
-def _unlink_projection_lease_if_unchanged(path: Path, identity: tuple[int, int]) -> bool:
-    """Remove one unlocked lease only while its random name keeps its identity."""
+def _unlink_projection_lease_if_unchanged(
+    path: Path, identity: tuple[int, int], *, what: str = "projection record"
+) -> bool:
+    """Remove one unlocked lease only while its random name keeps its identity.
+
+    *what* names the kind of file for the refusal report: a lease record, its
+    holder sidecar, or an ownership sidecar. A refusal from the filesystem is
+    reported through the same rate-limited seam as an alias unlink -- the same
+    environment fault silences both, and one that is only half reported is the
+    wrong root cause again. An identity change stays a silent ``False``.
+    """
     current = pinned_fs.lstat_by_name(path)
     if (
         current is None
@@ -277,17 +298,24 @@ def _unlink_projection_lease_if_unchanged(path: Path, identity: tuple[int, int])
     if pinned_fs.supports_pinned_walk() and os.unlink in os.supports_dir_fd:
         try:
             parent_fd = os.open(path.parent, pinned_fs.dir_flags())
-        except OSError:
+        except OSError as exc:
+            _warn_unlink_refused(path, exc, what=what)
             return False
         try:
-            return pinned_fs.unlink_verified(parent_fd, path.name, identity)
+            return pinned_fs.unlink_verified(
+                parent_fd,
+                path.name,
+                identity,
+                on_error=lambda exc: _warn_unlink_refused(path, exc, what=what),
+            )
         finally:
             os.close(parent_fd)
     if not platform_compat.IS_WINDOWS:
         return False
     try:
         path.unlink()
-    except OSError:
+    except OSError as exc:
+        _warn_unlink_refused(path, exc, what=what)
         return False
     return True
 
@@ -343,13 +371,20 @@ def _acquire_projection_lease(directory: Path, aliases: set[str]) -> ExitStack:
         identity = (created.st_dev, created.st_ino)
         # Registered before the descriptor contexts so ExitStack releases the
         # lease lock and file handle first (required for unlink on Windows).
-        stack.callback(_unlink_projection_lease_if_unchanged, lease_path, identity)
+        stack.callback(
+            _unlink_projection_lease_if_unchanged, lease_path, identity, what="lease record"
+        )
         atomic_write(holder_path, "", restrict_to_owner=True)
         holder_created = pinned_fs.lstat_by_name(holder_path)
         if holder_created is None or not stat.S_ISREG(holder_created.st_mode):
             raise OSError("skill projection lease holder was not published as a regular file")
         holder_identity = (holder_created.st_dev, holder_created.st_ino)
-        stack.callback(_unlink_projection_lease_if_unchanged, holder_path, holder_identity)
+        stack.callback(
+            _unlink_projection_lease_if_unchanged,
+            holder_path,
+            holder_identity,
+            what="lease holder",
+        )
         holder_fd = stack.enter_context(platform_compat.open_lock_file(holder_path))
         opened = os.fstat(holder_fd)
         named = pinned_fs.lstat_by_name(holder_path)
@@ -731,6 +766,67 @@ def _managed_marker(spec: object) -> bool:
     return isinstance(spec, dict) and spec.get(_MANAGED_MARKER) == _MANAGED_MARKER_VALUE
 
 
+_UNLINK_WARNING_LOCK = threading.Lock()
+_UNLINK_WARNING_LAST = 0.0
+_UNLINK_WARNING_SUPPRESSED = 0
+
+
+def _warn_unlink_refused(path: Path, exc: OSError, *, what: str = "stale alias") -> None:
+    """Report a projection-file unlink the OS refused, at most once per interval.
+
+    The prune's every other "no" is a deliberate keep -- kept, active, leased,
+    changed under the walk -- and stays at debug. This one is not: the walk
+    classified the file as reclaimable and the filesystem would not let it go,
+    which is a permission or mount problem an operator has to fix, and at
+    backlog scale it is the same answer thousands of times per spawn. One line
+    per interval, carrying the count it stands for, is what makes it visible
+    without making it the log.
+
+    This is the ONE reporter and the ONE throttle for every such path: aliases
+    and the lease records, holder sidecars and ownership sidecars that travel
+    with them share the interval and the suppressed count, because they share
+    the fault. *what* names the kind of file so the line stays honest about
+    which one it saw, and the line names the operation and the errno it got:
+    only a permission-class errno is diagnosed as an unwritable directory --
+    a file that vanished between the walk and the unlink, or a descriptor
+    limit, is a refusal too, but not that one.
+    """
+    global _UNLINK_WARNING_LAST, _UNLINK_WARNING_SUPPRESSED
+    now = time.monotonic()
+    with _UNLINK_WARNING_LOCK:
+        if _UNLINK_WARNING_LAST and now - _UNLINK_WARNING_LAST < _UNLINK_WARNING_INTERVAL_SECS:
+            _UNLINK_WARNING_SUPPRESSED += 1
+            return
+        suppressed = _UNLINK_WARNING_SUPPRESSED
+        _UNLINK_WARNING_SUPPRESSED = 0
+        _UNLINK_WARNING_LAST = now
+    code = errno.errorcode.get(exc.errno, str(exc.errno)) if exc.errno is not None else "?"
+    reason = exc.strerror or exc.__class__.__name__
+    if exc.errno in _UNWRITABLE_ERRNOS:
+        logger.warning(
+            "skill projection: cannot remove %s %s -- unlink refused, %s (%s); %d similar "
+            "refusal(s) since the last report -- the directory %s is not writable by this "
+            "process, so no backlog there can drain",
+            what,
+            path.name,
+            code,
+            reason,
+            suppressed,
+            path.parent,
+        )
+        return
+    logger.warning(
+        "skill projection: cannot remove %s %s -- unlink refused, %s (%s); %d similar "
+        "refusal(s) since the last report, in the directory %s",
+        what,
+        path.name,
+        code,
+        reason,
+        suppressed,
+        path.parent,
+    )
+
+
 def _unlink_alias_if_unchanged(path: Path, identity: tuple[int, int]) -> bool:
     """Unlink *path* only while it still names the classified alias inode.
 
@@ -738,14 +834,23 @@ def _unlink_alias_if_unchanged(path: Path, identity: tuple[int, int]) -> bool:
     publisher. POSIX additionally pins the parent descriptor. Windows lacks
     unlink-at, so it performs one final no-link identity check before the
     by-name unlink; other platforms without a pinned walk retain the alias.
+
+    A refusal from the filesystem itself is reported (rate-limited); every
+    other ``False`` is an identity change and stays silent.
     """
     if pinned_fs.supports_pinned_walk() and os.unlink in os.supports_dir_fd:
         try:
             parent_fd = os.open(path.parent, pinned_fs.dir_flags())
-        except OSError:
+        except OSError as exc:
+            _warn_unlink_refused(path, exc)
             return False
         try:
-            return pinned_fs.unlink_verified(parent_fd, path.name, identity)
+            return pinned_fs.unlink_verified(
+                parent_fd,
+                path.name,
+                identity,
+                on_error=lambda exc: _warn_unlink_refused(path, exc),
+            )
         finally:
             os.close(parent_fd)
 
@@ -760,7 +865,8 @@ def _unlink_alias_if_unchanged(path: Path, identity: tuple[int, int]) -> bool:
             return False
         try:
             path.unlink()
-        except OSError:
+        except OSError as exc:
+            _warn_unlink_refused(path, exc)
             return False
         return True
 

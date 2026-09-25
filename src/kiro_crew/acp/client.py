@@ -5483,6 +5483,10 @@ class AcpClient:
         self._spawn_work_dir = str(self._work_dir)
         self._process: asyncio.subprocess.Process | None = None
         self._pid: int | None = None
+        # False until shutdown confirms both the root's exit and every tracked
+        # descendant's exit. A work-directory reclaim reads this fail-closed
+        # verdict after shutdown.
+        self._process_tree_confirmed_dead = False
         self._start_time: str | None = None  # start identity for PID-recycle detection
         # Names THIS spawn of the child, not the session it serves: a resume
         # re-uses the session id on a brand-new process (see ensure_ready's
@@ -7356,6 +7360,11 @@ class AcpClient:
     def is_process_alive(self) -> bool:
         """True if the underlying process exists and has not exited."""
         return self._is_process_alive()
+
+    @property
+    def process_tree_confirmed_dead(self) -> bool:
+        """Whether shutdown confirmed the root and every tracked child exited."""
+        return self._process_tree_confirmed_dead is True
 
     @property
     def process_instance(self) -> str:
@@ -9273,6 +9282,7 @@ class AcpClient:
             self._discard_sandbox_cleanup()
             raise
         self._pid = self._process.pid
+        self._process_tree_confirmed_dead = False
         # Minted with the process it names, random rather than pid-derived: a
         # pid can be reused by the OS, and the start-time disambiguator is not
         # readable on every platform, so equality on a fresh random id is the
@@ -9792,7 +9802,10 @@ class AcpClient:
         # what the next session's guard judges, not this one's.
         self._mcp_ref_spec = None
         self._spec_denied_tools = frozenset()
-        # Save PIDs before clearing state — needed for untracking
+        # Save PID state before clearing it. A root is confirmed exited only
+        # when its own Process reports a reaped return code; a missing or
+        # unreadable PID is not enough to reclaim its working directory.
+        root_confirmed_dead = bool(self._process and self._process.returncode is not None)
         saved_pid = None if platform_compat.IS_WINDOWS else self._pid
         saved_child_pids = self._child_pids
         self._process = None
@@ -9857,6 +9870,7 @@ class AcpClient:
         from kiro_crew.session import _untrack_child_pids, _untrack_pid, _untrack_session_pid
         from kiro_crew.session_pid import _pid_gone_or_unmanaged
 
+        survivors: list[int] = []
         if saved_child_pids:
             dead_children = {
                 pid: rec for pid, rec in saved_child_pids.items() if _pid_gone_or_unmanaged(pid)
@@ -9894,6 +9908,7 @@ class AcpClient:
                     saved_pid,
                 )
         self._child_pids = {}
+        self._process_tree_confirmed_dead = root_confirmed_dead and not survivors
 
     async def _new_session_following_substitution(self) -> dict:
         """Issue ``session/new``; if the gateway substitutes the model, adopt it
@@ -10555,6 +10570,7 @@ class AcpClient:
 
     async def shutdown(self) -> None:
         """Gracefully stop the ACP process."""
+        self._process_tree_confirmed_dead = False
         # `_reset_state` in a `finally`, because `_kill_process` can leave
         # through several doors: it awaits four `run_in_executor` calls (child
         # scan, record capture, escaped-child sweep) that are not individually

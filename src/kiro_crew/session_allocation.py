@@ -475,6 +475,44 @@ class SessionAllocationService:
         """Return whether a folded alias has an allocation/claim in flight."""
         return bool(self._allocation_reservations.get(self._owner._fold_key(key)))
 
+    def _install_work_dir_claim_probe(self, key: str, provider: LLMProvider) -> None:
+        """Guard *provider*'s final work-dir reclaim with registry ownership.
+
+        The context manager deliberately retains ``_lock`` through the reclaim
+        operation. A bool sampled under the lock and acted on afterwards would
+        reopen the same pop-then-shutdown race this guard closes.
+        """
+
+        def provider_cwd(candidate: LLMProvider) -> str:
+            try:
+                value = candidate.cwd
+            except Exception:
+                return ""
+            return value if isinstance(value, str) else ""
+
+        target_cwd = provider_cwd(provider)
+
+        @contextlib.asynccontextmanager
+        async def claim():
+            async with self._lock:
+                claimed = not bool(self._allocation_reservations.get(key))
+                if claimed:
+                    for registered_key, session in self._sessions.items():
+                        other = session.provider
+                        if other is provider:
+                            continue
+                        if registered_key == key:
+                            claimed = False
+                            break
+                        if target_cwd and provider_cwd(other) == target_cwd:
+                            claimed = False
+                            break
+                yield claimed
+
+        setter = getattr(type(provider), "set_work_dir_claim_probe", None)
+        if callable(setter):
+            setter(provider, claim)
+
     async def try_acquire(self, key: str) -> bool:
         """Acquire only an exact-key idle session; alias folding is intentional absent."""
         session = self._sessions.get(key)
@@ -698,6 +736,10 @@ class SessionAllocationService:
                             "run runtime bootstrap-session terminate failed", exc_info=True
                         )
                     return runtime
+                # This provider derived the PARENT's work directory from the
+                # parent's key only to bootstrap a runtime; the directory is
+                # the parent session's, whatever the factory flagged.
+                provider.disown_work_dir()
                 try:
                     await provider.shutdown()
                 except Exception:
@@ -853,6 +895,7 @@ class SessionAllocationService:
                     agent=agent or "",
                 )
                 session.capability_member = prepared.member
+                self._install_work_dir_claim_probe(key, provider)
                 self._sessions[key] = session
                 self.advance_ownership_generation(key)
                 won_race_session = session
@@ -870,6 +913,9 @@ class SessionAllocationService:
                     await discard_session_start(key)
                     raise
         if duplicate is not None:
+            # ``current`` holds this key and runs in the directory this
+            # provider derived from it; the loser must not reclaim it.
+            duplicate.disown_work_dir()
             try:
                 await duplicate.shutdown()
             except Exception:
@@ -2075,6 +2121,7 @@ class SessionAllocationService:
                         session.provider_switch_replay = True
                     if replay_needed and provider_label != constants.provider_label_default:
                         owner._session_map.clear_sid(key)
+                    self._install_work_dir_claim_probe(key, provider)
                     self._sessions[key] = session
                     self.advance_ownership_generation(key)
                     try:
@@ -2143,6 +2190,10 @@ class SessionAllocationService:
 
         if won_race_session is not None:
             if duplicate_provider is not None:
+                # ``existing`` won this key and runs in the very directory the
+                # loser derived from it: a reclaim at the loser's shutdown would
+                # pull the live session's cwd out from under it.
+                duplicate_provider.disown_work_dir()
                 try:
                     await duplicate_provider.shutdown()
                 except Exception:

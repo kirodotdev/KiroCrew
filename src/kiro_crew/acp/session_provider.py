@@ -562,6 +562,11 @@ class AcpSessionProvider(LLMProvider):
         return self._runtime.is_alive()
 
     @property
+    def process_tree_confirmed_dead(self) -> bool:
+        """Whether the owned runtime confirmed its whole process tree exited."""
+        return self._runtime.process_tree_confirmed_dead
+
+    @property
     def process_instance(self) -> str:
         """Per-spawn identity of the shared runtime's current process (see base).
 

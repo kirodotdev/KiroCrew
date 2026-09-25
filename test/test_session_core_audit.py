@@ -186,6 +186,9 @@ async def test_open_task_session_lost_race_revalidates_recycled_winner(cfg):
 
     dup_provider = AsyncMock()          # the redundant provider we lose with
     dup_provider.shutdown = AsyncMock()
+    # Synchronous on the real provider; an AsyncMock attribute would hand the
+    # registry an un-awaited coroutine when it disowns the lost-race provider.
+    dup_provider.disown_work_dir = MagicMock()
     fresh_provider = AsyncMock()        # the winning provider on the retry
     fresh_provider.shutdown = AsyncMock()
 

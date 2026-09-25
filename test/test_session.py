@@ -51,6 +51,8 @@ def _mock_provider_factory():
         # this synchronously, and an auto-generated coroutine would read as
         # "alive" only by truthiness while leaking an un-awaited coroutine.
         m.is_process_alive = lambda: True
+        # Same reason: the registry calls this synchronously on a race loser.
+        m.disown_work_dir = MagicMock()
         m.context_usage_pct = lambda: 0.0
         m.context_window_tokens = lambda: 0
         m.has_active_turn = lambda: False
@@ -89,6 +91,7 @@ def _alive_provider_factory():
         m.start = AsyncMock()
         m.memory_mode = kwargs.get("memory_mode", "persistent")
         m.shutdown = AsyncMock()
+        m.disown_work_dir = MagicMock()
         m.is_process_alive = lambda: True
         m.is_alive = lambda: True
         m.context_usage_pct = lambda: 0.0
@@ -371,6 +374,8 @@ class TestSessionManager:
 
             m.start = _start
             m.shutdown = AsyncMock()
+            # Sync on the real provider; the won-race arm calls it on the loser.
+            m.disown_work_dir = MagicMock()
             m.is_process_alive = lambda: True
             m.is_alive = lambda: True
             m.context_usage_pct = lambda: 0.0
@@ -4170,6 +4175,8 @@ class TestKiroInPlaceCompaction:
             m = AsyncMock()
             m.start = AsyncMock()
             m.shutdown = AsyncMock()
+            # Sync on the real provider; the replaced-recycle arm calls it.
+            m.disown_work_dir = MagicMock()
             m.context_usage_pct = lambda: 0.0
 
             async def _stream(_cmd):
