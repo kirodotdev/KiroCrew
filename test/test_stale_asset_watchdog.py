@@ -501,3 +501,226 @@ async def test_watchdog_survives_asset_gap_that_heals_while_draining(caplog):
     assert not [r for r in caplog.records if r.levelno >= logging.CRITICAL], (
         "healed run logged a misleading graceful-shutdown CRITICAL"
     )
+
+
+@pytest.mark.asyncio
+async def test_watchdog_stands_down_while_our_own_update_applies():
+    """A gap our own installer created must not trigger shutdown.
+
+    The in-place installer deletes the static bundle it is replacing. Shutting
+    down here cancels the installer task, which kills the installer before it
+    writes its console scripts — the gateway destroying its own install.
+    """
+    from kiro_crew.dashboard.stale_asset_watchdog import run_stale_asset_watchdog
+
+    shutdown = asyncio.Event()
+    calls = {"assets": 0}
+
+    def _mock_assets_present() -> bool:
+        calls["assets"] += 1
+        # startup True, then a permanent-looking gap while the update runs.
+        if calls["assets"] >= 4:
+            # Enough ticks observed to prove the loop kept going without
+            # shutting down; end the test the way a normal shutdown would.
+            asyncio.get_running_loop().call_soon(shutdown.set)
+        return calls["assets"] <= 1
+
+    with patch(
+        "kiro_crew.dashboard.stale_asset_watchdog.assets_present",
+        side_effect=_mock_assets_present,
+    ):
+        fired = await asyncio.wait_for(
+            run_stale_asset_watchdog(
+                shutdown,
+                interval=0.01,
+                confirm_delay=0.01,
+                update_in_progress=lambda: True,
+                update_suppress_max=30.0,
+            ),
+            timeout=5.0,
+        )
+
+    # The watchdog never signalled: the vanish was attributed to our own apply.
+    assert fired is False
+
+
+@pytest.mark.asyncio
+async def test_watchdog_stands_down_when_update_starts_during_confirm():
+    """An apply beginning inside the confirm/drain window still suppresses."""
+    from kiro_crew.dashboard.stale_asset_watchdog import run_stale_asset_watchdog
+
+    shutdown = asyncio.Event()
+    assets_calls = {"n": 0}
+    update_calls = {"n": 0}
+
+    def _mock_assets_present() -> bool:
+        assets_calls["n"] += 1
+        return assets_calls["n"] <= 1  # startup True, then permanent gap
+
+    def _update_in_progress() -> bool:
+        update_calls["n"] += 1
+        # False at the first decision point (so the watchdog proceeds into the
+        # confirm + drain path), True by the pre-signal re-ask — the apply
+        # started inside that window.
+        if update_calls["n"] >= 2:
+            asyncio.get_running_loop().call_soon(shutdown.set)
+            return True
+        return False
+
+    with patch(
+        "kiro_crew.dashboard.stale_asset_watchdog.assets_present",
+        side_effect=_mock_assets_present,
+    ):
+        fired = await asyncio.wait_for(
+            run_stale_asset_watchdog(
+                shutdown,
+                interval=0.01,
+                confirm_delay=0.01,
+                update_in_progress=_update_in_progress,
+                update_suppress_max=30.0,
+            ),
+            timeout=5.0,
+        )
+
+    # The predicate was consulted a second time, right before signalling, and
+    # that re-ask is what prevented the self-inflicted shutdown.
+    assert update_calls["n"] >= 2
+    assert fired is False
+
+
+@pytest.mark.asyncio
+async def test_watchdog_overrides_a_stuck_update_stand_down():
+    """A stand-down that outlives the ceiling must not disable the watchdog."""
+    from kiro_crew.dashboard.stale_asset_watchdog import run_stale_asset_watchdog
+
+    shutdown = asyncio.Event()
+    calls = {"assets": 0}
+
+    def _mock_assets_present() -> bool:
+        calls["assets"] += 1
+        return calls["assets"] <= 1
+
+    with patch(
+        "kiro_crew.dashboard.stale_asset_watchdog.assets_present",
+        side_effect=_mock_assets_present,
+    ):
+        # An apply that claims the gap forever. The ceiling is short enough that
+        # the second tick is past it, so the guard is overridden.
+        fired = await asyncio.wait_for(
+            run_stale_asset_watchdog(
+                shutdown,
+                interval=0.02,
+                confirm_delay=0.01,
+                update_in_progress=lambda: True,
+                update_suppress_max=0.03,
+            ),
+            timeout=5.0,
+        )
+
+    assert shutdown.is_set()
+    assert fired is True
+
+
+@pytest.mark.asyncio
+async def test_watchdog_shuts_down_when_update_predicate_raises():
+    """A broken predicate must never wedge shutdown — fail towards shutting down."""
+    from kiro_crew.dashboard.stale_asset_watchdog import run_stale_asset_watchdog
+
+    shutdown = asyncio.Event()
+    calls = {"assets": 0}
+
+    def _mock_assets_present() -> bool:
+        calls["assets"] += 1
+        return calls["assets"] <= 1
+
+    def _boom() -> bool:
+        raise RuntimeError("update state unreadable")
+
+    with patch(
+        "kiro_crew.dashboard.stale_asset_watchdog.assets_present",
+        side_effect=_mock_assets_present,
+    ):
+        fired = await asyncio.wait_for(
+            run_stale_asset_watchdog(
+                shutdown,
+                interval=0.02,
+                confirm_delay=0.01,
+                update_in_progress=_boom,
+            ),
+            timeout=5.0,
+        )
+
+    assert shutdown.is_set()
+    assert fired is True
+
+
+@pytest.mark.asyncio
+async def test_watchdog_stand_down_window_resets_after_a_healthy_sample(caplog):
+    """Assets reappearing clears the window, so a later apply gets a full ceiling.
+
+    Observable via the stand-down warning: it is logged when a window OPENS, so
+    a reset between two gaps produces two of them. Without the reset the second
+    gap would inherit the first window's elapsed time and eventually be
+    overridden early.
+    """
+    from kiro_crew.dashboard.stale_asset_watchdog import run_stale_asset_watchdog
+
+    caplog.set_level(logging.WARNING, logger="kiro_crew.dashboard.stale_asset_watchdog")
+
+    shutdown = asyncio.Event()
+    assets_calls = {"n": 0}
+
+    def _mock_assets_present() -> bool:
+        assets_calls["n"] += 1
+        # startup True; tick 2 missing (window opens); tick 3 present (window
+        # resets); tick 4 missing again (a second window must open).
+        if assets_calls["n"] >= 5:
+            asyncio.get_running_loop().call_soon(shutdown.set)
+        return assets_calls["n"] not in (2, 4)
+
+    with patch(
+        "kiro_crew.dashboard.stale_asset_watchdog.assets_present",
+        side_effect=_mock_assets_present,
+    ):
+        fired = await asyncio.wait_for(
+            run_stale_asset_watchdog(
+                shutdown,
+                interval=0.01,
+                confirm_delay=0.01,
+                update_in_progress=lambda: True,
+                update_suppress_max=30.0,
+            ),
+            timeout=5.0,
+        )
+
+    assert fired is False
+    opened = [r for r in caplog.records if "standing down for up to" in r.getMessage()]
+    # Two separate stand-down windows, not one continuous one.
+    assert len(opened) == 2
+
+
+@pytest.mark.asyncio
+async def test_watchdog_unchanged_when_no_update_predicate():
+    """Without the predicate the historical vanish → shutdown path is intact."""
+    from kiro_crew.dashboard.stale_asset_watchdog import run_stale_asset_watchdog
+
+    shutdown = asyncio.Event()
+    calls = {"assets": 0}
+
+    def _mock_assets_present() -> bool:
+        calls["assets"] += 1
+        return calls["assets"] <= 1
+
+    with patch(
+        "kiro_crew.dashboard.stale_asset_watchdog.assets_present",
+        side_effect=_mock_assets_present,
+    ):
+        fired = await asyncio.wait_for(
+            run_stale_asset_watchdog(shutdown, interval=0.05, confirm_delay=0.01),
+            timeout=5.0,
+        )
+
+    assert shutdown.is_set()
+    assert fired is True
+    # startup + tick + confirm re-check + post-drain re-check, exactly as before.
+    assert calls["assets"] == 4
