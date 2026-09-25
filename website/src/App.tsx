@@ -594,7 +594,7 @@ function ActivityIndicator({ count, collapsed, label }: { count: number; collaps
         glyph depicts is a question about the rail's iconography rather than about
         the overlap, so it is left to the follow-up rather than guessed at here.
         The `title` carries the naming for a user who hovers. */}
-    <Bot size={11} className="animate-pulse" aria-hidden />
+    <Bot size={11} aria-hidden />
     {count}
   </span>
 }
@@ -3953,7 +3953,7 @@ export default function App() {
                 aria-label={capsuleActionMsg}
                 aria-expanded={!capsuleCollapsed}
               >
-                <span aria-hidden="true" className={`w-1.5 h-1.5 rounded-full transition-colors duration-300 ${offline ? 'bg-danger animate-pulse motion-reduce:animate-none' : 'bg-ok shadow-[0_0_8px_rgba(34,197,94,.4)]'}`} />
+                <span aria-hidden="true" className={`w-1.5 h-1.5 rounded-full transition-colors duration-300 ${offline ? 'bg-danger animate-pulse [animation-iteration-count:3]! motion-reduce:animate-none' : 'bg-ok shadow-[0_0_8px_rgba(34,197,94,.4)]'}`} />
                 {/* Live-region announcement lives in its own hidden span:
                     role="status" on the button itself would override its
                     implicit button role for screen readers. */}
@@ -3970,7 +3970,7 @@ export default function App() {
                     ? i18nT('app.resource_posture_tooltip_critical', { gb: sysMetrics.availableGb?.toFixed(1) ?? '?' })
                     : i18nT('app.resource_posture_tooltip_tight', { gb: sysMetrics.availableGb?.toFixed(1) ?? '?' })}
                 >
-                  <span aria-hidden="true" className={`inline-block w-2 h-2 rounded-full animate-pulse motion-reduce:animate-none ${sysMetrics.posture === 'critical' ? 'bg-danger' : 'bg-warn'}`} />
+                  <span aria-hidden="true" className={`inline-block w-2 h-2 rounded-full ${sysMetrics.posture === 'critical' ? 'bg-danger animate-pulse [animation-iteration-count:3]! motion-reduce:animate-none' : 'bg-warn'}`} />
                   {!isMobile && <span className="font-medium">{sysMetrics.posture === 'critical' ? i18nT('app.resource_critical') : i18nT('app.resource_tight')}</span>}
                   {!isMobile && sysMetrics.subagentCap != null && <span className="text-muted text-[10px]">· {i18nT('app.subagent_cap', { cap: String(sysMetrics.subagentCap) })}</span>}
                 </span>
@@ -4699,7 +4699,7 @@ export default function App() {
                   active={activePath === devPath}
                   collapsed={effectiveCollapsed}
                   onClick={closeMobileNav}
-                  badge={!devPageSeen && activePath !== devPath ? <span className={dotClass} /> : undefined}
+                  badge={!devPageSeen && activePath !== devPath ? <span className={`${dotClass} [animation-iteration-count:3]!`} /> : undefined}
                 />
                 )
               })()}
