@@ -71,7 +71,9 @@ def _native_projection_for_fake_processes(monkeypatch):
     monkeypatch.setattr(
         skill_projection,
         "prepare_native_skill_projection",
-        lambda work_dir: skill_projection.NativeSkillProjection({"kirocrew": "kirocrew"}),
+        lambda work_dir, **_kwargs: skill_projection.NativeSkillProjection(
+            {"kirocrew": "kirocrew"}
+        ),
     )
 
 
