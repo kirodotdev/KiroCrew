@@ -599,7 +599,9 @@ class TestAnInheritingRuntimeJoinsTheMarkerOnceLive:
         monkeypatch.setattr(
             skill_projection,
             "prepare_native_skill_projection",
-            lambda work_dir: skill_projection.NativeSkillProjection({"kirocrew": "kirocrew-view"}),
+            lambda work_dir, **_kwargs: skill_projection.NativeSkillProjection(
+                {"kirocrew": "kirocrew-view"}
+            ),
         )
         calls: list[tuple[str, Path, int]] = []
         fake_scratch = SimpleNamespace(

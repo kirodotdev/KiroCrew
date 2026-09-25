@@ -57,7 +57,7 @@ def _native_projection_for_fake_processes(monkeypatch):
 
     loop_thread = threading.current_thread()
 
-    def prepare(work_dir):
+    def prepare(work_dir, **_kwargs):
         assert threading.current_thread() is not loop_thread
         return skill_projection.NativeSkillProjection({"kirocrew": "kirocrew-skill-view-test"})
 

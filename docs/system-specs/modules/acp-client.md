@@ -39,8 +39,81 @@ actionable error. The reserved server's `disabled` must be a boolean and
 with an actionable error instead of aborting preparation of healthy agents.
 Shared runtimes derive session control-plane elements from the
 prepared view, then attach the existing signed session token. An existing broker
-element wins; a configuration whose native restrictions prevent a scoped identity
-element is refused instead of silently falling back to global skill discovery.
+element wins. Whether the `kirocrew-core` element can be mounted at all is one
+question with one predicate, `session_mcp.native_mount_withholding`, asked over
+the source set `session_mcp.native_settings_sources` returns: the agent's own
+`kirocrew-core` entry, the global `~/.kiro/settings/mcp.json` the dashboard's
+tool toggle writes, and the project's `.kiro/settings/mcp.json`. The two
+readers split the sources by what each one is. The projection judges the spec
+entry at preparation, as authored and before the managed launch replaces it (the
+replacement carries only the keys a per-session element can express, so a `type`
+or a key the element cannot carry would otherwise vanish unjudged): a restriction
+authored there is static for the view's life and refuses that agent's projected
+view, naming the spec and the restriction. The settings files are judged at
+every session start, because they outlive a spawn and are shared by every agent
+of the process, and the mount is their ONE reader: `kiro_control_plane_servers`
+reads them once at `session/new` and `session/load`, judges every granted
+identity-bound server -- a name a broker stub already carries included, since the
+stub carries a kiro-cli-only restriction no better than the element does -- and
+returns the array together with the verdicts it withheld on
+(`NativeControlPlaneMount`). For a projected search agent whose element the mount
+did not produce, the shared runtime refuses that one session on THAT verdict,
+with a sentence naming the file, the restriction and the way back (the
+dashboard's MCP tab for a toggle); it reads nothing again, because a second read
+is the window in which a toggle undone in between answers "allowed" and the
+session falls to the generic guard naming the wrong file. The spawn stands, the
+other agents' sessions stand, and a toggle undone restores the next session
+without a respawn. A broker stub is not a source: its overlay is written once
+from the spec and the global file as they were, so a stub written before a toggle
+is exactly what the toggle cannot have reached; the files are judged before it is
+accepted. Agents outside the projection take the stub path as the mount leaves
+it. The direct client (`AcpClient`) mounts no per-session element at all: one
+process serves one session, the identity rides the process environment, and
+kiro-cli mounts `kirocrew-core` natively from the view -- the managed launch plus
+the `autoApprove`, `disabledTools` and `timeout` the view copies -- so the element
+question does not arise there, and the projection it prepares
+(`per_session_element=False`) keeps a view whose spec restricts other tools
+(`disabledTools: ["learn_add"]`, a `timeout`); only `skill_search` itself
+disabled or excluded still refuses it. A restriction is a disabled server, a non-empty
+`disabledTools`, a transport a user chose that is not stdio, a key the per-session
+element cannot carry -- the table the spec rebuild keeps on a managed entry
+(`agent._MANAGED_MCP_ENTRY_KEYS`, the one table both share) less `timeout`, which
+`acp_server_element` does not emit, so a `timeout` set on the declaration the
+element would replace keeps that declaration native rather than run the server on
+the default with nothing to say so -- an entry that is not an object, or a settings
+file that cannot be read safely. Kiro Crew's own marks on an entry are not
+restrictions: the `registry` transport value the rebuild stamps under
+`agent.mcp_registry_mode` -- on the agent spec's managed entry, the one place
+Crew writes it; in a settings file the same value is a declaration a user or an
+admin wrote, which kiro-cli drops outside registry mode, so there it keeps the
+declaration native like any other non-stdio type -- the `x-kirocrew` provenance
+marker the global-file sync stamps and the `x-kirocrew-derived` record the
+rebuild writes -- kiro-cli reads none of them as a setting. The way back the
+verdict names is the dashboard's MCP tab only for a mute or a `disabledTools` in
+the global settings, the one file that tab writes; a restriction in the spec or
+the project's file is offered the edit that removes it there. The message repeats at most eight
+user-authored values and at most `_NATIVE_NAMED_CHARS` characters of each -- a
+name, a key, a transport, the `repr` of a malformed value -- and at most
+`_NATIVE_NAMED_PATH_CHARS` characters of a settings file's path, cut from the
+front so the tail that locates the file survives, because the message is
+retained per agent for the life of the runtime while the file it quotes is read
+up to the reader's 50 MB ceiling. Every value and the path go through the
+package's one sink cleaner (`mcp_session_report.sanitize_sink_text`: redact,
+drop control characters, then cut) before the message repeats them -- the value
+is text from a settings file, the project's checked out with the repository,
+and the message reaches the gateway's log, where a newline or an escape sequence
+in a tool name would write a line of its own. The cleaner reads the first
+`_NATIVE_NAMED_WINDOW` characters of a value whole, so nothing the message
+repeats was cut before it was redacted and a 50 MB value costs a window, not
+the file; a value the window did not hold whole is a cut value. The restriction itself stands, since the mount
+never widens the grant. An agent the spec refused is never in the projection's
+search set, so the `session/new` refusal to bind `skill_search` without its
+native restrictions is unreachable for that shape: the spawn that would load its
+view fails as `AcpRuntimeError` carrying the projection's sentence, the error the
+provider's startup paths translate; a session refused for a
+settings file names the file instead of that guard, and the guard remains for
+what it was written for: an element neither granted nor pre-empted while the
+files allow it.
 
 The workspace overlay owns `chat.disableInheritingDefaultResources=true` while
 Crew supplies discovery. Only literal JSON `true` in the original native setting

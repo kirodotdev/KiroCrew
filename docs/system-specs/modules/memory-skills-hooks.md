@@ -3265,7 +3265,18 @@ The explicit unbudgeted catalog renderer remains available to non-startup caller
 Native Kiro 2.21.2 progressively loads bodies but places every mapped skill's
 metadata into startup context. Native CLI launch views omit those skill resources
 and suppress implicit native skill inheritance; Crew supplies the bounded directory.
-The authored agent spec remains the mapping authority. See
+The authored agent spec remains the mapping authority. On a shared runtime a view
+stands on the `kirocrew-core` per-session element that gives `skill_search` this
+session's identity, so the projection asks the same predicate the mount asks over
+the spec entry as authored at preparation, refusing a view whose spec withholds
+the element; the global and project MCP settings are read once per session start
+by the mount alone, which hands its verdict on with the array, and the runtime
+refuses that one session on it -- stub or no stub in its array -- naming the file
+and the restriction while the spawn and the other agents' sessions stand. The
+direct client mounts the declaration natively with the identity on its process
+environment, so its view keeps a spec restriction on other tools
+([native skill startup views](acp-client.md#native-skill-startup-views)).
+See
 [context management](../../architecture/context-management.md#4-default-agent-vs-other-agents)
 for native view and inherited steering behavior.
 
