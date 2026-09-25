@@ -1112,7 +1112,9 @@ class SlackRenderer(Renderer):
         limit = self._limit()
         if len(text) + reserve <= limit:
             return [text]
-        chunks = await asyncio.to_thread(split_markdown_safe, text, limit, reserve=reserve)
+        chunks = await asyncio.to_thread(
+            split_markdown_safe, text, limit, reserve=reserve, redactor=_redact_all
+        )
         bounded: list[str] = []
         for chunk in chunks:
             bounded.extend(chunk_text(chunk, SLACK_MSG_LIMIT - reserve) or [chunk])

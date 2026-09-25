@@ -303,7 +303,10 @@ class WeComRenderer(Renderer):
         # before any cut can reach it.
         remainder = self.redact_for_target(remainder)
         chunks = await asyncio.to_thread(
-            split_markdown_safe, remainder, WECOM_SAFE_REPLY_CHARS
+            split_markdown_safe,
+            remainder,
+            WECOM_SAFE_REPLY_CHARS,
+            redactor=_default_redactor,
         ) or [remainder]
         # Tables convert per CHUNK, and only now that the turn has sealed: a table
         # whose last row was still arriving stayed raw in the streaming frames, so
