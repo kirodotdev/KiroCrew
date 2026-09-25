@@ -200,7 +200,7 @@ says nothing rather than a card that is quietly wrong.
 It renders in two places, from one projection, and they carry DIFFERENT amounts of
 it — the card is narrower than the record on purpose:
 
-- **Developer > Agent Backend**, in the detail for the highlighted harness, and only
+- **Settings > Agent Harness**, in the detail for the highlighted harness, and only
   where switching costs the reader something: the deny reach as a rule with its
   exception, and the spec settings that will not take effect. Not the projection KIND
   — `native`/`mirror`/`external` names the route Crew takes, which no reader can act

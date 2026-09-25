@@ -3286,6 +3286,26 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
     applied = live.snapshot()
     if applied is None:
         applied = await asyncio.to_thread(KiroCrewConfig.load)
+    if path_key == "agent.acp_backend":
+        from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
+
+        prerequisite = request.app.get("kiro_prerequisite_service")
+        if (
+            isinstance(prerequisite, KiroPrerequisiteService)
+            and not prerequisite.initial_setup_complete
+        ):
+            try:
+                await prerequisite.record_independent_backend_setup(applied.agent.acp_backend)
+            except Exception:
+                logger.warning("Could not record independent backend setup", exc_info=True)
+                return web.json_response(
+                    {
+                        "error": "Agent selection was saved, but setup completion could not be recorded. Try again.",
+                        "code": "setup_marker_write_failed",
+                        "config_saved": True,
+                    },
+                    status=503,
+                )
     return web.json_response(_masked_config_dict(applied))
 
 

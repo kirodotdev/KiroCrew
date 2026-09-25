@@ -51,6 +51,7 @@ import json
 import logging
 import math
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any, NamedTuple
 
 from kiro_crew.agent_sdk.capabilities import capabilities_of
@@ -337,6 +338,34 @@ def _agent_spec(agent_id: str) -> dict[str, Any]:
     if agent_spec_absent(agents_dir, agent_id):
         return {}
     return load_agent_spec(agents_dir, agent_id)
+
+
+def kas_spec_load_error(agents_dir: Path, agent_id: str) -> str | None:
+    """Why KAS session creation would refuse *agent_id*'s spec, or ``None``.
+
+    Runs KAS's two LOADING steps and nothing else: ``load_agent_spec``, then
+    ``resolve_prompt`` for a non-blank prompt. Either raising
+    ``KasAgentTranslationError`` refuses a KAS session, and its message is
+    returned. It stops before ``to_client_custom_agent``, which consults the
+    governance ceiling and writes SEL records. Any other exception propagates.
+    """
+    # circular import: kas_agents imports this module at load time.
+    from kiro_crew.acp.kas_agents import (
+        KasAgentTranslationError,
+        load_agent_spec,
+        resolve_prompt,
+    )
+
+    try:
+        spec = load_agent_spec(agents_dir, agent_id)
+        prompt = spec.get("prompt")
+        # A blank or absent prompt takes resolve_prompt's constant fallback and
+        # cannot fail; skipping it avoids that function's warning per probe.
+        if not (prompt is None or (isinstance(prompt, str) and not prompt.strip())):
+            resolve_prompt(spec, agent_id=agent_id, agents_dir=agents_dir)
+    except KasAgentTranslationError as exc:
+        return str(exc)
+    return None
 
 
 def crew_fired_spec_hooks(agent_id: str) -> tuple[list[ScriptHook], list[str], int]:

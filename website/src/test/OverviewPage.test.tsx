@@ -158,8 +158,8 @@ describe('OverviewPage — mission control', () => {
     expect(screen.getByTestId('edition-panel')).toBeInTheDocument()
   })
 
-  // The Kiro sign-in card serves the KAS backend only, a Developer Mode
-  // preview, so it lives under Developer > Agent Backend. On the landing page
+  // The Kiro sign-in card serves the KAS backend only, so it lives under the
+  // switch that picks KAS, on Settings > Agent Harness. On the landing page
   // its provider chooser read as a required step to every user, first-run
   // installs included. Asserted so it is not re-added: neither the card nor a
   // read of its status belongs here.
@@ -184,7 +184,7 @@ describe('OverviewPage — mission control', () => {
     vi.mocked(api.kirocrewConfig).mockResolvedValueOnce({ agent: { acp_backend: KIRO_SIGN_IN_BACKEND } })
     renderWithProviders(<OverviewPage />, { store: statusStore() })
     const pointer = await screen.findByTestId('kiro-sign-in-moved')
-    expect(pointer).toHaveTextContent('Kiro sign-in moved to Developer > Agent Backend')
+    expect(pointer).toHaveTextContent('Kiro sign-in moved to Settings > Agent Harness')
     // Same destination as the chat error row, so the two doors cannot drift.
     expect(pointer).toHaveAttribute('href', KIRO_SIGN_IN_PATH)
     expect(api.kasLoginStatus).not.toHaveBeenCalled()

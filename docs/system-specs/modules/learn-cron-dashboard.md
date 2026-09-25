@@ -1174,7 +1174,9 @@ specified compatibility change.
 - `handlers.py` — status, system (live CPU/memory/network), memory CRUD, cron CRUD, lesson CRUD, skills, agent config (save + auto-restart sessions), logs SSE with persistent ring buffer (1000 entries, replays on connect) + queue-based handler (also pushes to WS log subscribers via `ensure_future`), log level control, session delete, refine status push via `broadcast_ws` with throttled chunks (~4/sec). `start_time` included in SSE/WS dashboard status payload. MCP management: probe cache (`_bg_mcp_probe()` at startup, 10-min TTL, merges enabled/disabledTools from global mcp.json), server/tool toggle writes to `~/.kiro/settings/mcp.json` + syncs to kirocrew.json, bulk toggle-all, `_sync_mcp_to_agent()` helper.
 - `handlers/kiro_prerequisite.py` + `kiro_prerequisite.py` — authenticated
   first-run readiness surface. `GET /api/kiro-prerequisite` discovers viable
-  `kiro-cli` candidates and checks `whoami`; exact owners receive structured
+  `kiro-cli` candidates and checks `whoami`, probing `acp --help` independently
+  of sign-in so KAS cannot complete setup with a CLI known to lack ACP support;
+  exact owners receive structured
   platform/install/auth state — all of it DETECTED, never performed, since
   Kiro Crew neither installs the CLI nor signs in — while authenticated non-owner
   dashboard users receive only redacted `ready` and
@@ -2846,11 +2848,52 @@ which fades as focus moves; a pane outside split view is never dimmed.
 auth-cookie refresh scheduler outside this gate, so a stale access cookie can
 still refresh while the dashboard body is blocked. On a new gateway it:
 
-1. displays the connected gateway's OS so a remote browser does not imply the
-   CLI is needed on the browser machine;
-2. links out to Kiro's official setup page (`OFFICIAL_INSTALL_DOCS_URL`,
-   `https://kiro.dev/cli/`) — a link, never a button;
-3. once a viable CLI is found, names the commands the USER runs to sign in
+1. displays the connected gateway's OS so a remote browser does not imply an
+   agent must be installed on the browser machine;
+2. offers the Kiro CLI card and an independent Other coding agents picker.
+   The picker reads `/api/acp-backends`, shows each harness's detected state and
+   install command, and lets the owner select a verified harness. A configured
+   usable backend whose `/api/acp-backends` row advertises
+   `independent_setup=true` opens the dashboard without Kiro CLI or KAS ACP
+   support. The server sets this flag from the named independent-harness set;
+   an unknown future backend does not inherit the bypass merely because it is
+   not Kiro or KAS;
+   non-Kiro bypass also requires that a session could START: the host has an OS
+   sandbox backend (`sandbox_backend_available=true`, detected off-loop from
+   Crew's OS sandbox backend even when no Kiro CLI candidate exists) OR the host
+   permits unsandboxed exec (`unsandboxed_exec_permitted=true` — the platform
+   default on a backend-less host such as native Windows, or an operator opt-in).
+   A non-enforced harness (Claude Code, KAS) needs no Crew OS credential mask, so
+   it can finish setup on a backend-less host that permits unsandboxed exec; an
+   enforced harness stays held back by `sandbox_blocked_backends`. Neither
+   capability nor a permit narrows Kiro CLI readiness, whose internal
+   sandbox can be delegated to on Windows. The client fails closed on an older
+   gateway that sends no `unsandboxed_exec_permitted` field (undefined ⇒ not
+   permitted). `sandbox_unavailable` remains the
+   separate Kiro probe-refusal verdict and still blocks this bypass. KAS remains
+   subject to the Kiro ACP compatibility check. Separately,
+   `sandbox_blocked_backends` lists enforced harnesses for which the runtime's
+   `credential_mask_applies(configured_sandbox_mode())` refuses: this includes
+   effective `off` even on a capable host, but honors a governance floor that
+   raises `off` to a sandboxed tier. The server owns the enforcement membership;
+   unenforced harnesses do not acquire that refusal. Unknown or failed probes
+   do not claim a harness is ready. A missing probe response does not label the configured
+   agent as not ready or offer a switch back to Kiro CLI; that warning requires
+   a returned probe. The picker's Use action applies the same sandbox eligibility
+   as the dashboard bypass; it cannot switch to a harness the gate would then
+   refuse, and shows a sandbox warning for that state. Failed config switches
+   name the attempted agent even if the picker selection changes afterward,
+   and switch/re-check notices have their own retry controls. Settings and this
+   gate use one translated harness-name helper. The gate's "switch agents
+   later" lines name **Settings > Agent Harness** (`/settings/agent`), where
+   the same switch lives after setup; it moved there from the Developer page,
+   whose sidebar entry needs Developer Mode, so a user who set up with a
+   non-Kiro agent can reach it (the old `/developer?tab=agent-backend` link
+   redirects there);
+3. shows the Linux/macOS or Windows one-line Kiro CLI install command to copy,
+   and links to Kiro's official setup page (`OFFICIAL_INSTALL_DOCS_URL`,
+   `https://kiro.dev/cli/`). Neither action runs an installer in Kiro Crew;
+4. once a viable CLI is found, names the commands the USER runs to sign in
    (`KIRO_CLI_LOGIN_COMMAND`, `kiro-cli login`, for a personal account, and
    `KIRO_CLI_SSO_LOGIN_COMMAND`, `kiro-cli login --use-device-flow --license pro`,
    for organization SSO) and offers **Check again**. When the resolved binary
@@ -2864,7 +2907,22 @@ still refresh while the dashboard body is blocked. On a new gateway it:
    the personal sign-in command naming the path as the app's built-in kiro-cli,
    so an absolute path is explained rather than surprising; and the bundled
    copy's **Update** is refused (`BUNDLED_CLI_UPDATE_REFUSAL`);
-4. records first-run completion when `ready=true`.
+5. records first-run completion when the selected backend is usable. An owner
+   PATCH selecting an independent backend, or a later explicit agent **Check
+   again** after installation, records the gateway's existing setup-complete
+   marker once the server confirms that the configured backend is selectable,
+   installed, does not need a gateway restart, and passes the host sandbox
+   checks. A marker write failure returns a coded 503 explaining that the
+   selection or re-check succeeded but completion did not persist, with a retry
+   action; it never reports a successful completed setup. A later browser and
+   an authorized non-owner then read the durable `initial_setup_complete` bit
+   instead of depending on the first browser's localStorage. An unknown or
+   missing install probe does not write the marker; installation is not proof
+   of harness sign-in, which the first ACP turn still verifies and reports in
+   chat. Once setup is complete, backend PATCHes skip this first-run probe.
+   A re-check whose marker write fails still audits the completed probe with
+   an error outcome naming the marker failure, and answers the coded
+   `setup_marker_write_failed` 503 so the gate offers Check again.
 
 **Kiro Crew performs neither setup step, and there is no code path that could.**
 Both belong to Kiro CLI. Deleted for install: the installer download
@@ -2912,15 +2970,15 @@ in its footer.
 
 `repair_required` therefore has ONE producer now, the missing-agent-spec overlay.
 A missing CLI is not a repair: the user obtains it from Kiro, so the gateway reports
-`installed=false` and offers no action of its own rather than claiming a remedy it
-does not have.
+`installed=false`. The Kiro card offers a command to copy, never an install action
+that Kiro Crew runs.
 
 Any Kiro CLI that runs is directly usable for sign-in regardless of how it was
 installed (toolbox, Homebrew, winget, Kiro's installer, or a self-updated
 bundle). Trust is "the CLI runs, and it has a valid login" — install source,
 owner, and path do not gate setup or ACP launch — so an installed-but-signed-out
-CLI always offers an enabled **Sign in to Kiro** rather than a button-less
-"repair" dead end.
+CLI always shows the two sign-in commands in the Kiro card rather than a
+button-less "repair" dead end.
 
 **The first-run gate is the one screen that polls the HOST rather than the latch.**
 `kiroPrerequisiteIsBlocking(status)` is true only while the full-screen first-run

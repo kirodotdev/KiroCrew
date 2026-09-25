@@ -1,13 +1,14 @@
 import { lazy, Suspense, useEffect } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { ScrollText, Monitor, Brain, Archive, Database, Network, Activity, FileCode2, Cpu, Bug, ArrowRight } from 'lucide-react'
+import { ScrollText, Monitor, Brain, Archive, Database, Network, Activity, FileCode2, Bug, ArrowRight } from 'lucide-react'
 import SidePanelLayout from '../components/SidePanelLayout'
 import { ContentSkeleton } from '../components/ui'
 import { settingsPath } from '../components/settingsPath'
 import type { SettingsTarget } from '../components/settingsPath'
 import { SettingsLink } from '../components/SettingsLink'
-import { useSettingHighlight } from '../hooks/useSettingHighlight'
 import { FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR } from './settings/FeaturePreviewsSection'
+import { AGENT_HARNESS_SETTINGS_TAB } from './developer/kiroSignInLink'
+import { useSettingHighlight } from '../hooks/useSettingHighlight'
 import { LogViewer } from './LogsPage'
 import SystemPage from './SystemPage'
 import TelemetryPanel from './TelemetryPanel'
@@ -15,7 +16,6 @@ import SessionArchive from './SessionArchive'
 import LocalStorageDebug from './LocalStorageDebug'
 import { McpManagement } from './settings/McpManagement'
 import { KiroCrewCfgTab, AgentCfgTab } from './overview'
-import { AgentBackendTab } from './developer/AgentBackendTab'
 import { DebugToolsTab } from './developer/DebugToolsTab'
 
 /**
@@ -45,7 +45,6 @@ function buildTabs() {
     { key: 'mcp-pool', label: i18nT('pages.developerPage.tabs.mcpPool.label'), icon: <Network size={16} />, description: i18nT('pages.developerPage.tabs.mcpPool.description') },
     { key: 'memory', label: i18nT('pages.developerPage.tabs.memory.label'), icon: <Brain size={16} />, description: i18nT('pages.developerPage.tabs.memory.description') },
     { key: 'config', label: i18nT('pages.developerPage.tabs.config.label'), icon: <FileCode2 size={16} />, description: i18nT('pages.developerPage.tabs.config.description') },
-    { key: 'agent-backend', label: i18nT('pages.developerPage.tabs.agentBackend.label'), icon: <Cpu size={16} />, description: i18nT('pages.developerPage.tabs.agentBackend.description') },
     { key: 'debug-tools', label: i18nT('pages.developerPage.tabs.debugTools.label'), icon: <Bug size={16} />, description: i18nT('pages.developerPage.tabs.debugTools.description') },
     { key: 'archive', label: i18nT('pages.developerPage.tabs.archive.label'), icon: <Archive size={16} />, description: i18nT('pages.developerPage.tabs.archive.description') },
   ]
@@ -70,20 +69,34 @@ const FEATURE_PREVIEWS_TARGET: SettingsTarget = {
   highlight: `key:${FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR}`,
 }
 
+/**
+ * The tab key the coding-agent switch had while it lived on this page. It moved
+ * to Settings > Agent Harness once first-run setup began offering agents other
+ * than Kiro CLI: the sidebar shows this page only in Developer Mode, so a user
+ * who set up with Claude Code had no visible way to switch agents or reach the
+ * Kiro sign-in card under the switch. The old URL survives in bookmarks and in
+ * already-open tabs that predate KIRO_SIGN_IN_PATH's move.
+ */
+const LEGACY_AGENT_BACKEND_TAB = 'agent-backend'
+
 export default function DeveloperPage() {
   const tabs = buildTabs()
   const navigate = useNavigate()
   const { pathname, search } = useLocation()
 
-  // `?highlight=key:<anchor>` lands a deep link ON its card rather than at the
-  // top of the pane: the chat's "Sign in to Kiro" error row sends the user to
-  // the Kiro sign-in card, which sits below the long backend-switch card on
-  // the Agent Backend tab (KIRO_SIGN_IN_PATH). Same hook Settings mounts; it
-  // waits for the card, which renders only after the tab's config query.
-  // Owned only while the URL is this page's own route: the legacy redirect
-  // below hands a Settings-bound highlight to SettingsPage, and this page
-  // must not consume it on the tick before that page mounts.
-  useSettingHighlight(pathname === '/developer')
+  // Serves the default-crewmate deep link: the Crewmates roster's `default`
+  // badge (`ChangeDefaultLink` in KiroCrewAgentsPage.tsx) points at
+  // `DEFAULT_CREWMATE_PATH`, `/developer?tab=config&highlight=key:default-crewmate`,
+  // and this hook rings the Default crewmate row on the Config tab.
+  //
+  // Gated on the route AND the tab: the legacy 'agent-backend' tab forwards its
+  // `?highlight=` on to Settings > Agent Harness through the redirect below, so
+  // this hook must leave that value alone for SettingsPage to consume rather
+  // than finding no anchor here and stripping it first.
+  useSettingHighlight(
+    pathname === '/developer'
+      && new URLSearchParams(search).get('tab') !== LEGACY_AGENT_BACKEND_TAB,
+  )
 
   // Feature Previews moved to Settings > Developer. The old tab's URL survives
   // in bookmarks, docs and command-palette history, so a link that still names
@@ -92,9 +105,20 @@ export default function DeveloperPage() {
   // back to the remembered or first tab, which reads as "the toggles are gone".
   // Passive useEffect on purpose, matching SettingsPage's legacy translation:
   // react-router 7 drops navigations fired from useLayoutEffect on first mount.
+  //
+  // The coding-agent switch moved the same way, to Settings > Agent Harness.
+  // Its old links can carry `?highlight=key:kiro-sign-in` (the chat's "Sign in
+  // to Kiro" row built exactly that URL), so the highlight rides along and
+  // SettingsPage rings the sign-in card instead of this page consuming it.
   useEffect(() => {
-    if (new URLSearchParams(search).get('tab') !== LEGACY_FEATURE_PREVIEWS_TAB) return
-    navigate(settingsPath(FEATURE_PREVIEWS_TARGET), { replace: true })
+    const qs = new URLSearchParams(search)
+    const tab = qs.get('tab')
+    if (tab === LEGACY_FEATURE_PREVIEWS_TAB) {
+      navigate(settingsPath(FEATURE_PREVIEWS_TARGET), { replace: true })
+    } else if (tab === LEGACY_AGENT_BACKEND_TAB) {
+      const highlight = qs.get('highlight') ?? undefined
+      navigate(settingsPath({ tab: AGENT_HARNESS_SETTINGS_TAB, highlight }), { replace: true })
+    }
   }, [search, navigate])
 
   // The redirect only catches a URL that still names the old tab. A user who
@@ -148,7 +172,6 @@ export default function DeveloperPage() {
             <AgentCfgTab />
           </>
         )}
-        {tab === 'agent-backend' && <AgentBackendTab />}
         {tab === 'debug-tools' && <DebugToolsTab />}
         {tab === 'archive' && <SessionArchive />}
       </>}

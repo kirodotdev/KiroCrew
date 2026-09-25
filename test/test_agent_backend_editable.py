@@ -1,6 +1,6 @@
 """``agent.acp_backend`` is writable from the dashboard, and only to real backends.
 
-The Developer > Agent Backend switch writes this field over
+The Settings > Agent Harness switch writes this field over
 ``PATCH /api/config/kirocrew``, so it has to be in ``_EDITABLE_CONFIG`` at all —
 before this it was absent and every save came back "field not editable".
 

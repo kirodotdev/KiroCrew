@@ -1,5 +1,5 @@
 # Smoke: the Kiro sign-in card in its signed-out state. The card lives on
-# Developer > Agent Backend, under the backend switch (`KiroSignInCard` renders
+# Settings > Agent Harness, under the backend switch (`KiroSignInCard` renders
 # there and nowhere else; Settings > Overview only carries a pointer link, and
 # only once KAS is the selected backend). It is offered whenever KAS is
 # selectable, which the baseline set makes true on the seeded target. The seeded
@@ -16,13 +16,13 @@ user_story: >-
   whether Kiro Crew holds a Kiro identity and how to sign in, so that I can
   fix the missing sign-in without reading logs.
 docs_url: docs/system-specs/modules/kas-auth.md
-summary: Open the Developer page's Agent Backend tab and read the signed-out Kiro sign-in card
+summary: Open Settings > Agent Harness and read the signed-out Kiro sign-in card
 preconditions:
   seed: rich
   members: [nova-sky]
-  start_url: /developer
+  start_url: /settings/agent
 steps:
-  - You are on the Developer page. It has a rail of tabs (Logs, System, Telemetry, Storage, ... , Agent Backend, Debug Tools, Archive). Click the tab labelled "Agent Backend" (it has a chip icon).
+  - You are on the Settings page with the "Agent Harness" tab open (it has a chip icon in the tab rail).
   - Scroll down past the backend switch until you find a card titled "Kiro sign-in" (it has a key icon).
   - Wait two seconds so the card can finish checking the sign-in status (a short "Checking sign-in…" line may show first).
 expectations:

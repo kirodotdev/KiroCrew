@@ -35,6 +35,19 @@ export interface KiroPrerequisiteStatus {
    * CLI is installed.
    */
   sandbox_unavailable: boolean
+  /** Crew OS sandbox capability; absent on older gateways, so bypass requires true. */
+  sandbox_backend_available?: boolean
+  /**
+   * Whether this host permits execution with NO OS sandbox backend — the
+   * platform default (native Windows) or an operator opt-in. A non-enforced
+   * harness (not in `sandbox_blocked_backends`) needs no Crew OS mask, so it can
+   * start and finish setup on such a host even when `sandbox_backend_available`
+   * is false. Absent on older gateways; a consumer must FAIL CLOSED on the
+   * absence (undefined ⇒ not permitted), never treat it as true.
+   */
+  unsandboxed_exec_permitted?: boolean
+  /** Runtime-enforced harness ids whose credential mask cannot apply at the effective tier. */
+  sandbox_blocked_backends?: string[]
   /** Machine-readable: 'transient' | 'foreign_sandbox' | 'no_backend' | ''. */
   sandbox_failure_kind: string
   /** Technical probe reason, e.g. 'unshare(CLONE_NEWNS) failed with errno 1 (EPERM)'. */

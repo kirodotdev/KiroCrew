@@ -1,5 +1,5 @@
 /**
- * AgentBackendTab — Developer > Agent Backend, as a list and a detail.
+ * AgentBackendTab — Settings > Agent Harness, as a list and a detail.
  *
  * Three independent rules, and the tests exist mostly to keep them from being
  * collapsed into each other.
@@ -22,7 +22,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
 import React from 'react'
+import { ApiError } from '../api/apiError'
 
 const {
   patchConfigMock,
@@ -56,7 +58,9 @@ vi.mock('../components/settingRef/useConfigSchema', () => ({
 // would need the kas-login API this file does not mock. Unlike the real card it
 // renders unconditionally, so its absence below can only be the tab's gate.
 vi.mock('../pages/developer/KiroSignInCard', () => ({
-  KiroSignInCard: () => <div data-testid="kiro-sign-in-card" />,
+  KiroSignInCard: ({ compact }: { compact?: boolean }) => (
+    <div data-testid="kiro-sign-in-card" data-compact={compact ? 'true' : 'false'} />
+  ),
 }))
 
 import { AgentBackendTab } from '../pages/developer/AgentBackendTab'
@@ -190,30 +194,34 @@ function wrap() {
   wrapWithClient()
 }
 
-/** A harness ROW. `role="tab"`, so it can never be confused with the Use button. */
-const row = (name: string) => screen.getByRole('tab', { name })
 /**
- * The harness NAMES in list order.
- *
- * Reads the name span rather than the row's `textContent`, which also carries the
- * readiness word -- and asserting the name is what the ordering cases are about.
+ * A harness ROW's radio. Its accessible name is the harness name alone, so it can
+ * never be confused with the Use button, and `checked` is which detail is open.
  */
-const rows = () =>
-  screen.getAllByRole('tab').map(el => el.querySelector('span.truncate')?.textContent)
+const row = (name: string) => screen.getByRole('radio', { name })
+/**
+ * The visible row the radio sits in: the label carrying the name, the in-use word
+ * and the status badge. What a sighted reader scans.
+ */
+const rowLabel = (name: string) => row(name).closest('label') as HTMLElement
+/** The harness NAMES in list order, read off each radio's accessible name. */
+const rows = () => screen.getAllByRole('radio').map(el => el.getAttribute('aria-label'))
 /** The one control that switches the backend. */
 const useButton = (name: string) => screen.getByRole('button', { name: `Use ${name}` })
 /** Put a harness's detail on screen without switching to it. */
 const highlight = (name: string) => fireEvent.click(row(name))
+/** The one open detail: the panel under the checked row. */
+const detail = () => screen.getByTestId('agent-harness-detail')
 /**
  * Queries scoped to the open detail.
  *
  * Load-bearing, not tidiness. Each harness's status sentence is in the DOM TWICE by
  * design -- once as the row's `aria-describedby` text, so a reader arrowing down the
- * list is told each state, and once visibly in the strip. An unscoped `getByText`
+ * list is told each state, and once visibly in the detail. An unscoped `getByText`
  * cannot choose between them, and the assertion worth making is the scoped one: that
- * the STRIP says it, rather than that the document contains it somewhere.
+ * the DETAIL says it, rather than that the document contains it somewhere.
  */
-const panel = () => within(screen.getByRole('tabpanel'))
+const panel = () => within(detail())
 
 beforeEach(() => {
   localStorage.clear()
@@ -236,7 +244,7 @@ beforeEach(() => {
 describe('AgentBackendTab list', () => {
   it('lists all three backends as rows', async () => {
     wrap()
-    expect(await screen.findByRole('tab', { name: 'Kiro CLI' })).toBeInTheDocument()
+    expect(await screen.findByRole('radio', { name: 'Kiro CLI' })).toBeInTheDocument()
     expect(row('Claude Code')).toBeInTheDocument()
     expect(row('KAS (kiro-agent)')).toBeInTheDocument()
   })
@@ -251,7 +259,7 @@ describe('AgentBackendTab list', () => {
     })
     schemaMock.mockReturnValue(schemaWith(['', 'claude', 'kas', 'zephyr']))
     wrap()
-    await waitFor(() => expect(screen.getAllByRole('tab')).toHaveLength(4))
+    await waitFor(() => expect(screen.getAllByRole('radio')).toHaveLength(4))
     expect(rows()).toEqual(['Kiro CLI', 'KAS (kiro-agent)', 'Claude Code', 'zephyr'])
   })
 
@@ -272,8 +280,8 @@ describe('AgentBackendTab list', () => {
     // The useful default and the one id the row list always contains.
     kirocrewConfigMock.mockResolvedValue({ agent: { acp_backend: 'kas' } })
     wrap()
-    await waitFor(() => expect(row('KAS (kiro-agent)')).toHaveAttribute('aria-selected', 'true'))
-    expect(row('Kiro CLI')).toHaveAttribute('aria-selected', 'false')
+    await waitFor(() => expect(row('KAS (kiro-agent)')).toBeChecked())
+    expect(row('Kiro CLI')).not.toBeChecked()
   })
 
   it('hides a backend the deployment may not select, rather than dimming it', async () => {
@@ -282,8 +290,8 @@ describe('AgentBackendTab list', () => {
     schemaMock.mockReturnValue(schemaWith(['']))
     wrap()
     await waitFor(() => expect(row('Kiro CLI')).toBeInTheDocument())
-    expect(screen.queryByRole('tab', { name: 'Claude Code' })).toBeNull()
-    expect(screen.queryByRole('tab', { name: 'KAS (kiro-agent)' })).toBeNull()
+    expect(screen.queryByRole('radio', { name: 'Claude Code' })).toBeNull()
+    expect(screen.queryByRole('radio', { name: 'KAS (kiro-agent)' })).toBeNull()
   })
 
   it('keeps the current backend listed even if it reads as unselectable', async () => {
@@ -325,7 +333,7 @@ describe('AgentBackendTab list', () => {
     schemaMock.mockReturnValue(schemaWith(['', 'claude']))
     wrap()
     await waitFor(() => expect(row('Kiro CLI')).toBeInTheDocument())
-    await waitFor(() => expect(screen.queryByRole('tab', { name: 'Claude Code' })).toBeNull())
+    await waitFor(() => expect(screen.queryByRole('radio', { name: 'Claude Code' })).toBeNull())
   })
 
   it('lists every backend while the schema is still loading', async () => {
@@ -350,7 +358,7 @@ describe('AgentBackendTab list', () => {
     expect(
       screen.getByText('Could not load the agent backend.').closest('[role="alert"]'),
     ).not.toBeNull()
-    expect(screen.queryByRole('tab')).toBeNull()
+    expect(screen.queryByRole('radio')).toBeNull()
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
   })
 
@@ -363,119 +371,95 @@ describe('AgentBackendTab list', () => {
   })
 })
 
-describe('AgentBackendTab highlight is not selection', () => {
+describe('AgentBackendTab checking a row is not selecting an agent', () => {
   it('clicking a row changes the detail and writes no config', async () => {
     // The rule the whole layout exists for. Under the old control the only way to
     // read about a harness was to select it.
     wrap()
     await waitFor(() => expect(row('Kiro CLI')).toBeInTheDocument())
     highlight('Claude Code')
-    expect(row('Claude Code')).toHaveAttribute('aria-selected', 'true')
+    expect(row('Claude Code')).toBeChecked()
     // Looking at it did not make it the running one.
     expect(row('Claude Code')).not.toHaveAttribute('aria-current')
     expect(row('Kiro CLI')).toHaveAttribute('aria-current', 'true')
     expect(patchConfigMock).not.toHaveBeenCalled()
   })
 
-  it('Enter on a row highlights it and writes no config', async () => {
-    // Named explicitly rather than left to the browser's click synthesis: "Enter does
-    // not switch the backend" has to be a property of the component.
+  it('checking a radio opens its detail and writes no config', async () => {
+    // The radio's own change event -- what a keyboard arrow fires in a browser --
+    // is a look, not a switch. "Checking does not switch the backend" has to be a
+    // property of the component, not of which handler happens to be wired.
     wrap()
     await waitFor(() => expect(row('Kiro CLI')).toBeInTheDocument())
-    fireEvent.keyDown(row('Kiro CLI'), { key: 'ArrowDown' })
-    fireEvent.keyDown(row('KAS (kiro-agent)'), { key: 'Enter' })
-    expect(row('KAS (kiro-agent)')).toHaveAttribute('aria-selected', 'true')
+    fireEvent.click(row('KAS (kiro-agent)'))
+    expect(row('KAS (kiro-agent)')).toBeChecked()
+    expect(row('Kiro CLI')).not.toBeChecked()
     expect(row('Kiro CLI')).toHaveAttribute('aria-current', 'true')
     expect(patchConfigMock).not.toHaveBeenCalled()
   })
 
-  it('arrow keys move the highlight along both axes', async () => {
-    // Both, because the layout's orientation flips with a CSS breakpoint this
-    // component never reads: refusing one axis would break the keyboard in whichever
-    // layout the reader happens to be in.
+  it('is one radio group, so the browser supplies the keyboard', async () => {
+    // Every row shares one `name`: that is what gives the list a single tab stop
+    // and arrow keys that move the check and the focus together, natively -- the
+    // behaviour the old tablist reimplemented by hand. Eight tabbable rows would
+    // put eight stops between the page heading and the one button.
     wrap()
     await waitFor(() => expect(row('Kiro CLI')).toBeInTheDocument())
-    fireEvent.keyDown(row('Kiro CLI'), { key: 'ArrowDown' })
-    expect(row('KAS (kiro-agent)')).toHaveAttribute('aria-selected', 'true')
-    fireEvent.keyDown(row('KAS (kiro-agent)'), { key: 'ArrowRight' })
-    expect(row('Claude Code')).toHaveAttribute('aria-selected', 'true')
-    fireEvent.keyDown(row('Claude Code'), { key: 'ArrowLeft' })
-    expect(row('KAS (kiro-agent)')).toHaveAttribute('aria-selected', 'true')
-    fireEvent.keyDown(row('KAS (kiro-agent)'), { key: 'ArrowUp' })
-    expect(row('Kiro CLI')).toHaveAttribute('aria-selected', 'true')
-  })
-
-  it('clamps the highlight at both ends instead of wrapping', async () => {
-    wrap()
-    await waitFor(() => expect(row('Kiro CLI')).toBeInTheDocument())
-    fireEvent.keyDown(row('Kiro CLI'), { key: 'ArrowUp' })
-    expect(row('Kiro CLI')).toHaveAttribute('aria-selected', 'true')
-    fireEvent.keyDown(row('Kiro CLI'), { key: 'End' })
-    expect(row('Claude Code')).toHaveAttribute('aria-selected', 'true')
-    fireEvent.keyDown(row('Claude Code'), { key: 'ArrowDown' })
-    expect(row('Claude Code')).toHaveAttribute('aria-selected', 'true')
-    fireEvent.keyDown(row('Claude Code'), { key: 'Home' })
-    expect(row('Kiro CLI')).toHaveAttribute('aria-selected', 'true')
-  })
-
-  it('moves real keyboard focus with the highlight, not just aria-selected', async () => {
-    // A tablist with automatic activation has to carry FOCUS to the row it activated.
-    // Moving only `aria-selected` and the roving tabindex leaves a screen reader
-    // announcing the row the user has left, and leaves Tab continuing from an element
-    // that is now tabIndex={-1}.
-    wrap()
-    await waitFor(() => expect(row('Kiro CLI')).toBeInTheDocument())
-    row('Kiro CLI').focus()
-    expect(document.activeElement).toBe(row('Kiro CLI'))
-
-    fireEvent.keyDown(row('Kiro CLI'), { key: 'ArrowDown' })
-    expect(document.activeElement).toBe(row('KAS (kiro-agent)'))
-
-    fireEvent.keyDown(row('KAS (kiro-agent)'), { key: 'End' })
-    expect(document.activeElement).toBe(row('Claude Code'))
-
-    fireEvent.keyDown(row('Claude Code'), { key: 'Home' })
-    expect(document.activeElement).toBe(row('Kiro CLI'))
+    const names = new Set(screen.getAllByRole('radio').map(el => el.getAttribute('name')))
+    expect(names.size).toBe(1)
+    expect([...names][0]).toBeTruthy()
+    // Exactly one is checked at any time, and the check follows the open detail.
+    expect(screen.getAllByRole('radio').filter(el => (el as HTMLInputElement).checked)).toHaveLength(1)
+    highlight('Claude Code')
+    expect(screen.getAllByRole('radio').filter(el => (el as HTMLInputElement).checked)).toHaveLength(1)
+    expect(row('Claude Code')).toBeChecked()
+    // The checked radio names the detail it opened.
+    expect(row('Claude Code')).toHaveAttribute('aria-controls', detail().id)
+    expect(row('Kiro CLI')).not.toHaveAttribute('aria-controls')
   })
 
   it('does not steal focus when a row is clicked rather than arrowed to', async () => {
-    // Clicking already puts focus where the user pointed; the helper must not fight
-    // the browser over it, and a click on a row must not pull focus off, say, the
-    // Use button the user was about to press.
+    // Clicking already puts focus where the user pointed; the component must not
+    // fight the browser over it, and a click on a row must not pull focus off, say,
+    // the Use button the user was about to press.
     wrap()
     await waitFor(() => expect(row('Kiro CLI')).toBeInTheDocument())
     highlight('Claude Code')
-    expect(row('Claude Code')).toHaveAttribute('aria-selected', 'true')
+    expect(row('Claude Code')).toBeChecked()
   })
 
-  it('keeps one tab stop for the whole list', async () => {
-    // Roving tabindex: eight tabbable rows would put eight stops between the panel's
-    // heading and its only button.
-    wrap()
-    await waitFor(() => expect(row('Kiro CLI')).toBeInTheDocument())
-    expect(row('Kiro CLI')).toHaveAttribute('tabindex', '0')
-    expect(row('Claude Code')).toHaveAttribute('tabindex', '-1')
-    highlight('Claude Code')
-    expect(row('Claude Code')).toHaveAttribute('tabindex', '0')
-    expect(row('Kiro CLI')).toHaveAttribute('tabindex', '-1')
-  })
-
-  it('renders exactly one detail, whatever is highlighted', async () => {
+  it('renders exactly one detail, whatever is checked', async () => {
     // The reason the panel was redesigned: every harness's whole card used to render
     // stacked down the page.
     acpBackendsMock.mockResolvedValue({
       backends: [probeRow('', card()), probeRow('kas', card()), probeRow('claude', card())],
     })
     wrap()
-    await waitFor(() => expect(screen.getAllByRole('tabpanel')).toHaveLength(1))
+    await waitFor(() => expect(screen.getAllByTestId('agent-harness-detail')).toHaveLength(1))
     expect(screen.getAllByText(/supports \d+ of \d+ features/)).toHaveLength(1)
     highlight('Claude Code')
-    expect(screen.getAllByRole('tabpanel')).toHaveLength(1)
+    expect(screen.getAllByTestId('agent-harness-detail')).toHaveLength(1)
     expect(screen.getAllByText(/supports \d+ of \d+ features/)).toHaveLength(1)
   })
 
+  it('opens the detail directly under its own row, not in a side pane', async () => {
+    // The onboarding shape: the detail is inside the checked row's outline, after
+    // its label, so it reads as that agent's panel rather than a card detached at
+    // the foot of the list.
+    wrap()
+    await waitFor(() => expect(row('Kiro CLI')).toBeInTheDocument())
+    highlight('Claude Code')
+    const outline = rowLabel('Claude Code').parentElement as HTMLElement
+    expect(outline.contains(detail())).toBe(true)
+    expect(
+      rowLabel('Claude Code').compareDocumentPosition(detail()) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+    // And not under any other row.
+    expect((rowLabel('Kiro CLI').parentElement as HTMLElement).contains(detail())).toBe(false)
+  })
+
   it('states each row status as words, outside the row so it is not the row name', async () => {
-    // The glyph summarises a sentence that is also present. It lives OUTSIDE the row
+    // The badge summarises a sentence that is also present. It lives OUTSIDE the row
     // because text inside would join the row's accessible NAME, and every row would
     // then be named after its own problem.
     acpBackendsMock.mockResolvedValue({
@@ -487,9 +471,10 @@ describe('AgentBackendTab highlight is not selection', () => {
     schemaMock.mockReturnValue(schemaWith(['', 'kas']))
     wrap()
     await waitFor(() => expect(row('KAS (kiro-agent)')).toBeInTheDocument())
-    // The name is the name -- the row also carries a one-word readiness summary, and
-    // neither of them is the row's accessible NAME.
-    expect(row('KAS (kiro-agent)').querySelector('span.truncate')?.textContent).toBe(
+    // The name is the name -- the row also carries a badge, and neither of them is
+    // the row's accessible NAME.
+    expect(row('KAS (kiro-agent)')).toHaveAccessibleName('KAS (kiro-agent)')
+    expect(rowLabel('KAS (kiro-agent)').querySelector('span.truncate')?.textContent).toBe(
       'KAS (kiro-agent)',
     )
     // The state is the description.
@@ -502,9 +487,9 @@ describe('AgentBackendTab highlight is not selection', () => {
 
   it('states BOTH in-use and readiness, so an active broken harness shows both', async () => {
     // The two facts are independent and an operator needs them at once. One mark with
-    // a precedence can only ever show the winner, which is why they are two columns:
-    // a harness that is the one running AND missing its binary has to read as "in
-    // use, and broken" rather than as one or the other.
+    // a precedence can only ever show the winner, which is why they are two things on
+    // the row: a harness that is the one running AND missing its binary has to read
+    // as "in use, and broken" rather than as one or the other.
     kirocrewConfigMock.mockResolvedValue({ agent: { acp_backend: 'claude' } })
     acpBackendsMock.mockResolvedValue({
       backends: [
@@ -532,7 +517,7 @@ describe('AgentBackendTab highlight is not selection', () => {
     expect(other?.textContent).not.toContain('In use.')
   })
 
-  it('marks in-use independently of readiness, so a broken active row keeps its dot', async () => {
+  it('marks in-use independently of readiness, so a broken active row keeps its word', async () => {
     // The regression this guards: an earlier single-glyph row let a readiness problem
     // hide which backend was running.
     kirocrewConfigMock.mockResolvedValue({ agent: { acp_backend: 'claude' } })
@@ -545,31 +530,34 @@ describe('AgentBackendTab highlight is not selection', () => {
     wrap()
     // aria-current is the machine-readable half and survives the readiness verdict.
     await waitFor(() => expect(row('Claude Code')).toHaveAttribute('aria-current', 'true'))
-    // Two marks render, not one: the leading dot and the trailing readiness glyph.
-    await waitFor(() => expect(row('Claude Code').querySelectorAll('svg')).toHaveLength(2))
-    // A non-current row carries only the readiness glyph.
-    expect(row('Kiro CLI').querySelectorAll('svg')).toHaveLength(1)
+    // Both render on the row, visibly: the in-use word and the readiness badge.
+    await waitFor(() => expect(rowLabel('Claude Code').textContent).toContain('Not installed'))
+    expect(rowLabel('Claude Code').textContent).toContain('In use')
+    // A non-current row carries only the badge.
+    expect(rowLabel('Kiro CLI').textContent).toContain('Installed')
+    expect(rowLabel('Kiro CLI').textContent).not.toContain('In use')
   })
 
-  it('says "In use." visibly, not only to a screen reader', async () => {
-    // Two dim Use buttons otherwise look alike for different reasons -- one because
-    // the harness is already running, one because its binary is missing -- and a
-    // sighted reader cannot tell which.
+  it('says "In use" visibly on the row, not only to a screen reader', async () => {
+    // The configured harness has no Use button, so the row is the one place a
+    // sighted reader learns which agent is running. The word is on the row itself,
+    // and only on the running one.
     wrap()
     await waitFor(() => expect(row('Kiro CLI')).toHaveAttribute('aria-current', 'true'))
-    const label = within(screen.getByRole('tabpanel')).getByText('In use.')
+    const label = within(rowLabel('Kiro CLI')).getByText('In use')
     expect(label).toBeInTheDocument()
     expect(label.className).not.toContain('sr-only')
+    expect(within(rowLabel('Claude Code')).queryByText('In use')).toBeNull()
     // And it belongs to the ACTIVE harness, not to whichever row is being read.
     highlight('Claude Code')
-    expect(within(screen.getByRole('tabpanel')).queryByText('In use.')).toBeNull()
+    expect(within(rowLabel('Kiro CLI')).getByText('In use')).toBeInTheDocument()
+    expect(within(rowLabel('Claude Code')).queryByText('In use')).toBeNull()
   })
 
-  it('makes a dead Use button look dead on every affordance at once', async () => {
-    // A dead click on the panel's one mutating control is answered by silence, so the
-    // dead state drops the border, the fill and the elevation together and fades the
-    // label on top. Any one affordance left in place reads as pressable by itself, so
-    // the whole class set is asserted rather than the `disabled` attribute alone.
+  it('makes a dead Use button look dead, in the onboarding button style', async () => {
+    // The detail's one mutating control is the same accent button first-run setup
+    // uses, and its dead state is that button's: disabled, faded, no pointer. A dead
+    // click is answered by silence, so the button must not read as pressable.
     acpBackendsMock.mockResolvedValue({
       backends: [
         probeRow('', card()),
@@ -581,52 +569,34 @@ describe('AgentBackendTab highlight is not selection', () => {
     highlight('Claude Code')
     await waitFor(() => expect(useButton('Claude Code')).toBeDisabled())
     const dead = useButton('Claude Code').className
-    expect(dead).toContain('cursor-not-allowed')
-    // Border and fill: gone, not merely dimmer than the live one.
-    expect(dead).toContain('border-transparent')
-    expect(dead).toContain('bg-transparent')
-    expect(dead).not.toContain('border-border-strong')
-    expect(dead).not.toContain('bg-bg-elevated')
-    // Elevation: gone. Text: muted AND faded.
-    expect(dead).not.toContain('shadow-sm')
-    expect(dead).toContain('text-muted')
-    expect(dead).toContain('opacity-40')
-    expect(dead).not.toContain('text-text-strong')
-    // Nothing invites a press: no pointer cursor and no hover response.
-    expect(dead).not.toContain('cursor-pointer')
-    expect(dead).not.toContain('hover:bg-bg-hover')
+    expect(dead).toContain('disabled:opacity-30')
+    expect(dead).toContain('disabled:cursor-not-allowed')
+    expect(dead).toContain('bg-accent')
 
-    // The contrast, in the same render: a pressable one keeps the elevation.
+    // The contrast, in the same render: a pressable one is enabled and accent-filled.
     highlight('Kiro CLI')
     acpBackendsMock.mockResolvedValue({
       backends: [probeRow('', card()), probeRow('kas', card())],
     })
     highlight('KAS (kiro-agent)')
     await waitFor(() => expect(useButton('KAS (kiro-agent)')).toBeEnabled())
-    const live = useButton('KAS (kiro-agent)').className
-    expect(live).toContain('border-border-strong')
-    expect(live).toContain('shadow-sm')
-    expect(live).toContain('bg-bg-elevated')
-    expect(live).toContain('cursor-pointer')
-    expect(live).not.toContain('opacity-40')
+    expect(useButton('KAS (kiro-agent)').className).toContain('bg-accent')
   })
 
-  it('gives the in-use dot a word: a hover title and a visible one beside it', async () => {
-    // The dot alone labels nothing, so the only visible word on the running harness
-    // would be its readiness one -- making "Ready" stand for two facts at once, able
-    // to run and the one running.
+  it('gives the in-use word a hover title as well', async () => {
+    // The word alone is what a sighted reader gets; the title repeats it for a
+    // hover, so the hover text and the visible text are one string.
     wrap()
     await waitFor(() => expect(row('Kiro CLI')).toHaveAttribute('aria-current', 'true'))
-    expect(row('Kiro CLI').querySelector('[title="In use"]')).toBeInTheDocument()
-    // The word prints where the other row word prints, and only on the running row.
-    expect(row('Kiro CLI').textContent).toContain('In use')
-    expect(row('Claude Code').querySelector('[title="In use"]')).toBeNull()
-    expect(row('Claude Code').textContent).not.toContain('In use')
+    expect(rowLabel('Kiro CLI').querySelector('[title="In use"]')).toBeInTheDocument()
+    expect(rowLabel('Kiro CLI').textContent).toContain('In use')
+    expect(rowLabel('Claude Code').querySelector('[title="In use"]')).toBeNull()
+    expect(rowLabel('Claude Code').textContent).not.toContain('In use')
   })
 
   it('does not say the in-use word twice to a screen reader', async () => {
-    // The row description states both facts in full, so the two visible marks are
-    // hidden from the reader that already has the sentence.
+    // The row description states both facts in full, so the visible word and the
+    // badge do not join the accessible NAME of the radio.
     wrap()
     await waitFor(() => expect(row('Kiro CLI')).toHaveAttribute('aria-current', 'true'))
     expect(row('Kiro CLI')).toHaveAccessibleName('Kiro CLI')
@@ -658,34 +628,36 @@ describe('AgentBackendTab highlight is not selection', () => {
     expect(kiro.parentElement?.className).not.toContain('opacity-60')
   })
 
-  it('does not make each row fill the narrow strip', async () => {
-    // The regression this guards is a task failure, not a cosmetic one: a full-width
-    // row inside the horizontal scroller means exactly ONE row on screen and the rest
-    // unreachable, which reads as a dropdown that does nothing when tapped. `w-full`
-    // belongs to the `md` column layout only.
+  it('shows the full harness name, never truncated by a fixed row width', async () => {
+    // The old strip capped each row at 11rem and truncated "KAS (kiro-agent)" to
+    // "KAS (kiro-..." at ordinary widths. A row now spans the list, so the name has
+    // the row's width and the badge yields its own space.
     wrap()
     await waitFor(() => expect(row('Kiro CLI')).toBeInTheDocument())
     for (const name of ['Kiro CLI', 'Claude Code', 'KAS (kiro-agent)']) {
-      const cls = row(name).className
-      expect(cls).toContain('md:w-full')
-      expect(cls.split(/\s+/)).not.toContain('w-full')
+      const label = rowLabel(name)
+      expect(label.className.split(/\s+/)).not.toEqual(expect.arrayContaining([expect.stringMatching(/^max-w-/)]))
+      expect(label.querySelector('span.truncate')?.textContent).toBe(name)
     }
   })
 
   it('says nothing about readiness it did not measure', async () => {
     // No probe payload at all -- a 404 or a non-owner 403. The active row still shows
-    // which backend is running, because in-use is not a readiness claim.
+    // which backend is running, because in-use is not a readiness claim; and no row
+    // carries a badge, because a badge would be a claim.
     wrap()
     await waitFor(() => expect(row('Kiro CLI')).toHaveAttribute('aria-current', 'true'))
     const describedBy = row('Kiro CLI').getAttribute('aria-describedby')
     expect(document.getElementById(describedBy as string)?.textContent).toContain('In use.')
     expect(screen.queryByText(/Missing on this machine/)).toBeNull()
+    expect(rowLabel('Kiro CLI').textContent).not.toContain('Installed')
+    expect(rowLabel('Claude Code').textContent).not.toContain('Installed')
   })
 
-  it('puts a visible word beside each readiness glyph', async () => {
+  it('puts a status badge on each row, in the words first-run setup uses', async () => {
     // A glyph with only a `title` is a glyph a touch device never explains and a
-    // first-time reader has to guess at. The word carries the same precedence as the
-    // mark, so the two cannot disagree.
+    // first-time reader has to guess at. The badge is the same one the setup gate's
+    // picker shows, so a harness reads the same on both screens.
     acpBackendsMock.mockResolvedValue({
       backends: [
         probeRow('', card()),
@@ -702,18 +674,12 @@ describe('AgentBackendTab highlight is not selection', () => {
     wrap()
     await waitFor(() => expect(row('deepseek')).toBeInTheDocument())
 
-    expect(row('Kiro CLI').textContent).toContain('Ready')
-    expect(row('Claude Code').textContent).toContain('Missing')
-    expect(row('codex').textContent).toContain('Not checked')
-    // A state, not a verb: "Re-check" read as a clickable action beside the Check
-    // again button that actually performs one.
-    expect(row('pi').textContent).toContain('Not live')
-    expect(row('deepseek').textContent).toContain('Not offered')
+    expect(rowLabel('Kiro CLI').textContent).toContain('Installed')
+    expect(rowLabel('Claude Code').textContent).toContain('Not installed')
+    expect(rowLabel('codex').textContent).toContain('Check failed')
+    expect(rowLabel('pi').textContent).toContain('Installed, not active yet')
+    expect(rowLabel('deepseek').textContent).toContain('Not offered')
 
-    // Hidden from assistive tech: the row's DESCRIPTION already states the state as a
-    // full sentence, and announcing a one-word summary on top would say it twice.
-    const word = row('Claude Code').querySelector('span[aria-hidden]')
-    expect(word?.textContent).toBe('Missing')
     // The accessible name stays the harness name alone.
     expect(row('Claude Code')).toHaveAccessibleName('Claude Code')
   })
@@ -725,13 +691,13 @@ describe('AgentBackendTab highlight is not selection', () => {
     wrap()
     await waitFor(() => expect(row('Claude Code')).toBeInTheDocument())
     highlight('Claude Code')
-    expect(row('Claude Code')).toHaveAttribute('aria-selected', 'true')
+    expect(row('Claude Code')).toBeChecked()
     schemaMock.mockReturnValue(schemaWith(['']))
     // A re-render with the narrower schema: Claude is gone and the pane follows the
     // active backend rather than emptying.
     fireEvent.click(row('Kiro CLI'))
-    await waitFor(() => expect(screen.queryByRole('tab', { name: 'Claude Code' })).toBeNull())
-    expect(row('Kiro CLI')).toHaveAttribute('aria-selected', 'true')
+    await waitFor(() => expect(screen.queryByRole('radio', { name: 'Claude Code' })).toBeNull())
+    expect(row('Kiro CLI')).toBeChecked()
   })
 })
 
@@ -754,19 +720,69 @@ describe('AgentBackendTab switching', () => {
     await waitFor(() => expect(patchConfigMock).toHaveBeenCalledWith('agent.acp_backend', 'claude'))
   })
 
-  it('has no Use button to press for the backend already running', async () => {
+  it('has no Use button at all for the backend already running', async () => {
     // A PATCH writing the stored value still resolves, which would reset the model
     // list -- blanking every picker and spawning `--list-models` for a backend that
-    // did not change.
+    // did not change. The row already says "In use", so the detail offers no
+    // button rather than a dead one: two dead buttons otherwise look identical for
+    // different reasons.
     wrap()
     await waitFor(() => expect(row('Kiro CLI')).toBeInTheDocument())
-    // The reason is the LABEL on the active harness: "In use", not "Use Kiro CLI".
-    // Two dead buttons otherwise look identical for different reasons.
     expect(screen.queryByRole('button', { name: 'Use Kiro CLI' })).toBeNull()
-    const inUse = screen.getByRole('button', { name: 'In use' })
-    expect(inUse).toBeDisabled()
-    fireEvent.click(inUse)
+    expect(screen.queryByRole('button', { name: 'In use' })).toBeNull()
+    expect(within(rowLabel('Kiro CLI')).getByText('In use')).toBeInTheDocument()
     expect(patchConfigMock).not.toHaveBeenCalled()
+  })
+
+  it('says what Use does, from the running agent to the checked one, above the button', async () => {
+    // Checked is not current: the radio says "chosen" and the button says "Use", and
+    // nothing else on the detail said that no switch has happened yet or what one
+    // would do. One sentence names both ends, and it sits directly above the button.
+    wrap()
+    await waitFor(() => expect(row('Claude Code')).toBeInTheDocument())
+    highlight('Claude Code')
+    const line = panel().getByText('New sessions switch from Kiro CLI to Claude Code.')
+    expect(line).toBeInTheDocument()
+    expect(line.compareDocumentPosition(useButton('Claude Code')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('names the agent actually running as the switch-from, not the default', async () => {
+    kirocrewConfigMock.mockResolvedValue({ agent: { acp_backend: 'claude' } })
+    wrap()
+    await waitFor(() => expect(row('Kiro CLI')).toBeInTheDocument())
+    highlight('Kiro CLI')
+    expect(panel().getByText('New sessions switch from Claude Code to Kiro CLI.')).toBeInTheDocument()
+    expect(panel().queryByText(/from Kiro CLI to/)).toBeNull()
+  })
+
+  it('says nothing about switching on the row that is already in use', async () => {
+    // The running row has no Use button, so a sentence about what Use does would
+    // describe a control that is not there.
+    wrap()
+    await waitFor(() => expect(row('Kiro CLI')).toBeInTheDocument())
+    expect(row('Kiro CLI')).toBeChecked()
+    expect(panel().queryByText(/New sessions switch from/)).toBeNull()
+    expect(screen.queryByText(/New sessions switch from/)).toBeNull()
+  })
+
+  it('says nothing about switching on a harness this build never offers', async () => {
+    // No Use button there either: a PATCH the wire refuses is not a switch.
+    acpBackendsMock.mockResolvedValue({
+      backends: [
+        probeRow('', card()),
+        probeRow('codex', {
+          selectable: false,
+          ...card({ offered_by_build: false, tool_approval: 'unverified' }),
+        }),
+      ],
+    })
+    schemaMock.mockReturnValue(schemaWith(['']))
+    wrap()
+    await waitFor(() => expect(row('codex')).toBeInTheDocument())
+    highlight('codex')
+    expect(panel().getByText('This build does not offer this agent.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Use codex' })).toBeNull()
+    expect(panel().queryByText(/New sessions switch from/)).toBeNull()
   })
 
   it('resets the model list and drops its localStorage cache after a switch', async () => {
@@ -811,6 +827,35 @@ describe('AgentBackendTab switching', () => {
     await waitFor(() => expect(screen.getByText('Could not save the agent backend.')).toBeInTheDocument())
     expect(row('Kiro CLI')).toHaveAttribute('aria-current', 'true')
   })
+
+  it('treats a config_saved 503 as a real switch: invalidates and shows the marker message', async () => {
+    // A 503 `setup_marker_write_failed` carrying `config_saved: true` DID commit the
+    // choice on disk; only the first-run marker did not. So the switch's side
+    // effects must run (reset the model list, invalidate the config) and the
+    // server's marker-write message is shown, NOT the generic save failure that
+    // would keep badging the old agent.
+    const { qc } = wrapWithClient()
+    const reset = vi.spyOn(qc, 'resetQueries')
+    const invalidate = vi.spyOn(qc, 'invalidateQueries')
+    qc.setQueryData(['available-models', 'acp'], [{ name: 'old-backend-model' }])
+    patchConfigMock.mockRejectedValue(
+      new ApiError(
+        503,
+        'Agent saved, but setup completion could not be recorded.',
+        JSON.stringify({ code: 'setup_marker_write_failed', config_saved: true }),
+      ),
+    )
+    await waitFor(() => expect(row('Kiro CLI')).toBeInTheDocument())
+    highlight('Claude Code')
+    fireEvent.click(useButton('Claude Code'))
+    await waitFor(() =>
+      expect(screen.getByText('Agent saved, but setup completion could not be recorded.')).toBeInTheDocument(),
+    )
+    expect(screen.queryByText('Could not save the agent backend.')).toBeNull()
+    await waitFor(() => expect(reset).toHaveBeenCalledWith({ queryKey: ['available-models'] }))
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['kirocrewConfig'] })
+    expect(qc.getQueryData(['available-models', 'acp'])).toBeUndefined()
+  })
 })
 
 /** A payload whose Claude row is missing its adapter, with an install command. */
@@ -834,16 +879,19 @@ describe('AgentBackendTab status strip', () => {
     // supported. Those claims were not measured anywhere and were wrong.
     wrap()
     await waitFor(() => expect(row('Kiro CLI')).toBeInTheDocument())
-    expect(screen.getByRole('tabpanel').textContent).toContain('Default. All features supported.')
+    expect(detail().textContent).toContain('Default. All features supported.')
     highlight('KAS (kiro-agent)')
-    expect(screen.getByRole('tabpanel').textContent).toContain('Experimental')
+    expect(detail().textContent).toContain('Experimental')
     expect(screen.queryByText(/OS sandbox|Anthropic|steered mid-turn/)).toBeNull()
   })
 
-  it('names the missing components and offers the install command to copy', async () => {
+  it('says what to install and offers the install command to copy', async () => {
     // The command gets its own copyable block rather than being folded into the
     // sentence: an operator must not have to select the one string they have to run
-    // out of a paragraph.
+    // out of a paragraph. Beside the command the components are NOT named again --
+    // "Missing: claude-acp" next to `npm i -g @zed-industries/claude-code-acp` names
+    // a second thing, and the reader second-guesses which to install -- but the
+    // row's description still carries them, so a screen reader is told what is gone.
     acpBackendsMock.mockResolvedValue({
       backends: [
         probeRow('', card()),
@@ -859,10 +907,16 @@ describe('AgentBackendTab status strip', () => {
     await waitFor(() => expect(row('Claude Code')).toBeInTheDocument())
     highlight('Claude Code')
     await waitFor(() =>
-      expect(panel().getByText('Missing on this machine: claude-agent-acp')).toBeInTheDocument(),
+      expect(panel().getByText('Install Claude Code on the gateway host.')).toBeInTheDocument(),
     )
     expect(panel().getByText('npm i -g @zed-industries/claude-code-acp')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Copy command' })).toBeInTheDocument()
+    expect(panel().getByText(/After installing, press Check again/)).toBeInTheDocument()
+    expect(panel().queryByText(/Missing/)).toBeNull()
+    const describedBy = row('Claude Code').getAttribute('aria-describedby')
+    expect(document.getElementById(describedBy as string)?.textContent).toContain(
+      'Missing on this machine: claude-agent-acp',
+    )
     // And the switch is dead, with the reason wired to it rather than merely near it.
     expect(useButton('Claude Code')).toBeDisabled()
     expect(useButton('Claude Code').getAttribute('aria-describedby')).toBe('agent-backend-status')
@@ -909,12 +963,12 @@ describe('AgentBackendTab status strip', () => {
       await waitFor(() => expect(row('Claude Code')).toBeInTheDocument())
       highlight('Claude Code')
       fireEvent.click(await screen.findByRole('button', { name: 'Copy command' }))
-      await waitFor(() =>
-        expect(screen.queryByRole('button', { name: 'Copy command' })).toBeNull(),
-      )
-      // It reports the failure rather than a success it cannot vouch for.
-      expect(screen.getByRole('button', { name: 'Copy failed' })).toBeInTheDocument()
+      // It reports the failure rather than a success it cannot vouch for: the same
+      // notice first-run setup's copy block shows, under the box.
+      await waitFor(() => expect(screen.getByTestId('kiro-gate-copy-failed')).toBeInTheDocument())
+      expect(screen.getByText(/Copy failed/)).toBeInTheDocument()
       expect(screen.queryByRole('button', { name: 'Copied' })).toBeNull()
+      expect(screen.getByRole('button', { name: 'Copy command' })).toBeInTheDocument()
     } finally {
       if (realClipboard) Object.defineProperty(navigator, 'clipboard', realClipboard)
     }
@@ -935,9 +989,8 @@ describe('AgentBackendTab status strip', () => {
     })
     schemaMock.mockReturnValue(schemaWith(['']))
     wrap()
-    await waitFor(() =>
-      expect(panel().getByText('Missing on this machine: kiro-cli')).toBeInTheDocument(),
-    )
+    await waitFor(() => expect(panel().getByText('Missing: kiro-cli')).toBeInTheDocument())
+    expect(panel().getByText('Install Kiro CLI on the gateway host.')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Copy command' })).toBeNull()
     expect(screen.queryByText('Install command')).toBeNull()
   })
@@ -1007,11 +1060,16 @@ describe('AgentBackendTab status strip', () => {
     // from the spawn path after the clear. Promising "without restarting" would be
     // wrong in exactly the case the wording exists to cover.
     expect(panel().getByText(/Press Check again to pick it up/)).toBeInTheDocument()
-    // The last resort names the product AND where to do it, not a bare noun: a reader
-    // who does not know what the gateway is cannot act on "restart it".
+    // The last resort is the SAME sentence first-run setup shows for this state,
+    // naming the harness and the gateway host: the two screens are one picker,
+    // and "Settings > About" here against "that host" there read as two problems.
     expect(
-      panel().getByText(/restart Kiro Crew from Settings > About/),
+      panel().getByText(
+        'Claude Code is installed on the gateway host. Press Check again to pick it up. If this line is still here after that, restart Kiro Crew on that host.',
+      ),
     ).toBeInTheDocument()
+    expect(panel().queryByText(/Settings > About/)).toBeNull()
+    expect(panel().queryByText(/Installed on this machine/)).toBeNull()
     expect(screen.getByRole('button', { name: 'Check again' })).toBeInTheDocument()
   })
 
@@ -1025,7 +1083,7 @@ describe('AgentBackendTab status strip', () => {
     schemaMock.mockReturnValue(schemaWith(['']))
     wrap()
     await waitFor(() => expect(row('Kiro CLI')).toBeInTheDocument())
-    await waitFor(() => expect(screen.queryByRole('tab', { name: 'Claude Code' })).toBeNull())
+    await waitFor(() => expect(screen.queryByRole('radio', { name: 'Claude Code' })).toBeNull())
     expect(screen.queryByText(/must restart before it can be used/)).toBeNull()
   })
 
@@ -1093,7 +1151,7 @@ describe('AgentBackendTab check again', () => {
     expect(acpBackendsMock.mock.calls.length).toBe(listCalls)
     // The untouched row kept its own answer.
     highlight('Kiro CLI')
-    expect(screen.getByRole('tabpanel').textContent).toContain('Default. All features supported.')
+    expect(detail().textContent).toContain('Default. All features supported.')
   })
 
   it('cancels the in-flight poll so it cannot land on top of the fresh row', async () => {
@@ -1135,7 +1193,8 @@ describe('AgentBackendTab check again', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
     await waitFor(() => expect(acpBackendRecheckMock).toHaveBeenCalled())
     expect(useButton('Claude Code')).toBeDisabled()
-    expect(panel().getByText('Missing on this machine: claude-agent-acp')).toBeInTheDocument()
+    expect(panel().getByText('Install Claude Code on the gateway host.')).toBeInTheDocument()
+    expect(panel().getByText('npm i -g @zed-industries/claude-code-acp')).toBeInTheDocument()
   })
 
   it('still reports restart_required when a re-probe comes back with it set', async () => {
@@ -1160,6 +1219,36 @@ describe('AgentBackendTab check again', () => {
     expect(useButton('Claude Code')).toBeDisabled()
   })
 
+  it('applies the fresh row and shows the marker message when a re-check saves but the marker write fails', async () => {
+    // A 503 `setup_marker_write_failed` on a re-check carries the fresh probe row:
+    // the re-probe itself succeeded and only the marker write did not. So the row is
+    // applied exactly as on success (the switch comes alive) and the server's
+    // marker-write message is shown in place of the generic install-check-failed line.
+    missingClaude()
+    acpBackendRecheckMock.mockRejectedValue(
+      new ApiError(
+        503,
+        'Agent check completed, but setup completion could not be recorded.',
+        JSON.stringify({
+          code: 'setup_marker_write_failed',
+          backend: probeRow('claude', { installed: 'installed', ...card() }),
+        }),
+      ),
+    )
+    wrap()
+    await waitFor(() => expect(row('Claude Code')).toBeInTheDocument())
+    highlight('Claude Code')
+    await waitFor(() => expect(useButton('Claude Code')).toBeDisabled())
+    fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
+    await waitFor(() => expect(useButton('Claude Code')).toBeEnabled())
+    expect(
+      panel().getByText('Agent check completed, but setup completion could not be recorded.'),
+    ).toBeInTheDocument()
+    expect(
+      panel().queryByText('Could not check whether this is installed on this machine.'),
+    ).toBeNull()
+  })
+
   it('surfaces a failed re-check instead of letting it read as "still missing"', async () => {
     // Unlike a failed poll, which is absent information the user did not ask for.
     missingClaude()
@@ -1169,7 +1258,7 @@ describe('AgentBackendTab check again', () => {
     highlight('Claude Code')
     await waitFor(() => expect(screen.getByRole('button', { name: 'Check again' })).toBeEnabled())
     fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
-    // Through ErrorNotice, and INSIDE the strip: an error about this harness's probe
+    // Through ErrorNotice, and INSIDE the detail: an error about this harness's probe
     // belongs beside this harness's buttons, not at the top of a panel whose other
     // rows are fine.
     await waitFor(() =>
@@ -1181,7 +1270,7 @@ describe('AgentBackendTab check again', () => {
       .getByText('Could not check whether this is installed on this machine.')
       .closest('[role="alert"]')
     expect(notice).not.toBeNull()
-    expect(document.getElementById('agent-backend-status')?.contains(notice)).toBe(true)
+    expect(detail().contains(notice)).toBe(true)
   })
 
   it('keeps a late re-check failure on the harness it belongs to', async () => {
@@ -1259,7 +1348,7 @@ describe('AgentBackendTab check again', () => {
     wrap()
     await waitFor(() => expect(row('Kiro CLI')).toBeInTheDocument())
     await waitFor(() =>
-      expect(screen.getByRole('tabpanel').textContent).toContain('Default. All features supported.'),
+      expect(detail().textContent).toContain('Default. All features supported.'),
     )
     expect(screen.queryByRole('button', { name: 'Check again' })).toBeNull()
   })
@@ -1575,7 +1664,7 @@ describe('AgentBackendTab detail card', () => {
     schemaMock.mockReturnValue(schemaWith(['']))
     wrap()
     await waitFor(() =>
-      expect(screen.getByRole('tabpanel').textContent).toContain('Default. All features supported.'),
+      expect(detail().textContent).toContain('Default. All features supported.'),
     )
     expect(screen.queryByText(/supports \d+ of/)).toBeNull()
     expect(screen.queryByText('Good to know')).toBeNull()
@@ -1617,7 +1706,7 @@ describe('AgentBackendTab detail card', () => {
     await waitFor(() =>
       expect(screen.getByText('Kiro CLI supports 1 of 2 features')).toBeInTheDocument(),
     )
-    expect(screen.queryByRole('tab', { name: 'Claude Code' })).toBeNull()
+    expect(screen.queryByRole('radio', { name: 'Claude Code' })).toBeNull()
   })
 })
 
@@ -1732,7 +1821,7 @@ describe('AgentBackendTab MCP ability card', () => {
       })
       wrap()
       await waitFor(() => expect(panel().getByText(/Crew tools/)).toBeInTheDocument())
-      const text = screen.getByRole('tabpanel').textContent ?? ''
+      const text = detail().textContent ?? ''
       expect(text).not.toContain('copies them across')
       expect(text).not.toContain('reads that file itself')
       expect(text).not.toMatch(/\bmirror\b/)
@@ -1755,7 +1844,7 @@ describe('AgentBackendTab MCP ability card', () => {
       })
       wrap()
       await waitFor(() => expect(panel().getByText(/Crew tools/)).toBeInTheDocument())
-      const text = screen.getByRole('tabpanel').textContent ?? ''
+      const text = detail().textContent ?? ''
       expect(text).not.toContain('{{')
       expect(text).not.toContain('Connections')
       cleanup()
@@ -1919,13 +2008,22 @@ describe('AgentBackendTab standing caveats', () => {
   })
 })
 
-describe('AgentBackendTab kiro sign-in card', () => {
-  it('renders the Kiro sign-in card under the switch while KAS is on offer', async () => {
-    // Gated on KAS being OFFERED rather than SELECTED, so the user can sign in first
-    // and switch second instead of paying one "not signed in" turn to find the card.
+describe('AgentBackendTab kiro sign-in', () => {
+  it('renders the Kiro sign-in inside the KAS detail, compact, while KAS is on offer', async () => {
+    // The identity it stores is used by the KAS relay alone, so it lives in the one
+    // row whose harness uses it -- and in the in-detail form, not a card inside the
+    // detail's own bordered panel.
     wrap()
     await waitFor(() => expect(row('KAS (kiro-agent)')).toBeInTheDocument())
-    expect(screen.getByTestId('kiro-sign-in-card')).toBeInTheDocument()
+    // Kiro CLI's detail is open: no sign-in there.
+    expect(screen.queryByTestId('kiro-sign-in-card')).toBeNull()
+    highlight('KAS (kiro-agent)')
+    const signIn = screen.getByTestId('kiro-sign-in-card')
+    expect(detail().contains(signIn)).toBe(true)
+    expect(signIn).toHaveAttribute('data-compact', 'true')
+    // And not on the other harness that could be looked at next.
+    highlight('Claude Code')
+    expect(screen.queryByTestId('kiro-sign-in-card')).toBeNull()
   })
 
   it('renders no sign-in card when this deployment cannot select KAS', async () => {
@@ -1933,14 +2031,18 @@ describe('AgentBackendTab kiro sign-in card', () => {
     schemaMock.mockReturnValue(schemaWith(['', 'claude']))
     wrap()
     await waitFor(() => expect(row('Kiro CLI')).toBeInTheDocument())
+    expect(screen.queryByRole('radio', { name: 'KAS (kiro-agent)' })).toBeNull()
+    expect(screen.queryByTestId('kiro-sign-in-card')).toBeNull()
+    highlight('Claude Code')
     expect(screen.queryByTestId('kiro-sign-in-card')).toBeNull()
   })
 
-  it('keeps the sign-in card while KAS is the saved backend, even if it reads as unselectable', async () => {
+  it('opens on KAS with the sign-in while KAS is the saved backend, even if it reads as unselectable', async () => {
     kirocrewConfigMock.mockResolvedValue({ agent: { acp_backend: 'kas' } })
     schemaMock.mockReturnValue(schemaWith(['']))
     wrap()
     await waitFor(() => expect(row('KAS (kiro-agent)')).toHaveAttribute('aria-current', 'true'))
+    expect(row('KAS (kiro-agent)')).toBeChecked()
     expect(screen.getByTestId('kiro-sign-in-card')).toBeInTheDocument()
   })
 
@@ -1962,6 +2064,46 @@ describe('AgentBackendTab kiro sign-in card', () => {
     await waitFor(() => expect(row('KAS (kiro-agent)')).toBeInTheDocument())
     highlight('KAS (kiro-agent)')
     expect(panel().getByText('This build does not offer this agent.')).toBeInTheDocument()
+    expect(screen.queryByTestId('kiro-sign-in-card')).toBeNull()
+  })
+
+  it("opens the KAS detail when the URL carries the chat's sign-in highlight", async () => {
+    // The chat's "Sign in to Kiro" link is `/settings/agent?highlight=key:kiro-sign-in`.
+    // The Settings highlight hook waits for the anchor and rings it, but the anchor
+    // lives inside the KAS detail -- so the tab has to open that detail for the link
+    // to land on anything.
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={['/settings/agent?highlight=key%3Akiro-sign-in']}>
+          <AgentBackendTab />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    await waitFor(() => expect(row('KAS (kiro-agent)')).toBeChecked())
+    expect(row('Kiro CLI')).not.toBeChecked()
+    // Kiro CLI is still the one running: opening a detail switched nothing.
+    expect(row('Kiro CLI')).toHaveAttribute('aria-current', 'true')
+    expect(screen.getByTestId('kiro-sign-in-card')).toBeInTheDocument()
+    expect(patchConfigMock).not.toHaveBeenCalled()
+    // Once open, the reader is free to look elsewhere: the link does not drag them
+    // back while the parameter is still in the URL.
+    highlight('Claude Code')
+    expect(row('Claude Code')).toBeChecked()
+    expect(screen.queryByTestId('kiro-sign-in-card')).toBeNull()
+  })
+
+  it('leaves the detail on the running backend for any other highlight', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={['/settings/agent?highlight=key%3Asomething-else']}>
+          <AgentBackendTab />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    await waitFor(() => expect(row('Kiro CLI')).toBeChecked())
+    expect(row('KAS (kiro-agent)')).not.toBeChecked()
     expect(screen.queryByTestId('kiro-sign-in-card')).toBeNull()
   })
 })

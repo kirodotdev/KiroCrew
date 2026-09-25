@@ -1,5 +1,5 @@
 /**
- * Capture harness for Developer > Agent Backend, once it reads the machine probe.
+ * Capture harness for Settings > Agent Harness, once it reads the machine probe.
  *
  * Runs the REAL built SPA (website/dist) behind a static file server with every
  * /api/** call answered from fixtures — no gateway, no token, no agent. The panel
@@ -446,7 +446,9 @@ await page.addInitScript(() => {
   localStorage.setItem('mc-onboarded', '1')
 })
 
-const heading = () => page.getByText('Agent Backend', { exact: true }).first()
+// The page title in Settings > Agent Harness (`settings.tabs.agent.label`); the
+// sidebar repeats the label, hence `.first()`.
+const heading = () => page.getByText('Agent Harness', { exact: true }).first()
 
 /** Wait for the card to settle after a (re)navigation, then screenshot it. */
 const shoot = async (name) => {
@@ -460,13 +462,15 @@ const shoot = async (name) => {
 /**
  * Put one harness's DETAIL on screen, which is where its own lines render.
  *
- * Highlighting is not selecting -- the row is a tab and only the Use button
- * switches the backend -- so every scene below can walk the list read-only. The
- * panel opens on the configured harness, so a frame about any other one starts
- * here.
+ * Checking is not switching -- the rows are one radio group laid out like
+ * first-run setup's picker, the checked row opens its detail under itself, and
+ * only the detail's Use button changes the config -- so every scene below can
+ * walk the list read-only. The panel opens on the configured harness, so a
+ * frame about any other one starts here.
  */
 const highlight = async (name) => {
-  await page.getByRole('tab', { name }).click()
+  await page.getByRole('radio', { name }).check()
+  await page.getByTestId('agent-harness-detail').waitFor({ timeout: 20000 })
 }
 
 const reloadScene = async (next) => {
@@ -474,14 +478,14 @@ const reloadScene = async (next) => {
   await page.reload({ waitUntil: 'domcontentloaded' })
 }
 
-await page.goto(`${base}/developer?tab=agent-backend`, { waitUntil: 'domcontentloaded' })
+await page.goto(`${base}/settings/agent`, { waitUntil: 'domcontentloaded' })
 await highlight('Claude Code')
 await page.getByText(CLAUDE_INSTALL, { exact: false }).waitFor({ timeout: 20000 })
 await shoot('agent-backend-local.png')
 
 await reloadScene(SCENE_DENIED)
 await page
-  .getByRole('tab', { name: 'Claude Code' })
+  .getByRole('radio', { name: 'Claude Code' })
   .waitFor({ state: 'detached', timeout: 20000 })
 await shoot('agent-backend-denied.png')
 

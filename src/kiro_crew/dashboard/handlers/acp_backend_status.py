@@ -176,12 +176,14 @@ def _row(state: Any, selectable: set) -> Dict[str, Any]:
         declaration_for,
         signs_in_separately,
     )
+    from kiro_crew.agent_sdk.backends import ACP_BACKENDS_INDEPENDENT_SETUP
 
     auth = declaration_for(state.backend)
     return {
         "id": state.backend,
         "policy_id": state.policy_id,
         "selectable": state.backend in selectable,
+        "independent_setup": state.backend in ACP_BACKENDS_INDEPENDENT_SETUP,
         "installed": state.installed,
         # Enforced here, not just by the probes: the contract makes this
         # non-empty ONLY for a MISSING verdict, so an UNKNOWN row can
@@ -313,6 +315,30 @@ async def api_acp_backend_recheck(request: web.Request) -> web.Response:
     forget_for_recheck(backend)
     row = await asyncio.to_thread(_recheck, backend)
 
+    # The configured harness may have been installed after the initial config
+    # PATCH. This owner-requested POST is the first state-derived opportunity to
+    # persist first-run completion once the fresh probe says it is usable. GET
+    # remains read-only; a failed marker write is a retryable partial success.
+    from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
+
+    prerequisite = request.app.get("kiro_prerequisite_service")
+    marker_write_failed = False
+    if (
+        isinstance(prerequisite, KiroPrerequisiteService)
+        and not prerequisite.initial_setup_complete
+    ):
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        configured = await asyncio.to_thread(KiroCrewConfig.load)
+        if configured.agent.acp_backend == backend:
+            try:
+                await prerequisite.record_independent_backend_setup(backend)
+            except Exception:
+                logger.warning(
+                    "Could not record independent backend setup on re-check", exc_info=True
+                )
+                marker_write_failed = True
+
     caller = str(request.get("user") or "")
     audit_caller = str(request.get("app") or caller or "unknown")
 
@@ -320,9 +346,10 @@ async def api_acp_backend_recheck(request: web.Request) -> web.Response:
         sel().log_api_access(
             caller=audit_caller,
             operation=_AUDIT_RECHECK_OPERATION,
-            outcome="success",
+            outcome="error" if marker_write_failed else "success",
             source="dashboard",
             resources=backend or "kiro",
+            error=("setup_marker_write_failed" if marker_write_failed else ""),
         )
 
     # AFTER the work, not before it. Auditing first would record a success for a
@@ -337,4 +364,18 @@ async def api_acp_backend_recheck(request: web.Request) -> web.Response:
         # The answer is already computed and is what the operator asked for.
         logger.debug("Could not audit ACP backend re-check", exc_info=True)
 
+    if marker_write_failed:
+        # The fresh probe row rides along on the failure: the re-probe itself
+        # succeeded and only the marker write did not, so a client that dropped
+        # ``row`` here would re-paint the stale pre-install verdict under a
+        # "could not check" line. The client applies it exactly as it does the
+        # 200 body and still shows this marker-write message.
+        return web.json_response(
+            {
+                "error": "Agent check completed, but setup completion could not be recorded. Press Check again.",
+                "code": "setup_marker_write_failed",
+                "backend": row,
+            },
+            status=503,
+        )
     return web.json_response({"backend": row})

@@ -129,16 +129,18 @@ channel none of them describes, add a set — do not widen an existing one.
 
 ### And this appears on the card
 
-Every decision in this stage is READ BACK to the operator. Developer > Agent
-Backend is a LIST of harnesses and a DETAIL for whichever row is highlighted, and
-the detail is that harness's capability card — each line projected from these
-memberships by `agent_sdk/backend_cards.py`. So a membership is not only what the
-code branches on, it is what an operator comparing two harnesses is shown before
-they pick one.
+Every decision in this stage is READ BACK to the operator. Settings > Agent
+Harness is a LIST of harnesses — radio rows built from the same pieces as first-run
+setup's "Use other coding agents" picker (`website/src/components/agentHarness/`:
+row, status badge, install block, Use / Check again actions) — and a DETAIL that
+opens directly under whichever row is checked, and the detail carries that
+harness's capability card — each line projected from these memberships by
+`agent_sdk/backend_cards.py`. So a membership is not only what the code branches
+on, it is what an operator comparing two harnesses is shown before they pick one.
 
 Exactly one card is ever on screen, which is why the capability list is not behind
 a disclosure: it was collapsed when every harness's card rendered stacked down the
-page, and with one card there is nothing to bury. Highlighting a row shows its
+page, and with one card there is nothing to bury. Checking a row shows its
 card and never switches the backend — the one **Use \<name\>** button does that —
 so a harness this machine cannot run still gets a row and a full card. Under the
 old control an unselectable harness had no chip at all, which meant the harnesses

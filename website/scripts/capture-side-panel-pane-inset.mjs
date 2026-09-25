@@ -232,13 +232,13 @@ const PAGES = [
   {
     route: 'developer',
     tabs: ['logs', 'system', 'telemetry', 'storage', 'mcp-pool', 'memory', 'config',
-      'agent-backend', 'debug-tools', 'archive'],
+      'debug-tools', 'archive'],
   },
   {
     route: 'settings',
     tabs: ['overview', 'imports', 'chat', 'display', 'voice', 'notifications', 'shortcuts',
-      'skills', 'channels', 'browser', 'computer-use', 'webhooks', 'instances', 'privacy',
-      'security', 'developer', 'releases', 'about'],
+      'skills', 'agent', 'channels', 'browser', 'computer-use', 'webhooks', 'instances',
+      'privacy', 'security', 'developer', 'releases', 'about'],
   },
 ]
 
