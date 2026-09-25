@@ -10,7 +10,7 @@ const {
   execFileSync: defaultExecFileSync,
 } = require("child_process");
 
-const { findKirocrewBin } = require("./find-bin");
+const { findKirocrewBin, findSshBin } = require("./find-bin");
 const { buildGatewayEnvironment, gatewayBytecodeEnvironment } = require("./gateway-env");
 const { resolveGatewayPath } = require("./mac-env");
 const {
@@ -79,6 +79,8 @@ const {
   DEFAULT_REMOTE_BIN,
   DEFAULT_REMOTE_PATH,
   buildRemoteTokenCommand,
+  buildRemoteTokenSshArgs,
+  describeSshFailure,
   parseTokenFromStdout,
 } = require("./remote-token");
 const { fetchLocalToken: fetchTokenFromHome } = require("./local-token");
@@ -1354,20 +1356,25 @@ function createGatewaySupervisor({
       port: effectivePort,
       remotePath: remotePath || undefined,
     });
-    const sshArgs = ["-o", "ConnectTimeout=10", remoteHost, remoteCommand];
+    const sshArgs = buildRemoteTokenSshArgs(remoteHost, remoteCommand);
+    const sshBin = findSshBin(fs, path, processObj.env, IS_WIN);
+    const timeoutMs = Math.max(store.get("sshTimeoutMs") || 20000, 5000);
 
     return new Promise((resolve) => {
       sendStatus("Fetching token from remote dev desktop…");
-      glog(`SSH token fetch: ssh ${remoteHost} for port ${effectivePort}`);
+      glog(`SSH token fetch: ${sshBin} ${remoteHost} for port ${effectivePort}`);
       execFile(
-        "/usr/bin/ssh",
+        sshBin,
         sshArgs,
-        { timeout: Math.max(store.get("sshTimeoutMs") || 20000, 5000) },
+        { timeout: timeoutMs },
         (error, stdout, stderr) => {
           if (error) {
             console.error("SSH token fetch failed:", error.message);
             if (stderr) console.error("SSH stderr:", stderr.trim().slice(0, 500));
-            resolve({ token: "", error: stderr?.trim() || error.message });
+            resolve({
+              token: "",
+              error: describeSshFailure(error, stderr, { sshBin, remoteHost, timeoutMs }),
+            });
             return;
           }
           resolve({ token: parseTokenFromStdout(stdout), error: null });

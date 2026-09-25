@@ -2104,3 +2104,37 @@ test("linux refuses the respawn too, where unverifiedIncumbent is false by desig
   assert.ok(logs.some((line) => line.includes("could not capture the incumbent PID on :5476")));
   assert.deepStrictEqual(quits, []);
 });
+
+test("fetchRemoteToken runs ssh from PATH with stdin closed and batch mode", async () => {
+  const execCalls = [];
+  const { supervisor } = harness({
+    store: fakeStore({ remoteHosts: { 5476: { host: "devbox" } } }),
+    execFileFn(file, args, options, callback) {
+      execCalls.push({ file, args, options });
+      callback(null, "http://localhost:5476?token=abc\n", "");
+    },
+  });
+
+  assert.deepStrictEqual(await supervisor.fetchRemoteToken(5476), { token: "abc", error: null });
+  assert.strictEqual(execCalls.length, 1);
+  assert.strictEqual(execCalls[0].file, "ssh");
+  assert.deepStrictEqual(
+    execCalls[0].args.slice(0, 5),
+    ["-n", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"],
+  );
+  assert.strictEqual(execCalls[0].args[5], "devbox");
+});
+
+test("fetchRemoteToken reports a missing ssh client by name", async () => {
+  const { supervisor } = harness({
+    store: fakeStore({ remoteHosts: { 5476: { host: "devbox" } } }),
+    execFileFn(file, args, options, callback) {
+      callback(Object.assign(new Error(`spawn ${file} ENOENT`), { code: "ENOENT" }), "", "");
+    },
+  });
+
+  assert.deepStrictEqual(
+    await supervisor.fetchRemoteToken(5476),
+    { token: "", error: "ssh client not found: ssh" },
+  );
+});

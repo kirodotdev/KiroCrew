@@ -6,6 +6,8 @@ const {
   REMOTE_BIN_CANDIDATES,
   buildCandidateTokenCommand,
   buildRemoteTokenCommand,
+  buildRemoteTokenSshArgs,
+  describeSshFailure,
   parseTokenFromStdout,
 } = require("../remote-token");
 
@@ -136,5 +138,50 @@ describe("parseTokenFromStdout", () => {
   it("stops at ampersand (doesn't eat following params)", () => {
     const url = "http://x?token=abc&session_exp=99999";
     assert.equal(parseTokenFromStdout(url), "abc");
+  });
+});
+
+describe("buildRemoteTokenSshArgs", () => {
+  it("closes ssh's stdin and fails fast instead of prompting", () => {
+    assert.deepStrictEqual(
+      buildRemoteTokenSshArgs("devbox", "kirocrew token"),
+      ["-n", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "devbox", "kirocrew token"],
+    );
+  });
+
+  it("places the host and remote command last, after every option", () => {
+    const args = buildRemoteTokenSshArgs("user@host", "cmd");
+    assert.deepStrictEqual(args.slice(-2), ["user@host", "cmd"]);
+  });
+});
+
+describe("describeSshFailure", () => {
+  const context = { sshBin: "ssh.exe", remoteHost: "devbox", timeoutMs: 20000 };
+  const failure = (fields) => Object.assign(new Error("Command failed"), fields);
+
+  it("names the missing ssh binary on a spawn ENOENT", () => {
+    assert.equal(
+      describeSshFailure(failure({ code: "ENOENT" }), "", context),
+      "ssh client not found: ssh.exe",
+    );
+  });
+
+  it("reports a timeout kill as a timeout, with any stderr", () => {
+    assert.equal(
+      describeSshFailure(failure({ killed: true, signal: "SIGTERM" }), "", context),
+      "ssh devbox timed out after 20000 ms",
+    );
+    assert.equal(
+      describeSshFailure(failure({ killed: true }), "slow proxy\n", context),
+      "ssh devbox timed out after 20000 ms: slow proxy",
+    );
+  });
+
+  it("returns ssh's stderr for an ordinary failure, else the error message", () => {
+    assert.equal(
+      describeSshFailure(failure({ code: 255 }), "Permission denied (publickey).\n", context),
+      "Permission denied (publickey).",
+    );
+    assert.equal(describeSshFailure(failure({ code: 1 }), "", context), "Command failed");
   });
 });

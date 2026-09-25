@@ -138,4 +138,44 @@ function findKirocrewBin(
   return isWindows ? "kirocrew.exe" : "kirocrew"; // fall back to PATH
 }
 
-module.exports = { findKirocrewBin };
+/**
+ * Resolve the local OpenSSH client for an `execFile` call.
+ *
+ * POSIX returns bare `"ssh"`: `execFile` searches PATH, as the gateway's own
+ * ssh calls do (`instances/token_mint.py`), so a Nix or Homebrew ssh is found
+ * and a GUI launch with the default launchd PATH still reaches `/usr/bin/ssh`.
+ * Windows has no `/usr/bin/ssh`, so it takes the first `ssh.exe` on PATH, then
+ * the in-box OpenSSH client, then bare `"ssh.exe"` so a miss surfaces as a
+ * spawn ENOENT naming the binary.
+ *
+ * @param {typeof import("fs")} fs - Node fs module (needs `accessSync`, `constants.F_OK`)
+ * @param {typeof import("path")} path - Node path module for the host platform
+ * @param {Record<string, string|undefined>} [env] - environment holding PATH and SystemRoot
+ * @param {boolean} [isWindows] - whether the host is Windows
+ * @returns {string} Absolute `ssh.exe` path when one is found on Windows, else a bare name
+ */
+function findSshBin(
+  fs,
+  path,
+  env = process.env,
+  isWindows = process.platform === "win32"
+) {
+  if (!isWindows) return "ssh";
+  const pathVar = env.PATH || env.Path || "";
+  const candidates = pathVar
+    .split(path.delimiter)
+    .filter(Boolean)
+    .map((dir) => path.join(dir, "ssh.exe"));
+  candidates.push(path.join(env.SystemRoot || "C:\\Windows", "System32", "OpenSSH", "ssh.exe"));
+  for (const bin of candidates) {
+    try {
+      fs.accessSync(bin, fs.constants.F_OK);
+      return bin;
+    } catch {
+      // not here; try the next candidate
+    }
+  }
+  return "ssh.exe";
+}
+
+module.exports = { findKirocrewBin, findSshBin };

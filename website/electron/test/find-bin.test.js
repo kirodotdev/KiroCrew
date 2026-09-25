@@ -2,7 +2,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const path = require("path");
 const fs = require("fs");
-const { findKirocrewBin } = require("../find-bin");
+const { findKirocrewBin, findSshBin } = require("../find-bin");
 
 const HOME = "/mock/home";
 const RESOURCES = "/mock/resources";
@@ -226,5 +226,41 @@ describe("findKirocrewBin", () => {
     const result = findKirocrewBin(fakeFs, fakeOs, path, RESOURCES, DIRNAME, "ia32");
     assert.equal(result, unsuffixed);
     assert.deepStrictEqual(probed.filter((p) => p.includes("kirocrew-backend-")), []);
+  });
+});
+
+describe("findSshBin", () => {
+  const existing = (...present) => ({
+    accessSync: (p) => { if (!present.includes(p)) throw new Error("ENOENT"); },
+    constants: { F_OK: fs.constants.F_OK },
+  });
+
+  it("returns bare ssh on POSIX so execFile searches PATH", () => {
+    const touched = [];
+    const probe = { accessSync: (p) => touched.push(p), constants: { F_OK: 0 } };
+    assert.equal(findSshBin(probe, path.posix, { PATH: "/opt/homebrew/bin:/usr/bin" }, false), "ssh");
+    assert.deepStrictEqual(touched, []);
+  });
+
+  it("prefers the first ssh.exe on the Windows PATH", () => {
+    const gitSsh = "C:\\Program Files\\Git\\usr\\bin\\ssh.exe";
+    const inbox = "C:\\Windows\\System32\\OpenSSH\\ssh.exe";
+    const env = { PATH: "C:\\tools;C:\\Program Files\\Git\\usr\\bin", SystemRoot: "C:\\Windows" };
+    assert.equal(findSshBin(existing(gitSsh, inbox), path.win32, env, true), gitSsh);
+  });
+
+  it("reads the Windows Path spelling when PATH is absent", () => {
+    const bin = "D:\\ssh\\ssh.exe";
+    assert.equal(findSshBin(existing(bin), path.win32, { Path: "D:\\ssh" }, true), bin);
+  });
+
+  it("falls back to the in-box OpenSSH client under SystemRoot", () => {
+    const inbox = "E:\\Win\\System32\\OpenSSH\\ssh.exe";
+    const env = { PATH: "C:\\tools", SystemRoot: "E:\\Win" };
+    assert.equal(findSshBin(existing(inbox), path.win32, env, true), inbox);
+  });
+
+  it("returns bare ssh.exe on Windows when no candidate exists", () => {
+    assert.equal(findSshBin(existing(), path.win32, { PATH: "C:\\tools" }, true), "ssh.exe");
   });
 });
