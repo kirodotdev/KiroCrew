@@ -846,6 +846,19 @@ const dashboardSlice = createSlice({
     confirmCloseHold(state, action: PayloadAction<{ key: string; requestId: string }>) {
       confirmHold(state, action.payload.key, action.payload.requestId)
     },
+    /** A removal the server already confirmed (no DELETE of ours in flight): arm
+     *  the tombstone straight in its confirmed phase so a pre-pop straggler list cannot re-add the row. */
+    armConfirmedCloseHold(state, action: PayloadAction<string>) {
+      if (isUnsafeKey(action.payload)) return
+      if (!state.closingSlots) state.closingSlots = {}
+      state.closingSlots[action.payload] = {
+        requestId: 'confirmed',
+        inFlightUntil: null,
+        graceFrames: CLOSE_CONFIRMED_GRACE_FRAMES,
+        awaitingFetches: [...(state.slotFetchesInFlight ?? [])],
+        confirmedUntil: Date.now() + CLOSE_CONFIRMED_MAX_MS,
+      }
+    },
     removeSlotOptimistic(state, action: PayloadAction<string>) {
       state.slots = state.slots.filter(s => s.key !== action.payload)
       state.unreadSlots = state.unreadSlots.filter(k => k !== action.payload)
@@ -1242,7 +1255,7 @@ const dashboardSlice = createSlice({
   },
 })
 
-export const { sseStatus, sseYolo, setYoloDuration, sseConnected, sseDisconnected, sseSlots, setSidebarOrder, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, addSlotOptimistic, removeSlotOptimistic, releaseCloseHold, confirmCloseHold, updateSlot, updateSlotFolder, updateSlotPin, triggerRefresh, markSlotUnread, markSlotRead, remoteSlotRead, setUpdateProgress,
+export const { sseStatus, sseYolo, setYoloDuration, sseConnected, sseDisconnected, sseSlots, setSidebarOrder, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, addSlotOptimistic, removeSlotOptimistic, releaseCloseHold, confirmCloseHold, armConfirmedCloseHold, updateSlot, updateSlotFolder, updateSlotPin, triggerRefresh, markSlotUnread, markSlotRead, remoteSlotRead, setUpdateProgress,
   setDesktopUpdateAvailable, sseSubagentStatus, sseSubagentText, sseSlotColor, setSessionDefaultColor, setSessionColorsMode, setSessionColorsPalette, setSessionColorsIntensity, setEnabledAppIds, patchSlotSourceLinks, patchSlotLink } = dashboardSlice.actions
 
 /**

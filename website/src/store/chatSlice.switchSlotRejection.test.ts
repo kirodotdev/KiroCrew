@@ -16,7 +16,7 @@ import { configureStore, type Middleware } from '@reduxjs/toolkit'
 vi.mock('../api/client', () => ({ api: { chatSlotDetail: vi.fn() } }))
 
 import chatReducer, { switchSlot, warmSlotCache, setActiveSlot, setSlotState, setSlotRunning, startLocalTurn, sseChatMessage, clearMessages, clearSlotCache } from './chatSlice'
-import { fetchSlots, removeSlotOptimistic } from './dashboardSlice'
+import { fetchSlots, removeSlotOptimistic, armConfirmedCloseHold } from './dashboardSlice'
 import { api } from '../api/client'
 import { isMissingSlotError } from '../utils/thunkError'
 import { buildErrorPrompt } from '../utils/errorReport.prompt'
@@ -560,6 +560,16 @@ describe('switchSlot 404 — an announcing caller surfaces the recovery (#6372)'
     expect(ev[0].payload).toBe('gone')
     // The page-level half: ChatPage renders this through its ErrorNotice.
     expect(store.getState().chat.switchSlotGone).toMatchObject({ name: 'Ghost session', kind: 'gone' })
+  })
+
+  it('announced 404 eviction arms a confirmed close hold before removing the row (#11255)', async () => {
+    detail.mockImplementation((key: string) =>
+      key === 'home' ? Promise.resolve(OK_PAGE) : Promise.reject(apiError(404, 'slot unavailable')))
+    const { store, actions } = makeRecordingStore([{ key: 'home', title: 'Home' }, { key: 'gone', title: 'Ghost session' }])
+    await store.dispatch(switchSlot('home'))
+    await unwrapRejection(store.dispatch(switchSlot({ key: 'gone', announceOnMissing: true })).unwrap())
+    const tail = actions.filter(a => a.type === armConfirmedCloseHold.type || a.type === removeSlotOptimistic.type)
+    expect(tail).toEqual([armConfirmedCloseHold('gone'), removeSlotOptimistic('gone')])
   })
 
   it('the gone-notice survives a programmatic switch and clears on the next user gesture', async () => {

@@ -309,6 +309,20 @@ describe('ArtifactDetailPage companion chat', () => {
     expect(store.getState().dashboard.slots.some(s => s.key === 'chat-bound')).toBe(false)
   })
 
+  it('holds the archived row out of a straggler frame that predates the pop (#11255)', async () => {
+    const store = createTestStore()
+    seedSlots(store, [mkSlot({ key: 'chat-bound', artifact: 'cr-queue' })])
+    renderPage(false, store)
+    await waitForLoaded()
+    fireEvent.click(screen.getByLabelText('Toggle agent chat'))
+    await waitFor(() => expect(screen.getByTestId('chat-page')).toBeInTheDocument())
+    fireEvent.click(screen.getByLabelText('New chat'))
+    await waitFor(() => expect(vi.mocked(api).createChatSlot).toHaveBeenCalledTimes(1))
+    expect(store.getState().dashboard.closingSlots['chat-bound']).toBeDefined()
+    seedSlots(store, [mkSlot({ key: 'chat-bound', artifact: 'cr-queue' }), mkSlot({ key: 'slot-new', artifact: 'cr-queue' })])
+    expect(store.getState().dashboard.slots.map(s => s.key)).toEqual(['slot-new'])
+  })
+
   it('archives EVERY slot bound to the slug, not just the resolved winner', async () => {
     // A two-window creation race can leave two slots bound to one slug. Archiving
     // only the winner leaves the other behind, and pickBoundSlot then reopens that

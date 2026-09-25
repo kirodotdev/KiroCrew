@@ -11,7 +11,7 @@ import { useTheme } from '../hooks/useTheme'
 import { type IframeSelection } from '../hooks/useCommentBridge'
 import { useAppDispatch, useAppSelector } from '../store'
 import { switchSlot } from '../store/chatSlice'
-import { fetchSlots, addSlotOptimistic, removeSlotOptimistic } from '../store/dashboardSlice'
+import { fetchSlots, addSlotOptimistic, removeSlotOptimistic, armConfirmedCloseHold } from '../store/dashboardSlice'
 import { safeHttpUrl } from '../lib/safeUrl'
 import { buildSrcdoc, readThemeVars } from '../lib/widgetSrcdoc'
 import { api } from '../api/client'
@@ -1324,6 +1324,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
             return
           }
         }
+        dispatch(armConfirmedCloseHold(slot.key))
         dispatch(removeSlotOptimistic(slot.key))
       }
       await createBoundSession()
