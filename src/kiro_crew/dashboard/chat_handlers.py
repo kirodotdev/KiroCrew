@@ -13421,7 +13421,11 @@ async def resume_slot_from_history(
     folder_checked_id = ""
     if meta.get("folder_id"):
         folder_checked_id = meta["folder_id"]
-        folder_unhidden = await _unhide_folder(state, folder_checked_id)
+        # ``frozen_is_present``: a folder a running delete has frozen still
+        # exists, so the stored filing is KEPT rather than erased below -- the
+        # delete's own commit-time sweep unfiles the slot if it commits, and an
+        # aborted delete leaves a folder this session is still rightly in.
+        folder_unhidden = await _unhide_folder(state, folder_checked_id, frozen_is_present=True)
     cleared_closed: bool = False
     cleared_closed_at: Any = meta.get("closed_at")
     # With a containment hook the clear is DEFERRED until the hook has passed:

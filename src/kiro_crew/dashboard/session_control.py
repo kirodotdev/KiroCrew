@@ -67,6 +67,7 @@ from kiro_crew.dashboard.chat_folders import (
     _resolve_folder_project_dir,
     _slot_meta_txn_lock,
     _unhide_folder,
+    folder_is_deleting,
     note_folder_filed,
 )
 from kiro_crew.dashboard.chat_fork import (
@@ -2446,7 +2447,11 @@ async def create_session(
             folders: list[dict[str, Any]],
         ) -> tuple[bool, str | None, str | None]:
             tree = _safe_folder_tree(folders)
-            exists = any(str(folder.get("id") or "") == folder_id for folder in tree)
+            # A folder a running delete has frozen reads as absent: filing into
+            # it would outlive it as a dangling id (``chat_folders``' freeze).
+            exists = not folder_is_deleting(state, folder_id) and any(
+                str(folder.get("id") or "") == folder_id for folder in tree
+            )
             raw_project, error = _folder_declared_project(tree, folder_id)
             return exists, raw_project, error
 
@@ -3000,6 +3005,10 @@ async def fork_session(
         # `create_session` does and for the same reasons; the Model-B un-hide runs
         # only once the filing has landed on the child.
         def _exists(folders: list[dict[str, Any]]) -> bool:
+            # A folder a running delete has frozen reads as absent: filing into
+            # it would outlive it as a dangling id (``chat_folders``' freeze).
+            if folder_is_deleting(state, folder_id):
+                return False
             return any(str(f.get("id") or "") == folder_id for f in _safe_folder_tree(folders))
 
         if not await state.read_folders(_exists):
@@ -3075,6 +3084,8 @@ async def fork_session(
         # this loop, so between this read and the assignment `_stamp` makes there
         # is no point at which a delete can land. Same value `read_folders` hands
         # its reader; the lock there exists for readers that hop off the loop.
+        if folder_is_deleting(state, folder_id):
+            return False  # frozen by a running delete: going, so absent here too
         return any(str(f.get("id") or "") == folder_id for f in _safe_folder_tree(state._folders))
 
     def _recheck() -> None:

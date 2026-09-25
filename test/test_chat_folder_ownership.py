@@ -477,6 +477,31 @@ class TestAnAppCannotDeleteFolders:
         assert _by_id(state, RADAR) is not None
 
     @pytest.mark.asyncio
+    async def test_the_cascade_flag_opens_no_second_door_for_an_app(self) -> None:
+        """``?delete_contents=true`` archives sessions, which is MORE than the
+        relocation the rule above forbids; it is refused before any session is
+        touched, and the flag is not read by the refusal at all."""
+        mine = _app_slot("chat-9-900", "issue-radar")
+        mine.folder_id = RADAR
+        state = _state(_app_slot("chat-1-100", "issue-radar"), mine)
+        with (
+            patch("kiro_crew.dashboard.chat_folders.save_slot_off_loop", AsyncMock()) as save,
+            patch("kiro_crew.dashboard.chat_handlers.close_slot", AsyncMock()) as close,
+        ):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.delete(
+                    f"/api/chat/folders/{RADAR}?delete_contents=true",
+                    headers={"X-Session-Key": "dashboard:chat-1-100"},
+                )
+                body = await resp.json()
+        assert resp.status == 403
+        assert body["code"] == "folder_delete_forbidden"
+        assert _by_id(state, RADAR) is not None
+        assert mine.folder_id == RADAR
+        save.assert_not_awaited()
+        close.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_no_session_is_touched_by_the_refusal(self) -> None:
         """Refused before the unfile loop, so nothing is written and there is
         nothing to roll back."""

@@ -161,7 +161,7 @@ async def test_slot_is_not_reachable_unhydrated_during_the_folder_unhide(tmp_pat
     unhide_entered = asyncio.Event()
     may_finish = asyncio.Event()
 
-    async def slow_unhide(_state, _folder_id):
+    async def slow_unhide(_state, _folder_id, **_kw):
         unhide_entered.set()
         await may_finish.wait()
         return True
@@ -560,6 +560,45 @@ async def test_a_dangling_folder_id_unchanged_across_the_read_is_still_dropped(
         f"a dangling folder_id survived resume (folder_id={slot.folder_id!r}); the "
         "resumed session points at a folder that does not exist"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_resume_into_a_folder_a_running_delete_has_frozen_keeps_the_filing(
+    tmp_path, monkeypatch
+):
+    """Frozen is not absent. A folder a ``delete_contents`` cascade has frozen
+    still exists; a resume landing inside that cascade keeps the stored filing --
+    the cascade's own commit sweeps it if the delete commits, and an aborted
+    delete leaves a folder the session is still rightly in. The frozen row is not
+    written either (its ``hidden`` flag stays)."""
+    from kiro_crew.dashboard import chat_folders
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+    log = state.conversation_log
+    key = "dashboard:frozenresume1"
+    log.append(key, "user", "history-1")
+    frozen_id = "fldrFROZEN01"
+    state._folders.append(
+        {"id": frozen_id, "name": "Going", "parent_id": "", "order": 0, "hidden": True}
+    )
+    log.update_metadata(key, {"folder_id": frozen_id})
+    chat_folders._deleting_folder_ids(state).add(frozen_id)
+    try:
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/frozenresume1/resume", json={"key": key})
+    finally:
+        chat_folders._deleting_folder_ids(state).discard(frozen_id)
+
+    assert resp.status == 200, f"resume did not publish (status {resp.status})"
+    slot = state._slots.get("frozenresume1")
+    assert slot is not None, "the slot was never published"
+    assert slot.folder_id == frozen_id, (
+        f"the stored filing was erased (folder_id={slot.folder_id!r}) because the folder "
+        "was frozen, not absent"
+    )
+    row = next(f for f in state._folders if f["id"] == frozen_id)
+    assert row.get("hidden") is True, "a frozen folder is never written"
 
 
 @pytest.mark.asyncio
