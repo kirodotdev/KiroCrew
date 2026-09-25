@@ -616,10 +616,25 @@ async def test_sessions_survive_a_restart(gateway_boot):
 ```
 
 `get`/`post`/`put`/`patch`/`delete` return the aiohttp response;
-`get_json`/`post_json` assert the status and decode. `auth=False` proves the
-denied side of a contract. `gw.state` is the live `DashboardState`, `gw.app`
-the real `web.Application`, `gw.home` the data home -- use them to assert on
-what a request left behind, not to bypass the request.
+`get_json`/`post_json` assert the status and decode. `auth=True` (the default)
+sends the dashboard session cookie the boot minted from its token -- not
+`?token=`, which is a one-use link nonce the `mixed_internal` routes refuse
+once any ordinary route has minted the cookie. `auth=False` proves the denied
+side of a contract. For the internal routes a managed MCP server calls
+(`/api/session-tool-policy`, the memory routes), `gw.mcp_headers(session_key)`
+does the launcher's half of the session-token handshake in-process and returns
+the `X-Internal-Secret` / `X-Session-Key` / `X-Session-Token` headers; send them
+with `auth=False`. `gw.state` is the live `DashboardState`, `gw.app` the real
+`web.Application`, `gw.home` the data home -- use them to assert on what a
+request left behind, not to bypass the request.
+
+`integration_home` also releases the rootdir conftest's agent-spec pin: that
+pin sends the boot's spec WRITES to a per-test directory while request-time
+READS follow `KIRO_HOME`, so under it the boot would write `kirocrew.json`
+where no request reads it. Both sides resolve to `<home>/kiro/agents` here,
+which is the private target the shared-home write guard exempts. A test that
+edits the agents directory waits for the managed `kirocrew.json` first (the
+spec rebuild runs after the dashboard is serving).
 
 The directory is a package (`test/integration/__init__.py`) so its conftest
 imports as `integration.conftest`. The unit files import `test/conftest.py` by
