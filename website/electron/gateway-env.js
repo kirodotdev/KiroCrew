@@ -44,13 +44,28 @@ const BUNDLED_KIRO_CLI_PROBE_MS = 10_000;
  * PYTHONIOENCODING=cp1252 on every supported desktop platform.
  *
  * @param {NodeJS.ProcessEnv} baseEnv
+ * @param {{bundled?: boolean, platform?: string}} options
  * @returns {NodeJS.ProcessEnv}
  */
-function buildGatewayEnvironment(baseEnv) {
-  return {
+function buildGatewayEnvironment(
+  baseEnv,
+  { bundled = false, platform = process.platform } = {},
+) {
+  const env = {
     ...baseEnv,
     ...GATEWAY_UTF8_ENV,
   };
+  if (bundled) {
+    // Bundled Python must import its packaged code and stdlib. Windows treats
+    // environment keys case-insensitively, including mixed-case inherited keys.
+    for (const key of Object.keys(env)) {
+      const name = platform === "win32" ? key.toUpperCase() : key;
+      if (["PYTHONPATH", "PYTHONHOME"].includes(name)) {
+        delete env[key];
+      }
+    }
+  }
+  return env;
 }
 
 /**
