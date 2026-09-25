@@ -30,6 +30,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kiro_crew import history as H
+from kiro_crew.execution_context import STRICTEST_MEMORY_MODE
 from kiro_crew.history import (
     _CONSOLIDATION_BACKOFF_BASE_SECS,
     _CONSOLIDATION_BACKOFF_MAX_SECS,
@@ -913,6 +914,8 @@ class TestWriteStructuredMemory:
 
     def test_semantic_write_and_delete_keep_the_consolidation_source(self, caplog) -> None:
         vs = MagicMock()
+        vs.space_generation = 5
+        vs.embed_semantic.side_effect = [[0.1, 0.9], [0.2, 0.8]]
         vs.set_semantic.return_value = None
         vs.delete_semantic.return_value = True
         c = _consolidator(vector_store=vs)
@@ -929,6 +932,13 @@ class TestWriteStructuredMemory:
             c._write_structured_memory(result, "sess")
         sources = {kw["key"]: kw["source"] for _, kw in vs.set_semantic.call_args_list}
         assert sources == {"plain": "consolidation:sess", "explicit": "consolidation:sess"}
+        calls = [kwargs for _args, kwargs in vs.set_semantic.call_args_list]
+        assert [call["embedding"] for call in calls] == [[0.1, 0.9], [0.2, 0.8]]
+        assert all(call["embedding_resolved"] is True for call in calls)
+        assert all(call["embedding_generation"] == 5 for call in calls)
+        assert all(call["retirement_embedding_resolved"] is True for call in calls)
+        assert all(call["retirement_value_json"] is None for call in calls)
+        vs.embed_semantic_retirement.assert_not_called()
         vs.delete_semantic.assert_called_once_with("stale", "consolidation:sess")
         assert "2 written, 1 deleted" in caplog.text
 
@@ -974,6 +984,8 @@ class TestWriteStructuredMemory:
 
     def test_episodic_write_and_skips(self, caplog) -> None:
         vs = MagicMock()
+        vs.space_generation = 7
+        vs.embed_episodic.return_value = [0.25, 0.75]
         vs.write_episodic.return_value = True
         c = _consolidator(vector_store=vs)
         result = {
@@ -991,6 +1003,9 @@ class TestWriteStructuredMemory:
         # which is where ``_session_facets`` is built.
         vs.write_episodic.assert_called_once_with(
             text="a thing happened",
+            embedding=[0.25, 0.75],
+            embedding_resolved=True,
+            embedding_generation=7,
             conversation_id="sess",
             tags=["t"],
             importance=0.9,
@@ -1339,11 +1354,17 @@ class TestAttemptsDescribeCurrentSpan:
 
 
 class TestUpdateMetadataLocked:
-    def test_unparseable_first_line_is_left_untouched(self, tmp_path: Path) -> None:
+    def test_unparseable_first_line_is_rewritten_strictest(self, tmp_path: Path) -> None:
         log = _log(tmp_path)
         _write(log._path("k"), "{ broken\n")
         log.update_metadata("k", {"title": "T"})
-        assert log._path("k").read_text(encoding="utf-8") == "{ broken\n"
+        first_line = log._path("k").read_text(encoding="utf-8").splitlines()[0]
+        assert json.loads(first_line) == {
+            "_type": "metadata",
+            "last_consolidated": 0,
+            "memory_mode": STRICTEST_MEMORY_MODE,
+            "title": "T",
+        }
 
     def test_non_metadata_first_line_is_left_untouched(self, tmp_path: Path) -> None:
         log = _log(tmp_path)

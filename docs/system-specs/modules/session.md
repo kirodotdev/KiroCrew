@@ -150,13 +150,29 @@ Incognito and Temporary sessions keep it in live session state only. Their
 TRANSCRIPT is persisted like any other session's -- the user reopens an
 incognito or temporary chat from History, before or after a restart -- and what
 the mode withholds is everything derived FROM it: consolidation, lessons,
-memory injection, the session summary, workflow and task snapshots. Every one of
-those readers gates on the `memory_mode` the transcript's metadata line carries,
-so that field is the file's privacy contract and both slot save and turn-start
-binding treat it as a ratchet. The binder folds a carrier-less line's canonical
+memory injection, the session summary, workflow and task snapshots. The
+metadata line is the file's privacy contract, and both slot save and
+turn-start binding treat it as a ratchet. When a writer tightens a line held by a
+live slot, the slot follows that mode on the event loop and its restricted-key
+marker is re-derived, so export, summary, memory injection, and learning gates
+observe the same restriction. Transcript-derived durable and egress publication
+then revalidates the chained live lines through `ConversationLog.publication_hold`.
+Export and transfer pass the exact chain returned with their assembled rows, so
+any membership change before publication is retryable. Export commits its
+synchronous response under the hold, while transfer releases it immediately
+before its awaited tunnel send. The network transmit is the accepted residual
+window; no threading lock crosses an await. The binder folds a
+carrier-less line's canonical
 on-disk mode into a new execution before choosing its publication branch, so a
 persistent same-key replacement takes the live-only restricted branch and cannot
-write an owner store onto that line. The slot save likewise records the STRICTEST
+write an owner store onto that line. When a live carrier already exists, the
+turn-start read-back reads the metadata line off-loop, folds its mode into that
+carrier, and republishes only the stricter carrier before memory context is built;
+an unreadable line is a transient read failure, not a mode -- the fold is withheld
+for that turn and the next turn's read-back tries again, since every mode the fold
+publishes is a one-way ratchet no path can widen -- while an absent line adds no
+mode.
+The slot save likewise records the STRICTEST
 mode it can see (the slot's own, or the live carrier's when the two disagree for
 a moment), never a looser one. Incognito may read memory;
 Temporary does not. Both refuse learned-memory writes. Children inherit the

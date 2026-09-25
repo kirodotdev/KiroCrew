@@ -379,7 +379,7 @@ class TestEnqueueDurability:
         slot = _seeded_slot(state, "s2c")
         _hold_note(slot)
 
-        def _unreadable(key, fields, guard):
+        def _unreadable(key, fields, guard, **_kwargs):
             return False  # guard never invoked, mirroring the unreadable branch
 
         monkeypatch.setattr(state.conversation_log, "update_metadata_if", _unreadable)

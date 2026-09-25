@@ -75,9 +75,12 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.config.loader import _raw_config
+from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.session_transfer import (
     SnapshotUnstable,
+    TranscriptBusy,
+    TranscriptWithheld,
     build_transfer_bundle_async,
     bundle_rejection_reason,
 )
@@ -284,13 +287,14 @@ async def api_chat_slot_export(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "session not found", "code": "export_slot_not_found"}, status=404
         )
-    if slot.memory_mode != "persistent":
+
+    def _refuse_restricted(reason: str) -> web.Response:
         # An incognito or temporary transcript is kept for the user's own History
         # and nothing is produced FROM it -- no lesson, no summary, no snapshot.
         # A bundle written into a file the user then stores somewhere is such a
         # product, so this is a refusal rather than a best-effort export of
         # whatever happens to be resident.
-        _audit("denied", error=f"memory_mode={slot.memory_mode}")
+        _audit("denied", error=reason)
         return web.json_response(
             {
                 "error": "cannot export an incognito or temporary session",
@@ -298,6 +302,9 @@ async def api_chat_slot_export(request: web.Request) -> web.Response:
             },
             status=400,
         )
+
+    if slot.memory_mode != "persistent":
+        return _refuse_restricted(f"memory_mode={slot.memory_mode}")
 
     try:
         bundle = await build_transfer_bundle_async(
@@ -343,6 +350,27 @@ async def api_chat_slot_export(request: web.Request) -> web.Response:
                 and is_owner_dashboard_request(request)
             ),
         )
+    except TranscriptBusy:
+        # The seam could not take the transcript lock in time: a holder (this
+        # session's own save, a cron append, a second gateway) outlasted the
+        # acquire ceiling. Nothing about the session is wrong and nothing was
+        # written, so this is the same retryable answer as an unstable snapshot.
+        _audit("failure", error="transcript busy")
+        return web.json_response(
+            {
+                "error": "the session is still being saved -- try again in a moment",
+                "code": "export_snapshot_unstable",
+            },
+            status=503,
+        )
+    except TranscriptWithheld as exc:
+        # The bundle is built from the transcript on DISK, and the file's own
+        # privacy contract gates it, not only the live slot's mode above: another
+        # writer (a second gateway on this data home, a same-key hand-over, a
+        # subagent or cron appending) may have tightened the line while this slot
+        # still reads persistent in memory. The builder checks the line before
+        # and after its read and raises; nothing was built or written.
+        return _refuse_restricted(f"on-disk line: {exc}")
     except SnapshotUnstable:
         # No consistent view of the source: a flush landed inside every retry, or
         # a rewind/regenerate rewrite is still owed so disk is stale. Retryable,
@@ -411,6 +439,56 @@ async def api_chat_slot_export(request: web.Request) -> web.Response:
 
     body = await asyncio.to_thread(gzip_bundle, bundle)
     filename = export_filename(bundle.get("title") or "")
+
+    publication_key = slot_history_key(slot)
+
+    def _commit_response() -> web.Response:
+        log = state.conversation_log
+        if log is None:
+            return web.Response(
+                body=body,
+                content_type="application/gzip",
+                headers={
+                    "Content-Disposition": content_disposition(filename),
+                    "Content-Length": str(len(body)),
+                    "X-Content-Type-Options": "nosniff",
+                },
+            )
+        expected_keys = getattr(bundle, "publication_keys", (publication_key,))
+        with log.publication_hold(publication_key, expected_keys=expected_keys):
+            return web.Response(
+                body=body,
+                content_type="application/gzip",
+                headers={
+                    "Content-Disposition": content_disposition(filename),
+                    "Content-Length": str(len(body)),
+                    # The body is a session's own text coming back out of the gateway on
+                    # the dashboard's own origin. Without this a browser is free to sniff
+                    # it and render it as something executable instead of saving it.
+                    "X-Content-Type-Options": "nosniff",
+                },
+            )
+
+    # Response construction is synchronous, so the publication lock covers the
+    # commit without crossing an await. The socket write happens after the handler
+    # returns and is the unavoidable residual transmit window.
+    try:
+        response = await asyncio.to_thread(_commit_response)
+    except TranscriptBusy:
+        _audit("failure", error="transcript busy at response commit")
+        return web.json_response(
+            {
+                "error": "the session is still being saved -- try again in a moment",
+                "code": "export_snapshot_unstable",
+            },
+            status=503,
+        )
+    except TranscriptWithheld as exc:
+        return _refuse_restricted(f"on-disk line at response commit: {exc}")
+    # Recorded only once the commit has taken the response: an ``allowed`` written
+    # before the revalidation above would name a byte count that was never
+    # transmitted whenever the line tightened during the build, and sit right
+    # next to the ``denied`` that says so.
     _audit(
         "allowed",
         resources=(
@@ -418,15 +496,4 @@ async def api_chat_slot_export(request: web.Request) -> web.Response:
             f"bytes={len(body)},layer_b={'yes' if bundle.get('layer_b') else 'no'}"
         ),
     )
-    return web.Response(
-        body=body,
-        content_type="application/gzip",
-        headers={
-            "Content-Disposition": content_disposition(filename),
-            "Content-Length": str(len(body)),
-            # The body is a session's own text coming back out of the gateway on
-            # the dashboard's own origin. Without this a browser is free to sniff
-            # it and render it as something executable instead of saving it.
-            "X-Content-Type-Options": "nosniff",
-        },
-    )
+    return response

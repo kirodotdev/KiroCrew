@@ -909,6 +909,49 @@ class TestSuggestionsContext:
         # is handed, so the read log is checked in that spelling.
         assert read_keys == ["dashboard_n1"], "the restricted transcript was read"
 
+    def test_build_context_drops_a_session_tightened_during_its_row_read(
+        self, tmp_path, monkeypatch
+    ):
+        """The listing row is a snapshot; the line is re-asked once the rows are read.
+
+        A same-key hand-over can land a restricted tab's rows under a line that
+        was persistent when ``list_sessions()`` ran. The rows just read must not
+        ground the prompt if the line now says restricted.
+        """
+        from kiro_crew import suggestions
+
+        monkeypatch.setattr(
+            suggestions.ContextBuilder,
+            "get_memory_for",
+            MagicMock(side_effect=RuntimeError("no memory in this test")),
+        )
+        log = ConversationLog(base_dir=tmp_path)
+        _write_session(log, "dashboard:t1", [("user", "SECRET landed late")])
+        _write_session(log, "dashboard:n1", [("user", "public refactor plan")])
+        real_locked_stems = type(log).locked_stems
+        fired: set[str] = set()
+
+        def _tighten_then_lock(self, stems):
+            # The tightening writer takes the transcript locks the seam holds, so
+            # it lands before the seam's hold (modelled here) or after -- never
+            # inside; landing first, it is what the seam's own check sees.
+            stems = list(stems)
+            if any("dashboard_t1" in stem for stem in stems) and "done" not in fired:
+                fired.add("done")
+                self.update_metadata("dashboard_t1", {"memory_mode": "incognito"})
+            return real_locked_stems(self, stems)
+
+        monkeypatch.setattr(type(log), "locked_stems", _tighten_then_lock)
+        state = MagicMock(conversation_log=log)
+        state.crons.list_jobs.return_value = []
+
+        context = suggestions._build_context(state)
+
+        assert "public refactor plan" in context
+        assert (
+            "SECRET" not in context
+        ), "rows read under a line tightened mid-read reached the prompt"
+
 
 # ── Soft gate: incognito prompt prefix (chat.py) ──
 

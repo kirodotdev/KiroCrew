@@ -21,6 +21,10 @@ def _fake_state():
     state = MagicMock()
     # conversation_log must be truthy for _persist_title to attempt a write.
     state.conversation_log = MagicMock()
+    # A restricted slot's title write looks up ``state._slots`` for a live
+    # same-key replacement to pre-tighten; a bare MagicMock there would pose
+    # as one at every key. No slot is registered in these tests.
+    state._slots = {}
     return state
 
 

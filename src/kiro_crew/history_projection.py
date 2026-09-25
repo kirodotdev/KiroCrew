@@ -29,6 +29,7 @@ from kiro_crew.chat_attachments import (
     restore_staged_attachments,
     stage_attachments_removal,
 )
+from kiro_crew.execution_context import STRICTEST_MEMORY_MODE
 from kiro_crew.history_cache import FileStamp, _FileChangeCacheEntry, _TranscriptRowIndexEntry
 from kiro_crew.jsonl_util import (
     bounded_raw_records,
@@ -50,6 +51,20 @@ if TYPE_CHECKING:
 #: shape check, exactly as ``read_file_change_messages`` already does for the
 #: same rows of the same files.
 _HISTORY_LOGGER = logging.getLogger("kiro_crew.history")
+
+#: What :meth:`TranscriptReadProjection.metadata_line_state` answers about a
+#: transcript's first line. ``get_metadata_status`` folds the last two into one
+#: ``readable=False``, which is the right answer for every READER (a line whose
+#: contract cannot be seen is refused either way) but not for a WRITER: a
+#: ``transient`` failure (the file could not be opened or decoded as UTF-8 after
+#: the bounded retries) clears on its own and the write is deferred, while a
+#: ``corrupt`` line (bytes on disk that are not JSON) never will, so a writer
+#: that keeps deferring on it never persists another row. The two-tuple API is
+#: kept for readers; writers ask this companion only once the tuple says
+#: unreadable.
+METADATA_LINE_READABLE = "readable"
+METADATA_LINE_TRANSIENT = "transient"
+METADATA_LINE_CORRUPT = "corrupt"
 
 
 def _history_facade() -> Any:
@@ -338,29 +353,34 @@ class TranscriptReadProjection:
         return messages
 
     def _chain_keys(self, key: str) -> list[str]:
-        """Return the established chronological tab chain for *key*."""
+        """Return the established chronological tab chain for *key* (never empty)."""
+        return self.chained_keys(key) or [key]
+
+    def chained_keys(self, key: str) -> list[str]:
+        """Every transcript key ``read_messages_chained(key)`` concatenates, in order.
+
+        EMPTY when the key carries no ``tab_id`` or the index knows no chain for
+        it: the chained read then serves ``_read_messages(key)``'s object itself
+        (on a cache hit the shared cached list, which callers treat as immutable
+        and the fork path relies on by identity), while any indexed chain -- a
+        single member included -- builds a fresh concatenation, exactly as
+        before. Exposed so a caller that must validate or lock EVERY file the
+        chained read touches (the derivation seam) can name them before reading;
+        such a caller reads an empty result as ``[key]``.
+        """
         metadata = self._log.get_metadata(key)
         tab_id = metadata.get("tab_id")
         if not tab_id:
-            return [key]
+            return []
         with self._log._lock:
             if self._log._tab_id_index is None:
                 self._log._rebuild_tab_id_index()
             index = self._log._tab_id_index or {}
-            keys = list(index.get(tab_id, []))
-        return keys or [key]
+            return list(index.get(tab_id, []))
 
     def read_messages_chained(self, key: str) -> list[dict]:
         """Concatenate chronologically ordered files sharing the same tab id."""
-        metadata = self._log.get_metadata(key)
-        tab_id = metadata.get("tab_id")
-        if not tab_id:
-            return self._log._read_messages(key)
-        with self._log._lock:
-            if self._log._tab_id_index is None:
-                self._log._rebuild_tab_id_index()
-            index = self._log._tab_id_index or {}
-            keys = list(index.get(tab_id, []))
+        keys = self.chained_keys(key)
         if not keys:
             return self._log._read_messages(key)
         messages: list[dict] = []
@@ -1422,6 +1442,18 @@ class TranscriptReadProjection:
         """Return metadata plus whether an existing file was readable."""
         return self._log._read_metadata_status(key)
 
+    def metadata_line_state(self, key: str) -> str:
+        """Say WHY a first line is unreadable: one of the ``METADATA_LINE_*`` values.
+
+        For a writer that met ``readable=False`` from :meth:`get_metadata_status`:
+        ``METADATA_LINE_TRANSIENT`` means defer and retry, ``METADATA_LINE_CORRUPT``
+        means no retry will ever read the line. A ``METADATA_LINE_READABLE`` answer
+        after an unreadable tuple means the file changed between the two reads,
+        which a writer treats as transient. Readers do not need this: the
+        two-tuple already tells them to refuse.
+        """
+        return self._log._read_metadata_state(key)[1]
+
     def _pause_for_transient_retry(self) -> None:
         """Sleep between read attempts only when off the event loop."""
         on_loop = True
@@ -1437,11 +1469,21 @@ class TranscriptReadProjection:
         return self._log._read_metadata_status(key)[0]
 
     def _read_metadata_status(self, key: str) -> tuple[dict, bool]:
-        """Read the first JSONL line with guarded caching and bounded retries."""
+        """The two-tuple view of :meth:`_read_metadata_state`: readable or not."""
+        metadata, state = self._log._read_metadata_state(key)
+        return metadata, state == METADATA_LINE_READABLE
+
+    def _read_metadata_state(self, key: str) -> tuple[dict, str]:
+        """Read the first JSONL line with guarded caching and bounded retries.
+
+        Returns the metadata plus one of the ``METADATA_LINE_*`` states: an absent
+        file, an empty first line and a first line that is JSON but not a
+        metadata object all read as ``({}, METADATA_LINE_READABLE)``.
+        """
         path = self._log._path(key)
         if not path.exists():
             self._log._meta_cache.pop(key, None)
-            return {}, True
+            return {}, METADATA_LINE_READABLE
         attempts = _history_facade()._METADATA_READ_ATTEMPTS
         for attempt in range(attempts):
             generation = self._log._cache_gen(key)
@@ -1449,7 +1491,7 @@ class TranscriptReadProjection:
                 identity = self._log._cache_identity(path.stat())
                 cached = self._log._meta_cache.get(key)
                 if cached and cached[0] == identity and cached[1] == self._log._cache_gen(key):
-                    return cached[2], True
+                    return cached[2], METADATA_LINE_READABLE
                 with open(path, encoding="utf-8") as handle:
                     first = handle.readline().strip()
             except (OSError, UnicodeError):
@@ -1463,9 +1505,9 @@ class TranscriptReadProjection:
                     attempts,
                     exc_info=True,
                 )
-                return {}, False
+                return {}, METADATA_LINE_TRANSIENT
             if not first:
-                return {}, True
+                return {}, METADATA_LINE_READABLE
             try:
                 data = json.loads(first)
                 metadata = (
@@ -1475,7 +1517,9 @@ class TranscriptReadProjection:
                 # A damaged first line cannot establish whether this was a
                 # member session. Keep get_metadata's legacy empty-dict view,
                 # but tell identity-sensitive readers to refuse the operation.
-                return {}, False
+                # Every line writer replaces the file atomically, so bytes that
+                # are not JSON are not a write in flight: no retry reads them.
+                return {}, METADATA_LINE_CORRUPT
             self._log._publish_if_current(
                 self._log._meta_cache,
                 key,
@@ -1483,8 +1527,8 @@ class TranscriptReadProjection:
                 key=key,
                 gen=generation,
             )
-            return metadata, True
-        return {}, True
+            return metadata, METADATA_LINE_READABLE
+        return {}, METADATA_LINE_READABLE
 
     def sliding_window(
         self,
@@ -1783,6 +1827,7 @@ class SessionMetadataProjection:
         guard: Callable[[dict], bool],
         *,
         require_existing: bool = False,
+        after_commit_under_lock: Callable[[], None] | None = None,
     ) -> bool:
         """Merge fields only when the locked on-disk metadata passes a guard.
 
@@ -1798,6 +1843,10 @@ class SessionMetadataProjection:
         Decided INSIDE the lock the write takes, which is the whole point: a
         deletion landing between a checked-then-written pair is precisely the
         window this closes, so the caller cannot do it for itself beforehand.
+        ``after_commit_under_lock`` runs after the atomic metadata rewrite but
+        before that lock is released. It is for an in-process witness whose
+        ordering against readers must match the line commit; it must not perform
+        I/O or mutate event-loop-affine state.
 
         Off by default, per caller rather than for everyone, because creating the
         line is the documented behaviour some callers depend on:
@@ -1806,28 +1855,71 @@ class SessionMetadataProjection:
         yet must still end up carrying the mode it was admitted under. Refusing
         there would leave a restricted session with no durable record of being
         restricted, which is worse than the stub this flag prevents.
+        Refuses to write over a line it cannot read -- with one distinction. A
+        TRANSIENT read failure defers: the guard is not run and ``False`` is
+        returned, so the caller retries later. A CORRUPT first line (bytes that
+        are not JSON) will never become readable, and a writer that kept
+        deferring on it would never persist anything again -- an empty tab's
+        ``closed`` could never land and the tab would resurrect on every
+        restart. So the guard is run against the line as the write below will
+        REBUILD it: no identity, no store, ``memory_mode`` at
+        :data:`~kiro_crew.execution_context.STRICTEST_MEMORY_MODE`. The line's
+        real contract is unknowable and the ratchet forbids relabelling it
+        looser, so the strictest mode is the only value the rewrite may carry;
+        :meth:`_update_metadata_locked` enforces the same fold on the bytes it
+        writes, whatever *fields* say.
         """
         with self._log._locked(key):
             if require_existing and not self._log._path(key).exists():
                 return False
             metadata, readable = self._log._read_metadata_status(key)
-            if not readable or not guard(metadata):
+            if not readable:
+                if self._log.metadata_line_state(key) != METADATA_LINE_CORRUPT:
+                    return False
+                metadata = {"memory_mode": STRICTEST_MEMORY_MODE}
+            if not guard(metadata):
                 return False
             self._log._update_metadata_locked(key, fields)
+            if after_commit_under_lock is not None:
+                after_commit_under_lock()
         if "tab_id" in fields:
             self._log.invalidate_tab_id_cache()
         return True
 
     def _update_metadata_locked(self, key: str, fields: dict) -> None:
-        """Merge or upsert one metadata line while the owner lock is held."""
+        """Merge or upsert one metadata line while the owner lock is held.
+
+        A first line that is not JSON is REWRITTEN rather than left alone: the
+        old bytes are dropped, the rows after them are kept, and the new line
+        carries no ``created_at`` (the identity is unknowable, and a minted one
+        would read to the owning slot's next save as a fresh incarnation born
+        after a delete -- an absent field fails that check open, the way a
+        legacy line does, and the slot's save restores its recorded identity),
+        no ``memory_store`` (a restricted line names none) and ``memory_mode``
+        at the strictest value, whatever *fields* carry. A first line that IS
+        JSON but not a metadata object (a legacy row-first file) is left as it
+        was, as before.
+        """
         path = self._log._path(key)
         previous_mtime = _history_facade()._safe_mtime(path)
         lines = path.read_text(encoding="utf-8").splitlines(keepends=True) if path.exists() else []
+        healing_corrupt_line = False
         if lines:
             try:
                 metadata = json.loads(lines[0])
             except json.JSONDecodeError:
-                return
+                _HISTORY_LOGGER.warning(
+                    "history: metadata line for %s is corrupt (not JSON); rewriting it "
+                    "under the %s mode so the transcript can be written again",
+                    key,
+                    STRICTEST_MEMORY_MODE,
+                )
+                healing_corrupt_line = True
+                metadata = {
+                    "_type": "metadata",
+                    "last_consolidated": 0,
+                    "memory_mode": STRICTEST_MEMORY_MODE,
+                }
             if not isinstance(metadata, dict):
                 return
             if metadata.get("_type") != "metadata":
@@ -1842,6 +1934,9 @@ class SessionMetadataProjection:
             lines = [""]
 
         metadata.update(fields)
+        if healing_corrupt_line:
+            metadata["memory_mode"] = STRICTEST_MEMORY_MODE
+            metadata.pop("memory_store", None)
         lines[0] = json.dumps(metadata) + "\n"
 
         # This hot one-line edit remains crash-atomic without paying for an

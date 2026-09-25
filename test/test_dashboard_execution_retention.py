@@ -11,7 +11,7 @@ import pytest
 from chat_test_helpers import _make_state
 
 from kiro_crew.dashboard.chat_handlers import close_slot
-from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+from kiro_crew.dashboard.chat_persistence import _save_slot_to_history, save_slot_off_loop
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.execution_context import (
     ExecutionContext,
@@ -84,6 +84,53 @@ def test_mode_tightening_at_commit_is_recorded(tmp_path, monkeypatch):
         encoding="utf-8"
     )
     assert state.conversation_log.get_metadata(key).get("memory_mode") == "temporary"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_guarded_save_adopts_mode_when_worker_finishes(tmp_path, monkeypatch):
+    """Worker completion tightens the live slot even after its awaiter is cancelled."""
+    state, slot, key = _state(tmp_path)
+    bind_session_execution(key, _execution("temporary"))
+    slot.append("user", "cancelled save restricted row sentinel")
+    entered, release = threading.Event(), threading.Event()
+    original = state.conversation_log._locked
+
+    @contextmanager
+    def block_worker(requested):
+        entered.set()
+        assert release.wait(5), "the test did not release the blocked history save"
+        with original(requested):
+            yield
+
+    def fail_if_periodic_adopter_runs(*_args):
+        pytest.fail("the periodic pending-mode adopter ran during the cancellation test")
+
+    monkeypatch.setattr(state.conversation_log, "_locked", block_worker)
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.chat_utils.apply_pending_slot_memory_mode",
+        fail_if_periodic_adopter_runs,
+    )
+    save_task = asyncio.create_task(
+        save_slot_off_loop(state, slot, force=True, expected_history_key=key)
+    )
+    worker_future = None
+    try:
+        assert await asyncio.to_thread(entered.wait, 5), "the save worker never entered"
+        save_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await save_task
+        writes = tuple(slot._guarded_history_writes)
+        assert len(writes) == 1, "the cancelled guarded save lost its worker future"
+        worker_future = writes[0]
+    finally:
+        release.set()
+    if worker_future is not None:
+        await asyncio.wait_for(asyncio.shield(worker_future), 5)
+
+    assert state.conversation_log.get_metadata(key).get("memory_mode") == "temporary"
+    assert slot._pending_memory_mode == "temporary"
+    assert slot.memory_mode == "temporary"
+    assert key in state._restricted_keys
 
 
 @pytest.mark.asyncio
@@ -235,3 +282,70 @@ async def test_late_queue_flush_keeps_closed_slot_restricted(tmp_path, monkeypat
     finally:
         release.set()
         await asyncio.to_thread(finished.wait, 5)
+
+
+@pytest.mark.asyncio
+async def test_guarded_save_adopts_mode_on_live_same_key_replacement(tmp_path, monkeypatch):
+    """Worker completion applies the mode to the slot that received its witness."""
+    state, original, key = _state(tmp_path)
+    original.memory_mode = "temporary"
+    original.append("user", "restricted original row")
+    state._slots.pop(original.key)
+    state._restricted_keys.discard(key)
+    replacement = state.get_or_create_slot(original.key)
+    replacement.append("user", "replacement row")
+    assert await save_slot_off_loop(state, replacement, force=True)
+    original.begin_close()
+
+    def fail_if_periodic_adopter_runs(*_args):
+        pytest.fail("the periodic pending-mode adopter ran during the guarded save")
+
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.chat_utils.apply_pending_slot_memory_mode",
+        fail_if_periodic_adopter_runs,
+    )
+
+    assert await save_slot_off_loop(
+        state,
+        original,
+        closed=True,
+        force=True,
+        expected_history_key=key,
+        rows_only=True,
+        issued_by_the_retraction=True,
+    )
+
+    assert state.conversation_log.get_metadata(key).get("memory_mode") == "temporary"
+    assert replacement._pending_memory_mode == "temporary"
+    assert replacement.memory_mode == "temporary"
+    assert key in state._restricted_keys
+
+
+@pytest.mark.asyncio
+async def test_title_write_adopts_mode_on_live_same_key_replacement(tmp_path, monkeypatch):
+    """Title completion applies a line fold to the slot that received its witness."""
+    from kiro_crew.dashboard.chat_title import _persist_title
+
+    state, original, key = _state(tmp_path)
+    await asyncio.to_thread(
+        state.conversation_log.update_metadata, key, {"memory_mode": "temporary"}
+    )
+    original.title = "Restricted transcript title"
+    state._slots.pop(original.key)
+    state._restricted_keys.discard(key)
+    replacement = state.get_or_create_slot(original.key)
+
+    def fail_if_periodic_adopter_runs(*_args):
+        pytest.fail("the periodic pending-mode adopter ran during title persistence")
+
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.chat_utils.apply_pending_slot_memory_mode",
+        fail_if_periodic_adopter_runs,
+    )
+
+    assert await _persist_title(state, original)
+
+    assert state.conversation_log.get_metadata(key).get("memory_mode") == "temporary"
+    assert replacement._pending_memory_mode == "temporary"
+    assert replacement.memory_mode == "temporary"
+    assert key in state._restricted_keys

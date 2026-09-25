@@ -84,3 +84,4 @@ Links to the pull requests, issues and commits that carry the decision.
 | Entry | Decision |
 |---|---|
 | [2026-07-20-sessions-sidebar-create-button-says-new.md](2026-07-20-sessions-sidebar-create-button-says-new.md) | The Sessions sidebar's primary create button shows the visible label "New". |
+| [2026-09-25-incognito-and-temporary-chats-keep-their-transcript.md](2026-09-25-incognito-and-temporary-chats-keep-their-transcript.md) | Incognito and Temporary chats keep their transcript in History; the modes promise "learn nothing", not "leave no disk record". |

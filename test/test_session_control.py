@@ -3852,11 +3852,11 @@ def test_the_empty_window_merge_reads_slot_state_at_write_time(tmp_path):
 
     real = state.conversation_log.update_metadata_if
 
-    def _mutate_then_write(key, fields, guard):
+    def _mutate_then_write(key, fields, guard, **kwargs):
         # Simulates a concurrent pin committing between this save's call and
         # its locked write: the merge must pick up the NEW value.
         child.pinned = True
-        return real(key, fields, guard)
+        return real(key, fields, guard, **kwargs)
 
     child.pinned = False
     with patch.object(state.conversation_log, "update_metadata_if", _mutate_then_write):
@@ -3911,7 +3911,7 @@ def test_an_unreadable_record_fails_the_empty_window_merge_loudly(tmp_path):
     )
     child = state.get_slot(created["target"])
 
-    def _unreadable(key, fields, guard):
+    def _unreadable(key, fields, guard, **_kwargs):
         # Mirrors update_metadata_if's fail-closed path: guard NOT invoked.
         return False
 

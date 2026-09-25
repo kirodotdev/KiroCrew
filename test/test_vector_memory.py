@@ -639,6 +639,43 @@ class TestConflictResolution:
             assert store.set_semantic("pref.os", "linux", 1.0, "user_explicit") is None
         assert calls == [("pref.os", "macos")]
 
+    def test_stale_pre_resolved_retirement_embedding_falls_back_to_inference(
+        self, tmp_path: Path, opened
+    ) -> None:
+        # Consolidation embeds the retirement query before taking its publication
+        # lock, against the value it snapshotted. When the key was rewritten in
+        # between, that vector names a value other than the superseded one,
+        # so the write must embed the ACTUAL old value rather than treat the stale
+        # vector as "resolved to None" and drop the similarity arm: nothing revisits
+        # a retirement this write skips.
+        store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
+        store.init()
+        assert store.set_semantic("pref.os", "macos", 1.0, "user_explicit") is None
+        assert store.write_episodic("the user likes working on a mac", conversation_id="c1")
+        (episode,) = store.get_episodic_list(limit=10)
+        embed = mock.Mock(return_value=[0.1] * 4)
+        with mock.patch.multiple(
+            store,
+            _try_embed=embed,
+            search_episodic=mock.Mock(return_value=[dict(episode, cosine_sim=0.9)]),
+        ):
+            assert (
+                store.set_semantic(
+                    "pref.os",
+                    "linux",
+                    1.0,
+                    "user_explicit",
+                    retirement_embedding=[0.9] * 4,
+                    retirement_embedding_resolved=True,
+                    # The value the caller embedded is not the one the row holds now.
+                    retirement_value_json='"windows"',
+                )
+                is None
+            )
+        embed.assert_called_once_with("os: macos")
+        assert store.get_episodic_list(limit=10) == []
+        assert [r["text"] for r in store.get_retired_episodic(limit=10)] == [episode["text"]]
+
     def test_healthy_user_row_still_refuses_an_automated_write(
         self, tmp_path: Path, opened
     ) -> None:

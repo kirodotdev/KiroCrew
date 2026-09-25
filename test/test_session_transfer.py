@@ -59,7 +59,38 @@ class _OwnerReq(SimpleNamespace):
 # ── bundle construction ──────────────────────────────────────────────────
 
 
-class _FakeLog:
+class _PersistentLine:
+    """The on-disk metadata line the builder's privacy gate reads: persistent,
+    readable. Tests that need a restricted or unreadable line override these."""
+
+    metadata: dict = {}
+    readable: bool = True
+
+    def get_metadata_status(self, _key):
+        return dict(self.metadata), self.readable
+
+    def derive_messages_chained(self, key):
+        """The derivation seam, as the real log implements it: line, then rows."""
+        from kiro_crew.history import TranscriptWithheld, is_incognito_transcript
+
+        meta, readable = self.get_metadata_status(key)
+        if not readable or is_incognito_transcript(meta.get("memory_mode")):
+            raise TranscriptWithheld("fake: restricted or unreadable")
+        return self.read_messages_chained(key)
+
+    @contextlib.contextmanager
+    def publication_hold(self, key, *, expected_keys=None):
+        from kiro_crew.history import TranscriptBusy, TranscriptWithheld, is_incognito_transcript
+
+        meta, readable = self.get_metadata_status(key)
+        if not readable:
+            raise TranscriptBusy("fake: unreadable at publication")
+        if is_incognito_transcript(meta.get("memory_mode")):
+            raise TranscriptWithheld("fake: restricted at publication")
+        yield
+
+
+class _FakeLog(_PersistentLine):
     def __init__(self, messages):
         self._messages = messages
 
@@ -186,7 +217,7 @@ async def test_send_handler_sends_each_turn_exactly_once(monkeypatch):
     tail = {"role": "assistant", "content": "unsaved turn", "ts": ""}
     disk = {"messages": [persisted]}
 
-    class _Log:
+    class _Log(_PersistentLine):
         def read_messages_chained(self, _key):
             return list(disk["messages"])
 
@@ -229,6 +260,101 @@ async def test_send_handler_sends_each_turn_exactly_once(monkeypatch):
     assert resp.status == 200, resp.body
     contents = [m["content"] for m in captured["bundle"]["messages"]]
     assert contents == ["persisted", "unsaved turn"], contents
+
+
+@pytest.mark.asyncio
+async def test_send_handler_revalidates_the_line_before_the_tunnel_post(monkeypatch):
+    from kiro_crew.dashboard import handlers_instances as hi
+
+    monkeypatch.setattr(
+        hi.KiroCrewConfig,
+        "load",
+        staticmethod(lambda: SimpleNamespace(instances=SimpleNamespace(enabled=True))),
+    )
+
+    class _TightensAtCommit(_FakeLog):
+        @contextlib.contextmanager
+        def publication_hold(self, _key, *, expected_keys=None):
+            from kiro_crew.history import TranscriptWithheld
+
+            raise TranscriptWithheld("fake: tightened before tunnel send")
+            yield
+
+    class _Mgr:
+        async def send_session_bundle(self, _id, _bundle):
+            raise AssertionError("the tunnel POST ran after publication was refused")
+
+    slot = _slot([{"role": "user", "content": "private", "ts": ""}])
+    state = SimpleNamespace(
+        _slots={"slot-1": slot},
+        conversation_log=_TightensAtCommit(slot.messages),
+        instances_manager=_Mgr(),
+        instances_registry=SimpleNamespace(get=lambda _i: SimpleNamespace(id="peer")),
+        owner_id="owner",
+    )
+    request = _OwnerReq(
+        app={"state": state},
+        match_info={"id": "peer"},
+        headers={},
+        json=_async_value({"slot": "slot-1"}),
+    )
+
+    resp = await hi.api_instances_send_session(request)
+
+    assert resp.status == 400
+    assert json.loads(resp.body)["code"] == "transfer_slot_not_persistent"
+
+
+@pytest.mark.asyncio
+async def test_send_refuses_if_assembled_chain_loses_a_member(tmp_path, monkeypatch):
+    from kiro_crew.dashboard import handlers_instances as hi
+    from kiro_crew.dashboard import session_transfer as st
+    from kiro_crew.history import ConversationLog
+
+    monkeypatch.setattr(
+        hi.KiroCrewConfig,
+        "load",
+        staticmethod(lambda: SimpleNamespace(instances=SimpleNamespace(enabled=True))),
+    )
+    tab_id = "ddddeeeeffff"
+    root = "dashboard:chat-transfer-root"
+    sibling = "dashboard:chat-transfer-sibling"
+    log = ConversationLog(base_dir=tmp_path / "sessions")
+    await asyncio.to_thread(log.append, root, "user", "root", tab_id=tab_id)
+    await asyncio.to_thread(log.append, sibling, "user", "sibling", tab_id=tab_id)
+    slot = _slot([{"role": "user", "content": "root", "ts": ""}])
+    slot.key = "chat-transfer-root"
+
+    class _Mgr:
+        async def send_session_bundle(self, _id, _bundle):
+            raise AssertionError("the tunnel POST ran after the chain changed")
+
+    state = SimpleNamespace(
+        _slots={"slot-1": slot},
+        conversation_log=log,
+        instances_manager=_Mgr(),
+        instances_registry=SimpleNamespace(get=lambda _i: SimpleNamespace(id="peer")),
+        owner_id="owner",
+    )
+    build = st.build_transfer_bundle_async
+
+    async def _build_then_delete(*args, **kwargs):
+        bundle = await build(*args, **kwargs)
+        assert await asyncio.to_thread(log.delete_session, sibling)
+        return bundle
+
+    monkeypatch.setattr(hi, "build_transfer_bundle_async", _build_then_delete)
+    request = _OwnerReq(
+        app={"state": state},
+        match_info={"id": "peer"},
+        headers={},
+        json=_async_value({"slot": "slot-1"}),
+    )
+
+    resp = await hi.api_instances_send_session(request)
+
+    assert resp.status == 503
+    assert json.loads(resp.body)["code"] == "transfer_snapshot_unstable"
 
 
 @pytest.mark.asyncio
@@ -286,7 +412,7 @@ async def test_snapshot_retries_when_a_flush_lands_during_the_read():
     disk = {"messages": [persisted]}
     reads: list[int] = []
 
-    class _Log:
+    class _Log(_PersistentLine):
         def read_messages_chained(self, _key):
             reads.append(len(disk["messages"]))
             return list(disk["messages"])
@@ -652,7 +778,7 @@ async def test_bundle_reads_the_transcript_key_not_the_session_key():
 
     reads: list[str] = []
 
-    class _Log:
+    class _Log(_PersistentLine):
         def read_messages_chained(self, key):
             reads.append(key)
             return [{"role": "user", "content": "older turn", "ts": ""}]
@@ -690,7 +816,7 @@ async def test_bundle_flushes_a_dirty_slot_so_in_place_edits_travel(monkeypatch)
     edited = {"role": "assistant", "content": "the NEW variant", "ts": ""}
     disk = {"messages": [{"role": "assistant", "content": "the old variant", "ts": ""}]}
 
-    class _Log:
+    class _Log(_PersistentLine):
         def read_messages_chained(self, _key):
             return list(disk["messages"])
 
@@ -2904,7 +3030,7 @@ def test_a_mapped_but_unreadable_layer_b_is_reported_as_withheld(monkeypatch):
     """
     from kiro_crew.dashboard import session_transfer as st
 
-    monkeypatch.setattr(st, "_read_chained_history", lambda *_a, **_k: [])
+    monkeypatch.setattr(st, "_read_chained_history", lambda _state, key: ([], (key,)))
     monkeypatch.setattr(st, "_read_layer_b", lambda _sid: None)
 
     lost = st._read_and_assemble(
@@ -4549,3 +4675,173 @@ async def test_a_folder_store_failure_leaves_the_session_filed_nowhere(monkeypat
     assert resp.status == 200, resp.body
     assert json.loads(resp.body)["ok"] is True
     assert _filed_folder(state) == ""
+
+
+# --------------------------------------------------------------------------- #
+# the file's own privacy contract gates the bundle, not only the live slot
+# --------------------------------------------------------------------------- #
+
+MSGS = [
+    {"role": "user", "content": "PRIVATE-1", "ts": ""},
+    {"role": "assistant", "content": "PRIVATE-2", "ts": ""},
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("line_mode", ["incognito", "temporary", "Incognito"])
+async def test_a_restricted_on_disk_line_withholds_the_bundle(line_mode):
+    """A persistent slot over a restricted line: the rows come from disk, so the
+    line on disk decides. A same-key recreation of a closed restricted tab, or a
+    writer tightening the line while this slot still reads persistent, both
+    reach here with a slot the callers' own gate lets through."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    state = _state(MSGS)
+    state.conversation_log.metadata = {"memory_mode": line_mode}
+    slot = _slot(MSGS)
+    with pytest.raises(st.TranscriptWithheld):
+        await st.build_transfer_bundle_async(state, slot)
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_on_disk_line_withholds_the_bundle():
+    """Fail closed: a builder that cannot see the contract ships nothing."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    state = _state(MSGS)
+    state.conversation_log.readable = False
+    slot = _slot(MSGS)
+    with pytest.raises(st.TranscriptWithheld):
+        await st.build_transfer_bundle_async(state, slot)
+
+
+@pytest.mark.asyncio
+async def test_a_line_tightened_during_the_read_withholds_the_bundle():
+    """The gate is asked again AFTER the read, so a tightening in between is caught."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    state = _state(MSGS)
+    log = state.conversation_log
+    real_derive = log.derive_messages_chained
+
+    def _tighten_then_derive(key):
+        # The tightening writer takes the transcript lock the seam holds, so it
+        # lands before the seam's hold (modelled here) or after it -- never inside.
+        log.metadata = {"memory_mode": "incognito"}
+        return real_derive(key)
+
+    log.derive_messages_chained = _tighten_then_derive
+    slot = _slot(MSGS)
+    with pytest.raises(st.TranscriptWithheld):
+        await st.build_transfer_bundle_async(state, slot)
+
+
+@pytest.mark.asyncio
+async def test_send_handler_refuses_a_slot_whose_line_is_restricted(monkeypatch):
+    """The tunnel send maps the builder's refusal to its own slot-gate answer, so a
+    persistent slot over a restricted file sends nothing to the peer."""
+    from kiro_crew.dashboard import handlers_instances as hi
+    from kiro_crew.dashboard import session_transfer as st
+
+    monkeypatch.setattr(
+        hi.KiroCrewConfig,
+        "load",
+        staticmethod(lambda: SimpleNamespace(instances=SimpleNamespace(enabled=True))),
+    )
+
+    class _Log(_PersistentLine):
+        metadata = {"memory_mode": "incognito"}
+
+        def read_messages_chained(self, _key):
+            return list(MSGS)
+
+    slot = _slot(MSGS)
+    slot.key = "slot-1"
+    assert slot.memory_mode == "persistent"
+
+    async def _save(_state, s, best_effort=True):
+        return True
+
+    monkeypatch.setattr(st, "save_slot_off_loop", _save)
+
+    sent: list = []
+
+    class _Mgr:
+        async def send_session_bundle(self, _id, bundle):
+            sent.append(bundle)
+            return True, {"key": "remote-1"}
+
+    state = SimpleNamespace(
+        _slots={"slot-1": slot},
+        conversation_log=_Log(),
+        instances_manager=_Mgr(),
+        instances_registry=SimpleNamespace(get=lambda _i: SimpleNamespace(id="peer")),
+        owner_id="owner",
+    )
+    request = _OwnerReq(
+        app={"state": state},
+        match_info={"id": "peer"},
+        headers={},
+        json=_async_value({"slot": "slot-1"}),
+    )
+
+    resp = await hi.api_instances_send_session(request)
+
+    assert resp.status == 400, resp.body
+    assert json.loads(resp.body)["code"] == "transfer_slot_not_persistent"
+    assert sent == [], "a bundle reached the peer despite the restricted line"
+
+
+@pytest.mark.asyncio
+async def test_send_handler_maps_a_busy_transcript_to_the_retryable_503(monkeypatch):
+    """A lock the seam could not take is 'retry', not 'not persistent'."""
+    from kiro_crew.dashboard import handlers_instances as hi
+    from kiro_crew.dashboard import session_transfer as st
+    from kiro_crew.history import TranscriptBusy
+
+    monkeypatch.setattr(
+        hi.KiroCrewConfig,
+        "load",
+        staticmethod(lambda: SimpleNamespace(instances=SimpleNamespace(enabled=True))),
+    )
+
+    class _Log(_PersistentLine):
+        def read_messages_chained(self, _key):
+            return list(MSGS)
+
+        def derive_messages_chained(self, _key):
+            raise TranscriptBusy("held by another writer")
+
+    slot = _slot(MSGS)
+    slot.key = "slot-1"
+
+    async def _save(_state, s, best_effort=True):
+        return True
+
+    monkeypatch.setattr(st, "save_slot_off_loop", _save)
+    sent: list = []
+
+    class _Mgr:
+        async def send_session_bundle(self, _id, bundle):
+            sent.append(bundle)
+            return True, {"key": "remote-1"}
+
+    state = SimpleNamespace(
+        _slots={"slot-1": slot},
+        conversation_log=_Log(),
+        instances_manager=_Mgr(),
+        instances_registry=SimpleNamespace(get=lambda _i: SimpleNamespace(id="peer")),
+        owner_id="owner",
+    )
+    request = _OwnerReq(
+        app={"state": state},
+        match_info={"id": "peer"},
+        headers={},
+        json=_async_value({"slot": "slot-1"}),
+    )
+
+    resp = await hi.api_instances_send_session(request)
+
+    assert resp.status == 503, resp.body
+    assert json.loads(resp.body)["code"] == "transfer_snapshot_unstable"
+    assert sent == []

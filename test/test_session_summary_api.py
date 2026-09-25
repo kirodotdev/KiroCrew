@@ -7,6 +7,7 @@ tokens, so these assert it serves the cache and nothing more.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import json
 import re
@@ -22,6 +23,7 @@ from kiro_crew.dashboard import chat_handlers, chat_summary
 from kiro_crew.dashboard.chat import api_chat_slot_summary, api_chat_slot_summary_generate
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.state import _ChatSlot
+from kiro_crew.history import HistoryLockTimeout, TranscriptBusy
 from kiro_crew.session_summary import count_user_turns_in_records
 
 pytestmark = pytest.mark.asyncio
@@ -166,6 +168,65 @@ class TestSummaryEndpoint:
         async with TestClient(TestServer(_make_app(state))) as client:
             await client.get("/api/chat/slots/s1/summary")
         assert called == []
+
+    @pytest.mark.parametrize("restriction", ["live", "disk", "unreadable"])
+    async def test_restricted_or_unreadable_transcript_hides_a_persistent_sidecar(
+        self, tmp_path, monkeypatch, restriction
+    ):
+        _pin_flag(monkeypatch, True)
+        state = _make_state(tmp_path)
+        slot = _ChatSlot("s1")
+        state._slots[slot.key] = slot
+        hkey = slot_history_key(slot)
+        log = state.conversation_log
+        log.append(hkey, "user", "hello")
+        log.set_cached_intent_summary(hkey, _payload(), log.session_mtime(hkey))
+        sidecar = log._intent_summary_cache_path(hkey)
+        assert sidecar.exists()
+
+        if restriction == "live":
+            slot.memory_mode = "incognito"
+        elif restriction == "disk":
+            await asyncio.to_thread(log.update_metadata, hkey, {"memory_mode": "temporary"})
+        else:
+            monkeypatch.setattr(log, "get_metadata_status", lambda _key: ({}, False))
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            body = await (await client.get("/api/chat/slots/s1/summary")).json()
+
+        assert body["intents"] == []
+        assert body["constraints"] == []
+        assert body["generated_at"] is None
+        assert body["stale"] is False
+        assert sidecar.exists(), "privacy gating should not delete a reusable sidecar"
+
+    async def test_a_lock_timeout_returns_the_same_empty_refusal_body(
+        self, tmp_path, monkeypatch
+    ):
+        _pin_flag(monkeypatch, True)
+        state = _make_state(tmp_path)
+        slot = _ChatSlot("s1")
+        state._slots[slot.key] = slot
+        hkey = slot_history_key(slot)
+        log = state.conversation_log
+        log.append(hkey, "user", "hello")
+        log.set_cached_intent_summary(hkey, _payload(), log.session_mtime(hkey))
+
+        @contextlib.contextmanager
+        def _timeout(self, stems):
+            raise HistoryLockTimeout("summary read lock held")
+            yield  # pragma: no cover
+
+        monkeypatch.setattr(type(log), "locked_stems", _timeout)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.get("/api/chat/slots/s1/summary")
+            body = await response.json()
+
+        assert response.status == 200
+        assert body["intents"] == []
+        assert body["constraints"] == []
+        assert body["generated_at"] is None
+        assert body["stale"] is False
 
     async def test_disabling_the_flag_stops_serving_an_earlier_summary(
         self, tmp_path, monkeypatch
@@ -554,6 +615,67 @@ class TestSummaryGenerateEndpoint:
             assert (await resp.json())["code"] == "summary_unavailable"
         assert called == []
         assert state.conversation_log.get_cached_intent_summary(slot_history_key(slot)) is None
+
+    @pytest.mark.parametrize("restriction", ["live", "disk", "unreadable"])
+    async def test_a_restricted_slot_is_not_answered_with_its_persistent_lifes_sidecar(
+        self, tmp_path, monkeypatch, restriction
+    ):
+        """The generator skips a restricted slot, but the ``.intents`` sidecar its
+        key wrote in an earlier persistent life is still on disk (kept, by design,
+        for a later persistent holder). The read-back has to go through the same
+        gate as the GET or that leftover is served as this session's summary."""
+        _pin_flag(monkeypatch, True)
+        _stub_generation(monkeypatch)
+        state = _make_state(tmp_path)
+        slot = _seed_slot(state)
+        hkey = slot_history_key(slot)
+        log = state.conversation_log
+        log.set_cached_intent_summary(hkey, _payload(), log.session_mtime(hkey))
+        sidecar = log._intent_summary_cache_path(hkey)
+        assert sidecar.exists()
+
+        if restriction == "live":
+            slot.memory_mode = "incognito"
+        elif restriction == "disk":
+            await asyncio.to_thread(log.update_metadata, hkey, {"memory_mode": "temporary"})
+        else:
+            monkeypatch.setattr(log, "get_metadata_status", lambda _key: ({}, False))
+
+        async with TestClient(TestServer(_make_generate_app(state))) as client:
+            resp = await client.post("/api/chat/slots/s1/summary")
+            body = await resp.json()
+
+        assert resp.status == 409
+        assert body["code"] == "summary_unavailable"
+        assert "intents" not in body
+        assert sidecar.exists(), "privacy gating should not delete a reusable sidecar"
+
+    async def test_a_lock_timeout_on_the_read_back_is_409_not_a_500(self, tmp_path, monkeypatch):
+        """Same answer as the GET's empty body: a busy transcript is a retry, and
+        the sidecar is not read bare around the hold."""
+        _pin_flag(monkeypatch, True)
+        state = _make_state(tmp_path)
+        slot = _seed_slot(state)
+        hkey = slot_history_key(slot)
+        log = state.conversation_log
+        log.set_cached_intent_summary(hkey, _payload(), log.session_mtime(hkey))
+
+        async def _pass_already_current(*_a, **_k):
+            return False
+
+        monkeypatch.setattr(chat_handlers, "generate_session_summary", _pass_already_current)
+
+        @contextlib.contextmanager
+        def _busy(stems):
+            raise TranscriptBusy("summary read lock held")
+            yield  # pragma: no cover
+
+        monkeypatch.setattr(log, "derivation_hold", _busy)
+        async with TestClient(TestServer(_make_generate_app(state))) as client:
+            resp = await client.post("/api/chat/slots/s1/summary")
+            body = await resp.json()
+        assert resp.status == 409
+        assert body["code"] == "summary_unavailable"
 
 
 class TestPanelGateDrift:

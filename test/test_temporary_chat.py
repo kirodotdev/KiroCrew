@@ -116,6 +116,44 @@ class TestPersistTitle:
         assert "memory_mode" not in meta
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("write_commits", [True, False], ids=["commit", "rollback"])
+    async def test_restricted_title_upsert_tightens_or_restores_a_live_replacement(
+        self, tmp_path, monkeypatch, write_commits
+    ):
+        """A retired titler cannot leave its same-transcript replacement looser."""
+        from chat_test_helpers import _make_state
+
+        from kiro_crew.dashboard.chat_title import _persist_title
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        original = state.get_or_create_slot("title-race", memory_mode="incognito")
+        original.title = "A private question"
+        original.append("user", "private title source")
+        state._slots.pop(original.key)
+        state._restricted_keys.discard("dashboard:title-race")
+        replacement = state.get_or_create_slot("title-race")
+        assert replacement.memory_mode == "persistent"
+
+        if not write_commits:
+            monkeypatch.setattr(
+                state.conversation_log, "update_metadata_if", lambda *_args, **_kwargs: False
+            )
+
+        assert await _persist_title(state, original) is write_commits
+
+        if write_commits:
+            assert (
+                state.conversation_log.get_metadata("dashboard:title-race").get("memory_mode")
+                == "incognito"
+            )
+            assert replacement.memory_mode == "incognito"
+            assert "dashboard:title-race" in state._restricted_keys
+        else:
+            assert replacement.memory_mode == "persistent"
+            assert "dashboard:title-race" not in state._restricted_keys
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("line_mode", ["temporary", "Temporary"])
     async def test_title_upsert_cannot_loosen_the_on_disk_mode(
         self, tmp_path, monkeypatch, line_mode

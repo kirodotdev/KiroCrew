@@ -237,6 +237,14 @@ def stricter_memory_mode(*modes: str) -> str:
     return max(modes, key=MEMORY_MODES.index)
 
 
+#: The mode no line can be stricter than. A writer that must rewrite a metadata
+#: line whose own ``memory_mode`` it cannot read (a corrupt first line) stamps
+#: this, because the ratchet forbids relabelling a line looser than it was and
+#: the strictest mode is the only value that is never looser than an unknown
+#: one. Derived from the order above rather than spelled out twice.
+STRICTEST_MEMORY_MODE = stricter_memory_mode(*MEMORY_MODES)
+
+
 @dataclass(frozen=True)
 class MemoryStoreRef:
     store_id: str
@@ -508,6 +516,59 @@ def read_live_session_execution(session_key: str) -> ExecutionContext | None:
         return _LIVE_EXECUTIONS.get(_live_key(session_key))
 
 
+def tighten_live_session_execution(
+    session_key: str,
+    memory_mode: str,
+    *,
+    expected: ExecutionContext | None | object = ...,
+) -> ExecutionContext | None:
+    """Tighten an existing live carrier without reading or writing its transcript.
+
+    Turn-start binding has already read the transcript off the event loop when it
+    reaches this helper. Keeping the carrier update under ``_EXECUTION_LOCK`` makes
+    that read-back generation-safe without making every synchronous
+    :func:`read_session_execution` caller perform file I/O. A missing live carrier
+    is a no-op; an unexpected replacement refuses rather than tightening another
+    execution that took over the same key.
+    """
+    key = _live_key(session_key)
+    with _EXECUTION_LOCK:
+        current = _LIVE_EXECUTIONS.get(key)
+        if expected is not ... and current != expected:
+            raise _unavailable("session changed during privacy tightening")
+        if current is None:
+            return None
+        tightened = current.with_mode(memory_mode)
+        if tightened != current:
+            _LIVE_EXECUTIONS[key] = tightened
+            _withdraw_vouched(key)
+        return tightened
+
+
+def rollback_live_session_tightening(
+    session_key: str,
+    previous: ExecutionContext | None,
+    *,
+    expected: ExecutionContext | None,
+) -> bool:
+    """Restore a live carrier only while the tightening generation still owns it.
+
+    This is the rollback half of a pre-write privacy tightening. It never restores
+    a vouched entry: tightening withdraws that authority, and rollback cannot safely
+    re-grant it. A later binding can vouch again from independently established
+    identity.
+    """
+    key = _live_key(session_key)
+    with _EXECUTION_LOCK:
+        if _LIVE_EXECUTIONS.get(key) != expected:
+            return False
+        if previous is None:
+            _LIVE_EXECUTIONS.pop(key, None)
+        else:
+            _LIVE_EXECUTIONS[key] = previous
+        return True
+
+
 @overload
 def read_session_execution(session_key: str, *, required: Literal[True]) -> ExecutionContext: ...
 
@@ -543,19 +604,28 @@ def read_session_execution(session_key: str, *, required: bool = False) -> Execu
     if not readable:
         raise _unavailable("session record is unreadable")
     execution = execution_from_record(record, required=required)
-    if execution is None:
-        if record.get("member_id") or record.get("selection_kind") == "member":
-            raise _missing_identity(_OPEN_A_NEW_CHAT_REMEDY)
-        store = record.get("memory_store")
-        if store and store != "default":
-            from kiro_crew.memory_stores import memory_store_version
+    if execution is not None:
+        # The line's own ``memory_mode`` is the file's privacy contract and a
+        # ratchet every writer folds; the record carried beside it holds a mode
+        # of its own and can lag a tightening of the line (a hand-edited
+        # ``Incognito`` header on a member chat, a line ratcheted by a save that
+        # could not also rewrite the record). A reader that answers from the
+        # record alone would hand back the looser mode, so the line is folded in
+        # here, at the one seam every carrier-first reader and every binder goes
+        # through. ``with_mode`` only ever tightens.
+        return execution.with_mode(canonical_memory_mode(record.get("memory_mode")))
+    if record.get("member_id") or record.get("selection_kind") == "member":
+        raise _missing_identity(_OPEN_A_NEW_CHAT_REMEDY)
+    store = record.get("memory_store")
+    if store and store != "default":
+        from kiro_crew.memory_stores import memory_store_version
 
-            if memory_store_version(store) == 2:
-                backfilled = _backfill_legacy_member_record(session_key, record, store)
-                if backfilled is not None:
-                    return backfilled
-                raise _missing_identity(_legacy_store_remedy(store))
-    return execution
+        if memory_store_version(store) == 2:
+            backfilled = _backfill_legacy_member_record(session_key, record, store)
+            if backfilled is not None:
+                return backfilled
+            raise _missing_identity(_legacy_store_remedy(store))
+    return None
 
 
 _OPEN_A_NEW_CHAT_REMEDY = (

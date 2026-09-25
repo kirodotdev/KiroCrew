@@ -180,6 +180,23 @@ class _ConsolidationNotDispatched(Exception):
     """A consolidation prompt never reached the provider."""
 
 
+class _PersistenceDisabledMidRun(Exception):
+    """The persistence switch turned off before this run committed output."""
+
+
+class _RunCommitState:
+    """Whether one consolidation run has committed a publication."""
+
+    __slots__ = ("committed",)
+
+    def __init__(self) -> None:
+        self.committed = False
+
+    def mark_committed(self) -> None:
+        """Record that a guarded durable publication succeeded."""
+        self.committed = True
+
+
 def _persistence_disabled() -> bool:
     """True when the operator turned persistent memory off.
 
@@ -583,6 +600,15 @@ class HistoryConsolidator:
         """Keep the pre-extraction ``kiro_crew.history`` logger category."""
         return _HISTORY_LOGGER
 
+    @contextlib.contextmanager
+    def _publication_hold_checked(self, key: str, commit_state: _RunCommitState | None = None):
+        """Acquire one publication hold and gate the run's first commit."""
+        state = commit_state or _RunCommitState()
+        with self._log.publication_hold(key):
+            if not state.committed and _persistence_disabled():
+                raise _PersistenceDisabledMidRun
+            yield state
+
     def retry_eligible(
         self, key: str, now: float | None = None, message_count: int | None = None
     ) -> bool:
@@ -901,7 +927,14 @@ class HistoryConsolidator:
         # The span identity any failure charge is stamped with. Rebuilt from the
         # snapshot below; the zero value only ever reaches a charge if the snapshot
         # itself raised, and that path is not billed.
+        # circular import: kiro_crew.history re-exports this module
+        from kiro_crew.history import TranscriptWithheld, is_incognito_transcript
+
         attempted = AttemptedSpan(0, 0, 0)
+        commit_state = _RunCommitState()
+        # The output being published, named in the warning when a later hold is
+        # refused after an earlier output committed (see the Withheld arm below).
+        stage = "publication"
         try:
             # Persistence global switch, checked here as well as in the automatic
             # entry points so the manual triggers (POST /api/memory/consolidate,
@@ -923,7 +956,6 @@ class HistoryConsolidator:
                 return _CONSOLIDATION_REFUSED
 
             from kiro_crew.execution_context import read_session_execution
-            from kiro_crew.history import is_incognito_transcript
 
             execution = await asyncio.to_thread(read_session_execution, key)
             if execution is not None and execution.memory_mode != "persistent":
@@ -942,11 +974,22 @@ class HistoryConsolidator:
             # dropping messages from extraction. Offloaded to a worker thread:
             # _consolidate runs on the gateway event loop and _locked/file IO is
             # blocking (same rationale as the mark_consolidated offload below).
-            (
-                unconsolidated,
-                total,
-                generation_at_snapshot,
-            ) = await asyncio.to_thread(self._log.snapshot_for_consolidation, key)
+            # ``withhold_restricted``: the two privacy checks above read the line
+            # BEFORE this snapshot, and a writer can tighten it in between (a
+            # same-key hand-over landing a restricted tab's rows under a line
+            # that was persistent a moment ago). The snapshot re-reads the line
+            # under the same lock as the rows and refuses them together, so no
+            # rows a restricted line governs ever reach the prompt below.
+            try:
+                (
+                    unconsolidated,
+                    total,
+                    generation_at_snapshot,
+                ) = await asyncio.to_thread(
+                    self._log.snapshot_for_consolidation, key, withhold_restricted=True
+                )
+            except TranscriptWithheld:
+                return _CONSOLIDATION_REFUSED
             # Transcript caches may share nested message dictionaries with an
             # editor. Freeze the submitted evidence before awaiting the model.
             unconsolidated = copy.deepcopy(unconsolidated)
@@ -1293,9 +1336,20 @@ class HistoryConsolidator:
             # edited transcript, or outrank a newer user turn. Appended assistant
             # replies may remain unconsolidated without invalidating the original
             # span. Recheck at the write boundary, before history or fact changes.
-            latest, latest_total, latest_generation = await asyncio.to_thread(
-                self._log.snapshot_for_consolidation, key
-            )
+            # Same gate at the write boundary: a line tightened while the model
+            # was thinking makes this result one derived from a restricted
+            # transcript, so it is discarded -- nothing reaches history or memory.
+            try:
+                latest, latest_total, latest_generation = await asyncio.to_thread(
+                    self._log.snapshot_for_consolidation, key, withhold_restricted=True
+                )
+            except TranscriptWithheld:
+                self._logger.info(
+                    "Discarding consolidation result for %s: the transcript became restricted "
+                    "during extraction",
+                    key,
+                )
+                return _CONSOLIDATION_REFUSED
             if (
                 latest_generation != generation_at_snapshot
                 or latest_total < total
@@ -1309,26 +1363,45 @@ class HistoryConsolidator:
                 return _CONSOLIDATION_REFUSED
 
             if member_memory:
+                stage = "member memory"
                 if vector_store is None:
                     raise RuntimeError("Member memory database is unavailable")
-                await run_in_embed_pool(
-                    vector_store.apply_consolidation,
-                    source_id=source_id,
-                    session_key=key,
-                    source_total=total,
-                    result=result,
-                    snapshot={row["key"]: row for row in current_semantic},
-                    messages=unconsolidated,
-                    facets=facets,
-                )
+                # Bound here because a nested def does not inherit the enclosing
+                # scope's narrowing: the closure would see the un-narrowed
+                # ``VectorMemoryStore | None`` and ``dict | None``.
+                store = vector_store
+                consolidation: dict = result
+
+                def _apply_member_consolidation() -> dict:
+                    with self._publication_hold_checked(key, commit_state) as publication:
+                        applied = store.apply_consolidation(
+                            source_id=source_id,
+                            session_key=key,
+                            source_total=total,
+                            result=consolidation,
+                            snapshot={row["key"]: row for row in current_semantic},
+                            messages=unconsolidated,
+                            facets=facets,
+                        )
+                        publication.mark_committed()
+                        return applied
+
+                await run_in_embed_pool(_apply_member_consolidation)
 
             if not member_memory and (entry := result.get("history_entry")):
+                stage = "history entry"
+
                 # Offloaded to a worker thread: append_history takes a blocking
                 # advisory file lock (cross-process) and does synchronous file
                 # IO, and _consolidate runs on the event loop thread (fired via
                 # asyncio.create_task). Running it inline would let cross-process
                 # lock contention stall the whole gateway loop.
-                await run_in_embed_pool(memory.append_history, entry)
+                def _append_history_under_hold() -> None:
+                    with self._publication_hold_checked(key, commit_state) as publication:
+                        memory.append_history(entry)
+                        publication.mark_committed()
+
+                await run_in_embed_pool(_append_history_under_hold)
                 self._logger.info("Consolidated %d messages for %s", len(unconsolidated), key)
 
             # Structured memory writes (Phase 2/3). Offloaded to a worker thread:
@@ -1337,6 +1410,7 @@ class HistoryConsolidator:
             # asyncio.create_task). Running it inline stalls the whole gateway loop
             # if the embedding endpoint is slow/hung (heartbeats, Slack, dashboard).
             if vector_store and not member_memory:
+                stage = "structured memory"
                 await run_in_embed_pool(
                     self._write_structured_memory,
                     result,
@@ -1345,6 +1419,7 @@ class HistoryConsolidator:
                     facets=facets,
                     snapshot={row["key"]: row for row in current_semantic},
                     messages=unconsolidated,
+                    commit_state=commit_state,
                 )
 
             # Legacy V1 Markdown writes (skip if migrated or private V2). Each value
@@ -1353,6 +1428,7 @@ class HistoryConsolidator:
             # re-enters the next prompt as the file's current content and primes
             # every later pass to repeat it (see _is_plausible_memory_file).
             if allow_markdown_updates:
+                stage = "preferences"
                 if prefs := result.get("preferences_update"):
                     if not _is_plausible_memory_file(prefs, "# User Preferences"):
                         self._logger.warning(
@@ -1369,9 +1445,16 @@ class HistoryConsolidator:
                         # minutes-long LLM call — if a dashboard Save landed
                         # in that window, writing would silently revert it,
                         # so the store skips the stale write instead.
-                        wrote = await run_in_embed_pool(
-                            lambda: memory.write_preferences(prefs, expected_baseline=current_prefs)
-                        )
+                        def _write_preferences() -> bool:
+                            with self._publication_hold_checked(key, commit_state) as publication:
+                                wrote = memory.write_preferences(
+                                    prefs, expected_baseline=current_prefs
+                                )
+                                if wrote:
+                                    publication.mark_committed()
+                                return wrote
+
+                        wrote = await run_in_embed_pool(_write_preferences)
                         if not wrote:
                             self._logger.info(
                                 "Consolidated preferences for %s discarded: file "
@@ -1380,6 +1463,7 @@ class HistoryConsolidator:
                             )
 
                 if projects := result.get("projects_update"):
+                    stage = "projects"
                     if not _is_plausible_memory_file(projects, "# Active Projects"):
                         self._logger.warning(
                             "Discarding implausible projects_update from "
@@ -1388,11 +1472,17 @@ class HistoryConsolidator:
                             len(projects),
                         )
                     elif projects.strip() != current_projects.strip():
-                        wrote = await run_in_embed_pool(
-                            lambda: memory.write_projects(
-                                projects, expected_baseline=current_projects
-                            )
-                        )
+
+                        def _write_projects() -> bool:
+                            with self._publication_hold_checked(key, commit_state) as publication:
+                                wrote = memory.write_projects(
+                                    projects, expected_baseline=current_projects
+                                )
+                                if wrote:
+                                    publication.mark_committed()
+                                return wrote
+
+                        wrote = await run_in_embed_pool(_write_projects)
                         if not wrote:
                             self._logger.info(
                                 "Consolidated projects for %s discarded: file "
@@ -1408,12 +1498,15 @@ class HistoryConsolidator:
                 and (lessons_store or vector_store)
                 and (raw_lessons := result.get("lessons"))
             ):
+                stage = "lessons"
                 await run_in_embed_pool(
                     self._save_lessons,
                     raw_lessons,
                     vector_store,
                     lessons_store,
                     facets=facets,
+                    key=key,
+                    commit_state=commit_state,
                 )
 
             # Auto skill detection — a SEPARATE LLM pass over the full-session
@@ -1429,7 +1522,9 @@ class HistoryConsolidator:
                 and self._skills_loader is not None
             ):
                 try:
-                    await self._run_skill_detection(key)
+                    await self._run_skill_detection(key, commit_state)
+                except _PersistenceDisabledMidRun:
+                    raise
                 except Exception:
                     self._logger.warning("Auto-skill detection failed for %s", key, exc_info=True)
 
@@ -1470,6 +1565,56 @@ class HistoryConsolidator:
                     generation_at_snapshot,
                 )
 
+        except TranscriptWithheld as exc:
+            if not commit_state.committed:
+                self._logger.info(
+                    "Discarding consolidation result for %s: the transcript became restricted "
+                    "during publication",
+                    key,
+                )
+                return _CONSOLIDATION_REFUSED
+            # A durable output already landed under an earlier hold, so the
+            # run's contract is the committed one (same latch as the persistence
+            # flip above). Refusing here would leave the span pending, and the
+            # idle sweep's re-run appends the history entry a second time:
+            # append_history carries no receipt to recognise its own earlier
+            # row. The outputs after the first are best-effort memory; a
+            # restricted line must not be learned from and a lock that could
+            # not be taken cannot be vouched for, so publication stops at this
+            # stage and the span is marked so it is not re-run. A transcript
+            # restricted mid-run is refused by the derivation seam on every
+            # later run, so marking it loses nothing.
+            self._logger.warning(
+                "Consolidation for %s stopped at the %s stage after an earlier output "
+                "committed (%s); the remaining outputs are skipped and the span is "
+                "marked consolidated so the idle sweep does not repeat it",
+                key,
+                stage,
+                exc,
+            )
+            if include_history:
+                try:
+                    await asyncio.to_thread(
+                        self._log.mark_consolidated,
+                        key,
+                        total,
+                        generation_at_snapshot,
+                    )
+                except Exception:
+                    # Same accounting as the arm below: an output committed, so
+                    # the turn was billed, and the unwritten marker must back
+                    # off rather than re-bill on the next tick.
+                    self._logger.exception("Consolidation failed for %s", key)
+                    await self._note_failed_attempt(key, attempted, "exception after the LLM call")
+                    raise
+            return None
+        except _PersistenceDisabledMidRun:
+            self._logger.info(
+                "Consolidation refused for %s: memory.persistence_enabled turned off "
+                "during the run",
+                key,
+            )
+            return _CONSOLIDATION_REFUSED
         except Exception:
             self._logger.exception("Consolidation failed for %s", key)
             # Anything raised between the LLM call and mark_consolidated (memory
@@ -1488,7 +1633,9 @@ class HistoryConsolidator:
             self._running.discard(key)
         return None
 
-    async def _run_skill_detection(self, key: str) -> None:
+    async def _run_skill_detection(
+        self, key: str, commit_state: _RunCommitState | None = None
+    ) -> None:
         """Detect a reusable skill from the FULL session (bounded window).
 
         Unlike history/semantic/lesson extraction — which correctly runs on the
@@ -1521,7 +1668,16 @@ class HistoryConsolidator:
         """
         if self._skills_loader is None:
             return
-        all_messages = await asyncio.to_thread(self._log._read_messages, key)
+        # circular import: kiro_crew.history re-exports this module
+        from kiro_crew.history import TranscriptWithheld
+
+        # Through the derivation seam: a third read of the transcript, so the line
+        # is validated with THESE rows under the lock (the consolidation snapshots
+        # above vouched for their own rows, not these).
+        try:
+            all_messages = await asyncio.to_thread(self._log.derive_messages, key)
+        except TranscriptWithheld:
+            return
         if not all_messages:
             return
         # Key the guard on (rotation generation, message count), NOT count
@@ -1640,7 +1796,13 @@ class HistoryConsolidator:
         )
         # _event_loop was captured by our caller (_consolidate) so the
         # thread-offloaded dedupe judge can marshal back onto the gateway loop.
-        await asyncio.to_thread(self._process_auto_skills, result, key)
+        await asyncio.to_thread(
+            self._process_auto_skills,
+            result,
+            key,
+            guard_publication=True,
+            commit_state=commit_state,
+        )
 
     def _gated_lesson_scope(self, item: dict) -> tuple[str | None, bool]:
         """The lesson's ``repo_scope`` to forward, plus whether to DROP the lesson.
@@ -1693,6 +1855,8 @@ class HistoryConsolidator:
         lesson_store: "LessonStore | None | _InheritGlobal" = _INHERIT_GLOBAL,
         *,
         facets: "MemoryFacets | None" = None,
+        key: str = "",
+        commit_state: _RunCommitState | None = None,
     ) -> None:
         """Save extracted lessons from consolidation result.
 
@@ -1737,19 +1901,28 @@ class HistoryConsolidator:
                     scope, drop = self._gated_lesson_scope(item)
                     if drop:
                         continue
-                    ok = vector_store.write_lesson(
-                        rule=item["rule"],
-                        category=item.get("category", "knowledge"),
-                        negative=item.get("negative"),
-                        source="consolidation",
-                        # Gated by _gated_lesson_scope above; write_lesson
-                        # canonicalises and re-checks admissibility itself.
-                        repo_scope=scope,
-                        # Already normalized by _lesson_tier, so write_lesson's
-                        # own raising check cannot fire on it.
-                        applies=self._lesson_tier(item),
-                        facets=facets,
-                    )
+                    rule_generation = vector_store.space_generation
+                    rule_emb = vector_store.embed_lesson(item["rule"])
+                    with self._publication_hold_checked(key, commit_state) as publication:
+                        ok = vector_store.write_lesson(
+                            rule=item["rule"],
+                            category=item.get("category", "knowledge"),
+                            negative=item.get("negative"),
+                            source="consolidation",
+                            rule_emb=rule_emb,
+                            rule_emb_generation=rule_generation,
+                            rule_emb_resolved=True,
+                            defer_backfills=True,
+                            # Gated by _gated_lesson_scope above; write_lesson
+                            # canonicalises and re-checks admissibility itself.
+                            repo_scope=scope,
+                            # Already normalized by _lesson_tier, so write_lesson's
+                            # own raising check cannot fire on it.
+                            applies=self._lesson_tier(item),
+                            facets=facets,
+                        )
+                        if ok:
+                            publication.mark_committed()
                     if ok:
                         count += 1
             if count:
@@ -1768,20 +1941,23 @@ class HistoryConsolidator:
                 scope, drop = self._gated_lesson_scope(item)
                 if drop:
                     continue
-                outcome = lesson_store.save(
-                    Lesson(
-                        ts=datetime.now(tz=_tz.utc).isoformat(),
-                        rule=item["rule"],
-                        category=item.get("category", "knowledge"),
-                        negative=item.get("negative"),
-                        # Gated by _gated_lesson_scope above (LessonStore.save
-                        # canonicalises but never checks admissibility itself).
-                        repo_scope=scope,
-                        # None is dropped by _serializable, so an unstated row
-                        # is byte-identical to one written before the field.
-                        applies=self._lesson_tier(item),
+                with self._publication_hold_checked(key, commit_state) as publication:
+                    outcome = lesson_store.save(
+                        Lesson(
+                            ts=datetime.now(tz=_tz.utc).isoformat(),
+                            rule=item["rule"],
+                            category=item.get("category", "knowledge"),
+                            negative=item.get("negative"),
+                            # Gated by _gated_lesson_scope above (LessonStore.save
+                            # canonicalises but never checks admissibility itself).
+                            repo_scope=scope,
+                            # None is dropped by _serializable, so an unstated row
+                            # is byte-identical to one written before the field.
+                            applies=self._lesson_tier(item),
+                        )
                     )
-                )
+                    if outcome != "refused":
+                        publication.mark_committed()
                 if outcome != "refused":
                     count += 1
         if count:
@@ -1796,6 +1972,7 @@ class HistoryConsolidator:
         facets: "MemoryFacets | None" = None,
         snapshot: dict | None = None,
         messages: list[dict] | None = None,
+        commit_state: _RunCommitState | None = None,
     ) -> None:
         """Write semantic + episodic entries from consolidation result.
 
@@ -1826,11 +2003,17 @@ class HistoryConsolidator:
                     continue
                 # Handle deletion of stale keys
                 if item.get("delete"):
-                    if private_policy:
-                        if vector_store.propose_semantic_delete(item["key"], source):
-                            refused += 1
-                    elif vector_store.delete_semantic(item["key"], source):
-                        deleted += 1
+                    with self._publication_hold_checked(key, commit_state) as publication:
+                        if private_policy:
+                            published = vector_store.propose_semantic_delete(item["key"], source)
+                            if published:
+                                refused += 1
+                        else:
+                            published = vector_store.delete_semantic(item["key"], source)
+                            if published:
+                                deleted += 1
+                        if published:
+                            publication.mark_committed()
                     continue
                 if "value" not in item or item["value"] is None:
                     # Counted and logged here because this path returns before set_semantic, so
@@ -1870,16 +2053,43 @@ class HistoryConsolidator:
                     if evidence:
                         extra["correction"] = evidence
                         extra["expected_revision"] = evidence.revision
+                previous = snapshot.get(item["key"]) if snapshot else None
+                previous_value_json = (
+                    previous.get("value_json") if isinstance(previous, dict) else None
+                )
+                if not isinstance(previous_value_json, str):
+                    previous_value_json = None
+                defer = budget.tripped
+                embedding_generation = vector_store.space_generation
                 with budget.measured():
+                    embedding = (
+                        None if defer else vector_store.embed_semantic(item["key"], item["value"])
+                    )
+                    retirement_embedding = (
+                        None
+                        if defer or previous_value_json is None
+                        else vector_store.embed_semantic_retirement(
+                            item["key"], previous_value_json
+                        )
+                    )
+                with self._publication_hold_checked(key, commit_state) as publication:
                     err = vector_store.set_semantic(
                         key=item["key"],
                         value=item["value"],
                         confidence=conf,
                         source=source,
                         facets=facets,
-                        defer_embedding=budget.tripped,
+                        defer_embedding=defer,
+                        embedding=embedding,
+                        embedding_resolved=True,
+                        embedding_generation=embedding_generation,
+                        retirement_embedding=retirement_embedding,
+                        retirement_embedding_resolved=True,
+                        retirement_value_json=previous_value_json,
                         **extra,
                     )
+                    if err is None:
+                        publication.mark_committed()
                 if err is None:
                     written += 1
                 else:
@@ -1943,16 +2153,24 @@ class HistoryConsolidator:
                 # last one to pay for an embed rather than the first to skip one.
                 defer = budget.tripped
                 with budget.measured():
-                    ep_ok = vector_store.write_episodic(
-                        text=item["text"],
-                        conversation_id=key,
-                        tags=tags,
-                        importance=importance,
-                        source=source,
-                        facets=facets,
-                        defer_embedding=defer,
-                        preserve_existing=defer,
-                    )
+                    embedding_generation = vector_store.space_generation
+                    embedding = None if defer else vector_store.embed_episodic(item["text"])
+                    with self._publication_hold_checked(key, commit_state) as publication:
+                        ep_ok = vector_store.write_episodic(
+                            text=item["text"],
+                            embedding=embedding,
+                            embedding_resolved=True,
+                            embedding_generation=embedding_generation,
+                            conversation_id=key,
+                            tags=tags,
+                            importance=importance,
+                            source=source,
+                            facets=facets,
+                            defer_embedding=defer,
+                            preserve_existing=defer,
+                        )
+                        if ep_ok:
+                            publication.mark_committed()
                 if ep_ok:
                     written += 1
                     if defer:
@@ -2083,6 +2301,51 @@ class HistoryConsolidator:
             self._logger.debug("Skill update merge failed", exc_info=True)
             return None
 
+    @contextlib.contextmanager
+    def _skill_publication_guard(
+        self,
+        key: str,
+        *,
+        enabled: bool,
+        commit_state: _RunCommitState | None = None,
+    ):
+        """Hold the transcript contract stable across one final skill write."""
+        state = commit_state or _RunCommitState()
+        if not enabled:
+            yield state
+            return
+        # Circular import: kiro_crew.history re-exports this module. The lock is
+        # acquired only after every model call has returned: model latency must
+        # never block a transcript writer. Keeping it through the final staging
+        # or publication call closes the check-to-write race instead.
+        from kiro_crew.history import TranscriptBusy, TranscriptWithheld
+
+        entered = False
+        try:
+            with self._publication_hold_checked(key, state) as publication:
+                entered = True
+                yield publication
+        except TranscriptBusy:
+            # Only an acquisition refusal maps to the existing no-publication arm;
+            # do not swallow an unrelated busy error from the guarded write body.
+            if entered:
+                raise
+            self._logger.debug(
+                "Discarding skill detection result for %s: the transcript was busy "
+                "during extraction",
+                key,
+            )
+            yield None
+        except TranscriptWithheld:
+            if entered:
+                raise
+            self._logger.debug(
+                "Discarding skill detection result for %s: the transcript became "
+                "restricted during extraction",
+                key,
+            )
+            yield None
+
     def _stage_skill_update(
         self,
         *,
@@ -2092,6 +2355,8 @@ class HistoryConsolidator:
         triggers: str,
         procedure_md: str,
         scripts: "list[dict] | None" = None,
+        guard_publication: bool = False,
+        commit_state: _RunCommitState | None = None,
     ) -> None:
         """Stage a pending UPDATE candidate for an existing auto-skill.
 
@@ -2204,17 +2469,24 @@ class HistoryConsolidator:
         _live_description = _frontmatter_value(live_body, "description")
         _staged_triggers = _merge_trigger_lists(_live_triggers, triggers)
         _staged_description = description or _live_description
-        name = loader.stage_skill_candidate(
-            _update_slug,
-            description=_staged_description,
-            triggers=_staged_triggers,
-            procedure_md=body,
-            provenance=provenance,
-            scripts=scripts or None,
-            kind="update",
-            target=target_key,
-            base_version=base_version,
-        )
+        with self._skill_publication_guard(
+            key, enabled=guard_publication, commit_state=commit_state
+        ) as publication:
+            if publication is None:
+                return
+            name = loader.stage_skill_candidate(
+                _update_slug,
+                description=_staged_description,
+                triggers=_staged_triggers,
+                procedure_md=body,
+                provenance=provenance,
+                scripts=scripts or None,
+                kind="update",
+                target=target_key,
+                base_version=base_version,
+            )
+            if name:
+                publication.mark_committed()
         if name:
             self._logger.info(
                 "Staged skill update %s (target %s) from session %s",
@@ -2244,7 +2516,14 @@ class HistoryConsolidator:
                 metadata={"slug": _update_slug, "reason": "creation_failed"},
             )
 
-    def _process_auto_skills(self, result: dict, key: str) -> None:
+    def _process_auto_skills(
+        self,
+        result: dict,
+        key: str,
+        *,
+        guard_publication: bool = False,
+        commit_state: _RunCommitState | None = None,
+    ) -> None:
         """Extract + write auto-generated skills from the consolidation result.
 
         Handles both ``new_skill`` and ``refined_skill`` result keys.  Each
@@ -2366,6 +2645,8 @@ class HistoryConsolidator:
                         triggers=triggers,
                         procedure_md=procedure_md,
                         scripts=valid_scripts or None,
+                        guard_publication=guard_publication,
+                        commit_state=commit_state,
                     )
                 else:
                     provenance = AutoSkillProvenance(
@@ -2397,14 +2678,23 @@ class HistoryConsolidator:
                         # prose. (An all-invalid candidate with approval disabled
                         # is consumed by the reject branch above, so a bare
                         # scripts_supplied never decides this branch.)
-                        name = self._skills_loader.stage_skill_candidate(
-                            slug,
-                            description=description,
-                            triggers=triggers,
-                            procedure_md=procedure_md,
-                            provenance=provenance,
-                            scripts=valid_scripts or None,
-                        )
+                        with self._skill_publication_guard(
+                            key,
+                            enabled=guard_publication,
+                            commit_state=commit_state,
+                        ) as publication:
+                            if publication is None:
+                                return
+                            name = self._skills_loader.stage_skill_candidate(
+                                slug,
+                                description=description,
+                                triggers=triggers,
+                                procedure_md=procedure_md,
+                                provenance=provenance,
+                                scripts=valid_scripts or None,
+                            )
+                            if name:
+                                publication.mark_committed()
                         if name:
                             self._logger.info(
                                 "Staged skill candidate %s from session %s", name, key
@@ -2426,13 +2716,22 @@ class HistoryConsolidator:
                                 metadata={"slug": slug, "reason": "creation_failed"},
                             )
                     else:
-                        name = self._skills_loader.create_auto_skill(
-                            slug,
-                            description=description,
-                            triggers=triggers,
-                            procedure_md=procedure_md,
-                            provenance=provenance,
-                        )
+                        with self._skill_publication_guard(
+                            key,
+                            enabled=guard_publication,
+                            commit_state=commit_state,
+                        ) as publication:
+                            if publication is None:
+                                return
+                            name = self._skills_loader.create_auto_skill(
+                                slug,
+                                description=description,
+                                triggers=triggers,
+                                procedure_md=procedure_md,
+                                provenance=provenance,
+                            )
+                            if name:
+                                publication.mark_committed()
                         if name:
                             self._logger.info("Auto-created skill %s from session %s", name, key)
                             _facade_sel().log_tool_invocation(
@@ -2527,13 +2826,22 @@ class HistoryConsolidator:
                 created_at=AutoSkillProvenance.now_iso(),
                 refined_at=AutoSkillProvenance.now_iso(),
             )
-            ok = self._skills_loader.update_auto_skill(
-                name,
-                description=description,
-                triggers=triggers,
-                procedure_md=procedure_md,
-                provenance=provenance,
-            )
+            with self._skill_publication_guard(
+                key,
+                enabled=guard_publication,
+                commit_state=commit_state,
+            ) as publication:
+                if publication is None:
+                    return
+                ok = self._skills_loader.update_auto_skill(
+                    name,
+                    description=description,
+                    triggers=triggers,
+                    procedure_md=procedure_md,
+                    provenance=provenance,
+                )
+                if ok:
+                    publication.mark_committed()
             if ok:
                 self._logger.info("Auto-refined skill %s from session %s", name, key)
                 _facade_sel().log_tool_invocation(

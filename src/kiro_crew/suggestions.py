@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 from aiohttp import web
 
 from kiro_crew.context import ContextBuilder
-from kiro_crew.history import is_incognito_transcript
+from kiro_crew.history import TranscriptWithheld, is_incognito_transcript
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
@@ -137,7 +137,12 @@ def _build_context(state: DashboardState) -> str:
                         continue
                     line = f"- **{title or key}**"
                     try:
-                        recent = state.conversation_log.recent(key, max_messages=6)
+                        # Through the derivation seam: the listing row above is a
+                        # snapshot, and a writer can tighten the line between it
+                        # and the rows; the seam validates the line with the rows
+                        # under one lock and raises TranscriptWithheld (caught
+                        # with everything else below: the session is skipped).
+                        recent = state.conversation_log.derive_recent(key, max_messages=6)
                         user_msgs = [
                             m["content"][:150]
                             for m in recent
@@ -145,6 +150,11 @@ def _build_context(state: DashboardState) -> str:
                         ][-3:]
                         if user_msgs:
                             line += "\n" + "\n".join(f"  - User: {msg}" for msg in user_msgs)
+                    except TranscriptWithheld:
+                        # Tightened since the listing: the whole session goes,
+                        # title included, exactly as the listing filter above
+                        # would have dropped it had the line been restricted then.
+                        continue
                     except Exception:
                         pass
                     session_parts.append(line)

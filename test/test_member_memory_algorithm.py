@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import struct
@@ -111,6 +112,8 @@ def test_v2_automatic_reextraction_keeps_forgotten_fact_hidden(stores):
 
 def test_consolidation_protects_owner_facts_and_keeps_v1_deletes_and_lesson_origin(stores):
     writer = object.__new__(HistoryConsolidator)
+    writer._log = MagicMock()
+    writer._log.publication_hold.side_effect = lambda _key: contextlib.nullcontext()
     for store in stores:
         assert store.set_semantic("project.status", "old", 1, "user_explicit") is None
         writer._write_structured_memory(
