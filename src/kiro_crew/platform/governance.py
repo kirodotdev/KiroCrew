@@ -862,7 +862,12 @@ class ScopedRuleset:
     matcher: str = _DEFAULT_MATCHER
 
     @staticmethod
-    def from_dict(d: Mapping[str, object], *, matcher: str = _DEFAULT_MATCHER) -> "ScopedRuleset":
+    def from_dict(
+        d: Mapping[str, object],
+        *,
+        matcher: str = _DEFAULT_MATCHER,
+        scope: str = "",
+    ) -> "ScopedRuleset":
         # additionalProperties:false — a typo'd key (e.g. "deney" instead of
         # "deny") must be a validation error, NOT silently dropped.  The
         # dangerous case is a deny-list typo: it would otherwise become an empty
@@ -885,6 +890,52 @@ class ScopedRuleset:
                 "put hard bounds in policy, not a profile deny",
                 list(deny),
             )
+        # The ``host`` matcher tests an EXTRACTED host (``_url_host``), never the
+        # URL an operator fetched, so an entry carrying a character no host can
+        # contain never matches any item.  Warn rather than raise: a dead deny
+        # silently permits what it was written to block, a dead allow silently
+        # refuses it, and nothing else reports either.  Refusing the document
+        # outright would instead turn one stale entry into a boot failure on
+        # upgrade for a policy that loads today.
+        if matcher == "host":
+            # Only the list the engine reads: ``permits`` never consults ``allow``
+            # in deny mode, and an allow-mode ``deny`` is already reported above.
+            listed, live = ("allow", allow) if mode == MODE_ALLOW else ("deny", deny)
+            effect = "refuses" if mode == MODE_ALLOW else "permits"
+            for index, pattern in enumerate(live):
+                # ``_url_host`` itself is no test: ``?.skills.sh`` is a working glob
+                # that urlparse reads as a query and returns no host for.  Each
+                # reason below is a character or shape a host cannot carry.
+                suggestion = _url_host(pattern)
+                if "/" in pattern:
+                    why = "a '/' (a scheme, a path or a CIDR mask)"
+                elif "@" in pattern:
+                    why = "an '@' (userinfo)"
+                elif suggestion and suggestion != pattern.strip():
+                    why = "a port or IPv6 brackets"
+                else:
+                    continue
+                # Never interpolate the pattern: an operator pastes whole URLs,
+                # with userinfo, signatures and ``?api_key=`` queries, and this
+                # fires on every boot with no redaction before the sink.  The
+                # position identifies the entry; ``_url_host`` output cannot hold
+                # a credential, a path or a query, so the host is safe to name.
+                reason = (
+                    "scope %r uses matcher=host and can never match %s[%d]: the item "
+                    "under test is a host, not a URL, and the entry carries %s, so it "
+                    "is dead and the scope %s the host it names"
+                )
+                args: Tuple[object, ...] = (scope, listed, index, why, effect)
+                # No advice beats bad advice: a glob-only host (``https://*`` gives
+                # ``*``) would grant every host, and a CIDR mask (``10.0.0.0/8``)
+                # names a range the host matcher cannot express at all.
+                tail = pattern.strip().partition(suggestion)[2] if suggestion else ""
+                catch_all = set(suggestion) <= set("*?")
+                cidr = tail[:1] == "/" and tail[1:].isdigit()
+                if suggestion and not catch_all and not cidr:
+                    logger.warning(reason + ". Write %r instead", *args, suggestion)
+                else:
+                    logger.warning(reason, *args)
         return ScopedRuleset(mode=mode, allow=allow, deny=deny, matcher=matcher)
 
     def permits(self, item: str) -> Decision:
@@ -2413,7 +2464,7 @@ def _parse_control(scope: str, spec: ScopeSpec, raw: object, *, is_policy: bool)
             return OrdinalControl(scale=spec.ordinal_scale, value=raw)
         raise PlatformCompositionError(f"scope {scope!r} must be an object")
     if spec.kind == RULESET:
-        ruleset = ScopedRuleset.from_dict(raw, matcher=spec.matcher)
+        ruleset = ScopedRuleset.from_dict(raw, matcher=spec.matcher, scope=scope)
         for floor in spec.always_permitted:
             # An ``always_permitted`` identifier is one this scope may not forbid.
             # Two reasons qualify, and the catalog entry says which applies: the
