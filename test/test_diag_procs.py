@@ -13,9 +13,12 @@ test that this works; no conftest shim is needed.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
+from collections.abc import Iterator
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -28,6 +31,29 @@ NUL = b"\x00"
 def nul_argv(*tokens: bytes) -> bytes:
     """Argv in the NUL-separated shape ``/proc/<pid>/cmdline`` uses."""
     return NUL.join(tokens) + NUL
+
+
+# One fixed monotonic reading, shared by both scans of a rate test. Every rate is
+# a counter delta over the gap between two rosters' stamps, and a test that ages
+# a stored roster by hand is asking for a gap of exactly that length. Taking the
+# same reading twice is what delivers it.
+SCAN_MONOTONIC = 10_000.0
+
+
+@contextlib.contextmanager
+def pinned_clock(reading: float) -> Iterator[None]:
+    """Hold the clock one scan stamps its roster with at *reading*.
+
+    ``procs.scan`` reads ``time.monotonic()`` itself, so the later of two scans
+    stamps whatever the wall clock says when it runs. Any real time the runner
+    spends between the two scans is then added to the gap the rate divides by,
+    which shrinks every rate below what the test set up -- on a slow or shared
+    runner by far more than a tight tolerance allows. Pinning the reading makes
+    the hand-aged window the whole window, so the arithmetic is the same on
+    every runner.
+    """
+    with mock.patch.object(procs.time, "monotonic", return_value=reading):
+        yield
 
 
 # -- the family under test ---------------------------------------------------
@@ -130,12 +156,22 @@ class FakeProcTable:
             wchan = wchans[offset] if offset < len(wchans) else wchans[-1]
             (tdir / "wchan").write_text(wchan, encoding="utf-8")
 
-    def scan(self, prev: procs.Roster | None = None, **kwargs: object) -> procs.Roster:
+    def scan(
+        self,
+        prev: procs.Roster | None = None,
+        *,
+        monotonic: float | None = None,
+        **kwargs: object,
+    ) -> procs.Roster:
         """Scan this table with every production seam replaced by a stub.
 
         ``clk_tck`` is passed explicitly because Windows has no
         ``os.sysconf``: without it every cpu and age figure read ``None`` on a
         Windows runner and the delta tests failed there while passing on Linux.
+
+        Pass *monotonic* to pin the reading this scan stamps its roster with;
+        a rate test passes the same one to both of its scans. See
+        :func:`pinned_clock`.
         """
         params: dict[str, object] = {
             "proc_root": self.root,
@@ -148,13 +184,23 @@ class FakeProcTable:
             "unreachable_orphan_fn": lambda pid, cmdline, tracked: False,
         }
         params.update(kwargs)
-        return procs.scan(prev, **params)  # type: ignore[arg-type]
+        if monotonic is None:
+            return procs.scan(prev, **params)  # type: ignore[arg-type]
+        with pinned_clock(monotonic):
+            return procs.scan(prev, **params)  # type: ignore[arg-type]
 
-    def scan_rated(self, baseline: "procs.RateBaseline", **kwargs: object) -> procs.Roster:
+    def scan_rated(
+        self,
+        baseline: "procs.RateBaseline",
+        *,
+        monotonic: float | None = None,
+        **kwargs: object,
+    ) -> procs.Roster:
         """Scan through the read path that keeps the previous roster itself.
 
         The same stubs as :meth:`scan`, so the only difference under test is who
-        holds the counters between two reads.
+        holds the counters between two reads. *monotonic* pins the reading as it
+        does there.
         """
         params: dict[str, object] = {
             "proc_root": self.root,
@@ -167,7 +213,10 @@ class FakeProcTable:
             "unreachable_orphan_fn": lambda pid, cmdline, tracked: False,
         }
         params.update(kwargs)
-        return procs.scan_with_rates(baseline, **params)
+        if monotonic is None:
+            return procs.scan_with_rates(baseline, **params)
+        with pinned_clock(monotonic):
+            return procs.scan_with_rates(baseline, **params)
 
 
 @pytest.fixture
@@ -505,7 +554,7 @@ def test_cpu_and_runq_percentages_are_deltas_between_two_scans(tmp_path: Path) -
     table.add(GATEWAY, OUTSIDER, cmdline=GATEWAY_ARGV, env=dict(MARKER))
     table.add(CHAT, GATEWAY, cmdline=CHAT_ARGV, env=dict(MARKER), utime=0, runq_ns=0)
 
-    first = table.scan()
+    first = table.scan(monotonic=SCAN_MONOTONIC)
     # Move the first scan's clock back so the second scan sees a known 10s gap
     # instead of the microseconds two back-to-back scans really take.
     first.monotonic -= 10.0
@@ -519,7 +568,7 @@ def test_cpu_and_runq_percentages_are_deltas_between_two_scans(tmp_path: Path) -
         utime=table.clk_tck * 5,
         runq_ns=2_000_000_000,
     )
-    second = table.scan(first)
+    second = table.scan(first, monotonic=SCAN_MONOTONIC)
 
     assert second.nodes[CHAT].cpu_pct == pytest.approx(50.0, abs=1.0)
     assert second.nodes[CHAT].runq_wait_pct == pytest.approx(20.0, abs=1.0)
@@ -556,7 +605,7 @@ def test_gil_hint_fires_on_a_pinned_python_process_with_futex_waiters(
     table.add(
         CHAT, GATEWAY, cmdline=argv, env=dict(MARKER), thread_states=states, thread_wchans=wchans
     )
-    first = table.scan()
+    first = table.scan(monotonic=SCAN_MONOTONIC)
     first.monotonic -= 10.0
     table.add(
         CHAT,
@@ -567,7 +616,7 @@ def test_gil_hint_fires_on_a_pinned_python_process_with_futex_waiters(
         thread_wchans=wchans,
         utime=table.clk_tck * 9,
     )
-    second = table.scan(first)
+    second = table.scan(first, monotonic=SCAN_MONOTONIC)
 
     node = second.nodes[CHAT]
     assert node.threads.futex_wait == 2
@@ -588,7 +637,7 @@ def test_gil_hint_stays_off_without_futex_waiters(tmp_path: Path) -> None:
     table.add(
         CHAT, GATEWAY, cmdline=argv, env=dict(MARKER), thread_states=states, thread_wchans=wchans
     )
-    first = table.scan()
+    first = table.scan(monotonic=SCAN_MONOTONIC)
     first.monotonic -= 10.0
     table.add(
         CHAT,
@@ -599,7 +648,7 @@ def test_gil_hint_stays_off_without_futex_waiters(tmp_path: Path) -> None:
         thread_wchans=wchans,
         utime=table.clk_tck * 9,
     )
-    second = table.scan(first)
+    second = table.scan(first, monotonic=SCAN_MONOTONIC)
 
     assert second.nodes[CHAT].cpu_pct == pytest.approx(90.0, abs=1.0)
     assert second.nodes[CHAT].gil_saturated_hint is False
@@ -700,7 +749,7 @@ def test_an_unchanged_process_still_gets_its_rate(tmp_path: Path) -> None:
     table = FakeProcTable(tmp_path / "proc")
     table.add(GATEWAY, OUTSIDER, cmdline=GATEWAY_ARGV, env=dict(MARKER))
     table.add(CHAT, GATEWAY, cmdline=CHAT_ARGV, env=dict(MARKER), utime=0, age_secs=500.0)
-    first = table.scan()
+    first = table.scan(monotonic=SCAN_MONOTONIC)
     first.monotonic -= 10.0
     table.add(
         CHAT,
@@ -710,7 +759,7 @@ def test_an_unchanged_process_still_gets_its_rate(tmp_path: Path) -> None:
         utime=table.clk_tck * 5,
         age_secs=500.0,
     )
-    second = table.scan(first)
+    second = table.scan(first, monotonic=SCAN_MONOTONIC)
     assert second.nodes[CHAT].cpu_pct == pytest.approx(50.0, abs=1.0)
     assert not any("pid recycled" in n for n in second.degraded_report())
 
@@ -1037,7 +1086,7 @@ def test_a_second_read_carries_real_cpu_and_runq_rates(tmp_path: Path) -> None:
     table.add(CHAT, GATEWAY, cmdline=CHAT_ARGV, env=dict(MARKER), utime=0, runq_ns=0)
 
     baseline = procs.RateBaseline()
-    first = table.scan_rated(baseline)
+    first = table.scan_rated(baseline, monotonic=SCAN_MONOTONIC)
     assert first.nodes[CHAT].cpu_pct is None
     _age_baseline(baseline, 10.0)
 
@@ -1050,7 +1099,7 @@ def test_a_second_read_carries_real_cpu_and_runq_rates(tmp_path: Path) -> None:
         utime=table.clk_tck * 5,
         runq_ns=2_000_000_000,
     )
-    second = table.scan_rated(baseline)
+    second = table.scan_rated(baseline, monotonic=SCAN_MONOTONIC)
 
     assert second.nodes[CHAT].cpu_pct == pytest.approx(50.0, abs=1.0)
     assert second.nodes[CHAT].runq_wait_pct == pytest.approx(20.0, abs=1.0)
@@ -1191,7 +1240,7 @@ def test_the_gil_hint_can_fire_through_the_read_path(tmp_path: Path) -> None:
         CHAT, GATEWAY, cmdline=argv, env=dict(MARKER), thread_states=states, thread_wchans=wchans
     )
     baseline = procs.RateBaseline()
-    first = table.scan_rated(baseline)
+    first = table.scan_rated(baseline, monotonic=SCAN_MONOTONIC)
     assert first.nodes[CHAT].gil_saturated_hint is False, "no rate, so no hint"
     _age_baseline(baseline, 10.0)
 
@@ -1204,7 +1253,7 @@ def test_the_gil_hint_can_fire_through_the_read_path(tmp_path: Path) -> None:
         thread_wchans=wchans,
         utime=table.clk_tck * 9,
     )
-    second = table.scan_rated(baseline)
+    second = table.scan_rated(baseline, monotonic=SCAN_MONOTONIC)
 
     node = second.nodes[CHAT]
     assert node.cpu_pct == pytest.approx(90.0, abs=1.0)
