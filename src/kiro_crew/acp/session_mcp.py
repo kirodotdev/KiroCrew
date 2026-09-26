@@ -80,6 +80,8 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from kiro_crew import agent as _agent_mod
+from kiro_crew import mcp_provenance
+from kiro_crew.acp.mcp_session_report import sanitize_sink_text
 from kiro_crew.agent import (
     _mcp_registry_mode,
     agent_spec_path,
@@ -955,13 +957,392 @@ def _declared_launch(source: Mapping[str, Any]) -> tuple[str, list[str]]:
     return str(source.get("command", "") or ""), args
 
 
+# The keys a native declaration of a managed server may carry and still be
+# re-declared as a per-session element: the table the spec rebuild keeps on a
+# managed entry (``agent._MANAGED_MCP_ENTRY_KEYS`` -- ``command``, ``args``,
+# ``env``, ``type``, ``autoApprove``, ``timeout``, ``disabled``,
+# ``disabledTools``), read from there so the two cannot drift, minus the one key
+# in it that :func:`acp_server_element` does not carry: ``timeout``. The element
+# REPLACES the declaration it is named after (an injected server wins over a
+# same-named native one), so a ``timeout`` the user set there would run on the
+# default with nothing to say so; the declaration stays native and the element
+# is withheld, naming the key, the same way the KAS carriage leaves a ``timeout``
+# customization in the agent block where that field is honoured. Anything else
+# outside the table is a kiro-cli-only setting the element cannot express and is
+# withheld for the same reason (see :func:`native_mount_withholding`). A key in
+# the table is not by itself a restriction -- ``autoApprove`` narrows no tool
+# surface -- only the values the arms below read.
+_NATIVE_ELEMENT_KEYS: frozenset[str] = _agent_mod._MANAGED_MCP_ENTRY_KEYS - {"timeout"}
+
+# Kiro Crew's OWN bookkeeping on an entry: the provenance marker the global-file
+# sync stamps on an entry it authored, and the derived-field record the spec
+# rebuild writes. Neither is a setting kiro-cli reads -- unknown keys are dropped
+# at deserialization -- so neither restricts the server, and an element that
+# omits them expresses everything the declaration says. Judging them as "a key
+# the element cannot carry" would refuse the default agent for Crew's own stamp,
+# with a message telling the user to remove it.
+_NATIVE_INERT_KEYS = frozenset({mcp_provenance.MARKER_KEY, mcp_provenance.DERIVED_KEY})
+
+# How the three places a managed server is declared are named to a user. These
+# land in the message that refuses a projected search agent, so they name the
+# FILE someone would open, not the variable that holds it.
+NATIVE_SOURCE_SPEC = "the agent spec"
+NATIVE_SOURCE_GLOBAL = "the global MCP settings"
+NATIVE_SOURCE_PROJECT = "the project's MCP settings"
+
+# The dashboard's MCP tab is the one writer of ``disabledTools`` and ``disabled``
+# on Crew's own servers (``/api/mcp/toggle-tool`` and the server toggle, both
+# into the global settings), so it is the recovery the message points at first.
+_NATIVE_REMEDY_DASHBOARD = "in the dashboard's MCP tab"
+
+# How many disabled tools a refusal names before it counts the rest: the
+# message reaches a log line and an error dialog, and the list is user-authored.
+_NATIVE_NAMED_TOOLS = 8
+
+# How many characters of ONE user-authored value a refusal repeats -- a tool
+# name, a key, a transport, the ``repr`` of a value that is not what it should
+# be. The count bound above bounds how many names a message carries; this
+# bounds each of them, and the two together bound the message, which the
+# projection RETAINS per agent (``NativeSkillProjection.errors``) for the life
+# of the runtime while the file it came from is read up to the reader's 50 MB
+# ceiling. Tool names are identifiers of a few dozen characters; a value this
+# long is not one, and the message says so by cutting it.
+_NATIVE_NAMED_CHARS = 64
+
+# How many characters of a settings file's PATH a refusal repeats. The path is
+# the remedy -- it names the file the user opens -- so it is cut from the FRONT,
+# keeping the tail that locates the file under its project. A project path is
+# admitted, not typed, but its length is the filesystem's ceiling and not ours,
+# and the string is retained per agent for the life of the runtime.
+_NATIVE_NAMED_PATH_CHARS = 256
+
+# How many characters of ONE value the cleaner READS before the message repeats
+# its bounded head. The value comes out of a settings file -- the project's is
+# checked out with the repository -- and the message reaches the gateway's log,
+# so it goes through the package's one sink cleaner
+# (:func:`~kiro_crew.acp.mcp_session_report.sanitize_sink_text`: redact, drop
+# control characters, THEN cut), never raw: a newline or an escape sequence in
+# a tool name would otherwise write its own log line. The cleaner runs over
+# this window whole, so nothing the message repeats was cut before it was
+# redacted; and the window, not the file, is what a value costs, because the
+# redactors are regular expressions whose time grows faster than the text on
+# some shapes (measured: 100,000 digits, 10.8 s) and the reader admits 50 MB.
+_NATIVE_NAMED_WINDOW = 16 * _NATIVE_NAMED_CHARS
+
+
+def _named_path(path: Path) -> str:
+    """*path* as a message repeats it: its tail, within :data:`_NATIVE_NAMED_PATH_CHARS`.
+
+    Cleaned like every other value the message carries: the path is the session's
+    working directory as admitted, and a control character in it would reach the
+    same log line.
+    """
+    text = str(path)
+    text = sanitize_sink_text(text, len(text))
+    if len(text) <= _NATIVE_NAMED_PATH_CHARS:
+        return text
+    return "..." + text[-(_NATIVE_NAMED_PATH_CHARS - 3) :]
+
+
+class NativeSettingsSource(NamedTuple):
+    """One settings file kiro-cli enforces beside the agent spec.
+
+    ``servers`` is its ``mcpServers`` map, empty for an absent file -- only
+    absence means "no restrictions"; a file that cannot be read safely never
+    becomes a source (see :func:`native_settings_sources`).
+    """
+
+    label: str
+    path: Path
+    servers: Mapping[str, Any]
+
+    @property
+    def named(self) -> str:
+        """The source as a refusal names it: the label and the file, bounded."""
+        return f"{self.label} ({_named_path(self.path)})"
+
+
+class NativeSettingsUnreadable(ValueError):
+    """A settings file exists but could not be read safely.
+
+    Raised by :func:`native_settings_sources` in place of the reader's own
+    ``OSError``/``ValueError`` (kept as ``__cause__``) so a caller can name the
+    file it could not read. It IS a ``ValueError``, so a caller that catches the
+    reader's exceptions still catches this one.
+    """
+
+    def __init__(self, label: str, path: Path) -> None:
+        super().__init__(f"{label} ({_named_path(path)}) could not be read safely")
+        self.label = label
+        self.path = path
+
+    def explain(self, outcome: str) -> str:
+        """One sentence for a user: why every native element is withheld."""
+        return (
+            f"{self.label} ({_named_path(self.path)}) could not be read safely, so no Kiro Crew"
+            f" server can be mounted with this session's identity; repair or remove"
+            f" that file to restore {outcome}"
+        )
+
+
+def native_settings_sources(work_dir: str | Path | None) -> list[NativeSettingsSource]:
+    """The settings files kiro-cli enforces beside the agent spec, global first.
+
+    This is the source set that decides whether a managed server's native
+    declaration can be re-declared as a per-session element. Its one reader is
+    :func:`kiro_control_plane_servers`, which mounts the element or not at each
+    session start and hands its verdict on; the skill projection, which decides
+    whether an agent may depend on the element, judges the agent spec alone and
+    never reads these files, so no two readers can answer from different files
+    or from the same file at different moments. The global file is the one the
+    dashboard's tool toggle writes; the per-project file is read beside the
+    session's working directory, the same directory the projection is prepared
+    for and ``session/new`` receives as ``cwd``.
+
+    Raises :class:`NativeSettingsUnreadable` when a file exists but fails the
+    gated read; the caller then withholds EVERY element, because a restriction
+    it cannot read must stay authoritative. An absent file contributes nothing.
+    """
+    reads: list[tuple[str, Path, Any]] = [
+        (NATIVE_SOURCE_GLOBAL, _agent_mod._KIRO_MCP_JSON, lambda _p: _global_settings(strict=True))
+    ]
+    if work_dir:
+        project_path = Path(work_dir) / ".kiro" / "settings" / "mcp.json"
+        reads.append((NATIVE_SOURCE_PROJECT, project_path, _read_mcp_settings))
+    sources: list[NativeSettingsSource] = []
+    for label, path, read in reads:
+        try:
+            settings = read(path)
+        except (OSError, ValueError) as exc:
+            raise NativeSettingsUnreadable(label, path) from exc
+        declared = settings.get("mcpServers", {}) if isinstance(settings, dict) else {}
+        sources.append(
+            NativeSettingsSource(label, path, declared if isinstance(declared, dict) else {})
+        )
+    return sources
+
+
+def native_declarations(
+    name: str, spec_entry: Any, settings: Collection[NativeSettingsSource]
+) -> list[tuple[str, Any]]:
+    """Every declaration of *name* a session is subject to, as ``(source, entry)``.
+
+    The spec's own entry first, then each settings file that names the server,
+    in the order :func:`native_settings_sources` returns them. The entries are
+    returned as declared -- a settings file is hand-editable JSON, so one may not
+    even be an object -- and the caller decides what a malformed one means.
+    """
+    declarations: list[tuple[str, Any]] = [(NATIVE_SOURCE_SPEC, spec_entry)]
+    for source in settings:
+        if name in source.servers:
+            declarations.append((source.named, source.servers[name]))
+    return declarations
+
+
+class NativeMountWithholding(NamedTuple):
+    """Why a managed server's per-session element is withheld, named for a user.
+
+    ``source`` is the declaration that carries the restriction (one of the
+    ``NATIVE_SOURCE_*`` labels, with the file's path for a settings file),
+    ``restriction`` what it says, ``remedy`` what removes it. :meth:`explain`
+    renders the sentence both readers of the predicate hand on: the projection
+    as the reason a search agent was refused, the element writer as its log line.
+    """
+
+    server: str
+    source: str
+    restriction: str
+    remedy: str
+
+    def explain(self, outcome: str) -> str:
+        return (
+            f"{self.server} is withheld by {self.source}: {self.restriction};"
+            f" {self.remedy} to restore {outcome}"
+        )
+
+
+class NativeControlPlaneMount(NamedTuple):
+    """What ONE read of the sources yields for a session's identity-bound servers.
+
+    ``elements`` is the per-session ``mcpServers`` array
+    :func:`kiro_control_plane_servers` produced. ``withheld`` names, for each
+    identity-bound server the spec grants whose element it did NOT produce
+    because a declaration keeps the server native, that declaration's
+    :class:`NativeMountWithholding` -- or, when a settings file could not be read
+    safely, the :class:`NativeSettingsUnreadable` that withheld every element. A
+    server in neither was not granted, not declared, or already in the array
+    with the files allowing it. Both come from the one read of the settings
+    files the mount performs, so a caller that refuses a session on ``withheld``
+    refuses it for the reason the array was built on, never for what the files
+    say a moment later.
+    """
+
+    elements: list[dict[str, Any]]
+    withheld: dict[str, NativeMountWithholding | NativeSettingsUnreadable]
+
+
+def _named(value: Any) -> str:
+    """*value* as a message repeats it: at most :data:`_NATIVE_NAMED_CHARS` characters.
+
+    Every user-authored field a refusal interpolates goes through here, so the
+    bound is one bound and a field added later cannot miss it by being spelled
+    differently. The text is cleaned before it is cut -- the first
+    :data:`_NATIVE_NAMED_WINDOW` characters go through the sink cleaner whole, so
+    a credential is redacted before a cut could split it and a control character
+    never reaches the message -- and a cut value ends in ``...`` inside the bound,
+    never past it. A value the window did not hold whole is a cut value too.
+    """
+    text = value if isinstance(value, str) else repr(value)
+    window = text[:_NATIVE_NAMED_WINDOW]
+    clean = sanitize_sink_text(window, len(window))
+    if len(text) <= _NATIVE_NAMED_WINDOW and len(clean) <= _NATIVE_NAMED_CHARS:
+        return clean
+    return clean[: _NATIVE_NAMED_CHARS - 3] + "..."
+
+
+def _named_some(values: list[Any]) -> str:
+    """The first :data:`_NATIVE_NAMED_TOOLS` of *values*, each bounded, then a count."""
+    named = ", ".join(_named(value) for value in values[:_NATIVE_NAMED_TOOLS])
+    if len(values) > _NATIVE_NAMED_TOOLS:
+        named += f" and {len(values) - _NATIVE_NAMED_TOOLS} more"
+    return named
+
+
+def _named_tools(value: Any) -> str:
+    """Render a ``disabledTools`` value for a message, bounded and typed."""
+    if not isinstance(value, list) or not all(isinstance(tool, str) for tool in value):
+        return f"is {_named(repr(value))}, not a list of tool names"
+    return f"lists {_named_some(value)}"
+
+
+def _native_restriction(
+    declared: Any, *, dashboard_writes: bool = False, spec_declaration: bool = False
+) -> tuple[str, str] | None:
+    """``(restriction, remedy)`` when one declaration keeps its server native.
+
+    The order is the order the questions are cheapest to answer and matters only
+    for which reason a declaration with several is named for. The two flags say
+    which declaration this is, because two answers depend on it. ``dashboard_writes``:
+    the declaration lives in the file the dashboard's MCP tab writes -- the global
+    settings -- so a mute or a ``disabledTools`` there is offered the tab as the
+    way back; a spec or project entry is not, since following that remedy would
+    leave the restriction where it is and refuse the next session again.
+    ``spec_declaration``: this is the agent spec's own managed entry, the one
+    place the spec rebuild stamps and un-stamps the ``registry`` marker, so the
+    marker is Crew's own there and restricts nothing.
+    """
+    if not isinstance(declared, dict):
+        return ("its entry is not a server object", "declare it as an object there")
+    extra = sorted(str(key) for key in set(declared) - _NATIVE_ELEMENT_KEYS - _NATIVE_INERT_KEYS)
+    if extra:
+        return (
+            f"its entry carries {_named_some(extra)}, which a per-session element cannot"
+            " express",
+            "remove that setting from the entry there",
+        )
+    transport = declared.get("type", "stdio")
+    # ``registry`` on the SPEC's managed entry is Crew's OWN marker, not a
+    # transport a user chose: the spec rebuild stamps it there on every managed
+    # entry while ``agent.mcp_registry_mode`` is on and removes it when the mode
+    # is off (``_enforce_managed_mcp_ownership``). The mount answers registry mode
+    # before it reaches this predicate, so the value restricts nothing on the
+    # spec; reading it as "not stdio" would refuse the default agent on every
+    # enterprise-governed install and tell the operator to delete a marker the
+    # next rebuild re-stamps. In a settings file the same value is a declaration
+    # a user or an admin wrote -- no Crew writer puts it there -- and outside
+    # registry mode kiro-cli DROPS a marked entry, so mounting the element for it
+    # would launch a server kiro-cli refuses: the declaration stays native.
+    transports = ("stdio", _KIRO_REGISTRY_TYPE) if spec_declaration else ("stdio",)
+    if transport not in transports:
+        return (
+            f"its type is {_named(repr(transport))}, not stdio",
+            "declare it as a stdio server there",
+        )
+    if mcp_entry_is_muted(declared):
+        return (
+            "it is disabled",
+            _remedy("re-enable the server", "set disabled to false there", tab=dashboard_writes),
+        )
+    disabled_tools = declared.get("disabledTools", [])
+    if disabled_tools != []:
+        return (
+            f"its disabledTools {_named_tools(disabled_tools)}",
+            _remedy(
+                "re-enable those tools",
+                "remove the disabledTools entry there",
+                tab=dashboard_writes,
+            ),
+        )
+    return None
+
+
+def _remedy(action: str, edit: str, *, tab: bool) -> str:
+    """The way back, one grammatical sentence whichever file holds the restriction.
+
+    Where the dashboard's MCP tab writes the file, the tab is offered first and the
+    hand edit is the alternative, joined by the ``or`` that two options need.
+    Where it does not, the edit stands alone: *action* would only restate what the
+    edit does, and a connective belongs to the arm that has two clauses to join.
+    """
+    if tab:
+        return f"{action} {_NATIVE_REMEDY_DASHBOARD}, or {edit}"
+    return edit
+
+
+def native_mount_withholding(
+    name: str, spec_entry: Any, settings: Collection[NativeSettingsSource]
+) -> NativeMountWithholding | None:
+    """Whether *name*'s per-session element must be withheld, and why.
+
+    THE predicate for "does a native restriction keep this managed server out of
+    the per-session ``mcpServers`` array": ``None`` means the element may be
+    mounted, anything else names the declaration and the restriction. A
+    per-session element cannot carry a kiro-cli-only setting -- a mute, a
+    ``disabledTools`` list, a non-stdio transport, any key outside
+    :data:`_NATIVE_ELEMENT_KEYS` -- and dropping one would widen the session's
+    tool surface behind the user's back, so the declaration that carries it
+    stays native and the element is withheld. Crew's own marks on an entry are
+    not settings and restrict nothing: the ``registry`` transport value, the
+    provenance marker and the derived-field record (:data:`_NATIVE_INERT_KEYS`).
+    That is the same answer for every
+    declaration the session is subject to, the spec's and each settings file's
+    (:func:`native_declarations`).
+
+    Two readers ask this question and MUST reach the same answer for the same
+    declaration: :func:`kiro_control_plane_servers`, which mounts the element or
+    not and hands its verdict on (:class:`NativeControlPlaneMount`), and the
+    skill projection, which decides whether an agent may rely on the element
+    being there. They split the sources by what each one is. The projection
+    judges the agent spec's entry at preparation, over no settings source, since
+    a restriction authored there is static for the view's life; the mount is the
+    ONE reader of the settings files, at each session start, and a runtime that
+    refuses a session for what a file says refuses it on the mount's verdict
+    rather than on a read of its own. A projection judging the spec by a rule
+    of its own would promise an element the mount then withholds, and
+    ``session/new`` would fail with an error pointing at the wrong file; so both
+    call this one function, and neither keeps a copy of the merge or of the
+    predicate.
+    """
+    dashboard_writes = {s.named for s in settings if s.label == NATIVE_SOURCE_GLOBAL}
+    for source, declared in native_declarations(name, spec_entry, settings):
+        verdict = _native_restriction(
+            declared,
+            dashboard_writes=source in dashboard_writes,
+            spec_declaration=source == NATIVE_SOURCE_SPEC,
+        )
+        if verdict is not None:
+            restriction, remedy = verdict
+            return NativeMountWithholding(name, source, restriction, remedy)
+    return None
+
+
 def kiro_control_plane_servers(
     agent: str | None,
     *,
     work_dir: str | Path | None,
     existing_names: Collection[str] = (),
     spec_override: dict[str, Any] | None = None,
-) -> list[dict[str, Any]]:
+) -> NativeControlPlaneMount:
     """Carry ordinary session identity without widening Kiro's native tool surface.
 
     Only an existing managed stdio declaration can be overridden. Native-only
@@ -980,44 +1361,43 @@ def kiro_control_plane_servers(
     the same form ``mcp_gateway.gatewayd`` reads: it answers for a granted opt-in
     server where the writers' emission question would refuse to mint one, and
     still yields ``None`` behind a closed ``spec_gate``.
+
+    Returns the array AND the verdicts it withheld on
+    (:class:`NativeControlPlaneMount`), both from this call's one read of the
+    settings files. The verdict is reached before the array is consulted: a name
+    a broker stub already carries gets no element either way, but the
+    restriction a declaration puts on it is what the session-start guard has to
+    know -- a stub carries a kiro-cli-only restriction no better than the
+    element does -- and it has to come from this read. A second read for it
+    would be the window in which a toggle undone in between answers ``None``
+    and the session falls back to a guard that names the wrong file.
     """
     if not agent or _registry_mode():
-        return []
+        return NativeControlPlaneMount([], {})
     spec = spec_override if spec_override is not None else _agent_spec_for(agent, work_dir)
     if not isinstance(spec, dict) or not isinstance(spec.get("mcpServers"), dict):
-        return []
+        return NativeControlPlaneMount([], {})
     allow = _tools_allowlist(spec)
     try:
-        settings = [_global_settings(strict=True)]
-        if work_dir:
-            settings.append(_read_mcp_settings(Path(work_dir) / ".kiro" / "settings" / "mcp.json"))
-    except (OSError, ValueError):
-        logger.debug("session MCP: withholding Kiro overrides because settings are unreadable")
-        return []
-    supported = {"command", "args", "env", "type", "autoApprove", "disabled", "disabledTools"}
-    out = []
+        settings = native_settings_sources(work_dir)
+    except NativeSettingsUnreadable as exc:
+        logger.debug("session MCP: withholding Kiro overrides: %s", exc)
+        return NativeControlPlaneMount([], {name: exc for name in IDENTITY_BOUND_SERVERS})
+    out: list[dict[str, Any]] = []
+    withheld_by_name: dict[str, NativeMountWithholding | NativeSettingsUnreadable] = {}
     for name in IDENTITY_BOUND_SERVERS:
-        if name in existing_names or not allow.grants(name):
+        if not allow.grants(name):
             continue
         entry = spec["mcpServers"].get(name)
         managed = managed_mcp_spec_entry(name, include_opt_in=True)
         if not isinstance(entry, dict) or not isinstance(managed, dict):
             continue
-        sources = [entry]
-        for settings_source in settings:
-            declared = (
-                settings_source.get("mcpServers", {}) if isinstance(settings_source, dict) else {}
-            )
-            if isinstance(declared, dict) and name in declared:
-                sources.append(declared[name])
-        if any(
-            not isinstance(source, dict)
-            or set(source) - supported
-            or source.get("type", "stdio") != "stdio"
-            or mcp_entry_is_muted(source)
-            or source.get("disabledTools", []) != []
-            for source in sources
-        ):
+        withheld = native_mount_withholding(name, entry, settings)
+        if withheld is not None:
+            logger.debug("session MCP: %s", withheld.explain("its per-session element"))
+            withheld_by_name[name] = withheld
+            continue
+        if name in existing_names:
             continue
         # The launch is the managed source's, never the spec's. A hand-authored
         # command for a reserved name cannot be right across users or upgrades
@@ -1037,7 +1417,7 @@ def kiro_control_plane_servers(
         # ``session/new`` with a TypeError from inside a comprehension.
         declared = [
             _declared_launch(source)
-            for source in sources
+            for _source_label, source in native_declarations(name, entry, settings)
             if isinstance(source, dict) and ("command" in source or "args" in source)
         ]
         managed_launch = _declared_launch(managed)
@@ -1058,4 +1438,4 @@ def kiro_control_plane_servers(
         element = acp_server_element(name, owned)
         if element is not None:
             out.append(element)
-    return out
+    return NativeControlPlaneMount(out, withheld_by_name)

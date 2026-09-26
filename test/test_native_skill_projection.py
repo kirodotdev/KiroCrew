@@ -97,6 +97,9 @@ def native_tree(tmp_path, monkeypatch):
         "list_agents",
         lambda **kw: [SimpleNamespace(name="custom", filename="custom.json", scope="global")],
     )
+    # The projection reads the settings files the control-plane mount reads;
+    # point the global one into the temp tree so no test reads this host's own.
+    monkeypatch.setattr("kiro_crew.agent._KIRO_MCP_JSON", home / "settings" / "mcp.json")
     return home, agents, project
 
 

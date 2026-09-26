@@ -2476,7 +2476,19 @@ class AcpRuntime:
                 if self._native_skill_projection is not None:
                     argv = list(argv)
                     agent_position = argv.index("--agent") + 1
-                    argv[agent_position] = self._native_skill_projection.agent(self._agent)
+                    try:
+                        argv[agent_position] = self._native_skill_projection.agent(self._agent)
+                    except ValueError as exc:
+                        # The projection refused this agent's view -- a
+                        # ``kirocrew-core`` restriction authored in its spec, a
+                        # disabled ``skill_search`` -- and says so in a sentence
+                        # that names the spec and the remedy. That sentence is
+                        # the user's, so it travels as the error the startup
+                        # paths translate (``providers/acp.py`` handles
+                        # ``AcpRuntimeError`` around ``spawn()``); a bare
+                        # ``ValueError`` would leave ``spawn()`` as an internal
+                        # failure with the actionable text unread.
+                        raise AcpRuntimeError(str(exc)) from exc
         except _KiroExecutableTrustError as exc:
             raise AcpRuntimeError(str(exc)) from exc
         # The handshake declaration is the harness's constant. A host that takes
@@ -5918,23 +5930,46 @@ class AcpRuntime:
                 if projection is not None
                 else {}
             )
-            native = await asyncio.to_thread(
+            mount = await asyncio.to_thread(
                 kiro_control_plane_servers,
                 agent,
                 work_dir=work_dir,
                 existing_names={str(entry.get("name")) for entry in entries},
                 **projection_kwargs,
             )
+            name = agent or self._agent
             if (
                 projection is not None
-                and (agent or self._agent) in projection.search_agents
-                and not any(entry.get("name") == "kirocrew-core" for entry in [*entries, *native])
+                and name in projection.search_agents
+                and not any(entry.get("name") == "kirocrew-core" for entry in mount.elements)
             ):
-                raise AcpRuntimeError(
-                    "Cannot bind skill_search to this session without losing native MCP restrictions. "
-                    "Check the agent's kirocrew-core server configuration."
-                )
-            return [*entries, *native]
+                # The mount did not produce the element itself: a settings file
+                # withheld it, or a broker stub already in ``entries`` pre-empted
+                # it (the mount emits no element for a name the array carries),
+                # or nothing grants it. The mount judged the files as they are
+                # now -- the projection judged the spec at spawn; the dashboard's
+                # tool toggle writes the global file while a runtime is warm, and
+                # a stub written from an earlier overlay carries the restriction
+                # no better than the element does -- and its verdict comes with
+                # the array, from the same read. Asking the files again here
+                # would open the window in which a toggle undone in between
+                # answers "allowed" and this session falls to the generic guard
+                # below, naming the wrong file. A withheld element refuses THIS
+                # session with the sentence that names the file and the way
+                # back; the spawn and every other agent's sessions stand.
+                # Refusing is the only honest answer: the view already dropped
+                # this agent's skill resources on the element's promise, and
+                # without the element kirocrew-core mounts natively, carries no
+                # identity and answers identity_unattested to every skill_search.
+                withheld = mount.withheld.get("kirocrew-core")
+                if withheld is not None:
+                    raise AcpRuntimeError(f"Agent {name!r}: {withheld.explain('skill search')}")
+                if not any(entry.get("name") == "kirocrew-core" for entry in entries):
+                    raise AcpRuntimeError(
+                        "Cannot bind skill_search to this session without losing native MCP "
+                        "restrictions. Check the agent's kirocrew-core server configuration."
+                    )
+            return [*entries, *mount.elements]
         return entries
 
     async def create_session(

@@ -8964,8 +8964,14 @@ class AcpClient:
                 raise AcpError(overlap)
             from kiro_crew.acp.skill_projection import prepare_native_skill_projection
 
+            # One process, one session: the identity rides the process environment
+            # (``_apply_session_identity_env``) and kiro-cli mounts ``kirocrew-core``
+            # natively from the view, restrictions included, so no per-session
+            # element replaces the declaration here -- the shared runtime's
+            # element-withholding question does not arise, and a ``disabledTools``
+            # naming other tools must not refuse this agent's view.
             self._native_skill_projection = await asyncio.to_thread(
-                prepare_native_skill_projection, self._work_dir
+                prepare_native_skill_projection, self._work_dir, per_session_element=False
             )
             argv = [
                 kiro_bin,

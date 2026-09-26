@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import pinned_fs, platform_compat
+from kiro_crew.acp import session_mcp
 from kiro_crew.agent_discovery import SCOPE_PROJECT, _read_agent_spec, list_agents
 from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
 from kiro_crew.atomic_write import atomic_write
@@ -1299,12 +1300,26 @@ def _is_current_publication(
 
 
 def prepare_native_skill_projection(
-    work_dir: Path, *, enabled: bool | None = None
+    work_dir: Path, *, enabled: bool | None = None, per_session_element: bool = True
 ) -> NativeSkillProjection | None:
     """Prepare native views after spec freshness admission, before spawning.
 
     Uses the existing workspace CLI settings channel. No home, identity store,
     session store or authored agent file is relocated or rewritten.
+
+    ``per_session_element`` says how ``kirocrew-core`` reaches a search agent's
+    sessions with this session's identity. ``True`` is the shared runtime: the
+    mount re-declares the server as a per-session ``mcpServers`` element
+    (:func:`session_mcp.kiro_control_plane_servers`) that REPLACES the spec's
+    declaration, so a declaration the element cannot carry -- a ``disabledTools``
+    list, a ``timeout``, a transport that is not stdio -- withholds the element,
+    the view would stand on nothing, and the spec's part of that verdict refuses
+    the view here. ``False`` is the direct client: one kiro-cli process for one
+    session, the identity on the process environment, and the declaration
+    mounted natively from the view with every restriction the view copies
+    honoured by kiro-cli itself. No element replaces anything there, so a
+    restriction on OTHER tools -- ``disabledTools: ["learn_add"]`` -- refuses
+    nothing; only ``skill_search`` itself disabled or excluded still does.
     """
     directory = kiro_agents_dir()
     crew_home_id = data_home().absolute().as_posix()
@@ -1323,6 +1338,18 @@ def prepare_native_skill_projection(
             )
         return None
     global_settings = _settings(kiro_home() / "settings" / "cli.json")
+    # Whether kirocrew-core's per-session element can be mounted is decided
+    # from the agent spec HERE and from the settings files BY THE MOUNT at each
+    # session start (:func:`session_mcp.kiro_control_plane_servers`, whose
+    # verdict the runtime refuses the session on), through one predicate shared
+    # with the mount. The split follows what each source is: the spec is this
+    # preparation's input and a restriction authored there is static for the
+    # view's life, so it refuses the view now with the reason; the settings files
+    # are written while a runtime is warm (the dashboard's tool toggle) and are
+    # shared by every agent of the process, so a restriction there refuses the
+    # search agent's SESSIONS, one at a time, naming the file -- never the spawn,
+    # which every other agent's sessions ride on. This module reads no settings
+    # file: the mount is their one reader.
     aliases: dict[str, str] = {}
     specs: dict[str, dict[str, Any]] = {}
     sources: dict[str, str] = {}
@@ -1385,6 +1412,39 @@ def prepare_native_skill_projection(
             if disabled or "skill_search" in disabled_tools:
                 errors[agent.name] = "skill_search is disabled; bounded skill discovery requires it"
                 continue
+            # The verdict the mount will reach for the spec's part, reached here
+            # first, over the declaration AS AUTHORED. The managed replacement
+            # built below carries only the keys a per-session element can
+            # express, so judging it would let a ``type`` or a key the element
+            # cannot carry vanish unjudged and the control plane mount despite the
+            # restriction; the mount's own arms read the declaration itself, and
+            # so does this. A restriction authored in the spec refuses the view:
+            # the view would drop this agent's skill resources on the promise of
+            # an element the mount can never mount for it. The settings files are
+            # deliberately NOT read here -- see the note above the loop -- so a
+            # spec that is clean gets its view whatever the files say today, and
+            # the mount asks the full question over the files at every session
+            # start. A broker stub ``session/new`` would mount ahead of the
+            # element is not a source either: a stub element carries a
+            # kiro-cli-only restriction no better than the native element does,
+            # and its overlay is written from the spec and the global file alone,
+            # so the sources decide, and only the sources.
+            #
+            # The question exists only where an element will REPLACE the
+            # declaration. The direct client mounts none: kiro-cli loads the
+            # view's entry itself -- the managed launch plus the restrictions
+            # copied onto it below -- and honours them natively, with the
+            # session's identity on the process environment. There a
+            # ``disabledTools`` naming other tools, or a ``timeout``, restricts
+            # exactly what its author meant and leaves ``skill_search`` standing
+            # (the checks above already refused the view if it did not), so
+            # withholding the view for it would refuse a supported customization
+            # and abort the spawn over a restriction that reaches the session.
+            if per_session_element:
+                withheld = session_mcp.native_mount_withholding("kirocrew-core", original_core, [])
+                if withheld is not None:
+                    errors[agent.name] = withheld.explain("skill search")
+                    continue
             entry = managed_mcp_spec_entry("kirocrew-core")
             if entry is None:
                 errors[agent.name] = "Crew's managed skill search server is unavailable"
