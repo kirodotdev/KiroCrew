@@ -71,6 +71,18 @@ dev = [
     # repository, so there was no existing one to reuse; pip-audit is PyPA's own
     # and is the tool the removed step used, which keeps the choice boring.
     "pip-audit==2.10.1",
+    # Transitive via black and pip-audit, pinned here because it is a pytest11
+    # plugin publisher. platformdirs 4.12.0 declares an entry point at
+    # platformdirs.pytest_plugin; pytest imports every pytest11 entry point at
+    # startup, and on the Windows runners that import raises, which is fatal
+    # before collection. setup.cfg refuses the plugin for pytest runs that read
+    # this repository's config, but the suite also spawns NESTED pytest
+    # processes that deliberately suppress that config -- stripping
+    # PYTEST_ADDOPTS or passing `-o addopts=` is what makes them able to test
+    # pytest behaviour in isolation -- so no config or environment lever
+    # reaches them. Constraining the resolved version is the one lever that
+    # does, because no process in the environment can then see the entry point.
+    "platformdirs<4.12",
 ]
 
 [tool.black]
