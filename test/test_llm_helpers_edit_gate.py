@@ -471,3 +471,58 @@ class TestOnlyEditKindWithParamsIsRerouted:
         approved, _p, rows = await _resolve(ev)
         assert approved is False
         assert "AWS credentials from environment" in _error(rows)
+
+
+def _delete_event(target: str, *, trusted: bool = True) -> LLMEvent:
+    """A permission event as the ACP client emits one for KAS's ``delete_file``:
+    kind ``delete``, the target under ``targetFile``, no document body."""
+    raw = {"targetFile": target, "explanation": "tidy up"}
+    return LLMEvent(
+        kind=EVENT_PERMISSION_REQUEST,
+        title="Delete File",
+        request_id="r1",
+        tool_kind="delete",
+        tool_input=json.dumps(raw),
+        raw_tool_params=raw,
+        raw_params_trusted=trusted,
+        shell_classified=trusted,
+        is_shell=False,
+    )
+
+
+class TestADeleteIsGatedOnItsTarget:
+    """``delete`` is a write-plane kind (``tool_paths.WRITE_PLANE_KINDS``): a
+    trusted delete gains the same target gate an edit has, and keeps its scan
+    (it carries no document body to suppress)."""
+
+    @pytest.mark.asyncio
+    async def test_deleting_a_write_protected_config_is_refused(self) -> None:
+        approved, provider, rows = await _resolve(_delete_event("~/.kiro/crew/config.json"))
+        assert approved is False
+        assert provider.rejected == ["r1"]
+        assert "config.json" in _error(rows)
+
+    @pytest.mark.asyncio
+    async def test_deleting_an_ordinary_file_is_allowed(self) -> None:
+        approved, _provider, rows = await _resolve(_delete_event("/tmp/proj/old-notes.md"))
+        assert approved is True, _error(rows)
+
+    @pytest.mark.asyncio
+    async def test_an_untrusted_delete_frame_is_not_target_gated_by_its_own_word(self) -> None:
+        """Provenance comes from the client's caches, not the payload: a frame
+        that missed them keeps the document scan as its fail-closed fallback and
+        does not enter the target gate on a kind it asserted itself."""
+        with patch.object(llm_helpers, "_edit_target_denial", side_effect=AssertionError("gated")):
+            approved, _provider, _rows = await _resolve(
+                _delete_event("/tmp/proj/old-notes.md", trusted=False)
+            )
+        assert approved is True
+
+    @pytest.mark.asyncio
+    async def test_the_scan_still_runs_on_a_delete(self) -> None:
+        """Unlike an edit, a delete has no document body, so nothing is suppressed."""
+        with patch.object(
+            llm_helpers, "_first_tool_input_denial", side_effect=AssertionError("scanned")
+        ):
+            with pytest.raises(AssertionError, match="scanned"):
+                await _resolve(_delete_event("/tmp/proj/old-notes.md"))

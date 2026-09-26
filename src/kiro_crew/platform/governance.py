@@ -816,6 +816,16 @@ class Decision:
     # record names the wrong subject. Empty when the caller asked about one item
     # and already knows it.
     item: str = ""
+    # Whether a refusal came from a deny-mode pattern MATCHING the item (Rule 1
+    # deny), as opposed to an allow-mode set merely not listing it or a disabled
+    # scope. Set where the match happens (``ScopedRuleset.permits``) and carried
+    # through every composition (``_AndRuleset.permits``, ``resolve``) unchanged,
+    # because a fold relabels ``rule`` to ``rule2-intersect`` and a reader that
+    # must tell "denied" from "not allowed" -- ``gate_decision``'s alias groups,
+    # where an explicit deny on one spelling of an identity binds while an
+    # allow-mode miss on one spelling does not -- cannot recover it from the
+    # label. Never set on a permit.
+    explicit_deny: bool = False
 
 
 # A control that can answer "is this item permitted?" for ONE level.  Both
@@ -900,7 +910,12 @@ class ScopedRuleset:
         # deny mode: permitted unless explicitly denied.
         hit = next((pat for pat in self.deny if match(item, pat)), None)
         if hit is not None:
-            return Decision(False, f"{item!r} matches deny pattern {hit!r}", rule="rule1-deny")
+            return Decision(
+                False,
+                f"{item!r} matches deny pattern {hit!r}",
+                rule="rule1-deny",
+                explicit_deny=True,
+            )
         return Decision(True, f"{item!r} not denied", rule="rule1-deny")
 
     def declared_patterns(self) -> Tuple[str, ...]:
@@ -966,14 +981,40 @@ class _AndRuleset:
     def permits(self, item: str) -> Decision:
         o = self.outer.permits(item)
         if not o.permitted:
-            return Decision(False, f"policy: {o.reason}", rule="rule2-intersect", layer="policy")
+            # The outer refusal is the answer, but its PROVENANCE must not hide
+            # the inner half's: an authority's allow-mode miss short-circuited
+            # here would read as "not listed" even when the subordinate tier
+            # denies the item outright, and a reader that must tell "denied"
+            # from "not allowed" (``gate_decision``'s alias groups) would admit
+            # the identity through another spelling. So the inner half is still
+            # asked for its deny, and either half's explicit deny is carried.
+            i = self.inner.permits(item)
+            return Decision(
+                False,
+                f"policy: {o.reason}",
+                rule="rule2-intersect",
+                layer="policy",
+                explicit_deny=o.explicit_deny or (not i.permitted and i.explicit_deny),
+            )
         i = self.inner.permits(item)
         if not i.permitted:
             if isinstance(self.inner, _AndRuleset):
                 # A nested pair is another policy tier, not the profile — its
                 # decision already carries the right prefix and layer.
-                return Decision(False, i.reason, rule="rule2-intersect", layer=i.layer)
-            return Decision(False, f"profile: {i.reason}", rule="rule2-intersect", layer="profile")
+                return Decision(
+                    False,
+                    i.reason,
+                    rule="rule2-intersect",
+                    layer=i.layer,
+                    explicit_deny=i.explicit_deny,
+                )
+            return Decision(
+                False,
+                f"profile: {i.reason}",
+                rule="rule2-intersect",
+                layer="profile",
+                explicit_deny=i.explicit_deny,
+            )
         return Decision(True, "permitted by both levels", rule="rule2-intersect", layer="both")
 
     def declared_patterns(self) -> Tuple[str, ...]:
@@ -3911,16 +3952,29 @@ def resolve(
     """
     policy_control = ceiling.get(scope) if ceiling is not None else None
     policy_dec = _query_level(policy_control, scope, item)
+    profile_control = profile.get(scope) if profile is not None else None
     if not policy_dec.permitted:
+        # Same provenance rule as ``_AndRuleset.permits``: a policy allow-mode
+        # miss is the answer, but a profile deny beneath it still marks the
+        # refusal as an explicit deny.
+        _below = _query_level(profile_control, scope, item)
         return Decision(
-            False, f"policy denies: {policy_dec.reason}", rule=policy_dec.rule, layer="policy"
+            False,
+            f"policy denies: {policy_dec.reason}",
+            rule=policy_dec.rule,
+            layer="policy",
+            explicit_deny=policy_dec.explicit_deny
+            or (not _below.permitted and _below.explicit_deny),
         )
 
-    profile_control = profile.get(scope) if profile is not None else None
     profile_dec = _query_level(profile_control, scope, item)
     if not profile_dec.permitted:
         return Decision(
-            False, f"profile denies: {profile_dec.reason}", rule=profile_dec.rule, layer="profile"
+            False,
+            f"profile denies: {profile_dec.reason}",
+            rule=profile_dec.rule,
+            layer="profile",
+            explicit_deny=profile_dec.explicit_deny,
         )
 
     layer = (
@@ -3945,6 +3999,8 @@ def gate_decision(
     diff_path: str = "",
     mcp_ref: str = "",
     extra_titles: Tuple[str, ...] = (),
+    alias_groups: Tuple[Tuple[str, ...], ...] = (),
+    deny_aliases: Tuple[str, ...] = (),
 ) -> Decision:
     """Resolve a PreToolUse gate title against the governance ceiling ∩ profile.
 
@@ -3976,8 +4032,30 @@ def gate_decision(
     re-resolves the active profile, so a hot reload between the two could answer
     each question from a different snapshot and permit a tool that both complete
     profiles deny. Empty entries are ignored.
+
+    ``alias_groups`` carries identities that have SEVERAL spellings for ONE tool
+    -- a KAS built-in's raw id beside the kiro-cli name a rule about it is
+    written under (``("str_replace", "fs_write")``). A group is one question:
+    it is DENIED if any spelling meets an explicit deny rule at either level (a
+    deny-mode ``tools.deny: ["str_replace"]`` still binds), and otherwise
+    PERMITTED when EACH governing level permits some spelling -- the OR is taken
+    within a level and the intersection across levels, so a ceiling granting
+    ``str_replace`` beneath a profile granting ``fs_write`` admits the one tool
+    both granted, while an allow-mode profile listing only ``fs_write`` admits
+    the call rather than also demanding the raw id no operator wrote. A group
+    member that is also the display title covers the title, so the title is not
+    asked a second time as a lone item the allow set would have to carry.
+
+    ``deny_aliases`` carries spellings whose rules may REFUSE the call but never
+    admit it -- a KAS ``delete_file`` reads under ``fs_write`` because an operator
+    who denied writes denied deletes, yet kiro-cli's ``fs_write`` cannot delete,
+    so an allow-mode rule naming ``fs_write`` must not become a deletion grant.
+    Each is asked for an explicit deny only; an allow-mode miss on it is not a
+    refusal, and the identity itself (in ``extra_titles`` or the title) still
+    has to be permitted on its own name.
     """
-    pairs = list(classify_tool_title(tool_title))
+    _grouped = {s for group in alias_groups for s in group if s}
+    pairs = list(classify_tool_title(tool_title)) if tool_title not in _grouped else []
     # Additional NON-model-authored titles the caller holds for the same call --
     # e.g. the trusted ``_meta.kiro.toolName`` beside an LLM-authored display
     # title. They are classified here, in ONE decision, rather than asked as
@@ -3997,8 +4075,20 @@ def gate_decision(
     # Order-preserving dedupe -- a caller whose title already equals its trusted
     # identity must not pay the same resolve twice.
     pairs = list(dict.fromkeys(pairs))
-    if not pairs:
+    if not pairs and not alias_groups and not deny_aliases:
         return Decision(True, "title not name-gate-governed", rule="default")
+    # Deny-only spellings first: an explicit deny written under the alias binds
+    # the identity, and nothing else about the alias is consulted -- an
+    # allow-mode set that does not list it is not a refusal, because the alias
+    # is not a grant surface for this identity. The identity's own name is still
+    # in ``pairs`` and has to be permitted there.
+    for alias in deny_aliases:
+        if not alias:
+            continue
+        for scope, item in dict.fromkeys(classify_tool_title(alias)):
+            decision = resolve(ceiling, profile, scope, item)
+            if not decision.permitted and decision.explicit_deny:
+                return replace(decision, item=item)
     # Deny if ANY governed scope the title/args map to denies it (the unprefixed
     # case maps to both commands+tools; an ungoverned scope permits, so this only
     # tightens).  Return the first denial for a precise audit reason.
@@ -4009,6 +4099,47 @@ def gate_decision(
             # query the caller cannot infer it, and an audit naming the prose
             # title instead of the trusted tool name is a misleading record.
             return replace(decision, item=item)
+    # One identity, several spellings. An explicit deny on any spelling is final
+    # -- read from ``explicit_deny``, which every fold carries through, never
+    # from the ``rule`` label, which a composed ruleset relabels
+    # ``rule2-intersect`` and would hide a subordinate tier's deny behind an
+    # authority's allow. Short of that, the group is judged PER LAYER: a layer
+    # permits the identity if it permits any spelling, and the identity is
+    # admitted when every layer does. Resolving each spelling through the
+    # intersection first would refuse a ceiling that grants ``str_replace``
+    # beneath a profile that grants ``fs_write`` -- each layer granted the one
+    # tool, in its own vocabulary -- so the OR is taken inside each layer and the
+    # intersection across them. Spellings are tried in order and a refusing
+    # layer's LAST refusal is the one reported, so an allow-mode miss is named
+    # in the vocabulary the operator writes rules in.
+    for group in alias_groups:
+        spellings = [s for s in group if s]
+        if not spellings:
+            continue
+        refusal: Optional[Decision] = None
+        for layer_ceiling, layer_profile in ((ceiling, None), (None, profile)):
+            if layer_ceiling is None and layer_profile is None:
+                continue
+            admitted = False
+            last_refusal: Optional[Decision] = None
+            for spelling in spellings:
+                spelling_ok = True
+                for scope, item in dict.fromkeys(classify_tool_title(spelling)):
+                    decision = resolve(layer_ceiling, layer_profile, scope, item)
+                    if decision.permitted:
+                        continue
+                    if decision.explicit_deny:
+                        return replace(decision, item=item)
+                    spelling_ok = False
+                    last_refusal = replace(decision, item=item)
+                if spelling_ok:
+                    admitted = True
+            # Every layer is walked before a refusal is answered, so an explicit
+            # deny in the second layer is reported over an allow-miss in the first.
+            if not admitted and last_refusal is not None and refusal is None:
+                refusal = last_refusal
+        if refusal is not None:
+            return refusal
     return Decision(True, "permitted by all mapped scopes", rule="rule2-intersect")
 
 

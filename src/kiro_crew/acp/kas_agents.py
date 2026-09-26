@@ -90,6 +90,10 @@ from kiro_crew.mcp_cleanup import (
     mcp_entry_is_registry_governed,
 )
 from kiro_crew.platform.governance import may_skip_gate_now
+from kiro_crew.platform.tool_names import (
+    expand_kiro_cli_tool_exclusions,
+    expand_kiro_cli_tool_names,
+)
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
 
@@ -321,11 +325,41 @@ def resolve_prompt(
     return text
 
 
+# The kiro-cli -> KAS tool-name reading lives in ``platform.tool_names`` (a
+# stdlib-only leaf) because the PreToolUse gate reads the SAME table in the other
+# direction: a spec mounted here in KAS ids must be governed under the kiro-cli
+# names an operator's rules are written in. Imported above and applied here.
+#
+# Why the projection needs it at all: Crew's specs are written in kiro-cli's
+# vocabulary (``defaults.json`` mounts ``fs_read``, ``fs_write``, ``grep``,
+# ``glob``), and KAS's allowlist matcher (``tools/tool-filter.ts``
+# ``matchesPattern``) compares an entry against a tool's exact id or one of its
+# tags with no translation -- its only alias is the ``execute_bash`` <->
+# ``execute_pwsh`` shell pair. On KAS ``fs_read``, ``grep`` and ``glob`` are not
+# tool ids at all (``fs_read`` is only a policy CAPABILITY name there,
+# ``policy/capabilities.ts``), so each such entry mounted nothing; ``fs_write``
+# is BOTH a registered id (the create/overwrite tool) and the capability name
+# ``str_replace`` / ``fs_append`` / ``delete_file`` are filed under, so it
+# mounted one tool of its family and none of the rest. A stock Crew spec
+# projected verbatim therefore reached the engine holding only the names that
+# happen to match on both (``execute_bash``, ``fs_write``, ``code``,
+# ``web_fetch``) plus its MCP refs: no way to read a file, list a directory,
+# search, or edit in place, and the agent shelled out for every read.
+#
+# The expansion ADDS the family beside the entry as written, never substitutes
+# it: a name that matches on both engines keeps working, a KAS-native name a
+# spec already carries is not duplicated, and a reader in either vocabulary
+# recognises the list. Applied to ``tools`` and ``excludedTools`` alike, so a
+# spec that withholds ``fs_read`` on kiro-cli withholds the same reads here.
+
+
 def _project_tools(spec: dict[str, Any], agent_id: str) -> str | list[str]:
     """Resolve the tool allowlist, failing closed when the spec is silent.
 
     ``"*"`` anywhere in the list is KAS's all-tools literal, which is a
-    different type from a list, so it cannot simply be passed through.
+    different type from a list, so it cannot simply be passed through. A list
+    is spelled out in KAS's own tool ids as well as the spec's
+    (:func:`expand_kiro_cli_tool_names`), because the engine translates nothing.
     """
     raw = spec.get("tools")
     if raw == "*":
@@ -334,7 +368,7 @@ def _project_tools(spec: dict[str, Any], agent_id: str) -> str | list[str]:
         entries = [t for t in raw if isinstance(t, str) and t]
         if "*" in entries:
             return "*"
-        return entries
+        return expand_kiro_cli_tool_names(entries)
     # Absent or malformed: KAS would resolve this to zero tools anyway. Emit that
     # explicitly and say so, rather than inferring an allowlist nobody wrote.
     logger.warning(
@@ -852,7 +886,11 @@ def to_client_custom_agent(
     if isinstance(excluded, list):
         entries = [t for t in excluded if isinstance(t, str) and t]
         if entries:
-            out["excludedTools"] = entries
+            # Same vocabulary gap as ``tools``, in the restricting direction, and
+            # with the restricting direction's polarity: a spec that excludes
+            # ``fs_read`` for kiro-cli must not leave ``read_file`` mounted here,
+            # and one that excludes ``fs_write`` must not leave ``delete_file``.
+            out["excludedTools"] = expand_kiro_cli_tool_exclusions(entries)
 
     welcome = spec_welcome_message(spec)
     if welcome:

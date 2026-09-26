@@ -168,6 +168,40 @@ class TestADiffBlockRoutesOntoTheWritePlane:
         assert is_edit_call("", "") is False
         assert is_edit_call("read", "") is False
 
+    def test_the_two_write_readings_differ_only_on_delete(self) -> None:
+        """``is_edit_call`` is the gates' write-plane routing and answers True
+        for a KAS ``delete``; ``is_workspace_edit_call`` is the ``tool.risk``
+        caution-badge carve-out's edit-only reading and does not -- a deletion
+        is not "easy to put back". Everywhere else the two agree."""
+        from kiro_crew.platform.tool_paths import (
+            WRITE_PLANE_KINDS,
+            is_edit_call,
+            is_workspace_edit_call,
+        )
+
+        assert is_edit_call("delete", "") is True
+        assert is_workspace_edit_call("delete", "") is False
+        for kind in ("", "read", "edit", "execute", "other"):
+            for diff_path in ("", _WRITE_ONLY):
+                assert is_edit_call(kind, diff_path) is is_workspace_edit_call(kind, diff_path), (
+                    kind,
+                    diff_path,
+                )
+        assert WRITE_PLANE_KINDS == frozenset({"edit", "delete"})
+
+    @pytest.mark.parametrize("bad_kind", [[], {}, 7, None, ["edit"], ("delete",)])
+    def test_a_non_string_kind_classifies_instead_of_raising(self, bad_kind) -> None:
+        """The ACP ``kind`` is an unvalidated frame value from the harness
+        subprocess. An unhashable one in a set-membership test would raise and
+        abort the turn; both readings answer it as "not on the plane by kind",
+        so only a diff block can route it."""
+        from kiro_crew.platform.tool_paths import is_edit_call, is_workspace_edit_call
+
+        assert is_edit_call(bad_kind, "") is False
+        assert is_edit_call(bad_kind, _WRITE_ONLY) is True
+        assert is_workspace_edit_call(bad_kind, "") is False
+        assert is_workspace_edit_call(bad_kind, _WRITE_ONLY) is True
+
     def test_governance_classifies_a_kindless_diff_block_call_as_a_write(self) -> None:
         from kiro_crew.platform.governance import classify_tool_args
 
@@ -456,3 +490,41 @@ class TestEveryEnforcingCallSiteThreadsTheDiffPath:
             "hook edit gate there judges edits params-only and denies benign "
             f"diff-only edits: {offenders}"
         )
+
+
+class TestADeleteIsOnTheWritePlane:
+    """KAS's ``delete_file`` declares the ACP ``delete`` kind and names its
+    target as ``targetFile``. A delete has the write plane's effect -- the file
+    is gone -- so it must reach the same write-protected-config tier an edit
+    does; before, the kind routed nowhere and ``delete_file {"targetFile":
+    "~/.kiro/crew/config.json"}`` skipped the always-on hard deny."""
+
+    def test_deleting_a_write_protected_config_is_denied(self) -> None:
+        decision = _call(
+            tool_kind="delete",
+            raw_params={"targetFile": _WRITE_ONLY, "explanation": "tidy"},
+        )
+        assert decision.action == TOOL_DENY
+        assert "config.json" in decision.reason
+
+    @pytest.mark.parametrize(
+        "protected",
+        ["~/.kiro/crew/cloud.json", "~/.kiro/crew/playwright-cli-config.json"],
+    )
+    def test_other_write_only_files_are_denied_to_a_delete_too(self, protected) -> None:
+        decision = _call(tool_kind="delete", raw_params={"targetFile": protected})
+        assert decision.action == TOOL_DENY
+
+    def test_deleting_an_ordinary_file_is_not_denied(self) -> None:
+        decision = _call(tool_kind="delete", raw_params={"targetFile": "/tmp/notes.md"})
+        assert decision.action != TOOL_DENY
+
+    def test_a_delete_naming_no_target_is_denied(self) -> None:
+        decision = _call(tool_kind="delete", raw_params={"explanation": "tidy"})
+        assert decision.action == TOOL_DENY
+        assert "no target path" in decision.reason
+
+    def test_the_read_allowance_is_untouched(self) -> None:
+        """Routing ``delete`` onto the write plane must not pull a read along."""
+        decision = _call(tool_kind="read", raw_params={"path": _WRITE_ONLY})
+        assert decision.action != TOOL_DENY

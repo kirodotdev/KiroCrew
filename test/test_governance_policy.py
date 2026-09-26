@@ -247,9 +247,7 @@ class TestCapabilityGate:
         # Default-ON siblings (memory_writes, browse, …) must not coerce
         # enabled: "false" through bool() and stay on.
         with pytest.raises(PlatformCompositionError, match="boolean"):
-            parse_profile(
-                {"name": "host", "capabilities": {"memory_writes": {"enabled": "false"}}}
-            )
+            parse_profile({"name": "host", "capabilities": {"memory_writes": {"enabled": "false"}}})
 
     def test_scopes_compose_independently(self):
         a = CapabilityGate(
@@ -1151,7 +1149,9 @@ class TestSchemaStrictness:
             ScopedMap.from_dict(
                 {
                     "members": {"mode": "allow", "allow": ["slack"]},
-                    "posture": {"discord": {"allowed_guild_ids": {"mode": "allow", "allow": ["G"]}}},
+                    "posture": {
+                        "discord": {"allowed_guild_ids": {"mode": "allow", "allow": ["G"]}}
+                    },
                 },
                 allow_posture=True,
             )
@@ -1160,7 +1160,9 @@ class TestSchemaStrictness:
         m = ScopedMap.from_dict(
             {
                 "members": {"mode": "allow", "allow": ["slack"]},
-                "posture": {"slack": {"allowed_enterprise_ids": {"mode": "allow", "allow": ["E1"]}}},
+                "posture": {
+                    "slack": {"allowed_enterprise_ids": {"mode": "allow", "allow": ["E1"]}}
+                },
             },
             allow_posture=True,
         )
@@ -1558,8 +1560,11 @@ class TestPolicySignatureOptIn:
             "kiro_crew.platform.governance._policy_home_path", lambda: tmp_path / "nope.json"
         )
         adm = tmp_path / "admission_policy.json"
-        adm.write_text(json.dumps({"require_policy_signature": True,
-                                   "trust_keys": {"fleet-control": "trust-key"}}))
+        adm.write_text(
+            json.dumps(
+                {"require_policy_signature": True, "trust_keys": {"fleet-control": "trust-key"}}
+            )
+        )
         monkeypatch.setenv("KIROCREW_ADMISSION_POLICY", str(adm))
         assert load_security_policy() is None  # core's loader-less pass
         assert load_security_policy(bundled_loader=lambda: None) is None  # edition's pass
@@ -1573,8 +1578,11 @@ class TestPolicySignatureAbsenceGate:
         # bypasses the requirement precisely when it matters (a mandated-signature
         # fleet that lost or never shipped its policy). Boot must abort instead.
         adm = tmp_path / "admission_policy.json"
-        adm.write_text(json.dumps({"require_policy_signature": True,
-                                   "trust_keys": {"fleet-control": "trust-key"}}))
+        adm.write_text(
+            json.dumps(
+                {"require_policy_signature": True, "trust_keys": {"fleet-control": "trust-key"}}
+            )
+        )
         monkeypatch.setenv("KIROCREW_ADMISSION_POLICY", str(adm))
         with pytest.raises(PlatformCompositionError):
             assert_policy_signature_satisfied(None)
@@ -1599,9 +1607,7 @@ class TestPolicySignatureAbsenceGate:
     def test_verified_ceiling_satisfies_the_gate(self, monkeypatch, tmp_path):
         _real_trust_file(monkeypatch, tmp_path, require=True, keys={"fleet-control": "trust-key"})
         signed = _sign_policy(_policy_body(identity={"issuer": "fleet-control"}), "trust-key")
-        assert_policy_signature_satisfied(
-            parse_policy(signed, signature_state=SIGNATURE_VERIFIED)
-        )
+        assert_policy_signature_satisfied(parse_policy(signed, signature_state=SIGNATURE_VERIFIED))
 
     def test_present_but_unverified_ceiling_does_NOT_satisfy_the_gate(self, monkeypatch, tmp_path):
         # Presence alone is not enough — the gate is the enforcement point for the
@@ -1652,9 +1658,7 @@ class TestPolicySignatureAbsenceGate:
         )
 
     @pytest.mark.parametrize("junk", ["false", None, 0, 1, ""])
-    def test_junk_flag_in_wellformed_trust_root_fails_closed(
-        self, monkeypatch, tmp_path, junk
-    ):
+    def test_junk_flag_in_wellformed_trust_root_fails_closed(self, monkeypatch, tmp_path, junk):
         # A well-formed trust root whose flag is PRESENT but not a boolean is a
         # different case from a broken file: the operator wrote the key down, so
         # it reads fail-closed as opted-in (via admission._coerce_flag) and an
@@ -1951,3 +1955,284 @@ class TestValidateReportsUngovernedCapabilities:
         ceiling = parse_policy(_policy_body(commands={"mode": MODE_DENY, "deny": ["nc *"]}))
         out = self._validate(capsys, ceiling)
         assert "UNGOVERNED" not in out
+
+
+class TestGateDecisionAliasGroups:
+    """A KAS built-in reaches the gate under two spellings of ONE identity: its
+    raw id (``str_replace``) and the kiro-cli name a rule about it is written
+    under (``fs_write``). Profiles are written in kiro-cli vocabulary. Asked as
+    two separate items, an allow-mode profile of ``{fs_write}`` refuses the raw
+    id it never listed; asked as the alias alone, a deny-mode ``deny:
+    [str_replace]`` stops binding. An alias group is one question: an explicit
+    deny on any spelling binds, otherwise one permitted spelling admits."""
+
+    def _profile(self, control) -> Profile:
+        return Profile(name="p", controls={"tools": control})
+
+    def test_allow_mode_written_in_kiro_cli_names_admits_the_kas_write(self):
+        p = self._profile(ScopedRuleset(MODE_ALLOW, ("Update the changelog", "fs_write")))
+        d = governance.gate_decision(
+            None,
+            p,
+            "Update the changelog",
+            alias_groups=(("str_replace", "fs_write"),),
+        )
+        assert d.permitted, d.reason
+
+    def test_allow_mode_written_in_kas_ids_admits_the_kas_write_too(self):
+        p = self._profile(ScopedRuleset(MODE_ALLOW, ("Update the changelog", "str_replace")))
+        d = governance.gate_decision(
+            None,
+            p,
+            "Update the changelog",
+            alias_groups=(("str_replace", "fs_write"),),
+        )
+        assert d.permitted, d.reason
+
+    def test_allow_mode_listing_neither_spelling_refuses_and_names_the_alias(self):
+        p = self._profile(ScopedRuleset(MODE_ALLOW, ("Update the changelog",)))
+        d = governance.gate_decision(
+            None,
+            p,
+            "Update the changelog",
+            alias_groups=(("str_replace", "fs_write"),),
+        )
+        assert not d.permitted
+        assert d.item == "fs_write"
+
+    @pytest.mark.parametrize("denied", ["str_replace", "fs_write"])
+    def test_deny_mode_on_either_spelling_binds(self, denied):
+        p = self._profile(ScopedRuleset(MODE_DENY, deny=(denied,)))
+        d = governance.gate_decision(
+            None,
+            p,
+            "Update the changelog",
+            alias_groups=(("str_replace", "fs_write"),),
+        )
+        assert not d.permitted
+        assert d.item == denied
+        assert d.rule == "rule1-deny"
+
+    def test_a_ceiling_deny_on_the_raw_id_is_final(self):
+        c = GovernanceCeiling(
+            version=1,
+            boot=parse_policy(_policy_body()).boot,
+            controls={"tools": ScopedRuleset(MODE_DENY, deny=("str_replace",))},
+        )
+        p = self._profile(ScopedRuleset(MODE_ALLOW, ("Update the changelog", "fs_write")))
+        d = governance.gate_decision(
+            c, p, "Update the changelog", alias_groups=(("str_replace", "fs_write"),)
+        )
+        assert not d.permitted and d.layer == "policy"
+
+    def test_a_title_equal_to_a_group_member_is_covered_by_the_group(self):
+        """KAS titles the call by its id in some shapes; the title must not become
+        a lone allow-set requirement beside the group that already carries it."""
+        p = self._profile(ScopedRuleset(MODE_ALLOW, ("fs_write",)))
+        d = governance.gate_decision(
+            None, p, "str_replace", alias_groups=(("str_replace", "fs_write"),)
+        )
+        assert d.permitted, d.reason
+
+    def test_an_empty_group_is_ignored(self):
+        p = self._profile(ScopedRuleset(MODE_ALLOW, ("t",)))
+        assert governance.gate_decision(None, p, "t", alias_groups=(("", ""),)).permitted
+
+    def test_each_level_granting_a_different_spelling_admits_the_one_tool(self):
+        """A ceiling written in KAS ids grants ``str_replace``; a profile written
+        in kiro-cli names grants ``fs_write``. Both levels granted the one tool,
+        each in its own vocabulary, so the intersection admits it. Resolving each
+        spelling through the intersection first would refuse: neither spelling is
+        permitted by BOTH levels."""
+        c = GovernanceCeiling(
+            version=1,
+            boot=parse_policy(_policy_body()).boot,
+            controls={"tools": ScopedRuleset(MODE_ALLOW, ("Update the changelog", "str_replace"))},
+        )
+        p = self._profile(ScopedRuleset(MODE_ALLOW, ("Update the changelog", "fs_write")))
+        d = governance.gate_decision(
+            c, p, "Update the changelog", alias_groups=(("str_replace", "fs_write"),)
+        )
+        assert d.permitted, d.reason
+        # The same two rulesets the other way round answer the same.
+        c2 = GovernanceCeiling(
+            version=1,
+            boot=parse_policy(_policy_body()).boot,
+            controls={"tools": ScopedRuleset(MODE_ALLOW, ("Update the changelog", "fs_write"))},
+        )
+        p2 = self._profile(ScopedRuleset(MODE_ALLOW, ("Update the changelog", "str_replace")))
+        assert governance.gate_decision(
+            c2, p2, "Update the changelog", alias_groups=(("str_replace", "fs_write"),)
+        ).permitted
+
+    def test_a_level_granting_neither_spelling_still_refuses(self):
+        """The OR is within a level only: a profile that lists neither spelling
+        refuses even though the ceiling grants one."""
+        c = GovernanceCeiling(
+            version=1,
+            boot=parse_policy(_policy_body()).boot,
+            controls={"tools": ScopedRuleset(MODE_ALLOW, ("Update the changelog", "str_replace"))},
+        )
+        p = self._profile(ScopedRuleset(MODE_ALLOW, ("Update the changelog",)))
+        d = governance.gate_decision(
+            c, p, "Update the changelog", alias_groups=(("str_replace", "fs_write"),)
+        )
+        assert not d.permitted
+        assert d.layer == "profile"
+        assert d.item == "fs_write"
+
+    def test_a_profile_deny_is_reported_over_a_ceiling_allow_miss(self):
+        """Every level is walked before a refusal is answered: a ceiling allow-set
+        that lists neither spelling and a profile that explicitly denies one --
+        the deny is the answer, with its provenance, not the miss."""
+        c = GovernanceCeiling(
+            version=1,
+            boot=parse_policy(_policy_body()).boot,
+            controls={"tools": ScopedRuleset(MODE_ALLOW, ("Update the changelog",))},
+        )
+        p = self._profile(ScopedRuleset(MODE_DENY, deny=("str_replace",)))
+        d = governance.gate_decision(
+            c, p, "Update the changelog", alias_groups=(("str_replace", "fs_write"),)
+        )
+        assert not d.permitted
+        assert d.explicit_deny is True
+        assert d.item == "str_replace"
+        assert d.layer == "profile"
+
+    def test_a_subordinate_deny_folded_under_an_allow_ceiling_still_binds(self):
+        """A composed control (central allow-mode ``{fs_write}`` folded with a
+        subordinate deny-mode ``deny: [str_replace]``) relabels its refusals
+        ``rule2-intersect``. The alias group must read the deny's PROVENANCE, not
+        the label, or the fold would hide the subordinate deny behind the
+        authority's allow and the denied write would proceed."""
+        central = ScopedRuleset(MODE_ALLOW, ("Update the changelog", "fs_write"))
+        subordinate = ScopedRuleset(MODE_DENY, deny=("str_replace",))
+        composed = central.compose(subordinate)
+        assert isinstance(composed, governance._AndRuleset)
+        c = GovernanceCeiling(
+            version=1,
+            boot=parse_policy(_policy_body()).boot,
+            controls={"tools": composed},
+        )
+        d = governance.gate_decision(
+            c, None, "Update the changelog", alias_groups=(("str_replace", "fs_write"),)
+        )
+        assert not d.permitted
+        assert d.item == "str_replace"
+        assert d.explicit_deny is True
+        assert d.rule == "rule2-intersect"  # the label the fold gives it
+
+    @pytest.mark.parametrize("outer_first", [True, False])
+    def test_a_central_delete_deny_folded_with_a_local_allow_still_binds(self, outer_first):
+        """Either fold order: a central ``tools: {deny: [delete_file]}`` and a
+        local allow-mode set naming ``fs_write``. A KAS ``delete_file`` arrives on
+        its own name with ``fs_write`` as a deny-only alias; the fold may only
+        tighten, so the denied id is final whichever tier the allow sits in."""
+        central = ScopedRuleset(MODE_DENY, deny=("delete_file",))
+        local = ScopedRuleset(MODE_ALLOW, ("Delete File", "fs_write"))
+        composed = central.compose(local) if outer_first else local.compose(central)
+        c = GovernanceCeiling(
+            version=1, boot=parse_policy(_policy_body()).boot, controls={"tools": composed}
+        )
+        d = governance.gate_decision(
+            c,
+            None,
+            "Delete File",
+            extra_titles=("delete_file",),
+            deny_aliases=("fs_write",),
+        )
+        assert not d.permitted
+        assert d.item == "delete_file"
+        assert d.explicit_deny is True
+        # The same ceiling with only one tier governing denies the call too --
+        # the fold must not answer differently.
+        c1 = GovernanceCeiling(
+            version=1, boot=parse_policy(_policy_body()).boot, controls={"tools": central}
+        )
+        assert not governance.gate_decision(
+            c1, None, "Delete File", extra_titles=("delete_file",), deny_aliases=("fs_write",)
+        ).permitted
+
+    def test_an_allow_mode_fs_write_grant_does_not_admit_a_kas_delete(self):
+        """``delete_file`` reads under ``fs_write`` for DENIES only. kiro-cli's
+        ``fs_write`` cannot delete, so an allow-mode ``tools`` set written for
+        kiro-cli that names ``fs_write`` grants the write family and nothing more;
+        the deletion is refused on its own name, which the set never listed."""
+        p = self._profile(ScopedRuleset(MODE_ALLOW, ("Delete File", "fs_write")))
+        d = governance.gate_decision(
+            None,
+            p,
+            "Delete File",
+            extra_titles=("delete_file",),
+            deny_aliases=("fs_write",),
+        )
+        assert not d.permitted
+        assert d.item == "delete_file"
+        assert d.explicit_deny is False  # an allow-set miss, not a written deny
+
+    def test_an_allow_mode_set_naming_the_delete_admits_it_without_naming_fs_write(self):
+        """The deny-only alias is not a second required entry: an operator who
+        wrote ``delete_file`` into an allow set granted the deletion, and the
+        set's silence on ``fs_write`` is not a refusal."""
+        p = self._profile(ScopedRuleset(MODE_ALLOW, ("Delete File", "delete_file")))
+        d = governance.gate_decision(
+            None,
+            p,
+            "Delete File",
+            extra_titles=("delete_file",),
+            deny_aliases=("fs_write",),
+        )
+        assert d.permitted, d.reason
+
+    def test_a_deny_written_under_the_deny_only_alias_binds(self):
+        p = self._profile(ScopedRuleset(MODE_DENY, deny=("fs_write",)))
+        d = governance.gate_decision(
+            None,
+            p,
+            "Delete File",
+            extra_titles=("delete_file",),
+            deny_aliases=("fs_write",),
+        )
+        assert not d.permitted
+        assert d.item == "fs_write"
+        assert d.explicit_deny is True
+
+    def test_a_deny_on_a_sibling_write_verb_does_not_reach_the_delete(self):
+        """``deny: [str_replace]`` denies that verb, not the ``fs_write`` name the
+        delete reads under, so the delete is not refused by it."""
+        p = self._profile(ScopedRuleset(MODE_DENY, deny=("str_replace",)))
+        d = governance.gate_decision(
+            None,
+            p,
+            "Delete File",
+            extra_titles=("delete_file",),
+            deny_aliases=("fs_write",),
+        )
+        assert d.permitted, d.reason
+
+    def test_a_deny_only_alias_never_admits_even_when_permitted_by_an_allow_set(self):
+        """Mutation guard for the deny-only channel: an allow-mode set that
+        PERMITS ``fs_write`` but not the delete still refuses the delete -- the
+        alias's permit is not consulted, only its deny."""
+        p = self._profile(ScopedRuleset(MODE_ALLOW, ("fs_write",)))
+        d = governance.gate_decision(None, p, "delete_file", deny_aliases=("fs_write",))
+        assert not d.permitted
+        assert d.item == "delete_file"
+
+    def test_deny_provenance_survives_every_fold_and_an_allow_miss_never_gains_it(self):
+        deny = ScopedRuleset(MODE_DENY, deny=("x",))
+        allow = ScopedRuleset(MODE_ALLOW, ("y",))
+        assert deny.permits("x").explicit_deny is True
+        assert allow.permits("x").explicit_deny is False  # not listed, not denied
+        assert allow.permits("y").explicit_deny is False  # a permit never carries it
+        for composed in (allow.compose(deny), deny.compose(allow)):
+            assert composed.permits("x").explicit_deny is True
+        nested = allow.compose(allow.compose(deny))
+        assert nested.permits("x").explicit_deny is True
+        assert nested.permits("z").explicit_deny is False  # allow-mode miss only
+        c = GovernanceCeiling(
+            version=1, boot=parse_policy(_policy_body()).boot, controls={"tools": deny}
+        )
+        assert resolve(c, None, "tools", "x").explicit_deny is True
+        p = Profile(name="p", controls={"tools": allow})
+        assert resolve(None, p, "tools", "x").explicit_deny is False

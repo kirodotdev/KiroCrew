@@ -1580,6 +1580,56 @@ class TestClassifierOnlyHostTrustedProof:
         for name in ("fs_write", "code", "execute_bash"):
             assert _is_host_read_only_builtin(name, "", mcp_identity_trusted=True) is False, name
 
+    @pytest.mark.parametrize(
+        "kas_id", ["read_file", "list_directory", "grep_search", "file_search"]
+    )
+    def test_a_trusted_kas_read_builtin_is_proven_read_only_under_its_kiro_cli_name(self, kas_id):
+        """KAS names the same work differently; under ``--approval reads`` a KAS
+        read must be free exactly where kiro-cli's ``fs_read`` is."""
+        from kiro_crew.hooks import _is_host_read_only_builtin
+
+        assert _is_host_read_only_builtin(kas_id, "", mcp_identity_trusted=True) is True, kas_id
+
+    @pytest.mark.parametrize("kas_id", ["str_replace", "fs_append", "delete_file", "run_command"])
+    def test_a_kas_write_or_shell_alias_is_not_a_read_only_proof(self, kas_id):
+        from kiro_crew.hooks import _is_host_read_only_builtin
+
+        assert _is_host_read_only_builtin(kas_id, "", mcp_identity_trusted=True) is False, kas_id
+
+    def test_the_alias_fold_still_demands_trust_and_no_server(self):
+        from kiro_crew.hooks import _is_host_read_only_builtin
+
+        assert _is_host_read_only_builtin("read_file", "", mcp_identity_trusted=False) is False
+        assert (
+            _is_host_read_only_builtin("read_file", "filesystem", mcp_identity_trusted=True)
+            is False
+        )
+
+    def test_a_kas_read_auto_approves_under_the_read_only_policy_end_to_end(self):
+        """The wire shape: cache hit with empty names (trusted, no server) plus
+        the frame's ``toolId``; a read of an ordinary file is auto-approved."""
+        r = HookManager().on_tool_call(
+            "Read File",
+            mcp_tool_name="read_file",
+            mcp_identity_trusted=True,
+            tool_kind="read",
+            raw_params={"path": "/tmp/notes.md"},
+            classifier_only=True,
+        )
+        assert r.action == TOOL_AUTO_APPROVE
+        assert r.read_only is True
+
+    def test_a_kas_read_of_a_sensitive_path_is_still_denied_before_the_proof(self):
+        r = HookManager().on_tool_call(
+            "Read File",
+            mcp_tool_name="read_file",
+            mcp_identity_trusted=True,
+            tool_kind="read",
+            raw_params={"path": "~/.ssh/id_rsa"},
+            classifier_only=True,
+        )
+        assert r.action == TOOL_DENY
+
 
 class TestMutatingKindBeatsTheTitle:
     """Only an explicitly READ-ONLY ``tool_kind`` may auto-approve on a title.
@@ -1762,7 +1812,12 @@ class TestCanonicalMcpIdentityGoverned:
         seen: list[str] = []
 
         def fake_gov(ctx, name, *a, **k):
-            targets = [name, *k.get("extra_titles", ()), k.get("mcp_ref", "")]
+            targets = [
+                name,
+                *k.get("extra_titles", ()),
+                *(s for g in k.get("alias_groups", ()) for s in g),
+                k.get("mcp_ref", ""),
+            ]
             for target in targets:
                 if target and target not in seen:
                     seen.append(target)
@@ -1942,6 +1997,270 @@ class TestBuiltinToolIdentityGoverned:
         # Three identities in play (title, fs_write, @weather:srv/fs_write) and
         # exactly ONE profile resolution.
         assert len(calls) == 1, f"expected one profile resolution, got {len(calls)}"
+
+
+class TestKasAliasesAreGovernedUnderTheirKiroCliName:
+    """``kas_agents`` mounts kiro-cli's ``fs_write`` on KAS as ``str_replace`` and
+    ``fs_append`` (``platform.tool_names``). An operator's rule is written in
+    kiro-cli vocabulary -- ``auto_deny_tools: ["fs_write"]`` is the natural
+    spelling, since Crew's specs are -- and the deny tier and the ``tools``-scope
+    ceiling both match on names. Without folding the alias back, a trust mode
+    that skips the prompt runs the write the operator denied."""
+
+    @pytest.mark.parametrize("kas_id", ["str_replace", "fs_append", "delete_file"])
+    def test_deny_floor_binds_a_kiro_cli_write_rule_to_the_kas_write_alias(self, kas_id):
+        cfg = HooksConfig(auto_deny_tools=["fs_write"])
+        r = HookManager(cfg).on_tool_call(
+            "Update the changelog",
+            mcp_tool_name=kas_id,
+            tool_kind="edit",
+        )
+        assert r.action == TOOL_DENY, kas_id
+
+    @pytest.mark.parametrize(
+        ("kas_id", "rule"),
+        [
+            ("read_file", "fs_read"),
+            ("list_directory", "fs_read"),
+            ("grep_search", "grep"),
+            ("file_search", "glob"),
+        ],
+    )
+    def test_deny_floor_binds_a_kiro_cli_read_rule_to_the_kas_read_alias(self, kas_id, rule):
+        cfg = HooksConfig(auto_deny_tools=[rule])
+        r = HookManager(cfg).on_tool_call("Look around", mcp_tool_name=kas_id, tool_kind="read")
+        assert r.action == TOOL_DENY, kas_id
+
+    @pytest.mark.parametrize("title", ["str_replace", "Running: str_replace", "read_file"])
+    def test_a_model_authored_title_never_folds_to_a_policy_name(self, title):
+        """``tool_name`` is ``select_tool_title``'s pick, which prefers the
+        model-authored ``description`` verbatim. A shell call the model described
+        as ``str_replace`` must not fold to ``fs_write`` and be refused by an
+        operator's ``deny fs_write`` -- a refusal the operator did not write is
+        still the model steering the gate. Only the engine-stamped identity
+        (``_meta.kiro.toolName`` / ``toolId``) folds."""
+        cfg = HooksConfig(auto_deny_tools=["fs_write", "fs_read"])
+        r = HookManager(cfg).on_tool_call(title, tool_kind="execute")
+        assert r.action != TOOL_DENY, title
+
+    @pytest.mark.parametrize("shell_id", ["run_command", "execute_bash"])
+    def test_an_identified_shell_call_titled_like_a_kas_write_is_not_denied_by_a_write_rule(
+        self, shell_id
+    ):
+        """THE REGRESSION GPT found: the identity is the shell (KAS reports it as
+        ``run_command``), the model's ``description`` reads ``str_replace``. Only
+        the identity folds -- to ``execute_bash``, which ``deny fs_write`` does
+        not name -- so the command the operator never denied is not refused."""
+        cfg = HooksConfig(auto_deny_tools=["fs_write"])
+        r = HookManager(cfg).on_tool_call(
+            "str_replace", mcp_tool_name=shell_id, tool_kind="execute"
+        )
+        assert r.action != TOOL_DENY, shell_id
+        # And the same identity IS refused by the rule that names the shell.
+        cfg = HooksConfig(auto_deny_tools=["execute_bash"])
+        r = HookManager(cfg).on_tool_call(
+            "str_replace", mcp_tool_name=shell_id, tool_kind="execute"
+        )
+        assert r.action == TOOL_DENY, shell_id
+
+    def test_a_kas_identity_arrives_on_the_permission_frame_not_the_title(self):
+        """KAS stamps no ``toolName`` on the tool_call, but the permission
+        request carries ``_meta.kiro.toolId`` (``build_permission_event`` reads
+        it into ``mcp_tool_name``). That is the input the fold trusts."""
+        cfg = HooksConfig(auto_deny_tools=["fs_write"])
+        r = HookManager(cfg).on_tool_call(
+            "Edit File", mcp_tool_name="str_replace", tool_kind="edit"
+        )
+        assert r.action == TOOL_DENY
+
+    def test_governance_tools_scope_sees_the_kiro_cli_name_for_a_kas_alias(self, monkeypatch):
+        seen = TestCanonicalMcpIdentityGoverned._deny_canonical(monkeypatch, "fs_write")
+        r = HookManager().on_tool_call(
+            "Update the changelog",
+            mcp_tool_name="str_replace",
+            tool_kind="edit",
+        )
+        assert r.action == TOOL_DENY
+        assert "fs_write" in seen
+
+    def test_governance_is_asked_the_kas_id_and_its_alias_as_one_group(self, monkeypatch):
+        """Governance profiles are written in kiro-cli vocabulary, and an ALLOW-mode
+        profile requires every queried item to match its allow set. So the raw
+        ``str_replace`` and its ``fs_write`` alias travel as ONE alias group
+        (``gate_decision``'s ``alias_groups``), never as two separate items and
+        never as the alias alone: a deny on either spelling binds, one permitted
+        spelling admits. The deny tier still reads both spellings."""
+        import kiro_crew.hooks as hooks_mod
+
+        groups: list = []
+
+        def gov(ctx, name, *a, **k):
+            groups.extend(k.get("alias_groups", ()))
+            assert "str_replace" not in k.get("extra_titles", ())
+            assert "fs_write" not in k.get("extra_titles", ())
+            return None
+
+        monkeypatch.setattr(hooks_mod, "_governance_denial", gov)
+        HookManager().on_tool_call(
+            "Update the changelog", mcp_tool_name="str_replace", tool_kind="edit"
+        )
+        assert groups == [("str_replace", "fs_write")]
+        # Title equal to the raw id: the group still carries both spellings.
+        groups.clear()
+        HookManager().on_tool_call("str_replace", mcp_tool_name="str_replace", tool_kind="edit")
+        assert groups == [("str_replace", "fs_write")]
+
+    def test_a_kas_delete_is_asked_on_its_own_name_with_fs_write_deny_only(self, monkeypatch):
+        """``delete_file``'s alias may only deny: kiro-cli's ``fs_write`` cannot
+        delete, so the id travels in ``extra_titles`` (it has to be permitted on
+        its own name) and ``fs_write`` in ``deny_aliases``, never as an alias
+        group whose permitted spelling would admit the deletion."""
+        import kiro_crew.hooks as hooks_mod
+
+        seen: dict = {}
+
+        def gov(ctx, name, *a, **k):
+            seen.update(k)
+            return None
+
+        monkeypatch.setattr(hooks_mod, "_governance_denial", gov)
+        HookManager().on_tool_call("Delete File", mcp_tool_name="delete_file", tool_kind="delete")
+        assert seen["alias_groups"] == ()
+        assert seen["extra_titles"] == ("delete_file",)
+        assert seen["deny_aliases"] == ("fs_write",)
+        # Title equal to the raw id: the id is the title, so it is not repeated.
+        seen.clear()
+        HookManager().on_tool_call("delete_file", mcp_tool_name="delete_file", tool_kind="delete")
+        assert seen["extra_titles"] == ()
+        assert seen["deny_aliases"] == ("fs_write",)
+
+    def test_an_allow_mode_fs_write_grant_does_not_admit_a_kas_delete(self, monkeypatch):
+        """End to end through the real ``gate_decision``: an allow set of {title,
+        fs_write} written for kiro-cli admits a KAS ``str_replace`` and REFUSES a
+        KAS ``delete_file``; naming ``delete_file`` admits it; a deny under
+        ``fs_write`` still refuses it."""
+        import kiro_crew.platform.governance_profiles as profiles_mod
+        from kiro_crew.platform.governance import MODE_ALLOW, MODE_DENY, Profile, ScopedRuleset
+
+        def with_profile(control):
+            monkeypatch.setattr(
+                profiles_mod,
+                "resolve_active_scope",
+                lambda *a, **k: Profile(name="p", controls={"tools": control}),
+            )
+
+        with_profile(ScopedRuleset(MODE_ALLOW, ("Delete File", "fs_write")))
+        r = HookManager().on_tool_call(
+            "Delete File", mcp_tool_name="delete_file", tool_kind="delete"
+        )
+        assert r.action == TOOL_DENY
+        assert "delete_file" in r.reason
+        r = HookManager().on_tool_call("Delete File", mcp_tool_name="str_replace", tool_kind="edit")
+        assert r.action != TOOL_DENY, r.reason
+
+        with_profile(ScopedRuleset(MODE_ALLOW, ("Delete File", "delete_file")))
+        r = HookManager().on_tool_call(
+            "Delete File", mcp_tool_name="delete_file", tool_kind="delete"
+        )
+        assert r.action != TOOL_DENY, r.reason
+
+        with_profile(ScopedRuleset(MODE_DENY, deny=("fs_write",)))
+        r = HookManager().on_tool_call(
+            "Delete File", mcp_tool_name="delete_file", tool_kind="delete"
+        )
+        assert r.action == TOOL_DENY
+
+    def test_an_allow_mode_profile_written_in_kiro_cli_names_permits_the_kas_write(
+        self, monkeypatch
+    ):
+        """End to end through the real ``gate_decision``: an allow set of {title,
+        fs_write} admits a KAS ``str_replace``; a deny-mode profile denying the
+        raw id still refuses it; and the deny TIER's raw-id rule still binds."""
+        import kiro_crew.platform.governance_profiles as profiles_mod
+        from kiro_crew.platform.governance import MODE_ALLOW, MODE_DENY, Profile, ScopedRuleset
+
+        def with_profile(control):
+            monkeypatch.setattr(
+                profiles_mod,
+                "resolve_active_scope",
+                lambda *a, **k: Profile(name="p", controls={"tools": control}),
+            )
+
+        with_profile(ScopedRuleset(MODE_ALLOW, ("Update the changelog", "fs_write")))
+        r = HookManager().on_tool_call(
+            "Update the changelog", mcp_tool_name="str_replace", tool_kind="edit"
+        )
+        assert r.action != TOOL_DENY, r.reason
+
+        with_profile(ScopedRuleset(MODE_DENY, deny=("str_replace",)))
+        r = HookManager().on_tool_call(
+            "Update the changelog", mcp_tool_name="str_replace", tool_kind="edit"
+        )
+        assert r.action == TOOL_DENY
+
+        with_profile(ScopedRuleset(MODE_DENY, deny=("fs_write",)))
+        r = HookManager().on_tool_call(
+            "Update the changelog", mcp_tool_name="str_replace", tool_kind="edit"
+        )
+        assert r.action == TOOL_DENY
+
+        # And the deny tier is unaffected: a raw-id deny still binds.
+        r = HookManager(HooksConfig(auto_deny_tools=["str_replace"])).on_tool_call(
+            "Update the changelog", mcp_tool_name="str_replace", tool_kind="edit"
+        )
+        assert r.action == TOOL_DENY
+
+    def test_a_name_both_engines_share_gains_no_alias(self, monkeypatch):
+        """``fs_write`` IS the policy spelling; nothing is added, nothing asked twice."""
+        seen = TestCanonicalMcpIdentityGoverned._deny_canonical(monkeypatch, "never-matches")
+        HookManager().on_tool_call("fs_write", mcp_tool_name="fs_write", tool_kind="edit")
+        assert seen == ["fs_write"]
+
+    def test_an_unrelated_tool_is_not_denied_by_a_write_rule(self):
+        cfg = HooksConfig(auto_deny_tools=["fs_write"])
+        r = HookManager(cfg).on_tool_call(
+            "Look around", mcp_tool_name="read_file", tool_kind="read"
+        )
+        assert r.action != TOOL_DENY
+
+    def test_an_mcp_served_tool_named_like_a_kas_builtin_gains_no_alias_at_the_deny_tier(self):
+        """The reference MCP filesystem server calls its tools ``read_file`` and
+        ``list_directory``. They are not kiro-cli's ``fs_read``; a built-in deny
+        must not fence a server the operator never named. ``mcpServerName`` is
+        stamped on every MCP-served call, so its presence is the discriminator."""
+        cfg = HooksConfig(auto_deny_tools=["fs_read"])
+        r = HookManager(cfg).on_tool_call(
+            "Read the notes",
+            mcp_server_name="filesystem",
+            mcp_tool_name="read_file",
+            tool_kind="read",
+        )
+        assert r.action != TOOL_DENY
+
+    def test_an_mcp_served_tool_named_like_a_kas_builtin_gains_no_alias_at_governance(
+        self, monkeypatch
+    ):
+        seen = TestCanonicalMcpIdentityGoverned._deny_canonical(monkeypatch, "fs_write")
+        r = HookManager().on_tool_call(
+            "Edit the notes",
+            mcp_server_name="filesystem",
+            mcp_tool_name="str_replace",
+            tool_kind="edit",
+        )
+        assert r.action != TOOL_DENY
+        assert "fs_write" not in seen
+
+    def test_a_per_server_rule_on_the_mcp_tool_itself_still_binds(self):
+        """Scoping the alias out of MCP calls removes nothing the operator wrote
+        for that server: the canonical identity is still a deny target."""
+        cfg = HooksConfig(auto_deny_tools=["@filesystem/read_file"])
+        r = HookManager(cfg).on_tool_call(
+            "Read the notes",
+            mcp_server_name="filesystem",
+            mcp_tool_name="read_file",
+            tool_kind="read",
+        )
+        assert r.action == TOOL_DENY
 
 
 class TestServerLevelGovernanceBindsOnPartialIdentity:
@@ -2508,7 +2827,7 @@ class TestTargetPathSpellings:
 
         return HookManager(HooksConfig.from_dict({}))
 
-    @pytest.mark.parametrize("key", ["path", "file_path", "filePath"])
+    @pytest.mark.parametrize("key", ["path", "file_path", "filePath", "targetFile"])
     def test_a_sensitive_path_is_denied_under_every_spelling(self, key):
         from kiro_crew.hooks import TOOL_DENY
 
@@ -2522,6 +2841,20 @@ class TestTargetPathSpellings:
             f"a sensitive path under {key!r} reached no check; the human would be "
             "asked to approve what the keystone must refuse outright"
         )
+
+    def test_a_kas_delete_of_a_sensitive_path_is_denied(self):
+        """``delete_file`` (KAS) carries its path as ``targetFile`` under kind
+        ``delete``; the keystone is not kind-gated, so the spelling alone decides
+        whether the delete is seen."""
+        from kiro_crew.hooks import TOOL_DENY
+
+        decision = self._gate().on_tool_call(
+            "Delete the key",
+            session_key="cli_chat",
+            tool_kind="delete",
+            raw_params={"targetFile": "~/.aws/credentials", "explanation": "x"},
+        )
+        assert decision.action == TOOL_DENY
 
     def test_a_second_innocent_alias_cannot_shadow_a_sensitive_one(self):
         """Every value present is checked, so a deny cannot be dodged by adding a
@@ -2550,7 +2883,7 @@ class TestTargetPathSpellings:
         ordinary files, or the gate would refuse most real edits."""
         from kiro_crew.hooks import TOOL_DENY
 
-        for key in ("path", "file_path", "filePath"):
+        for key in ("path", "file_path", "filePath", "targetFile"):
             decision = self._gate().on_tool_call(
                 "Tidy up the notes",
                 session_key="cli_chat",

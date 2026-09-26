@@ -106,6 +106,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_INLINE_COMPACTION,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
+    ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL,
     ACP_BACKENDS_STEER,
     ACP_BACKENDS_STRUCTURED_REFUSAL,
     EVENT_AGENT_SWITCHED,
@@ -1078,6 +1079,14 @@ class AcpSessionHandle:
         # permission event can carry diff_path for the edit gate when the
         # params themselves carry no path key. Same lifecycle as the caches above.
         self._tool_call_diff_path: dict[str, str] = {}
+        # toolCallId -> harness-classified ``kind`` from the tool_call frame, so a
+        # permission_request that omits ``kind`` still reaches the gate's
+        # kind-keyed tiers. Allocated like every sibling cache; whether it is
+        # HANDED to the wire parsers is decided per frame by
+        # ``_tool_kind_cache_for_wire`` (members of
+        # ``ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL`` only), so construction
+        # is the same for every harness and a non-member's path is unchanged.
+        self._tool_call_kind: dict[str, str] = {}
         # toolCallId -> trusted MCP server name (_meta.kiro.mcpServerName) cached
         # from the tool_call notification so the later permission_request event
         # can carry mcp_server_name (empty on the permission payload). This is
@@ -1426,6 +1435,7 @@ class AcpSessionHandle:
         self._tool_call_is_shell.clear()
         self._tool_call_raw_params.clear()
         self._tool_call_diff_path.clear()
+        self._tool_call_kind.clear()
         self._tool_call_mcp_server.clear()
         self._tool_call_tool_name.clear()
         self._native_child_tool_call_ids.clear()
@@ -4203,6 +4213,7 @@ class AcpSessionHandle:
                             shell_cache=self._tool_call_is_shell,
                             raw_params_cache=self._tool_call_raw_params,
                             diff_path_cache=self._tool_call_diff_path,
+                            tool_kind_cache=self._tool_kind_cache_for_wire(),
                             mcp_server_name_cache=self._tool_call_mcp_server,
                             tool_name_cache=self._tool_call_tool_name,
                             cache_scope=ssid,
@@ -5005,6 +5016,7 @@ class AcpSessionHandle:
             shell_cache=self._tool_call_is_shell,
             raw_params_cache=self._tool_call_raw_params,
             diff_path_cache=self._tool_call_diff_path,
+            tool_kind_cache=self._tool_kind_cache_for_wire(),
             mcp_server_name_cache=self._tool_call_mcp_server,
             tool_name_cache=self._tool_call_tool_name,
             # ORIGIN-BOUND provenance: cache entries are keyed by the
@@ -5330,6 +5342,27 @@ class AcpSessionHandle:
         if total is not None:
             self.last_prompt_stats.credits = total
 
+    def _tool_kind_cache_for_wire(self) -> dict[str, str] | None:
+        """The ``tool_kind_cache`` the wire parsers may use for this harness, or None.
+
+        Members of ``ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL`` (KAS) carry a
+        ``kind`` on the tool_call and none on ``session/request_permission``, so
+        the cache lets the permission event keep the harness's classification.
+        Every other harness gets ``None``, which disables both the writer and the
+        reader in ``_dispatch`` -- kiro-cli's permission frames omit ``kind`` too,
+        but its ``grep``/``glob`` tool_calls carry ``kind: "search"``, which the
+        read-only proof treats as a veto, so a carried kind would turn a search
+        that auto-approves under ``--approval reads`` into a refusal. Decided per
+        frame by membership, the same way ``_handle_update`` gates KAS-only
+        discriminants, so no harness's construction path changes (H13).
+        ``getattr``: a minimal runtime double carries no backend, and no backend
+        is not a member.
+        """
+        backend = getattr(self._runtime, "acp_backend", None)
+        if backend in ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL:
+            return self._tool_call_kind
+        return None
+
     def _handle_update(self, msg: JsonRpcMessage) -> list[AcpEvent]:
         """Process a session/update notification and return events."""
         params = msg.params or {}
@@ -5369,6 +5402,7 @@ class AcpSessionHandle:
                 shell_cache=self._tool_call_is_shell,
                 raw_params_cache=self._tool_call_raw_params,
                 diff_path_cache=self._tool_call_diff_path,
+                tool_kind_cache=self._tool_kind_cache_for_wire(),
                 mcp_server_name_cache=self._tool_call_mcp_server,
                 tool_name_cache=self._tool_call_tool_name,
                 cache_scope=frame_sid,
@@ -5483,6 +5517,7 @@ class AcpSessionHandle:
                         shell_cache=self._tool_call_is_shell,
                         raw_params_cache=self._tool_call_raw_params,
                         diff_path_cache=self._tool_call_diff_path,
+                        tool_kind_cache=self._tool_kind_cache_for_wire(),
                         mcp_server_name_cache=self._tool_call_mcp_server,
                         tool_name_cache=self._tool_call_tool_name,
                         cache_scope=self._session_id,
@@ -5506,6 +5541,7 @@ class AcpSessionHandle:
             shell_cache=self._tool_call_is_shell,
             raw_params_cache=self._tool_call_raw_params,
             diff_path_cache=self._tool_call_diff_path,
+            tool_kind_cache=self._tool_kind_cache_for_wire(),
             mcp_server_name_cache=self._tool_call_mcp_server,
             tool_name_cache=self._tool_call_tool_name,
             cache_scope=self._session_id,

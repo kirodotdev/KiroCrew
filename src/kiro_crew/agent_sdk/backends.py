@@ -155,6 +155,9 @@ with no row here.
      - pre-session registry query (whether the dashboard may skip a session reset)
    * - ``ACP_BACKENDS_STRUCTURED_REFUSAL``
      - driver-internal (whether the metadata refusal parser is consulted)
+   * - ``ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL``
+     - driver-internal (whether a kindless permission frame takes the preceding
+       tool_call's ``kind``; read per frame by the session handle's wire accessor)
    * - ``ACP_BACKENDS_HOOKS_LIST``
      - driver-internal (whether this harness's agent asks its client for the hooks
        matching a trigger and to run one, read by the session dispatch loop that
@@ -2018,6 +2021,27 @@ ACP_BACKENDS_SIDE_READONLY = frozenset({ACP_BACKEND_KIRO})
 # keeps provider-specific detail off the wire, so its refusal card has no category
 # line either.
 ACP_BACKENDS_STRUCTURED_REFUSAL = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+
+# Backends whose ``session/request_permission`` names no ``kind`` and whose
+# tool_call ``kind`` is SAFE to carry onto the permission event in its place,
+# so the gate's kind-keyed tiers (the write-plane routing for ``edit``/``delete``,
+# the read-only proof) see the classification the harness gave the call.
+# KAS is the member: its permission ``toolCall`` is id, status and title only
+# (``test/fixtures/acp_frames/kas/session.jsonl``), it is the harness that has
+# ``delete_file``, and every kind it stamps on a built-in is one the gate
+# already reads (``read``/``edit``/``delete``/``execute``).
+# kiro-cli is NOT a member although its permission frames omit ``kind`` as
+# well (``test/fixtures/acp_frames/kiro/session.jsonl``): its ``grep``/``glob``
+# tool_calls carry ``kind: "search"``, which the read-only proof in ``hooks``
+# treats as a veto, so a carried kind would turn a search that auto-approves
+# under ``--approval reads`` today into a refusal (H13). Its gates already
+# route edits by the diff content block and it has no delete tool, so it needs
+# nothing carried. claude-agent-acp, codex-acp and the rest are not members:
+# unmeasured, and a wrong kind on a permission event can only narrow or veto.
+# Membership decides whether ``AcpSessionHandle`` hands its ``tool_kind_cache``
+# (allocated for every backend) to ``_dispatch.build_permission_event``; a
+# non-member's parser receives none and the frame's own ``kind`` stands.
+ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL: FrozenSet[str] = frozenset({ACP_BACKEND_KAS})
 
 # Backends whose child may ask THIS host for an access token over the
 # ``_kiro/auth/getAccessToken`` connection-level request, to be answered from Kiro

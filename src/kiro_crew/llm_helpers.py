@@ -34,6 +34,7 @@ from kiro_crew.hooks import (
 )
 from kiro_crew.image_refs import strip_image_refs
 from kiro_crew.messaging.link import canonical_key
+from kiro_crew.platform.tool_paths import WRITE_PLANE_KINDS as _WRITE_PLANE_KINDS
 from kiro_crew.platform.tool_paths import (
     command_shaped_strings,
     edit_target_candidates,
@@ -2713,7 +2714,32 @@ async def _resolve_permission(
     # tightening: that call keeps its document scan below AND gains the
     # target gate). Suppressing the document scan stays keyed on the fully
     # trusted edit reroute (``_edit_params is not None``) alone.
-    _edit_target_gated = _edit_params is not None or bool(event.diff_path and not event.is_shell)
+    #
+    # A DELETE (KAS ``delete_file``, ACP kind ``delete``) is on the write plane
+    # too -- the file is gone -- and carries no document body, so it gains the
+    # target gate under the same trusted-provenance conditions as an edit and
+    # keeps its scan. Same predicate the hook tier and governance route on
+    # (``tool_paths.is_edit_call`` / ``WRITE_PLANE_KINDS``), so the three cannot
+    # disagree on which kinds a config-protecting hard deny applies to.
+    _trusted_delete = (
+        isinstance(event.tool_kind, str)
+        and event.tool_kind in _WRITE_PLANE_KINDS
+        and event.tool_kind != _EDIT_TOOL_KIND
+        and event.shell_classified
+        and not event.is_shell
+        and event.raw_params_trusted
+        and isinstance(event.raw_tool_params, dict)
+    )
+    _edit_target_gated = (
+        _edit_params is not None or _trusted_delete or bool(event.diff_path and not event.is_shell)
+    )
+    # The params the target gate judges: an edit's (rerouted) or a trusted
+    # delete's; a diff-only route passes None and is judged by ``diff_path``.
+    _gated_params = (
+        _edit_params
+        if _edit_params is not None
+        else (event.raw_tool_params if _trusted_delete else None)
+    )
     # Every OTHER non-shell tool with client-established provenance gets a
     # FIELD-SCOPED scan: the same three predicates, over every string in the
     # trusted params except a document body (``platform.tool_paths.
@@ -2776,7 +2802,7 @@ async def _resolve_permission(
         if title_hit is not None:
             return (title_hit[0], title_hit[1], normalized, "always_deny")
         if _edit_target_gated:
-            edit_hit = _edit_target_denial(_edit_params, event.diff_path)
+            edit_hit = _edit_target_denial(_gated_params, event.diff_path)
             if edit_hit is not None:
                 return (*edit_hit, "always_deny_input")
         if _scoped_truncated:

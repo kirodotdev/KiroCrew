@@ -122,6 +122,7 @@ from kiro_crew.platform import (
 from kiro_crew.platform.capability_bound import bind_capability_manager
 from kiro_crew.platform.defaults import DefaultCapabilityManager
 from kiro_crew.platform.governance import CU_MCP_SERVER, may_skip_gate_now
+from kiro_crew.platform.tool_names import KAS_TOOL_IDS_MEASURED_ON_KIRO_CLI
 from kiro_crew.sandbox import _MOUNT_SOURCE_PREFIX, warm_backend
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
@@ -4090,6 +4091,7 @@ def _report_kas_backend(issues: list[str]) -> None:
     # letting it swallow this row would hide a withheld auto-approve on exactly
     # the host where kiro-cli is misbehaving.
     _report_kas_spec_permissions(issues)
+    _report_kas_tool_vocabulary(issues)
     help_text = _kas_relay_help(binary)
     if help_text is None:
         # The probe itself failed, so nothing is known either way. Advisory: a
@@ -4160,6 +4162,46 @@ def _report_kas_spec_permissions(issues: list[str]) -> None:
     print("               already carries the block, `kirocrew setup --agent-only --clean`")
     print("               rebuilds it without the key.")
     issues.append("kiro-cli is too old to carry the KAS `permissions` block")
+
+
+def _report_kas_tool_vocabulary(issues: list[str]) -> None:
+    """Whether the installed engine is one the KAS tool-vocabulary tables were read from.
+
+    Crew mounts a spec's kiro-cli tool names on KAS by translating them to KAS's
+    built-in ids and governs KAS ids under their kiro-cli names
+    (``platform.tool_names``). Both directions were measured on ONE engine
+    release; any other kiro-cli ships a different KAS, which may rename a
+    built-in, add one, or (older) lack one. The mount direction fails silent
+    (an id the engine does not recognise is dropped from the spec's tool set
+    without an error, so a read tool is simply absent from the agent), the
+    policy direction fails permissive (an id the table does not know is
+    governed only under its own name), so a mismatch in either direction is
+    worth one line here. Advisory: another release is not known to have
+    drifted, only not known not to have.
+    """
+    version = installed_kiro_cli_version()
+    measured = ".".join(str(part) for part in KAS_TOOL_IDS_MEASURED_ON_KIRO_CLI)
+    if version is None:
+        print(
+            f"  tool names:  ➖ vocabulary measured on kiro-cli {measured}; installed version unknown"
+        )
+        return
+    if version == KAS_TOOL_IDS_MEASURED_ON_KIRO_CLI:
+        print(f"  tool names:  ✅ vocabulary measured on kiro-cli {measured} (installed matches)")
+        return
+    shown = ".".join(str(part) for part in version)
+    if version < KAS_TOOL_IDS_MEASURED_ON_KIRO_CLI:
+        # Unverified, not compatible: the tables were read from one release and
+        # an older KAS may lack an id or spell it differently. Same standing as
+        # a newer one -- only the direction of the drift risk differs.
+        print(f"  tool names:  ⚠️  installed kiro-cli {shown} is older than the {measured} the KAS")
+        print("               tool-name tables were measured on; not verified against it.")
+        print("               A built-in the tables name may be absent or spelled differently.")
+        return
+    print(f"  tool names:  ⚠️  installed kiro-cli {shown} is newer than the {measured} the KAS")
+    print("               tool-name tables were measured on. A renamed or added built-in")
+    print("               would mount or be governed under a name Crew does not know.")
+    print("               Re-measure: test/fixtures/kas_builtin_tool_ids.json (its note says how).")
 
 
 def _doctor_agents_janitor(issues: list[str], sweep_backups: bool) -> None:

@@ -28,8 +28,12 @@ from collections.abc import Mapping
 #:
 #: The camel-case spelling is not hypothetical -- ``_SEARCH_DENY_ARG_KEYS`` has
 #: accepted it for the search plane all along, while the sensitive-path keystone
-#: below read only the two snake_case forms.
-TARGET_PATH_KEYS: tuple[str, ...] = ("path", "file_path", "filePath")
+#: below read only the two snake_case forms. ``targetFile`` is the KAS
+#: ``delete_file`` built-in's one argument (``tools/delete-file.ts``); a spec
+#: that names it on the kas backend mounts it (``kas_agents``), and a delete
+#: whose path the keystone never read would be the one filesystem write the
+#: sensitive-path floor did not see.
+TARGET_PATH_KEYS: tuple[str, ...] = ("path", "file_path", "filePath", "targetFile")
 
 
 #: Cap on the number of DISTINCT candidate paths collected below. The extractor
@@ -128,10 +132,21 @@ def target_paths(raw_params: Mapping | None) -> TargetPaths:
     return found
 
 
+#: ACP ``kind`` values that put a call on the WRITE plane. ``edit`` is the
+#: file-write tool on every engine; ``delete`` is KAS's ``delete_file``
+#: (``tools/delete-file.ts`` emits the ACP ``delete`` kind). A delete has the
+#: write plane's effect -- the file is gone -- so it is judged by the same
+#: write-protected-config tier and ``filesystem.write`` scope an edit is; before
+#: this, ``delete_file {"targetFile": "~/.kiro/crew/config.json"}`` declared a
+#: kind neither gate routed and the always-on config hard-deny never ran.
+WRITE_PLANE_KINDS: frozenset[str] = frozenset({"edit", "delete"})
+
+
 def is_edit_call(tool_kind: str, diff_path: str = "") -> bool:
-    """Whether a tool call is on the WRITE plane: it declared the ``edit`` kind,
-    OR its tool_call frame carried a ``{"type": "diff"}`` content block naming a
-    path (*diff_path*).
+    """Whether a tool call is on the WRITE plane: it declared a write-plane
+    kind (:data:`WRITE_PLANE_KINDS` -- ``edit``, or ``delete`` for KAS's
+    ``delete_file``), OR its tool_call frame carried a ``{"type": "diff"}``
+    content block naming a path (*diff_path*).
 
     The diff content block is the edit's target of record, and its PRESENCE is
     what routes a call onto the write plane — the ACP ``kind`` field is
@@ -147,6 +162,28 @@ def is_edit_call(tool_kind: str, diff_path: str = "") -> bool:
     predicate NARROWED, never a different reading of what an edit is. The read
     allowance is keyed on the ABSENCE of a diff block: a read
     emits none, which is exactly what makes it a read.
+
+    A non-string *tool_kind* (a harness could stamp a list or a number on the
+    frame) is not on the plane by kind; only the diff block can route it. A
+    membership test on an unhashable value would raise instead of classify.
+    """
+    return (isinstance(tool_kind, str) and tool_kind in WRITE_PLANE_KINDS) or bool(diff_path)
+
+
+def is_workspace_edit_call(tool_kind: str, diff_path: str = "") -> bool:
+    """Whether a tool call is a plain file EDIT -- the ``edit`` kind or a diff
+    content block -- and NOT a delete.
+
+    :func:`is_edit_call` is the WRITE-PLANE routing predicate and, since
+    ``delete`` joined :data:`WRITE_PLANE_KINDS`, answers True for a deletion too:
+    the right reading for the gates, which must fence what a delete removes
+    exactly as they fence what an edit overwrites. It is the wrong reading for
+    the ``tool.risk`` ``caution``-badge carve-out, whose ground is that a
+    workspace edit is "easy to put back"; a deletion is not, so the badge must
+    keep printing on one. This predicate is that narrower reading, so the badge
+    consumer does not carry a private notion of an edit keyed on the ``kind``
+    alone (the diff block still routes a kindless edit here) and the gates keep
+    theirs. Two readings, one module, both named for what they decide.
     """
     return tool_kind == "edit" or bool(diff_path)
 

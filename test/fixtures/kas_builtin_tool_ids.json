@@ -1,0 +1,28 @@
+{
+  "_meta": {
+    "note": "KAS (kiro-agent) built-in tool identifiers Crew's vocabulary tables are measured against. Two id spaces exist on the engine: `registered` is the id the tool registers under and the allowlist matcher compares against (tools/tool-filter.ts matchesPattern; what a spec's `tools` entry must spell), and `permission_tool_id` is the id the engine stamps on session/request_permission as `_meta.kiro.toolId` (acp-workspace-connection.ts), which is what reaches Crew's gate on the kas backend. They differ for exactly one built-in: the shell registers as execute_bash / execute_pwsh but reports run_command (tools/default/execute-bash.ts: `public static id = 'run_command'`, while getConfig() sets the registered id). Sources: kiro-agent source at the commit below, plus a live wire capture (test/fixtures/acp_frames/kas/session.jsonl, run_command) and a live kas-backend probe on kiro-cli 2.24.0 that observed the Read File tool_call. RE-MEASURE on every kiro-cli/KAS bump: re-grep `id: '...' as const` under packages/kiro-agent/src/tools/{default,}/*.ts and the shell class's static id, then run test/test_tool_names.py -- a rename fails there before it fails permissive at the gate.",
+    "engine": "kiro-agent",
+    "kiro_cli_version": "2.24.0",
+    "kiro_agent_commit": "076b7d57b",
+    "recorded": "2026-09-24"
+  },
+  "registered": [
+    "code",
+    "delete_file",
+    "execute_bash",
+    "execute_pwsh",
+    "file_search",
+    "fs_append",
+    "fs_write",
+    "grep_search",
+    "list_directory",
+    "read_file",
+    "str_replace",
+    "tool_search",
+    "web_fetch"
+  ],
+  "permission_tool_id": {
+    "execute_bash": "run_command",
+    "execute_pwsh": "run_command"
+  }
+}

@@ -166,7 +166,14 @@ class TestModeBinding:
         seen = json.loads(mode_stub.read_text(encoding="utf-8"))
         assert [a["id"] for a in seen["injected"]] == ["kirocrew"]
         assert seen["injected"][0]["prompt"] == "You are Kiro."
-        assert seen["injected"][0]["tools"] == ["fs_read", "@kirocrew-core"]
+        # The spec's kiro-cli name travels with its KAS family beside it; the
+        # MCP ref is untouched.
+        assert seen["injected"][0]["tools"] == [
+            "fs_read",
+            "read_file",
+            "list_directory",
+            "@kirocrew-core",
+        ]
         # Activation had to happen, and had to name the injected agent — not a
         # built-in that KAS would have run in its place.
         assert seen["set_mode"] == "kirocrew"
@@ -254,7 +261,7 @@ class TestModeBinding:
         seen = json.loads(mode_stub.read_text(encoding="utf-8"))
         assert seen["injected"][0]["prompt"] == _KAS_FALLBACK_PROMPT
         # Tool restriction is preserved — the fallback only supplies a prompt.
-        assert seen["injected"][0]["tools"] == ["fs_read"]
+        assert seen["injected"][0]["tools"] == ["fs_read", "read_file", "list_directory"]
 
     @pytest.mark.asyncio
     async def test_an_unprojectable_agent_fails_loud(self, mode_stub, crew_agent, tmp_path):
