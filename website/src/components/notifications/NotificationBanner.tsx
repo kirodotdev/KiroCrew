@@ -118,6 +118,10 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote }:
   const stackRef = useRef<HTMLDivElement>(null)
   const pendingRef = useRef(pending)
   pendingRef.current = pending
+  // The notes rendered as cards by the last render. A card in `cardEls` but not
+  // in here is LEAVING: AnimatePresence keeps it mounted, focus and all, until
+  // its exit animation ends.
+  const shownRef = useRef<ReadonlySet<string>>(new Set())
 
   const measureExit = useCallback((tsList: string[]) => {
     const bell = bellRef.current?.getBoundingClientRect()
@@ -185,6 +189,16 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote }:
 
   useEffect(() => clearTimer, [clearTimer])
 
+  /** Whether focus on `node` holds the clock: inside the stack, and not inside
+   *  a card that is only still mounted to play its exit. */
+  const holdsFocus = useCallback((node: Node | null) => {
+    if (!node || !stackRef.current?.contains(node)) return false
+    for (const [ts, el] of cardEls.current) {
+      if (!shownRef.current.has(ts) && el.contains(node)) return false
+    }
+    return true
+  }, [])
+
   // Re-derive the holds from the DOM after every change to the deck, because a
   // card's removal destroys the ownership without firing the event that
   // releases it: an unmounted focused element sends no blur, so `blurCapture`
@@ -193,9 +207,12 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote }:
   //
   // The two owners are re-read differently because they are owned at different
   // levels. FOCUS is owned by an ELEMENT, so the only truthful answer is
-  // whether the stack still contains the active one -- true while a SURVIVING
-  // card holds it, false the moment the holder is unmounted (focus falls to
-  // `body`). The POINTER is owned by the CONTAINER, and removing a card inside
+  // whether a SURVIVING card holds the active one. "The stack contains it" is
+  // not that answer: a card that leaves -- dismissed, or pushed out of view by
+  // an arrival -- stays mounted, still focused, through its exit animation, and
+  // when it finally unmounts nothing re-runs this effect. So focus inside a
+  // leaving card is released here, as it starts to leave, not when it is gone.
+  // The POINTER is owned by the CONTAINER, and removing a card inside
   // it does not move the boundary the enter/leave pair is measured at, so a
   // pointer hold stays owned and only a real `pointerleave` releases it -- the
   // one exception being an empty deck, where there is no box left to be over.
@@ -203,11 +220,16 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote }:
   // Runs as an effect, not inside `removeNotes`: the handler fires BEFORE React
   // commits the removal, so `document.activeElement` there is still the button
   // that is about to disappear.
+  //
+  // Keyed on everything `visible` is derived from, not on `pending` alone:
+  // expanding the deck, or crossing the mobile breakpoint, changes what is
+  // rendered with no note arriving or leaving, and unmounts controls the user
+  // may be focused on -- the "+N" pill and the deck shells both expand it.
   useEffect(() => {
-    focusedWithin.current = !!stackRef.current?.contains(document.activeElement)
+    focusedWithin.current = holdsFocus(document.activeElement)
     if (pendingRef.current.length === 0) hovering.current = false
     syncPaused()
-  }, [pending, syncPaused])
+  }, [pending, expanded, isMobile, holdsFocus, syncPaused])
 
   // ---- arrival -----------------------------------------------------------------
   useEffect(() => {
@@ -307,6 +329,7 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote }:
   // Mobile shows the newest card alone: there is no room for a deck, and the
   // bell is one tap away for the rest.
   const visible = isMobile ? pending.slice(0, 1) : expanded ? pending.slice(0, BANNER_EXPANDED_MAX) : pending.slice(0, 1 + BANNER_DECK_DEPTH)
+  shownRef.current = new Set(visible.map(n => n.ts))
   const overflow = expanded && !isMobile ? pending.length - visible.length : 0
   const deckHidden = !expanded && !isMobile ? pending.length - 1 : 0
   const moreLabel = i18nT('components.notifications.notificationBanner.show_more_notifications_count', { count: deckHidden })
@@ -333,7 +356,7 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote }:
         className={`relative pointer-events-auto ${expanded ? 'flex flex-col gap-2' : ''}`}
         onPointerEnter={() => { hovering.current = true; syncPaused() }}
         onPointerLeave={() => { hovering.current = false; syncPaused() }}
-        onFocusCapture={() => { focusedWithin.current = true; syncPaused() }}
+        onFocusCapture={e => { focusedWithin.current = holdsFocus(e.target); syncPaused() }}
         onBlurCapture={e => {
           if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
           focusedWithin.current = false
