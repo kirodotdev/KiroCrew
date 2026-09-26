@@ -91,6 +91,34 @@ _SEARCH_MAX_FORGE_REFS = 3
 # collector because the cost it bounds is this module's.
 _MAX_SEARCH_REF_SPELLINGS = 8
 
+# Session metadata is agent-writable, so the first line of a session log can
+# carry a "tags" value of any JSON shape. ``list(5)`` raises TypeError and turns
+# one poisoned session into a 500 that fans out to every list_sessions()
+# consumer, so a field this branch retains must bound both what it accepts and
+# what it keeps: only string IDs survive, each capped at the tag-name ceiling
+# (chat_tags._NAME_MAX), and the list is capped in length. Matches the write-side
+# idiom used across the dashboard ([str(t) for t in raw if isinstance(t, str)]).
+_TAG_NAME_MAX = 60
+_MAX_TAGS_RETAINED = 32
+
+
+def _bounded_tags(raw: object) -> list[str]:
+    """Coerce an untrusted ``tags`` value into a bounded list of bounded IDs.
+
+    Accepts only a list of non-empty strings; every other shape (a bare int, a
+    dict, ``None``) yields an empty list rather than raising. Truncates each ID
+    to ``_TAG_NAME_MAX`` and the list to ``_MAX_TAGS_RETAINED``.
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for t in raw:
+        if isinstance(t, str) and t:
+            out.append(t[:_TAG_NAME_MAX])
+            if len(out) >= _MAX_TAGS_RETAINED:
+                break
+    return out
+
 
 def _is_cjk_char(ch: str) -> bool:
     """True for characters that written Chinese/Japanese/Korean does not space-separate.
@@ -1017,6 +1045,10 @@ class SessionCatalogProjection:
                 meta["memory_mode"] = d.get("memory_mode", "persistent")
                 if d.get("folder_id"):
                     meta["folder_id"] = d["folder_id"]
+                if d.get("tags"):
+                    tags = _bounded_tags(d["tags"])
+                    if tags:
+                        meta["tags"] = tags
             else:
                 # Read only the first line for metadata
                 try:
@@ -1034,6 +1066,10 @@ class SessionCatalogProjection:
                             meta["memory_mode"] = d.get("memory_mode", "persistent")
                             if d.get("folder_id"):
                                 meta["folder_id"] = d["folder_id"]
+                            if d.get("tags"):
+                                tags = _bounded_tags(d["tags"])
+                                if tags:
+                                    meta["tags"] = tags
                             # Guarded publish — discard the fill if a write
                             # invalidated this key inside the stat → read
                             # window (see the generation snapshot above).

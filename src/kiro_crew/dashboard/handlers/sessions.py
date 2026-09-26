@@ -1451,15 +1451,24 @@ _MACHINE_NAMESPACES: tuple[str, ...] = (
 )
 
 
-def _is_machine_only_session(key: str) -> bool:
+def _is_machine_only_session(key: str, *, allow_subagents: bool = False) -> bool:
     """True when *key* sits in a namespace no user ever addressed directly.
 
     Matched through ``_in_namespace`` because this reads a PERSISTED name:
     ``history._safe_key`` folds ``subagent:<id>`` to the stem ``subagent_<id>``, so
     the colon spelling every other subagent guard in the tree uses can never match
     here. That fold is the whole defect this filter repairs.
+
+    ``allow_subagents`` keeps the ``subagent`` namespace listed while still dropping
+    the rest. The Older-sessions pane asks for this: it presents subagent rows as a
+    hideable, revealable group, so they must reach the client to be toggled — the
+    other machine namespaces (secretary, channel, wf-*) have no such surface and
+    stay dropped.
     """
-    return any(_in_namespace(key, ns) for ns in _MACHINE_NAMESPACES)
+    namespaces = _MACHINE_NAMESPACES
+    if allow_subagents:
+        namespaces = tuple(ns for ns in namespaces if ns != "subagent")
+    return any(_in_namespace(key, ns) for ns in namespaces)
 
 
 async def api_sessions(request: web.Request) -> web.Response:
@@ -1501,6 +1510,15 @@ async def api_sessions(request: web.Request) -> web.Response:
     want_preview = (request.query.get("preview") or "").lower() in ("1", "true", "yes")
     exclude_open = (request.query.get("exclude_open") or "").lower() in ("1", "true", "yes")
     user_only = (request.query.get("user_only") or "").lower() in ("1", "true", "yes")
+    # The Older-sessions pane pairs this with ``user_only`` to KEEP subagent rows in
+    # the list (dropping the other machine namespaces), so its client-side reveal
+    # toggle has rows to hide and show. Without it ``user_only`` removes subagent
+    # sessions server-side and the toggle can never surface one.
+    include_subagents = (request.query.get("include_subagents") or "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
     # list_sessions() globs, stats, and reads the first line of EVERY session file
     # in the history dir — O(all sessions). At 2000 sessions, that's ~200 ms of
     # blocking IO (measured: 208 ms / 2000 files on a dev host). Running that on
@@ -1521,7 +1539,11 @@ async def api_sessions(request: web.Request) -> web.Response:
             if s.get("key", "") not in open_keys and canon(s.get("key", "")) not in open_keys
         ]
     if user_only:
-        all_sessions = [s for s in all_sessions if not _is_machine_only_session(s.get("key", ""))]
+        all_sessions = [
+            s
+            for s in all_sessions
+            if not _is_machine_only_session(s.get("key", ""), allow_subagents=include_subagents)
+        ]
     # Count AFTER the exclusion so the page, ``total`` and ``has_more`` describe
     # one list. The client advances its offset by the number of rows it received,
     # so filtering on its side instead would skip or repeat rows across pages.

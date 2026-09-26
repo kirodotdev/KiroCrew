@@ -11070,7 +11070,10 @@
       "opens_here_runs_on_instance": "এই সেশনটি এখানে খোলে — এর কাজ {{name}}-এ চলতে থাকে",
       "opens_on_crew_switches_there": "{{name}} এ খোলে — সেই Crew-এ চলে যায়, এখানে নয়",
       "remote_instances_list_unavailable": "রিমোট ক্রু তালিকাভুক্ত করা যায়নি, তাই সেগুলির সেশন দেখানো হজ্ছে না।",
-      "model_list_failed": "মডেলের তালিকা লোড করা যায়নি। যা দেখানো হচ্ছে তা অসম্পূর্ণ বা পুরনো হতে পারে।"
+      "model_list_failed": "মডেলের তালিকা লোড করা যায়নি। যা দেখানো হচ্ছে তা অসম্পূর্ণ বা পুরনো হতে পারে।",
+      "show_subagent_sessions": "সাব-এজেন্ট সেশন দেখাও",
+      "all_subagent_sessions_hidden_one": "{{count}}টি সাব-এজেন্ট সেশন লুকানো আছে। এটি দেখতে সাব-এজেন্ট সেশন দেখাও।",
+      "all_subagent_sessions_hidden_other": "{{count}}টি সাব-এজেন্ট সেশন লুকানো আছে। সেগুলি দেখতে সাব-এজেন্ট সেশন দেখাও।"
     },
     "connectionsPage": {
       "action_failed": "অ্যাকশন ব্যর্থ: {{error}}",

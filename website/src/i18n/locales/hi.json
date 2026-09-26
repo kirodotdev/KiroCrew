@@ -11070,7 +11070,10 @@
       "opens_here_runs_on_instance": "इस सत्र को यहाँ खोलता है — इसका निष्पादन {{name}} पर चलता रहता है",
       "opens_on_crew_switches_there": "{{name}} पर खुलता है — उस Crew पर स्विच करता है, यहाँ नहीं",
       "remote_instances_list_unavailable": "रिमोट क्रू सूचीबद्ध नहीं किए जा सके, इसलिए उनके सत्र नहीं दिखाए गए हैं।",
-      "model_list_failed": "मॉडल सूची लोड नहीं हो सकी। जो दिख रहा है वह अपूर्ण या पुराना हो सकता है।"
+      "model_list_failed": "मॉडल सूची लोड नहीं हो सकी। जो दिख रहा है वह अपूर्ण या पुराना हो सकता है।",
+      "show_subagent_sessions": "सब-एजेंट सत्र दिखाएं",
+      "all_subagent_sessions_hidden_one": "{{count}} सब-एजेंट सत्र छिपा है। इसे देखने के लिए सब-एजेंट सत्र दिखाएं।",
+      "all_subagent_sessions_hidden_other": "{{count}} सब-एजेंट सत्र छिपे हैं। उन्हें देखने के लिए सब-एजेंट सत्र दिखाएं।"
     },
     "connectionsPage": {
       "action_failed": "कार्रवाई विफल: {{error}}",

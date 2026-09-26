@@ -4753,8 +4753,10 @@ export const api = {
   // `userOnly` drops machine namespaces (`subagent_`, `wf_`, …), whose transcripts
   // have no title and so render their own storage key as one. NOT `taskrunner_`: that
   // namespace also holds real conversations, so the server keeps it listed.
-  // Both off by default: every other caller wants the full inventory.
-  sessions: (limit = 30, offset = 0, preview = false, excludeOpen = false, userOnly = false) => fetch('/api/sessions?limit=' + limit + '&offset=' + offset + (preview ? '&preview=1' : '') + (excludeOpen ? '&exclude_open=1' : '') + (userOnly ? '&user_only=1' : '')).then(j),
+  // `includeSubagents` (paired with `userOnly`) keeps the subagent namespace listed so
+  // the Older-sessions reveal toggle has rows to hide and show; the other machine
+  // namespaces still drop. Both off by default: every other caller wants the full inventory.
+  sessions: (limit = 30, offset = 0, preview = false, excludeOpen = false, userOnly = false, includeSubagents = false) => fetch('/api/sessions?limit=' + limit + '&offset=' + offset + (preview ? '&preview=1' : '') + (excludeOpen ? '&exclude_open=1' : '') + (userOnly ? '&user_only=1' : '') + (includeSubagents ? '&include_subagents=1' : '')).then(j),
   sessionsSearch: (q: string, limit = 50) => fetch('/api/sessions/search?q=' + encodeURIComponent(q) + '&limit=' + limit).then(j),
   // Federated session search across the local gateway + every CONNECTED remote
   // instance (backend rank-interleaves; remote rows carry instance_id/_name).

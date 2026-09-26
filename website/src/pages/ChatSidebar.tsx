@@ -1315,6 +1315,7 @@ interface HistoryItem {
   agent?: string  // persisted in JSONL metadata (set on session create + agent switch)
   memory_mode?: 'persistent' | 'incognito' | 'temporary'
   folder_id?: string  // folder the session was filed in; used to group search results
+  tags?: string[]  // tag ids on the session; resolved against the chat-tags query for inline badges
 }
 
 interface AgentInfo {
@@ -1397,6 +1398,23 @@ function readStoredStaleCollapse(): number {
 
 /** Whether the filter menu's Folders section is rolled up to its heading. */
 const FOLDERS_SHELVED_LS_KEY = 'mc-filter-folders-shelved'
+
+/** Whether the "Older Sessions" pane hides sub-agent/sub-task sessions
+ *  (classified by the key prefix subagent:/subagent_).
+ *  Default ON (hidden): on an active account sub-agents run in volume and
+ *  otherwise dominate the list. Stored as '1'/'0'. */
+const HIDE_SUBAGENTS_LS_KEY = 'mc-older-hide-subagents'
+
+/** Read the persisted hide-sub-agents preference. Missing/unset falls back to
+ *  hidden (true). Runs in a useState initializer during render, so a throwing
+ *  localStorage (private mode / disabled storage) must fall back, never crash. */
+function readStoredHideSubagents(): boolean {
+  try {
+    return localStorage.getItem(HIDE_SUBAGENTS_LS_KEY) !== '0'
+  } catch {
+    return true
+  }
+}
 
 /** Read the persisted hidden-folder ids. Runs in a useState initializer during
  *  render, so a throwing localStorage (private mode / disabled storage) or a
@@ -1505,7 +1523,7 @@ const SESSION_FILTERS: SessionFilterDef[] = [
  */
 function useDebouncedSessionSearch<T>(
   query: string,
-  transform: (sessions: { key: string; title?: string; created?: string; modified?: number; agent?: string; memory_mode?: 'persistent' | 'incognito' | 'temporary'; folder_id?: string; instance_id?: string; instance_name?: string }[]) => T,
+  transform: (sessions: { key: string; title?: string; created?: string; modified?: number; agent?: string; memory_mode?: 'persistent' | 'incognito' | 'temporary'; folder_id?: string; tags?: string[]; instance_id?: string; instance_name?: string }[]) => T,
   revalidateSignal?: string,
   federated = false,
 ): T | null {
@@ -1816,6 +1834,16 @@ function sessionRowIdentity(slot: Pick<Slot, 'key' | 'peer_id' | 'row_identity'>
  * rows by accident. */
 function historyRowIdentity(item: { key: string; instance_id?: string }): string {
   return item.instance_id ? `${item.instance_id}:${item.key}` : item.key
+}
+
+/** Whether a history row is a sub-agent/sub-task session. Trusts the backend's
+/** Whether a history row is a sub-agent/sub-task session. Classified from the
+ *  session-key prefix (subagent:/subagent_), which every history row carries.
+ *  The `_bg` background session is deliberately NOT treated as a sub-agent —
+ *  the "Show sub-agent sessions" toggle label would not describe it. */
+function isHistorySubagent(item: { key: string }): boolean {
+  const k = item.key
+  return k.startsWith('subagent:') || k.startsWith('subagent_')
 }
 
 /** Local sidebar metadata is keyed only by local slot key. A remote peer may
@@ -3466,6 +3494,17 @@ function ChatSidebar({
   const [newChatMenuOpen, setNewChatMenuOpen] = useState(false)
   const [slotFilter, setSlotFilter] = useState('')
   const [historyFilter, setHistoryFilter] = useState('')
+  // "Older Sessions" pane: hide sub-agent/sub-task sessions by default so real
+  // conversations are not buried under automatically-created subagent_* runs.
+  // Persisted so the choice survives reloads.
+  const [hideSubagents, setHideSubagents] = useState(readStoredHideSubagents)
+  const toggleHideSubagents = useCallback(() => {
+    setHideSubagents(prev => {
+      const next = !prev
+      safeSetItem(HIDE_SUBAGENTS_LS_KEY, next ? '1' : '0')
+      return next
+    })
+  }, [])
   // A resumed history row whose surface ChatPage cannot display used to succeed
   // on the wire and then silently bounce the user back to whatever slot was
   // already open, indistinguishable from a dead click (#3624). Neither the
@@ -10198,6 +10237,25 @@ function ChatSidebar({
                   <button type="button" className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-text cursor-pointer bg-transparent border-none p-0 leading-none transition-colors" onClick={() => setHistoryFilter('')} aria-label={i18nT('pages.chatSidebar.clear_search')}><X size={13} /></button>
                 )}
               </div>
+              {/* Show/hide sub-agent sessions. Rendered when the loaded history
+                  OR the active search result set contains sub-agent rows, so a
+                  content search that matches only a sub-agent session (scored
+                  across the whole scan window, beyond page 1) still gets a
+                  reveal control rather than an unexplained empty list. Toggling
+                  ON reveals them; it never deletes or restricts access. */}
+              {(history.some(isHistorySubagent) || (historySearchResults ?? []).some(isHistorySubagent)) && (
+                <label className="mt-1.5 flex items-center gap-1.5 px-1 text-[11px] text-muted cursor-pointer select-none hover:text-text transition-colors">
+                  <input
+                    type="checkbox"
+                    className="cursor-pointer accent-[var(--accent)]"
+                    checked={!hideSubagents}
+                    onChange={toggleHideSubagents}
+                    aria-label={i18nT('pages.chatSidebar.show_subagent_sessions')}
+                    data-testid="older-show-subagents-toggle"
+                  />
+                  {i18nT('pages.chatSidebar.show_subagent_sessions')}
+                </label>
+              )}
               {/* The unresumable-surface notice used to live here. It moved to
                   ChatPage's shared notice slot above the composer (#5925): this
                   pane starts CLOSED (`historyOpen` defaults false), so a notice
@@ -10217,7 +10275,9 @@ function ChatSidebar({
                 // Remote crew sessions are NOT merged here: they are the peer's
                 // LIVE slots and join the live sessions list above. Merging them into
                 // history as well would render each remote row twice.
-                const filteredHistory = (() => {
+                // The unfiltered candidate list for this view (search results
+                // merged with the local-history tail, or the plain history).
+                const base = (() => {
                   if (!historyFilter) return history
                   if (historyFilter.trim().length >= SEARCH_MIN_CHARS && historySearchResults) {
                     const seen = new Set(historySearchResults.map(s => s.key))
@@ -10226,6 +10286,16 @@ function ChatSidebar({
                   }
                   return (historySearchResults ?? history).filter(historyLocalMatch)
                 })()
+                // Drop sub-agent sessions unless the user opted to show them.
+                // Additive and non-destructive: the sessions are only excluded
+                // from this view, never deleted or made unreachable.
+                const filteredHistory = hideSubagents ? base.filter(s => !isHistorySubagent(s)) : base
+                // How many rows the sub-agent toggle removed from THIS view,
+                // counted against the SAME pre-filter list the view was built
+                // from — so an all-sub-agent page (including content-only search
+                // hits and local-history-tail rows) shows the hidden-count hint
+                // instead of the bare "no sessions" wording.
+                const hiddenSubagentCount = hideSubagents ? base.filter(isHistorySubagent).length : 0
                 // One definition of "search active" for every site below: results
                 // are present AND the query is still at/above the search threshold.
                 // The compound check matters on the clear-X frame: historyFilter
@@ -10255,6 +10325,16 @@ function ChatSidebar({
                 // A filtered-to-nothing list is a different statement and reuses the
                 // wording the two sibling panes already use for it.
                 if (sortedHistory.length === 0) {
+                  // When the toggle hid every row that would otherwise show, say
+                  // so and point at the control, rather than the bare "no
+                  // sessions" wording that reads as "nothing is here".
+                  if (hiddenSubagentCount > 0) {
+                    return (
+                      <div className="px-3 py-4 text-[12px] text-muted text-center">
+                        {i18nT('pages.chatSidebar.all_subagent_sessions_hidden', { count: hiddenSubagentCount })}
+                      </div>
+                    )
+                  }
                   return (
                     <div className="px-3 py-4 text-[12px] text-muted text-center">
                       {historyFilter
@@ -10274,6 +10354,15 @@ function ChatSidebar({
                 }
                 const historyRow = (s: (typeof sortedHistory)[number]) => {
                   const displayDate = fmtRelativeTime(s.modified ?? s.created)
+                  // Inline organisational context for the row, resolved once. Folder rides the meta line's ml-auto group
+                  // (the flat-view folder-chip slot) and tags are the permitted
+                  // line-5 tag-chip line — never a new stacked line under the
+                  // title (session-row-fixed-height).
+                  const rowFolder = s.folder_id ? folders.find(f => f.id === s.folder_id) : undefined
+                  const rowTags = (s.tags ?? [])
+                    .map(tid => tagById[tid])
+                    .filter((t): t is ChatTag => !!t)
+                    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
                   const agentName = s.agent || defaultAgent || ''
                   // Display vs resolution key, same split as renderSessionRow:
                   // `agentColorFor` must receive the bare name. An archived
@@ -10365,9 +10454,35 @@ function ChatSidebar({
                           )}
                           {s.memory_mode === 'incognito' && <span className="text-muted" title={i18nT('pages.chatSidebar.incognito_no_memory_writes')}><EyeOff size={10} /></span>}
                           {s.memory_mode === 'temporary' && <span className="text-aim" title={i18nT('pages.chatSidebar.temporary_no_memory_reads_or_writes')}><VenetianMask size={10} /></span>}
-                          {displayDate && <span className="ml-auto text-[11px] text-muted font-normal shrink-0">{displayDate}</span>}
+                          {/* ONE ml-auto group holds the folder chip and the
+                              timestamp — the slot the rule reserves for
+                              folder + time, so no new stacked line is added. */}
+                          {(rowFolder || displayDate) && (
+                            <span className="ml-auto flex items-center gap-1.5 shrink-0 min-w-0">
+                              {rowFolder && (
+                                <span className="flex items-center gap-1 min-w-0" data-testid={`history-folder-${rowFolder.id}`} title={rowFolder.name}>
+                                  <FolderGlyph color={rowFolder.color} icon={rowFolder.icon} size={11} open={false} />
+                                  <span className="truncate max-w-[80px]">{rowFolder.name}</span>
+                                </span>
+                              )}
+                              {displayDate && <span className="text-[11px] text-muted font-normal shrink-0">{displayDate}</span>}
+                            </span>
+                          )}
                         </div>
                         <div className="text-[13px] leading-snug line-clamp-2 break-words">{s.title || s.key}</div>
+                        {/* Line 5: tag chips, only when the session has tags — the
+                            permitted tag line (session-row-fixed-height), matching
+                            the live SessionRow's tinted `· name` grammar. */}
+                        {rowTags.length > 0 && (
+                          <span className="truncate min-w-0 block text-[11px] text-muted font-normal" title={rowTags.map(t => t.name).join(' · ')}>
+                            {rowTags.map((t, i) => (
+                              <span key={t.id} data-testid={`history-tag-${t.id}`}>
+                                {i > 0 && <span aria-hidden>{'\u00A0·\u00A0'}</span>}
+                                <span style={{ color: t.color }}>{t.name}</span>
+                              </span>
+                            ))}
+                          </span>
+                        )}
                       </div>
                       {/* Floating hover button group — matches session-row pattern.
                           Hidden for remote rows: deleteHistorySession targets the

@@ -227,7 +227,30 @@ async def test_user_only_drops_the_machine_namespaces() -> None:
 
 
 @pytest.mark.asyncio
-async def test_user_only_keeps_a_cron_row() -> None:
+async def test_include_subagents_keeps_subagent_rows_but_drops_the_rest() -> None:
+    """The Older-sessions reveal toggle needs subagent rows to arrive.
+
+    ``user_only`` alone drops the subagent namespace server-side, so a client-side
+    toggle would have nothing to reveal. ``include_subagents=1`` keeps the subagent
+    rows in the list — in both separator spellings — while the other machine
+    namespaces (workflow, secretary, channel) still drop. ``total`` counts the rows
+    actually returned so the client's offset stays aligned.
+    """
+    sessions = [
+        {"key": "dashboard_chat-1"},
+        {"key": "subagent_ba1f91c9"},
+        {"key": "subagent:live-spelling"},
+        {"key": "wf-worker_run7_a1b2"},
+        {"key": "secretary_a41f"},
+        {"key": "channel_C0AP3QR_agent7"},
+    ]
+    request = _make_request(sessions, query={"user_only": "1", "include_subagents": "1"})
+
+    body = await _call(request)
+
+    assert _keys(body) == ["dashboard_chat-1", "subagent_ba1f91c9", "subagent:live-spelling"]
+    assert body["total"] == 3
+    assert body["has_more"] is False
     """A cron job without ``hide_in_chat`` backs a real slot the user follows.
 
     The key does not record which kind wrote it, so dropping the namespace would

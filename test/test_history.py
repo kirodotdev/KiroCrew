@@ -281,6 +281,39 @@ class TestConversationLog:
         assert by_key["t-filed"].get("folder_id") == "folder-123"
         assert "folder_id" not in by_key["t-unfiled"]
 
+    def test_list_sessions_surfaces_tags(self, tmp_path):
+        """list_sessions() surfaces tag ids from the metadata line so the
+        dashboard can render inline tag badges."""
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("t-tagged", "user", "hi")
+        log.update_metadata("t-tagged", {"tags": ["tag-1", "tag-2"]})
+        log.append("t-untagged", "user", "hi")
+        by_key = {s["key"]: s for s in log.list_sessions()}
+        assert by_key["t-tagged"].get("tags") == ["tag-1", "tag-2"]
+        # A session with no tags carries no tags key at all (not an empty list),
+        # matching how folder_id is omitted when unset.
+        assert "tags" not in by_key["t-untagged"]
+
+    def test_list_sessions_tolerates_malformed_tags(self, tmp_path):
+        """A malformed agent-written tags value must not crash list_sessions().
+
+        Session metadata is agent-writable, so tags can be any JSON shape. A
+        bare int reaching list() would raise TypeError and 500 every consumer,
+        so a non-list value is dropped and a list is coerced to bounded string
+        ids. The second list_sessions() call exercises the cached-metadata
+        branch, which is the path that must also be guarded."""
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("t-bad", "user", "hi")
+        log.update_metadata("t-bad", {"tags": 5})
+        log.append("t-mixed", "user", "hi")
+        log.update_metadata("t-mixed", {"tags": ["ok", 7, "", "also-ok"]})
+        for _ in range(2):  # first call arms the cache; second hits the cached branch
+            by_key = {s["key"]: s for s in log.list_sessions()}
+            # Non-list tags: dropped entirely, no crash.
+            assert "tags" not in by_key["t-bad"]
+            # List tags: only non-empty string ids survive, in order.
+            assert by_key["t-mixed"].get("tags") == ["ok", "also-ok"]
+
     def test_search_sessions_surfaces_folder_id(self, tmp_path):
         """search_sessions() results carry folder_id — the frontend groups on it."""
         log = ConversationLog(base_dir=tmp_path)

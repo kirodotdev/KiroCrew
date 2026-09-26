@@ -11070,7 +11070,10 @@
       "opens_here_runs_on_instance": "Öffnet diese Sitzung hier — ihre Ausführung läuft weiter auf {{name}}",
       "opens_on_crew_switches_there": "Öffnet auf {{name}} — wechselt zu dieser Crew, nicht hier",
       "remote_instances_list_unavailable": "Remote-Crews konnten nicht aufgelistet werden, daher werden ihre Sitzungen nicht angezeigt.",
-      "model_list_failed": "Die Modellliste konnte nicht geladen werden. Die Anzeige ist möglicherweise unvollständig oder veraltet."
+      "model_list_failed": "Die Modellliste konnte nicht geladen werden. Die Anzeige ist möglicherweise unvollständig oder veraltet.",
+      "show_subagent_sessions": "Subagent-Sitzungen anzeigen",
+      "all_subagent_sessions_hidden_one": "{{count}} Subagent-Sitzung ausgeblendet. Blende Subagent-Sitzungen ein, um sie zu sehen.",
+      "all_subagent_sessions_hidden_other": "{{count}} Subagent-Sitzungen ausgeblendet. Blende Subagent-Sitzungen ein, um sie zu sehen."
     },
     "connectionsPage": {
       "action_failed": "Aktion fehlgeschlagen: {{error}}",

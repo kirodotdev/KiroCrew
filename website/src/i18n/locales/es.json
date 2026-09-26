@@ -11234,7 +11234,11 @@
       "opens_here_runs_on_instance": "Abre esta sesión aquí — su ejecución sigue en {{name}}",
       "opens_on_crew_switches_there": "Se abre en {{name}} — cambia a ese Crew, no aquí",
       "remote_instances_list_unavailable": "No se pudieron enumerar los crews remotos, por lo que sus sesiones no se muestran.",
-      "model_list_failed": "No se pudo cargar la lista de modelos. Lo que se muestra puede estar incompleto o desactualizado."
+      "model_list_failed": "No se pudo cargar la lista de modelos. Lo que se muestra puede estar incompleto o desactualizado.",
+      "show_subagent_sessions": "Mostrar sesiones de subagentes",
+      "all_subagent_sessions_hidden_one": "{{count}} sesión de subagente oculta. Muestra las sesiones de subagentes para verla.",
+      "all_subagent_sessions_hidden_many": "{{count}} de sesiones de subagentes ocultas. Muestra las sesiones de subagentes para verlas.",
+      "all_subagent_sessions_hidden_other": "{{count}} sesiones de subagentes ocultas. Muestra las sesiones de subagentes para verlas."
     },
     "connectionsPage": {
       "action_failed": "La acción falló: {{error}}",

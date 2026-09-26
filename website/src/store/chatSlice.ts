@@ -1590,12 +1590,14 @@ export const fetchHistory = createAsyncThunk(
     const offset = append ? state.historyOffset : 0
     // Older sessions is the complement of the open tabs listed above it, so the
     // server drops anything a live slot already holds. `user_only` drops the
-    // machine namespaces on top of that: a subagent or workflow transcript is
-    // not a conversation the reader ever addressed, and having no title it would
-    // render its own storage key as the row label. Both excluded server-side
-    // because `historyOffset` advances by the row count received: dropping rows
-    // here would desynchronise the offset and skip or repeat rows on the next page.
-    const d = await api.sessions(30, offset, false, true, true)
+    // machine namespaces on top of that. `include_subagents` then keeps the
+    // subagent namespace in: this pane presents subagent rows as a group the
+    // reveal toggle hides by default and can show, so they must arrive from the
+    // server to be toggled — the other machine namespaces (workflow, channel,
+    // secretary) have no such surface and stay dropped. All applied server-side
+    // because `historyOffset` advances by the row count received: filtering here
+    // would desynchronise the offset and skip or repeat rows on the next page.
+    const d = await api.sessions(30, offset, false, true, true, true)
     return { sessions: (d.sessions || d) as SessionInfo[], hasMore: d.has_more || false, offset, append }
   },
 )

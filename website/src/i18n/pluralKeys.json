@@ -149,6 +149,7 @@
   "pages.chat.subagentRunCard.agent_running",
   "pages.chat.turnBlock.worked_through_step",
   "pages.chatPage.knowledge_item",
+  "pages.chatSidebar.all_subagent_sessions_hidden",
   "pages.chatSidebar.archive_session",
   "pages.chatSidebar.day",
   "pages.chatSidebar.more_pull_request_in_this_session",
