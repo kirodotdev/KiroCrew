@@ -55,7 +55,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_KNOWN,
 )
 from kiro_crew.config import paths as config_paths
-from kiro_crew.constants import KIROCREW_SPAWN_INSTANCE_ENV
+from kiro_crew.constants import KIROCREW_SPAWN_HOME_ENV, KIROCREW_SPAWN_INSTANCE_ENV
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 
 #: The committed fixture. Resolved from this file so both callers agree on it.
@@ -100,6 +100,10 @@ VOLATILE_ENV = {
     # /proc to tell the root's own descendants from a fresh runtime's. That the
     # runtime's child RECEIVES it is the fact being pinned.
     KIROCREW_SPAWN_INSTANCE_ENV: "<spawn-instance>",
+    # The recording host's data home. That the runtime's child RECEIVES it is the
+    # fact being pinned: the orphan sweep reads it back out of /proc to prove a
+    # leaked runtime was spawned by this install and not a second one.
+    KIROCREW_SPAWN_HOME_ENV: "<data-home>",
 }
 
 #: The parent environment every capture runs against, whatever the recording host's

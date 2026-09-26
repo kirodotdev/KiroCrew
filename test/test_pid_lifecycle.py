@@ -4120,6 +4120,18 @@ class TestIsSweepableOrphanWork:
             assert _is_sweepable_orphan_work(1234, b"", 700.0) is False
 
 
+def _stat_from(child_map: dict[int, list[int]], tokens: dict[int, str] | None = None):
+    """A ``_pid_parent_and_token`` stub whose parent edges agree with *child_map*."""
+    parent_of = {c: p for p, kids in child_map.items() for c in kids}
+
+    def _stat(pid: int) -> tuple[int | None, str | None]:
+        if pid not in parent_of:
+            return (None, None)
+        return (parent_of[pid], (tokens or {}).get(pid, f"tok-{pid}"))
+
+    return _stat
+
+
 class TestWorkOrphanSweepIntegration:
     """find + kill phases honor the work-process positive-ID path."""
 
@@ -4222,10 +4234,22 @@ class TestWorkOrphanSweepIntegration:
                 return_value=False,
             ),
             # Preorder: 910 -> [911, 912(-> 913)]; 913 is a grandchild.
-            patch("kiro_crew.acp.client._get_child_pids", return_value=[911, 912, 913]),
             patch(
-                "kiro_crew.session_pid.platform_compat.kill_pid",
-                side_effect=lambda p, _sig: kill_order.append(p),
+                "kiro_crew.session_pid._build_child_map",
+                return_value={910: [911, 912], 912: [913]},
+            ),
+            patch(
+                "kiro_crew.session_pid._pid_parent_and_token",
+                side_effect=_stat_from({910: [911, 912], 912: [913]}),
+            ),
+            patch("kiro_crew.session_pid._pid_start_token", side_effect=lambda p: f"tok-{p}"),
+            # The sweep signals through the identity-bound helper, not the bare
+            # number, so the stand-in records the pid its token actually pinned.
+            patch(
+                "kiro_crew.session_pid._signal_pid_by_identity",
+                side_effect=lambda p, _sig, start: bool(
+                    start == f"tok-{p}" and (kill_order.append(p) or True)
+                ),
             ),
         ):
             mock_sys.platform = "linux"
@@ -4273,12 +4297,21 @@ class TestWorkOrphanSweepIntegration:
                 return_value=False,
             ),
             patch(
-                "kiro_crew.acp.client._get_child_pids",
-                return_value=[931, 932, 933, 934, 935],
+                "kiro_crew.session_pid._build_child_map",
+                return_value={930: [931, 932, 933, 934, 935]},
             ),
             patch(
-                "kiro_crew.session_pid.platform_compat.kill_pid",
-                side_effect=lambda p, _sig: kill_order.append(p),
+                "kiro_crew.session_pid._pid_parent_and_token",
+                side_effect=_stat_from({930: [931, 932, 933, 934, 935]}),
+            ),
+            patch("kiro_crew.session_pid._pid_start_token", side_effect=lambda p: f"tok-{p}"),
+            # The sweep signals through the identity-bound helper, not the bare
+            # number, so the stand-in records the pid its token actually pinned.
+            patch(
+                "kiro_crew.session_pid._signal_pid_by_identity",
+                side_effect=lambda p, _sig, start: bool(
+                    start == f"tok-{p}" and (kill_order.append(p) or True)
+                ),
             ),
         ):
             mock_sys.platform = "linux"
@@ -5816,14 +5849,14 @@ class TestUntrackedRuntimeReportIntegration:
             mock_sys.platform = "linux"
             result = find_orphan_mcp_candidates(active_pids=set())
 
-        assert result == []  # report-only: nothing handed to the kill phase
+        assert result == []  # not provably ours: nothing handed to the kill phase
         records = [r for r in caplog.records if "4242" in r.getMessage()]
         assert len(records) == 1
         assert records[0].levelno == logging.ERROR
         message = records[0].getMessage()
         assert "kiro-cli" in message
         assert "NEITHER PID file" in message
-        assert "report only" in message
+        assert "Not terminated" in message
 
     def test_argv0_control_characters_cannot_forge_log_lines(
         self,
@@ -6003,6 +6036,616 @@ class TestUntrackedRuntimeReportIntegration:
 
         assert result == []
         assert [r for r in caplog.records if "4646" in r.getMessage()] == []
+
+
+# ── Untracked managed-agent runtime orphan (RECLAIM) ──
+
+_THIS_HOME = "/home/u/.kiro/crew"
+
+
+class TestIsReclaimableUntrackedRuntime:
+    """Kill authority needs every conjunct; each test drops exactly one."""
+
+    def _reclaimable(self, *, instance: str | None = "inst-1", **overrides):
+        from kiro_crew.session_pid import _is_reclaimable_untracked_runtime
+
+        kwargs = dict(
+            pid=900,
+            cmdline=_agent_cmdline(),
+            tracked_pids=set(),
+            tracked_complete=True,
+            age_seconds=3600.0,
+        )
+        kwargs.update(overrides)
+        with patch("kiro_crew.session_pid._env_spawn_instance", return_value=instance):
+            return _is_reclaimable_untracked_runtime(**kwargs)
+
+    def test_owned_untracked_old_runtime_is_reclaimable(self) -> None:
+        """A wrapper-launched runtime whose launcher (its SID) is gone is a leak."""
+        with (
+            patch("kiro_crew.session_pid.peek_data_home", return_value=Path(_THIS_HOME)),
+            patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True),
+            patch("kiro_crew.session_pid._env_spawn_home", return_value=_THIS_HOME),
+            patch("kiro_crew.session_pid._linux_pid_sid", side_effect={900: 880, 880: -1}.get),
+        ):
+            assert self._reclaimable() is True
+
+    def test_runtime_under_recycled_leader_pid_is_reclaimable(self) -> None:
+        """A recycled leader PID that is not itself a session leader resurrects nothing."""
+        with (
+            patch("kiro_crew.session_pid.peek_data_home", return_value=Path(_THIS_HOME)),
+            patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True),
+            patch("kiro_crew.session_pid._env_spawn_home", return_value=_THIS_HOME),
+            patch("kiro_crew.session_pid._linux_pid_sid", side_effect={900: 880, 880: 700}.get),
+        ):
+            assert self._reclaimable() is True
+
+    def test_self_session_leader_forbids(self) -> None:
+        """A setsid'd harness an agent detached is its own leader and carries the stamps."""
+        with (
+            patch("kiro_crew.session_pid.peek_data_home", return_value=Path(_THIS_HOME)),
+            patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True),
+            patch("kiro_crew.session_pid._env_spawn_home", return_value=_THIS_HOME),
+            patch("kiro_crew.session_pid._linux_pid_sid", return_value=900),
+        ):
+            assert self._reclaimable() is False
+
+    def test_runtime_owned_by_live_session_forbids(self) -> None:
+        """A background kiro-cli an agent launched inherits the stamps; its live leader owns it."""
+        with (
+            patch("kiro_crew.session_pid.peek_data_home", return_value=Path(_THIS_HOME)),
+            patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True),
+            patch("kiro_crew.session_pid._env_spawn_home", return_value=_THIS_HOME),
+            patch("kiro_crew.session_pid._linux_pid_sid", side_effect={900: 880, 880: 880}.get),
+        ):
+            assert self._reclaimable() is False
+
+    def test_runtime_under_a_recycled_session_leader_is_reclaimable(self) -> None:
+        """A later runtime on the dead leader's number is a leader with its own instance.
+
+        Being a session leader is a shape any fresh runtime spawn has, so the
+        number alone would make the replacement a false owner and leave the
+        leaked tree alone for as long as the stranger lives. The leader owns the
+        process only while it carries the process's own spawn instance.
+        """
+        from kiro_crew.session_pid import _is_reclaimable_untracked_runtime
+
+        with (
+            patch("kiro_crew.session_pid.peek_data_home", return_value=Path(_THIS_HOME)),
+            patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True),
+            patch("kiro_crew.session_pid._env_spawn_home", return_value=_THIS_HOME),
+            patch("kiro_crew.session_pid._linux_pid_sid", side_effect={900: 880, 880: 880}.get),
+            patch(
+                "kiro_crew.session_pid._env_spawn_instance",
+                side_effect={900: "inst-1", 880: "inst-2"}.get,
+            ),
+        ):
+            assert (
+                _is_reclaimable_untracked_runtime(
+                    pid=900,
+                    cmdline=_agent_cmdline(),
+                    tracked_pids=set(),
+                    tracked_complete=True,
+                    age_seconds=3600.0,
+                )
+                is True
+            )
+
+    def test_leader_with_unreadable_instance_forbids(self) -> None:
+        """A leader whose token cannot be read is taken as the owner, never as a stranger."""
+        from kiro_crew.session_pid import _is_reclaimable_untracked_runtime
+
+        with (
+            patch("kiro_crew.session_pid.peek_data_home", return_value=Path(_THIS_HOME)),
+            patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True),
+            patch("kiro_crew.session_pid._env_spawn_home", return_value=_THIS_HOME),
+            patch("kiro_crew.session_pid._linux_pid_sid", side_effect={900: 880, 880: 880}.get),
+            patch(
+                "kiro_crew.session_pid._env_spawn_instance",
+                side_effect={900: "inst-1", 880: None}.get,
+            ),
+        ):
+            assert (
+                _is_reclaimable_untracked_runtime(
+                    pid=900,
+                    cmdline=_agent_cmdline(),
+                    tracked_pids=set(),
+                    tracked_complete=True,
+                    age_seconds=3600.0,
+                )
+                is False
+            )
+
+    def test_unreadable_sid_forbids(self) -> None:
+        with (
+            patch("kiro_crew.session_pid.peek_data_home", return_value=Path(_THIS_HOME)),
+            patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True),
+            patch("kiro_crew.session_pid._env_spawn_home", return_value=_THIS_HOME),
+            patch("kiro_crew.session_pid._linux_pid_sid", return_value=-1),
+        ):
+            assert self._reclaimable() is False
+
+    def test_incomplete_tracking_snapshot_forbids(self) -> None:
+        """A snapshot that may have dropped a live PID authorises nothing."""
+        with (
+            patch("kiro_crew.session_pid.peek_data_home", return_value=Path(_THIS_HOME)),
+            patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True),
+            patch("kiro_crew.session_pid._env_spawn_home", return_value=_THIS_HOME) as home,
+        ):
+            assert self._reclaimable(tracked_complete=False) is False
+        home.assert_not_called()
+
+    def test_under_age_floor_forbids(self) -> None:
+        from kiro_crew.session_pid import _UNTRACKED_RUNTIME_MIN_AGE_SECONDS
+
+        with (
+            patch("kiro_crew.session_pid.peek_data_home", return_value=Path(_THIS_HOME)),
+            patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True),
+            patch("kiro_crew.session_pid._env_spawn_home", return_value=_THIS_HOME),
+        ):
+            assert self._reclaimable(age_seconds=_UNTRACKED_RUNTIME_MIN_AGE_SECONDS - 1) is False
+
+    def test_other_install_runtime_forbids(self) -> None:
+        """A second install's live runtime is tracked in ITS files, not ours."""
+        with (
+            patch("kiro_crew.session_pid.peek_data_home", return_value=Path(_THIS_HOME)),
+            patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True),
+            patch("kiro_crew.session_pid._env_spawn_home", return_value="/home/u/.kiro/crew-b"),
+        ):
+            assert self._reclaimable() is False
+
+    def test_runtime_without_spawn_home_forbids(self) -> None:
+        """A runtime spawned before the stamp existed stays report-only."""
+        with (
+            patch("kiro_crew.session_pid.peek_data_home", return_value=Path(_THIS_HOME)),
+            patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True),
+            patch("kiro_crew.session_pid._env_spawn_home", return_value=None),
+        ):
+            assert self._reclaimable() is False
+
+    def test_runtime_without_spawn_instance_forbids(self) -> None:
+        """Without the instance token the kill phase could vouch no member of the tree."""
+        with (
+            patch("kiro_crew.session_pid.peek_data_home", return_value=Path(_THIS_HOME)),
+            patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True),
+            patch("kiro_crew.session_pid._env_spawn_home", return_value=_THIS_HOME),
+            patch("kiro_crew.session_pid._linux_pid_sid", side_effect={900: 880, 880: -1}.get),
+        ):
+            assert self._reclaimable(instance=None) is False
+
+    def test_tracked_runtime_forbids(self) -> None:
+        with (
+            patch("kiro_crew.session_pid.peek_data_home", return_value=Path(_THIS_HOME)),
+            patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True),
+            patch("kiro_crew.session_pid._env_spawn_home", return_value=_THIS_HOME),
+        ):
+            assert self._reclaimable(tracked_pids={900}) is False
+
+
+class TestUntrackedRuntimeReclaimIntegration:
+    """find + kill phases reclaim a provably-owned untracked runtime."""
+
+    def test_find_hands_owned_runtime_to_kill_phase_without_report(
+        self,
+        pid_file: Path,
+        session_pid_file: Path,
+        reset_untracked_report_dedup: None,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        from kiro_crew.session_pid import find_orphan_mcp_candidates
+
+        with (
+            patch("kiro_crew.session_pid._our_orphan_pids", return_value=[4343]),
+            patch("kiro_crew.session_pid.sys") as mock_sys,
+            patch.object(Path, "read_bytes", return_value=_agent_cmdline()),
+            patch("os.getpid", return_value=1),
+            patch("kiro_crew.session_pid._linux_pid_age", return_value=3600.0),
+            patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True),
+            patch("kiro_crew.session_pid.peek_data_home", return_value=Path(_THIS_HOME)),
+            patch("kiro_crew.session_pid._env_spawn_home", return_value=_THIS_HOME),
+            patch("kiro_crew.session_pid._env_spawn_instance", return_value="inst-1"),
+            patch("kiro_crew.session_pid._linux_pid_sid", side_effect={4343: 4300, 4300: -1}.get),
+            caplog.at_level(logging.ERROR, logger="kiro_crew.session_pid"),
+        ):
+            mock_sys.platform = "linux"
+            result = find_orphan_mcp_candidates(active_pids=set())
+
+        assert result == [4343]
+        assert [r for r in caplog.records if "4343" in r.getMessage()] == []
+
+    def test_find_reports_runtime_a_live_session_still_owns(
+        self,
+        pid_file: Path,
+        session_pid_file: Path,
+        reset_untracked_report_dedup: None,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        from kiro_crew.session_pid import find_orphan_mcp_candidates
+
+        with (
+            patch("kiro_crew.session_pid._our_orphan_pids", return_value=[4545]),
+            patch("kiro_crew.session_pid.sys") as mock_sys,
+            patch.object(Path, "read_bytes", return_value=_agent_cmdline()),
+            patch("os.getpid", return_value=1),
+            patch("kiro_crew.session_pid._linux_pid_age", return_value=3600.0),
+            patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True),
+            patch("kiro_crew.session_pid.peek_data_home", return_value=Path(_THIS_HOME)),
+            patch("kiro_crew.session_pid._env_spawn_home", return_value=_THIS_HOME),
+            patch("kiro_crew.session_pid._env_spawn_instance", return_value="inst-1"),
+            patch("kiro_crew.session_pid._linux_pid_sid", side_effect={4545: 4500, 4500: 4500}.get),
+            caplog.at_level(logging.ERROR, logger="kiro_crew.session_pid"),
+        ):
+            mock_sys.platform = "linux"
+            result = find_orphan_mcp_candidates(active_pids=set())
+
+        assert result == []
+        records = [r for r in caplog.records if "4545" in r.getMessage()]
+        assert len(records) == 1
+        assert "live owning session" in records[0].getMessage()
+
+    def test_find_reports_instead_when_snapshot_incomplete(
+        self,
+        pid_file: Path,
+        session_pid_file: Path,
+        reset_untracked_report_dedup: None,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        from kiro_crew.session_pid import find_orphan_mcp_candidates
+
+        with (
+            patch("kiro_crew.session_pid._our_orphan_pids", return_value=[4444]),
+            patch("kiro_crew.session_pid.sys") as mock_sys,
+            patch.object(Path, "read_bytes", return_value=_agent_cmdline()),
+            patch("os.getpid", return_value=1),
+            patch("kiro_crew.session_pid._linux_pid_age", return_value=3600.0),
+            patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True),
+            patch("kiro_crew.session_pid._read_tracked_agent_pids", return_value=(set(), False)),
+            patch("kiro_crew.session_pid.peek_data_home", return_value=Path(_THIS_HOME)),
+            patch("kiro_crew.session_pid._env_spawn_home", return_value=_THIS_HOME),
+            patch("kiro_crew.session_pid._env_spawn_instance", return_value="inst-1"),
+            patch("kiro_crew.session_pid._linux_pid_sid", side_effect={4444: 4400, 4400: -1}.get),
+            caplog.at_level(logging.ERROR, logger="kiro_crew.session_pid"),
+        ):
+            mock_sys.platform = "linux"
+            result = find_orphan_mcp_candidates(active_pids=set())
+
+        assert result == []
+        records = [r for r in caplog.records if "4444" in r.getMessage()]
+        assert len(records) == 1
+        assert "Not terminated" in records[0].getMessage()
+
+    _GROUP = {910: "tok-910", 911: "tok-911", 912: "tok-912", 913: "tok-913"}
+
+    def _kill_phase_patches(self, kill_order: list[int], **overrides):
+        from kiro_crew import session_pid as sp
+
+        patches = dict(
+            getpgrp=patch("os.getpgrp", return_value=1000),
+            getpgid=patch("os.getpgid", return_value=900),
+            getpid=patch("os.getpid", return_value=1),
+            read_bytes=patch.object(Path, "read_bytes", return_value=_agent_cmdline()),
+            age=patch("kiro_crew.session_pid._linux_pid_age", return_value=3600.0),
+            marker=patch("kiro_crew.session_pid._env_has_kirocrew_marker", return_value=True),
+            token=patch("kiro_crew.session_pid._pid_start_token", side_effect=lambda p: f"tok-{p}"),
+            tracked=patch(
+                "kiro_crew.session_pid._read_tracked_agent_pids", return_value=(set(), True)
+            ),
+            config_dir=patch("kiro_crew.session_pid.peek_data_home", return_value=Path(_THIS_HOME)),
+            home=patch("kiro_crew.session_pid._env_spawn_home", return_value=_THIS_HOME),
+            instance=patch("kiro_crew.session_pid._env_spawn_instance", return_value="inst-1"),
+            sid=patch("kiro_crew.session_pid._linux_pid_sid", side_effect={910: 900, 900: -1}.get),
+            members=patch(
+                "kiro_crew.session_pid._marked_group_members", return_value=dict(self._GROUP)
+            ),
+            # The sweep signals through the identity-bound helper, never the bare
+            # number, so the fake stands in for that helper and consults the same
+            # token seam -- a target whose identity has moved is reported as
+            # undelivered exactly as a real pidfd verification would report it.
+            kill=patch(
+                "kiro_crew.session_pid._signal_pid_by_identity",
+                side_effect=lambda p, _sig, start: bool(
+                    sp._pid_start_token(p) == start and (kill_order.append(p) or True)
+                ),
+            ),
+            bare_kill=patch(
+                "kiro_crew.session_pid.platform_compat.kill_pid",
+                side_effect=AssertionError("the sweep signalled a bare pid, not a pinned identity"),
+            ),
+        )
+        patches.update(overrides)
+        return patches.values()
+
+    def test_kill_sweeps_vouched_group_members_before_root(self) -> None:
+        """Every vouched member of the runtime's group dies, the root last."""
+        from contextlib import ExitStack
+
+        from kiro_crew.session_pid import kill_orphan_mcps
+
+        kill_order: list[int] = []
+        with ExitStack() as stack:
+            for p in self._kill_phase_patches(kill_order):
+                stack.enter_context(p)
+            mock_sys = stack.enter_context(patch("kiro_crew.session_pid.sys"))
+            mock_sys.platform = "linux"
+            killed = kill_orphan_mcps([910])
+
+        assert killed == 4
+        assert kill_order == [911, 912, 913, 910]
+
+    def test_kill_vouches_members_by_the_roots_group_and_instance(self) -> None:
+        """The group is read from the live root (a wrapper's), keyed by the root's own token."""
+        from contextlib import ExitStack
+
+        from kiro_crew.session_pid import kill_orphan_mcps
+
+        kill_order: list[int] = []
+        vouch = MagicMock(return_value={})
+        members = patch("kiro_crew.session_pid._marked_group_members", new=vouch)
+        with ExitStack() as stack:
+            for p in self._kill_phase_patches(kill_order, members=members):
+                stack.enter_context(p)
+            mock_sys = stack.enter_context(patch("kiro_crew.session_pid.sys"))
+            mock_sys.platform = "linux"
+            killed = kill_orphan_mcps([910])
+
+        vouch.assert_called_once_with(900, "inst-1")
+        assert killed == 1
+        assert kill_order == [910]
+
+    def test_kill_refuses_a_root_in_our_own_group(self) -> None:
+        """A root in the gateway's group was not spawned as a leader; listing it lists us."""
+        from contextlib import ExitStack
+
+        from kiro_crew.session_pid import kill_orphan_mcps
+
+        kill_order: list[int] = []
+        vouch = MagicMock(return_value={})
+        with ExitStack() as stack:
+            for p in self._kill_phase_patches(
+                kill_order,
+                getpgid=patch("os.getpgid", return_value=1000),
+                members=patch("kiro_crew.session_pid._marked_group_members", new=vouch),
+            ):
+                stack.enter_context(p)
+            mock_sys = stack.enter_context(patch("kiro_crew.session_pid.sys"))
+            mock_sys.platform = "linux"
+            killed = kill_orphan_mcps([910])
+
+        vouch.assert_not_called()
+        assert killed == 0
+        assert kill_order == []
+
+    def test_kill_reverify_spares_runtime_tracked_since_find(self) -> None:
+        """A runtime tracked between the two phases is owned again."""
+        from contextlib import ExitStack
+
+        from kiro_crew.session_pid import kill_orphan_mcps
+
+        kill_order: list[int] = []
+        tracked = patch(
+            "kiro_crew.session_pid._read_tracked_agent_pids", return_value=({910}, True)
+        )
+        with ExitStack() as stack:
+            for p in self._kill_phase_patches(kill_order, tracked=tracked):
+                stack.enter_context(p)
+            mock_sys = stack.enter_context(patch("kiro_crew.session_pid.sys"))
+            mock_sys.platform = "linux"
+            killed = kill_orphan_mcps([910])
+
+        assert killed == 0
+        assert kill_order == []
+
+    def test_kill_reverify_spares_recycled_pid(self) -> None:
+        """A start identity that moved between reads names a different process."""
+        from contextlib import ExitStack
+
+        from kiro_crew.session_pid import kill_orphan_mcps
+
+        kill_order: list[int] = []
+        reads: list[int] = []
+
+        def token(pid: int) -> str:
+            reads.append(pid)
+            return "tok-old" if len(reads) == 1 else "tok-new"
+
+        token_patch = patch("kiro_crew.session_pid._pid_start_token", side_effect=token)
+        with ExitStack() as stack:
+            for p in self._kill_phase_patches(kill_order, token=token_patch):
+                stack.enter_context(p)
+            mock_sys = stack.enter_context(patch("kiro_crew.session_pid.sys"))
+            mock_sys.platform = "linux"
+            killed = kill_orphan_mcps([910])
+
+        assert killed == 0
+        assert kill_order == []
+
+    def test_kill_enumerates_no_member_of_a_root_recycled_before_the_group_read(self) -> None:
+        """A replacement runtime on the root's number lends its instance to nobody.
+
+        The instance and group are read from the live root and the root is
+        signalled last, so a root recycled after its identity was captured would
+        have its REPLACEMENT's members enumerated and SIGKILLed on the dead
+        root's verdict, with only the replacement itself spared by the final
+        token check. The token is compared again before the enumeration, and a
+        mismatch enumerates and signals nothing.
+        """
+        from contextlib import ExitStack
+
+        from kiro_crew.session_pid import kill_orphan_mcps
+
+        kill_order: list[int] = []
+        reads: list[int] = []
+
+        def token(pid: int) -> str:
+            # The first read of 910 is the captured identity; every read after
+            # it sees the replacement that took the number.
+            reads.append(pid)
+            return "tok-910" if pid == 910 and len(reads) == 1 else f"tok-{pid}-replacement"
+
+        vouch = MagicMock(return_value=dict(self._GROUP))
+        signals = MagicMock(return_value=True)
+        with ExitStack() as stack:
+            for p in self._kill_phase_patches(
+                kill_order,
+                token=patch("kiro_crew.session_pid._pid_start_token", side_effect=token),
+                members=patch("kiro_crew.session_pid._marked_group_members", new=vouch),
+                kill=patch("kiro_crew.session_pid._signal_pid_by_identity", new=signals),
+            ):
+                stack.enter_context(p)
+            mock_sys = stack.enter_context(patch("kiro_crew.session_pid.sys"))
+            mock_sys.platform = "linux"
+            killed = kill_orphan_mcps([910])
+
+        assert killed == 0
+        vouch.assert_not_called()
+        signals.assert_not_called()
+
+    def test_kill_enumerates_no_member_of_a_root_whose_identity_is_unreadable(self) -> None:
+        """No captured root identity means the live instance vouches for nothing."""
+        from contextlib import ExitStack
+
+        from kiro_crew.session_pid import kill_orphan_mcps
+
+        kill_order: list[int] = []
+        vouch = MagicMock(return_value=dict(self._GROUP))
+        signals = MagicMock(return_value=True)
+        with ExitStack() as stack:
+            for p in self._kill_phase_patches(
+                kill_order,
+                token=patch("kiro_crew.session_pid._pid_start_token", return_value=None),
+                members=patch("kiro_crew.session_pid._marked_group_members", new=vouch),
+                kill=patch("kiro_crew.session_pid._signal_pid_by_identity", new=signals),
+            ):
+                stack.enter_context(p)
+            mock_sys = stack.enter_context(patch("kiro_crew.session_pid.sys"))
+            mock_sys.platform = "linux"
+            killed = kill_orphan_mcps([910])
+
+        assert killed == 0
+        vouch.assert_not_called()
+        signals.assert_not_called()
+
+    def test_kill_skips_member_recycled_since_the_vouch(self) -> None:
+        """A group member whose start identity moved after the vouch is not signalled."""
+        from contextlib import ExitStack
+
+        from kiro_crew.session_pid import kill_orphan_mcps
+
+        kill_order: list[int] = []
+
+        def token(pid: int) -> str:
+            # pid 912 exited and was reused after the vouch captured "tok-912".
+            return "recycled" if pid == 912 else f"tok-{pid}"
+
+        token_patch = patch("kiro_crew.session_pid._pid_start_token", side_effect=token)
+        with ExitStack() as stack:
+            for p in self._kill_phase_patches(kill_order, token=token_patch):
+                stack.enter_context(p)
+            mock_sys = stack.enter_context(patch("kiro_crew.session_pid.sys"))
+            mock_sys.platform = "linux"
+            killed = kill_orphan_mcps([910])
+
+        assert killed == 3
+        assert kill_order == [911, 913, 910]
+
+    def test_kill_signals_through_the_pinned_identity_not_the_bare_pid(self) -> None:
+        """The token must BIND the signal, so the sweep cannot SIGKILL a recycled stranger.
+
+        Comparing the start token and then signalling the number is two operations
+        on a bare pid: the target can exit in between and the kernel can reissue
+        the number, and the SIGKILL then lands on an unrelated process while the
+        sweep logs and counts it as the orphan's. The same file already refuses
+        that residual for the sibling group-teardown path, so this path routes
+        through the same open-verify-signal helper.
+        """
+        from contextlib import ExitStack
+
+        from kiro_crew.session_pid import kill_orphan_mcps
+
+        kill_order: list[int] = []
+        calls: list[tuple[int, int, str]] = []
+        pinned = patch(
+            "kiro_crew.session_pid._signal_pid_by_identity",
+            side_effect=lambda p, sig, start: bool(
+                calls.append((p, sig, start)) or kill_order.append(p) or True
+            ),
+        )
+        with ExitStack() as stack:
+            for p in self._kill_phase_patches(kill_order, kill=pinned):
+                stack.enter_context(p)
+            mock_sys = stack.enter_context(patch("kiro_crew.session_pid.sys"))
+            mock_sys.platform = "linux"
+            killed = kill_orphan_mcps([910])
+
+        assert killed == 4
+        # Every target is signalled through the helper, each pinned to the token
+        # captured when it was enumerated -- not to a token re-read just before.
+        assert [(pid, start) for pid, _sig, start in calls] == [
+            (911, "tok-911"),
+            (912, "tok-912"),
+            (913, "tok-913"),
+            (910, "tok-910"),
+        ]
+        assert {sig for _pid, sig, _start in calls} == {platform_compat.SIGKILL}
+
+    def test_kill_counts_only_a_delivery_the_identity_check_allowed(self) -> None:
+        """An undelivered signal is not a kill: the process was gone or recycled.
+
+        The helper returns False when the pid it opened is not the process the
+        token named. Counting that as a kill reports a reclaim that never
+        happened, and a count kept on an unverified signal is the same count a
+        check-then-kill on a bare number would keep after signalling a stranger.
+        """
+        from contextlib import ExitStack
+
+        from kiro_crew.session_pid import kill_orphan_mcps
+
+        kill_order: list[int] = []
+
+        def _pinned(pid: int, sig: int, start: str) -> bool:
+            # 912's number was reissued between the vouch and the signal; the
+            # pidfd verification catches it and nothing is sent.
+            if pid == 912:
+                return False
+            kill_order.append(pid)
+            return True
+
+        with ExitStack() as stack:
+            for p in self._kill_phase_patches(
+                kill_order,
+                kill=patch("kiro_crew.session_pid._signal_pid_by_identity", side_effect=_pinned),
+            ):
+                stack.enter_context(p)
+            mock_sys = stack.enter_context(patch("kiro_crew.session_pid.sys"))
+            mock_sys.platform = "linux"
+            killed = kill_orphan_mcps([910])
+
+        assert killed == 3
+        assert kill_order == [911, 913, 910]
+
+    def test_kill_log_escapes_hostile_argv0(self, caplog: pytest.LogCaptureFixture) -> None:
+        """argv0 is process-controlled; a newline in it must not forge a log line."""
+        from contextlib import ExitStack
+
+        from kiro_crew.session_pid import kill_orphan_mcps
+
+        kill_order: list[int] = []
+        hostile = b"/opt/kiro-cli\n2026-01-01 ERROR forged\x00acp\x00"
+        read_bytes = patch.object(Path, "read_bytes", return_value=hostile)
+        members = patch("kiro_crew.session_pid._marked_group_members", return_value={})
+        with ExitStack() as stack:
+            for p in self._kill_phase_patches(kill_order, read_bytes=read_bytes, members=members):
+                stack.enter_context(p)
+            mock_sys = stack.enter_context(patch("kiro_crew.session_pid.sys"))
+            mock_sys.platform = "linux"
+            stack.enter_context(caplog.at_level(logging.INFO, logger="kiro_crew.session_pid"))
+            killed = kill_orphan_mcps([910])
+
+        assert killed == 1
+        messages = [r.getMessage() for r in caplog.records if "SIGKILL pid=910" in r.getMessage()]
+        assert len(messages) == 1
+        assert "\n" not in messages[0]
+        assert "\\n2026-01-01 ERROR forged" in messages[0]
 
 
 # ── Orphaned playwright-cli browser daemon sweep ───────────────

@@ -119,8 +119,9 @@ from kiro_crew.agent_sdk.tool_search import (
 )
 from kiro_crew.browser_cli.launch import browser_session_env, browser_socket_env
 from kiro_crew.config import live
-from kiro_crew.config.paths import kiro_agents_dir
+from kiro_crew.config.paths import kiro_agents_dir, peek_data_home
 from kiro_crew.constants import (
+    KIROCREW_SPAWN_HOME_ENV,
     KIROCREW_SPAWN_INSTANCE_ENV,
     KIROCREW_SPAWNED_ENV,
     KIROCREW_SPAWNED_VALUE,
@@ -2641,6 +2642,8 @@ class AcpRuntime:
         # server it spawns inherit this, so escaped launcher trees (``npx
         # @playwright/mcp`` -> node) are identifiable as ours.
         env[KIROCREW_SPAWNED_ENV] = KIROCREW_SPAWNED_VALUE
+        # Off-loop: a KIROCREW_HOME override is resolved through Path.resolve().
+        env[KIROCREW_SPAWN_HOME_ENV] = str(await self._to_thread_guarding_sandbox(peek_data_home))
         # The incarnation this spawn is. Minted here, before the process exists,
         # because it has to travel in the child's environment: it is what a
         # teardown reads back out of /proc/<pid>/environ to prove a process is

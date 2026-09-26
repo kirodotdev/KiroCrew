@@ -1074,8 +1074,9 @@ against sweep completeness, and are torn down at `close_all`.
   strands the whole tree: the leader dies, the `launcher`/`kiro-cli`/
   `kiro-cli-chat` + MCP children reparent to the systemd user manager, and
   nothing reaps the scope — the idle/RSS watchdog iterates only
-  `_sessions`, the PID sweeps know only tracked roots, and
-  `session_pid._is_untracked_managed_agent_orphan` is report-only. The reaper
+  `_sessions`, the PID sweeps know only tracked roots, and the untracked-MCP
+  sweep's runtime arm (below) needs a `KIROCREW_SPAWN_HOME` stamp that a
+  scope's tree may predate. The reaper
   reconciles the cgroup tree (the only authority on what this instance leaked)
   against the live registry. It runs on every cleanup tick via the
   `reap_agent_scopes` hook — never on the gateway boot path
@@ -1129,6 +1130,54 @@ against sweep completeness, and are torn down at `close_all`.
   `session_pid_<pid>.txt`/`.sig` files are separately pruned by
   `_prune_stale_session_pid_files` (below); the reaper adds no second deletion
   path.
+- **Reclaiming untracked agent runtimes** (`session_pid.kill_orphan_mcps`,
+  runtime arm; Linux only): the untracked-MCP sweep's runtime arm reclaims a
+  `kiro-cli`/`claude`-class root that reparented to init without ever being
+  recorded in a PID file — the shape left when a launcher is hard-killed but
+  its runtime survives. `_is_untracked_managed_agent_orphan` is the identity
+  (reparented, harness argv0 basename, `KIROCREW_SPAWNED`, in neither PID
+  file) and on its own only logs; `_is_reclaimable_untracked_runtime` grants
+  the kill and requires ALL of: a complete tracked-PID read (a partial read
+  reaps nothing), a `KIROCREW_SPAWN_HOME` environ stamp equal to this install's
+  data home (every runtime spawn stamps it; a stamp-less root from an older
+  build or another install stays report-only), a `KIROCREW_SPAWN_INSTANCE`
+  token (both spawn paths stamp it beside the home; the kill phase vouches the
+  tree's members by it), an age of at least
+  `_UNTRACKED_RUNTIME_MIN_AGE_SECONDS`, and no live owning session: the stamps are inherited by everything
+  a runtime spawns, so a `kiro-cli` an agent started in the background from
+  its shell tool carries them and reparents to init too, but its SID still
+  names the runtime that owns it (runtimes start with `start_new_session`);
+  while that session leader is alive and carries the same
+  `KIROCREW_SPAWN_INSTANCE` the process is report-only (a later runtime that
+  took a dead leader's number carries its own token and owns nothing; a
+  leader whose token is unreadable counts as the owner). A root that
+  is its own session leader is report-only as well: a harness an agent
+  detached with `setsid` has exactly that shape, inherits the stamps and may
+  be mid-work, and the SID cannot tell it from a direct spawn (the ruling
+  `_work_orphan_session_leader_alive` already makes for setsid'd work
+  processes). Only a root whose session leader is gone -- the shape a killed
+  launcher leaves behind -- is reclaimed.
+  The kill re-verifies the proof set against a fresh tracking
+  snapshot and the root's start token, then enumerates the tree as the root's
+  process GROUP vouched member by member through `_marked_group_members` with
+  the root's instance token — the same proof the ACP teardown uses once a
+  leader is gone — rather than by a parent-edge walk, which cannot reach a
+  member whose intermediate parent already died (this leak class is defined by
+  reparenting). The group is read from the live root, since a wrapper-launched
+  runtime sits in its launcher's group, and a root in the gateway's own group
+  is refused; the root's start token is compared again right after the
+  instance and group are read and before any member is enumerated, so a
+  replacement runtime that took the root's number never has its members
+  signalled on the strength of the dead root's verdict. Members are SIGKILLed
+  before the root, each start token re-read
+  immediately before its signal so a PID recycled since the vouch is skipped.
+  Division of labor with the scope reaper: the
+  scope reaper owns trees the cgroup can attribute (systemd `--scope` hosts),
+  where the cgroup is the ownership authority and no stamp is needed; this arm
+  owns runtimes outside any attributable scope (no systemd user manager, or
+  a runtime spawned before the scope existed), where the per-install stamp is
+  the only ownership proof. Both can see the same tree on a systemd host and
+  either may reclaim it first; the other then finds nothing.
 - **Stuck-turn reporting** (`_stuck_turn_check`, threshold
   `_STUCK_TURN_REPORT_SECS` = 300s, not configurable): reports a turn whose
   consumer has stopped pulling events. Exists because the per-turn watchdog in

@@ -25,6 +25,13 @@ KIROCREW_SPAWNED_VALUE = "1"
 # this one says WHICH spawn, so a teardown that has lost its root can still tell
 # the root's own tree from a fresh spawn that took the root's recycled pid.
 KIROCREW_SPAWN_INSTANCE_ENV = "KIROCREW_SPAWN_INSTANCE"
+# Data home of the gateway that spawned an agent runtime, set on the root's
+# environment and inherited by its whole tree. KIROCREW_SPAWNED says "a Kiro
+# Crew spawned this"; this one says WHICH install, so a sweep reading it back
+# out of /proc can tell its own install's leaked runtime from a second
+# install's live one, which is tracked in THAT install's PID files and so looks
+# untracked from here.
+KIROCREW_SPAWN_HOME_ENV = "KIROCREW_SPAWN_HOME"
 
 # Canonical truthy set for boolean environment variables (KIROCREW_NO_JAIL,
 # KIROCREW_DEV_MODE, …).  Use ``env_flag_enabled`` rather than ``bool(os.environ

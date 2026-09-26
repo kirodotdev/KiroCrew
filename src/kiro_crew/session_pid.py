@@ -24,8 +24,9 @@ from pathlib import Path
 from kiro_crew import platform_compat
 from kiro_crew.agent_sdk.backends import agent_process_markers, node_adapter_entry_relpaths
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.config.paths import config_dir
+from kiro_crew.config.paths import config_dir, peek_data_home
 from kiro_crew.constants import (
+    KIROCREW_SPAWN_HOME_ENV,
     KIROCREW_SPAWN_INSTANCE_ENV,
     KIROCREW_SPAWNED_ENV,
     KIROCREW_SPAWNED_VALUE,
@@ -307,8 +308,10 @@ _MANAGED_AGENT_MARKERS: tuple[str, ...] = tuple(
 #: Exact, because substring over a basename over-matches on the short generic names
 #: the projection introduced — ``mongoose`` contains ``goose``, and a basename holding
 #: ``dsh`` is not ``dsh``. On the negative gate an over-match wrongly EXCLUDES a
-#: process from the work sweep; on the report it names a process that is not a harness.
-#: Neither is a kill (the report says so in as many words), and both are wrong.
+#: process from the work sweep; on the untracked-runtime test it names a process that
+#: is not a harness, and that test is the first conjunct of the reclaim kill path
+#: (:func:`_is_reclaimable_untracked_runtime`), so a name added here is a name the
+#: sweep may SIGKILL once the ownership stamp and age floor also hold.
 #:
 #: ``kiro-cli-chat`` belongs here and not above: as an exact basename it is not
 #: covered by ``kiro-cli``.
@@ -349,9 +352,11 @@ def _basename_names_a_harness(basename: bytes) -> bool:
 # about, which is authority.
 #
 # Narrower on purpose, and the reason is the difference between the two questions.
-# _MANAGED_AGENT_BASENAMES answers "is this a harness process" for a negative sweep gate
-# and a report, neither of which terminates anything. This set authorizes an
-# abandoned-scope reclaim to KILL, and widening a kill path to five more harnesses is
+# _MANAGED_AGENT_BASENAMES answers "is this a harness process"; the one kill it feeds
+# (the untracked-runtime reclaim) additionally demands this install's spawn-home stamp
+# on the root, so a wider name set there costs nothing without proof of ownership. This
+# set authorizes an abandoned-scope reclaim to KILL on argv identity alone, and
+# widening that to five more harnesses is
 # its own change with its own review, so the projection is left here to reuse rather
 # than consumed by a set that grew on speculation. Until then a codex-acp, opencode, pi-acp, goose or dsh tree in an
 # abandoned scope is not anchored, and that gap is recorded rather than quietly closed
@@ -2920,6 +2925,12 @@ def _protected_pids() -> set[int]:
 _ORPHAN_SWEEP_MAX_KILLS = 30
 _ORPHAN_MIN_AGE_SECONDS = 120  # Never reap processes younger than this
 
+# Age floor for reclaiming an untracked agent runtime (see
+# _is_reclaimable_untracked_runtime). Wide on purpose: a runtime whose
+# tracking append has not landed yet, or whose spawner is mid-teardown, must
+# never be caught, and a leaked runtime costs only memory until it is.
+_UNTRACKED_RUNTIME_MIN_AGE_SECONDS = 1800
+
 # Dedicated, more conservative age floor for the WORK-process orphan class
 # (agent-spawned pytest/build/shim subtrees identified purely by the
 # KIROCREW_SPAWNED environ marker — see _is_sweepable_orphan_work). Work
@@ -3496,10 +3507,24 @@ def _env_spawn_instance(pid: int, proc_root: Path | None = None) -> str | None:
     root's environment; every descendant inherits it, and a runtime spawned
     later carries a different one -- which is the whole point of reading it.
     """
+    return _spawn_env_value(pid, KIROCREW_SPAWN_INSTANCE_ENV, proc_root)
+
+
+def _env_spawn_home(pid: int, proc_root: Path | None = None) -> str | None:
+    """*pid*'s ``KIROCREW_SPAWN_HOME``, or ``None`` when absent or unreadable.
+
+    The data home of the install whose gateway spawned the runtime. A runtime
+    spawned by an older gateway carries no value and reads as ``None``, which
+    every caller treats as "not provably ours".
+    """
+    return _spawn_env_value(pid, KIROCREW_SPAWN_HOME_ENV, proc_root)
+
+
+def _spawn_env_value(pid: int, name: str, proc_root: Path | None = None) -> str | None:
     if sys.platform != "linux" and proc_root is None:
         return None
     root = proc_root if proc_root is not None else Path("/proc")
-    prefix = f"{KIROCREW_SPAWN_INSTANCE_ENV}=".encode()
+    prefix = f"{name}=".encode()
     try:
         environ = (root / str(pid) / "environ").read_bytes()
     except OSError:
@@ -3507,7 +3532,7 @@ def _env_spawn_instance(pid: int, proc_root: Path | None = None) -> str | None:
     for entry in environ.split(b"\x00"):
         if entry.startswith(prefix):
             value = entry[len(prefix) :]
-            return value.decode("ascii", "replace") if value else None
+            return value.decode("utf-8", "replace") if value else None
     return None
 
 
@@ -3976,7 +4001,7 @@ def tracked_agent_pid_owners() -> dict[int, int]:
 
 
 def _is_untracked_managed_agent_orphan(pid: int, cmdline: bytes, tracked_pids: set[int]) -> bool:
-    """REPORT-ONLY: a managed agent runtime that no reaper can reach.
+    """Identity of a managed agent runtime that no tracked-PID reaper can reach.
 
     Every existing reaper declines this process, which is why a leaked runtime
     has no reproduction:
@@ -4000,12 +4025,14 @@ def _is_untracked_managed_agent_orphan(pid: int, cmdline: bytes, tracked_pids: s
     (:data:`_GATEWAY_MARKERS`) are excluded: they are not agent runtimes and
     are never tracked as such.
 
-    This grants NO kill authority and is wired to nothing that terminates — a
-    hit only logs. Blast radius is therefore zero, which is what makes the
-    detector safe to ship ahead of a maintainer's ruling on whether an
-    untracked runtime may be reaped at all. It also means a cross-data-home
-    false positive (a second install's live runtime, tracked in ITS config dir
-    and so absent from ours) is diagnostic noise rather than a wrong kill.
+    On its own this grants NO kill authority: a hit only logs. It is also the
+    first conjunct of :func:`_is_reclaimable_untracked_runtime`, which adds the
+    ownership proof (a complete PID-file read, this install's
+    ``KIROCREW_SPAWN_HOME`` stamp, a wide age floor) before the sweep may
+    SIGKILL the tree. Widening the identity here therefore widens a kill path,
+    and a cross-data-home false positive (a second install's live runtime,
+    tracked in ITS config dir and so absent from ours) stays diagnostic noise
+    only because the stamp check downstream rejects it.
     """
     if not cmdline:
         return False  # kernel thread / zombie — no argv to identify
@@ -4018,6 +4045,99 @@ def _is_untracked_managed_agent_orphan(pid: int, cmdline: bytes, tracked_pids: s
     if pid in tracked_pids:
         return False  # a reaper can already reach it
     return _env_has_kirocrew_marker(pid)
+
+
+def _is_reclaimable_untracked_runtime(
+    pid: int,
+    cmdline: bytes,
+    tracked_pids: set[int],
+    tracked_complete: bool,
+    age_seconds: float,
+) -> bool:
+    """Kill authority for the untracked runtime :func:`_is_untracked_managed_agent_orphan` reports.
+
+    Each conjunct closes one way the report could be wrong about ownership:
+
+    * ``tracked_complete`` -- a partial PID-file read can drop a live tracked
+      runtime, which would then look untracked. Nothing is reaped off a
+      snapshot that may have lost a PID.
+    * ``KIROCREW_SPAWN_HOME`` equal to this install's data home -- a second
+      install's live runtime is tracked in ITS PID files and so looks untracked
+      from here; the marker alone cannot tell the two apart. Only a runtime that
+      says it was spawned from THIS data home qualifies, and a gateway holds its
+      data home exclusively (``gateway.lock``), so that runtime's spawner is
+      either this process or a dead predecessor. Runtimes from before the stamp
+      existed carry no value and stay report-only.
+    * a ``KIROCREW_SPAWN_INSTANCE`` token -- the kill phase enumerates the tree
+      by it (:func:`_marked_group_members` over the root's process group), so a
+      root that carries none has no tree the sweep can prove and stays
+      report-only. Both spawn paths stamp it beside the home.
+    * a wide age floor -- the spawn-to-track window and a teardown in flight are
+      both orders of magnitude shorter than :data:`_UNTRACKED_RUNTIME_MIN_AGE_SECONDS`.
+    * no live owning session (:func:`_untracked_runtime_owner_session_alive`)
+      -- the stamps are inherited by everything a runtime spawns, so a
+      ``kiro-cli`` an agent started in the background from inside its session
+      carries them too and reparents to init when the shell that started it
+      returns. Its SID still names the runtime that owns it; while that leader
+      lives the process is someone's, not a leak. A process that is its own
+      session leader is owned as well: a detached (``setsid``) harness has that
+      shape, and the SID cannot tell it from a direct spawn. Only a runtime whose
+      leader is gone qualifies.
+
+    Linux-only through the environ reads, fail-closed elsewhere like every
+    other environ-gated sweep arm.
+    """
+    if not tracked_complete or age_seconds < _UNTRACKED_RUNTIME_MIN_AGE_SECONDS:
+        return False
+    if not _is_untracked_managed_agent_orphan(pid, cmdline, tracked_pids):
+        return False
+    if _env_spawn_home(pid) != str(peek_data_home()):
+        return False
+    if _env_spawn_instance(pid) is None:
+        return False
+    return not _untracked_runtime_owner_session_alive(pid)
+
+
+def _untracked_runtime_owner_session_alive(pid: int) -> bool:
+    """True when a live agent session still owns *pid* through its SID.
+
+    The gateway spawns every runtime with ``start_new_session=True``, so a
+    runtime root is its own session leader (``sid == pid``) and every process
+    under it -- MCP servers, shell-tool commands, a ``kiro-cli`` an agent
+    launched in the background -- inherits that SID for life; reparenting to
+    init does not change it (see :func:`_linux_pid_sid`). That gives three
+    shapes, and only the last one is a leak:
+
+    * ``sid == pid``: a session leader. The gateway's own direct spawn has this
+      shape, but so does a harness an agent detached with ``setsid`` from its
+      shell tool: it inherits the stamps, reparents to init and is its own
+      leader, and it may be mid-work. The SID carries no ownership information
+      here, so this shape is treated as owned -- the same ruling
+      :func:`_work_orphan_session_leader_alive` makes for a setsid'd work
+      process. A direct spawn that outlives the gateway untracked is confined
+      to the spawn-to-track window and stays report-only.
+    * SID names a process that is still a session leader AND carries the same
+      ``KIROCREW_SPAWN_INSTANCE`` as *pid*: an agent session is alive and may
+      be driving this process. Owned -- report only. The instance is what makes
+      the leader the OWNER rather than a number: every descendant inherits the
+      root's per-spawn token, so the real leader carries *pid*'s value, while a
+      later runtime that took the dead leader's number carries its own fresh
+      one and is nobody's owner. A leader whose token is unreadable is taken as
+      the owner (fail-closed).
+    * SID names a dead or recycled leader (a launcher wrapper that was killed,
+      a runtime that exited): the owning session is gone and the stamped
+      process is a leak. This is the shape a killed launcher leaves behind.
+
+    FAIL-CLOSED: an unreadable SID counts as owned, so a ``/proc`` read that
+    fails never widens the kill path.
+    """
+    sid = _linux_pid_sid(pid)
+    if sid <= 0 or sid == pid:
+        return True
+    if _linux_pid_sid(sid) != sid:
+        return False
+    leader_instance = _env_spawn_instance(sid)
+    return leader_instance is None or leader_instance == _env_spawn_instance(pid)
 
 
 def _work_orphan_session_leader_alive(pid: int) -> bool:
@@ -4055,11 +4175,11 @@ def find_orphan_mcp_candidates(active_pids: set[int]) -> list[int]:
     Returns candidate PIDs. Caller should re-verify against fresh active PIDs
     before killing (two-phase pattern to eliminate races).
 
-    Also REPORTS — never returns as a candidate — any untracked managed-agent
-    runtime orphan (:func:`_is_untracked_managed_agent_orphan`). That class is
-    unreachable by every reaper, so it would otherwise leak silently with no
-    reproduction; the report deliberately carries no kill authority, which is
-    why such a PID is excluded from ``candidates``.
+    An untracked managed-agent runtime orphan
+    (:func:`_is_untracked_managed_agent_orphan`) is unreachable by every other
+    reaper. It is returned as a candidate only when this install provably
+    spawned it (:func:`_is_reclaimable_untracked_runtime`); otherwise it is
+    REPORTED and left running, so a leak short of that proof is never silent.
     """
     candidates: list[int] = []
     my_pid = os.getpid()
@@ -4069,7 +4189,7 @@ def find_orphan_mcp_candidates(active_pids: set[int]) -> list[int]:
     # Read once per scan, not per PID: the files are small but the scan is not.
     # Empty on Windows and on any run with no orphans, so the diagnostic read is
     # skipped entirely in the common case.
-    tracked_pids = _tracked_agent_pids() if orphan_pids else set()
+    tracked_pids, tracked_complete = _read_tracked_agent_pids() if orphan_pids else (set(), True)
     untracked_seen: set[int] = set()
 
     for pid in orphan_pids:
@@ -4110,12 +4230,18 @@ def find_orphan_mcp_candidates(active_pids: set[int]) -> list[int]:
             continue
         if pid_age < _ORPHAN_MIN_AGE_SECONDS:
             continue
-        # Report-only arm. Placed AFTER the age gate so a runtime whose tracking
-        # append has not landed yet is never reported: the gate is orders of
-        # magnitude wider than the spawn-to-append window. Reported PIDs are
-        # deliberately NOT appended to ``candidates`` — this arm has no kill
-        # authority (see the predicate's docstring).
+        # Untracked runtime arm. Placed AFTER the age gate so a runtime whose
+        # tracking append has not landed yet is never touched: the gate is orders
+        # of magnitude wider than the spawn-to-append window. A runtime this
+        # install provably spawned is handed to the kill phase
+        # (:func:`_is_reclaimable_untracked_runtime`); anything short of that
+        # proof is reported and left alone.
         if _is_untracked_managed_agent_orphan(pid, cmdline, tracked_pids):
+            if _is_reclaimable_untracked_runtime(
+                pid, cmdline, tracked_pids, tracked_complete, pid_age
+            ):
+                candidates.append(pid)
+                continue
             untracked_seen.add(pid)
             if pid not in _reported_untracked_agent_pids:
                 # %r, not %s: argv0 is set by the process itself, so a newline
@@ -4125,7 +4251,9 @@ def find_orphan_mcp_candidates(active_pids: set[int]) -> list[int]:
                     "Leaked agent runtime pid=%s (argv0 %r, age %.0fs): reparented "
                     "to init/systemd with a KIROCREW_SPAWNED environ marker but "
                     "recorded in NEITHER PID file, so no reaper can reclaim it. "
-                    "Not terminated — report only.",
+                    "Not terminated — it is not provably this install's leaked spawn "
+                    "(no KIROCREW_SPAWN_HOME match, no KIROCREW_SPAWN_INSTANCE, a live "
+                    "owning session, incomplete tracking snapshot, or under the age floor).",
                     pid,
                     _work_orphan_basename(cmdline).decode("utf-8", "replace"),
                     pid_age,
@@ -4220,6 +4348,7 @@ def kill_orphan_mcps(pids: list[int]) -> int:
     # (one full /proc pass) and only when a marked MCP orphan is actually
     # confirmed -- the common sweep finds none and pays nothing.
     child_map: dict[int, list[int]] | None = None
+    tracked_snapshot: tuple[set[int], bool] | None = None
     for pid in pids:
         if killed >= _ORPHAN_SWEEP_MAX_KILLS:
             break
@@ -4371,8 +4500,29 @@ def kill_orphan_mcps(pids: list[int]) -> int:
             # before the kill; _is_sweepable_orphan_work fails closed off Linux.
             work_age = _linux_pid_age(pid, time.time()) if sys.platform == "linux" else 0.0
             if _is_sweepable_orphan_work(pid, cmdline, work_age):
+                if child_map is None:
+                    child_map = _build_child_map()
                 killed += _kill_orphan_work_tree(
-                    pid, cmdline, work_age, budget=_ORPHAN_SWEEP_MAX_KILLS - killed
+                    pid,
+                    cmdline,
+                    work_age,
+                    budget=_ORPHAN_SWEEP_MAX_KILLS - killed,
+                    root_token=root_token,
+                    child_map=child_map,
+                )
+                continue
+            # Untracked agent runtime. Re-verify the whole proof set against a
+            # FRESH tracking snapshot: a runtime tracked between the two phases
+            # is owned again and must not be touched.
+            if tracked_snapshot is None:
+                tracked_snapshot = _read_tracked_agent_pids()
+            if _is_reclaimable_untracked_runtime(pid, cmdline, *tracked_snapshot, work_age):
+                killed += _kill_orphan_runtime_tree(
+                    pid,
+                    cmdline,
+                    work_age,
+                    budget=_ORPHAN_SWEEP_MAX_KILLS - killed,
+                    root_token=root_token,
                 )
                 continue
             # Stranded browser daemon. Re-verify the FULL identity — argv
@@ -4702,7 +4852,15 @@ def _sel_orphan_mcp_subtree_kill(root: int, killed: int) -> None:
         logger.debug("SEL orphan-mcp-subtree-kill audit failed", exc_info=True)
 
 
-def _kill_orphan_work_tree(pid: int, cmdline: bytes, age_seconds: float, budget: int) -> int:
+def _kill_orphan_work_tree(
+    pid: int,
+    cmdline: bytes,
+    age_seconds: float,
+    budget: int,
+    *,
+    root_token: str | None,
+    child_map: dict[int, list[int]],
+) -> int:
     """SIGKILL a confirmed work-class orphan and its WHOLE subtree, leaf-first.
 
     Deliberately NOT :func:`_kill_pid_tree`: that helper only reaps
@@ -4712,61 +4870,167 @@ def _kill_orphan_work_tree(pid: int, cmdline: bytes, age_seconds: float, budget:
     and is sweepable (an orphaned pytest's own python/shim children are
     exactly the processes that pile up).
 
-    Descendants are enumerated once (preorder) and killed in reverse, so
-    every process dies before its parent — no child is re-parented away
-    mid-kill and the enumeration stays valid. The root goes last. *budget*
-    bounds the total SIGKILLs so the caller's global
-    :data:`_ORPHAN_SWEEP_MAX_KILLS` cap covers subtree members too; if the
-    budget runs out mid-subtree the survivors are re-reaped next sweep cycle.
+    Descendants are enumerated once (preorder, through
+    :func:`_orphan_descendants` over the caller's *child_map*) and killed in
+    reverse, so every process dies before its parent — no child is re-parented
+    away mid-kill and the enumeration stays valid. The root goes last, and is
+    signalled only while it still carries *root_token*, the identity the caller
+    read before any other evidence about it. *budget* bounds the total SIGKILLs
+    so the caller's global :data:`_ORPHAN_SWEEP_MAX_KILLS` cap covers subtree
+    members too; if the budget runs out mid-subtree the survivors are re-reaped
+    next sweep cycle.
 
     Returns the number of processes killed.
     """
+    members = list(reversed(_orphan_descendants(pid, child_map)))
+    return _kill_marked_orphan_tree(
+        pid, cmdline, age_seconds, budget, kind="work", root_token=root_token, members=members
+    )
+
+
+def _kill_orphan_runtime_tree(
+    pid: int,
+    cmdline: bytes,
+    age_seconds: float,
+    budget: int,
+    *,
+    root_token: str | None,
+) -> int:
+    """SIGKILL a reclaimable untracked agent runtime and its WHOLE tree.
+
+    The tree is the runtime's process GROUP, vouched member by member through
+    :func:`_marked_group_members` with the ``KIROCREW_SPAWN_INSTANCE`` the root
+    carries -- the same proof the ACP teardown uses once a leader is gone
+    (:func:`_signal_orphaned_runtime_group`). Not the parent-edge walk the work
+    arm uses: this leak class is DEFINED by reparenting to init, and a member
+    whose intermediate parent died before the sweep is unreachable by any walk
+    from the root, while its group and instance survive every reparenting. A
+    detached survivor left the group with ``setsid`` and is not a member; the
+    per-member argv gate keeps a non-runtime process the tree merely inherited
+    the markers to (a preview server) out of the kill, as the teardown does.
+
+    The group is read from the live root rather than assumed equal to its pid:
+    a wrapper-launched runtime sits in its launcher's group. A root in our own
+    group is refused -- it was not spawned as a session leader and a member
+    listing keyed on it would list the gateway.
+
+    The instance and the group are evidence about whichever process holds the
+    root's number when they are read, and the root is signalled LAST. So before
+    they vouch anything, the root's start token is re-read and compared with
+    *root_token*, the identity the caller captured before any other read about
+    it: a mismatch means the root exited and a replacement runtime -- its own
+    fresh instance, its own group -- took the number, and enumerating by the
+    replacement's instance would SIGKILL its members while the root check at
+    the end spares only the replacement itself. On a mismatch nothing is
+    enumerated and nothing is signalled.
+    """
+    instance = _env_spawn_instance(pid)
+    try:
+        pgid = os.getpgid(pid)
+    except OSError:
+        return 0
+    if not instance or pgid <= 1 or pgid == os.getpgrp():
+        return 0
+    live_token = _pid_start_token(pid)
+    if root_token is None or live_token is None or live_token != root_token:
+        logger.debug(
+            "Orphan runtime sweep: skipping pid=%d — start identity changed or unavailable "
+            "between the eligibility read and the group read (pre=%r post=%r), so the "
+            "instance and group just read may be a replacement's; re-reaped next sweep",
+            pid,
+            root_token,
+            live_token,
+        )
+        return 0
+    vouched = _marked_group_members(pgid, instance)
+    members = sorted((member, token) for member, token in vouched.items() if member != pid)
+    return _kill_marked_orphan_tree(
+        pid, cmdline, age_seconds, budget, kind="runtime", root_token=root_token, members=members
+    )
+
+
+def _kill_marked_orphan_tree(
+    pid: int,
+    cmdline: bytes,
+    age_seconds: float,
+    budget: int,
+    *,
+    kind: str,
+    root_token: str | None,
+    members: list[tuple[int, str | None]],
+) -> int:
     if budget <= 0:
         return 0
-    descendants: list[int] = []
-    try:
-        # circular import: session_pid → acp.client → session → session_pid
-        from kiro_crew.acp.client import _get_child_pids
-
-        descendants = _get_child_pids(pid)
-    except Exception:
-        logger.debug("Error enumerating descendants of work orphan %s", pid, exc_info=True)
+    # Each member's start token comes from the read that enumerated it, and the
+    # root's is the one the caller captured before any other read about it --
+    # so no PID here can be signalled on evidence gathered about a predecessor
+    # that held it.
+    targets = [*members, (pid, root_token)]
     my_pid = os.getpid()
     basename = _work_orphan_basename(cmdline).decode("utf-8", errors="replace")
     killed = 0
-    for target in [*reversed(descendants), pid]:
+    for target, walk_token in targets:
         if killed >= budget:
             break  # global kill cap exhausted; next sweep cycle finishes the job
         if target <= 0 or target == my_pid:
             continue
+        if walk_token is None:
+            logger.debug(
+                "Orphan %s sweep: skipping pid=%d — no start identity was captured when "
+                "it was enumerated, re-reaped next sweep",
+                kind,
+                target,
+            )
+            continue
+        # The identity has to BIND the signal, not merely precede it. Comparing the
+        # token and then signalling the bare number leaves a window in which the
+        # target exits, the kernel reissues the number, and the SIGKILL lands on an
+        # unrelated replacement -- logged as this orphan's, so silently. Narrowing
+        # that window cannot close it for the reason this file already states for the
+        # sibling teardown path: a pid is not a handle. `_signal_pid_by_identity`
+        # opens a pidfd first and verifies the identity THROUGH it, so the signal
+        # cannot reach a later occupant of the number, and it reports whether
+        # delivery actually happened instead of leaving the caller to assume it.
         try:
-            platform_compat.kill_pid(target, platform_compat.SIGKILL)
-            killed += 1
-            if target == pid:
-                logger.info(
-                    "Orphan work sweep: SIGKILL pid=%d basename=%s age=%ds "
-                    "reason=KIROCREW_SPAWNED work orphan (reparented to init)",
-                    target,
-                    basename,
-                    int(age_seconds),
-                )
-            else:
-                logger.info(
-                    "Orphan work sweep: SIGKILL pid=%d reason=descendant of work orphan %d",
-                    target,
-                    pid,
-                )
+            delivered = _signal_pid_by_identity(target, platform_compat.SIGKILL, walk_token)
         except (ProcessLookupError, PermissionError, OSError):
-            pass
+            continue
+        if not delivered:
+            logger.debug(
+                "Orphan %s sweep: skipping pid=%d — start identity changed since "
+                "enumeration or the process is already gone, re-reaped next sweep",
+                kind,
+                target,
+            )
+            continue
+        killed += 1
+        if target == pid:
+            logger.info(
+                "Orphan %s sweep: SIGKILL pid=%d basename=%r age=%ds "
+                "reason=KIROCREW_SPAWNED %s orphan (reparented to init)",
+                kind,
+                target,
+                basename,
+                int(age_seconds),
+                kind,
+            )
+        else:
+            logger.info(
+                "Orphan %s sweep: SIGKILL pid=%d reason=member of %s orphan %d tree",
+                kind,
+                target,
+                kind,
+                pid,
+            )
     if killed:
-        _sel_orphan_work_kill(pid, basename, age_seconds, cmdline, killed)
+        _sel_orphan_tree_kill(pid, basename, age_seconds, cmdline, killed, kind=kind)
     return killed
 
 
-def _sel_orphan_work_kill(
-    pid: int, basename: str, age_seconds: float, cmdline: bytes, killed: int
+def _sel_orphan_tree_kill(
+    pid: int, basename: str, age_seconds: float, cmdline: bytes, killed: int, *, kind: str
 ) -> None:
-    """Emit SEL audit event for a work-orphan subtree kill."""
+    """Emit SEL audit event for a marked-orphan subtree kill."""
     try:
         # Lazy import to avoid a circular import (see kill_orphan_mcps).
         from kiro_crew.sel import sel
@@ -4775,18 +5039,18 @@ def _sel_orphan_work_kill(
             session_key="gateway",
             agent="kirocrew",
             source="background",
-            tool_name="orphan_work_sweep",
+            tool_name=f"orphan_{kind}_sweep",
             tool_kind="process_kill",
             outcome="completed",
-            resources=f"pid={pid} basename={basename} age={int(age_seconds)}s method=work_tree",
+            resources=f"pid={pid} basename={basename!r} age={int(age_seconds)}s method={kind}_tree",
             metadata={
                 "cmdline": cmdline[:200].decode("utf-8", errors="replace"),
                 "killed_in_tree": killed,
-                "reason": "KIROCREW_SPAWNED orphan work process",
+                "reason": f"KIROCREW_SPAWNED orphan {kind} process",
             },
         )
     except Exception:
-        logger.debug("SEL orphan-work-kill audit failed", exc_info=True)
+        logger.debug("SEL orphan-%s-kill audit failed", kind, exc_info=True)
 
 
 _PAGE_SIZE = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096

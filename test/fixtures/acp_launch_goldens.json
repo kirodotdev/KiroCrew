@@ -8,6 +8,8 @@
       "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
       "KIROCREW_SESSION_KEY": "golden-session",
       "KIROCREW_SPAWNED": "1",
+      "KIROCREW_SPAWN_HOME": "<data-home>",
+      "KIROCREW_SPAWN_INSTANCE": "<spawn-instance>",
       "KIROCREW_STUB_SESSION_TOKEN": "<session-token>",
       "PATH": "<augmented-path>"
     },
@@ -22,6 +24,7 @@
     "env_added": {
       "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
       "KIROCREW_SPAWNED": "1",
+      "KIROCREW_SPAWN_HOME": "<data-home>",
       "KIROCREW_SPAWN_INSTANCE": "<spawn-instance>",
       "PATH": "<augmented-path>"
     },
@@ -43,6 +46,8 @@
       "KIROCREW_SCRATCH": "<scratch>",
       "KIROCREW_SESSION_KEY": "golden-session",
       "KIROCREW_SPAWNED": "1",
+      "KIROCREW_SPAWN_HOME": "<data-home>",
+      "KIROCREW_SPAWN_INSTANCE": "<spawn-instance>",
       "KIROCREW_STUB_SESSION_TOKEN": "<session-token>",
       "KIRO_CHAT_LOG_FILE": "<scratch-log>",
       "PATH": "<augmented-path>",
@@ -65,6 +70,8 @@
       "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
       "KIROCREW_SESSION_KEY": "golden-session",
       "KIROCREW_SPAWNED": "1",
+      "KIROCREW_SPAWN_HOME": "<data-home>",
+      "KIROCREW_SPAWN_INSTANCE": "<spawn-instance>",
       "KIROCREW_STUB_SESSION_TOKEN": "<session-token>",
       "PATH": "<augmented-path>"
     },
@@ -82,6 +89,8 @@
       "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
       "KIROCREW_SESSION_KEY": "golden-session",
       "KIROCREW_SPAWNED": "1",
+      "KIROCREW_SPAWN_HOME": "<data-home>",
+      "KIROCREW_SPAWN_INSTANCE": "<spawn-instance>",
       "KIROCREW_STUB_SESSION_TOKEN": "<session-token>",
       "PATH": "<augmented-path>"
     },
@@ -99,6 +108,8 @@
       "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
       "KIROCREW_SESSION_KEY": "golden-session",
       "KIROCREW_SPAWNED": "1",
+      "KIROCREW_SPAWN_HOME": "<data-home>",
+      "KIROCREW_SPAWN_INSTANCE": "<spawn-instance>",
       "KIROCREW_STUB_SESSION_TOKEN": "<session-token>",
       "PATH": "<augmented-path>"
     },
@@ -114,6 +125,8 @@
       "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
       "KIROCREW_SESSION_KEY": "golden-session",
       "KIROCREW_SPAWNED": "1",
+      "KIROCREW_SPAWN_HOME": "<data-home>",
+      "KIROCREW_SPAWN_INSTANCE": "<spawn-instance>",
       "KIROCREW_STUB_SESSION_TOKEN": "<session-token>",
       "OPENCODE_CONFIG_CONTENT": "{\"permission\":\"ask\"}",
       "PATH": "<augmented-path>"
@@ -131,6 +144,8 @@
       "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
       "KIROCREW_SESSION_KEY": "golden-session",
       "KIROCREW_SPAWNED": "1",
+      "KIROCREW_SPAWN_HOME": "<data-home>",
+      "KIROCREW_SPAWN_INSTANCE": "<spawn-instance>",
       "KIROCREW_STUB_SESSION_TOKEN": "<session-token>",
       "PATH": "<augmented-path>",
       "PI_ACP_PI_COMMAND": "/opt/run/pi-launcher.sh"
