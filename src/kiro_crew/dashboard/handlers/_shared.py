@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import fnmatch
 import functools
+import hashlib
 import inspect
 import json
 import logging
@@ -2061,6 +2062,319 @@ def _leaf_is_contained(resolved: Path, root_resolved: Path, prefix_allows_link: 
     return any(
         _path_at_or_under(resolved, declared) for declared in _declared_app_skill_dirs(resolved)
     )
+
+
+_SKILL_KEY_QUALIFIER_SEP = ":"
+
+
+def _split_package_skill_key(pkg_rel: str) -> tuple[str | None, str]:
+    """Split a ``package/`` key remainder into ``(qualifier, relative_path)``.
+
+    ``None`` for the qualifier means the key is UNQUALIFIED -- not that any remainder
+    resolves as it always has. A reserved colon is still refused: a qualifier is only
+    recognised when both halves are non-empty, so a stray leading or trailing separator
+    degrades to "no qualifier" rather than to an empty glob pattern, and the resolver
+    then rejects the colon-carrying remainder rather than serving it.
+    """
+    if _SKILL_KEY_QUALIFIER_SEP not in pkg_rel:
+        return None, pkg_rel
+    qualifier, _, rel = pkg_rel.partition(_SKILL_KEY_QUALIFIER_SEP)
+    if not qualifier or not rel:
+        return None, pkg_rel
+    # Only the SHAPE this catalogue mints counts as a qualifier. Without that test a directory
+    # legitimately named with a colon parsed as one and resolved to nothing, with no fallback.
+    if len(qualifier) != _ROOT_IDENTITY_DIGEST_BYTES * 2 or not all(
+        c in "0123456789abcdef" for c in qualifier
+    ):
+        return None, pkg_rel
+    return qualifier, rel
+
+
+def _resolved_str(path: Path) -> str:
+    """Canonical spelling for comparison, falling back to the literal one.
+
+    A root that cannot be resolved must not silently match a DIFFERENT root, so the
+    fallback keeps the literal text rather than a partially-resolved prefix.
+    """
+    try:
+        return str(path.resolve())
+    except (OSError, RuntimeError, ValueError):
+        return str(path)
+
+
+_ROOT_IDENTITY_DIGEST_BYTES = 16
+
+
+def _root_identity_token(root: Path) -> str | None:
+    """The qualifier for *root*: a stable, collision-resistant token for its identity.
+
+    A qualifier answers one question — WHICH of several roots bundling the same relative
+    path does this key mean — so the only thing it carries is *root*'s own identity, and
+    it must be an identity rather than a distinguishing path segment. A segment is chosen
+    against whichever roots collide at derivation time, so a root that is REPLACED
+    (uninstalled, and a different root installed that still carries the same segment,
+    e.g. ``<...>/A/skills`` giving way to ``<...>/A/v2/skills``) would re-derive the very
+    same qualifier. A key an editor still holds would then resolve to a DIFFERENT file,
+    and because the agent-config write path (:func:`apply_skill_mapping`) resolves keys
+    against a FRESH catalog at write time, it would persist a ``skill://`` URI for a
+    skill the user never selected — silent, and durable in the agent's config.
+
+    This token closes that, and both of its halves matter. It is derived from the root's
+    own CANONICAL path plus that directory's device, inode, METADATA-CHANGE TIME
+    (``st_ctime_ns``) and MODIFICATION TIME (``st_mtime_ns``), so it
+    is the same for the same root no matter what else is installed or removed alongside
+    it: a key stays valid across an unrelated bundle install, and the editor's held key
+    and the agent config's persisted URI keep meaning what they meant. The inode is what
+    makes it an identity rather than an ADDRESS: the path alone re-derives when one bundle
+    is uninstalled and another is installed at the SAME path, so a held key would resolve
+    to the replacement's file and the write path would persist a skill nobody selected.
+    The metadata-change time is what makes that identity hard to REPRODUCE, and it is
+    load-bearing rather than belt-and-braces: an inode number is a reusable resource, so a
+    replacement directory at the same path can be handed the identical ``st_ino`` — ordinary
+    ext-family behaviour on a normal uninstall/reinstall — and dev:ino alone would then
+    re-derive the replaced bundle's own qualifier. ``st_ctime_ns`` is not recycled with the
+    inode number: it records the last metadata change to THIS inode, so a fresh directory
+    carries a fresh value. It is NOT a guarantee of uniqueness, and the guarantee is not
+    claimed — it narrows the window rather than closing it. Per-instance, that stale key
+    fails to resolve, which the write path
+    turns into a whole-request rejection. **Residual, recorded rather than implied:** a
+    filesystem's timestamp granularity is coarse (measured ~20ms on xfs), so an
+    uninstall and reinstall completing inside ONE granule AND handed the recycled inode
+    re-derives the replaced key after all. A true creation time would narrow it further and
+    the platform will not give us one — Linux exposes no ``st_birthtime`` through
+    ``os.stat`` (verified: absent from ``os.stat_result`` on this interpreter) — so the
+    narrowed window is what this basis buys, not its elimination.
+
+    The cost is that the identity tracks the root's own top-level contents AND its own
+    metadata: adding or removing a skill directory in a root moves that directory's
+    ``st_ctime_ns`` and ``st_mtime_ns``, and so does a metadata-only change to the root
+    itself — a ``chmod`` or
+    ``chown`` on it, with no content touched at all. Either re-spells every qualified key
+    in that root (a write further down, inside a skill, does not). That is a mutation of
+    the bundle itself rather than an unrelated install, and the re-enumerate-only contract
+    already tolerates it — as it tolerates re-materialising the
+    same bundle through a remount or a restore. The cost of re-spelling is a 404, never
+    another bundle's bytes. A root that cannot be stat'ed yields no identity at all and the
+    caller OMITS it, rather than keeping a path-only one: a digest over the path alone would
+    match nothing a minted key carries, so serving it could only 404 while still occupying a
+    catalog row. Minting requires copies on disk, so a minted digest always carried an inode.
+    That last claim is only as strong as
+    the digest is wide: a narrow one can be GROUND against, so an install path could be
+    chosen to collide with a key already minted for another root.
+    :data:`_ROOT_IDENTITY_DIGEST_BYTES` is the bound that makes the search infeasible
+    rather than merely unlikely.
+
+    Lowercase hex is also already key-safe: it carries neither
+    :data:`_SKILL_KEY_QUALIFIER_SEP` nor a glob metacharacter nor a traversal element, so
+    the key round-trips without a per-candidate filter. What it gives up is legibility —
+    ``package/a1b2c3d4e5f67890abcdef1234567890:tool`` does not say which bundle it means. The omission
+    warnings carry the absolute path instead, which is the surface a reader needs, and a
+    resolved row still shows its own file.
+
+    Canonical and not the advertised path, so an edition that advertises one root
+    through a symlink alias keeps ONE identity. ``blake2b`` and not ``hash()``, which
+    is salted per process and would mint a different key on every restart. A root that
+    does not canonicalise yields ``None`` and the caller omits the path: identity that
+    cannot be established fails closed.
+    """
+    try:
+        resolved = root.resolve()
+        basis = str(resolved)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    try:
+        st: os.stat_result = resolved.stat()
+    except (OSError, ValueError):
+        # A path-only qualifier would be minted here and then 404 once stat() recovers,
+        # because the recovered token carries the stat terms this one omitted.
+        return None
+    return _identity_token_from_stat(basis, st)
+
+
+def _identity_token_from_stat(basis: str, st: os.stat_result | None) -> str:
+    """The digest itself, over a canonical path and an ALREADY-TAKEN ``stat``.
+
+    Split out so the qualifier can be derived from an ``os.fstat`` of a PINNED directory
+    descriptor: deriving it from the name re-resolves the path, which is the step a
+    replacement completing between the check and the read subverts.
+    """
+    # ``os.fsencode`` and NOT ``basis.encode("utf-8")``: on POSIX a path is bytes, so a
+    # byte the encoding cannot decode arrives as a lone surrogate that utf-8 refuses.
+    material = os.fsencode(basis)
+    if st is not None:
+        # ``st_mtime_ns`` carries the discrimination the others cannot: an inode can be
+        # reused at once, and on Windows ``st_ctime_ns`` is a coarse CREATION time.
+        material += b"\x00" + (
+            f"{st.st_dev}:{st.st_ino}:{st.st_ctime_ns}:{st.st_mtime_ns}".encode("ascii")
+        )
+    return hashlib.blake2b(material, digest_size=_ROOT_IDENTITY_DIGEST_BYTES).hexdigest()
+
+
+def _dedupe_entries(entries: list[tuple[Path, Path]]) -> list[tuple[Path, Path]]:
+    """One ``(root, file)`` pair per DISTINCT file, CONTAINED by its root, in order.
+
+    The single dedupe for both sides of the grammar: the enumerator's collision fold and
+    the resolver's tier loop. One skill is routinely reachable through two roots — an
+    edition may advertise both a directory and a symlink into it — and that is NOT an
+    ambiguity; only distinct FILES are. Qualified keys are emitted per distinct COPY, so
+    a third root holding a symlink to another root's copy is a genuine collision by
+    count yet the same file: iterating raw entries would give it its own key pointing at
+    a file another key already names, two catalog rows for one skill.
+
+    **Containment is enforced here, on the CANONICAL forms of both sides.** ``Path.glob``
+    matches a symlinked directory's dirent and yields a path that is LEXICALLY under the
+    root while resolving anywhere on the filesystem, so a skill directory — or any
+    intermediate directory on the way to it — that is a symlink pointing outside the root
+    would otherwise hand the detail endpoint a file outside the package territory
+    entirely. A prefix test on the unresolved path cannot see that, and neither can the
+    glob result itself; only ``resolve()`` on both sides can. That makes this the one
+    place the check belongs: all three call sites (both resolver tiers and the fold) pass
+    through it, so enumeration and resolution refuse the same entries by construction
+    rather than by two rules kept in step by hand — an escaping entry omitted from only
+    one side would be a catalogued row that 404s on open, or a resolvable key ``/tree``
+    never lists.
+
+    ``Path.resolve()`` raises ``RuntimeError`` (not ``OSError``) on a symlink loop, and a
+    looping ``SKILL.md`` IS yielded by ``glob`` because a literal pattern matches the
+    dirent without following it. Catching only ``OSError`` would turn that into a 500 on
+    a browser-triggered request, so an unresolvable entry is skipped instead: it cannot
+    be read anyway. An unresolvable ROOT fails the same way — closed, not open, since
+    containment cannot be established against a root that does not canonicalise.
+    """
+    kept: list[tuple[Path, Path]] = []
+    seen: set[Path] = set()
+    canonical_roots: dict[Path, Path | None] = {}
+    for root, skill_md in _drop_unopenable_leaves(entries):
+        if root not in canonical_roots:
+            try:
+                canonical_roots[root] = root.resolve()
+            except (OSError, RuntimeError):
+                canonical_roots[root] = None
+        canonical_root = canonical_roots[root]
+        try:
+            identity = skill_md.resolve()
+        except (OSError, RuntimeError):
+            # Unreadable anyway — see the symlink-loop paragraph above.
+            continue
+        if canonical_root is None or not identity.is_relative_to(canonical_root):
+            # Escapes the root it was found under. Logged with both absolute paths
+            # because the row simply will not appear, and this line is the only
+            # remediation surface an edition author gets.
+            logger.warning(
+                "edition skill %s resolves to %s, outside its root %s — omitting it; "
+                "a package skill directory may not symlink out of its own root",
+                skill_md,
+                identity,
+                canonical_root if canonical_root is not None else root,
+            )
+            continue
+        if identity in seen:
+            continue
+        seen.add(identity)
+        kept.append((root, skill_md))
+    return kept
+
+
+def _drop_unopenable_leaves(
+    entries: list[tuple[Path, Path]],
+) -> list[tuple[Path, Path]]:
+    """Drop copies whose ``SKILL.md`` no reader can open: a symlink, or an aliased inode.
+
+    Every package read opens the leaf with ``O_NOFOLLOW`` and refuses ``st_nlink > 1``, so
+    neither kind can be served however contained it is. Catalogued anyway, it is a listed key
+    that 404s on open -- the phantom row this grammar exists to remove, arrived at from the
+    other side. The two are dropped TOGETHER because splitting them is what made a
+    deduplicating install list rows none of its reads could answer.
+
+    This lives inside the shared collision computation rather than in the enumerator so the
+    two sides cannot disagree BY CONSTRUCTION: dropping it in enumeration alone would leave
+    the resolver counting a copy the catalog never offered, and a qualifier derived over a
+    different number of copies is a different qualifier.
+    """
+    kept: list[tuple[Path, Path]] = []
+    for root, skill_md in entries:
+        try:
+            linked = skill_md.is_symlink()
+        except OSError:
+            continue
+        if not linked:
+            try:
+                linked = skill_md.stat().st_nlink > 1
+            except OSError:
+                continue
+            if linked and str(skill_md) not in _ALIASED_LEAF_WARNED:
+                _ALIASED_LEAF_WARNED.add(str(skill_md))
+                logger.warning(
+                    "package skill %s has more than one name, so every read of it is "
+                    "refused and its key is omitted rather than catalogued unreadable. "
+                    "Copy the file instead of hard-linking it to make it addressable",
+                    skill_md,
+                )
+                continue
+        if linked:
+            if str(skill_md) not in _SYMLINK_LEAF_WARNED:
+                _SYMLINK_LEAF_WARNED.add(str(skill_md))
+                logger.warning(
+                    "package skill %s is a symlink, so every read of it is refused and its "
+                    "key is omitted rather than catalogued unreadable. Replace the link with "
+                    "a copy to make it addressable",
+                    skill_md,
+                )
+            continue
+        kept.append((root, skill_md))
+    return kept
+
+
+def _package_collision(
+    entries: list[tuple[Path, Path]],
+) -> tuple[list[tuple[Path, Path]], list[str] | None]:
+    """The ONE collision-set computation, shared by enumeration and resolution.
+
+    Returns ``(copies, qualifiers)`` for a single walked rel:
+
+    * *copies* is the deduplicated ``(root, file)`` list — one entry per DISTINCT
+      file, contained by its root (see :func:`_dedupe_entries`).
+    * *qualifiers* is one qualifier per entry of *copies*, in the same order, or
+      ``None`` when this rel has no addressable qualified spelling at all.
+
+    ``None`` covers BOTH of the ways that happens, because both mean the catalogue
+    offers no qualified key: fewer than two distinct copies (so the rel is keyed
+    unqualified), or a collision in which some root does not canonicalise and so yields
+    no identity. Callers distinguish the two by ``len(copies)``, which is what lets
+    enumeration mint the unqualified key in the first case and omit in the second, while
+    resolution refuses in both.
+
+    The all-or-nothing shape is kept as a FAIL-CLOSED backstop rather than a rule that
+    fires in normal operation. Since :func:`_root_identity_token` is a digest of the root's
+    own canonical path, every root that canonicalises yields one, and two distinct roots
+    cannot yield the same one — so neither the missing-qualifier nor the duplicate branch
+    is reachable except when the filesystem refuses to canonicalise a root.
+
+    **Both sides call this rather than each computing it**, and that is the point: every
+    key the catalog EMITS must resolve to the file it was emitted for, so any difference
+    in how the two build this set is a phantom row — a key ``/tree`` lists and ``detail``
+    404s. That is the direction this shares, and it is the whole of it: resolution is
+    deliberately WIDER than enumeration, because the resolver also accepts a leaf-name
+    key through its nested tier, so a rel the catalog lists at its full relative path
+    stays reachable under the bare leaf. Two copies of the rule agreeing today is not
+    even the narrow guarantee; it is a pair that drifts on the next edit to either one.
+    One implementation cannot disagree with itself.
+    """
+    copies = _dedupe_entries(entries)
+    if len(copies) < 2:
+        return copies, None
+    roots = [root for root, _skill_md in copies]
+    qualifiers = [_root_identity_token(root) for root in roots]
+    if any(q is None for q in qualifiers) or len(set(qualifiers)) != len(qualifiers):
+        return copies, None
+    # Every element is a str once none is None; narrowed for the caller's benefit.
+    return copies, [q for q in qualifiers if q is not None]
+
+
+_SYMLINK_LEAF_WARNED: set[str] = set()
+
+
+_ALIASED_LEAF_WARNED: set[str] = set()
 
 
 def _resolve_skill_root(name: str, state: DashboardState, session_key: str = "") -> Path | None:
