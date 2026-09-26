@@ -21,7 +21,13 @@ from .errors import (
     RepoUrlError,
 )
 
-SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+#: GitLab's own ceiling on a single path segment. ``Namespace`` validates ``path``
+#: with ``length: { maximum: URL_MAX_LENGTH }``, and that constant is 255.
+#: Bounding a segment's SIZE and the segment COUNT below together bound the whole
+#: parsed value, which is what keeps it inside what its consumers can hold: an
+#: argv element, and a filesystem component under ``NAME_MAX``.
+GITLAB_MAX_SEGMENT_CHARS = 255
+SEGMENT_RE = re.compile(rf"^[A-Za-z0-9._-]{{1,{GITLAB_MAX_SEGMENT_CHARS}}}$")
 _URL_PATH_SEPARATOR = "/"
 
 #: GitLab's own ceiling on how deep a group may sit. ``Namespace`` validates
