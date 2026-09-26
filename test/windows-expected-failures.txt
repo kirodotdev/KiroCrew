@@ -53,10 +53,6 @@ test/test_artifacts_handlers.py::TestTeardown::test_not_found_returns_404
 test/test_artifacts_handlers.py::TestTeardown::test_restricted_session_denied
 test/test_artifacts_handlers.py::TestTeardown::test_success_includes_infra_note
 test/test_artifacts_handlers.py::TestTeardown::test_teardown_fail_closed_when_aws_unreachable
-test/test_cli.py::TestInstallPidfdChildWatcher::test_falls_back_to_safe_watcher_on_old_kernel
-test/test_cli.py::TestInstallPidfdChildWatcher::test_falls_back_to_safe_watcher_when_pidfd_open_missing
-test/test_cli.py::TestInstallPidfdChildWatcher::test_installs_safe_watcher_on_macos
-test/test_cli.py::TestInstallPidfdChildWatcher::test_sets_watcher_on_linux
 test/test_cli.py::TestRestart::test_spawn_detached_gateway_uses_kirocrew_bin
 test/test_cli.py::TestSetupWorkspaceDir::test_uses_saved_path_as_default
 test/test_config_paths.py::TestDefaultWorkspaceBase::test_macos_uses_volumes_when_present

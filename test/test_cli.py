@@ -6467,13 +6467,15 @@ class TestInstallPidfdChildWatcher:
         # the PidfdChildWatcher ctor explode so reaching them fails the test.
         called = []
         monkeypatch.setattr(asyncio, "set_child_watcher", lambda w: called.append(w))
-        monkeypatch.setattr(asyncio, "SafeChildWatcher", lambda: "fake-safe-watcher")
+        # raising=False: these watcher classes are Unix-only and do not exist
+        # on Windows, where the test still simulates the macOS install path.
+        monkeypatch.setattr(asyncio, "SafeChildWatcher", lambda: "fake-safe-watcher", raising=False)
 
         def _boom(*_a) -> object:
             raise AssertionError("Linux pidfd path must not be reached on macOS")
 
         monkeypatch.setattr("kiro_crew.cli.os.pidfd_open", _boom, raising=False)
-        monkeypatch.setattr(asyncio, "PidfdChildWatcher", _boom)
+        monkeypatch.setattr(asyncio, "PidfdChildWatcher", _boom, raising=False)
         _install_child_watcher()
         assert called == ["fake-safe-watcher"], "macOS must install SafeChildWatcher"
 
@@ -6508,7 +6510,9 @@ class TestInstallPidfdChildWatcher:
         monkeypatch.setattr("kiro_crew.cli.os.close", lambda fd: closed.append(fd))
         called_with = []
         monkeypatch.setattr(asyncio, "set_child_watcher", lambda w: called_with.append(w))
-        monkeypatch.setattr(asyncio, "PidfdChildWatcher", lambda: "fake-pidfd-watcher")
+        monkeypatch.setattr(
+            asyncio, "PidfdChildWatcher", lambda: "fake-pidfd-watcher", raising=False
+        )
         _install_child_watcher()
         assert opened, "pidfd_open must be probed before installing"
         assert closed == [4242], "the probe fd must be closed"
@@ -6534,12 +6538,12 @@ class TestInstallPidfdChildWatcher:
         monkeypatch.setattr("kiro_crew.cli.os.pidfd_open", _no_pidfd, raising=False)
         installed = []
         monkeypatch.setattr(asyncio, "set_child_watcher", lambda w: installed.append(w))
-        monkeypatch.setattr(asyncio, "SafeChildWatcher", lambda: "fake-safe-watcher")
+        monkeypatch.setattr(asyncio, "SafeChildWatcher", lambda: "fake-safe-watcher", raising=False)
 
         def _ctor_must_not_run() -> object:
             raise AssertionError("PidfdChildWatcher must not be constructed when pidfd_open fails")
 
-        monkeypatch.setattr(asyncio, "PidfdChildWatcher", _ctor_must_not_run)
+        monkeypatch.setattr(asyncio, "PidfdChildWatcher", _ctor_must_not_run, raising=False)
         _install_child_watcher()  # must not raise
         assert installed == ["fake-safe-watcher"], (
             "a < 5.3 kernel must fall back to SafeChildWatcher, not the "
@@ -6563,14 +6567,14 @@ class TestInstallPidfdChildWatcher:
         monkeypatch.delattr("kiro_crew.cli.os.pidfd_open", raising=False)
         installed = []
         monkeypatch.setattr(asyncio, "set_child_watcher", lambda w: installed.append(w))
-        monkeypatch.setattr(asyncio, "SafeChildWatcher", lambda: "fake-safe-watcher")
+        monkeypatch.setattr(asyncio, "SafeChildWatcher", lambda: "fake-safe-watcher", raising=False)
 
         def _ctor_must_not_run() -> object:
             raise AssertionError(
                 "PidfdChildWatcher must not be constructed when os.pidfd_open is missing"
             )
 
-        monkeypatch.setattr(asyncio, "PidfdChildWatcher", _ctor_must_not_run)
+        monkeypatch.setattr(asyncio, "PidfdChildWatcher", _ctor_must_not_run, raising=False)
         _install_child_watcher()  # must not raise
         assert installed == ["fake-safe-watcher"], (
             "a Python build without os.pidfd_open must fall back to "
