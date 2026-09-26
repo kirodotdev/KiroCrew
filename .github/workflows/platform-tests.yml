@@ -210,11 +210,29 @@ jobs:
         # platform-independent, and a burnt cap costs 10x here. --no-cov because
         # coverage-combine merges ubuntu shards only.
         #
-        # No surface selector and nothing deselected, same as the Windows job:
-        # `-n auto` already saturates the runner, so a shorter file list does not
-        # shorten a shard. Residual darwin gaps are node ids in
-        # test/macos-expected-failures.txt, applied by the rootdir conftest through
-        # the same matcher as the Windows list.
+        # `-n 2`, NOT `-n auto`. The budget plugin behind `auto`
+        # (xdist_budget.py, registered in the rootdir conftest) sizes workers by
+        # free memory, and on a macos-15 runner (3 cores, 7 GiB, ~3 GiB free
+        # after the OS and toolchain) it answered ONE worker on every nightly
+        # from at least 09-16 to 09-26 -- the log's own line is
+        #   xdist worker budget: 1 of 3 workers (3.0 GiB free, 7 GiB installed)
+        # so each shard ran its tests serially on a 3-core machine at ~23 tests
+        # a second. MEASURED with two workers on the 3-shard shape (dispatch run
+        # 36228922099): 21-27 minutes a shard against 32-39 the same day at one.
+        # The plugin is right for a developer laptop it does not know; this
+        # runner is a fixed shape the lane can state outright, and an explicit
+        # count skips the budget (it hooks pytest_xdist_auto_num_workers only).
+        # 2 rather than 3: each worker imports its shard's files and holds them,
+        # and the 16 GiB/worker figure the plugin carries for macOS (#10061) was
+        # measured on a 36 GiB laptop, not here. Swap pressure or a jetsam kill
+        # in a shard log means back to 1; two workers holding well under the cap
+        # makes 3 the next measurement. test_macos_platform_tests_gate.py pins
+        # the explicit count so a revert to `auto` is visible.
+        #
+        # No surface selector and nothing deselected, same as the Windows job.
+        # Residual darwin gaps are node ids in test/macos-expected-failures.txt,
+        # applied by the rootdir conftest through the same matcher as the
+        # Windows list.
         # PYTHONUNBUFFERED plus faulthandler_timeout: the first full run of shard
         # 3 on macos-15 hit the 40-minute cap having printed NOTHING after the
         # pytest command line, and the runner then reaped nine orphan bash and two
@@ -239,7 +257,7 @@ jobs:
           # plugin loadable: `-m` puts the working directory on sys.path, where the
           # console script does not, so `-p scripts.ci_file_shards` resolves here
           # exactly as it does in backend-test and backend-test-windows.
-          python -m pytest -p scripts.ci_file_shards -q -n auto --timeout=180 \
+          python -m pytest -p scripts.ci_file_shards -q -n 2 --timeout=180 \
             --no-cov --max-worker-restart=0 \
             -o faulthandler_timeout=150 \
             --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \

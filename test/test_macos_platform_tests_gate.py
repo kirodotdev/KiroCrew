@@ -123,6 +123,15 @@ class TestTheMovedLaneIsTheSameLane:
         # with headroom and a cap that cancels publication.
         assert "-p scripts.ci_file_shards" in runs
         assert '--file-shards "$SHARD_COUNT"' in runs and "--file-shard " in runs
+        # An explicit worker count, never `-n auto`: the budget plugin behind
+        # `auto` reads ~3 GiB free on the 7 GiB macos-15 runner and answers ONE
+        # worker, which is what made every shard run serially on a 3-core
+        # machine. The runner is a fixed shape the lane can state outright.
+        shard = next(
+            str(s.get("run", "")) for s in job["steps"] if "--file-shard " in str(s.get("run", ""))
+        )
+        assert "-n auto" not in shard, "the mac shard is back on the memory budget (1 worker)"
+        assert " -n 2 " in shard
         assert "--splits" not in runs, "pytest-split re-imports every shard's discards"
 
     #: The concurrent ``macos-15`` job count this lane's ceiling was calibrated at, from
