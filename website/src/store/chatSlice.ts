@@ -517,6 +517,40 @@ const clearFiledFolderSuggestions = (
   }
 }
 
+/** Stand in for the `_done` of an active-slot turn that has ended when the tab
+ *  never applied it.
+ *
+ *  A turn whose `_done` does not land (a frame lost across a socket drop, or a
+ *  history fetch taken mid-turn that resolves after it and writes back
+ *  `running`) leaves `slotState` busy. The transcript and footer follow
+ *  `slotRunning`, which a later slots snapshot clears, but
+ *  `selectComposerBusy` also reads the stream state, so the composer kept
+ *  offering Steer with no agent running until a reload.
+ *
+ *  Only the live `slots` frame may say the turn ended. The server projects
+ *  `running` from the turn task itself, so a frame reporting it false was
+ *  serialized after every frame that turn sent, and this socket delivers
+ *  frames in order: no later frame of that turn can follow it. An HTTP
+ *  `fetchSlots` reply has no such order (it can predate a turn whose frames
+ *  already streamed in), which is why this is wired to `sseSlots` and never to
+ *  the transport-agnostic `dashboard.slots` rows. A local send still awaiting
+ *  its confirmation is left alone: the frame can predate the send. */
+const settleEndedActiveTurn = (
+  state: ChatState,
+  payload: readonly { key: string; running?: boolean }[],
+): void => {
+  const slot = state.activeSlot
+  if (!slot || isUnsafeKey(slot) || state.pendingTurnSlot === slot) return
+  const row = payload.find(s => s.key === slot)
+  if (!row || row.running !== false) return
+  if (state.slotState === 'idle' && !state.slotRunning) return
+  state.slotState = 'idle'
+  state.slotRunning = false
+  state.slotStopping = false
+  state.lastChunkSeq = undefined
+  finalizeTrailingStreaming(state.messages)
+}
+
 /** Read one slot's pending question card, or null.
  *
  *  A bare `map[slot]` lookup is not safe even with guarded writes: for
@@ -6408,6 +6442,7 @@ const chatSlice = createSlice({
         if (action.payload.length === 0 && !seenSnapshot) return
         reconcileSlotResidue(state, action.payload)
         clearFiledFolderSuggestions(state, action.payload)
+        settleEndedActiveTurn(state, action.payload)
       })
       /** The other authoritative slot-list writer. A request's reply is
        *  authoritative even when empty — nothing to disambiguate — so this is
