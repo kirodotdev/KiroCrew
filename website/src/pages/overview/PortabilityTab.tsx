@@ -3,6 +3,7 @@ import { Download, Upload, FileArchive, AlertCircle, CheckCircle } from 'lucide-
 import { Card, CardTitle } from '../../components/ui'
 import SimpleSelect from '../../components/SimpleSelect'
 import ErrorNotice from '../../components/ErrorNotice'
+import { noteStaleOwnerResponse } from '../../api/staleOwnerSignal'
 
 import { i18nT } from '../../i18n/t'
 interface Manifest {
@@ -50,6 +51,10 @@ export default function PortabilityTab() {
       const resp = await fetch('/api/portability/export')
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({ error: resp.statusText }))
+        // Owner-gated direct fetch: a session minted before the owner was
+        // configured is denied `401 stale_session_reauth`, which `j` would turn
+        // into the re-auth prompt. Raise it here too; the inline error stays.
+        noteStaleOwnerResponse(resp.status, err)
         setExportStatus({ type: 'error', msg: err.error || resp.statusText })
         return
       }
@@ -107,6 +112,8 @@ export default function PortabilityTab() {
         const items = data.summary?.items || []
         setImportStatus({ type: 'ok', msg: `Import complete (${items.length} items). Restart gateway to apply all changes.` })
       } else {
+        // Owner-gated like export: raise the re-auth prompt on a stale session.
+        noteStaleOwnerResponse(resp.status, data)
         setImportStatus({
           type: 'error',
           msg: refusalText(resp.status, data, i18nT('pages.overview.portabilityTab.import_failed')),
