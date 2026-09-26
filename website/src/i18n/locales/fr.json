@@ -11043,10 +11043,7 @@
       "goal_loop_cycle": "Boucle d’objectif · cycle {{count}} sur {{total}}",
       "goal_loop_cycle_no_cap": "Boucle d’objectif · cycle {{count}} (sans limite)",
       "goal_loop_interrupted_title": "Boucle d’objectif armée — le dernier tour a été interrompu ; reprends le chat ou attends le prochain cycle",
-      "hidden": "masqué",
       "hidden_because_parent_hidden": "{{name}} est masqué car un dossier parent est masqué",
-      "hidden_folder": "dossier masqué",
-      "hidden_folders": "dossiers masqués",
       "hide": "Masquer",
       "hide_folder": "Masquer le dossier",
       "hide_when_empty": "Masquer si vide",
@@ -11234,7 +11231,16 @@
       "opens_here_runs_on_instance": "Ouvre cette session ici — son exécution continue sur {{name}}",
       "opens_on_crew_switches_there": "S'ouvre sur {{name}} — bascule vers ce Crew, pas ici",
       "remote_instances_list_unavailable": "Impossible de lister les crews distantes, leurs sessions ne sont donc pas affichées.",
-      "model_list_failed": "Impossible de charger la liste des modèles. Ce qui est affiché peut être incomplet ou obsolète."
+      "model_list_failed": "Impossible de charger la liste des modèles. Ce qui est affiché peut être incomplet ou obsolète.",
+      "hidden_folder_count_one": "{{count}} dossier masqué",
+      "hidden_folder_count_many": "{{count}} dossiers masqués",
+      "hidden_folder_count_other": "{{count}} dossiers masqués",
+      "sort_filter_sessions_hidden_one": "Trier et filtrer les sessions — {{count}} dossier masqué n'est pas affiché",
+      "sort_filter_sessions_hidden_many": "Trier et filtrer les sessions — {{count}} dossiers masqués ne sont pas affichés",
+      "sort_filter_sessions_hidden_other": "Trier et filtrer les sessions — {{count}} dossiers masqués ne sont pas affichés",
+      "show_hidden_folders_from_board_one": "{{count}} dossier masqué n'est pas affiché — utilise Trier et filtrer pour le rétablir.",
+      "show_hidden_folders_from_board_many": "{{count}} dossiers masqués ne sont pas affichés — utilise Trier et filtrer pour les rétablir.",
+      "show_hidden_folders_from_board_other": "{{count}} dossiers masqués ne sont pas affichés — utilise Trier et filtrer pour les rétablir."
     },
     "connectionsPage": {
       "action_failed": "Échec de l’action : {{error}}",

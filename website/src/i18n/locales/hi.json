@@ -10891,10 +10891,7 @@
       "goal_loop_cycle": "लक्ष्य लूप · चक्र {{count}}/{{total}}",
       "goal_loop_cycle_no_cap": "लक्ष्य लूप · चक्र {{count}} (कोई सीमा नहीं)",
       "goal_loop_interrupted_title": "लक्ष्य लूप तैयार — पिछला टर्न बाधित हुआ; चैट फिर से शुरू करो या अगले चक्र का इंतज़ार करो",
-      "hidden": "छिपा",
       "hidden_because_parent_hidden": "{{name}} छिपा है क्योंकि इसका कोई पैरेंट फ़ोल्डर छिपा है",
-      "hidden_folder": "छिपा फ़ोल्डर",
-      "hidden_folders": "छिपे फ़ोल्डर",
       "hide": "छिपाएँ",
       "hide_folder": "फ़ोल्डर छिपाएँ",
       "hide_when_empty": "खाली होने पर छिपाएँ",
@@ -11070,7 +11067,13 @@
       "opens_here_runs_on_instance": "इस सत्र को यहाँ खोलता है — इसका निष्पादन {{name}} पर चलता रहता है",
       "opens_on_crew_switches_there": "{{name}} पर खुलता है — उस Crew पर स्विच करता है, यहाँ नहीं",
       "remote_instances_list_unavailable": "रिमोट क्रू सूचीबद्ध नहीं किए जा सके, इसलिए उनके सत्र नहीं दिखाए गए हैं।",
-      "model_list_failed": "मॉडल सूची लोड नहीं हो सकी। जो दिख रहा है वह अपूर्ण या पुराना हो सकता है।"
+      "model_list_failed": "मॉडल सूची लोड नहीं हो सकी। जो दिख रहा है वह अपूर्ण या पुराना हो सकता है।",
+      "hidden_folder_count_one": "{{count}} छिपा फ़ोल्डर",
+      "hidden_folder_count_other": "{{count}} छिपे फ़ोल्डर",
+      "sort_filter_sessions_hidden_one": "सत्र क्रमित और फ़िल्टर करो — {{count}} छिपा फ़ोल्डर नहीं दिखाया जाता",
+      "sort_filter_sessions_hidden_other": "सत्र क्रमित और फ़िल्टर करो — {{count}} छिपे फ़ोल्डर नहीं दिखाए जाते",
+      "show_hidden_folders_from_board_one": "{{count}} छिपा फ़ोल्डर नहीं दिखाया जाता — इसे वापस लाने के लिए क्रमित और फ़िल्टर खोलो।",
+      "show_hidden_folders_from_board_other": "{{count}} छिपे फ़ोल्डर नहीं दिखाए जाते — इन्हें वापस लाने के लिए क्रमित और फ़िल्टर खोलो।"
     },
     "connectionsPage": {
       "action_failed": "कार्रवाई विफल: {{error}}",

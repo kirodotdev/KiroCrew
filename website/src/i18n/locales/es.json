@@ -11043,10 +11043,7 @@
       "goal_loop_cycle": "Bucle de objetivo · ciclo {{count}} de {{total}}",
       "goal_loop_cycle_no_cap": "Bucle de objetivo · ciclo {{count}} (sin límite)",
       "goal_loop_interrupted_title": "Bucle de objetivo armado — el último turno se interrumpió; reanuda el chat o espera al siguiente ciclo",
-      "hidden": "oculto",
       "hidden_because_parent_hidden": "{{name}} está oculto porque una carpeta superior está oculta",
-      "hidden_folder": "carpeta oculta",
-      "hidden_folders": "carpetas ocultas",
       "hide": "Ocultar",
       "hide_folder": "Ocultar la carpeta",
       "hide_when_empty": "Ocultar cuando esté vacía",
@@ -11234,7 +11231,16 @@
       "opens_here_runs_on_instance": "Abre esta sesión aquí — su ejecución sigue en {{name}}",
       "opens_on_crew_switches_there": "Se abre en {{name}} — cambia a ese Crew, no aquí",
       "remote_instances_list_unavailable": "No se pudieron enumerar los crews remotos, por lo que sus sesiones no se muestran.",
-      "model_list_failed": "No se pudo cargar la lista de modelos. Lo que se muestra puede estar incompleto o desactualizado."
+      "model_list_failed": "No se pudo cargar la lista de modelos. Lo que se muestra puede estar incompleto o desactualizado.",
+      "hidden_folder_count_one": "{{count}} carpeta oculta",
+      "hidden_folder_count_many": "{{count}} carpetas ocultas",
+      "hidden_folder_count_other": "{{count}} carpetas ocultas",
+      "sort_filter_sessions_hidden_one": "Ordenar y filtrar sesiones: {{count}} carpeta oculta no se muestra",
+      "sort_filter_sessions_hidden_many": "Ordenar y filtrar sesiones: {{count}} carpetas ocultas no se muestran",
+      "sort_filter_sessions_hidden_other": "Ordenar y filtrar sesiones: {{count}} carpetas ocultas no se muestran",
+      "show_hidden_folders_from_board_one": "{{count}} carpeta oculta no se muestra: ábrela desde Ordenar y filtrar para recuperarla.",
+      "show_hidden_folders_from_board_many": "{{count}} carpetas ocultas no se muestran: ábrelas desde Ordenar y filtrar para recuperarlas.",
+      "show_hidden_folders_from_board_other": "{{count}} carpetas ocultas no se muestran: ábrelas desde Ordenar y filtrar para recuperarlas."
     },
     "connectionsPage": {
       "action_failed": "La acción falló: {{error}}",

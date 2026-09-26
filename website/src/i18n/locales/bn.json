@@ -10891,10 +10891,7 @@
       "goal_loop_cycle": "গোল লুপ · {{total}}-এর মধ্যে সাইকেল {{count}}",
       "goal_loop_cycle_no_cap": "গোল লুপ · সাইকেল {{count}} (কোনো সীমা নেই)",
       "goal_loop_interrupted_title": "লক্ষ্য লুপ প্রস্তুত — শেষ টার্ন বিঘ্নিত হয়েছে; চ্যাট আবার চালু করো বা পরের সাইকেলের জন্য অপেক্ষা করো",
-      "hidden": "লুকানো",
       "hidden_because_parent_hidden": "{{name}} লুকানো আছে, কারণ এর উপরের একটি ফোল্ডার লুকানো",
-      "hidden_folder": "লুকানো ফোল্ডার",
-      "hidden_folders": "লুকানো ফোল্ডারগুলো",
       "hide": "লুকাও",
       "hide_folder": "ফোল্ডার লুকান",
       "hide_when_empty": "খালি থাকলে লুকান",
@@ -11070,7 +11067,13 @@
       "opens_here_runs_on_instance": "এই সেশনটি এখানে খোলে — এর কাজ {{name}}-এ চলতে থাকে",
       "opens_on_crew_switches_there": "{{name}} এ খোলে — সেই Crew-এ চলে যায়, এখানে নয়",
       "remote_instances_list_unavailable": "রিমোট ক্রু তালিকাভুক্ত করা যায়নি, তাই সেগুলির সেশন দেখানো হজ্ছে না।",
-      "model_list_failed": "মডেলের তালিকা লোড করা যায়নি। যা দেখানো হচ্ছে তা অসম্পূর্ণ বা পুরনো হতে পারে।"
+      "model_list_failed": "মডেলের তালিকা লোড করা যায়নি। যা দেখানো হচ্ছে তা অসম্পূর্ণ বা পুরনো হতে পারে।",
+      "hidden_folder_count_one": "{{count}}টি লুকানো ফোল্ডার",
+      "hidden_folder_count_other": "{{count}}টি লুকানো ফোল্ডার",
+      "sort_filter_sessions_hidden_one": "সেশন সাজান ও ফিল্টার করো — {{count}}টি লুকানো ফোল্ডার দেখানো হয় না",
+      "sort_filter_sessions_hidden_other": "সেশন সাজান ও ফিল্টার করো — {{count}}টি লুকানো ফোল্ডার দেখানো হয় না",
+      "show_hidden_folders_from_board_one": "{{count}}টি লুকানো ফোল্ডার দেখানো হয় না — ফিরিয়ে আনতে সাজান ও ফিল্টার খোলো।",
+      "show_hidden_folders_from_board_other": "{{count}}টি লুকানো ফোল্ডার দেখানো হয় না — ফিরিয়ে আনতে সাজান ও ফিল্টার খোলো।"
     },
     "connectionsPage": {
       "action_failed": "অ্যাকশন ব্যর্থ: {{error}}",
