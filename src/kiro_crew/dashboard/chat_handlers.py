@@ -11559,7 +11559,11 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     folder_checked_id = ""
     if meta.get("folder_id"):
         folder_checked_id = meta["folder_id"]
-        folder_unhidden = await _unhide_folder(state, folder_checked_id)
+        # ``frozen_is_present``: a folder a running delete has frozen still
+        # exists, so the stored filing is KEPT rather than erased below -- the
+        # delete's own commit-time sweep unfiles the slot if it commits, and an
+        # aborted delete leaves a folder this session is still rightly in.
+        folder_unhidden = await _unhide_folder(state, folder_checked_id, frozen_is_present=True)
     if meta.get("closed"):
         # Clear the closed flag so the session restores on the next gateway restart.
         # Offloaded because clear_closed takes the per-session cross-process lock,

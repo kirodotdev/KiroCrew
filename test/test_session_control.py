@@ -3520,6 +3520,33 @@ def test_create_refuses_an_unknown_folder(tmp_path):
     assert state.live_slot_count() == before, "a refused create must not leave a slot behind"
 
 
+def test_create_refuses_a_folder_frozen_by_a_running_delete(tmp_path):
+    """A folder a ``delete_contents`` cascade has frozen is going; a session
+    filed into it now would outlive it as a dangling id, so the existence check
+    reads it as absent for the request's duration."""
+    from kiro_crew.dashboard import chat_folders
+
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    _folder(state, "fold00000001", "Goal")
+    before = state.live_slot_count()
+    chat_folders._deleting_folder_ids(state).add("fold00000001")
+    try:
+        with pytest.raises(sc.SessionControlError) as exc:
+            asyncio.run(
+                sc.create_session(state, caller_session_key=_key(caller), folder_id="fold00000001")
+            )
+    finally:
+        chat_folders._deleting_folder_ids(state).discard("fold00000001")
+    assert exc.value.code == "folder_not_found"
+    assert state.live_slot_count() == before
+    # Thawed, the same folder accepts the create.
+    result = asyncio.run(
+        sc.create_session(state, caller_session_key=_key(caller), folder_id="fold00000001")
+    )
+    assert state.get_slot(result["target"]).folder_id == "fold00000001"
+
+
 def test_a_folder_deleted_mid_create_is_refused_under_the_lock(tmp_path, monkeypatch):
     """Folder existence is decided under the folder-store lock, late.
 

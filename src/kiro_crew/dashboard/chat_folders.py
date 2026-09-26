@@ -235,6 +235,12 @@ _CHAT_FOLDER_PENDING_ICON_TASKS: dict[str, asyncio.Task[None]] = {}
 #: to survive a restart for. Entries are dropped on folder delete.
 _CHAT_FOLDER_ICON_EPOCHS: dict[str, int] = {}
 
+#: The ``SlotCloseError`` code the cascade's own pre-pop check raises when a
+#: session left the subtree while its close awaited. Internal to the cascade: it
+#: is caught in the same loop and never reaches a response, so it is not part of
+#: the route's error-code contract.
+_CODE_LEFT_SUBTREE = "folder_subtree_left"
+
 
 def _bump_icon_epoch(folder_id: str) -> None:
     """Invalidate any in-flight icon generation for this folder.
@@ -403,23 +409,65 @@ def folder_ids_filed_into(state: DashboardState) -> set[str]:
     return set(ids) if isinstance(ids, set) else set()
 
 
-async def _unhide_folder(state: DashboardState, folder_id: str) -> bool:
+def _deleting_folder_ids(state: DashboardState) -> set[str]:
+    """The folder ids a running delete has frozen -- its whole subtree, on the
+    cascade -- for the request's duration.
+
+    Only ever touched on the event loop: frozen inside a folder-store callback
+    (so the subtree it records is the committed tree, read under the store lock),
+    thawed synchronously when the delete's request ends, and consulted by the
+    store's own callbacks and by synchronous on-loop checks -- none of which can
+    interleave with a thaw, so a check never sees the set half-updated. A frozen
+    folder refuses every mutation that would move the ground under the delete:
+    filing a session into it (:func:`_unhide_folder` and the session-birth
+    existence checks report it absent), creating a child under it, reparenting it
+    or reparenting into it, reordering it, deleting it again. Attached lazily like
+    ``_folders_filed_into`` because it is this module's bookkeeping, not the
+    store's; empty between deletes.
+    """
+    ids = getattr(state, "_folders_deleting", None)
+    if not isinstance(ids, set):
+        ids = set()
+        setattr(state, "_folders_deleting", ids)
+    return ids
+
+
+def folder_is_deleting(state: DashboardState, folder_id: str) -> bool:
+    """Whether a running delete has frozen *folder_id*. Call on the event loop."""
+    return bool(folder_id) and folder_id in _deleting_folder_ids(state)
+
+
+async def _unhide_folder(
+    state: DashboardState, folder_id: str, *, frozen_is_present: bool = False
+) -> bool:
     """Clear a folder's `hidden` flag when a session re-engages it.
 
     Model-B semantics: reviving or moving a session into a folder un-hides it so
     it stays visible until the user hides it again. Persists on change; the
     caller is responsible for pushing the slots update.
 
-    Returns whether the folder EXISTS. Existence is reported from inside the
-    store lock, which is the only place it can be checked without a race: a
-    caller that validated against ``state._folders`` beforehand and then assigned
-    can have the folder deleted in between, and would persist a placement into a
-    folder that is gone.
+    Returns whether the folder EXISTS for the caller's purpose. Existence is
+    reported from inside the store lock, which is the only place it can be checked
+    without a race: a caller that validated against ``state._folders`` beforehand
+    and then assigned can have the folder deleted in between, and would persist a
+    placement into a folder that is gone.
+
+    A folder a running delete has FROZEN (:func:`_deleting_folder_ids`) still
+    exists, is never written here, and reads two ways, which is what
+    *frozen_is_present* says. A caller about to make a NEW filing leaves it False
+    and reads the folder as absent: it is going, and a placement into it would
+    outlive it as a dangling id. A caller holding a STORED filing it would erase on
+    "absent" -- the resume, the import repair -- passes True and reads the folder
+    as present, keeping the filing: erasing it would unfile the session from a
+    folder that still exists if the delete then aborts, and if the delete commits,
+    its own commit-time sweep unfiles the slot. Frozen is the delete's to decide.
     """
     if not folder_id:
         return True
 
     def _clear(folders: list[dict[str, Any]]) -> tuple[bool, bool]:
+        if folder_is_deleting(state, folder_id):
+            return False, frozen_is_present
         for f in folders:
             if f["id"] == folder_id:
                 if f.get("hidden"):
@@ -986,6 +1034,59 @@ def _is_descendant(folders: list[dict], *, ancestor_id: str, folder_id: str) -> 
     return False
 
 
+def _subtree_folder_ids(folders: list[dict[str, Any]], root_id: str) -> set[str]:
+    """``root_id`` plus the id of every folder anywhere under it.
+
+    Empty when ``root_id`` is not in *folders*, so a caller that computes the set
+    under the store lock learns the root was deleted meanwhile from the result
+    rather than from an exception. Same cycle-guarded walk as
+    :func:`_is_descendant`.
+    """
+    return {
+        str(f["id"])
+        for f in folders
+        if f.get("id") and _is_descendant(folders, ancestor_id=root_id, folder_id=str(f["id"]))
+    }
+
+
+def _clear_archived_folder_assignments(conversation_log: Any, folder_ids: set[str]) -> int:
+    """Unfile every ARCHIVED session filed under one of *folder_ids*; count them.
+
+    Synchronous and lock-taking (``update_metadata_if`` enters the transcript's
+    cross-process flock), so the caller runs it off the event loop. Each write is
+    a compare-and-set on the on-disk record: it lands only while the transcript
+    still names one of these folders, and ``require_existing`` keeps a session
+    deleted since the listing from being recreated as a metadata-only stub. A
+    session whose write fails is logged and skipped -- its dangling ``folder_id``
+    degrades to unfiled everywhere a reader meets it (the resume path drops it),
+    so a partial pass leaves nothing broken, only a row this delete did not tidy.
+    """
+    cleared = 0
+    for session in conversation_log.list_sessions():
+        if str(session.get("folder_id") or "") not in folder_ids:
+            continue
+        key = str(session.get("key") or "")
+        if not key:
+            continue
+        try:
+            applied = conversation_log.update_metadata_if(
+                key,
+                {"folder_id": ""},
+                lambda meta: str(meta.get("folder_id") or "") in folder_ids,
+                require_existing=True,
+            )
+        except Exception:
+            logger.warning(
+                "folder delete: could not unfile archived session %s from a deleted folder",
+                key,
+                exc_info=True,
+            )
+            continue
+        if applied:
+            cleared += 1
+    return cleared
+
+
 class FolderCreateError(ValueError):
     """A folder could not be created because the request was refused.
 
@@ -1185,6 +1286,11 @@ async def create_folder_record(
         parent = next((f for f in folders if f["id"] == parent_id), None) if parent_id else None
         if parent_id and parent is None:
             return False, "parent_not_found"
+        if parent_id and folder_is_deleting(state, parent_id):
+            # A delete running on that subtree has frozen it: a child created now
+            # would be born under a folder that is going, with sessions no pass of
+            # that delete has seen.
+            return False, "parent_deleting"
         # The ceiling is tested here, under the lock, for the same reason the parent
         # is re-checked here: `len(folders)` is only authoritative while the lock is
         # held, so a pre-lock test lets concurrent creators each pass a cap that is
@@ -1224,6 +1330,8 @@ async def create_folder_record(
     if create_err == "parent_not_found":
         # The parent was deleted while this request waited for the lock.
         raise FolderCreateError("parent folder not found", "folder_parent_not_found")
+    if create_err == "parent_deleting":
+        raise FolderCreateError("parent folder is being deleted", "folder_parent_deleting")
     if create_err == "forbidden_parent":
         raise FolderOwnershipError()
     if create_err == "project_dir_exists":
@@ -1558,6 +1666,15 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
         target = next((f for f in folders if f["id"] == fid), None)
         if target is None:
             return False, "not_found"
+        # A delete running on this folder's subtree has frozen it: nothing about
+        # it may change, and nothing may be moved into it, until that delete
+        # ends -- a reparent out would carry sessions that delete has already
+        # committed to archiving, a reparent in would hand it sessions it has not
+        # seen.
+        if folder_is_deleting(state, fid) or (
+            reparenting and new_parent and folder_is_deleting(state, new_parent)
+        ):
+            return False, "deleting"
         # Ownership, decided here for the same reason the cycle rule is: a
         # concurrent reparent can change who the target or the destination
         # belongs to between validation and the write.
@@ -1636,6 +1753,11 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
     if err == "not_found":
         # Deleted between the validation above and acquiring the store lock.
         return web.json_response({"error": "not found", "code": "folder_not_found"}, status=404)
+    if err == "deleting":
+        # Frozen by a delete that is still running; the tree it describes is going.
+        return web.json_response(
+            {"error": "folder is being deleted", "code": "folder_deleting"}, status=409
+        )
     if err in ("not_owned", "forbidden_parent", "foreign_descendant"):
         # Distinguished in the audit, not to the caller: one code for all three
         # keeps the response from reporting which folder was foreign.
@@ -1821,6 +1943,8 @@ async def api_chat_folder_reorder(request: web.Request) -> web.Response:
             target = by_id.get(fid)
             if target is None:
                 return False, "not_found"
+            if folder_is_deleting(state, fid):
+                return False, "deleting"
             if request_app and _folder_owner_app(target) != request_app:
                 return False, "not_owned"
             # Ownership of the row itself is not the whole rule: repositioning a
@@ -1850,6 +1974,13 @@ async def api_chat_folder_reorder(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "a folder in the reorder no longer exists", "code": "folder_not_found"},
             status=404,
+        )
+    if err == "deleting":
+        # Same reading for a folder a running delete has frozen: the tree the
+        # reorder describes is changing under it, so none of it lands.
+        return web.json_response(
+            {"error": "a folder in the reorder is being deleted", "code": "folder_deleting"},
+            status=409,
         )
     if err == "not_owned":
         # One row named a folder this app does not own. Refused whole, and
@@ -1900,7 +2031,23 @@ async def api_chat_folder_reorder(request: web.Request) -> web.Response:
 
 
 async def api_chat_folder_delete(request: web.Request) -> web.Response:
-    """DELETE /api/chat/folders/{id} — delete a folder, ungroup its slots."""
+    """DELETE /api/chat/folders/{id}?delete_contents=<bool> — delete a folder.
+
+    Default (``delete_contents`` falsy) is the SAFE path and today's behaviour:
+    unfile the folder's live sessions to the top level, re-parent its direct
+    child folders to the top level, and remove only this folder. Nothing but the
+    one folder row is destroyed.
+
+    ``delete_contents=true`` removes the whole subtree in one step -- the case is
+    a shift folder holding a hundred per-ticket subfolders, which the safe path
+    can only dissolve one level at a time. Every descendant folder is deleted;
+    every live session filed anywhere in the subtree is ARCHIVED through
+    :func:`chat_handlers.close_slot`, the exact path the tab ✕ takes (saved to
+    history as closed, resumable later -- never a hard delete of a transcript);
+    and archived sessions still filed under the subtree have that assignment
+    cleared so no transcript keeps naming a folder that is gone. The response
+    carries the counts. Same shape as ``DELETE /api/artifact-folders/{id}``.
+    """
 
     state: DashboardState = request.app["state"]
     if (refusal := _refuse_unattributable_caller(state, request)) is not None:
@@ -1909,6 +2056,8 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
     target = next((f for f in state._folders if f["id"] == fid), None)
     if target is None:
         return web.json_response({"error": "not found"}, status=404)
+    raw_cascade = (request.query.get("delete_contents") or "").strip().lower()
+    delete_contents = raw_cascade in ("1", "true", "yes")
     request_app = _effective_request_app(state, request)
     # Answered before a single slot is unfiled, so the common refusal costs no
     # rollback. Sound pre-lock because ``owner_app`` is stamped at create and no
@@ -1964,6 +2113,141 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
             },
             status=403,
         )
+    # The folders this delete empties: the one row on the safe path, the whole
+    # subtree on the cascade. Computed ONCE, under the store lock, and FROZEN
+    # there for the request's duration (``_deleting_folder_ids``). The sessions
+    # live in a different store from the folders, so no reading of "what is in
+    # this folder" can be atomic with its removal -- instead the tree is held
+    # still: while the set is frozen no folder in it can be reparented, reordered,
+    # deleted again or given a child, nothing can be reparented into it, and
+    # every filing path that consults the store (``_unhide_folder``,
+    # ``arrival_folder_exists``) refuses to file a session into it. So the set the
+    # archive pass walks IS the set ``_remove`` deletes, and a session moved OUT
+    # of it meanwhile is a rescue this delete honours (the pre-pop check below),
+    # not a race it loses. Thawed in ``finally``, whichever way the request ends.
+    deleting = _deleting_folder_ids(state)
+    taken: set[str] = set()
+
+    # The freeze goes through ``mutate_folders`` reporting "no change", the way
+    # ``_unhide_folder`` does for a folder already visible: it runs under the
+    # store lock -- so the subtree it reads is the committed tree and no callback
+    # can see the set half-updated -- without rewriting the store.
+    def _freeze(folders: list[dict[str, Any]]) -> tuple[bool, set[str] | None]:
+        if not any(f.get("id") == fid for f in folders):
+            return False, set()
+        subtree = _subtree_folder_ids(folders, fid) if delete_contents else {fid}
+        if subtree & deleting:
+            # Another delete holds part of this tree; two cascades over one
+            # subtree would each archive what the other is committed to.
+            return False, None
+        taken.update(subtree)
+        deleting.update(subtree)
+        return False, subtree
+
+    try:
+        frozen = await state.mutate_folders(_freeze)
+        if frozen is None:
+            return web.json_response(
+                {"error": "folder is being deleted", "code": "folder_deleting"}, status=409
+            )
+        if not frozen:
+            # Deleted between the lookup above and the lock.
+            return web.json_response({"error": "not found", "code": "folder_not_found"}, status=404)
+        return await _delete_frozen(request, state, fid, delete_contents, frozen)
+    finally:
+        # Synchronous and lock-free on purpose: the set is only ever touched on
+        # this loop, the store callbacks that read it are synchronous, so nothing
+        # can be mid-read here -- and a thaw that awaited the store would leave
+        # the tree frozen for good if the store were the thing that just failed.
+        # ``taken`` is what the callback actually took, so a freeze call that
+        # raised after its callback ran is released too.
+        deleting.difference_update(taken)
+
+
+async def _delete_frozen(
+    request: web.Request,
+    state: DashboardState,
+    fid: str,
+    delete_contents: bool,
+    target_ids: set[str],
+) -> web.Response:
+    """The body of :func:`api_chat_folder_delete`, run while *target_ids* is frozen.
+
+    Archive (cascade) or unfile (safe path) the live sessions filed in
+    *target_ids*, commit the removal of exactly that set, then tidy the archived
+    rows it covered. Split from the route so the freeze around it is one
+    ``try``/``finally`` rather than a thaw at every exit.
+    """
+    archived: list[str] = []
+    if delete_contents:
+        # Archive, do not unfile: "delete everything in it" means the sessions
+        # leave the sidebar too, and the only sanctioned way a session leaves it
+        # is the tab-✕ close -- saved to history as closed, with every rollback
+        # and resurrection guard that path carries. Nothing here is a hard
+        # delete; every one of these conversations is still in History.
+        #
+        # A close that refuses stops the cascade: the folder tree is untouched,
+        # the sessions archived so far are in History still filed under their
+        # (still existing) folders, so the person sees exactly the state the
+        # tab-✕ would have left and retries. Archiving is not undone -- there is
+        # no "un-close", and a refused close is the recoverable outcome.
+        from kiro_crew.dashboard.chat_handlers import (  # circular: chat_handlers imports this module
+            SlotCloseError,
+            close_slot,
+        )
+
+        for name, slot in list(state._slots.items()):
+            # Re-check the registration: each close awaits, and a name can be
+            # popped and re-minted for another conversation meanwhile.
+            if state._slots.get(name) is not slot or slot.folder_id not in target_ids:
+                continue
+            if slot.is_closing:
+                # Another retraction owns this slot (a ✕ mid-flight, the idle
+                # sweep); it lands archived without a second close racing it.
+                continue
+
+            def _still_in_subtree(name: str = name, slot: Any = slot) -> None:
+                # close_slot's point of no return, SYNCHRONOUS: the membership
+                # read above went stale across its awaits (nudge retirement, the
+                # app hook), and a move committed meanwhile (a drag out of the
+                # subtree, or a re-mint of the name) makes this a session the
+                # person just placed elsewhere. Raising unwinds the close and
+                # leaves it live where it now sits; the code is ours to catch.
+                if state._slots.get(name) is not slot or slot.folder_id not in target_ids:
+                    raise SlotCloseError(
+                        "session left the folder subtree during the close",
+                        code=_CODE_LEFT_SUBTREE,
+                    )
+
+            try:
+                await close_slot(state, slot, name, pre_pop_check=_still_in_subtree)
+            except SlotCloseError as exc:
+                if exc.code == _CODE_LEFT_SUBTREE:
+                    # Not ours to archive any more; the cascade goes on without it.
+                    continue
+                source, caller = _audit_origin(request)
+                sel().log_api_access(
+                    caller=caller,
+                    operation="chat.folder_delete",
+                    outcome="error",
+                    source=source,
+                    resources=f"{fid} delete_contents session={name}",
+                    error=exc.code,
+                )
+                return web.json_response(
+                    {
+                        "error": (
+                            f"folder not deleted: session {name} could not be archived "
+                            f"({exc.message}); {len(archived)} session(s) were archived "
+                            "before it and are in History"
+                        ),
+                        "code": exc.code,
+                        "archived_sessions": len(archived),
+                        "session": name,
+                    },
+                    status=500,
+                )
+            archived.append(name)
     # Unfile the folder's slots first, then commit the folder removal. If that
     # commit fails, put the slots back: otherwise the delete half-lands —
     # conversations persistently unfiled while the folder they came from is
@@ -1971,33 +2255,49 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
     # ordering leaves a partial-commit window on its own (folder-first strands a
     # dangling folder_id; slots-first strands unfiled conversations), and only
     # undoing the half that did land closes both.
+    #
+    # On the cascade this loop normally finds nothing -- the archive pass above
+    # closed every session in the subtree -- and catches the two it could not:
+    # a slot another close already owned, and one a path that does not consult
+    # the store (a fork inheriting its parent's folder, a channel or cron
+    # placement) filed into the frozen subtree meanwhile. Those stay live,
+    # unfiled, rather than being archived by a second pass that would race the
+    # first.
+    #
+    # A list snapshot, re-checked per entry, like the archive pass: the save
+    # below awaits, and a close landing meanwhile (a ✕ mid-flight, the stale-slot
+    # sweep) pops the table. Iterating the live view raises ``RuntimeError`` on
+    # the step after that pop -- outside the rollback ``try`` below, with slots
+    # already unfiled and the folder still present. A name popped or re-minted
+    # since the snapshot is skipped; its own close carries it.
     unfiled: list[tuple[Any, str]] = []
-    for slot in state._slots.values():
-        if slot.folder_id == fid:
-            unfiled.append((slot, slot.folder_id))
-            # Pin the write to the transcript this iteration's membership
-            # check covered: the save awaits inside the loop, so a rebind can
-            # land mid-persist and the save would otherwise resolve its
-            # target from the moved routing at write time. No await between
-            # this capture and the unfile below.
-            authorized_history_key = slot_history_key(slot)
-            slot.folder_id = ""
-            if not await save_slot_off_loop(
-                state, slot, force=True, expected_history_key=authorized_history_key
-            ):
-                # Refused without writing (session permanently deleted or
-                # rebound mid-persist). The in-memory unfile stands — the
-                # folder is being removed — so mark dirty and let the
-                # periodic flush persist wherever the slot now routes; a
-                # dangling folder_id left on the old transcript is ignored
-                # on the next load.
-                slot._dirty = True
-                logger.warning(
-                    "folder delete: unfile save refused for %s "
-                    "(session deleted or rebound); marked dirty for "
-                    "periodic-flush retry",
-                    getattr(slot, "key", "?"),
-                )
+    for name, slot in list(state._slots.items()):
+        if state._slots.get(name) is not slot or slot.folder_id not in target_ids:
+            continue
+        unfiled.append((slot, slot.folder_id))
+        # Pin the write to the transcript this iteration's membership
+        # check covered: the save awaits inside the loop, so a rebind can
+        # land mid-persist and the save would otherwise resolve its
+        # target from the moved routing at write time. No await between
+        # this capture and the unfile below.
+        authorized_history_key = slot_history_key(slot)
+        slot.folder_id = ""
+        if not await save_slot_off_loop(
+            state, slot, force=True, expected_history_key=authorized_history_key
+        ):
+            # Refused without writing (session permanently deleted or
+            # rebound mid-persist). The in-memory unfile stands — the
+            # folder is being removed — so mark dirty and let the
+            # periodic flush persist wherever the slot now routes; a
+            # dangling folder_id left on the old transcript is ignored
+            # on the next load.
+            slot._dirty = True
+            logger.warning(
+                "folder delete: unfile save refused for %s "
+                "(session deleted or rebound); marked dirty for "
+                "periodic-flush retry",
+                getattr(slot, "key", "?"),
+            )
 
     async def _restore_unfiled() -> None:
         for slot, previous in unfiled:
@@ -2043,20 +2343,77 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
                     )
         state.push_slots_update()
 
-    def _remove(folders: list[dict[str, Any]]) -> tuple[bool, None]:
+    swept: list[tuple[str, Any]] = []
+
+    def _remove(folders: list[dict[str, Any]]) -> tuple[bool, set[str]]:
+        # Exactly the frozen set, on both paths: it is the set the archive and
+        # unfile passes walked, and while it was frozen no folder could join it,
+        # leave it or be removed by another request, so the subtree under the
+        # lock now IS the snapshot. Present ids only, so a torn row cannot make
+        # the commit report an id it never removed.
+        removed = {str(f["id"]) for f in folders if f.get("id") in target_ids}
+        # The safe path re-parents the row's direct children to the top level;
+        # on the cascade nothing should hang off a removed folder any more, and
+        # the same line keeps the tree acyclic-and-rooted if something does.
         for f in folders:
-            if f.get("parent_id") == fid:
+            if f.get("id") not in removed and f.get("parent_id") in removed:
                 f["parent_id"] = ""
+        # The last word on live assignments, in the same synchronous step as the
+        # removal: a filing path that never consulted the store or the freeze (a
+        # cron placement, a fork inheriting its parent's folder, a channel
+        # default) can have set a slot's ``folder_id`` since the unfile loop's
+        # snapshot. Nothing can interleave between this sweep and the commit --
+        # both run inside this callback -- so the commit cannot leave a live
+        # slot naming a folder it removes. The persist follows the commit
+        # (below); the rollback covers these entries like the loop's own.
+        for name, slot in list(state._slots.items()):
+            if state._slots.get(name) is slot and slot.folder_id in removed:
+                unfiled.append((slot, slot.folder_id))
+                swept.append((name, slot))
+                slot.folder_id = ""
         # In place, not a rebind: mutate_folders snapshots the list object it
         # was given, and other holders of state._folders must see the removal.
-        folders[:] = [f for f in folders if f["id"] != fid]
-        return True, None
+        folders[:] = [f for f in folders if f.get("id") not in removed]
+        return True, removed
 
     try:
-        await state.mutate_folders(_remove)
-    except Exception:
+        removed_ids = await state.mutate_folders(_remove)
+    except Exception as exc:
         await _restore_unfiled()
+        if delete_contents:
+            # The archive pass is not undone -- there is no "un-close" -- and
+            # the folder store rolled its list back, so this is the state a
+            # refused close leaves: the sessions closed so far are in History,
+            # still filed under folders that exist. A retry finds nothing live
+            # left to archive and commits. Record what landed, since the
+            # ``allowed`` row below never will.
+            source, caller = _audit_origin(request)
+            sel().log_api_access(
+                caller=caller,
+                operation="chat.folder_delete",
+                outcome="error",
+                source=source,
+                resources=f"{fid} delete_contents archived={len(archived)}",
+                error=type(exc).__name__,
+            )
         raise
+    for name, slot in swept:
+        # Persist what the sweep unfiled, the way the loop persists its own: a
+        # slot closed meanwhile carried the unfile in its closing save; one that
+        # is still live gets the pinned forced save, and a refused save marks it
+        # dirty for the periodic flush, exactly as above.
+        if state._slots.get(name) is not slot:
+            continue
+        authorized_history_key = slot_history_key(slot)
+        if not await save_slot_off_loop(
+            state, slot, force=True, expected_history_key=authorized_history_key
+        ):
+            slot._dirty = True
+            logger.warning(
+                "folder delete: commit-time unfile save refused for %s "
+                "(session deleted or rebound); marked dirty for periodic-flush retry",
+                getattr(slot, "key", "?"),
+            )
     # Pop the epoch only after the removal is confirmed persisted. Popping
     # inside the callback would be a module-level side effect that survives a
     # failed store write: the folder would still exist while its epoch read 0
@@ -2064,27 +2421,61 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
     # a confirmed delete the entry has nothing left to guard (the write-back
     # already drops results for a folder it cannot re-find); popping keeps the
     # dict from growing with every deleted-folder id over the process lifetime.
-    _CHAT_FOLDER_ICON_EPOCHS.pop(fid, None)
-    # Cancel the folder's pending icon generation and drop its registry entry.
-    # Without this, an owner looping create->delete accumulates one queued
+    #
+    # Cancel each removed folder's pending icon generation and drop its registry
+    # entry. Without this, an owner looping create->delete accumulates one queued
     # task per deleted folder behind the serialized generator — each holds a
     # strong reference and a slot in the one-at-a-time model queue. The cancel
     # is safe after a confirmed delete: a write already started finishes under
     # the shield, and its write-back re-finds the folder by id, which no
     # longer exists, so nothing lands.
-    pending = _CHAT_FOLDER_PENDING_ICON_TASKS.pop(fid, None)
-    if pending is not None and not pending.done():
-        pending.cancel()
+    for gone in removed_ids:
+        _CHAT_FOLDER_ICON_EPOCHS.pop(gone, None)
+        pending = _CHAT_FOLDER_PENDING_ICON_TASKS.pop(gone, None)
+        if pending is not None and not pending.done():
+            pending.cancel()
+    cleared = 0
+    if delete_contents and removed_ids and state.conversation_log is not None:
+        # After the commit, never before: an archived session filed under a
+        # folder that still exists is correctly filed, and a commit that failed
+        # above must leave those rows exactly as they were. The pass covers the
+        # sessions the archive pass just closed (their closing save carried the
+        # folder they sat in) and anything archived there earlier. Off the loop:
+        # each write takes the transcript's flock.
+        cleared = await asyncio.to_thread(
+            _clear_archived_folder_assignments, state.conversation_log, removed_ids
+        )
     state.push_slots_update()
+    if cleared:
+        state.push_refresh("history")
     source, caller = _audit_origin(request)
     sel().log_api_access(
         caller=caller,
         operation="chat.folder_delete",
         outcome="allowed",
         source=source,
-        resources=fid,
+        resources=(
+            f"{fid} delete_contents folders={len(removed_ids)} archived={len(archived)} "
+            f"unfiled={len(unfiled)} history_unfiled={cleared}"
+            if delete_contents
+            else fid
+        ),
     )
-    return web.json_response({"ok": True})
+    if not delete_contents:
+        # The safe path answers ``{ok}`` only: its one client ignores the body,
+        # and the counts are the cascade's contract (its second confirm step
+        # shows them).
+        return web.json_response({"ok": True})
+    return web.json_response(
+        {
+            "ok": True,
+            "delete_contents": True,
+            "deleted_folder_ids": sorted(removed_ids),
+            "unfiled_sessions": len(unfiled),
+            "archived_sessions": len(archived),
+            "unfiled_history_sessions": cleared,
+        }
+    )
 
 
 # The authorization-identity helper is homed in ``token_auth`` beside the rule it

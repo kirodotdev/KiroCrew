@@ -671,6 +671,34 @@ class TestTheFilingIsSynchronous:
         assert state.push_slots_update.call_count == 2
 
     @pytest.mark.asyncio
+    async def test_a_folder_frozen_by_a_running_delete_is_not_placed_into(
+        self, monkeypatch
+    ) -> None:
+        """The placement re-asks whether the folder exists at the assignment,
+        synchronously, and a folder a ``delete_contents`` cascade has frozen reads
+        as absent: the tab stays where it is and nothing is written."""
+        import kiro_crew.dashboard.chat_persistence as persistence
+        from kiro_crew.dashboard import chat_folders
+
+        saves: list[str] = []
+
+        async def _save(state, slot, *a, **kw):
+            saves.append(slot.key)
+            return True
+
+        monkeypatch.setattr(persistence, "save_slot_off_loop", _save)
+        state = _make_state()
+        chat_folders._deleting_folder_ids(state).add(FOLDER)
+        try:
+            slot = _deliver(state, _job(chat_folder_id=FOLDER), "the brief", history=[])
+            assert slot is not None
+            await asyncio.gather(*list(state._background_tasks))
+        finally:
+            chat_folders._deleting_folder_ids(state).discard(FOLDER)
+        assert slot.folder_id == ""
+        assert saves == []
+
+    @pytest.mark.asyncio
     async def test_a_failed_write_retracts_the_placement(self, monkeypatch) -> None:
         """So memory and disk agree on "not filed" rather than disagreeing."""
         import kiro_crew.dashboard.chat_persistence as persistence

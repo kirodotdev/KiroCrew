@@ -387,6 +387,13 @@ def chat_folder_exists(state: DashboardState, folder_id: str) -> bool:
     """
     if not folder_id:
         return False
+    from kiro_crew.dashboard.chat_folders import folder_is_deleting
+
+    # A folder a running delete has frozen is going: a placement into it would
+    # outlive it as a dangling id, so it reads as absent here, as it does for
+    # every other filing path that consults the store.
+    if folder_is_deleting(state, folder_id):
+        return False
     return any(str(f.get("id")) == folder_id for f in getattr(state, "_folders", None) or ())
 
 
@@ -457,6 +464,21 @@ async def _commit_cron_tab_placement(
     from kiro_crew.dashboard.chat_utils import slot_history_key
 
     async with _slot_meta_txn_lock(state):
+        # Re-asked SYNCHRONOUSLY at the assignment, after the lock's await: the
+        # target was resolved before this task was scheduled, and a delete of
+        # that folder (or the freeze that precedes one) can have landed since.
+        # Nothing suspends between this answer and the assignment, and the
+        # delete's own commit unfiles under the folder-store lock whatever it
+        # still finds, so the two can never leave a placement into a folder
+        # that is gone.
+        if placed and not chat_folder_exists(state, placed):
+            logger.info(
+                "Cron '%s': folder %s is gone or being deleted; %s stays where it is",
+                job.name,
+                placed,
+                slot.key,
+            )
+            return False
         slot.folder_id = placed
         authorized_history_key = slot_history_key(slot)
         committed = False

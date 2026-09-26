@@ -2122,7 +2122,11 @@ async def _install_arrived_bundle(
             status=409,
         )
 
-    if slot.folder_id and not await arrival_folder_exists(state, slot.folder_id):
+    # ``frozen_is_present``: a folder a running delete has frozen still exists;
+    # the stored filing is kept and that delete's commit decides it.
+    if slot.folder_id and not await arrival_folder_exists(
+        state, slot.folder_id, frozen_is_present=True
+    ):
         logger.info(
             "session_transfer: arrival folder %s went away during import of %s; "
             "leaving the session unfiled",

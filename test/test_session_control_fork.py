@@ -284,6 +284,23 @@ def test_without_a_folder_the_child_inherits_the_sources_folder(tmp_path):
     assert state.get_slot(result["target"]).folder_id == folder_id
 
 
+def test_a_folder_frozen_by_a_running_delete_refuses_the_whole_fork(tmp_path):
+    from kiro_crew.dashboard import chat_folders
+
+    state = _make_state(tmp_path)
+    caller = _seed(state, "chat-1")
+    folder_id = _folder(state, "fold00000003", "Going")
+    before = set(state._slots)
+    chat_folders._deleting_folder_ids(state).add(folder_id)
+    try:
+        with pytest.raises(sc.SessionControlError) as exc:
+            _fork(state, caller, folder_id=folder_id)
+    finally:
+        chat_folders._deleting_folder_ids(state).discard(folder_id)
+    assert exc.value.code == "folder_not_found"
+    assert set(state._slots) == before
+
+
 def test_an_unknown_folder_refuses_the_whole_fork(tmp_path):
     state = _make_state(tmp_path)
     caller = _seed(state, "chat-1")

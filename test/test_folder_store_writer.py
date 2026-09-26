@@ -511,7 +511,7 @@ class TestSlotCreateFolderAssignment:
 
         # The target is deleted between the handler's unlocked check and the store
         # lock, which is what _unhide_folder reports from inside that lock.
-        async def _gone(state_: Any, folder_id: str) -> bool:
+        async def _gone(state_: Any, folder_id: str, **_kw: Any) -> bool:
             return folder_id != "target"
 
         monkeypatch.setattr(chat_handlers, "_unhide_folder", _gone)

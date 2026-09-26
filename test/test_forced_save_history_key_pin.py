@@ -247,11 +247,20 @@ class TestRefusalDispositionPerSite:
             folder = await (await client.post("/api/chat/folders", json={"name": "F"})).json()
             slot = state.get_or_create_slot("s1")
             slot.folder_id = folder["id"]
-            # Force the folder-store commit to fail so the rollback runs and
-            # its restore save is also refused.
+
+            # Force the folder-store COMMIT to fail so the rollback runs and its
+            # restore save is also refused. Only the removal callback fails: the
+            # delete first freezes the folder through the same store method with a
+            # no-write callback, and that has to go through for the unfile to run.
+            async def commit_fails(fn, on_committed=None):
+                if getattr(fn, "__name__", "") == "_remove":
+                    raise OSError("disk full")
+                _changed, value = fn(state._folders)
+                return value
+
             with (
                 patch("kiro_crew.dashboard.chat_folders.save_slot_off_loop", refusing),
-                patch.object(state, "mutate_folders", AsyncMock(side_effect=OSError("disk full"))),
+                patch.object(state, "mutate_folders", AsyncMock(side_effect=commit_fails)),
             ):
                 resp = await client.delete(f"/api/chat/folders/{folder['id']}")
             # The commit failure propagates (the delete did NOT land)…

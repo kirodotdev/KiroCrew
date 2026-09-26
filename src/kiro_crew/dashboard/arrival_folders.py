@@ -54,7 +54,11 @@ import uuid
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-from kiro_crew.dashboard.chat_folders import MAX_CHAT_FOLDERS, folder_ids_filed_into
+from kiro_crew.dashboard.chat_folders import (
+    MAX_CHAT_FOLDERS,
+    folder_ids_filed_into,
+    folder_is_deleting,
+)
 from kiro_crew.sel import sel
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -597,8 +601,17 @@ async def discard_arrival_folders(
         logger.info("Rolled back arrival folder %s after a failed import", fid)
 
 
-async def arrival_folder_exists(state: "DashboardState", folder_id: str) -> bool:
+async def arrival_folder_exists(
+    state: "DashboardState", folder_id: str, *, frozen_is_present: bool = False
+) -> bool:
     """Whether *folder_id* is still a folder in COMMITTED store state.
+
+    A folder a running delete has frozen (``chat_folders._deleting_folder_ids``)
+    exists but is going, and reads as *frozen_is_present* says: absent for a
+    caller about to make a NEW filing (it would outlive the folder as a dangling
+    id), present for the import repair that would otherwise ERASE a stored filing
+    from a folder the delete may yet leave standing -- if the delete commits, its
+    own commit-time sweep unfiles the slot.
 
     Read through ``read_folders`` so it sees only committed rows: an unlocked
     read can land mid-transaction and report a folder whose write is then rolled
@@ -617,6 +630,8 @@ async def arrival_folder_exists(state: "DashboardState", folder_id: str) -> bool
         return False
 
     def _read(folders: list[dict[str, Any]]) -> bool:
+        if folder_is_deleting(state, folder_id):
+            return frozen_is_present
         return any(str(f.get("id", "")) == folder_id for f in folders)
 
     try:

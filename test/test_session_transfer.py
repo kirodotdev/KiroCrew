@@ -4279,8 +4279,8 @@ async def test_a_close_during_the_folder_check_is_not_undone_by_the_repair(monke
     state = _stub_state(st, monkeypatch, save=_count_then_delete_the_folder)
     real_exists = st.arrival_folder_exists
 
-    async def _a_close_lands_inside_the_check(_state, folder_id):
-        answer = await real_exists(_state, folder_id)
+    async def _a_close_lands_inside_the_check(_state, folder_id, **kw):
+        answer = await real_exists(_state, folder_id, **kw)
         if not answer:
             # The folder is gone, so this is the call that arms the repair. The
             # person closes the tab in the same window: a close pops the slot
@@ -4304,6 +4304,40 @@ async def test_a_close_during_the_folder_check_is_not_undone_by_the_repair(monke
         "the transcript landed and the close is the person's own later action, so "
         "the import is not a failure"
     )
+
+
+@pytest.mark.asyncio
+async def test_an_arrival_folder_frozen_during_the_save_keeps_the_filing(monkeypatch):
+    """Frozen is not gone. A ``delete_contents`` cascade freezing the arrival
+    folder while the durable save is in flight must not arm the repair: the folder
+    still exists, and the cascade's own commit decides the filing. The repair's
+    existence read is asked with ``frozen_is_present`` for exactly this reason."""
+    from kiro_crew.dashboard import chat_folders
+    from kiro_crew.dashboard import session_transfer as st
+
+    saves: list[str] = []
+    frozen: list[str] = []
+
+    async def _freeze_the_folder_during_the_save(_state, slot, *_a, **_k):
+        saves.append(getattr(slot, "folder_id", ""))
+        if slot.folder_id and not frozen:
+            chat_folders._deleting_folder_ids(state).add(slot.folder_id)
+            frozen.append(slot.folder_id)
+        return True
+
+    state = _stub_state(st, monkeypatch, save=_freeze_the_folder_during_the_save)
+    try:
+        resp = await st.api_chat_slot_import(_make_request(state, _valid(origin="mac")))
+    finally:
+        for folder_id in frozen:
+            chat_folders._deleting_folder_ids(state).discard(folder_id)
+
+    assert saves and saves[0], "the premise: the durable save carried a folder_id"
+    assert frozen == [saves[0]]
+    assert len(saves) == 1, "no repair save: the filing is kept, not erased"
+    assert state._imported_slot.folder_id == saves[0]
+    assert resp.status == 200, resp.body
+    assert json.loads(resp.body)["ok"] is True
 
 
 @pytest.mark.asyncio
@@ -4333,8 +4367,8 @@ async def test_a_delete_during_the_folder_check_is_not_reported_as_landed(monkey
 
     real_exists = st.arrival_folder_exists
 
-    async def _watch_exists(_state, folder_id):
-        answer = await real_exists(_state, folder_id)
+    async def _watch_exists(_state, folder_id, **kw):
+        answer = await real_exists(_state, folder_id, **kw)
         existed.append(answer)
         return answer
 
