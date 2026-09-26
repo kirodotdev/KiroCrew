@@ -2660,9 +2660,9 @@ export function useWebSocket() {
               }
             }
             // Readers of the FULL registry (the Crew Members drawer's patrol
-            // block needs stopped_reason, next_due_ts and banner, none of which
-            // ride this frame) re-read it in place rather than merging a partial
-            // payload — one seed path, not a third copy of the merge.
+            // block needs banner, which does not ride a plain loop's frame)
+            // re-read it in place rather than merging a partial payload — one
+            // seed path, not a third copy of the merge.
             queryClient.invalidateQueries({ queryKey: AUTONUDGE_LOOPS_QUERY_KEY })
             break
           }

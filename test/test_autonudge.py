@@ -3056,6 +3056,37 @@ async def test_bound_deactivation_never_overwrites_a_manual_pause(svc):
 
 
 @pytest.mark.asyncio
+async def test_a_pause_landing_after_a_bound_keeps_the_bound(svc):
+    """The MIRROR race: the timer's bound stop lands first, and a reasonless
+    ``active=False`` -- the goal popover's Pause, pressed off a record that
+    still read running -- arrives second. That is a repeat of an inactive
+    state, not a new stop: stamping "manual" over the bound would make the
+    loop read Paused and offer a resume the timer turns away before the nudge,
+    and the record would lose why it ended."""
+    await svc.start()
+    for slot, bound in (("chat-1-201", "runtime_budget"), ("chat-1-202", "cycle_cap")):
+        loop = await svc.add(slot_key=slot, message="go", idle_secs=15)
+        await svc.update(loop.id, active=False, stopped_reason=bound)
+        assert svc._loops[loop.id].stopped_reason == bound
+        paused = await svc.update(loop.id, active=False)
+        assert (
+            svc._loops[loop.id].stopped_reason == bound
+        ), "a reasonless pause must not overwrite the bound that stopped the loop first"
+        assert svc._loops[loop.id].active is False
+        # The caller gets the truthful record back, so a popover that pressed
+        # Pause off a stale reading flips to the stopped state, not to Paused.
+        assert paused is not None and paused.stopped_reason == bound
+    # A pause on a loop that IS running is a new stop and records manual.
+    running = await svc.add(slot_key="chat-1-203", message="go", idle_secs=15)
+    await svc.update(running.id, active=False)
+    assert svc._loops[running.id].stopped_reason == "manual"
+    # And the guard is no bar to the revive: ``active=True`` still clears the bound.
+    revived = await svc.update(loop.id, active=True)
+    assert revived is not None and revived.active is True and revived.stopped_reason == ""
+    svc.stop()
+
+
+@pytest.mark.asyncio
 async def test_budget_expiring_mid_turn_deactivates_post_delivery(svc, monkeypatch):
     """The budget gates turn STARTS and must not cancel an
     in-flight turn — but once a slow turn ENDS with the budget spent, the loop

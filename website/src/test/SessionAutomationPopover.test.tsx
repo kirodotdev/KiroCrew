@@ -1,4 +1,6 @@
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
+import { flushSync } from 'react-dom'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import SessionAutomationPopover from '../components/SessionAutomationPopover'
@@ -194,6 +196,24 @@ describe('SessionAutomationPopover', () => {
 
     expect(screen.queryByText('Next cycle not yet scheduled')).toBeNull()
     expect(screen.getByText(/Next cycle in/)).toBeInTheDocument()
+  })
+
+  it('carries the stop reason through the compatibility bridge, so a manual pause reads Paused and a bound stop reads Stopped', () => {
+    // The goal editor tells the two apart on `stopped_reason === 'manual'`
+    // alone. A bridge that drops the field makes every inactive loop --
+    // including one the user has just paused -- render as Stopped with an
+    // erase control and no Resume.
+    renderPopover({ ...activeLegacyLoop, active: false, nextDueAt: 0, stoppedReason: 'manual' })
+    expect(screen.getByRole('button', { name: 'Resume loop and nudge now' })).toBeInTheDocument()
+    expect(screen.getByTestId('auto-nudge-loop-paused-manually')).toHaveTextContent('Paused')
+    expect(screen.queryByRole('button', { name: 'Clear stopped goal' })).toBeNull()
+  })
+
+  it('keeps a bound-stopped legacy loop on the Stopped path through the bridge', () => {
+    renderPopover({ ...activeLegacyLoop, active: false, nextDueAt: 0, stoppedReason: 'cycle_cap' })
+    expect(screen.getByTestId('auto-nudge-loop-paused')).toHaveTextContent('Stopped')
+    expect(screen.getByRole('button', { name: 'Clear stopped goal' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Resume loop and nudge now' })).toBeNull()
   })
 
   it('centres the radar glyph and its count in the composer trigger', () => {
@@ -705,14 +725,73 @@ describe('SessionAutomationPopover', () => {
     expect(screen.getByRole('spinbutton', { name: 'Seconds between nudges' })).toHaveValue(300)
     expect(screen.getByRole('spinbutton', { name: 'Max cycles (0 = infinite)' })).toHaveValue(24)
 
+    // Edit one field, then Save: the write goes to the LEGACY loop's id and
+    // carries the edited field only -- the untouched interval and cap are not
+    // written back. No `active` on a running loop's save: the field would be
+    // a no-op while the loop runs and a silent revive if it stopped between
+    // render and press.
+    fireEvent.change(screen.getByRole('textbox', { name: 'Goal description' }), {
+      target: { value: 'Keep checking, closely.' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/autonudge/legacy-1', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        message: 'Keep checking.', idle_secs: 300, max_cycles: 24, active: true,
-      }),
+      body: JSON.stringify({ message: 'Keep checking, closely.' }),
     }))
+  })
+
+  it('a two-leg press (write, then fire) hands the parent ONE record -- the fired one, carrying the armed deadline', async () => {
+    // ChatPage re-identifies `automation` on every hand-off
+    // (`dispatch(sseAutomation(next))`), and this bridge's onChange guard
+    // (`automationRef.current !== automation`) then drops any later hand-off
+    // still running in the pressed render's closure. A press with a write leg
+    // and a fire leg therefore hands up ONE record, once the fire settled: the
+    // fired record with the armed deadline. Two hand-offs lose the second, so
+    // the schedule keeps a full countdown and Trigger never disables on the
+    // due cycle. `flushSync` stands in for the store notification, which
+    // re-renders the parent before the next leg's response can arrive.
+    const written = {
+      id: 'legacy-1', slot_key: 'chat-1', message: 'edited', idle_secs: 300, max_cycles: 24,
+      cycle_count: 2, active: true, last_fire_ts: 0, next_due_ts: 1_900_000_300, stopped_reason: '',
+    }
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      const answers = init?.method === 'PATCH' || /\/fire$/.test(String(url))
+      return Promise.resolve(new Response(JSON.stringify(answers ? { ok: true, loop: written } : { loop: null }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const received: (AutomationRecord | null)[] = []
+    const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
+    function Parent() {
+      const [automation, setAutomation] = useState<AutomationRecord | null>(activeLegacyLoop)
+      return (
+        <QueryClientProvider client={client}>
+          <SessionAutomationPopover
+            slotKey="chat-1"
+            automation={automation}
+            open={true}
+            onOpenChange={() => {}}
+            onChange={next => { received.push(next); flushSync(() => setAutomation(next)) }}
+            creationReady={true}
+            sessionMode=""
+          />
+        </QueryClientProvider>
+      )
+    }
+    render(<Parent />)
+    fireEvent.change(screen.getByRole('textbox', { name: 'Goal description' }), { target: { value: 'edited' } })
+
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Save edits and nudge now' })) })
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/autonudge/legacy-1/fire', expect.objectContaining({ method: 'POST' })))
+    expect(received).toHaveLength(1)
+    const handed = received[0] as LegacyGoalLoop
+    expect(handed.kind).toBe('legacy_goal_loop')
+    expect(handed.message).toBe('edited')
+    // The armed deadline, not the write response's fresh full countdown.
+    expect(Math.abs((handed.nextDueAt ?? 0) - Date.now() / 1000)).toBeLessThan(5)
   })
 
   it('applies a mutation response when the captured automation is still current', async () => {

@@ -126,6 +126,10 @@ function legacyWire(loop: LegacyGoalLoop): AutoNudgeLoop {
     active: loop.active,
     last_fire_ts: loop.lastFireAt,
     next_due_ts: loop.nextDueAt ?? 0,
+    // The goal editor tells a PAUSED loop (resumable in place) from a STOPPED
+    // one on this field alone; dropping it here rendered every inactive loop,
+    // including one the user had just paused, as Stopped with an erase control.
+    stopped_reason: loop.stoppedReason,
     ...(loop.stopSentinelPath !== undefined ? { stop_sentinel_path: loop.stopSentinelPath } : {}),
     ...(loop.judge !== undefined ? { judge: loop.judge } : {}),
     ...(loop.judge_last_verdict !== undefined
