@@ -6759,6 +6759,11 @@ class TestRetriggerRecovery:
                 mock_sm_inst.running_agents_for = MagicMock(return_value=[])
                 mock_sm_inst.get = MagicMock(return_value=None)
                 mock_sm_inst.notify_injection_failed = MagicMock()
+                # Per-run frames are slotted by the run's root; a depth-one
+                # run's root is its parent (what admission stamps).
+                mock_sm_inst.root_session_key_for = MagicMock(
+                    side_effect=lambda info: info.parent_session_key
+                )
                 mock_sm.return_value = mock_sm_inst
                 orch._init_subagents()
         return orch, mock_sm

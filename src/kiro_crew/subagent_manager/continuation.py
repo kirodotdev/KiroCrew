@@ -414,6 +414,7 @@ class ContinuationCoordinator(ManagerComponent):
         _memory_mode: str | None = None,
         _crew_log_asked: "tuple[str, int] | None" = None,
         _stage_boundary_owner: str = "",
+        _root_session_key: str = "",
     ) -> SubagentInfo | None:
         """:meth:`continue_conversation_impl` for event-loop callers: the same
         prelude, then ``spawn_async`` (write-before-ack with the store write on
@@ -488,6 +489,7 @@ class ContinuationCoordinator(ManagerComponent):
             _execution_context=execution,
             _captured_state=state,
             _stage_boundary_owner=_stage_boundary_owner,
+            _root_session_key=_root_session_key,
         )
         if not isinstance(prelude, dict):
             return prelude
@@ -509,8 +511,22 @@ class ContinuationCoordinator(ManagerComponent):
         _execution_context=None,
         _captured_state=...,
         _stage_boundary_owner: str = "",
+        _root_session_key: str = "",
     ) -> "SubagentInfo | dict[str, Any] | None":
         """Dispatch a follow-up *task* into conversation *conv_id*.
+
+        ``_root_session_key`` is the trust root of the run whose OWN next turn
+        this is -- set only by the runtime's automatic follow-up
+        (``spawn_steer`` ``mode="follow_up"``), which holds that run's record
+        and its admission stamp. Admission then keeps the stamp instead of
+        re-walking ``parent_session_key``: by the time a follow-up dispatches,
+        the run's parent may have finished and been evicted, and a walk from a
+        key with no record answers the key itself -- no chat's trust, and a
+        founding root the conversation's durable record contradicts -- which
+        would mark the run's own conversation contested and persist that
+        false contest onto its founder. A caller that is not the run itself
+        (a chat continuing it, another run) passes nothing and is resolved
+        as before.
 
         ``_preassigned_id`` mirrors ``spawn``: a caller that must persist the
         dispatch identity BEFORE the side effect (so a crash in between is
@@ -726,6 +742,7 @@ class ContinuationCoordinator(ManagerComponent):
             _memory_mode=_memory_mode,
             _stage_boundary_owner=_stage_boundary_owner,
             app=app,
+            **({"_root_session_key": _root_session_key} if _root_session_key else {}),
             **(
                 {"_execution_context": _execution_context.to_record()}
                 if _execution_context is not None
@@ -1069,6 +1086,13 @@ class ContinuationCoordinator(ManagerComponent):
                 # ask is recorded at its own turn as `subagent/steered`.
                 _crew_log_asked=getattr(info, "_crew_log_followup_asked", None),
                 _stage_boundary_owner=stage_boundary_owner_for_run(info),
+                # This is the run's OWN next turn: its trust root is the stamp
+                # it was admitted with, not a re-walk of a parent key whose
+                # record may be gone by now (see ``_continue_prelude_impl``).
+                # A parentless run (a cron's or the CLI's) has no chat root and
+                # founded its conversation in its own name, so that founding
+                # stamp is what its follow-up must present to inherit it.
+                _root_session_key=info.root_session_key or info.conversation_root_session_key,
             )
             err = "spawn_failed" if child is None else str(getattr(child, "error", "") or "")
             if not err.startswith("conversation_busy"):

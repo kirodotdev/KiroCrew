@@ -99,6 +99,8 @@ interface SpawnListAgent {
   id: string
   done?: boolean
   parent?: string
+  /** The tab the run's WS frames are slotted to: the chat at the root of its spawn tree, named by the backend's own slot mapping. */
+  slot?: string
 }
 interface SpawnListResponse {
   agents?: SpawnListAgent[]
@@ -235,7 +237,14 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
     const reconcile = setInterval(() => {
       api.spawnList().then((d: SpawnListResponse) => {
         if (cancelled) return
-        const backendIds = new Set((d.agents || []).filter((a) => !a.done && a.parent === `dashboard:${slot}`).map((a) => a.id))
+        // Match on the tab the run's frames are slotted to. The backend names
+        // that tab (`slot`) with the same mapping its WS frames use -- the chat
+        // at the ROOT of the run's spawn tree -- so a nested run (whose `parent`
+        // is a `subagent:<id>` no tab shows) and a cron- or channel-born tab
+        // (whose slot is not a prefix strip of its key) both compare equal.
+        // Only a backend that predates `slot` gets the old parent-key match.
+        const inThisTab = (a: SpawnListAgent) => (a.slot != null ? a.slot === slot : a.parent === `dashboard:${slot}`)
+        const backendIds = new Set((d.agents || []).filter((a) => !a.done && inThisTab(a)).map((a) => a.id))
         activeListRef.current.forEach(a => {
           if (!backendIds.has(a.id)) dispatch(sseSubagentDone({ slot, id: a.id, elapsed: Math.round((Date.now() - a.startedAt) / 1000), error: 'reconciliation: agent no longer tracked by backend' }))
         })

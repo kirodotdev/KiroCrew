@@ -1781,7 +1781,14 @@ export function useWebSocket() {
             const approvalNote = {
               kind: 'approval',
               title: i18nT('hooks.useWebSocket.tool_approval', { name: data.tool || i18nT('hooks.useWebSocket.unknown') }),
-              body: approvalNotificationBody(data.source, data.tool_input, data.tool_purpose),
+              // A subagent prompt always has a chat's tab -- except one whose
+              // run is contested, which reaches the feed with no slot. That
+              // prompt leads with its purpose: the card excerpt is all a reader
+              // gets before Review, and the purpose is what says why it has no
+              // tab. Other slotless sources (cron, hooks) keep the command first.
+              body: approvalNotificationBody(data.source, data.tool_input, data.tool_purpose, {
+                purposeFirst: !approvalSlot && data.source === 'subagent',
+              }),
               ts: String(data.ts || Date.now() / 1000),
               approval_id: data.id,
               ...(approvalSlot ? { slot: approvalSlot } : {}),

@@ -355,6 +355,7 @@ from kiro_crew.subagent import (
     SubagentManager,
     ToolApprovalCallback,
     _injection_notice_outcome,
+    is_contested_root,
     resolve_max_subagents,
     stage_boundary_owner_for_run,
 )
@@ -2472,6 +2473,33 @@ class GatewayOrchestrator:
             )
             return True
 
+    def _spawn_approval_slot(self, request_id: str) -> str:
+        """The dashboard slot that shows a spawn approval, from its ``spawn:<id>`` id.
+
+        The prompt belongs to the tab of the chat at the ROOT of the spawn tree
+        (the run's admission-stamped ``root_session_key``), never to its literal
+        parent: a nested spawn's parent is a ``subagent:<id>`` key that no tab
+        shows. ``""`` when the run is unknown, has no parent, or no manager is
+        attached -- and for a run in a contested conversation, whose trust root
+        is a marker that is no session key at all and must not be turned into a
+        phantom slot: resolved through ``trust_root_for`` rather than the card's
+        routing root, because the slot named here is the one whose Trust setting
+        answers the prompt (``approval_slot`` -> ``_ps._trust``), and a contested
+        continuation's card lives in a tab whose trust must not approve it. The
+        caller then surfaces the prompt on the global feed rather than guessing a
+        tab.
+        """
+        mgr = getattr(self, "subagent_mgr", None)
+        if mgr is None:
+            return ""
+        info = mgr.get(request_id.removeprefix("spawn:"))
+        if info is None or not info.parent_session_key:
+            return ""
+        root = mgr.trust_root_for(info)
+        if is_contested_root(root):
+            return ""
+        return subagent_event_slot(root)
+
     def _interactive_approval(
         self,
         source: str,
@@ -2536,6 +2564,9 @@ class GatewayOrchestrator:
             # as an agent ID loses the dashboard slot and hides the approval prompt.
             # ``dashboard_slot_key`` answers "which tab shows this conversation?", so a
             # channel-born session gets its prompt in the tab it is open in too.
+            # A subagent's tool prompt arrives with the key of the chat at the
+            # ROOT of its spawn tree (stamped on the run at admission), never its
+            # ``subagent:<id>`` parent, which no tab shows.
             parent_slot = dashboard_slot_key(parent_session_key)
 
             # NO heuristic fallback. A background caller (cron / taskrunner /
@@ -9026,9 +9057,24 @@ class GatewayOrchestrator:
             if not self.dashboard_state:
                 return
             try:
-                slot = selected_slot_name or _event_slot(info.parent_session_key)
+                # The tab this frame addresses is the run's ROOT chat -- the
+                # same slot its per-run frames carry -- and its ``agents`` list
+                # is the tree rooted there, not the literal parent's own wave.
+                # The reducer REPLACES a slot's list with ``agents`` and evicts
+                # the slot's cards when ``running`` is 0, so a parent-keyed
+                # frame for the root's depth-one run would wipe a live nested
+                # card from the tab the moment its coordinator finished. The
+                # admission stamp is read first: a retried terminal report is
+                # rebuilt from a snapshot that carries it, and by then the
+                # ancestors a walk would need may be gone.
+                root_key = info.root_session_key or (
+                    self.subagent_mgr.root_session_key(info.parent_session_key)
+                    if self.subagent_mgr
+                    else info.parent_session_key
+                )
+                slot = selected_slot_name or _event_slot(root_key)
                 agents = (
-                    self.subagent_mgr.running_agents_for(info.parent_session_key)
+                    self.subagent_mgr.running_agents_rooted_at(root_key)
                     if self.subagent_mgr
                     else []
                 )
@@ -9241,7 +9287,16 @@ class GatewayOrchestrator:
             )
 
             if not _flush_only:
-                await _broadcast_subagent_status(info, "done", _injection_slot_name)
+                # Only a RESOLVED injection slot overrides the frame's own
+                # addressing. The raw-key fallback below serves the digest
+                # paths; for a nested run it names ``subagent:<id>``, a slot no
+                # tab reads, and the frame would miss the root tab whose list
+                # it must refresh.
+                await _broadcast_subagent_status(
+                    info,
+                    "done",
+                    _completion_key if isinstance(_completion_key, str) else "",
+                )
                 # Wake anything waiting on this parent's wave (the autopilot
                 # stage loop) BEFORE the injection below, which can take
                 # minutes: ``info.done`` is already True by here — the terminal
@@ -10507,16 +10562,8 @@ class GatewayOrchestrator:
 
         def _spawn_slot_resolver(request_id: str) -> str:
             """Resolve slot from spawn request_id (spawn:{agent_id})."""
-            agent_id = request_id.removeprefix("spawn:")
-            info = self.subagent_mgr.get(agent_id) if self.subagent_mgr is not None else None
-            slot = _event_slot(info.parent_session_key) if info and info.parent_session_key else ""
-            logger.info(
-                "_spawn_slot_resolver: rid=%s agent_id=%s info=%s slot=%s",
-                request_id,
-                agent_id,
-                info is not None,
-                slot,
-            )
+            slot = self._spawn_approval_slot(request_id)
+            logger.info("_spawn_slot_resolver: rid=%s slot=%s", request_id, slot)
             return slot
 
         _approve_subagent = self._interactive_approval(
@@ -10547,7 +10594,19 @@ class GatewayOrchestrator:
             )
             if channel_decision is not None:
                 return channel_decision
-            event = LLMEvent(kind="permission_request", request_id=request_id, title=description)
+            # The description's first line is the prompt's title; any further
+            # lines are its purpose. The dashboard renders a title truncated to a
+            # few words (the feed card, the detail panel header) and the purpose
+            # in full as the body, so a description that needs explaining (a
+            # contested conversation's prompt) puts the operative words on line
+            # one and the explanation below. A one-line description is unchanged.
+            title, _, purpose = description.partition("\n")
+            event = LLMEvent(
+                kind="permission_request",
+                request_id=request_id,
+                title=title,
+                tool_purpose=purpose.strip(),
+            )
             return await _approve_spawn_gate(event, parent_session_key)
 
         # Debounced slots push: keep slots[].subagents_running live for every
@@ -10576,7 +10635,22 @@ class GatewayOrchestrator:
         async def _subagent_event(etype: str, info: SubagentInfo, extra: dict) -> None:
             if not self.dashboard_state:
                 return
-            slot_name = _event_slot(info.parent_session_key)
+            # Per-run frames (spawn / tool / chunk / done / snapshot) are keyed by
+            # (slot, id) on the wire and upserted one card at a time, so they
+            # follow the run to the tab of the chat at the ROOT of its spawn tree
+            # -- the same tab its spawn-approval prompt was addressed to, whose
+            # pending card these frames advance. Tagging them with the literal
+            # ``subagent:<id>`` parent named no tab, so an approved nested spawn
+            # left a "Starting" card in the root chat that never moved. The
+            # list-carrying ``subagent_status`` frame (``_broadcast_subagent_status``)
+            # and the reconnect replay (``subagent_replay_slot``) address the
+            # same tab, listing the tree rooted there, so no frame the tab
+            # receives can evict a card another frame painted.
+            slot_name = _event_slot(
+                self.subagent_mgr.root_session_key_for(info)
+                if self.subagent_mgr
+                else info.parent_session_key
+            )
             base = {"id": info.id, "slot": slot_name}
             # Batch identity rides every frame when present so the UI can
             # group/aggregate a wave without a lookup table. (Type guard:

@@ -33,6 +33,9 @@ class _StageDeliveryManager:
     def running_agents_for(self, _parent: str) -> list[dict]:
         return []
 
+    def running_agents_rooted_at(self, _root: str) -> list[dict]:
+        return []
+
     async def has_pending_work_for_async(self, _parent: str) -> bool:
         return False
 
@@ -300,6 +303,9 @@ class _KeyedStageDeliveryManager:
 
     def running_agents_for(self, parent: str) -> list[dict]:
         self.running_keys.append(parent)
+        return []
+
+    def running_agents_rooted_at(self, _root: str) -> list[dict]:
         return []
 
     async def has_pending_work_for_async(self, _parent: str) -> bool:
@@ -751,6 +757,9 @@ class _ReboundStageDeliveryManager:
         self.waited = False
 
     def running_agents_for(self, _parent: str) -> list[dict]:
+        return []
+
+    def running_agents_rooted_at(self, _root: str) -> list[dict]:
         return []
 
     async def has_pending_work_for_async(self, _parent: str) -> bool:

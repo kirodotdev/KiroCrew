@@ -28,6 +28,7 @@ if TYPE_CHECKING:
         asyncio,
         cached_admission_check,
         check_memory_available,
+        contested_root,
         learned_cost_for,
         logger,
         platform_compat,
@@ -194,6 +195,9 @@ class _GateMixin(ManagerComponent):
         _window_hint: "bool | None" = None,
         _child_registration: bool = True,
         _crew_log_asked: "tuple[str, int] | None" = None,
+        _root_session_key: str = "",
+        _conversation_root_session_key: str = "",
+        _durable_conversation_root: str | None = None,
         _memory_mode: str | None = None,
         *,
         crew: str = "",
@@ -261,6 +265,44 @@ class _GateMixin(ManagerComponent):
         # concurrency gate keeps its identity across the round-trip instead of
         # being announced under one id and starting under another.
         agent_id: str = _preassigned_id or self._manager._mint_agent_id()
+        # The root of the spawn tree is resolved ONCE, on the first entry, while
+        # the caller that asked for this spawn is the live record its
+        # ``subagent:<id>`` parent key names. A queued or store-accepted member
+        # re-enters with the value it was queued under (``_root_session_key`` in
+        # the queued params) instead of re-walking the key: by then the caller
+        # may have finished and its conversation been continued from ANOTHER
+        # chat, and re-resolving would hand this run that chat's trust. That
+        # rule is structural, not a convention each re-entry path must remember:
+        # a resumed admission (``_from_queue`` or ``_store_accepted``) whose
+        # nested caller arrives WITHOUT the stamp fails closed to a contested
+        # root, which no trust lookup honours, so a path that forgets the
+        # parameter costs an interactive prompt rather than an escalation. A
+        # chat-keyed caller is its own root and a parentless run founds its
+        # own, so neither needs the stamp.
+        if (
+            (_from_queue or _store_accepted)
+            and not _root_session_key
+            and parent_session_key.startswith("subagent:")
+        ):
+            # The caller's root cannot be re-established here (it was captured
+            # on the first entry, and the stamp is missing): fail closed.
+            _root_session_key = contested_root(parent_session_key)
+        root_session_key: str = _root_session_key or self._manager.root_session_key(
+            parent_session_key
+        )
+        # Fixed at the same moment: the root every request keyed by this run's
+        # conversation resolves to. A continuation compares against the
+        # conversation's founding root here, so a continue from another chat is
+        # marked contested before it can be asked anything.
+        conversation_root_session_key: str = (
+            _conversation_root_session_key
+            or self._manager.conversation_root_for_new_run(
+                conversation_key,
+                root_session_key,
+                f"subagent:{agent_id}",
+                durable_root=_durable_conversation_root,
+            )
+        )
         # Submission accounting: count this member as
         # submitted BEFORE any rejection or queue/registration branching. A
         # member refused below (empty task, low memory, bad cwd, governance)
@@ -336,11 +378,18 @@ class _GateMixin(ManagerComponent):
             )
 
         def _refuse_row(info: SubagentInfo) -> SubagentInfo:
-            """A policy refusal of a spawn whose row ALREADY exists (a drained
-            row the pump re-checks) marks that row failed in the same step,
-            so the refusal the caller sees is also the store's verdict and
-            the pump can never dispatch work that was refused."""
-            if _from_queue and info.error:
+            """A policy refusal of a spawn whose row ALREADY exists marks that
+            row failed in the same step, so the refusal the caller sees is also
+            the store's verdict and the pump can never dispatch work that was
+            refused. The row exists for a drained row the pump re-checks
+            (``_from_queue``), for an accepted ``spawn_async`` row re-entering
+            (``_store_accepted``), and for the dispatcher's claimed re-entry
+            (``_claimed``): a refusal on either of the latter two -- the
+            conversation-busy check at the commit point is the one that can
+            fire there -- would otherwise leave an ADMITTED row with no runtime,
+            which the next incarnation's reconcile requeues and runs, executing
+            work the caller was told was refused."""
+            if (_from_queue or _store_accepted or _claimed is not None) and info.error:
                 self._manager._admission.taskq_fail(agent_id, info.error)
             return self._manager._announce_rejection(info)
 
@@ -547,6 +596,10 @@ class _GateMixin(ManagerComponent):
             "_crew_log_asked": _crew_log_asked,
             "_agent_prevalidated": _agent_prevalidated,
             "_preassigned_id": agent_id,
+            # Captured on the first entry (see the top of this method); the
+            # drain must reuse it rather than resolve the parent key again.
+            "_root_session_key": root_session_key,
+            "_conversation_root_session_key": conversation_root_session_key,
         }
         if _prepare_only and _memory_mode == "persistent":
             # ``spawn_async``: every policy gate above has passed; hand back the
@@ -1170,6 +1223,48 @@ class _GateMixin(ManagerComponent):
         info._raw_task = task  # unredacted prompt for kiro-cli execution
         info._memory_mode_ready = not bool(conversation_key)
         info._taskq_generation = taskq_generation
+        # The roots captured on this spawn's FIRST entry (see the top of this
+        # method): trust and tab routing for this run read the stamps later,
+        # when the parent that made the call may already be gone.
+        # A continuation re-checks that its conversation is FREE at the moment
+        # it commits. The prelude checked once, but a continuation awaits
+        # between that check and this registration (the founder's durable root
+        # and the run's execution record are read off the loop, the store row
+        # is written on its writer thread, a lane reservation may be awaited),
+        # and two continuations of one conversation can both pass every earlier
+        # check in those windows. Admitting both is not a harmless duplicate:
+        # the roots are resolved against the records present at each pass, so a
+        # same-root one registered first is stamped with the founding root and
+        # runs its whole turn under that trust while a cross-root one registered
+        # second marks the conversation contested -- a contest the first never
+        # sees. One live or queued run per conversation is the invariant the
+        # prelude promises callers ("use spawn_steer to inject into it"), so the
+        # gate holds it here, with no await between this check and the write to
+        # ``_agents``. A busy record that is this very run's own entry is not a
+        # rival. A ``ClaimPoint`` re-entry that ends here did not register, and
+        # its caller (the pump's claim-and-start) gives its reservation back the
+        # way it does for any drained row that did not start.
+        if conversation_key:
+            busy = self._manager._conversation_busy(conversation_key)
+            if busy is not None and busy.id != agent_id:
+                refused = SubagentInfo(
+                    id=agent_id,
+                    task=_redacted_task,
+                    memory_mode=_memory_mode,
+                    agent=agent,
+                    parent_session_key=parent_session_key,
+                    done=True,
+                    error=(
+                        f"conversation_busy: run {busy.id} is in flight on this "
+                        "conversation — use spawn_steer to inject into it, or wait "
+                        "for its completion event"
+                    ),
+                    batch_id=batch_id,
+                    batch_total=max(0, int(batch_total)),
+                )
+                return _refuse_row(refused)
+        info.root_session_key = root_session_key
+        info.conversation_root_session_key = conversation_root_session_key
         self._manager._agents[agent_id] = info
         self._record_crew_log_dispatch(info, from_queue=_from_queue, asked=_crew_log_asked)
         if not _dispatch_now:  # a ClaimPoint re-entry already holds its reservation
@@ -1198,10 +1293,18 @@ class _GateMixin(ManagerComponent):
             except RuntimeError:
                 pass  # no running loop (sync/test context)
 
-        # Check parent session trust (approval_policy="auto") set by dashboard trust toggle.
+        # Check parent session trust (approval_policy="auto") set by dashboard
+        # trust toggle. Read at the ROOT of the spawn tree captured on this
+        # spawn's first entry, so a subagent spawning its own subagent inherits
+        # the chat's trust at any depth and a drained member cannot pick up a
+        # different chat's trust through a continued conversation; a
+        # non-subagent parent is its own root. Through ``trust_root_for``: a run
+        # admitted into a CONTESTED conversation (a continuation of it, or a
+        # retry carrying its marker) resolves to the marker rather than the
+        # chat its card lives in, and the marker is refused.
         parent_trusted = (
             parent_session_key
-            and self._manager._sessions.get_approval_policy(parent_session_key) == "auto"
+            and self._manager.root_approval_policy(self._manager.trust_root_for(info)) == "auto"
         )
 
         if self._manager._is_yolo and self._manager._is_yolo():

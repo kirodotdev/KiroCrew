@@ -430,15 +430,43 @@ class _TaskqBridgeMixin(ManagerComponent):
             pass
 
     async def await_pending_defer(self, agent_id: str) -> None:
-        """Wait for the defer :meth:`taskq_defer_posted` posted for *agent_id*,
-        so ``next_run_at`` is on the row before the pump may refill it."""
+        """Wait for the write :meth:`taskq_defer_posted` or :meth:`taskq_fail`
+        posted for *agent_id*, so the row carries it before the pump may refill
+        it or the caller hears the verdict. A posted FAILURE is verified: if the
+        row does not read terminal once the write has settled (the write lost
+        to store contention), the settle is retried once on the writer thread,
+        and a row still not terminal is logged by id -- the reconcile's requeue
+        then re-enters the gate, where the same check refuses it again while
+        the rival is live."""
+        from kiro_crew import taskq as _taskq
+
         pending = getattr(self._manager, "_pending_defers", None)
-        task = pending.pop(agent_id, None) if pending else None
-        if task is not None:
-            try:
-                await task
-            except Exception:  # noqa: BLE001 - the write logged its own failure
-                pass
+        entry = pending.pop(agent_id, None) if pending else None
+        if entry is None:
+            return
+        task, reason = entry if isinstance(entry, tuple) else (entry, None)
+        try:
+            await task
+        except Exception:  # noqa: BLE001 - the write logged its own failure
+            pass
+        if reason is None:
+            return
+        store = self.taskq_store()
+        if store is None:
+            return
+        try:
+            if _taskq.is_terminal(await store.run(store.state_of, agent_id) or ""):
+                return
+            await store.run(store.finish, agent_id, _taskq.FAILED, error=reason)
+            if _taskq.is_terminal(await store.run(store.state_of, agent_id) or ""):
+                return
+        except Exception:  # noqa: BLE001 - reported below, by id
+            pass
+        _glue_logger.warning(
+            "taskq: refused row %s could not be settled failed; a later requeue "
+            "re-enters the gate and is refused again while its rival is live",
+            agent_id,
+        )
 
     def park_defer(
         self,
@@ -644,15 +672,31 @@ class _TaskqBridgeMixin(ManagerComponent):
         return store.advance(agent_id, state, generation=generation)
 
     def taskq_fail(self, agent_id: str, reason: str) -> None:
-        """Terminal ``failed`` for a persisted row refused before it registered."""
+        """Terminal ``failed`` for a persisted row refused before it registered.
+
+        The write is posted to the writer thread and RECORDED under the row's
+        id (``_pending_defers``, the same slot the accept path already awaits
+        for a posted defer), so ``spawn_async`` awaits it before it hands the
+        refusal back: a refusal published while its durable failure is still in
+        flight would let a write lost to store contention leave the row
+        ADMITTED, and the next incarnation's reconcile requeues and runs it.
+        :meth:`await_pending_defer` verifies the row reads terminal and retries
+        the settle once inline if it does not.
+        """
         from kiro_crew import taskq as _taskq
 
         store = self.taskq_store()
         if store is None:
             return
-        self._post_store_write(
+        task = self._post_store_write(
             store, f"fail {agent_id}", store.finish, agent_id, _taskq.FAILED, error=reason
         )
+        if task is not None:
+            pending = getattr(self._manager, "_pending_defers", None)
+            if pending is None:
+                pending = {}
+                setattr(self._manager, "_pending_defers", pending)
+            pending[agent_id] = (task, reason)
 
     def taskq_settle(self, info: SubagentInfo) -> None:
         """Write the run's terminal state from its record; fenced by generation.
@@ -1366,6 +1410,11 @@ class _TaskqBridgeMixin(ManagerComponent):
         # grants and which no start path reads.
         params.pop("_agent_prevalidated", None)
         params.pop("approval_mode", None)
+        # A row written before roots were stamped at admission carries no
+        # ``_root_session_key``. It needs none here: every window entry
+        # re-enters through ``spawn(..., _from_queue=True)``, where the gate
+        # resolves an unstamped ``subagent:`` caller to a contested root rather
+        # than re-walking a tree the restart may have left to another chat.
         return params
 
     def _evict_for_lanes(self, count: int, lanes: "Mapping[str, str] | None" = None) -> int:

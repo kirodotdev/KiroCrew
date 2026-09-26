@@ -86,6 +86,19 @@ def _subagent_replay_has_owner(frame: object) -> bool:
     return isinstance(slot, str) and bool(slot.strip())
 
 
+def subagent_replay_slot(a: Any) -> str:
+    """The ``slot`` a replayed frame for *a* must carry: its ROOT chat's tab.
+
+    The live per-run frames are slotted to the root of the run's spawn tree
+    (the stamp taken at admission), so a nested run's card is drawn in the chat
+    that started the tree. The replay must name the same tab: keyed on the
+    literal ``subagent:<id>`` parent, a reconnect would tag the card with a slot
+    no tab reads and the live card would vanish. A record without a stamp (a
+    synthetic terminal, a test double) falls back to its parent, as before.
+    """
+    return subagent_event_slot(getattr(a, "root_session_key", "") or a.parent_session_key)
+
+
 def build_subagent_snapshot(a: Any, *, now: float | None = None) -> dict:
     """Build the ``subagent_snapshot`` replay frame's ``data`` for one agent.
 
@@ -117,7 +130,7 @@ def build_subagent_snapshot(a: Any, *, now: float | None = None) -> dict:
 
     data: dict = {
         "id": a.id,
-        "slot": subagent_event_slot(a.parent_session_key),
+        "slot": subagent_replay_slot(a),
         # The sub-agent's OWN session key (where it writes its ctx_blocks /
         # token rows), so a client can fetch this node's own context-trace and
         # render its window composition. Mirrors the run key derived in
@@ -1008,7 +1021,7 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                                 # prefix-strip tags replayed cards with a slot
                                 # no tab reads, so the panel rehydrated empty
                                 # after every reconnect for cron/channel tabs.
-                                slot = subagent_event_slot(a.parent_session_key)
+                                slot = subagent_replay_slot(a)
                                 try:
                                     _replay.append(
                                         {

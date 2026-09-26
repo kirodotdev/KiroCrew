@@ -204,6 +204,13 @@ def _subagent_parent_session_key(state: DashboardState, session_key: str) -> str
         )
 
     best = max(matches, key=_rank)
+    # The ROOT of the run's spawn tree, not its literal parent: a nested run's
+    # parent is another ``subagent:<id>`` that no tab shows, so its card would be
+    # suppressed even though the chat that started the tree has a tab open. The
+    # stamp is taken at admission; a record without one answers with its parent.
+    root = getattr(best, "root_session_key", "")
+    if isinstance(root, str) and root:
+        return root
     parent = getattr(best, "parent_session_key", "")
     # isinstance, not truthiness: a stubbed manager can hand back a
     # non-str here and dashboard_slot_key would treat it as a key.

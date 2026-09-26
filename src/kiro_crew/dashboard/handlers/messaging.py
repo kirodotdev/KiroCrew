@@ -59,6 +59,7 @@ from kiro_crew.dashboard.chat_utils import (
     remember_slack_options,
     run_to_completion,
     slack_options_owner_key,
+    subagent_event_slot,
 )
 from kiro_crew.dashboard.handlers._shared import (
     _pip_install_channel_available,
@@ -111,6 +112,7 @@ from kiro_crew.subagent import (
     DEFERRED_QUEUED_REASONS,
     effort_applied_note,
     effort_drop_reason,
+    is_contested_root,
     stage_boundary_owner_for_run,
 )
 from kiro_crew.subagent_persistence import _agent_dir, read_state
@@ -1344,6 +1346,15 @@ async def api_spawn_list(request: web.Request) -> web.Response:
             "task": _redact(info.task),
             "done": info.done,
             "parent": info.parent_session_key,
+            # The tab the run's WS frames are slotted to -- the chat at the ROOT
+            # of its spawn tree, named with the same mapping the gateway applies
+            # -- so the dashboard compares slot to slot. A nested run's
+            # ``parent`` is a ``subagent:<id>`` no tab shows, so a reconcile
+            # keyed on ``parent`` would evict the nested card the frames just
+            # painted; and a raw key compared to ``dashboard:<slot>`` misses
+            # every cron- and channel-born tab, whose slot is not a prefix strip
+            # of its key, so the reconcile would fail a live card as untracked.
+            "slot": subagent_event_slot(state.subagents.root_session_key_for(info)),
             "agent": info.agent or info.crew,
             "started": info.started,
         }
@@ -1473,6 +1484,28 @@ async def api_spawn_retry(request: web.Request) -> web.Response:
         _memory_mode=execution.memory_mode,
         _execution_context=execution.to_record(),
         _stage_boundary_owner=retry_boundary_owner,
+        # Same trust as the run it replaces. The gate resolves a fresh spawn's
+        # root by walking parent links, and between the failure and the retry
+        # the parent conversation can have been evicted and continued from
+        # ANOTHER chat -- a trusted one -- which would then be the root a
+        # re-walk finds, and the retry (and every tool call under it) would
+        # auto-approve on trust the failed run never had. The stamp taken at
+        # the original's admission is what it actually ran under; the retry
+        # founds its own conversation from that root, as the original did.
+        _root_session_key=old.root_session_key,
+        # And the same conversation trust. A failed CONTESTED continuation has a
+        # routing root (the chat that continued it, where its card lives) that is
+        # not its trust root: its turn was authored under another chat's key, so
+        # its requests resolve to the contested marker. The retry runs that same
+        # turn's task, so it carries the marker too; founding a fresh
+        # conversation at the routing root would hand the retry (and its tools)
+        # the auto-approval the marker exists to deny. Any other stamp is
+        # re-derived by the gate from the root, as for a fresh spawn.
+        _conversation_root_session_key=(
+            old.conversation_root_session_key
+            if is_contested_root(old.conversation_root_session_key)
+            else ""
+        ),
     )
     if not info:
         return web.json_response(

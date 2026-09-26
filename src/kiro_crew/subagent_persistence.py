@@ -399,6 +399,7 @@ def create_agent_folder(
     memory_mode="persistent",
     app="",
     execution_context=None,
+    conversation_root="",
 ) -> Path:
     from kiro_crew.execution_context import ExecutionContext, execution_for_store
 
@@ -423,6 +424,12 @@ def create_agent_folder(
         "task": task,
         "agent": agent,
         "parent_session": parent_session,
+        # The root every request keyed by this run's conversation resolves to,
+        # as stamped at admission. Read back when a continuation arrives after
+        # the in-memory records are gone (restart, eviction): the founder's
+        # value is the conversation's founding root, and a contested marker
+        # written here later keeps the contest across a restart.
+        "conversation_root": conversation_root,
         "started": time.time(),
         "max_turns": max_turns,
         "status": "running",
@@ -744,7 +751,17 @@ def _release_retention_locks(holders: list["_AgentLock"]) -> None:
         holder.lock.release()
 
 
-def update_state(agent_id: str, **fields: object) -> bool:
+# The fields ``update_state(durable=True)`` may write THROUGH a live-only
+# record to its durable file. A live-only record exists so that an incognito
+# or temporary turn's body never reaches ``state.json``; write-through is for
+# the record's PROVENANCE -- what a restart must read back about who owns the
+# run -- and nothing else. Enforced here, not by convention: a caller that
+# passes any other field with ``durable=True`` on a live-only record is
+# refused, so no later feature can carry a body field to disk on this switch.
+DURABLE_PROVENANCE_FIELDS: frozenset[str] = frozenset({"conversation_root"})
+
+
+def update_state(agent_id: str, *, durable: bool = False, **fields: object) -> bool:
     """Merge *fields* into state.json (atomic rewrite).
 
     Returns True when the merge was written, False when it was SKIPPED because
@@ -753,6 +770,23 @@ def update_state(agent_id: str, **fields: object) -> bool:
     the reaper deleted -- but callers with a durability contract (the pre-spawn
     provenance write) need to see the skip to retry rather than mistake
     a silent no-op for success.
+
+    A LIVE-ONLY record (a run whose memory mode is not persistent, held in
+    :data:`_LIVE_RUN_STATES`) normally absorbs the merge in memory and the
+    durable file is left alone -- that is what keeps an incognito or temporary
+    turn's body off disk. ``durable=True`` is for the fields that are not this
+    turn's body but the record's provenance, which a restart must read back --
+    and ONLY those: on a live-only record the switch accepts the fields in
+    :data:`DURABLE_PROVENANCE_FIELDS` and raises ``ValueError`` for any other,
+    so the body cannot ride it to disk by a later caller's mistake:
+    the merge lands in that file first and in the live dict only once the
+    write has succeeded, when the run also has a durable ``state.json`` (a
+    persistent owner tightened for one continuation), the way
+    :func:`tighten_run_memory_mode` writes retention metadata
+    through. With no durable file there is nothing to carry the field and
+    nothing a restart could read, so the merge is complete in memory; a durable
+    file that exists but cannot be read is a skip (False) that publishes
+    nothing, as for any other record.
 
     The read / merge / rewrite is serialized per agent for OFF-LOOP callers (see
     :data:`_STATE_LOCKS`), so two pool writers cannot rewrite a snapshot
@@ -784,10 +818,26 @@ def update_state(agent_id: str, **fields: object) -> bool:
     they still pay their own fsync on the loop, and moving that I/O while keeping
     their ``SessionMap`` mutation on-loop remains outstanding.
     """
-    if _live_run_key(agent_id) in _LIVE_RUN_STATES:
-        _LIVE_RUN_STATES[_live_run_key(agent_id)].update(fields)
-        return True
+    live_key = _live_run_key(agent_id)
+    live = live_key in _LIVE_RUN_STATES
+    if live and durable:
+        stray = set(fields) - DURABLE_PROVENANCE_FIELDS
+        if stray:
+            raise ValueError(
+                "update_state(durable=True) on a live-only record may write only "
+                f"provenance fields {sorted(DURABLE_PROVENANCE_FIELDS)}, not {sorted(stray)}"
+            )
     p = _agent_dir(agent_id) / "state.json"
+    if live and (not durable or not p.exists()):
+        # The merge is complete in memory: a body field never reaches disk,
+        # and a provenance field with no durable record has nothing a restart
+        # could read back.
+        _LIVE_RUN_STATES[live_key].update(fields)
+        return True
+    # A durable merge on a live record publishes to memory only AFTER the
+    # file holds it. ``read_state`` prefers the live dict, so publishing
+    # first would let a failed write leave in-process readers seeing a value
+    # (a contested conversation root, say) that a restart never restores.
     # Off-loop callers serialize; on-loop callers keep pre-existing behaviour.
     # ``holder`` stays referenced for the whole critical section -- that strong
     # reference is what keeps every concurrent writer on one lock (see
@@ -807,6 +857,8 @@ def update_state(agent_id: str, **fields: object) -> bool:
         state.update(fields)
         state["updated_at"] = time.time()
         _atomic_write(p, state)
+        if live:
+            _LIVE_RUN_STATES[live_key].update(fields)
     finally:
         if holder is not None:
             holder.lock.release()

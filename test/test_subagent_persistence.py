@@ -2250,3 +2250,128 @@ def test_restricted_runtime_record_never_calls_disk_writer(agent_root, monkeypat
 
     monkeypatch.setattr("kiro_crew.subagent_persistence._atomic_write", fail)
     assert bind_session_memory_mode("taskrunner:restricted:runtime", "temporary") == "temporary"
+
+
+class TestDurableMergeOnALiveOnlyRecord:
+    """``update_state(durable=True)`` carries provenance fields through to disk.
+
+    A tightened (live-only) record absorbs ordinary merges in memory so a
+    restricted turn's body stays off disk; a field a restart must read back
+    (the conversation contest) is written to the durable file as well, the way
+    tightening itself writes retention metadata through.
+    """
+
+    def test_plain_merge_stays_in_memory_but_durable_merge_reaches_the_file(self, agent_root):
+        from kiro_crew import subagent_persistence as persistence
+
+        folder = create_agent_folder("durable-merge", task="body")
+        assert persistence.tighten_run_memory_mode("durable-merge", "incognito") == "incognito"
+        try:
+            assert update_state("durable-merge", conversation_root="contested:subagent:X") is True
+            durable = json.loads((folder / "state.json").read_text(encoding="utf-8"))
+            assert durable["conversation_root"] == ""  # a plain merge never touches the file
+            assert (
+                update_state(
+                    "durable-merge", durable=True, conversation_root="contested:subagent:X"
+                )
+                is True
+            )
+            durable = json.loads((folder / "state.json").read_text(encoding="utf-8"))
+            assert durable["conversation_root"] == "contested:subagent:X"
+            assert durable["task"] == "body"  # the restricted turn's body is still not written
+            assert read_state("durable-merge")["conversation_root"] == "contested:subagent:X"
+        finally:
+            persistence._LIVE_RUN_STATES.clear()
+        # After a restart (live dict gone) the file is what is read.
+        assert read_state("durable-merge")["conversation_root"] == "contested:subagent:X"
+
+    def test_live_only_record_without_a_file_is_complete_in_memory(self, agent_root):
+        from kiro_crew import subagent_persistence as persistence
+
+        key = persistence._live_run_key("live-only")
+        persistence._LIVE_RUN_STATES[key] = {"id": "live-only"}
+        try:
+            assert update_state("live-only", durable=True, conversation_root="c:x") is True
+            assert persistence._LIVE_RUN_STATES[key]["conversation_root"] == "c:x"
+            assert not (agent_root / "live-only" / "state.json").exists()
+        finally:
+            persistence._LIVE_RUN_STATES.clear()
+
+    def test_an_unreadable_durable_file_is_a_skip_even_for_a_live_record(self, agent_root):
+        from kiro_crew import subagent_persistence as persistence
+
+        folder = create_agent_folder("durable-broken")
+        assert persistence.tighten_run_memory_mode("durable-broken", "incognito") == "incognito"
+        (folder / "state.json").write_text("{not json", encoding="utf-8")
+        try:
+            assert update_state("durable-broken", durable=True, conversation_root="c:x") is False
+            # The skip published nothing: memory does not claim a root the
+            # file never recorded, so a restart and the live process agree.
+            key = persistence._live_run_key("durable-broken")
+            assert persistence._LIVE_RUN_STATES[key]["conversation_root"] == ""
+        finally:
+            persistence._LIVE_RUN_STATES.clear()
+
+    def test_the_durable_switch_carries_only_provenance_fields_through_a_live_record(
+        self, agent_root
+    ):
+        """The write-through exists for provenance, and the set is closed.
+
+        A live-only record keeps an incognito or temporary turn's body off disk.
+        ``durable=True`` is the one way past that, so it accepts only the named
+        provenance fields; any other field is refused -- not merely left to a
+        docstring -- and nothing reaches the file or the live dict."""
+        from kiro_crew import subagent_persistence as persistence
+
+        folder = create_agent_folder("durable-scope", task="body")
+        assert persistence.tighten_run_memory_mode("durable-scope", "incognito") == "incognito"
+        key = persistence._live_run_key("durable-scope")
+        try:
+            assert persistence.DURABLE_PROVENANCE_FIELDS == frozenset({"conversation_root"})
+            with pytest.raises(ValueError, match="provenance"):
+                update_state("durable-scope", durable=True, task="a new body")
+            with pytest.raises(ValueError, match="provenance"):
+                update_state(
+                    "durable-scope", durable=True, conversation_root="c:x", task="a new body"
+                )
+            durable = json.loads((folder / "state.json").read_text(encoding="utf-8"))
+            assert durable["task"] == "body"
+            assert persistence._LIVE_RUN_STATES[key]["task"] == "body"
+            # The provenance field alone still writes through.
+            assert update_state("durable-scope", durable=True, conversation_root="c:x") is True
+            durable = json.loads((folder / "state.json").read_text(encoding="utf-8"))
+            assert durable["conversation_root"] == "c:x"
+            # A record that is NOT live-only is unaffected: durable is the
+            # default there and every field writes to the file as always.
+        finally:
+            persistence._LIVE_RUN_STATES.clear()
+        assert update_state("durable-scope", task="a new body") is True
+        durable = json.loads((folder / "state.json").read_text(encoding="utf-8"))
+        assert durable["task"] == "a new body"
+
+    def test_a_failed_durable_write_publishes_nothing_to_memory(self, agent_root, monkeypatch):
+        """Persist before you publish: the live dict takes the field only once
+        the file holds it. ``read_state`` prefers the live dict, so a merge
+        published ahead of a write that then fails would show in-process
+        readers a contested root that a restart restores to the old trust
+        root -- the founder's memory and its ``state.json`` disagreeing about
+        who owns the conversation."""
+        from kiro_crew import subagent_persistence as persistence
+
+        create_agent_folder("durable-write-fails")
+        assert (
+            persistence.tighten_run_memory_mode("durable-write-fails", "incognito") == "incognito"
+        )
+        key = persistence._live_run_key("durable-write-fails")
+
+        def _boom(path, payload):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(persistence, "_atomic_write", _boom)
+        try:
+            with pytest.raises(OSError):
+                update_state("durable-write-fails", durable=True, conversation_root="contested:s:X")
+            assert persistence._LIVE_RUN_STATES[key]["conversation_root"] == ""
+            assert read_state("durable-write-fails")["conversation_root"] == ""
+        finally:
+            persistence._LIVE_RUN_STATES.clear()

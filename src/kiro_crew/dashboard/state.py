@@ -8053,7 +8053,12 @@ class DashboardState:
                 include_check_status=include_check_status,
                 dashboard_user=dashboard_user,
             )
-            d["subagents_running"] = bool(subs and subs.running_agents_for(f"dashboard:{s.key}"))
+            # The tab's whole tree, not only its own wave: nested runs' cards and
+            # frames are slotted to the root tab, so the badge must stay lit while
+            # a grandchild still runs after the coordinator that spawned it ended.
+            d["subagents_running"] = bool(
+                subs and subs.running_agents_rooted_at(f"dashboard:{s.key}")
+            )
             out.append(d)
         # The slot-key/session-key correspondence the lineage join needs, read the same
         # way ``/api/sessions/memory`` reads it for the Sessions table. Handed over

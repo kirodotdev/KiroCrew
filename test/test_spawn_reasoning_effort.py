@@ -476,6 +476,9 @@ class TestRecordAndRetry:
             task="t",
             _raw_task="t",
             parent_session_key="dash:1",
+            # Stamped at admission; a depth-one run's root is its parent.
+            root_session_key="dash:1",
+            conversation_root_session_key="dash:1",
             agent="",
             max_turns=0,
             cwd="",

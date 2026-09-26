@@ -23,7 +23,7 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -148,6 +148,11 @@ def _info(**kw: Any) -> Any:
         "include_project": True,
     }
     base.update(kw)
+    # Stamped at admission on every real record; a depth-one run's root is its
+    # parent. Set after the update so an explicit parent is what it defaults to.
+    base.setdefault("root_session_key", base["parent_session_key"])
+    # The conversation root a depth-one run founds is its own root.
+    base.setdefault("conversation_root_session_key", base["root_session_key"])
     return SimpleNamespace(**base)
 
 
@@ -159,6 +164,11 @@ def _mgr(**kw: Any) -> Any:
     mgr._tasks = {}
     mgr.get.return_value = None
     mgr.settle_before_delete = AsyncMock(return_value="delivered")
+    # What the real manager answers for a record admission stamped: the stamp,
+    # else the parent (a depth-one run's root).
+    mgr.root_session_key_for = MagicMock(
+        side_effect=lambda info: getattr(info, "root_session_key", "") or info.parent_session_key
+    )
     for key, val in kw.items():
         setattr(mgr, key, val)
     return mgr
@@ -797,6 +807,35 @@ class TestApiSpawnList:
         agents = _payload(_run(mod.api_spawn_list, _Req(_state(subagents=mgr))))["agents"]
         assert agents[0]["error"] == ""
 
+    def test_entry_names_the_root_tab_beside_the_literal_parent(self) -> None:
+        """The dashboard reconciles a tab's cards on ``slot``, not ``parent``.
+
+        A nested run's frames are slotted to the root chat's tab while its
+        ``parent`` is a ``subagent:<id>`` no tab shows; a parent-keyed reconcile
+        would evict the card the frames just painted.
+        """
+        nested = _info(id="grand", parent_session_key="subagent:child")
+        mgr = _mgr(all_agents=[nested])
+        mgr.root_session_key_for = MagicMock(return_value="dashboard:chat-1")
+        agents = _payload(_run(mod.api_spawn_list, _Req(_state(subagents=mgr))))["agents"]
+        assert agents[0]["parent"] == "subagent:child"
+        # The tab NAME the run's frames carry, via the gateway's own mapping, so
+        # the dashboard compares slot to slot instead of a raw key to a prefix.
+        assert agents[0]["slot"] == "chat-1"
+        mgr.root_session_key_for.assert_called_once_with(nested)
+
+    def test_entry_slot_uses_the_frames_mapping_for_a_cron_root(self) -> None:
+        """A cron-born tab is ``cron-<id>``, not a prefix strip of ``cron:<id>``."""
+        nested = _info(id="grand", parent_session_key="subagent:child")
+        mgr = _mgr(all_agents=[nested])
+        mgr.root_session_key_for = MagicMock(return_value="cron:job-9")
+        with patch(
+            "kiro_crew.dashboard.handlers.messaging.subagent_event_slot",
+            side_effect=lambda key: {"cron:job-9": "cron-job-9"}[key],
+        ):
+            agents = _payload(_run(mod.api_spawn_list, _Req(_state(subagents=mgr))))["agents"]
+        assert agents[0]["slot"] == "cron-job-9"
+
 
 class TestApiSpawnRetry:
     def _req(self, mgr: Any, agent_id: str = "a1") -> _Req:
@@ -807,6 +846,12 @@ class TestApiSpawnRetry:
             old.execution_context = ExecutionContext(
                 None, MemoryStoreRef("default"), "template", "kirocrew"
             )
+            # Stamped at admission on every real record; a depth-one run's root
+            # is its parent.
+            if not hasattr(old, "root_session_key"):
+                old.root_session_key = old.parent_session_key
+            if not hasattr(old, "conversation_root_session_key"):
+                old.conversation_root_session_key = old.root_session_key
         return _Req(_state(subagents=mgr), None, match_info={"agent_id": agent_id})
 
     def test_503_without_manager(self) -> None:

@@ -1125,7 +1125,11 @@ async def test_spawn_list_follows_origin_including_cross_member_delegation(env):
 
     rows = [row("alice-run", "member-bob"), row("bob-run", "member-alice"), row("global-run", "")]
     env.state.subagents = SimpleNamespace(
-        all_agents=rows, _agents={r.id: r for r in rows}, _tasks={r.id: object() for r in rows}
+        all_agents=rows,
+        _agents={r.id: r for r in rows},
+        _tasks={r.id: object() for r in rows},
+        # A depth-one run's root is its parent (what admission stamps).
+        root_session_key_for=lambda info: info.parent_session_key,
     )
     response = await messaging.api_spawn_list(request(env, internal=True))
     assert [r["id"] for r in json.loads(response.text)["agents"]] == ["alice-run"]

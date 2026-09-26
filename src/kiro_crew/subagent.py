@@ -535,6 +535,124 @@ _REAPER_INTERVAL = 60  # seconds between reaper sweeps
 # run for this long has its session files + map entry deleted by the reaper.
 # Hibernated conversations cost a JSON file, not RSS, so this is generous.
 _CONVERSATION_TTL_SECS = 6 * 3600
+# A conversation continued from a chat other than the one that founded it has
+# no single owner. Its resolved root is this marker over the conversation key
+# rather than the key itself: the key IS a session in the store when the run
+# was started as a dedicated process (registered with the founding chat's
+# policy), so answering with the key would hand that trust straight back.
+# The marker is no session key, so trust and tab lookups find nothing under
+# it, and it is stamped into every run admitted beneath the conversation, so
+# the refusal does not depend on the contested records still being retained.
+_CONTESTED_ROOT_PREFIX = "contested:"
+
+
+def contested_root(conversation_key: str) -> str:
+    """The root a contested conversation resolves to; see ``_CONTESTED_ROOT_PREFIX``."""
+    return _CONTESTED_ROOT_PREFIX + conversation_key
+
+
+def is_contested_root(root_session_key: str) -> bool:
+    """True for a root produced by :func:`contested_root`."""
+    return root_session_key.startswith(_CONTESTED_ROOT_PREFIX)
+
+
+# The words a contested conversation's prompts carry. Its prompts reach only the
+# global approvals feed (the marker names no tab), whose card prefixes a title
+# with "Tool approval:", shows two lines of body, and offers one control, Review;
+# the Review panel shows everything and offers Approve/Reject. So the title is
+# the ASK, as on every other card (``spawn_run(...)`` / ``shell(...)``), and the
+# body is written in the words of what the USER did, not the system's model: a
+# person who pressed "continue" on an old run from a second chat never did a
+# thing called "a run in 2+ chats", and the input box is labelled "Message ...",
+# never "composer". Both prompts lead with the STATE and its why, so the card's
+# two lines say what this prompt is before anything else; the spawn prompt
+# then names the remedy, and a tool prompt the
+# tool's own purpose and then the remedy, so what the tool is for is not
+# buried under boilerplate on every prompt the run raises. The remedy is whole
+# in the Review panel either way, where the decision is made.
+# One state sentence, true in every case the marker covers: a conversation two
+# chats have a claim on, one whose founding record cannot be read, one founded
+# by no chat (a cron's or the CLI's run a chat later continued). "Continued
+# from more than one chat" would be false for the last two, and the marker does
+# not record which case minted it -- every refusal reads only ``is_contested_root``.
+# The why names the USER'S act, not the system's model: in every one of those
+# cases a chat continued a task it did not start (a second chat, or a chat
+# picking up a cron's or the CLI's run), and that act is what the reader can
+# connect to the prompt in front of them.
+CONTESTED_PROMPT_STATE = "This run has no single owning chat"
+CONTESTED_PROMPT_WHY = "its task was continued from a chat that did not start it"
+# The SAFE action leads: this prompt exists because no chat's trust vouches for
+# the run, and a habituated approver reads the first verb of a card. The object
+# is named -- "this task", the work the run was started for -- so "it" cannot be
+# read as the request in the card's title.
+CONTESTED_PROMPT_REMEDY = "Start this task again from a single chat, or approve this request"
+
+
+def contested_spawn_note() -> str:
+    """The body of a contested spawn prompt: the state, the remedy, then the why.
+
+    The feed card shows two lines of body and offers one control, Review. The
+    state opens, so the card says what this prompt is; the remedy follows so
+    the card's excerpt reaches the SAFE verb ("Start this task again...") before
+    it is cut, and a user who dismisses the banner has still seen the way out;
+    the why -- the explanation a user reads once they are deciding -- comes
+    last, whole in Review. A spawn prompt has no purpose of its own to show, so
+    unlike :func:`contested_tool_note` nothing stands between state and remedy.
+    """
+    return (
+        f"{CONTESTED_PROMPT_STATE}. {CONTESTED_PROMPT_REMEDY}. "
+        f"{_capitalize_first(CONTESTED_PROMPT_WHY)}."
+    )
+
+
+def contested_tool_note(purpose: str = "") -> str:
+    """The body of a contested tool prompt: the state, the purpose, then the why and remedy, as paragraphs.
+
+    The feed card shows the body's first two lines, and those must carry the
+    state AND what the tool is for -- the card's reason to exist on every
+    contested tool prompt the run raises. The why does not fit there beside
+    them, so on a tool prompt it moves to Review with the remedy, one sentence:
+    a user who meets only tool prompts still reads, where they decide, why the
+    run has no chat and what to do; the spawn prompt, which has no purpose to
+    show, keeps the why on its card.
+    """
+    # The three parts are three PARAGRAPHS, and the middle one is SET APART:
+    # it is the untrusted run's own claim about what the tool is for, raised on
+    # the one surface that exists because the run is not trusted, so it must
+    # not read with the authority of the system's sentences on either side.
+    # The body is markdown (the command already gets its own fenced block):
+    # the claim is a quote, which the Review panel renders as a distinct muted
+    # block, while the feed card's plain two-line excerpt strips the marker and
+    # reads the purpose as prose right after the state -- the card has room
+    # for the state and the purpose, and nothing else.
+    head = f"{CONTESTED_PROMPT_STATE}."
+    body = purpose.strip()
+    if body and not body.endswith((".", "!", "?")):
+        body += "."
+    if body:
+        body = "\n".join(f"> {line}" if line else ">" for line in body.splitlines())
+    tail = f"{_capitalize_first(CONTESTED_PROMPT_WHY)}. {CONTESTED_PROMPT_REMEDY}."
+    return "\n\n".join(part for part in (head, body, tail) if part)
+
+
+def _capitalize_first(sentence: str) -> str:
+    return sentence[:1].upper() + sentence[1:]
+
+
+def _label_contested_prompt(event: Any, root_session_key: str) -> None:
+    """Lead a contested run's tool prompt with the state its spawn prompt names.
+
+    A bare ``shell(...)`` on the global feed with no chat provenance reads as a
+    routing bug; the spawn gate labels its own prompt, and a tool prompt raised
+    mid-run must say the same. The label goes in ``tool_purpose`` (the card's
+    body) ahead of the tool's own purpose, so the tool title stays intact for
+    anything that reads it and the purpose still shows.
+    """
+    if not is_contested_root(root_session_key):
+        return
+    event.tool_purpose = contested_tool_note(event.tool_purpose)
+
+
 # Startup grace for spawn_steer: how long a steer on a live run
 # waits for its session to register before returning the typed
 # ``session_starting`` refusal, and the poll cadence within that window.
@@ -1636,6 +1754,30 @@ class SubagentInfo:
     # record, and the handler answers 429 from that absence.
     error_code: str = ""
     parent_session_key: str = ""
+    # The chat, cron or channel key at the root of this run's spawn tree,
+    # resolved once at admission while every ancestor record is still live.
+    # Per-chat trust and the owning dashboard tab are keyed on it: a nested
+    # run's ``parent_session_key`` is a ``subagent:<id>`` that no store or tab
+    # knows, and an ancestor can be deleted or cancelled before this run's
+    # first tool prompt, so re-walking the tree at check time is not enough.
+    # Equal to ``parent_session_key`` for a depth-one run, so empty for a run
+    # admitted without a parent (a cron's or the CLI's spawn) and for a record
+    # built outside admission; either way ``root_session_key_for`` falls back
+    # to walking from the parent link. For the parentless run itself that is
+    # ``""`` (no owner, no trust); its children resolve to the run's own
+    # ``subagent:<id>`` key, where its effective policy is registered.
+    root_session_key: str = ""
+    # The root that governs every request keyed by this run's CONVERSATION
+    # (``conversation_key or subagent:<id>``), fixed when the conversation's
+    # first run is admitted and inherited unchanged by each continuation. A run
+    # and its continuation share one session key, so a request under that key
+    # cannot say which of them sent it; giving both the same answer makes the
+    # question moot, and means continuing another chat's conversation never
+    # lends it the continuing chat's trust. Equal to ``root_session_key`` for
+    # the run that starts a conversation -- or, for a parentless one, its own
+    # ``subagent:<id>`` key, so a chat's continuation contests it rather than
+    # founding it. Empty only outside admission.
+    conversation_root_session_key: str = ""
     # Boundary generation captured at admission; paired with
     # ``parent_session_key`` it identifies the exact owning stage boundary.
     # Empty selects legacy-compatible or explicitly unowned routing.
@@ -2108,6 +2250,7 @@ class _ReportFailureSnapshot:
 
     id: str
     parent_session_key: str
+    root_session_key: str
     _stage_boundary_owner: str
     _stage_boundary_cancelled: bool
     task: str
@@ -2142,6 +2285,7 @@ class _ReportFailureSnapshot:
         return cls(
             id=info.id,
             parent_session_key=info.parent_session_key,
+            root_session_key=info.root_session_key,
             _stage_boundary_owner=stage_boundary_owner_for_run(info),
             _stage_boundary_cancelled=bool(info._stage_boundary_cancelled),
             task=bounded(info.task),
@@ -2177,6 +2321,7 @@ class _ReportFailureSnapshot:
         text = (
             self.id,
             self.parent_session_key,
+            self.root_session_key,
             self._stage_boundary_owner,
             self.task,
             self.result,
@@ -2207,6 +2352,11 @@ class _ReportFailureSnapshot:
             result_truncated=self.result_truncated,
             error=self.error,
             parent_session_key=self.parent_session_key,
+            # The admission stamp travels with the report: a retried terminal
+            # frame for a nested run is slotted by its root (``subagent_replay_slot``
+            # / the status frame), and by retry time the ancestor that a re-walk
+            # would need may be gone, leaving the card in the root tab stale.
+            root_session_key=self.root_session_key,
             _stage_boundary_owner=self._stage_boundary_owner,
             _stage_boundary_cancelled=self._stage_boundary_cancelled,
             agent=self.agent,
@@ -4039,6 +4189,9 @@ class SubagentManager:
     def running_agents_for(self, parent_key: str) -> list[dict]:
         return self._run_events.running_agents_for_impl(parent_key)
 
+    def running_agents_rooted_at(self, root_key: str) -> list[dict]:
+        return self._run_events.running_agents_rooted_at_impl(root_key)
+
     def completion_event(self, parent_key: str) -> "asyncio.Event":
         """Event pulsed each time a run belonging to *parent_key* finishes.
 
@@ -4120,6 +4273,9 @@ class SubagentManager:
         _claimed: "tuple[int, bool, str] | None" = None,
         _window_hint: "bool | None" = None,
         _child_registration: bool = True,
+        _root_session_key: str = "",
+        _conversation_root_session_key: str = "",
+        _durable_conversation_root: str | None = None,
         *,
         crew: str = "",
         target_member: str | None = None,
@@ -4158,6 +4314,9 @@ class SubagentManager:
             _claimed=_claimed,
             _window_hint=_window_hint,
             _child_registration=_child_registration,
+            _root_session_key=_root_session_key,
+            _conversation_root_session_key=_conversation_root_session_key,
+            _durable_conversation_root=_durable_conversation_root,
             crew=crew,
             target_member=target_member,
             delegation=delegation,
@@ -4205,6 +4364,17 @@ class SubagentManager:
             or getattr(self._sessions, "admission_closed", False) is True
         ):
             return self.spawn(task, **kwargs)
+        conversation_for_root = str(kwargs.get("conversation_key") or "")
+        if conversation_for_root and kwargs.get("_durable_conversation_root") is None:
+            # A continuation compares against its conversation's founding root.
+            # When no in-memory record of the conversation remains (restart,
+            # eviction) that root lives in the founder's run record, so it is
+            # read here, off the loop, and handed to the gate as a value; the
+            # gate itself reads nothing. Unknown (no record, pre-stamp record)
+            # is ``""``, which the gate fails closed on.
+            kwargs["_durable_conversation_root"] = await asyncio.to_thread(
+                self._durable_conversation_root, conversation_for_root
+            )
         if kwargs.get("_execution_context") is None:
             from kiro_crew.execution_context import read_session_execution
             from kiro_crew.subagent_persistence import read_run_execution
@@ -4424,6 +4594,7 @@ class SubagentManager:
         _memory_mode: str | None = None,
         _crew_log_asked: "tuple[str, int] | None" = None,
         _stage_boundary_owner: str = "",
+        _root_session_key: str = "",
     ) -> SubagentInfo | None:
         return await self._continuation.continue_conversation_async_impl(
             conv_id,
@@ -4437,6 +4608,7 @@ class SubagentManager:
             _memory_mode,
             _crew_log_asked,
             _stage_boundary_owner,
+            _root_session_key=_root_session_key,
         )
 
     def _continue_prelude(
@@ -4455,6 +4627,7 @@ class SubagentManager:
         _execution_context=None,
         _captured_state=...,
         _stage_boundary_owner: str = "",
+        _root_session_key: str = "",
     ) -> "SubagentInfo | dict[str, Any] | None":
         return self._continuation._continue_prelude_impl(
             conv_id,
@@ -4470,6 +4643,7 @@ class SubagentManager:
             _execution_context=_execution_context,
             _captured_state=_captured_state,
             _stage_boundary_owner=_stage_boundary_owner,
+            _root_session_key=_root_session_key,
         )
 
     def recorded_cwd(self, conv_id: str) -> str:
@@ -4648,6 +4822,215 @@ class SubagentManager:
     def get(self, agent_id: str) -> SubagentInfo | None:
         return self._run_events.get_impl(agent_id)
 
+    def root_session_key(self, key: str) -> str:
+        """The first non-subagent session key reached by following parent links.
+
+        A subagent's own key is ``subagent:<id>``. On the shared-runtime path
+        that key is never registered in the session store, so anything keyed on
+        it (trust, the owning dashboard tab) is absent for every run below depth
+        one. The walk stops at a non-subagent key, a key with no record, an
+        empty parent, or a key already visited (a cycle has no root, and the
+        last key seen is returned rather than looping).
+
+        A key names a CONVERSATION: the run that started it and every
+        continuation share it, so a request under that key cannot say which of
+        them sent it. The answer therefore never depends on which run is live.
+        A record admitted for the conversation carries the
+        ``conversation_root_session_key`` fixed by the run that founded it (see
+        :meth:`conversation_root_for_new_run`), so ordinarily every retained
+        record agrees. A continuation started from a different root marks the
+        conversation contested, and two records that founded it independently
+        (concurrent continuations admitted after eviction) can retain different
+        roots; either way the conversation resolves to :func:`contested_root`
+        of its key -- a marker that is no session key, so
+        :meth:`root_approval_policy` refuses it and no tab shows it. Runs
+        admitted below a contested conversation carry the marker in their own
+        stamps, so the refusal outlives the records that established it.
+        A record built outside admission (no stamp) answers with its own root
+        stamp, or its parent link.
+        """
+        seen: set[str] = set()
+        while key.startswith("subagent:") and key not in seen:
+            seen.add(key)
+            records = self._conversation_records(key)
+            if not records:
+                break
+            roots = {r.conversation_root_session_key for r in records}
+            roots.discard("")
+            if len(roots) > 1:
+                # A continuation from another chat beside the founder, or two
+                # records that founded the conversation independently (concurrent
+                # continuations after eviction) with different roots: no single
+                # chat owns the key.
+                return contested_root(key)
+            if roots:
+                # The one root every record agrees on -- a chat's key, or a
+                # contested marker inherited from an ancestor conversation and
+                # propagated unchanged.
+                return roots.pop()
+            record = records[0]
+            if record.root_session_key:
+                return record.root_session_key
+            if not record.parent_session_key:
+                break
+            key = record.parent_session_key
+        return key
+
+    def _conversation_records(self, key: str) -> list[SubagentInfo]:
+        """Every retained record keyed by *key*, the direct run first.
+
+        A run's key is ``conversation_key or subagent:<id>``: the original run
+        matches on its id, each continuation on its ``conversation_key``.
+        """
+        records: list[SubagentInfo] = []
+        direct = self._agents.get(key[len("subagent:") :]) if key.startswith("subagent:") else None
+        if direct is not None:
+            records.append(direct)
+        records.extend(
+            info
+            for info in self._agents.values()
+            if info is not direct and info.conversation_key == key
+        )
+        return records
+
+    def conversation_root_for_new_run(
+        self,
+        conversation_key: str,
+        own_root: str,
+        own_key: str,
+        durable_root: str | None = None,
+    ) -> str:
+        """The conversation root to stamp on a run being admitted.
+
+        A run that starts a conversation founds it with *own_root* -- or, when
+        it has no parent (a cron's or the CLI's spawn, whose root is empty),
+        with *own_key* (``subagent:<id>``), so that the conversation has a
+        founder to compare against and a continuation from a chat cannot found
+        it in the chat's name. A continuation (``conversation_key`` set)
+        inherits the founding root when it matches its own; a continuation from
+        a different root gets :func:`contested_root` of the key, the marker
+        :meth:`root_session_key` fails closed on. With no retained record of the
+        conversation (a restart, or the founder evicted) the founding root is
+        *durable_root*: the value of the founder's durable run record, where
+        admission wrote it (:func:`create_agent_folder`) and where a contest is
+        written when one arises, captured OFF the event loop by the caller
+        (:meth:`spawn_async` via :meth:`_durable_conversation_root`) -- this
+        method runs on the loop and reads nothing. A conversation whose founding
+        root is unknown here -- no captured value, no record, or one written
+        before the stamp existed -- is contested, so a chat cannot found in its
+        own name a conversation another chat authored. A *durable_root* that is
+        itself a contested marker wins over every retained record, since the
+        record that contested the conversation may be gone while the founder's
+        is not.
+        """
+        own_root = own_root or own_key
+        if not conversation_key:
+            return own_root
+        if durable_root and is_contested_root(durable_root):
+            # A contest written to the founder's record outranks whatever is
+            # retained in memory: the founder may still be retained with its
+            # founding root while the continuation that contested it has been
+            # evicted, and a same-root continuation must not read the founding
+            # root back past the contest.
+            return durable_root
+        founding: set[str] = set()
+        for record in self._conversation_records(conversation_key):
+            stamp = record.conversation_root_session_key
+            if is_contested_root(stamp):
+                return stamp  # already contested: stays contested
+            if stamp:
+                founding.add(stamp)
+        if not founding:
+            durable = durable_root or ""
+            if not durable:
+                # No record of who founded the conversation: fail closed. The
+                # marker does not say why (the prompt's one state sentence is
+                # true for this case too), only that no chat's trust applies.
+                return contested_root(conversation_key)
+            if is_contested_root(durable):
+                return durable
+            founding.add(durable)
+        # A founder that is not this root -- another chat, no chat at all (a
+        # parentless run founds in its own name, the conversation key itself),
+        # or two independent founders (concurrent continuations admitted after
+        # the original's record was evicted) -- means nobody owns the key.
+        return own_root if founding == {own_root} else contested_root(conversation_key)
+
+    def _durable_conversation_root(self, conversation_key: str) -> str:
+        """The conversation root the founder's run record persisted, or ``""``.
+
+        The record is the founder's own ``state.json`` (the conversation key
+        names the founder's id). A record without the field predates the stamp:
+        it answers its chat parent when the founder was a depth-one run (the
+        root admission would have stamped), else ``""``, which the caller treats
+        as unknown. A file read: call
+        it off the event loop (``asyncio.to_thread``) and hand the value to
+        admission as ``_durable_conversation_root``.
+        """
+        state = read_state(conversation_key[len("subagent:") :])
+        if not state:
+            return ""
+        if "conversation_root" not in state:
+            # A record written before the stamp existed. Its founding root is
+            # still derivable when the founder was a depth-one run: admission
+            # would have stamped its chat parent, so that key is the same root
+            # the stamp would carry, and a same-chat continuation is spared a
+            # one-time contested lockout. A nested pre-stamp founder (parent
+            # ``subagent:``) has no derivable root and stays unknown.
+            parent = state.get("parent_session")
+            if isinstance(parent, str) and parent and not parent.startswith("subagent:"):
+                return parent
+            return ""
+        root = state.get("conversation_root")
+        return root if isinstance(root, str) else ""
+
+    def root_session_key_for(self, info: SubagentInfo) -> str:
+        """The root session key of *info*'s own spawn tree.
+
+        The stamp taken at admission wins; a record built outside admission
+        (a synthetic terminal, a test double) falls back to resolving its parent.
+        """
+        return info.root_session_key or self.root_session_key(info.parent_session_key)
+
+    def trust_root_for(self, info: SubagentInfo) -> str:
+        """The root whose trust governs requests *info*'s own run issues.
+
+        Ordinarily the run's spawn-tree root (:meth:`root_session_key_for`).
+        A continuation admitted into a CONTESTED conversation is the exception:
+        its spawn-tree root is the chat that continued it, but the turn it runs
+        is driven by a conversation another chat founded, so that chat's trust
+        must not approve the requests it issues -- the continuing chat can
+        already auto-approve any spawn of its own, and lending that trust to a
+        foreign conversation's instructions is the escalation the marker exists
+        to deny. Such a run resolves to the conversation's contested marker,
+        which :meth:`root_approval_policy` refuses and no tab shows; its card
+        stays in the continuing chat's tab (:meth:`root_session_key_for`), and
+        its prompts reach the global feed labeled with the cause.
+        """
+        stamp = info.conversation_root_session_key
+        if is_contested_root(stamp):
+            return stamp
+        return self.root_session_key_for(info)
+
+    def root_approval_policy(self, root_session_key: str) -> str:
+        """The trust a resolved root grants: the store's policy, or ``""``.
+
+        A contested conversation's marker is refused without consulting the
+        store. The marker is not a session key, and that is the point: a
+        continuable run started from a trusted chat runs on its own session,
+        registered under the run's ``subagent:`` key with the chat's ``"auto"``,
+        so a root that named the run's key would read that trust back for a
+        conversation the marker exists to deny -- and, stamped into the records
+        of every run admitted beneath it, the marker keeps denying it after the
+        records that established the contest are gone. Any other root -- a chat,
+        cron or channel key, or the own key of a run that has no parent (a
+        cron's or the CLI's spawn) -- reads the store, which is where such a
+        run's effective policy is registered for its children.
+        """
+        if is_contested_root(root_session_key):
+            return ""
+        return self._sessions.get_approval_policy(root_session_key)
+
     @property
     def count(self) -> int:
         return len(self.running)
@@ -4721,8 +5104,10 @@ class SubagentManager:
         except Exception:
             logger.debug("Failed to write tombstone for %s", info.id, exc_info=True)
 
-    async def _write_state_off_loop(self, info: SubagentInfo, what: str, **fields: object) -> bool:
-        return await self._run_events._write_state_off_loop_impl(info, what, **fields)
+    async def _write_state_off_loop(
+        self, info: SubagentInfo, what: str, record_id: str = "", /, **fields: object
+    ) -> bool:
+        return await self._run_events._write_state_off_loop_impl(info, what, record_id, **fields)
 
     async def _run_inner(self, info: SubagentInfo, session_key: str) -> None:
         return await self._run_events._run_inner_impl(info, session_key)
