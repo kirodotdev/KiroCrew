@@ -167,6 +167,9 @@ class LoopStallWatchdog:
         log: Logger, injectable for tests.
     """
 
+    # Floor between heartbeat-lag captures, across episodes.
+    _LAG_CAPTURE_COOLDOWN_SECS = 60.0
+
     def __init__(
         self,
         *,
@@ -193,6 +196,9 @@ class LoopStallWatchdog:
         self._enrich_after = enrich_after
         self._enrich = enrich or collect_stall_enrichment
         self._enriched = False
+        self._lag_enriched = False
+        self._lag_inflight = False
+        self._lag_next_at = 0.0
         self._log = log or logger
         self._last_beat = now()
         self._dumped = False
@@ -311,6 +317,46 @@ class LoopStallWatchdog:
         self._dumped = False
         self._enriched = False
         return False
+
+    def claim_lag_enrichment(self, lag: float) -> bool:
+        """Return ``True`` at most once per episode of heartbeat lag.
+
+        Cheap and non-blocking, so the heartbeat may call it on the loop every
+        tick, before :meth:`beat`. A lag at or below the heartbeat's 1s warning
+        threshold ends the episode. A stall :meth:`check` already captured, a
+        capture still running, or one within the cooldown is not captured. On
+        ``True`` the caller runs :meth:`log_lag_enrichment` off the loop.
+        """
+        if lag <= 1.0:
+            self._lag_enriched = False
+            return False
+        now = self._now()
+        if self._lag_enriched or self._enriched or self._lag_inflight or now < self._lag_next_at:
+            return False
+        self._lag_next_at = now + self._LAG_CAPTURE_COOLDOWN_SECS
+        self._lag_enriched = True
+        self._lag_inflight = True
+        return True
+
+    def log_lag_enrichment(self, lag: float) -> None:
+        """Log the ``enrich`` capture for a recovered heartbeat lag.
+
+        Logger only, never ``dump_file``, for the crash-sentinel reason that
+        :meth:`check` gives. The collector's own header describes a capture
+        taken during a stall, so it is replaced. Reads procfs: run off the loop.
+        """
+        try:
+            lines = self._enrich(lag)[1:]
+        except Exception:  # pragma: no cover - collector already degrades
+            self._log.exception("loop watchdog lag enrichment failed")
+            lines = ["(collector raised)"]
+        finally:
+            self._lag_inflight = False
+        self._log.warning(
+            "event-loop heartbeat lag %.1fs — socket snapshot after recovery:\n%s",
+            lag,
+            "\n".join(lines),
+        )
 
     def _run(self) -> None:
         # ``Event.wait`` returns True only when stopped; on timeout it returns

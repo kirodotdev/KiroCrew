@@ -5814,8 +5814,10 @@ async def start_dashboard(
         while True:
             t0 = time.monotonic()
             await asyncio.sleep(interval)
-            _loop_watchdog.beat()
             lag = time.monotonic() - t0 - interval
+            # Claimed before beat(): check() holds its own capture flag until a beat.
+            capture_lag = _loop_watchdog.claim_lag_enrichment(lag)
+            _loop_watchdog.beat()
             # Resource-pressure notifications ride the heartbeat cadence
             # rather than owning a task: the notifier self-gates to its own
             # sample interval, never raises, and off-loads its synchronous
@@ -5836,6 +5838,16 @@ async def start_dashboard(
                 # stays silent unless it actually wedges (the tripwire), and we
                 # don't emit ~8.6k INFO lines/day when DEBUG is enabled.
                 logger.debug("event-loop heartbeat ok (lag %.2fs)", lag)
+            if capture_lag:
+                # Bounded like the probes above so a busy executor cannot starve
+                # beat(); shielded so the capture still clears its in-flight flag.
+                try:
+                    capture = asyncio.get_running_loop().run_in_executor(
+                        None, _loop_watchdog.log_lag_enrichment, lag
+                    )
+                    await asyncio.wait_for(asyncio.shield(capture), 2.0)
+                except Exception:
+                    logger.debug("heartbeat lag capture not awaited", exc_info=True)
 
     def _heartbeat_done(task: "asyncio.Task") -> None:  # type: ignore[type-arg]
         if task.cancelled():
