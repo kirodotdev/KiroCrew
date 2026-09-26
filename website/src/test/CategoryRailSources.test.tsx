@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import CategoryRail, { type SourceRow } from '../components/appstore/CategoryRail'
+import { sourceRowKey } from '../components/appstore/types'
 
 const CURATED: SourceRow = { name: 'internal', label: 'Internal apps', count: 4, builtin: false, review: 'curated' }
 const COMMUNITY: SourceRow = { name: 'community', label: 'Community apps', count: 9, builtin: false, review: 'community' }
@@ -15,8 +16,9 @@ function renderRail(sources: SourceRow[]) {
       selected="all"
       onSelect={vi.fn()}
       sources={sources}
-      selectedSource={null}
-      onSelectSource={vi.fn()}
+      selectedSources={[]}
+      onToggleSource={vi.fn()}
+      onClearSources={vi.fn()}
       onAddSource={vi.fn()}
     />,
   )
@@ -74,6 +76,24 @@ describe('CategoryRail SOURCES review tier', () => {
     renderRail([BUILTIN, CURATED])
     expect(screen.getByLabelText('First-party')).toBeInTheDocument()
     expect(screen.getByLabelText('Reviewed by the Kiro Crew team')).toBeInTheDocument()
+  })
+
+  it('marks a selected source row with a check affordance', () => {
+    const { container } = render(
+      <CategoryRail
+        categories={[]}
+        total={0}
+        selected="all"
+        onSelect={vi.fn()}
+        sources={[CURATED, PLAIN]}
+        selectedSources={[sourceRowKey(CURATED)]}
+        onToggleSource={vi.fn()}
+        onClearSources={vi.fn()}
+        onAddSource={vi.fn()}
+      />,
+    )
+    // Only the selected row carries the check; the unselected PLAIN row does not.
+    expect(container.querySelectorAll('.lucide-check')).toHaveLength(1)
   })
 
   it('claims nothing for a source with no review tier', () => {

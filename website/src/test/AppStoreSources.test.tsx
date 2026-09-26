@@ -50,25 +50,43 @@ function mount(route = '/apps') {
 }
 
 const sourceButton = (label: string) => screen.findByRole('button', { name: new RegExp(label) })
-const appRows = () => screen.queryAllByRole('button', { name: /^View details for/ })
+/* Scope grid-row lookups to the app list. The editorial/featured cards now stay
+   mounted through a source or search filter (they are storefront content, not a
+   view of the grid) and render their own "View details for" buttons, so a
+   page-wide query would double-count them. */
+const grid = () => screen.getByTestId('discover-app-list')
+const appRows = () => within(grid()).queryAllByRole('button', { name: /^View details for/ })
 
 describe('App Store source filtering', () => {
-  it('filters by registry id, shows readable source names, and resets independently', async () => {
+  it('filters by registry id, unions multiple sources, and clears independently', async () => {
     mount()
     fireEvent.click(await sourceButton('Team catalog'))
     expect(await screen.findByRole('status')).toHaveTextContent('2 apps')
     expect(appRows()).toHaveLength(2)
-    expect(screen.queryByRole('button', { name: 'View details for Gamma Tool' })).toBeNull()
-    const alpha = screen.getByRole('button', { name: 'View details for Alpha Tool' })
+    expect(within(grid()).queryByRole('button', { name: 'View details for Gamma Tool' })).toBeNull()
+    const alpha = within(grid()).getByRole('button', { name: 'View details for Alpha Tool' })
     expect(within(alpha).getByText('Team catalog')).toBeVisible()
     expect(await sourceButton('Team catalog')).toHaveAttribute('aria-pressed', 'true')
 
+    // A second source ADDS to the filter (union) rather than replacing it.
     fireEvent.click(await sourceButton('Other catalog'))
+    expect(appRows()).toHaveLength(3)
+    expect(screen.getByRole('status')).toHaveTextContent('3 apps')
+    expect(within(grid()).getByRole('button', { name: 'View details for Gamma Tool' })).toBeVisible()
+    expect(await sourceButton('Team catalog')).toHaveAttribute('aria-pressed', 'true')
+    expect(await sourceButton('Other catalog')).toHaveAttribute('aria-pressed', 'true')
+
+    // Clicking a selected source again removes just that one.
+    fireEvent.click(await sourceButton('Team catalog'))
     expect(appRows()).toHaveLength(1)
     expect(screen.getByRole('status')).toHaveTextContent('1 app')
-    expect(screen.getByRole('button', { name: 'View details for Gamma Tool' })).toBeVisible()
+    expect(within(grid()).getByRole('button', { name: 'View details for Gamma Tool' })).toBeVisible()
+    expect(await sourceButton('Team catalog')).toHaveAttribute('aria-pressed', 'false')
+
+    // All sources clears the whole filter and returns to showing everything.
     fireEvent.click(screen.getByRole('button', { name: 'All sources' }))
     expect(screen.getByRole('status')).toHaveTextContent('5 apps')
+    expect(screen.getByRole('button', { name: 'All sources' })).toHaveAttribute('aria-pressed', 'true')
   })
 
   it('composes source with search and category and keeps them when source resets', async () => {
@@ -91,12 +109,25 @@ describe('App Store source filtering', () => {
     expect(screen.getByText('No matching apps')).toBeVisible()
     expect(screen.getByText('Try a different search, category, or source.')).toBeVisible()
     expect(screen.getByRole('status')).toHaveTextContent('0 apps')
+    // Keyboard toggles a second bucket on; the empty(0) and builtin(1) sources union.
     fireEvent.keyDown(await sourceButton('Built-in'), { key: ' ' })
     expect(appRows()).toHaveLength(1)
-    expect(screen.getByRole('button', { name: 'View details for Epsilon Builtin' })).toBeVisible()
+    expect(within(grid()).getByRole('button', { name: 'View details for Epsilon Builtin' })).toBeVisible()
+    // Adding the core bucket unions its app in alongside the builtin one.
     fireEvent.click(await sourceButton('Kiro Crew registry'))
-    expect(appRows()).toHaveLength(1)
-    expect(screen.getByRole('button', { name: 'View details for Delta Tool' })).toBeVisible()
+    expect(appRows()).toHaveLength(2)
+    expect(within(grid()).getByRole('button', { name: 'View details for Epsilon Builtin' })).toBeVisible()
+    expect(within(grid()).getByRole('button', { name: 'View details for Delta Tool' })).toBeVisible()
+  })
+
+  it('keeps the featured section mounted when a source is selected (no layout collapse)', async () => {
+    mount()
+    expect(await screen.findAllByText('FEATURED')).not.toHaveLength(0)
+    // Selecting a source filters the grid...
+    fireEvent.click(await sourceButton('Team catalog'))
+    expect(screen.getByRole('status')).toHaveTextContent('2 apps')
+    // ...but the editorial layer stays put instead of unmounting (the jank fix).
+    expect(screen.queryAllByText('FEATURED').length).toBeGreaterThan(0)
   })
 
   it('preserves source attribution from browse to an installed app detail', async () => {
@@ -106,7 +137,7 @@ describe('App Store source filtering', () => {
     })
     mount()
     fireEvent.click(await sourceButton('Team catalog'))
-    fireEvent.click(screen.getByRole('button', { name: 'View details for Alpha Tool' }))
+    fireEvent.click(within(grid()).getByRole('button', { name: 'View details for Alpha Tool' }))
     expect(await screen.findByText('Team catalog')).toBeVisible()
     expect(screen.getByText('Source')).toBeVisible()
     expect(screen.queryByText('Kiro Crew registry')).toBeNull()
@@ -188,6 +219,9 @@ it('scopes category counts to source and search while keeping empty categories s
   fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Build' } })
   expect(screen.getByRole('button', { name: 'All apps 1' })).toBeVisible()
   expect(screen.getByRole('button', { name: 'Research & Writing 0' })).toHaveAttribute('aria-pressed', 'true')
+  // Swap the only selected source to the empty catalog (deselect Team, add Empty):
+  // its zero matches under the active category+search collapse every count to 0.
+  fireEvent.click(await sourceButton('Team catalog'))
   fireEvent.click(await sourceButton('Empty catalog'))
   expect(screen.getByRole('button', { name: 'All apps 0' })).toBeVisible()
   expect(screen.getByRole('status')).toHaveTextContent('0 apps')
@@ -234,14 +268,18 @@ it.each(['__builtin__', '__core__', 'registry:team-feed'])('isolates an external
   expect(within(external).queryByLabelText('First-party')).toBeNull()
   fireEvent.click(external)
   expect(appRows()).toHaveLength(1)
-  const appRow = screen.getByRole('button', { name: 'View details for External App' })
+  const appRow = within(grid()).getByRole('button', { name: 'View details for External App' })
   expect(appRow).toBeVisible()
   expect(within(appRow).getByText('Reserved-name registry')).toBeVisible()
   expect(within(appRow).queryByText('Built-in · kirocrew')).toBeNull()
+  // Deselect the external source, then select each host bucket alone: the
+  // external app named after a reserved id must not leak into them.
+  fireEvent.click(await sourceButton('Reserved-name registry'))
   fireEvent.click(await sourceButton('Built-in · kirocrew'))
   expect(appRows()).toHaveLength(1)
-  expect(screen.queryByRole('button', { name: 'View details for External App' })).toBeNull()
+  expect(within(grid()).queryByRole('button', { name: 'View details for External App' })).toBeNull()
+  fireEvent.click(await sourceButton('Built-in · kirocrew'))
   fireEvent.click(await sourceButton('Kiro Crew registry'))
   expect(appRows()).toHaveLength(1)
-  expect(screen.queryByRole('button', { name: 'View details for External App' })).toBeNull()
+  expect(within(grid()).queryByRole('button', { name: 'View details for External App' })).toBeNull()
 })
