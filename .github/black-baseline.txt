@@ -849,7 +849,6 @@ test/test_skill_paths_and_mcp_sync.py
 test/test_skill_pending.py
 test/test_skill_pending_notify.py
 test/test_skill_providers.py
-test/test_skill_script_validator.py
 test/test_skill_trigger_pointer.py
 test/test_skill_update_flow.py
 test/test_skill_versioning.py

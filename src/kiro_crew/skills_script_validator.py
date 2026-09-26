@@ -28,6 +28,7 @@ _DESTRUCTIVE = [
     (re.compile(r"\brmdir\b\s+/", re.I), "destructive: rmdir on root path"),
     (re.compile(r"\bmkfs\b", re.I), "destructive: mkfs"),
     (re.compile(r"\bdd\s+if=", re.I), "destructive: dd if="),
+    (re.compile(r"\bdd\s+.*of\s*=\s*/dev/(sd|hd|vd|nvme|mmcblk|loop|dm-|md|dasd|disk/)", re.I), "destructive: dd of=/dev/"),
     (re.compile(r">\s*/dev/sd", re.I), "destructive: write to block device"),
     (re.compile(r"\bDROP\s+(TABLE|DATABASE)\b", re.I), "destructive: SQL DROP"),
     (re.compile(r"\bTRUNCATE\s+TABLE\b", re.I), "destructive: SQL TRUNCATE"),

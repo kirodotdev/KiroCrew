@@ -23,6 +23,12 @@ def test_rejects_destructive():
     assert any("rm -rf" in f for f in findings)
 
 
+def test_rejects_dd_output_to_device():
+    ok, findings = validate_skill_script("run.py", "import os\nos.system('dd of=/dev/sda')\n")
+    assert ok is False
+    assert any("dd of=" in f for f in findings)
+
+
 def test_rejects_rmtree():
     ok, findings = validate_skill_script("run.py", "import shutil\nshutil.rmtree('/data')\n")
     assert ok is False
@@ -168,7 +174,9 @@ def test_rejects_aliased_network_import():
 
 
 def test_rejects_network_import_from_and_socket_alias():
-    ok1, f1 = validate_skill_script("a.py", "from urllib import request\nrequest.urlopen('http://x')\n")
+    ok1, f1 = validate_skill_script(
+        "a.py", "from urllib import request\nrequest.urlopen('http://x')\n"
+    )
     assert ok1 is False and any("network egress import-from" in f for f in f1)
     ok2, f2 = validate_skill_script("b.py", "import socket as s\ns.socket()\n")
     assert ok2 is False and any("network egress import" in f for f in f2)
@@ -206,9 +214,7 @@ def test_env_environ_not_flagged_as_sensitive_path():
 def test_rejects_aliased_dangerous_attribute():
     """A dangerous callable referenced (not called) off a dangerous module —
     `f = os.remove; f(x)` — must be rejected (GPT MEDIUM: indirect attr)."""
-    ok, findings = validate_skill_script(
-        "run.py", "import os\nf = os.remove\nf('/tmp/x')\n"
-    )
+    ok, findings = validate_skill_script("run.py", "import os\nf = os.remove\nf('/tmp/x')\n")
     assert ok is False
     assert any("dangerous attribute" in f or "dangerous call" in f for f in findings)
 
