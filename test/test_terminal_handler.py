@@ -6139,6 +6139,22 @@ class TestPtyChildEnvStripsPythonStartupVars:
         assert env["TERM"] == "xterm-256color"
         assert env["KIROCREW_UNRELATED_KEEPME"] == "keep-this-value"
 
+    def test_python_startup_var_spellings_are_matched_case_insensitively(self, monkeypatch):
+        """Windows treats environment names as case-insensitive, so a lowercase
+        spelling there IS the same variable and must not survive. On POSIX
+        CPython only honours the exact case, so dropping the odd-case twin strips
+        nothing the shell's Python would have read. The odd case is injected
+        straight into ``os.environ`` because that proxy uppercases on Windows,
+        which would make a ``setenv``-built pin vacuous there."""
+        monkeypatch.setattr(
+            os, "environ", {"pythonpath": "/gateway/lowercase", "SHELL": "/bin/bash"}
+        )
+
+        env = terminal._pty_child_env({})
+
+        assert "pythonpath" not in env
+        assert env["SHELL"] == "/bin/bash"
+
     def test_macos_bash_deprecation_banner_is_silenced(self, monkeypatch):
         """macOS ships Bash 3.2, which prints a three-line "use zsh" notice on
         every interactive start. The panel silences it, and yields to a user who

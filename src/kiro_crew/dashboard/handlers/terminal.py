@@ -26,7 +26,7 @@ from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.origin import check_origin, mark_audit_claimed
 from kiro_crew.executors import discovery_executor, subprocess_executor
 from kiro_crew.hooks import validate_file_path
-from kiro_crew.sandbox import _PYTHON_ENV_PREFIXES, RLIMIT_PROFILE_NONE, spawn_shim_argv
+from kiro_crew.sandbox import RLIMIT_PROFILE_NONE, spawn_shim_argv, strip_python_env
 from kiro_crew.security import (
     is_sensitive_path,
     redact_credentials,
@@ -1007,10 +1007,7 @@ def _pty_child_env(extra: dict[str, str]) -> dict[str, str]:
     """
     env = {**os.environ, **extra}
     env.setdefault("BASH_SILENCE_DEPRECATION_WARNING", "1")
-    for key in list(env):
-        if any(key.startswith(prefix) for prefix in _PYTHON_ENV_PREFIXES):
-            del env[key]
-    return env
+    return strip_python_env(env)
 
 
 def _bash_ready_env(token: str) -> dict[str, str]:

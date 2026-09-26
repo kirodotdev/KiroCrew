@@ -12470,6 +12470,29 @@ def scrub_agent_subprocess_env(
     return scrubbed
 
 
+def strip_python_env(env: dict[str, str]) -> dict[str, str]:
+    """Return *env* without Kiro Crew's own Python startup variables.
+
+    The named form of the "Python vars only, keep credentials" operation the
+    shell-facing scrubs open-coded (the dashboard terminal's PTY child, the MCP
+    gateway's third-party backend spawn): drop ``_PYTHON_ENV_PREFIXES`` and keep
+    everything else. These callers serve the operator's OWN unsandboxed
+    processes, so unlike :func:`scrub_agent_subprocess_env` every
+    credential-bearing variable survives — taking ``SSH_AUTH_SOCK`` or the AWS
+    keys would break git-over-SSH and the AWS CLI in the operator's terminal.
+
+    Matching is case-insensitive: Windows treats environment names as
+    case-insensitive, so a lowercase spelling is the same variable and must not
+    survive. On POSIX a lowercase ``pythonpath`` is inert to CPython, so the
+    wider match strips nothing the interpreter would have honoured.
+    """
+    return {
+        key: value
+        for key, value in env.items()
+        if not any(key.upper().startswith(prefix) for prefix in _PYTHON_ENV_PREFIXES)
+    }
+
+
 def sandboxed_spawn_argv(
     argv: list[str],
     mode: str = "standard",

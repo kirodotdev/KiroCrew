@@ -139,11 +139,11 @@ from kiro_crew.platform_compat import pid_exists as _pid_exists
 from kiro_crew.platform_compat import proc_rss_bytes as _proc_rss_bytes
 from kiro_crew.platform_compat import process_start_time as _process_start_time
 from kiro_crew.sandbox import (
-    _PYTHON_ENV_PREFIXES,
     CANONICAL_TEMP_KEYS,
     classify_declared_temp_env,
     declared_temp_refusal_reasons,
     format_declared_temp_refusals,
+    strip_python_env,
     warm_backend,
 )
 from kiro_crew.security import redact
@@ -2058,14 +2058,12 @@ def env_target_resolver(pool_key: PoolKey) -> Optional[tuple[str, list[str], dic
     # launcher-injection namespace is gone. Third-party backends never receive
     # that token and keep settings outside the four Python interpreter roots
     # that can make them load Kiro Crew's packages instead of their own.
-    denied_env_prefixes = (
-        _SPEC_ENV_DENIED_PREFIXES
-        if pool_key.server_name in CONTROL_PLANE_BACKENDS
-        else tuple(_PYTHON_ENV_PREFIXES)
-    )
-    for key in tuple(env):
-        if any(key.upper().startswith(prefix) for prefix in denied_env_prefixes):
-            env.pop(key, None)
+    if pool_key.server_name in CONTROL_PLANE_BACKENDS:
+        for key in tuple(env):
+            if any(key.upper().startswith(prefix) for prefix in _SPEC_ENV_DENIED_PREFIXES):
+                env.pop(key, None)
+    else:
+        env = strip_python_env(env)
     # No KIROCREW_CHANNEL_ID is exported into the backend env. Copying it from
     # PoolKey.channel_id would only make sense while a backend was owned by one
     # channel. A pooled backend serves several channels, so a
