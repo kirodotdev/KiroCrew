@@ -31,7 +31,8 @@ vi.mock('./useMoveSlotToFolder', () => ({ useMoveSlotToFolder: () => moveSlotToF
 const chatConfig = vi.hoisted(() => ({ confirmCloseSession: true }))
 vi.mock('../pages/chat/ChatSettings', () => ({ loadChatConfig: () => chatConfig }))
 
-const deleteSlot = vi.hoisted(() => vi.fn((key: string) => ({ type: 'zzq/deleteSlot', payload: key })))
+// `unwrap` because deleteSlot is a createAsyncThunk: close() reports its rejection.
+const deleteSlot = vi.hoisted(() => vi.fn((key: string) => ({ type: 'zzq/deleteSlot', payload: key, unwrap: () => Promise.resolve() })))
 const switchSlot = vi.hoisted(() => vi.fn((key: string) => ({ type: 'zzq/switchSlot', payload: key })))
 vi.mock('../store/chatSlice', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -767,13 +768,13 @@ describe('move', () => {
   it('delegates to the shared optimistic move', () => {
     const { result } = harness()
     act(() => result.current.move(KEY, 'zzq-folder'))
-    expect(moveSlotToFolder).toHaveBeenCalledWith(KEY, 'zzq-folder')
+    expect(moveSlotToFolder).toHaveBeenCalledWith(KEY, 'zzq-folder', { onFailed: expect.any(Function) })
   })
 
   it('passes null through for a move to root', () => {
     const { result } = harness()
     act(() => result.current.move(KEY, null))
-    expect(moveSlotToFolder).toHaveBeenCalledWith(KEY, null)
+    expect(moveSlotToFolder).toHaveBeenCalledWith(KEY, null, { onFailed: expect.any(Function) })
   })
 })
 

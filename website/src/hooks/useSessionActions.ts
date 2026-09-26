@@ -84,7 +84,8 @@ export interface SessionActions {
   close: (slotKey: string) => void
 }
 
-export function useSessionActions(mode?: string): SessionActions {
+export function useSessionActions(mode?: string, onWriteError?: (message: string) => void): SessionActions {
+  const writeFailed = useCallback((err: unknown) => onWriteError?.(err instanceof Error && err.message ? err.message : i18nT('pages.chatPage.unknown_error')), [onWriteError])
   const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
   const moveSlotToFolder = useMoveSlotToFolder()
@@ -246,9 +247,10 @@ export function useSessionActions(mode?: string): SessionActions {
     onSuccess: (_data, _vars, ctx) => ctx
       ? finishPinMutation(ctx.batch, ctx.entry, true)
       : undefined,
-    onError: (_err, _vars, ctx) => ctx
-      ? finishPinMutation(ctx.batch, ctx.entry, false)
-      : undefined,
+    onError: (err, _vars, ctx) => {
+      writeFailed(err)
+      return ctx ? finishPinMutation(ctx.batch, ctx.entry, false) : undefined
+    },
   })
 
   // Orchestrator/Autopilot mode toggle (optimistic, server-persisted).
@@ -259,7 +261,8 @@ export function useSessionActions(mode?: string): SessionActions {
       dispatch(updateSlot({ key, mode: newMode }))
       return { key, prev, newMode }
     },
-    onError: (_err, _vars, ctx) => {
+    onError: (err, _vars, ctx) => {
+      writeFailed(err)
       if (!ctx) return
       // Guarded rollback: don't clobber a superseding mode toggle.
       const current = store.getState().dashboard.slots.find(s => s.key === ctx.key)?.mode ?? ''
@@ -273,16 +276,19 @@ export function useSessionActions(mode?: string): SessionActions {
   // non-active slot). Failure must NOT be silent -- the user would proceed
   // believing their stale MCP config was refreshed, the exact confusion the
   // feature exists to fix. alert() is the always-available surface (the
-  // dashboard has no global toast); the copy branches on the backend's
+  // dashboard has no global toast) and the only one that survives the menu
+  // closing on select; the copy branches on the backend's
   // machine-readable code, because "try again when the session is idle" is a
   // dead end for a slot that LOOKS idle but has sub-agents still working.
   const reloadMutation = useMutation({
     mutationFn: (slot: string) => api.chatSlotReload(slot),
     onError: (err) => {
       const body = err instanceof ApiError ? err.body : ''
-      alert(i18nT(body.includes('slot_subagents_running')
+      const message = i18nT(body.includes('slot_subagents_running')
         ? 'hooks.useSessionActions.reload_failed_subagents'
-        : 'hooks.useSessionActions.reload_failed'))
+        : 'hooks.useSessionActions.reload_failed')
+      if (onWriteError) onWriteError(message)
+      else alert(message)
     },
   })
 
@@ -329,14 +335,16 @@ export function useSessionActions(mode?: string): SessionActions {
   }, [mode])
 
   const move = useCallback((slotKey: string, folderId: string | null) => {
-    moveSlotToFolder(slotKey, folderId)
-  }, [moveSlotToFolder])
+    moveSlotToFolder(slotKey, folderId, { onFailed: writeFailed })
+  }, [moveSlotToFolder, writeFailed])
 
   const reload = useCallback((slotKey: string) => { reloadMutate(slotKey) }, [reloadMutate])
 
   const close = useCallback((slotKey: string) => {
-    if (!loadChatConfig().confirmCloseSession || confirm(i18nT('hooks.useSessionActions.close_this_session'))) dispatch(deleteSlot(slotKey))
-  }, [dispatch])
+    if (!loadChatConfig().confirmCloseSession || confirm(i18nT('hooks.useSessionActions.close_this_session'))) {
+      dispatch(deleteSlot(slotKey)).unwrap().catch(writeFailed)
+    }
+  }, [dispatch, writeFailed])
 
   return { duplicate, toggleRead, togglePin, toggleMode, copyLink, move, reload, close }
 }

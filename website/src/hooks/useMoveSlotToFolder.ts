@@ -15,6 +15,8 @@ export type MoveSlotOptions = {
    * then race and cancel each other.
    */
   onCommitted?: () => void
+  /** Called when the server REFUSED the move, so a caller can surface it. */
+  onFailed?: (err: unknown) => void
 }
 
 /**
@@ -65,6 +67,7 @@ export function useMoveSlotToFolder(): (
       // handler: the caller learns the server ACKNOWLEDGED the write without
       // taking over the rollback.
       onSuccess: () => opts?.onCommitted?.(),
+      onError: (err) => opts?.onFailed?.(err),
     })
   }, [mutate])
 }

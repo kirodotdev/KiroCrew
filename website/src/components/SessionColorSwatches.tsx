@@ -1,10 +1,12 @@
 import { useRef, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
-import { store, useAppDispatch } from '../store'
+import { store, useAppDispatch, useAppStore } from '../store'
+import { useConnected } from '../hooks/useConnected'
 import { sseSlotColor } from '../store/dashboardSlice'
 import { api } from '../api/client'
 import { useSessionPalette } from '../hooks/useSessionPalette'
 import { colorName } from '../utils/sessionColors'
+import { offlineProps } from '../utils/offline'
 
 import { i18nT } from '../i18n/t'
 import { useImeGuard } from '../hooks/useImeGuard'
@@ -27,17 +29,19 @@ const HEX_RE = /^#[0-9a-fA-F]{6}$/
  *   one PATCH — an index-only null would leave a custom hex in place, since
  *   the endpoint is `in body`-gated.
  *
- * `onPicked` lets a caller that controls its own menu close it after a pick (the
+ * `onPicked` lets a caller that controls its own menu close it after a pick lands (the
  * header passes `setOpen(false)`); the sidebar menus are uncontrolled, so they
  * omit it and stay open — letting you try colours. Custom-hex commits never
  * call `onPicked`: the OS colour panel outlives the menu, and closing the row
  * mid-drag would orphan it.
  */
-export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, onPicked }: {
+export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, onPicked, onWriteError }: {
   slotKey: string
   colorIndex?: number | null
   colorHex?: string | null
   onPicked?: () => void
+  /** null clears a previous failure, so a stale notice cannot outlive a later success. */
+  onWriteError?: (message: string | null) => void
 }) {
   const ime = useImeGuard()
   const dispatch = useAppDispatch()
@@ -56,7 +60,13 @@ export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, on
   const writeGenRef = useRef(0)
   if (HEX_RE.test(draft)) lastValidRef.current = draft
 
+  // Both writes are PATCHes, so the row dims like its gated menu siblings.
+  const connected = useConnected()
+  const boundStore = useAppStore()
+
   const readSlot = () => store.getState().dashboard.slots.find(s => s.key === slotKey)
+
+  const writeFailed = (err: unknown) => onWriteError?.(err instanceof Error && err.message ? err.message : i18nT('pages.chatPage.unknown_error'))
 
   const colorMutation = useMutation({
     // idx === null is the "no colour" cell: clear BOTH fields in one PATCH.
@@ -71,7 +81,8 @@ export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, on
         : sseSlotColor({ key: slotKey, color_index: idx }))
       return { prev, gen }
     },
-    onError: (_err, idx, ctx) => {
+    onError: (err, idx, ctx) => {
+      writeFailed(err)
       if (!ctx) return
       // A superseded write never rolls back: a later pick (even one targeting
       // the same value, which the checks below cannot distinguish) owns the
@@ -104,7 +115,8 @@ export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, on
       dispatch(sseSlotColor({ key: slotKey, color_hex: hex }))
       return { prev, gen }
     },
-    onError: (_err, hex, ctx) => {
+    onError: (err, hex, ctx) => {
+      writeFailed(err)
       if (!ctx) return
       if (ctx.gen !== writeGenRef.current) return
       const current = readSlot()?.color_hex ?? null
@@ -113,19 +125,26 @@ export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, on
   })
 
   const pick = (idx: number | null) => {
+    if (!connected) return
     // An immediate selection supersedes any pending debounced wheel commit —
     // without this, a wheel drag followed within 300ms by a palette/no-color
     // click would let the delayed hex PATCH run last and persist stale color.
     if (commitTimerRef.current) clearTimeout(commitTimerRef.current)
-    colorMutation.mutate(idx)
-    onPicked?.()
+    onWriteError?.(null)
+    // onPicked on success only (closing first unmounts the host of the notice a
+    // rejection reports into), and never over a superseding pick or a draft still
+    // ON SCREEN — dirtyRef alone outlives an incomplete draft the panel has hidden.
+    colorMutation.mutate(idx, { onSuccess: (_d, _v, ctx) => { if (ctx?.gen === writeGenRef.current && !(customOpen && dirtyRef.current)) onPicked?.() } })
   }
 
   const commitHex = (value: string) => {
+    // Live store, not the render closure: the debounced commitHex predates the drop.
+    if (!boundStore.getState().dashboard.connected) return
     if (!HEX_RE.test(value)) return
     // A direct commit (Enter/blur) supersedes a pending wheel commit too.
     if (commitTimerRef.current) clearTimeout(commitTimerRef.current)
     dirtyRef.current = false
+    onWriteError?.(null)
     hexMutation.mutate(value.toLowerCase())
   }
 
@@ -144,32 +163,35 @@ export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, on
     // Every affordance inside is a real <button> or <input>.
     // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- stopPropagation barrier, not an activatable control; there is no behaviour for a keyboard to be given
     <div onKeyDown={e => e.stopPropagation()}>
-      <div className="flex items-center gap-1.5 px-3 py-1.5">
-        <button type="button" aria-label={i18nT('components.sessionColorSwatches.no_color')} className={`w-4 h-4 rounded-full border-[1.5px] cursor-pointer transition-transform hover:brightness-125 swatch-cue ${colorIndex == null && !colorHex ? 'border-text-strong scale-110' : 'border-transparent'}`} style={{ background: 'var(--bg-accent)', backgroundImage: 'linear-gradient(135deg, transparent 45%, var(--danger) 45%, var(--danger) 55%, transparent 55%)' }} onClick={() => pick(null)} title={i18nT('components.sessionColorSwatches.no_color')} />
+      <div className={`flex items-center gap-1.5 px-3 py-1.5 ${connected ? '' : 'opacity-40'}`} {...offlineProps(connected, i18nT('utils.offline.recolor_sessions'))}>
+        <button type="button" aria-label={i18nT('components.sessionColorSwatches.no_color')} className={`w-4 h-4 rounded-full border-[1.5px] cursor-pointer transition-transform hover:brightness-125 swatch-cue aria-disabled:cursor-not-allowed aria-disabled:hover:scale-100 ${colorIndex == null && !colorHex ? 'border-text-strong scale-110' : 'border-transparent'}`} style={{ background: 'var(--bg-accent)', backgroundImage: 'linear-gradient(135deg, transparent 45%, var(--danger) 45%, var(--danger) 55%, transparent 55%)' }} onClick={() => pick(null)} title={i18nT('components.sessionColorSwatches.no_color')} {...offlineProps(connected, i18nT('utils.offline.recolor_sessions'), i18nT('components.sessionColorSwatches.no_color'))} />
         {paletteColors.map((c, i) => (
-          <button type="button" key={i} aria-label={colorName(c)} className={`w-4 h-4 rounded-full border-[1.5px] cursor-pointer transition-transform hover:brightness-125 swatch-cue ${colorIndex === i ? 'border-text-strong scale-110' : 'border-transparent'}`} style={{ background: c }} onClick={() => pick(i)} title={colorName(c)} />
+          <button type="button" key={i} aria-label={colorName(c)} className={`w-4 h-4 rounded-full border-[1.5px] cursor-pointer transition-transform hover:brightness-125 swatch-cue aria-disabled:cursor-not-allowed aria-disabled:hover:scale-100 ${colorIndex === i ? 'border-text-strong scale-110' : 'border-transparent'}`} style={{ background: c }} onClick={() => pick(i)} title={colorName(c)} {...offlineProps(connected, i18nT('utils.offline.recolor_sessions'), colorName(c))} />
         ))}
         <button
           type="button"
           aria-label={i18nT('components.sessionColorSwatches.custom_color')}
           aria-expanded={customOpen}
           title={colorHex ? `${i18nT('components.sessionColorSwatches.custom_color')} (${colorHex})` : i18nT('components.sessionColorSwatches.custom_color')}
-          className={`w-4 h-4 rounded-full border-[1.5px] cursor-pointer transition-transform hover:brightness-125 swatch-cue ${colorHex ? 'border-text-strong scale-110' : 'border-transparent'}`}
+          className={`w-4 h-4 rounded-full border-[1.5px] cursor-pointer transition-transform hover:brightness-125 swatch-cue aria-disabled:cursor-not-allowed aria-disabled:hover:scale-100 ${colorHex ? 'border-text-strong scale-110' : 'border-transparent'}`}
           // Always the multicolor wheel: it is the cell's identity as the
           // "pick any color" affordance. The active ring marks a set custom
           // color; the actual hex shows in the tooltip and on the row itself.
           style={{ background: 'conic-gradient(from 0deg, #f66 0deg, #fc6 60deg, #6d6 120deg, #6cc 180deg, #66f 240deg, #c6f 300deg, #f66 360deg)' }}
-          onClick={() => setCustomOpen(o => !o)}
+          onClick={() => { if (connected) setCustomOpen(o => !o) }}
+          {...offlineProps(connected, i18nT('utils.offline.recolor_sessions'), i18nT('components.sessionColorSwatches.custom_color'))}
         />
       </div>
       {customOpen && (
-        <div className="flex items-center gap-2 px-3 pb-1.5">
+        <div className={`flex items-center gap-2 px-3 pb-1.5 ${connected ? '' : 'opacity-40'}`}>
           <input
             type="color"
             value={lastValidRef.current}
-            onChange={e => onWheelChange(e.target.value)}
+            onChange={e => { if (connected) onWheelChange(e.target.value) }}
+            onClick={e => { if (!connected) e.preventDefault() }}
             aria-label={i18nT('components.sessionColorSwatches.custom_color')}
-            className="w-6 h-6 rounded cursor-pointer border border-border bg-transparent p-0"
+            {...offlineProps(connected, i18nT('utils.offline.recolor_sessions'), i18nT('components.sessionColorSwatches.custom_color'))}
+            className="w-6 h-6 rounded cursor-pointer border border-border bg-transparent p-0 aria-disabled:cursor-not-allowed"
           />
           <input
             type="text"
@@ -187,6 +209,8 @@ export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, on
             }}
             {...ime.bindComposition({ onBlur: () => { if (dirtyRef.current) commitHex(draft) } })}
             aria-label={i18nT('components.sessionColorSwatches.hex_color_code')}
+            readOnly={!connected}
+            {...offlineProps(connected, i18nT('utils.offline.recolor_sessions'), i18nT('components.sessionColorSwatches.hex_color_code'))}
             placeholder="#4f8ef7"
             className="w-[76px] bg-bg-accent border border-border rounded px-1.5 py-0.5 text-[11px] font-mono text-text outline-hidden focus-visible:border-accent"
           />
