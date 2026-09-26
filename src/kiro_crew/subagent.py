@@ -40,6 +40,7 @@ from kiro_crew.agent_sdk.drivers.acp_vocab import (  # noqa: F401 - STOP_* resol
     is_runtime_death,
 )
 from kiro_crew.executors import run_in_embed_pool
+from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 
 if TYPE_CHECKING:
     from kiro_crew.execution_context import ExecutionContext
@@ -3075,21 +3076,25 @@ class SubagentManager:
         metadata: dict | None = None,
         info: "SubagentInfo | None" = None,
     ) -> None:
-        await client.approve_tool(request_id)
+        approval_sent = await client.approve_tool(request_id)
         # An APPROVED child-origin escalation is side-effect activity: count
         # it in tool_count so the transient-retry / cancel-respawn replay
         # gates see it (an approved child mutation must never be replayed by
         # a bare original prompt). Counted here — on the approval outcome —
         # not at receipt: a purely rejected escalation executed nothing and
         # must not permanently disable the run's replay budget.
-        if info is not None and event.sub_session_id:
+        if approval_sent is not False and info is not None and event.sub_session_id:
             info.tool_count += 1
         sel().log_tool_invocation(
             session_key=session_key,
             source="subagent",
             tool_name=event.title,
             tool_kind=event.tool_kind,
-            outcome="auto_approved" if metadata and metadata.get("reason") else "approved",
+            outcome=(
+                "auto_approved"
+                if approval_sent is not False and metadata and metadata.get("reason")
+                else "approved" if approval_sent is not False else OUTCOME_REJECTED_TRANSPORT_FLOOR
+            ),
             request_id=request_id,
             metadata=metadata,
         )

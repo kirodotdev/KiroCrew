@@ -145,6 +145,8 @@ def _stub(backend: str = GOOSE) -> AcpClient:
     client._acp_backend = backend
     client._available_mode_ids = []
     client._modes_advertised = False
+    client._session_key = ""
+    client._agent = ""
     return client
 
 
@@ -1491,7 +1493,10 @@ def test_a_classified_goose_call_is_still_approved_without_a_deny_set() -> None:
 
 
 def test_a_harness_outside_the_set_builds_nothing_without_a_deny_set() -> None:
-    """Every other backend keeps the prior site byte for byte: no event, plain approve."""
+    """Every other backend keeps the prior answer: a plain approve, no option ids.
+
+    The event is built for the approval floor alone; nothing it advertised is
+    recorded, so the answer this site sends is the one it always sent."""
     import asyncio
 
     from kiro_crew.acp.types import JsonRpcMessage
@@ -1503,15 +1508,24 @@ def test_a_harness_outside_the_set_builds_nothing_without_a_deny_set() -> None:
     async def _approve(request_id: str) -> None:
         approved.append(request_id)
 
-    def _never_build(_msg):  # pragma: no cover - must not run
-        raise AssertionError("no event is built on a session that judges nothing")
+    built: list = []
+    client._permission_options = {}
+
+    def _build(msg):
+        from kiro_crew.acp.types import EVENT_PERMISSION_REQUEST, AcpEvent
+
+        built.append(msg.id)
+        client._permission_options[msg.id] = {"once": "allow"}
+        return AcpEvent(kind=EVENT_PERMISSION_REQUEST, request_id=msg.id)
 
     client.approve_tool = _approve  # type: ignore[method-assign]
-    client._build_permission_event = _never_build  # type: ignore[method-assign]
+    client._build_permission_event = _build  # type: ignore[method-assign]
 
     msg = JsonRpcMessage(id="perm-c", method="session/request_permission", params={})
     asyncio.run(client._handle_permission(msg))
     assert approved == ["perm-c"]
+    assert built == ["perm-c"], "the approval floor needs the event"
+    assert "perm-c" not in client._permission_options
 
 
 def test_the_drift_refusals_run_on_both_answering_sites() -> None:

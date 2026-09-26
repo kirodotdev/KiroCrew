@@ -3268,11 +3268,19 @@ async def test_handle_wait_turn_done_timeout():
     assert result is False
 
 
+def _recorded_request(request_id):
+    """The event the handle builds for a permission request it routes."""
+    from kiro_crew.acp.types import EVENT_PERMISSION_REQUEST, AcpEvent
+
+    return AcpEvent(kind=EVENT_PERMISSION_REQUEST, request_id=request_id, title="notes.txt")
+
+
 @pytest.mark.asyncio
 async def test_handle_approve_tool():
     rt, _, proc = _make_runtime()
     q = _register(rt, "sA")
     handle = AcpSessionHandle("sA", q["sA"], rt)
+    handle._permission_gate_events["req-7"] = _recorded_request("req-7")
     await handle.approve_tool("req-7", option_id="allow_always")
     sent = json.loads(proc.stdin.write.call_args.args[0].decode())
     assert sent["id"] == "req-7"
@@ -3706,6 +3714,7 @@ async def test_approve_tool_echoes_recorded_option():
     handle = AcpSessionHandle("sA", q["sA"], rt)
     # Simulate build_permission_event having recorded claude-agent-acp ids.
     handle._permission_options[42] = {"once": "allow", "always": "allow_always"}
+    handle._permission_gate_events[42] = _recorded_request(42)
     await handle.approve_tool(42)  # no explicit id → resolves the "once" variant
     sent = json.loads(proc.stdin.write.call_args.args[0].decode())
     assert sent["result"]["outcome"]["optionId"] == "allow"

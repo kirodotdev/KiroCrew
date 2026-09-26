@@ -6281,6 +6281,23 @@ class TestBuildPermissionEvent:
 class TestApproveTool:
     """Tests for approve_tool always= and recorded-option dispatch."""
 
+    @pytest.fixture(autouse=True)
+    def _recorded_requests(self, monkeypatch):
+        """Every id approved here stands for a request the client built an event for."""
+        from kiro_crew.acp.types import EVENT_PERMISSION_REQUEST, AcpEvent
+
+        class _Recorded(dict):
+            def pop(self, key, default=None):
+                return AcpEvent(kind=EVENT_PERMISSION_REQUEST, request_id=key, title="notes.txt")
+
+        original = AcpClient.__init__
+
+        def _init(self, *args, **kwargs):
+            original(self, *args, **kwargs)
+            self._permission_gate_events = _Recorded()
+
+        monkeypatch.setattr(AcpClient, "__init__", _init)
+
     @pytest.mark.asyncio
     async def test_always_uses_recorded_optionid(self, tmp_path):
         from kiro_crew.acp.types import OUTCOME_SELECTED

@@ -4280,6 +4280,36 @@ class _ApprovingProvider:
         self.approved.append(request_id)
 
 
+class _FloorRefusingProvider:
+    """approve_tool answers False: the transport's gate refused the call."""
+
+    def __init__(self) -> None:
+        self.approved: list[str] = []
+
+    async def approve_tool(self, request_id: str) -> bool:
+        self.approved.append(request_id)
+        return False
+
+
+class TestSlackApproveTransportFloor:
+    @pytest.mark.asyncio
+    async def test_approve_click_refused_by_floor_returns_reject(self):
+        """The card must not be relabelled as approved when approve_tool refused."""
+        from kiro_crew.slack.handler import _ACTION_REJECT, _OUTCOME_REJECTED, _PendingApproval
+
+        set_owner_id("U1")
+        set_allowed_users({"U1"})
+        prov = _FloorRefusingProvider()
+        pending = _PendingApproval(prov, "req-floor", session_key="chat-floor")
+        _pending_approvals["C1:tsf"] = pending
+
+        result = await handle_interaction("C1", "tsf", "approve_tool", user_id="U1")
+
+        assert result == _ACTION_REJECT
+        assert prov.approved == ["req-floor"]
+        assert pending.future.result() == _OUTCOME_REJECTED
+
+
 class TestSlackTrustSubagentPropagation:
     """Slack Trust must set the session approval policy so subagents inherit it."""
 

@@ -21,6 +21,7 @@ from typing import Any
 from kiro_crew.eval.scenario import Assertion, AssertionType, Scenario, SeedProfile, Session, Turn
 from kiro_crew.memory import MemoryStore
 from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
+from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR, refusal_for
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -86,9 +87,7 @@ class ScenarioResult:
 
     @property
     def passed_assertions(self) -> int:
-        return sum(
-            1 for s in self.sessions for t in s.turns for _, ok in t.assertion_results if ok
-        )
+        return sum(1 for s in self.sessions for t in s.turns for _, ok in t.assertion_results if ok)
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -159,12 +158,7 @@ ProviderFactory = Callable[[str], LLMProvider]
 # Tools considered safe to auto-approve during eval (read-only).
 # Fully-qualified names use exact match; ambiguous short names require
 # additional path validation before approval.
-_SAFE_TOOL_EXACT: frozenset[str] = frozenset(
-    s.lower()
-    for s in (
-        "WorkspaceSearch",
-    )
-)
+_SAFE_TOOL_EXACT: frozenset[str] = frozenset(s.lower() for s in ("WorkspaceSearch",))
 
 _SAFE_TOOL_PREFIXES_FS: tuple[str, ...] = tuple(
     s.lower()
@@ -266,7 +260,9 @@ class EvalRunner:
                 if isinstance(provider, AcpProvider):
                     # Access private attribute directly to avoid modifying core provider
                     # files. TODO: add set_workspace() to AcpProvider.
-                    if not (hasattr(provider, "_client") and hasattr(provider._client, "_work_dir")):
+                    if not (
+                        hasattr(provider, "_client") and hasattr(provider._client, "_work_dir")
+                    ):
                         raise RuntimeError(
                             "AcpProvider internals changed — eval workspace override broken"
                         )
@@ -305,8 +301,8 @@ class EvalRunner:
                 await asyncio.to_thread(skills.sync_builtins)
             except Exception:
                 logger.warning(
-                    "builtin-skill sync failed; continuing without synced "
-                    "builtins", exc_info=True,
+                    "builtin-skill sync failed; continuing without synced " "builtins",
+                    exc_info=True,
                 )
             ctx_builder = ContextBuilder(
                 memory=memory,
@@ -324,7 +320,8 @@ class EvalRunner:
 
             for idx, session_def in enumerate(scenario.sessions):
                 session_result = await self._run_session(
-                    session_def, ws,
+                    session_def,
+                    ws,
                     provider_factory=shared_ws_factory,
                     ctx_builder=ctx_builder if idx > 0 else None,
                 )
@@ -459,7 +456,10 @@ class EvalRunner:
         return ""
 
     async def _run_turn(
-        self, provider: LLMProvider, turn_def: Turn, session_key: str,
+        self,
+        provider: LLMProvider,
+        turn_def: Turn,
+        session_key: str,
     ) -> TurnResult:
         """Send a message and collect the response."""
         t0 = time.monotonic()
@@ -480,29 +480,55 @@ class EvalRunner:
             elif event.kind == EVENT_PERMISSION_REQUEST:
                 from kiro_crew.security import is_sensitive_path
 
-                safety = self._classify_safe_tool(event)
-                if safety in ("exact", "prefix_api"):
-                    # Known read-only API — approve without path check
+                reason = await asyncio.to_thread(
+                    refusal_for,
+                    event,
+                    session_key=session_key,
+                    agent="",
+                    security_only=False,
+                )
+                if reason is not None:
+                    logger.warning("Rejected tool by permission gate: %s", event.title)
                     sel().log_tool_invocation(
                         session_key=session_key,
                         tool_name=event.title,
-                        outcome="approved",
+                        outcome="rejected_hook_deny",
                         source="eval_runner",
                     )
-                    await provider.approve_tool(event.request_id)
+                    await provider.reject_tool(event.request_id)
+                    continue
+
+                safety = self._classify_safe_tool(event)
+                if safety in ("exact", "prefix_api"):
+                    # Known read-only API — approve without path check
+                    approval_sent = await provider.approve_tool(event.request_id)
+                    sel().log_tool_invocation(
+                        session_key=session_key,
+                        tool_name=event.title,
+                        outcome=(
+                            "approved"
+                            if approval_sent is not False
+                            else OUTCOME_REJECTED_TRANSPORT_FLOOR
+                        ),
+                        source="eval_runner",
+                    )
                 elif safety == "prefix_fs":
                     # Filesystem operation — deny-by-default path check
                     target = self._extract_path_from_input(event.tool_input or "")
                     if target:
                         target = str(Path(target).expanduser().resolve())
                     if target and not is_sensitive_path(target):
+                        approval_sent = await provider.approve_tool(event.request_id)
                         sel().log_tool_invocation(
                             session_key=session_key,
                             tool_name=event.title,
-                            outcome="approved",
+                            outcome=(
+                                "approved"
+                                if approval_sent is not False
+                                else OUTCOME_REJECTED_TRANSPORT_FLOOR
+                            ),
                             source="eval_runner",
                         )
-                        await provider.approve_tool(event.request_id)
                     else:
                         outcome = "rejected_sensitive" if target else "rejected_no_path"
                         logger.warning("Rejected tool (path check failed): %s", event.title)
@@ -593,8 +619,7 @@ def format_results(results: list[ScenarioResult]) -> str:
                 for assertion, ok in tr.assertion_results:
                     a_status = "✅" if ok else "❌"
                     lines.append(
-                        f"     {a_status} {assertion.type.value}: "
-                        f"`{assertion.value[:50]}`"
+                        f"     {a_status} {assertion.type.value}: " f"`{assertion.value[:50]}`"
                     )
                 if not tr.passed:
                     snippet = tr.agent_response[:200].replace("\n", " ")

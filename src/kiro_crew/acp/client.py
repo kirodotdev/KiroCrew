@@ -54,6 +54,7 @@ from kiro_crew import (
     agent_sdk,
     model_registry,
     model_scope,
+    permission_floor,
     platform_compat,
 )
 from kiro_crew import sel as sel_module
@@ -5637,6 +5638,10 @@ class AcpClient:
         # "allow"/"allow_always". Falling back to OPTION_ALLOW_ONCE causes
         # claude-agent-acp to reject the response.
         self._permission_options: dict[str | int, dict[str, str]] = {}
+        # Request id -> the permission event built for it, so approve_tool can
+        # put the request through the security floor (``permission_floor``)
+        # whichever consumer answers it.
+        self._permission_gate_events: dict[str | int, AcpEvent] = {}
         self._stderr_lines: deque[str] = deque(maxlen=20)
         # Latched on this process's FIRST non-thinking text chunk, tool call or
         # tool result, cleared with the rest of the process state on respawn:
@@ -11681,6 +11686,7 @@ class AcpClient:
         # Clear stale permission options so an aborted/cancelled request from
         # a prior turn cannot leak into this one (memory + correctness).
         self._permission_options.clear()
+        getattr(self, "_permission_gate_events", {}).clear()
         self._stale_eligible = False
         self._tool_dispatched = False
         self._active_tool_calls.clear()
@@ -12097,7 +12103,7 @@ class AcpClient:
         option_id: str | None = None,
         *,
         always: bool = False,
-    ) -> None:
+    ) -> bool:
         """Approve a pending session/request_permission.
 
         ``option_id`` overrides the auto-resolved id when provided. Otherwise
@@ -12105,7 +12111,30 @@ class AcpClient:
         "always" variant if ``always=True``, else the "once" variant. This
         keeps kiro-cli ("allow_once"/"allow_always") and claude-agent-acp
         ("allow"/"allow_always") working without caller knowledge.
+
+        Every approval first passes the security floor
+        (:mod:`kiro_crew.permission_floor`): a request the deny floor or the
+        sensitive-path checks refuse is REJECTED here, whichever consumer asked
+        to approve it and whether or not that consumer consulted the gate.
         """
+        # An instance allocated without ``__init__`` may keep no event map until
+        # the builder creates it; read it as empty, so it is judged like any
+        # other client: an unrecorded id is refused.
+        gate_events = getattr(self, "_permission_gate_events", None)
+        gate_event = gate_events.pop(request_id, None) if gate_events is not None else None
+        # No recorded event means no request this transport built, so there
+        # is nothing the floor could judge: refuse rather than approve unjudged.
+        if gate_event is None:
+            reason: str | None = permission_floor.REASON_NO_EVENT
+        else:
+            reason = await asyncio.to_thread(permission_floor.refusal_for, gate_event)
+        if reason is not None:
+            logger.warning("approve_tool: security floor rejected req=%s: %s", request_id, reason)
+            await asyncio.to_thread(
+                permission_floor.audit_refusal, gate_event, reason, request_id=request_id
+            )
+            await self.reject_tool(request_id)
+            return False
         # An approved call may complete; forget the envelope mapping so the map
         # stays bounded by the calls still awaiting an answer.
         getattr(self, "_pi_gate_request_tool", {}).pop(str(request_id), None)
@@ -12122,6 +12151,7 @@ class AcpClient:
             request_id,
             {"outcome": {"outcome": OUTCOME_SELECTED, "optionId": resolved_id}},
         )
+        return True
 
     def _note_pi_gate_denied(self, request_id: str | int) -> None:
         """Remember that the host DENIED the gate-extension dialog for this request.
@@ -12146,6 +12176,7 @@ class AcpClient:
         (kiro-cli), which kiro handles as an ordinary rejection.
         """
         recorded = self._permission_options.pop(request_id, None)
+        getattr(self, "_permission_gate_events", {}).pop(request_id, None)
         self._note_pi_gate_denied(request_id)
         reject_id = recorded.get("reject") if recorded else None
         if reject_id:
@@ -12499,15 +12530,22 @@ class AcpClient:
         "unidentified" cannot fall toward asking: on a session with a deny set, an MCP
         tool approval (the adapter marks one with ``_meta.is_mcp_tool_approval``)
         whose call this client cannot identify is REFUSED rather than approved blind.
-        On a session that judges nothing, nothing is checked and nothing is built --
-        other backends' behaviour here is unchanged, and building the event would
-        record advertised option ids these sites never consulted.
+        On a session that judges nothing, nothing is checked here and the answer is
+        the plain approve it always was: the event is still built, so approve_tool's
+        security floor can judge the request. Its advertised allow option ids stay
+        unrecorded, while its reject id is kept so a floor refusal answers with the
+        advertised reject option.
         """
-        # Before the branch: on a session that judges nothing no event is built here,
-        # and the gate tripwire still needs to know this call was asked about.
+        # The gate tripwire needs to know this call was asked about.
         self._note_pi_gate_asked(msg)
+        event = self._build_permission_event(msg)
+        if not self._judges_permission_requests:
+            options = getattr(self, "_permission_options", {})
+            recorded = options.pop(event.request_id, None)
+            reject_id = (recorded or {}).get("reject")
+            if reject_id:
+                options[event.request_id] = {"reject": reject_id}
         if self._judges_permission_requests:
-            event = self._build_permission_event(msg)
             if await self._deny_spec_disabled_tool(event):
                 return
             if await self._refuse_identity_drift(event):
@@ -12533,13 +12571,30 @@ class AcpClient:
                 await self.reject_tool(event.request_id)
                 return
         request_id = msg.id if msg.id is not None else ""
+        reason = await asyncio.to_thread(
+            permission_floor.refusal_for,
+            event,
+            session_key=self._session_key or "",
+            agent=self._agent,
+            security_only=False,
+        )
+        if reason is not None:
+            logger.warning("auto-approve identity gate rejected req=%s: %s", request_id, reason)
+            await asyncio.to_thread(
+                permission_floor.audit_refusal, event, reason, request_id=request_id
+            )
+            await self.reject_tool(request_id)
+            return
 
         params = msg.params or {}
         tool_call = params.get("toolCall", {})
         title = tool_call.get("title", "unknown")
         logger.info("Auto-approving tool: %s", title)
 
-        await self.approve_tool(request_id)
+        if await self.approve_tool(request_id):
+            await asyncio.to_thread(
+                permission_floor.audit_auto_approval, event, request_id=request_id
+            )
 
     async def _refuse_identity_drift(self, event: AcpEvent) -> bool:
         """Refuse a request whose harness identity is absent or names an unmounted server.
@@ -13961,6 +14016,12 @@ class AcpClient:
         )
         if recorded is not None:
             self._permission_options[event.request_id] = recorded
+        # Created here when absent, so a client allocated without ``__init__``
+        # that builds an event still records it for approve_tool's floor.
+        _gate_events = getattr(self, "_permission_gate_events", None)
+        if _gate_events is None:
+            _gate_events = self._permission_gate_events = {}
+        _gate_events[event.request_id] = event
         self._note_pi_gate_asked(msg)
         logger.info("Permission requested for tool: %s (req=%s)", event.title, event.request_id)
         if logger.isEnabledFor(logging.DEBUG):

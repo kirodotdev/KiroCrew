@@ -307,6 +307,7 @@ from kiro_crew.name_grant import (
     shell_command_for_event,
     should_log_decline,
 )
+from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 from kiro_crew.platform import redact_via_context
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
@@ -14096,7 +14097,18 @@ async def _run_chat(
                                     refusal_notices=_refusal_notices,
                                 )
                                 continue
-                            await client.approve_tool(event.request_id)
+                            approval_sent = await client.approve_tool(event.request_id)
+                            if approval_sent is False:
+                                sel().log_tool_invocation(
+                                    session_key=session_key,
+                                    agent=slot.agent or "kirocrew",
+                                    source="dashboard",
+                                    tool_name=_redact_display_text(event.title),
+                                    tool_kind=event.tool_kind,
+                                    outcome=OUTCOME_REJECTED_TRANSPORT_FLOOR,
+                                    request_id=event.request_id,
+                                )
+                                continue
                             _wt_note_approved(event)
                             _tool_title = _broadcast_auto_tool(state, slot, event)
                             # Defense-in-depth: _broadcast_auto_tool already
@@ -14192,7 +14204,18 @@ async def _run_chat(
                         _safe_native_crew_debug_title(event.title),
                         event.request_id,
                     )
-                    await client.approve_tool(event.request_id)
+                    approval_sent = await client.approve_tool(event.request_id)
+                    if approval_sent is False:
+                        sel().log_tool_invocation(
+                            session_key=session_key,
+                            agent=slot.agent or "kirocrew",
+                            source="dashboard",
+                            tool_name=_redact_display_text(event.title),
+                            tool_kind=event.tool_kind,
+                            outcome=OUTCOME_REJECTED_TRANSPORT_FLOOR,
+                            request_id=event.request_id,
+                        )
+                        continue
                     _wt_note_approved(event)
                     _tool_title = _broadcast_auto_tool(state, slot, event)
                     # Defense-in-depth: re-redact before this second external
@@ -14312,7 +14335,18 @@ async def _run_chat(
                                 refusal_reasons=_refusal_reasons,
                             )
                             continue
-                        await client.approve_tool(event.request_id)
+                        approval_sent = await client.approve_tool(event.request_id)
+                        if approval_sent is False:
+                            sel().log_tool_invocation(
+                                session_key=session_key,
+                                agent=slot.agent or "kirocrew",
+                                source="dashboard",
+                                tool_name=_redact_display_text(event.title),
+                                tool_kind=event.tool_kind,
+                                outcome=OUTCOME_REJECTED_TRANSPORT_FLOOR,
+                                request_id=event.request_id,
+                            )
+                            continue
                         _wt_note_approved(event)
                         _tool_title = _broadcast_auto_tool(state, slot, event)
                         _tool_title, _ = redact_exfiltration_urls(_tool_title)
@@ -14388,7 +14422,18 @@ async def _run_chat(
                                 state=state,
                             )
                             continue
-                        await client.approve_tool(event.request_id)
+                        approval_sent = await client.approve_tool(event.request_id)
+                        if approval_sent is False:
+                            sel().log_tool_invocation(
+                                session_key=session_key,
+                                agent=slot.agent or "kirocrew",
+                                source="dashboard",
+                                tool_name=_redact_display_text(event.title),
+                                tool_kind=event.tool_kind,
+                                outcome=OUTCOME_REJECTED_TRANSPORT_FLOOR,
+                                request_id=event.request_id,
+                            )
+                            continue
                         _wt_note_approved(event)
                         _tool_title = _broadcast_auto_tool(state, slot, event)
                         slot.append(
@@ -14474,7 +14519,18 @@ async def _run_chat(
                             continue
                     # always=False — KiroCrew owns trust scope; per-call request_permission
                     # is required for PreToolUse hooks to run on every tool invocation.
-                    await client.approve_tool(event.request_id)
+                    approval_sent = await client.approve_tool(event.request_id)
+                    if approval_sent is False:
+                        sel().log_tool_invocation(
+                            session_key=session_key,
+                            agent=slot.agent or "kirocrew",
+                            source="dashboard",
+                            tool_name=_redact_display_text(event.title),
+                            tool_kind=event.tool_kind,
+                            outcome=OUTCOME_REJECTED_TRANSPORT_FLOOR,
+                            request_id=event.request_id,
+                        )
+                        continue
                     _wt_note_approved(event)
                     _tool_title = _broadcast_auto_tool(state, slot, event)
                     # Defense-in-depth: re-redact before the sel log (idempotent).
@@ -15089,7 +15145,18 @@ async def _run_chat(
                         # above tests it.
                         if event.is_shell and cmd:
                             await asyncio.to_thread(pin_human_approval, cmd)
-                        await client.approve_tool(event.request_id)
+                        approval_sent = await client.approve_tool(event.request_id)
+                        if approval_sent is False:
+                            sel().log_tool_invocation(
+                                session_key=session_key,
+                                agent=slot.agent or "kirocrew",
+                                source="dashboard",
+                                tool_name=_redact_display_text(event.title),
+                                tool_kind=event.tool_kind,
+                                outcome=OUTCOME_REJECTED_TRANSPORT_FLOOR,
+                                request_id=event.request_id,
+                            )
+                            continue
                         _wt_note_approved(event)
                         _approved_title = _redact_display_text(event.title)
                         slot.append(

@@ -47,6 +47,7 @@ class FakeHandle:
         self._script = script or []
         self._gate = gate
         self.approvals: list = []
+        self.rejections: list = []
         self.destroyed = False
 
     async def prompt(self, message, timeout=0):
@@ -58,6 +59,9 @@ class FakeHandle:
 
     async def approve_tool(self, request_id, option_id=None):
         self.approvals.append(request_id)
+
+    async def reject_tool(self, request_id):
+        self.rejections.append(request_id)
 
     async def destroy(self):
         self.destroyed = True
@@ -82,6 +86,7 @@ class FakeRuntime:
         self._seq = 0
         self.script = []
         self.gate = None
+        self.last_handle = None
         FakeRuntime.instances.append(self)
 
     def is_alive(self):
@@ -100,6 +105,7 @@ class FakeRuntime:
         self.active += 1
         self.max_active = max(self.max_active, self.active)
         h = FakeHandle(self, sid, script=list(self.script), gate=self.gate)
+        self.last_handle = h
         self.sessions[sid] = h
         self._session_queues[sid] = object()
         # mirror the handle destroy -> pop from _session_queues too
@@ -291,6 +297,39 @@ class TestApprovalAndAudit(unittest.IsolatedAsyncioTestCase):
         # find it via the runtime's last created session id
         self.assertEqual(rt._seq, 1)
         await pool.end_batch()
+
+    async def test_policy_deny_is_rejected_before_auto_approval(self):
+        script = [
+            _ev(
+                rp.EVENT_PERMISSION_REQUEST,
+                request_id="r-policy",
+                title="WorkspaceSearch",
+                tool_kind="other",
+            )
+        ]
+        _install_fake_runtime(self, script=script)
+        refusal_for = getattr(rp, "refusal_for", None)
+        self.assertIsNotNone(refusal_for, "review pool has no identity-bearing permission gate")
+        seen = {}
+
+        def _deny(event, **kwargs):
+            seen.update(kwargs)
+            return "policy"
+
+        with unittest.mock.patch.object(rp, "refusal_for", _deny):
+            pool = ReviewPool(agent="review-agent", work_dir=_work_dir(self))
+            expected_agent = pool._agent
+            await pool.begin_batch()
+            await pool.send("t")
+            handle = FakeRuntime.instances[0].last_handle
+            await pool.end_batch()
+
+        self.assertEqual(handle.approvals, [])
+        self.assertEqual(handle.rejections, ["r-policy"])
+        self.assertEqual(seen["session_key"], handle.session_id)
+        self.assertEqual(seen["agent"], expected_agent)
+        self.assertEqual(seen["app"], "code-review-sage")
+        self.assertFalse(seen["security_only"])
 
     async def test_tool_call_emits_sel_audit(self):
         calls: list = []

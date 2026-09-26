@@ -123,6 +123,7 @@ from kiro_crew.messaging.session_trust import _trusted_sessions as _shared_trust
 from kiro_crew.messaging.session_trust import add_trusted_session as _add_trusted_session
 from kiro_crew.messaging.session_trust import clear_trusted_sessions, is_session_trusted
 from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
+from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 from kiro_crew.platform import current_context
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
@@ -4437,7 +4438,17 @@ async def handle_message(
                         # block.
                         _ng_refusal = await name_grant.refusal_for_event(event)
                         if _ng_refusal is None:
-                            await client.approve_tool(event.request_id)
+                            approval_sent = await client.approve_tool(event.request_id)
+                            if approval_sent is False:
+                                sel().log_tool_invocation(
+                                    session_key=session_key,
+                                    source="slack",
+                                    tool_name=event.title,
+                                    tool_kind=event.tool_kind,
+                                    outcome=OUTCOME_REJECTED_TRANSPORT_FLOOR,
+                                    request_id=event.request_id,
+                                )
+                                continue
                             Stats().inc_tool_auto_approved()
                             sel().log_tool_invocation(
                                 session_key=session_key,
@@ -4483,7 +4494,17 @@ async def handle_message(
 
                 # auto_approve_subagent_spawn → auto-approve spawn_run tool calls
                 if _should_auto_approve_spawn(context_builder, event):
-                    await client.approve_tool(event.request_id)
+                    approval_sent = await client.approve_tool(event.request_id)
+                    if approval_sent is False:
+                        sel().log_tool_invocation(
+                            session_key=session_key,
+                            source="slack",
+                            tool_name=event.title,
+                            tool_kind=event.tool_kind,
+                            outcome=OUTCOME_REJECTED_TRANSPORT_FLOOR,
+                            request_id=event.request_id,
+                        )
+                        continue
                     Stats().inc_tool_auto_approved()
                     sel().log_tool_invocation(
                         session_key=session_key,
@@ -4497,7 +4518,17 @@ async def handle_message(
                     continue
 
                 if approval_mode == APPROVAL_AUTO:
-                    await client.approve_tool(event.request_id)
+                    approval_sent = await client.approve_tool(event.request_id)
+                    if approval_sent is False:
+                        sel().log_tool_invocation(
+                            session_key=session_key,
+                            source="slack",
+                            tool_name=event.title,
+                            tool_kind=event.tool_kind,
+                            outcome=OUTCOME_REJECTED_TRANSPORT_FLOOR,
+                            request_id=event.request_id,
+                        )
+                        continue
                     Stats().inc_tool_auto_approved()
                     sel().log_tool_invocation(
                         session_key=session_key,
@@ -4513,7 +4544,17 @@ async def handle_message(
                 # Trust mode (per-session) or YOLO mode (owner-only global) → auto-approve
                 _yolo_now = is_yolo_mode()
                 if _yolo_now or session_key in _trusted_sessions:
-                    await client.approve_tool(event.request_id)
+                    approval_sent = await client.approve_tool(event.request_id)
+                    if approval_sent is False:
+                        sel().log_tool_invocation(
+                            session_key=session_key,
+                            source="slack",
+                            tool_name=event.title,
+                            tool_kind=event.tool_kind,
+                            outcome=OUTCOME_REJECTED_TRANSPORT_FLOOR,
+                            request_id=event.request_id,
+                        )
+                        continue
                     Stats().inc_tool_auto_approved()
                     logger.info(
                         "Auto-approved %s (%s)",
@@ -6384,6 +6425,7 @@ async def handle_interaction(
     # replaces. approve_tool pops the recorded options before sending, so the
     # guard's fallback reject can land as a cancelled outcome (ends the turn's
     # remaining tool calls) — still strictly better than a wedged subprocess.
+    floor_refused = False
     try:
         if action_id in (_ACTION_APPROVE, _ACTION_TRUST):
             # Set trust state BEFORE approving (so subsequent tools auto-approve)
@@ -6408,15 +6450,25 @@ async def handle_interaction(
                     logger.warning(
                         "No session_key on pending approval %s; approving without trust", key
                     )
+            approval_sent = True
             if pending.provider:
-                await pending.provider.approve_tool(pending.request_id)
+                approval_sent = await pending.provider.approve_tool(pending.request_id)
             if not pending.future.done():
-                pending.future.set_result(_OUTCOME_APPROVED)
-            Stats().inc_tool_approval()
+                pending.future.set_result(
+                    _OUTCOME_APPROVED if approval_sent is not False else _OUTCOME_REJECTED
+                )
+            if approval_sent is not False:
+                Stats().inc_tool_approval()
+            else:
+                # The transport's gate refused the call: the card must not
+                # be relabelled as approved.
+                floor_refused = True
             sel().log_api_access(
                 caller=user_id,
                 operation="slack.interactive.approval",
-                outcome="allowed",
+                outcome=(
+                    "allowed" if approval_sent is not False else OUTCOME_REJECTED_TRANSPORT_FLOOR
+                ),
                 source="slack",
                 resources=action_id,
             )
@@ -6445,7 +6497,7 @@ async def handle_interaction(
             pending.future.set_result(_OUTCOME_REJECTED)
         raise
 
-    return action_id
+    return _ACTION_REJECT if floor_refused else action_id
 
 
 def _build_approval_blocks(event: LLMEvent, is_dm: bool = True, source: str = "") -> list[dict]:

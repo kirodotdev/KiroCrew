@@ -813,6 +813,7 @@ class TestHookGateKwargs:
         # The scan found the enforcing sites it was written for — an empty
         # match set would make the assertion above vacuous.
         assert helper_sites >= {
+            "permission_floor.py",
             "dashboard/chat_runner.py",
             "dashboard/handlers/hooks.py",
             "discord/transport_dispatch.py",
