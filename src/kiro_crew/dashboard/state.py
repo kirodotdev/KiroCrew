@@ -2597,6 +2597,7 @@ class _ChatSlot:
         "theme_consent",
         "theme_consent_sha",
         "memory_mode",
+        "_pending_memory_mode",
         "_ephemeral",
         "_pending_context",
         "_deferred_notes",
@@ -3397,6 +3398,8 @@ class _ChatSlot:
                 f"invalid memory_mode {memory_mode!r}, must be one of {VALID_MEMORY_MODES}"
             )
         self.memory_mode: str = memory_mode
+        # A save thread records a stricter folded line mode for loop-side adoption.
+        self._pending_memory_mode: str | None = None
         self._ephemeral: bool = ephemeral  # Incognito mode: no memory writes
         self._pending_context: list[dict[str, Any]] = []
         self._deferred_notes: list[dict[str, Any]] = []

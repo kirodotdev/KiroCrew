@@ -170,6 +170,68 @@ def test_restricted_session_record_stays_live_and_monotonic(members, tmp_path):
     assert not ConversationLog()._path("dashboard_private").exists()
 
 
+@pytest.mark.parametrize("line_mode", ["incognito", "Incognito"])
+def test_persistent_bind_honors_restricted_record_without_execution_context(members, line_mode):
+    from kiro_crew.history import ConversationLog
+
+    key = "dashboard_restricted_recreate"
+    log = ConversationLog()
+    log.update_metadata(key, {"memory_mode": line_mode})
+    persistent = execution.resolve_member_execution(members, "alice")
+
+    execution.bind_session_execution(key, persistent)
+
+    metadata = log.get_metadata(key)
+    assert metadata["memory_mode"] == "incognito"
+    assert "memory_store" not in metadata
+    assert execution.EXECUTION_CONTEXT_KEY not in metadata
+    live = execution.read_live_session_execution(key)
+    assert live is not None
+    assert live.memory_mode == "incognito"
+    assert execution.read_session_execution(key) == live
+
+
+@pytest.mark.parametrize("line_mode", ["incognito", "Incognito"])
+def test_durable_record_reads_no_looser_than_its_tightened_line(members, line_mode):
+    """A persistent record beside a restricted line answers with the line's mode.
+
+    A member chat binds a persistent DURABLE record into its line. The line's own
+    ``memory_mode`` can then be tightened without the record following it -- a
+    hand-edited ``Incognito`` header, or a save that ratcheted the line as a
+    restricted original's rows landed under it. Every carrier-first reader goes
+    through ``read_session_execution``, so it folds the line in: the identity is
+    the record's, the mode is the stricter of the two. The next binding then takes
+    the restricted branch and heals the record itself, so the file stops
+    disagreeing with itself.
+    """
+    from kiro_crew.history import ConversationLog
+
+    key = "dashboard_member_line_tightened"
+    log = ConversationLog()
+    persistent = execution.resolve_member_execution(members, "alice")
+    execution.bind_session_execution(key, persistent)
+    before = log.get_metadata(key)
+    assert before[execution.EXECUTION_CONTEXT_KEY]["memory_mode"] == "persistent"
+    assert execution.read_session_execution(key) == persistent
+
+    log.update_metadata(key, {"memory_mode": line_mode})
+
+    read = execution.read_session_execution(key)
+    assert read is not None
+    assert read.memory_mode == "incognito", "the record's looser mode won over the line"
+    assert replace(read, memory_mode="persistent") == persistent, "the identity moved"
+
+    execution.bind_session_execution(key, persistent)
+
+    metadata = log.get_metadata(key)
+    assert metadata["memory_mode"] == "incognito"
+    assert metadata[execution.EXECUTION_CONTEXT_KEY]["memory_mode"] == "incognito"
+    assert metadata[execution.EXECUTION_CONTEXT_KEY]["member_id"] == persistent.member_id
+    live = execution.read_live_session_execution(key)
+    assert live is not None
+    assert live.memory_mode == "incognito"
+
+
 def test_session_publication_compares_captured_record(members):
     alice = execution.resolve_member_execution(members, "alice")
     bob = execution.resolve_member_execution(members, "bob")

@@ -17,13 +17,18 @@ compatibility or egress claims rather than "the feature works":
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import gzip
 import json
 from types import SimpleNamespace
 
 import pytest
+from chat_test_helpers import _make_state
 
 from kiro_crew.dashboard import session_export as se
+from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
+from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.session_transfer import (
     _SUPPORTED_BUNDLE_VERSIONS,
     BUNDLE_VERSION,
@@ -31,14 +36,44 @@ from kiro_crew.dashboard.session_transfer import (
     build_source_record,
     build_transfer_bundle_async,
 )
+from kiro_crew.history import (
+    ConversationLog,
+    TranscriptBusy,
+    TranscriptWithheld,
+    is_incognito_transcript,
+)
 
 
 class _FakeLog:
-    def __init__(self, messages):
+    def __init__(self, messages, *, metadata=None, readable=True):
         self._messages = messages
+        # The on-disk metadata line the export's file-level privacy gate reads.
+        # ``None`` metadata models an absent file; ``readable=False`` a line that
+        # exists but cannot be read.
+        self.metadata = {} if metadata is None else dict(metadata)
+        self.readable = readable
 
     def read_messages_chained(self, _key):
         return list(self._messages)
+
+    def get_metadata_status(self, _key):
+        return dict(self.metadata), self.readable
+
+    def derive_messages_chained(self, key):
+        """The derivation seam, as the real log implements it: line, then rows."""
+        meta, readable = self.get_metadata_status(key)
+        if not readable or is_incognito_transcript(meta.get("memory_mode")):
+            raise TranscriptWithheld("fake: restricted or unreadable")
+        return self.read_messages_chained(key)
+
+    @contextlib.contextmanager
+    def publication_hold(self, key, *, expected_keys=None):
+        meta, readable = self.get_metadata_status(key)
+        if not readable:
+            raise TranscriptBusy("fake: unreadable at publication")
+        if is_incognito_transcript(meta.get("memory_mode")):
+            raise TranscriptWithheld("fake: restricted at publication")
+        yield
 
 
 def _slot(messages, *, title="My session", memory_mode="persistent", app="", **over):
@@ -388,6 +423,120 @@ async def test_export_streams_a_gzipped_bundle():
 
 
 @pytest.mark.asyncio
+async def test_export_revalidates_the_line_at_response_commit():
+    class _TightensAtCommit(_FakeLog):
+        @contextlib.contextmanager
+        def publication_hold(self, _key, *, expected_keys=None):
+            raise TranscriptWithheld("fake: tightened before response commit")
+            yield
+
+    slot = _slot(MSGS)
+    state = _state(MSGS, slots={"slot-1": slot})
+    state.conversation_log = _TightensAtCommit(MSGS)
+
+    resp = await se.api_chat_slot_export(_request(state))
+
+    assert resp.status == 400
+    assert json.loads(resp.body)["code"] == "export_slot_not_persistent"
+
+
+def _capture_audit(monkeypatch) -> list[dict]:
+    events: list[dict] = []
+
+    class _Audit:
+        def log_api_access(self, **fields):
+            events.append(fields)
+
+    monkeypatch.setattr(se, "sel", lambda: _Audit())
+    return events
+
+
+@pytest.mark.asyncio
+async def test_export_refuses_if_assembled_chain_loses_a_member(tmp_path, monkeypatch):
+    tab_id = "aaaabbbbcccc"
+    sibling = "dashboard:chat-export-sibling"
+    root = "dashboard:chat-export-root"
+    log = ConversationLog(base_dir=tmp_path / "sessions")
+    await asyncio.to_thread(log.append, root, "user", "root", tab_id=tab_id)
+    await asyncio.to_thread(log.append, sibling, "user", "sibling", tab_id=tab_id)
+    root_messages = [{"role": "user", "content": "root", "ts": ""}]
+    slot = _slot(root_messages)
+    slot.key = "chat-export-root"
+    state = _state(root_messages, slots={"slot-1": slot})
+    state.conversation_log = log
+    build = se.build_transfer_bundle_async
+
+    async def _build_then_delete(*args, **kwargs):
+        bundle = await build(*args, **kwargs)
+        assert await asyncio.to_thread(log.delete_session, sibling)
+        return bundle
+
+    monkeypatch.setattr(se, "build_transfer_bundle_async", _build_then_delete)
+
+    resp = await se.api_chat_slot_export(_request(state))
+
+    assert resp.status == 503
+    assert json.loads(resp.body)["code"] == "export_snapshot_unstable"
+
+
+@pytest.mark.asyncio
+async def test_a_line_tightened_at_commit_leaves_only_the_denied_audit(monkeypatch):
+    """No ``allowed`` record may name bytes that were never transmitted: the
+    allowed line is written only once the commit has taken the response."""
+    events = _capture_audit(monkeypatch)
+
+    class _TightensAtCommit(_FakeLog):
+        @contextlib.contextmanager
+        def publication_hold(self, _key, *, expected_keys=None):
+            raise TranscriptWithheld("fake: tightened before response commit")
+            yield
+
+    slot = _slot(MSGS)
+    state = _state(MSGS, slots={"slot-1": slot})
+    state.conversation_log = _TightensAtCommit(MSGS)
+
+    resp = await se.api_chat_slot_export(_request(state))
+
+    assert resp.status == 400
+    assert [e["outcome"] for e in events] == ["denied"]
+    assert events[0]["error"].startswith("on-disk line at response commit")
+
+
+@pytest.mark.asyncio
+async def test_a_busy_commit_leaves_only_the_failure_audit(monkeypatch):
+    events = _capture_audit(monkeypatch)
+
+    class _BusyAtCommit(_FakeLog):
+        @contextlib.contextmanager
+        def publication_hold(self, _key, *, expected_keys=None):
+            raise TranscriptBusy("fake: held at response commit")
+            yield
+
+    slot = _slot(MSGS)
+    state = _state(MSGS, slots={"slot-1": slot})
+    state.conversation_log = _BusyAtCommit(MSGS)
+
+    resp = await se.api_chat_slot_export(_request(state))
+
+    assert resp.status == 503
+    assert [e["outcome"] for e in events] == ["failure"]
+
+
+@pytest.mark.asyncio
+async def test_a_committed_export_records_exactly_one_allowed_audit(monkeypatch):
+    events = _capture_audit(monkeypatch)
+    slot = _slot(MSGS)
+    state = _state(MSGS, sessions=_FakeSessions({SESSION_KEY: "auto"}), slots={"slot-1": slot})
+
+    resp = await se.api_chat_slot_export(_request(state))
+
+    assert resp.status == 200
+    assert [e["outcome"] for e in events] == ["allowed"]
+    assert f"bytes={len(resp.body)}" in events[0]["resources"]
+    assert f"messages={len(MSGS)}" in events[0]["resources"]
+
+
+@pytest.mark.asyncio
 async def test_export_carries_no_host_or_login_provenance():
     """A downloaded file can be shared with anyone, so it must carry neither the
     host's identity nor the operator's login.
@@ -445,6 +594,77 @@ async def test_incognito_and_temporary_sessions_are_refused():
 
         assert resp.status == 400, mode
         assert json.loads(resp.body)["code"] == "export_slot_not_persistent"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("line_mode", ["incognito", "temporary", "Incognito"])
+async def test_a_restricted_on_disk_line_refuses_a_slot_that_still_reads_persistent(line_mode):
+    """The bundle is built from DISK, so the file's own contract gates it.
+
+    Another writer -- a second gateway on this data home, a same-key hand-over, a
+    subagent appending -- can tighten the line while this slot still reads
+    persistent in memory. The live-slot gate above passes; the file must not.
+    """
+    slot = _slot(MSGS, memory_mode="persistent")
+    state = _state(MSGS, slots={"slot-1": slot})
+    state.conversation_log.metadata = {"memory_mode": line_mode}
+
+    resp = await se.api_chat_slot_export(_request(state))
+
+    assert resp.status == 400
+    assert json.loads(resp.body)["code"] == "export_slot_not_persistent"
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_on_disk_line_refuses_the_export():
+    """Fail closed: a reader that cannot see the contract does not ship the rows."""
+    slot = _slot(MSGS, memory_mode="persistent")
+    state = _state(MSGS, slots={"slot-1": slot})
+    state.conversation_log.readable = False
+
+    resp = await se.api_chat_slot_export(_request(state))
+
+    assert resp.status == 400
+    assert json.loads(resp.body)["code"] == "export_slot_not_persistent"
+
+
+@pytest.mark.asyncio
+async def test_a_line_tightened_while_the_bundle_was_built_is_refused(monkeypatch):
+    """The gate is asked again AFTER the build, so a tightening in between is caught."""
+    slot = _slot(MSGS, memory_mode="persistent")
+    state = _state(MSGS, slots={"slot-1": slot})
+    log = state.conversation_log
+    real_derive = log.derive_messages_chained
+
+    def _tighten_then_derive(key):
+        # The writer that tightens the line takes the transcript lock the seam
+        # holds, so it lands either before the seam's hold (this) or after it.
+        log.metadata = {"memory_mode": "incognito"}
+        return real_derive(key)
+
+    monkeypatch.setattr(log, "derive_messages_chained", _tighten_then_derive)
+
+    resp = await se.api_chat_slot_export(_request(state))
+
+    assert resp.status == 400
+    assert json.loads(resp.body)["code"] == "export_slot_not_persistent"
+
+
+@pytest.mark.asyncio
+async def test_a_busy_transcript_is_a_retryable_503_not_a_privacy_refusal(monkeypatch):
+    """The seam could not take the lock: nothing is wrong with the session, retry."""
+    slot = _slot(MSGS, memory_mode="persistent")
+    state = _state(MSGS, slots={"slot-1": slot})
+
+    def _busy(_key):
+        raise TranscriptBusy("held by another writer")
+
+    monkeypatch.setattr(state.conversation_log, "derive_messages_chained", _busy)
+
+    resp = await se.api_chat_slot_export(_request(state))
+
+    assert resp.status == 503
+    assert json.loads(resp.body)["code"] == "export_snapshot_unstable"
 
 
 @pytest.mark.asyncio
@@ -892,3 +1112,35 @@ def test_gzip_is_deterministic_for_one_document():
     document = {"bundle_version": 2, "messages": [{"role": "user", "content": "hi", "ts": ""}]}
     assert se.gzip_bundle(document) == se.gzip_bundle(document)
     assert json.loads(gzip.decompress(se.gzip_bundle(document))) == document
+
+
+@pytest.mark.asyncio
+async def test_a_pending_line_tightening_is_applied_before_export(tmp_path, monkeypatch):
+    events = []
+
+    class _Audit:
+        def log_api_access(self, **fields):
+            events.append(fields)
+
+    monkeypatch.setattr(se, "sel", lambda: _Audit())
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("slot-1")
+    slot.append("user", "restricted row")
+    slot.drain()
+    assert await save_slot_off_loop(state, slot, best_effort=False)
+    await asyncio.to_thread(
+        state.conversation_log.update_metadata,
+        slot_history_key(slot),
+        {"memory_mode": "incognito"},
+    )
+    slot.append("assistant", "restricted reply")
+    slot.drain()
+
+    assert await save_slot_off_loop(state, slot, best_effort=False)
+    assert slot.memory_mode == "incognito"
+    response = await se.api_chat_slot_export(_request(state))
+
+    assert response.status == 400
+    assert json.loads(response.body)["code"] == "export_slot_not_persistent"
+    assert events[-1]["outcome"] == "denied"
+    assert events[-1]["error"] == "memory_mode=incognito"

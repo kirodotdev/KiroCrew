@@ -1513,7 +1513,12 @@ versions is what lets a v2 instance still receive a copy from a v1 one.
 Status codes: `404` unknown instance or unknown local slot, `400` a
 non-persistent source session or a malformed body, `503` the manager is not
 running or the source could not be persisted first, `502` the peer refused or
-was unreachable (the peer's own `code` is forwarded).
+was unreachable (the peer's own `code` is forwarded). After assembly, the sender
+passes the exact validated chain keys that produced the bundle to
+`ConversationLog.publication_hold` immediately before the tunnel POST. Any
+membership change is retryable as `503 transfer_snapshot_unstable`. The hold
+ends before that awaited call, so it never blocks the event loop; the transmit
+itself is the accepted residual window.
 
 **`send-session` is NOT a third token-crossing route.** §6's invariant holds:
 `connect` and `refresh-token` remain the only two routes whose response carries a
@@ -1925,8 +1930,17 @@ Three properties worth stating because they are easy to lose:
   slug is built from the bundle's **already-redacted** title and never from
   `slot.title`.
 - **An incognito or temporary session cannot be exported.** Those transcripts
-  exist under a promise that nothing is kept, so writing one into a file is
-  refused rather than best-effort served.
+  are kept for the user's own History and nothing is produced FROM them (no
+  lesson, no summary, no snapshot); a bundle written into a file is such a
+  product, so it is refused rather than best-effort served. After bundle assembly
+  and compression, the handler revalidates the chained live metadata lines under
+  `ConversationLog.publication_hold` while constructing the synchronous response.
+  The hold covers the response commit without crossing an await; the subsequent
+  socket write is the accepted residual transmit window. The `allowed` audit
+  record is written only once that commit has taken the response, so a line
+  tightened during the build leaves exactly one record -- the `denied` (or the
+  `failure` on lock contention) -- and never an `allowed` naming bytes that were
+  not transmitted.
 - **No conversation changes, and nothing installs.** An export creates, moves and
   deletes nothing, so a repeat costs the source nothing and the action needs no
   confirm step. It is not a pure read of the disk, though: like `send-session` it

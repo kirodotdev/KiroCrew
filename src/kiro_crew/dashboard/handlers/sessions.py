@@ -68,11 +68,13 @@ from kiro_crew.history import (
     SEARCH_MIN_CHARS,
     ConversationLog,
     HistoryLockTimeout,
+    TranscriptBusy,
+    TranscriptWithheld,
     _archive_dir,
-    is_incognito_transcript,
     transcript_lock_stems,
     transcript_stem,
     transcript_stems,
+    transcript_withholds_derivation,
 )
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.mcp_discovery import sync_discovered_servers
@@ -1594,14 +1596,27 @@ async def _summarize_one(state: DashboardState, key: str) -> str:
     if not log:
         return ""
     loop = asyncio.get_running_loop()
-    # get_metadata + recent do synchronous full-file reads (read_text + per-line
-    # JSON parse, up to 2MB). Offload to the executor so a batch of large session
-    # files never freezes the gateway event loop — mirrors api_sessions above.
-    meta = await loop.run_in_executor(None, log.get_metadata, key)
-    # Defense in depth: never summarize an incognito/temporary session even if a
-    # caller somehow passes its key.
-    if is_incognito_transcript(meta.get("memory_mode")):
+
+    def _read_cache_if_derivation_is_allowed() -> tuple[str | None, bool]:
+        # The sidecar is derived from the transcript. Hold the same physical
+        # lock as metadata writers while validating the line and reading the
+        # cache, so a same-key restricted recreation cannot leave a stale
+        # persistent summary readable. Unreadable fails closed.
+        with log.derivation_hold(transcript_lock_stems(key)):
+            if transcript_withholds_derivation(log, key):
+                return None, False
+            return log.get_cached_summary(key), True
+
+    try:
+        cached, derivation_allowed = await loop.run_in_executor(
+            None, _read_cache_if_derivation_is_allowed
+        )
+    except TranscriptBusy:
         return ""
+    if not derivation_allowed:
+        return ""
+    if cached:
+        return str(cached)
     # Cache: a summary persisted in a sidecar file is reusable as long as the
     # session file hasn't changed since it was generated. session_mtime advances
     # only on real message appends (preserved across metadata writes), so it is a
@@ -1614,15 +1629,23 @@ async def _summarize_one(state: DashboardState, key: str) -> str:
     # preserves the mtime while advancing this counter, and stamping the new
     # content identity onto the older summary would bless it as fresh.
     generation = await loop.run_in_executor(None, log.rotation_generation, key)
-    cached = await loop.run_in_executor(None, log.get_cached_summary, key)
-    if cached:
-        return str(cached)
-    messages = await loop.run_in_executor(
-        None,
-        functools.partial(
-            log.recent, key, max_messages=_SUMMARIZE_MSG_LIMIT, roles={"user", "assistant"}
-        ),
-    )
+    # Through the DERIVATION seam, not the plain ``recent``: the line checked
+    # above is a snapshot, and a writer can tighten it before the rows are read
+    # (a same-key hand-over landing a closed restricted tab's rows). The seam
+    # validates the line with the rows under one lock hold and raises instead of
+    # yielding rows a restricted (or unreadable) line governs.
+    try:
+        messages = await loop.run_in_executor(
+            None,
+            functools.partial(
+                log.derive_recent,
+                key,
+                max_messages=_SUMMARIZE_MSG_LIMIT,
+                roles={"user", "assistant"},
+            ),
+        )
+    except TranscriptWithheld:
+        return ""
     prompt = _build_summary_prompt(messages)
     if not prompt:
         return ""
@@ -1639,16 +1662,30 @@ async def _summarize_one(state: DashboardState, key: str) -> str:
     summary, _ = redact_exfiltration_urls(summary)
     summary, _ = redact_credentials(summary)
     summary = summary[:200]
-    # Persist for reuse in a sidecar cache (best-effort; keyed by the mtime we
-    # observed above so a concurrent append invalidates it on the next call).
-    # Writing the sidecar never touches the session JSONL, so it cannot race a
-    # concurrent append or reorder list_sessions.
+    # Revalidate only after the model call has returned: model latency must never
+    # block a transcript writer. Keep the hold through the sidecar write so a
+    # same-key tightening cannot land between the privacy check and publication.
     if sig is not None:
+
+        def _publish_if_derivation_is_allowed() -> None:
+            with log.publication_hold(key):
+                log.set_cached_summary(key, summary, sig, generation)
+
         try:
-            await loop.run_in_executor(
-                None,
-                functools.partial(log.set_cached_summary, key, summary, sig, generation),
+            await loop.run_in_executor(None, _publish_if_derivation_is_allowed)
+        except TranscriptBusy:
+            logger.debug(
+                "Summary for %s withheld: the transcript lock was busy at publication",
+                key,
             )
+            return ""
+        except TranscriptWithheld:
+            logger.debug(
+                "Discarding summary for %s: the transcript became restricted "
+                "during summarisation",
+                key,
+            )
+            return ""
         except Exception:
             logger.debug("Failed to persist summary cache for %s", key, exc_info=True)
     return summary

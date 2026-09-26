@@ -1,8 +1,10 @@
 """Behavioral compatibility, correction evidence and temporal quality fixtures."""
 
+import contextlib
 import json
 import struct
 from datetime import datetime, timezone
+from unittest.mock import MagicMock
 
 import pytest
 from member_memory_helpers import declare_v2_store
@@ -12,6 +14,19 @@ from kiro_crew import memory_stores, vector_memory
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.history_consolidation import HistoryConsolidator
 from kiro_crew.vector_memory import VectorMemoryStore, open_member_database
+
+
+def _bare_writer() -> HistoryConsolidator:
+    """A consolidator built without __init__, driving the write path directly.
+
+    The structured-memory writes commit under the transcript's publication
+    seam (``self._log.publication_hold``); these tests have no transcript, so
+    the seam is a no-op hold and the write path stays unconditional.
+    """
+    writer = object.__new__(HistoryConsolidator)
+    writer._log = MagicMock()
+    writer._log.publication_hold.side_effect = lambda _key: contextlib.nullcontext()
+    return writer
 
 
 @pytest.fixture(params=["v1", "v2"])
@@ -373,7 +388,7 @@ def test_temporal_rows_do_not_crowd_current_fact_or_episode_context(store):
 @pytest.mark.parametrize("store", ["v2"], indirect=True)
 def test_consolidator_confidence_is_not_authority_and_bad_item_is_local(store):
     fact(store)
-    writer = object.__new__(HistoryConsolidator)
+    writer = _bare_writer()
     writer._write_structured_memory(
         {
             "semantic": [
@@ -393,7 +408,7 @@ def test_consolidator_confidence_is_not_authority_and_bad_item_is_local(store):
 
 @pytest.mark.parametrize("store", ["v2"], indirect=True)
 def test_consolidator_creates_new_fact_with_metadata_without_orphan_proposal(store):
-    writer = object.__new__(HistoryConsolidator)
+    writer = _bare_writer()
     writer._write_structured_memory(
         {
             "semantic": [
@@ -517,7 +532,7 @@ def test_controlled_update_cases_require_current_user_evidence(store, case):
     expected = {"explicit": "new@example.com", "stale": "third@example.com"}.get(
         case, "old@example.com"
     )
-    writer = object.__new__(HistoryConsolidator)
+    writer = _bare_writer()
     writer._write_structured_memory(
         {"semantic": [item]},
         "dashboard:alice",
@@ -620,7 +635,7 @@ def test_model_quote_cannot_strip_actual_user_message_context(store, content, qu
         )
         is None
     )
-    writer = object.__new__(HistoryConsolidator)
+    writer = _bare_writer()
     writer._write_structured_memory(
         {
             "semantic": [
@@ -659,7 +674,7 @@ def test_model_quote_cannot_strip_actual_user_message_context(store, content, qu
 @pytest.mark.parametrize("store", ["v2"], indirect=True)
 def test_complete_affirmative_user_statement_still_authorizes_correction(store, content, quote):
     before = fact(store)
-    writer = object.__new__(HistoryConsolidator)
+    writer = _bare_writer()
     writer._write_structured_memory(
         {
             "semantic": [

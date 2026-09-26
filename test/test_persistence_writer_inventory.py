@@ -53,6 +53,9 @@ GATED_AUTOMATIC = {
     # projects. Gated in _consolidate plus all three automatic entry points.
     "history_consolidation.py::_save_lessons",
     "history_consolidation.py::_write_structured_memory",
+    "history_consolidation.py::_append_history_under_hold",
+    "history_consolidation.py::_write_preferences",
+    "history_consolidation.py::_write_projects",
     "history_consolidation.py::_consolidate",
     # Distils a lesson from a repeatedly failing task; gated before the LLM call.
     "taskrunner.py::_extract_lesson",

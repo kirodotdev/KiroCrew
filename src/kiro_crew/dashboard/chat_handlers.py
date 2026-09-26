@@ -119,12 +119,23 @@ from kiro_crew.dashboard.chat_utils import (
     _redact_meta,
     _redact_meta_for_role,
     _remove_queued_by_id,
+    _resettle_restricted_key,
     _sync_dashboard_slots,
     drained_to_thread,
     effective_session_key,
     history_corpus_unreadable,
+)
+from kiro_crew.dashboard.chat_utils import (
+    replacement_shares_transcript as _replacement_shares_transcript,
+)
+from kiro_crew.dashboard.chat_utils import (
+    restore_replacement_if_handover_did_not_land,
     slot_history_key,
     subagents_attached_async,
+    tighten_live_slot_memory_mode,
+)
+from kiro_crew.dashboard.chat_utils import (
+    tighten_replacement_to_restricted_original as _tighten_replacement_to_restricted_original,
 )
 from kiro_crew.dashboard.handlers._shared import _owner_denial_response, read_bounded_json
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
@@ -176,11 +187,19 @@ from kiro_crew.dashboard.state import (
 )
 from kiro_crew.dashboard.system_notices import SESSION_RELOAD_KIND, is_system_notice
 from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
-from kiro_crew.history import carry_provenance, is_incognito_transcript, transcript_stems
+from kiro_crew.history import (
+    ConversationLog,
+    TranscriptBusy,
+    carry_provenance,
+    is_incognito_transcript,
+    transcript_lock_stems,
+    transcript_withholds_derivation,
+)
 from kiro_crew.history_projection import TranscriptRevisionChanged
 from kiro_crew.jsonl_util import OversizedRecord, SplitlinesBoundaryRecord
 from kiro_crew.llm_helpers import pick_epoch_host, slot_switch_session_lock
 from kiro_crew.memory_startup import MemoryStartupUnavailable, wait_for_memory_preparation
+from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging.link import canonical_key, is_channel_session_key
 from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.providers.base import LLMProvider
@@ -1793,8 +1812,7 @@ async def api_chat_slot_summary(request: web.Request) -> web.Response:
     # stop serving summaries, not just stop producing them, or a sidecar written
     # during an earlier opt-in keeps being returned after opt-out.
     if enabled and log is not None:
-        history_key = slot_history_key(slot)
-        payload, stale = await asyncio.to_thread(log.read_intent_summary, history_key)
+        payload, stale = await _read_intent_summary_if_derivation_is_allowed(log, slot)
 
     body: dict = {
         "enabled": enabled,
@@ -1807,6 +1825,38 @@ async def api_chat_slot_summary(request: web.Request) -> web.Response:
         "generate_state": _generate_state(cfg, slot),
     }
     return web.json_response(body)
+
+
+async def _read_intent_summary_if_derivation_is_allowed(
+    log: ConversationLog, slot: Any
+) -> tuple[dict | None, bool]:
+    """Read *slot*'s ``.intents`` sidecar only if its transcript may be derived from.
+
+    The one read both summary routes use: the sidecar is itself derived from
+    the transcript, so it is served under the same two gates as the transcript
+    -- the live slot's mode, and the on-disk line validated while holding the
+    same physical lock as metadata writers. A ``.intents`` file can outlive the
+    persistent life that wrote it (the key is recreated restricted; the sidecar
+    stays, by design, for a later persistent holder), and
+    ``read_intent_summary`` reports its signature mismatch as ``stale`` rather
+    than dropping it, so a bare read would hand a restricted session its
+    predecessor's summary. Unreadable fails closed; a lock timeout is the same
+    empty result.
+    """
+    if is_incognito_transcript(getattr(slot, "memory_mode", "")):
+        return None, False
+    history_key = slot_history_key(slot)
+
+    def _read() -> tuple[dict | None, bool]:
+        with log.derivation_hold(transcript_lock_stems(history_key)):
+            if transcript_withholds_derivation(log, history_key):
+                return None, False
+            return log.read_intent_summary(history_key)
+
+    try:
+        return await asyncio.to_thread(_read)
+    except TranscriptBusy:
+        return None, False
 
 
 def _generate_state(cfg: KiroCrewConfig, slot: Any) -> str:
@@ -1924,9 +1974,11 @@ async def api_chat_slot_summary_generate(request: web.Request) -> web.Response:
 
     # Read back rather than trusting the return value: a forced pass returns
     # False both when it produced nothing AND when the cached summary was
-    # already current, and those are opposite outcomes for the panel.
-    history_key = slot_history_key(slot)
-    payload, stale = await asyncio.to_thread(log.read_intent_summary, history_key)
+    # already current, and those are opposite outcomes for the panel. Through
+    # the same gated read as the GET: a pass the generator skipped for
+    # ``memory_mode`` must not be answered with a sidecar left over from the
+    # key's earlier persistent life.
+    payload, stale = await _read_intent_summary_if_derivation_is_allowed(log, slot)
     if payload is None:
         return web.json_response(
             {"error": "could not summarize this session", "code": "summary_unavailable"},
@@ -3875,67 +3927,6 @@ def _slot_still_ours(state: DashboardState, name: str, slot: _ChatSlot) -> bool:
     return current is None or current is slot
 
 
-def _replacement_shares_transcript(state: DashboardState, name: str, slot: _ChatSlot) -> bool:
-    """True iff a DIFFERENT slot now holds ``name`` AND writes ``slot``'s transcript.
-
-    Slot identity is not transcript ownership, and the archival save is scoped to
-    the TRANSCRIPT: it targets ``slot_history_key(slot)``, not ``name``. A slot
-    carrying a ``linked_session_key`` — channel-, cron- or workflow-born — keeps its
-    conversation under that linked key, while a replacement minted by a plain
-    ``get_or_create_slot(name)`` (the shape POST /api/chat and the session_close
-    verb take) is unbound and keeps its own under ``dashboard:{name}``. Same key,
-    two files. So :func:`_slot_still_ours` cannot decide the save: yielding the
-    archive to a replacement that shares nothing leaves the ORIGINAL's transcript
-    with no ``closed`` flag, and an absent flag is exactly what
-    ``channel_slots._close_stands`` reads as "the user never dismissed this" — the
-    reconcile pass then resurfaces the tab the user closed.
-
-    Compared as FILE identity, not as key strings, because the file is what the
-    write touches and the mapping is not injective: ``history._safe_key`` folds
-    ``slack:<ts>`` and the ``slack_<ts>`` filename stem onto one ``.jsonl``, and a
-    Slack thread predating the canonical key still resolves to its bare
-    ``thread_ts`` stem (:func:`~kiro_crew.history.transcript_stems` carries both).
-    The two errors are not symmetric: over-reporting "shared" only declines an
-    archive the next close will make, while under-reporting stamps ``closed`` onto a
-    file a live slot is still writing, which is the whole harm being guarded.
-    """
-    current = state._slots.get(name)
-    if current is None or current is slot:
-        return False
-    return bool(
-        set(transcript_stems(slot_history_key(current)))
-        & set(transcript_stems(slot_history_key(slot)))
-    )
-
-
-def _resettle_restricted_key(state: DashboardState, name: str) -> None:
-    """Re-derive ``dashboard:{name}``'s restricted marker from whoever owns ``name`` NOW.
-
-    ``state._restricted_keys`` is keyed by SESSION KEY, not by slot identity, so the
-    marker describes whatever object holds the key — never the object a close happens
-    to be carrying. Every exit of a teardown therefore owes the one postcondition
-    this function IS: ``dashboard:{name}`` is in the set iff the slot currently at
-    ``name`` is restricted, an absent key counting as unrestricted.
-
-    Two shapes of exit need it, and they need opposite answers. An ordinary close
-    pops the slot for good, so the marker must be DROPPED — otherwise an incognito
-    tab's key stays blocked for every later holder of it. A close that yields the key
-    to a concurrent same-key replacement must re-derive from the REPLACEMENT:
-    ``_is_restricted_session`` tests the key BEFORE it looks at the slot, so an
-    incognito original's leftover marker makes every memory, artifact and mcp-apps
-    call on a PERSISTENT replacement answer 403 for as long as that tab lives.
-
-    Re-derived rather than blindly discarded, because a replacement that is itself
-    restricted has to KEEP the marker: dropping it is the fail-OPEN direction.
-    """
-    key = f"dashboard:{name}"
-    current = state._slots.get(name)
-    if current is not None and current.is_restricted:
-        state._restricted_keys.add(key)
-    else:
-        state._restricted_keys.discard(key)
-
-
 class _HandoverDrainResult(NamedTuple):
     """What a hand-over drain did with the state it is the last reader of.
 
@@ -4128,6 +4119,15 @@ async def _persist_handover_tail(
     the write stays as it is, and the loss is reported rather than silent.
     """
     try:
+        tightening = _tighten_replacement_to_restricted_original(state, name, slot)
+    except UnknownMemoryStore:
+        tightening = None
+        logger.warning(
+            "Slot %s: replacement rebound twice during tightening; writing the tail "
+            "under the ratcheted line without tightening the live replacement",
+            name,
+        )
+    try:
         slot.flush_deferred_notes()
     except Exception:
         # The flush puts the unwritten suffix back before raising, so this count is
@@ -4180,6 +4180,7 @@ async def _persist_handover_tail(
             issued_by_the_retraction=True,
         )
     except Exception:
+        await restore_replacement_if_handover_did_not_land(state, name, tightening, history_key)
         logger.error(
             "Slot %s: %d unpersisted row(s) could not be written to %s while handing "
             "the key to a concurrent recreate; they are lost with the original slot",
@@ -4197,6 +4198,7 @@ async def _persist_handover_tail(
             _report_lost_queued_prompts(state, name, lost, history_key)
         return _HandoverDrainResult(rows_committed=False, prompts_lost=lost)
     if not committed:
+        await restore_replacement_if_handover_did_not_land(state, name, tightening, history_key)
         # The save declined without writing: the session was permanently deleted
         # while this write awaited the lock, or the slot's routing moved off the
         # transcript this frame authorized. Neither leaves anywhere for these rows
@@ -4212,6 +4214,12 @@ async def _persist_handover_tail(
         if lost:
             _report_lost_queued_prompts(state, name, lost, history_key)
         return _HandoverDrainResult(rows_committed=False, prompts_lost=lost)
+    # Only a replacement that WRITES THIS TRANSCRIPT follows the committed rows'
+    # mode: a slot at ``name`` whose rows route elsewhere (a task-review or
+    # workflow slot with a divergent ``linked_session_key``) shares no file with
+    # the original and must not be ratcheted for rows it will never read.
+    if _replacement_shares_transcript(state, name, slot):
+        tighten_live_slot_memory_mode(state, name, slot.memory_mode)
     # The write committed, and it can still leave owed entries with no durable
     # future: a rows-only save over a line another live slot published defers
     # every slot-owned field, ``queued_prompts`` among them

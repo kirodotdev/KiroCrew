@@ -146,14 +146,47 @@ repair `kirocrew doctor` names when the start-of-process migration could not
 attribute it. A successful backfill logs one INFO line naming the session.
 
 Persistent sessions serialize this record in their existing owner metadata.
-Incognito and Temporary sessions keep it in live session state and suppress
-Crew transcript/body persistence. Incognito may read memory; Temporary does not.
-Both refuse learned-memory writes. Children inherit the strictest admitted mode,
-even after a parent closes; replacing a parent cannot broaden their policy.
-If an existing persistent session becomes restricted, its existing owner record
-atomically tightens only retention metadata. No restricted body is added or
-rewritten, and restart cannot recover a weaker mode. A new restricted session
-does not create a durable owner record.
+Incognito and Temporary sessions keep it in live session state only. Their
+TRANSCRIPT is persisted like any other session's -- the user reopens an
+incognito or temporary chat from History, before or after a restart -- and what
+the mode withholds is everything derived FROM it: consolidation, lessons,
+memory injection, the session summary, workflow and task snapshots. The
+metadata line is the file's privacy contract, and both slot save and
+turn-start binding treat it as a ratchet. When a writer tightens a line held by a
+live slot, the slot follows that mode on the event loop and its restricted-key
+marker is re-derived, so export, summary, memory injection, and learning gates
+observe the same restriction. Transcript-derived durable and egress publication
+then revalidates the chained live lines through `ConversationLog.publication_hold`.
+Export and transfer pass the exact chain returned with their assembled rows, so
+any membership change before publication is retryable. Export commits its
+synchronous response under the hold, while transfer releases it immediately
+before its awaited tunnel send. The network transmit is the accepted residual
+window; no threading lock crosses an await. The binder folds a
+carrier-less line's canonical
+on-disk mode into a new execution before choosing its publication branch, so a
+persistent same-key replacement takes the live-only restricted branch and cannot
+write an owner store onto that line. When a live carrier already exists, the
+turn-start read-back reads the metadata line off-loop, folds its mode into that
+carrier, and republishes only the stricter carrier before memory context is built;
+an unreadable line is a transient read failure, not a mode -- the fold is withheld
+for that turn and the next turn's read-back tries again, since every mode the fold
+publishes is a one-way ratchet no path can widen -- while an absent line adds no
+mode.
+The slot save likewise records the STRICTEST
+mode it can see (the slot's own, or the live carrier's when the two disagree for
+a moment), never a looser one. Incognito may read memory;
+Temporary does not. Both refuse learned-memory writes. Children inherit the
+strictest admitted mode, even after a parent closes; replacing a parent cannot
+broaden their policy. If an existing persistent session becomes restricted, its
+existing owner record atomically tightens only retention metadata, and restart
+cannot recover a weaker mode. A new restricted session does not create a durable
+owner record, and its metadata line names NO `memory_store`: with no carrier on
+the line, a store name would read back as the legacy owner claim the identity
+backfill refuses for a restricted mode, and the restart would refuse the chat.
+Left out, the restart reads the session as unbound and the first turn re-selects
+the member from `agent` under the retained mode -- the same live-only carrier the
+session ran under before the restart. `agent_kind` stays on the line: it is a
+display fact, not an owner claim.
 
 Tab close and idle archival snapshot the live restricted identity before yielding;
 cleanup does not read durable session metadata. Tab close retires its nudge loop

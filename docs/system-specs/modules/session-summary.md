@@ -92,6 +92,21 @@ exists to avoid.
 
 Both sidecars are reaped by `delete_session`, which is contractually a permanent
 removal: a deleted session must leave no orphaned model-generated text on disk.
+Their user-facing reads validate the transcript's derivation policy through
+`ConversationLog.derivation_hold` while holding the transcript lock; the intent
+panel's GET and the POST's read-back share one helper
+(`chat_handlers._read_intent_summary_if_derivation_is_allowed`), so a `.intents`
+file left by the key's earlier persistent life is never served bare to a slot that
+is now restricted. Each writer revalidates through
+`ConversationLog.publication_hold` immediately after the model call and keeps that
+hold through the sidecar write. A lock timeout maps to `TranscriptBusy` and follows
+the existing empty/refused result on both READ and PUBLISH: the publish-time
+privacy verdict could not be obtained, so `_summarize_one` discards the generated
+one-line summary as well as skipping its sidecar write; the intent generator,
+which returns no text to a requester, likewise reports the pass as not published.
+The `TranscriptBusy` and `TranscriptWithheld` refusal arms therefore both return an
+empty summary and differ only in their diagnostic log text. No transcript lock
+spans model latency.
 
 **The write is guarded against resurrecting a delete.** Generation holds no lock
 while the model call is in flight (it can take tens of seconds), so a permanent
@@ -216,7 +231,7 @@ indistinguishable from one that is broken.
 | `disabled` | The flag is off — the common case, and it costs nothing |
 | `in_flight` | A pass for this slot is already running. The marker is taken **before the first await**, so two concurrent callers cannot both reach the model call — on-demand generation made that reachable from two clients at once |
 | `running` | A turn is in flight (`slot.running`). Consulted directly rather than inferred from the stop reason, because the marker is cleared at turn start: an empty `_last_stop_reason` means BOTH "idle session restored in a later process" and "streaming right now". **Holds under `force`** |
-| `memory_mode` | Incognito or temporary: no derived artifact from this conversation (mirrors `history.INCOGNITO_MEMORY_MODES` — a temporary transcript is discarded, so a persisted summary would outlive it) |
+| `memory_mode` | Incognito or temporary: no derived artifact from this conversation (mirrors `history.INCOGNITO_MEMORY_MODES` — the transcript is kept for the user's own History, and a summary is exactly the kind of model-produced artifact the mode withholds). Checked on the live slot AND on the on-disk line (`history.transcript_withholds_derivation`, before and after the transcript read, failing closed on an unreadable line), because the rows come from disk and the file can be stricter than the slot that kept it in memory. The panel read applies the same two gates while holding the transcript lock across its `.intents` sidecar read, so a summary cached before a same-key restricted recreation is not served. The sidecar is retained rather than deleted: a later persistent holder may legitimately reuse it if its transcript signature still matches. |
 | `stop_reason:<r>` | The turn did not cleanly end |
 | `too_few_turns` | Below `min_user_turns` |
 | `cadence` | Fewer than `regenerate_after_turns` since the last pass |
@@ -329,7 +344,11 @@ A forced pass lifts **exactly two** gates — `stop_reason` and `cadence` — be
 those bound spending nobody asked for, and an explicit click already carries the
 consent they stand in for. `disabled`, `in_flight`, `memory_mode`, `running` and
 `too_few_turns` all still hold, and the cache check is not skipped, so a second
-click cannot buy an identical answer.
+click cannot buy an identical answer. The handler answers from a **read-back** of
+the sidecar rather than the pass's return value (a forced pass returns `False` both
+for "produced nothing" and "already current"), and that read-back is the GET's own
+gated read: a pass skipped for `memory_mode` is answered `409 summary_unavailable`,
+never with a `.intents` sidecar the key wrote in an earlier persistent life.
 
 `generate_state` on the GET tells the panel which affordance to offer:
 `ready` / `too_few_turns` / `unavailable`. It is decided server-side so the frontend

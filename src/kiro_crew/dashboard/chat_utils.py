@@ -47,8 +47,22 @@ from kiro_crew.dashboard.state import (
     append_and_surface,
     parse_cls_meta,
 )
-from kiro_crew.history import transcript_sort_key
+from kiro_crew.execution_context import (
+    ExecutionContext,
+    canonical_memory_mode,
+    read_live_session_execution,
+    rollback_live_session_tightening,
+    stricter_memory_mode,
+    tighten_live_session_execution,
+)
+from kiro_crew.history import (
+    is_incognito_transcript,
+    transcript_lock_stems,
+    transcript_sort_key,
+    transcript_stems,
+)
 from kiro_crew.hooks import _HOST_READ_ONLY_BUILTIN_TOOLS, safe_read_file
+from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging.link import canonical_key, is_channel_session_key
 from kiro_crew.quick_prompts import QUICK_PROMPTS
 from kiro_crew.security import (
@@ -91,6 +105,74 @@ def chunk_generation() -> str:
     replays. Not a secret and not an identity: it only says "same process".
     """
     return _CHUNK_GENERATION
+
+
+def _resettle_restricted_key(state: DashboardState, name: str) -> None:
+    """Re-derive ``dashboard:{name}``'s restricted marker from whoever owns ``name`` NOW.
+
+    ``state._restricted_keys`` is keyed by SESSION KEY, not by slot identity, so the
+    marker describes whatever object holds the key -- never the object a close happens
+    to be carrying. Every exit of a teardown, and every tightening of a live slot,
+    owes the one postcondition this function IS: ``dashboard:{name}`` is in the set
+    iff the slot currently at ``name`` is restricted, an absent key counting as
+    unrestricted.
+
+    Two shapes of exit need it, and they need opposite answers. An ordinary close
+    pops the slot for good, so the marker must be DROPPED -- otherwise an incognito
+    tab's key stays blocked for every later holder of it. A close that yields the key
+    to a concurrent same-key replacement must re-derive from the REPLACEMENT:
+    ``_is_restricted_session`` tests the key BEFORE it looks at the slot, so an
+    incognito original's leftover marker makes every memory, artifact and mcp-apps
+    call on a PERSISTENT replacement answer 403 for as long as that tab lives.
+
+    Re-derived rather than blindly discarded, because a replacement that is itself
+    restricted has to KEEP the marker: dropping it is the fail-OPEN direction.
+    """
+    key = f"dashboard:{name}"
+    current = state._slots.get(name)
+    if current is not None and current.is_restricted:
+        state._restricted_keys.add(key)
+    else:
+        state._restricted_keys.discard(key)
+
+
+def tighten_live_slot_memory_mode(
+    state: DashboardState,
+    name: str,
+    memory_mode: object,
+    *,
+    expected_slot: _ChatSlot | None = None,
+) -> bool:
+    """Tighten the current slot to *memory_mode* and re-derive its key marker.
+
+    ``expected_slot`` prevents an off-loop save completion for a retired slot
+    from changing a successor. The operation is synchronous so callers perform
+    the slot write and marker update in one event-loop turn.
+    """
+    current = state._slots.get(name)
+    if current is None or (expected_slot is not None and current is not expected_slot):
+        return False
+    current_mode = canonical_memory_mode(getattr(current, "memory_mode", "persistent"))
+    tightened = stricter_memory_mode(current_mode, canonical_memory_mode(memory_mode))
+    changed = tightened != current_mode
+    if changed:
+        current.memory_mode = tightened
+    _resettle_restricted_key(state, name)
+    return changed
+
+
+def apply_pending_slot_memory_mode(state: DashboardState, slot: _ChatSlot) -> bool:
+    """Apply a save thread's folded mode to its still-live slot on the event loop.
+
+    The pending value is never cleared: it is monotonic (a save thread only ever
+    folds it stricter) and tightening is idempotent, so re-applying it is free,
+    while a clear would race a producer that lands between the read and the
+    clear and lose its stricter value until the next turn's read-back.
+    """
+    pending = getattr(slot, "_pending_memory_mode", None)
+    if pending is None:
+        return False
+    return tighten_live_slot_memory_mode(state, slot.key, pending, expected_slot=slot)
 
 
 async def run_config_write(fn, /, *args, **kwargs):
@@ -838,6 +920,219 @@ def effective_session_key(slot: _ChatSlot) -> str:
     :func:`session_key_for` for the ones that have no slot YET.
     """
     return session_key_for(slot.key, getattr(slot, "linked_session_key", "") or "")
+
+
+def replacement_shares_transcript(state: DashboardState, name: str, slot: _ChatSlot) -> bool:
+    """Whether a different slot at *name* writes *slot*'s transcript file."""
+    current = state._slots.get(name)
+    if current is None or current is slot:
+        return False
+    return bool(
+        set(transcript_stems(slot_history_key(current)))
+        & set(transcript_stems(slot_history_key(slot)))
+    )
+
+
+@dataclass(frozen=True)
+class ReplacementTightening:
+    """State changed before a rows-only hand-over write."""
+
+    replacement: _ChatSlot
+    previous_mode: str
+    tightened_mode: str
+    replacement_key: str
+    previous_execution: ExecutionContext | None
+    tightened_execution: ExecutionContext | None
+
+
+def tighten_replacement_to_restricted_original(
+    state: DashboardState, name: str, slot: _ChatSlot
+) -> ReplacementTightening | None:
+    """Tighten a same-transcript replacement before *slot*'s rows are written.
+
+    A rows-only writer can outlive the slot that produced its rows. If another
+    slot has taken over the same key and file, the replacement must become at
+    least as restricted before those rows reach disk; otherwise live-slot gates
+    can derive from private rows while the transcript line is being ratcheted.
+
+    The live carrier compare-and-set runs before the slot or restricted marker
+    mutates. If another turn rebinds the carrier, retry once from a fresh read;
+    a second conflict propagates with every slot-owned value unchanged. Callers
+    therefore receive either a complete tightening plus its rollback witness,
+    or no slot/marker mutation to roll back.
+    """
+    replacement = state._slots.get(name)
+    if replacement is None or replacement is slot:
+        return None
+    if not replacement_shares_transcript(state, name, slot):
+        return None
+    if not slot.messages and slot._disk_older_count <= 0:
+        return None
+    current = canonical_memory_mode(getattr(replacement, "memory_mode", "persistent"))
+    retained = stricter_memory_mode(
+        current, canonical_memory_mode(getattr(slot, "memory_mode", "persistent"))
+    )
+    if retained == current:
+        return None
+    # Tighten the replacement's LIVE carrier in place (compare-and-set) rather
+    # than clearing it: a clear evicts the only in-memory record of a live
+    # member-bound session's identity, so the store-binding check for the rest
+    # of that turn sees no execution and skips -- the fail-OPEN direction -- and
+    # the next turn's fold has nothing to fold into. A persistent replacement
+    # has no live carrier (its record is durable, and the save that lands these
+    # rows tightens that record with the line); its next restricted binding
+    # withdraws the vouched entry. Only ever tighter: ``with_mode`` never loosens.
+    replacement_key = effective_session_key(replacement)
+    previous_execution = read_live_session_execution(replacement_key)
+    try:
+        tightened_execution = tighten_live_session_execution(
+            replacement_key, retained, expected=previous_execution
+        )
+    except UnknownMemoryStore:
+        previous_execution = read_live_session_execution(replacement_key)
+        tightened_execution = tighten_live_session_execution(
+            replacement_key, retained, expected=previous_execution
+        )
+    replacement.memory_mode = retained
+    _resettle_restricted_key(state, name)
+    logger.info(
+        "Slot %s: the replacement holding this key was tightened from %s to %s because "
+        "it shares the transcript of the %s original whose rows are being written",
+        name,
+        current,
+        retained,
+        retained,
+    )
+    return ReplacementTightening(
+        replacement=replacement,
+        previous_mode=current,
+        tightened_mode=retained,
+        replacement_key=replacement_key,
+        previous_execution=previous_execution,
+        tightened_execution=tightened_execution,
+    )
+
+
+async def restore_replacement_if_handover_did_not_land(
+    state: DashboardState,
+    name: str,
+    tightened: ReplacementTightening | None,
+    history_key: str,
+) -> bool:
+    """Undo a pre-write tightening only while its exact witness is still current.
+
+    The durable line is read under the same transcript lock every line writer
+    takes, and the generation-guarded carrier rollback runs inside that hold.
+    The carrier registry has its own thread-safe lock, so this worker step does
+    not touch loop-owned slot state. A writer that tightens the line records the
+    live holder's monotonic pending mode after its atomic rewrite and before
+    releasing the transcript lock. Therefore a writer ordered before this read
+    is visible in ``durable_mode``; one ordered after it is visible in
+    ``_pending_memory_mode`` before loop-owned state is loosened. The loop then
+    checks that pending witness plus the exact slot, mode and marker without
+    another await before mutating.
+
+    An unreadable or busy line cannot prove rollback safe and leaves every live
+    restriction in place. Nor can rollback loosen below the locked line: when
+    ``stricter(previous_mode, durable_mode)`` is restricted, mode, marker and
+    carrier all stay at the attempted tightening.
+    """
+    if tightened is None:
+        return False
+    conversation_log = getattr(state, "conversation_log", None)
+    if conversation_log is None:
+        return False
+
+    def _validate_and_rollback_carrier() -> tuple[str, str, bool, bool]:
+        with conversation_log.derivation_hold(transcript_lock_stems(history_key)):
+            metadata, readable = conversation_log.get_metadata_status(history_key)
+            if not readable:
+                return "persistent", "persistent", False, False
+            durable_mode = canonical_memory_mode(metadata.get("memory_mode"))
+            rollback_mode = stricter_memory_mode(tightened.previous_mode, durable_mode)
+            if is_incognito_transcript(rollback_mode):
+                return durable_mode, rollback_mode, True, False
+            rolled_back = rollback_live_session_tightening(
+                tightened.replacement_key,
+                tightened.previous_execution,
+                expected=tightened.tightened_execution,
+            )
+            return durable_mode, rollback_mode, True, rolled_back
+
+    try:
+        durable_mode, rollback_mode, readable, carrier_rolled_back = await asyncio.to_thread(
+            _validate_and_rollback_carrier
+        )
+    except Exception:
+        logger.info(
+            "Slot %s: could not lock and verify the failed hand-over line %s; "
+            "keeping the replacement restricted",
+            name,
+            history_key,
+            exc_info=True,
+        )
+        return False
+    if not readable:
+        logger.info(
+            "Slot %s: the privacy line for %s is unreadable after a failed hand-over; "
+            "keeping the replacement restricted",
+            name,
+            history_key,
+        )
+        return False
+    if is_incognito_transcript(rollback_mode):
+        logger.info(
+            "Slot %s: the locked line for %s requires %s; keeping the replacement at %s",
+            name,
+            history_key,
+            rollback_mode,
+            tightened.tightened_mode,
+        )
+        return False
+    if not carrier_rolled_back:
+        return False
+
+    # Imported lazily: chat_persistence imports this module. The pending read is
+    # the only worker-owned value consulted here; every live-state check and the
+    # mutation below remains in this uninterrupted event-loop turn.
+    from kiro_crew.dashboard.chat_persistence import pending_slot_memory_mode
+
+    replacement = tightened.replacement
+    if state._slots.get(name) is not replacement:
+        return False
+    if canonical_memory_mode(getattr(replacement, "memory_mode", "persistent")) != (
+        tightened.tightened_mode
+    ):
+        return False
+    if f"dashboard:{name}" not in state._restricted_keys:
+        return False
+    pending_mode = pending_slot_memory_mode(replacement)
+    if pending_mode is not None and is_incognito_transcript(pending_mode):
+        # The carrier rollback was atomic with the older line snapshot. A writer
+        # that committed a tighter line afterwards published this pending witness;
+        # restore the carrier tightening while its generation is still the one we
+        # rolled back, and leave the loop-owned mode and marker untouched.
+        try:
+            tighten_live_session_execution(
+                tightened.replacement_key,
+                stricter_memory_mode(tightened.tightened_mode, pending_mode),
+                expected=tightened.previous_execution,
+            )
+        except UnknownMemoryStore:
+            pass
+        return False
+    replacement.memory_mode = rollback_mode
+    _resettle_restricted_key(state, name)
+    logger.info(
+        "Slot %s: restored the replacement from %s to %s because the failed "
+        "hand-over left %s at %s",
+        name,
+        tightened.tightened_mode,
+        rollback_mode,
+        history_key,
+        durable_mode,
+    )
+    return True
 
 
 def subagents_attached(

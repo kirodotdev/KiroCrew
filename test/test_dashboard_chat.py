@@ -4098,6 +4098,12 @@ class TestKiroReadinessQueueHandoff:
         state.sessions.record_failure = AsyncMock()
         state.conversation_log = MagicMock()
         state.conversation_log.read_messages.return_value = []
+        # The turn-start read-back folds the on-disk line into the live carrier;
+        # a mocked log must answer that read like an absent file (readable, no line).
+        state.conversation_log.get_metadata_status.return_value = ({}, True)
+        # The turn now reaches the transcript save; a MagicMock ``_path`` would
+        # otherwise materialise a ``MagicMock/`` tree in the current directory.
+        state.conversation_log._path.return_value = tmp_path / "transcript.jsonl"
         if wait_end == "deadline":
             monkeypatch.setattr("kiro_crew.memory_startup.MEMORY_ADMISSION_WAIT_SECONDS", 0.0)
         state.memory_startup_task = asyncio.create_task(prepare_memory())
@@ -17465,9 +17471,10 @@ class TestForkSlot:
     async def test_fork_of_temporary_parent_stays_temporary_with_its_history(self, tmp_path):
         """Temporary blocks memory READS, not the session's own thread history.
 
-        Cold provider replay uses the child's live message window. A temporary
-        fork carries its copied turns into the fresh provider without writing
-        those bodies into a durable conversation log.
+        Cold provider replay uses the child's live message window, and the
+        copied turns also reach the child's own conversation log -- a temporary
+        fork is a chat the user reopens from History like any other -- under a
+        metadata line that names the temporary mode, so nothing learns from it.
         """
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("src", memory_mode="temporary")
@@ -17500,8 +17507,12 @@ class TestForkSlot:
         )
         assert "parent question" in replay
         assert "parent answer" in replay
-        assert state.conversation_log.recent(history_key) == []
-        assert not state.conversation_log._path(history_key).exists()
+        recent = state.conversation_log.recent(history_key)
+        assert [m["content"] for m in recent if m.get("role") in ("user", "assistant")] == [
+            "parent question",
+            "parent answer",
+        ]
+        assert state.conversation_log.get_metadata(history_key).get("memory_mode") == "temporary"
 
     @pytest.mark.asyncio
     async def test_fork_history_visible_to_new_kiro_via_context_builder(self, tmp_path):

@@ -375,12 +375,33 @@ material by replacing a manual member document.
 
 Both versions freeze a deep copy of the extraction transcript and revalidate
 its generation, original message prefix and new user turns after the model
-returns, before any memory write. Edited/deleted source messages or a new user
-turn refuse that pass and leave it pending without charging a different span's
-retry budget. Appended assistant acknowledgments can remain pending while the
-unchanged original span is committed. This source check and each record's
-revision check protect against stale background extraction; they are separate
-checks, not a cross-file transcript/database transaction.
+returns, before any memory write. Every transcript-derived durable publication
+then enters `ConversationLog.publication_hold` for that one write: the member V2
+atomic consolidation transaction, and each V1 history, semantic, preference,
+project, lesson and episodic write. The hold runs on the existing worker and spans
+neither extraction nor embedding inference nor an event-loop await. Edited/deleted
+source messages or a new user turn refuse that pass and leave it pending without
+charging a different span's retry budget. Appended assistant acknowledgments can
+remain pending while the unchanged original span is committed. The
+persistence switch is checked at the start of the run and before its first
+publication. If it turns off before any output commits, the run is refused and
+no transcript span is marked consolidated. Once one output commits, the run
+finishes its remaining outputs and marks the span normally so a retry cannot
+repeat a partial consolidation. The same latch governs a later hold the seam
+refuses: before the first commit a restricted line (`TranscriptWithheld`) or a
+lock the hold cannot take (`TranscriptBusy`) refuses the run with nothing
+marked; after it, the run stops publishing at that output -- a restricted line
+must not be learned from and a busy lock cannot be vouched for -- logs at
+warning which stage was refused and why, and still marks the span consolidated.
+The outputs after the first are best-effort memory, while leaving the span
+pending re-runs it on the next idle sweep and `append_history`, which carries no
+receipt, appends the same history entry twice; a transcript restricted mid-run
+is refused by the derivation seam on every later run, so marking it loses
+nothing. The run-level latch counts only a publication
+whose writer reports success, or a no-result writer that completes without raising.
+This source check and each record's revision
+check protect against stale background extraction; they are separate checks,
+not a cross-file transcript/database transaction.
 
 The prefs path does NOT advance the persisted `last_consolidated` marker — only the history path does. This ensures history consolidation always covers all messages, even if prefs consolidation fired earlier.
 
@@ -4329,7 +4350,7 @@ session ends → HistoryConsolidator (3h idle path)
             → SEL audit event emitted
 ```
 
-No new timer, no new background task — piggybacks on the existing idle-fired `HistoryConsolidator._consolidate()` path. The auxiliary LLM already runs on the background kiro-cli session every 3 hours of idle per session; the auto-skill keys are appended to the same JSON the LLM already returns.
+No new timer, no new background task — piggybacks on the existing idle-fired `HistoryConsolidator._consolidate()` path. The auxiliary LLM already runs on the background kiro-cli session every 3 hours of idle per session; the auto-skill keys are appended to the same JSON the LLM already returns. Before every final stage, create, or refine write, the consolidator enters `ConversationLog.publication_hold`, which revalidates the chained transcript privacy lines and retains their locks for only that final filesystem write. A restricted or unreadable line discards the candidate. The hold never spans skill extraction, metadata dedupe, or merge model calls, so privacy validation and publication are atomic without blocking transcript writers for model latency.
 
 ### Eligibility gate (`_count_tool_call_messages`, `_session_touched_sensitive`)
 
