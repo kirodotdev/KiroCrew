@@ -4818,7 +4818,12 @@ export const api = {
   // Autocomplete
   autocomplete: (q: string): Promise<{suggestions: string[]}> => fetch('/api/autocomplete?q=' + encodeURIComponent(q)).then(j),
   // Spawn
-  spawnList: (): Promise<{ agents?: SubagentInfo[] }> => fetch('/api/spawn').then(j),
+  // `slot` (a slot key) adds the queued depth of the session that slot's turns
+  // run on, that session key as `parent`, and the event seq the depth is
+  // ordered against. The gateway resolves the slot: a cron-born or
+  // channel-born tab's session key is not `dashboard:<slot>`.
+  spawnList: (slot?: string): Promise<{ agents?: SubagentInfo[]; parent?: string; queued?: number; queued_seq?: number }> =>
+    fetch(slot ? '/api/spawn?slot=' + encodeURIComponent(slot) : '/api/spawn').then(j),
   spawn: (task: string) => post('/api/spawn', { task }).then(j),
   spawnStatus: (id: string, opts?: { signal?: AbortSignal }) => fetch('/api/spawn/' + encodeURIComponent(id), opts).then(j),
   spawnDelete: (id: string) => del('/api/spawn/' + encodeURIComponent(id)).then(j),

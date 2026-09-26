@@ -3,7 +3,7 @@ import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { configureStore } from '@reduxjs/toolkit'
-import chatReducer, { setActiveSlot, sseSubagentSpawn, sseSubagentPending, sseSubagentQueued, sseSubagentDone, sseSubagentTool, sseSubagentStalled } from '../store/chatSlice'
+import chatReducer, { setActiveSlot, sseSubagentSpawn, sseSubagentPending, sseSubagentQueued, reconcileSubagentQueued, clearSubagentsForSnapshot, sseSubagentDone, sseSubagentTool, sseSubagentStalled } from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 
@@ -146,6 +146,121 @@ describe('SubagentProgressBar — queued / waiting count', () => {
     const { container } = renderBar(store)
     expect(container).toBeEmptyDOMElement()
   })
+
+  it('clears a stale queued count from the backend on the first reconcile tick', async () => {
+    // The symptom: "running 0, queued 1" with Stop all, while the gateway holds
+    // nothing for this parent. The count comes from subagent_queued frames, so
+    // one left non-zero stays until something corrects it; the reconcile poll
+    // asks the gateway for this parent's depth and takes its answer.
+    vi.useFakeTimers()
+    try {
+      vi.mocked(api.spawnList).mockResolvedValue({ agents: [], queued: 0, queued_seq: 9 })
+      const store = makeStore([])
+      store.dispatch(sseSubagentQueued({ slot: SLOT, queued: 1, seq: 7 }))
+      const { container } = renderBar(store)
+      expect(screen.getByTestId('subagent-queued-count').textContent).toContain('1')
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+
+      expect(api.spawnList).toHaveBeenCalledWith(SLOT)
+      expect(store.getState().chat.subagentQueued[SLOT]).toBeUndefined()
+      expect(container).toBeEmptyDOMElement()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('leaves the queued count alone when the gateway does not report one', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.mocked(api.spawnList).mockResolvedValue({ agents: [] })
+      const store = makeStore([])
+      store.dispatch(sseSubagentQueued({ slot: SLOT, queued: 2 }))
+      renderBar(store)
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+      expect(store.getState().chat.subagentQueued[SLOT]).toBe(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('SubagentProgressBar — reconcile on a tab whose session is not dashboard:<slot>', () => {
+  // A cron-born tab is named `cron-<id>` while its turns run on `cron:<id>`;
+  // the gateway keys queued depth and agent parents on the session key. The
+  // chip must ask by SLOT and let the gateway resolve the session, or a real
+  // queue reads as empty and real agents as untracked.
+  const CRON_SLOT = 'cron-job-7'
+  const CRON_SESSION = 'cron:job-7'
+
+  /** A gateway double: answers the depth of the session the asked-for slot
+   *  runs on, and knows nothing for any other key. */
+  function gatewayAnswering(queued: number, agents: { id: string; done: boolean; parent: string }[] = []) {
+    return (slot?: string) => Promise.resolve(
+      slot === CRON_SLOT
+        ? { agents, parent: CRON_SESSION, queued, queued_seq: 9 }
+        : { agents, queued: 0, queued_seq: 9 },
+    )
+  }
+
+  function cronStore() {
+    const store = configureStore({
+      reducer: { chat: chatReducer, dashboard: dashboardReducer, notifications: notificationsReducer },
+    })
+    store.dispatch(setActiveSlot(CRON_SLOT))
+    return store
+  }
+
+  function renderCronBar(store: ReturnType<typeof cronStore>) {
+    const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <Provider store={store}>
+          <SubagentProgressBar slot={CRON_SLOT} />
+        </Provider>
+      </QueryClientProvider>,
+    )
+  }
+
+  beforeEach(() => vi.clearAllMocks())
+
+  it('keeps a cron-born tab\'s real queued count across a reconcile tick', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.mocked(api.spawnList).mockImplementation(gatewayAnswering(2))
+      const store = cronStore()
+      store.dispatch(sseSubagentQueued({ slot: CRON_SLOT, queued: 2, seq: 7 }))
+      renderCronBar(store)
+      expect(screen.getByTestId('subagent-queued-count').textContent).toContain('2')
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+
+      expect(store.getState().chat.subagentQueued[CRON_SLOT]).toBe(2)
+      expect(screen.getByTestId('subagent-queued-count').textContent).toContain('2')
+      expect(api.spawnList).toHaveBeenCalledWith(CRON_SLOT)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps a cron-born tab\'s running agent that the gateway still tracks', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.mocked(api.spawnList).mockImplementation(
+        gatewayAnswering(0, [{ id: 'a1', done: false, parent: CRON_SESSION }]),
+      )
+      const store = cronStore()
+      store.dispatch(sseSubagentSpawn({ slot: CRON_SLOT, id: 'a1', task: 'task a1', agent: 'agent-a1' }))
+      renderCronBar(store)
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+
+      expect(store.getState().chat.subagents.a1?.status).toBe('running')
+      expect(screen.getByTestId('subagent-running-count').textContent).toContain('1')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('SubagentProgressBar — overlay stacking', () => {
@@ -186,6 +301,56 @@ describe('sseSubagentQueued reducer', () => {
     store.dispatch(sseSubagentQueued({ slot: SLOT, queued: 4 }))
     store.dispatch(sseSubagentQueued({ slot: SLOT, queued: 0 }))
     expect(store.getState().chat.subagentQueued[SLOT]).toBeUndefined()
+  })
+
+  it('ignores a frame whose seq is older than the newest one applied', () => {
+    // The gateway can finish two depth counts for one parent out of order; the
+    // older non-zero one must not put back a count the newer one cleared.
+    const store = freshStore()
+    store.dispatch(sseSubagentQueued({ slot: SLOT, queued: 0, seq: 12 }))
+    store.dispatch(sseSubagentQueued({ slot: SLOT, queued: 1, seq: 11 }))
+    expect(store.getState().chat.subagentQueued[SLOT]).toBeUndefined()
+    store.dispatch(sseSubagentQueued({ slot: SLOT, queued: 3, seq: 13 }))
+    expect(store.getState().chat.subagentQueued[SLOT]).toBe(3)
+  })
+
+  it('applies every frame from a gateway that sends no seq', () => {
+    const store = freshStore()
+    store.dispatch(sseSubagentQueued({ slot: SLOT, queued: 2, seq: 5 }))
+    store.dispatch(sseSubagentQueued({ slot: SLOT, queued: 1 }))
+    expect(store.getState().chat.subagentQueued[SLOT]).toBe(1)
+  })
+
+  it('orders each slot on its own seq', () => {
+    const store = freshStore()
+    store.dispatch(sseSubagentQueued({ slot: SLOT, queued: 1, seq: 20 }))
+    store.dispatch(sseSubagentQueued({ slot: 'other', queued: 2, seq: 3 }))
+    expect(store.getState().chat.subagentQueued.other).toBe(2)
+  })
+
+  it('forgets the seq on a reconnect snapshot, so a restarted gateway is heard', () => {
+    // A restarted gateway numbers from 1 again; every restart forces the WS
+    // reconnect whose snapshot resets the counts, and the mark with them.
+    const store = freshStore()
+    store.dispatch(sseSubagentQueued({ slot: SLOT, queued: 1, seq: 500 }))
+    store.dispatch(clearSubagentsForSnapshot())
+    store.dispatch(sseSubagentQueued({ slot: SLOT, queued: 2, seq: 1 }))
+    expect(store.getState().chat.subagentQueued[SLOT]).toBe(2)
+  })
+
+  it('reconcile keeps the wait label while rows still wait, and is ordered by seq too', () => {
+    const store = freshStore()
+    store.dispatch(sseSubagentQueued({ slot: SLOT, queued: 3, seq: 4, reason: 'low_memory' }))
+    store.dispatch(reconcileSubagentQueued({ slot: SLOT, queued: 2, seq: 5 }))
+    expect(store.getState().chat.subagentQueued[SLOT]).toBe(2)
+    expect(store.getState().chat.subagentQueuedReason[SLOT]?.reason).toBe('low_memory')
+    // A REST answer read before a newer frame arrived must not override it.
+    store.dispatch(sseSubagentQueued({ slot: SLOT, queued: 4, seq: 8 }))
+    store.dispatch(reconcileSubagentQueued({ slot: SLOT, queued: 0, seq: 6 }))
+    expect(store.getState().chat.subagentQueued[SLOT]).toBe(4)
+    store.dispatch(reconcileSubagentQueued({ slot: SLOT, queued: 0, seq: 8 }))
+    expect(store.getState().chat.subagentQueued[SLOT]).toBeUndefined()
+    expect(store.getState().chat.subagentQueuedReason[SLOT]).toBeUndefined()
   })
 
   it('clamps negative / garbage payloads to a non-negative integer', () => {

@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useMemo, useCallback, memo } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { Bot, X, AlertTriangle, Loader2, CheckCircle, AlertCircle, Square, RotateCcw, Clock, ChevronRight, Hand } from 'lucide-react'
 import { useAppSelector, useAppDispatch } from '../../store'
-import { openActivityToTab, selectSubagent, sseSubagentDone, isAwaitingSpawnApproval } from '../../store/chatSlice'
+import { openActivityToTab, selectSubagent, sseSubagentDone, reconcileSubagentQueued, isAwaitingSpawnApproval } from '../../store/chatSlice'
 import { api } from '../../api/client'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -102,6 +102,13 @@ interface SpawnListAgent {
 }
 interface SpawnListResponse {
   agents?: SpawnListAgent[]
+  /** The session key the asked-for slot's turns run on, present when the
+   *  list was asked for one slot (`?slot=`) by a gateway that resolves it. */
+  parent?: string
+  /** That session's queued depth, present alongside `parent`. */
+  queued?: number
+  /** The `subagent_queued` seq that depth is ordered against. */
+  queued_seq?: number
 }
 
 /** Active subagent summary above the chat input. */
@@ -227,23 +234,38 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
     dispatch(openActivityToTab('subagents'))
   }, [dispatch])
   const [, setTick] = useState(0)
-  // 1Hz tick to update elapsed timers + 30s reconciliation to clear phantom agents
+  // 1Hz tick to update elapsed timers + 30s reconciliation to clear phantom
+  // agents AND a phantom queued count. The queued count is otherwise fed only
+  // by `subagent_queued` events, so one the stream left non-zero (a lost or
+  // reordered frame) would keep the chip mounted with "queued 1" and Stop all
+  // indefinitely; the gateway's own depth for this parent corrects it here.
   useEffect(() => {
     if (!hasActive || !slot) return
     let cancelled = false
     const t = setInterval(() => setTick(n => 1 - n), 1000)
     const reconcile = setInterval(() => {
-      api.spawnList().then((d: SpawnListResponse) => {
+      // The gateway resolves the slot to the session its turns run on and
+      // hands that key back: a cron-born tab (`cron-<id>` on `cron:<id>`) or a
+      // channel-born one (`slack_<ts>` on `slack:<ts>`) is not `dashboard:<slot>`,
+      // and filtering on a guessed key would read every agent of such a tab as
+      // untracked and its queue as empty. The guess stays only as the fallback
+      // for a gateway that resolves nothing.
+      api.spawnList(slot).then((d: SpawnListResponse) => {
         if (cancelled) return
-        const backendIds = new Set((d.agents || []).filter((a) => !a.done && a.parent === `dashboard:${slot}`).map((a) => a.id))
+        const parent = d.parent ?? `dashboard:${slot}`
+        const backendIds = new Set((d.agents || []).filter((a) => !a.done && a.parent === parent).map((a) => a.id))
         activeListRef.current.forEach(a => {
           if (!backendIds.has(a.id)) dispatch(sseSubagentDone({ slot, id: a.id, elapsed: Math.round((Date.now() - a.startedAt) / 1000), error: 'reconciliation: agent no longer tracked by backend' }))
         })
+        // Absent from a gateway that does not report it: leave the count be.
+        if (typeof d.queued === 'number') {
+          dispatch(reconcileSubagentQueued({ slot, queued: d.queued, seq: d.queued_seq }))
+        }
       }).catch(() => {
-        // Deliberately silent: this is a background poll that only ever REMOVES
-        // phantom cards. A refused poll leaves the cards exactly as they were,
-        // the next tick retries in 30s, and the person asked for none of it —
-        // so there is no failed action to report on the chip.
+        // Deliberately silent: this is a background poll that only ever
+        // corrects phantom state. A refused poll leaves the chip exactly as it
+        // was, the next tick retries in 30s, and the person asked for none of
+        // it — so there is no failed action to report on the chip.
       })
     }, 30_000)
     return () => { cancelled = true; clearInterval(t); clearInterval(reconcile) }

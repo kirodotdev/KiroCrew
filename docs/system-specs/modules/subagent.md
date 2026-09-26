@@ -473,7 +473,8 @@ made; no gate reads it back. Two consumers:
   `reason` and, for the memory kinds, `available_gb` / `required_gb` beside
   `queued`. The label is remembered per parent (`_queue_wait`) so the drain's and
   the cancel path's re-emits — which carry no verdict of their own — keep it, and
-  forgotten at depth 0, where the event is once again the bare `{"queued": 0}`.
+  forgotten at depth 0, where the event is once again the bare
+  `{"queued": 0, "seq": N}`.
   One label per parent, last writer wins: it is the verdict on the most recent
   row the gate judged for that parent, not a per-row ledger. A parent holding a
   memory-deferred row and then a capacity-queued one shows `concurrency_limit`
@@ -489,6 +490,20 @@ made; no gate reads it back. Two consumers:
   (`website/src/pages/chat/subagentQueuedReason.ts`), visibly on the run card
   and the composer chip as well as in their tooltips, and with a figure-less
   sentence when the event names the kind but not the numbers.
+- Every `subagent_queued` carries `seq`, one manager-wide counter taken when the
+  emit is scheduled. On the off-loop pump the store half of the count finishes
+  later on the writer thread, so two emits for one parent can finish out of
+  order; the one that finishes after a newer emit for that parent already fired
+  is dropped, and the dashboard reducer also ignores a frame older than the
+  newest seq it applied for the slot (a frame with no seq is always applied).
+  The depth counts spawns that have not started: a `_resume_id` window entry is
+  a resident run waiting for its slot back, not a queued spawn, and is excluded.
+  `GET /api/spawn?slot=<slot key>` adds the `queued` depth of the session that
+  slot's turns run on (resolved server-side, as stop-all resolves its slot: a
+  cron-born tab `cron-<id>` runs on `cron:<id>`, a channel-born tab on the
+  channel's own key) together with that key as `parent` and the current
+  `queued_seq`; the composer chip's 30 s reconcile takes it, so a count the
+  event stream left wrong clears within one tick.
 - `POST /api/spawn` answers the three DEFERRED kinds (`DEFERRED_QUEUED_REASONS`)
   with `status: "queued"`, `reason` and `reason_detail` under the same `id`;
   every reader of that answer relays it: `spawn_run` prints a
