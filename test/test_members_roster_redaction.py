@@ -68,6 +68,7 @@ async def _roster(tmp_path, agents, memory_stores=None):
         agents=agents,
         default_agent=next(iter(agents)),
         memory_stores=memory_stores or {},
+        degraded_sections=frozenset(),
     )
     state = _make_state(tmp_path)
     with patch("kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", return_value=fake):

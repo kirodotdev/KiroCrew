@@ -297,10 +297,18 @@ but can still move: the correcting append goes through
 between the comparison and the write keeps its newer word. All of these refusals are
 ordinary — the next roster read compares afresh.
 
-The startup sweep reconciles through `reconcile_member_config_unstamped`. It writes
-from the gateway's long-lived config object, which it did not load and whose bytes it
-cannot name, so it has the conditional append alone — a named entry point rather than a
-stamp value, so the one caller giving up that guard says so where it is called.
+The startup sweep reconciles through the same single entry, under the same two
+conditions. It cannot meet them from the config object the gateway hands it: that was
+loaded when the gateway was constructed, and the sweep runs later as a background task
+with the HTTP port already listening, so a dashboard save can have landed in between
+and those values are no longer the operator's word. The sweep therefore loads config
+itself, in its own worker thread, and passes that load's digest — so a save that landed
+while the sweep was queued is what reaches the log, rather than being overwritten by
+it. Absent or degraded provenance withholds the member/config write and nothing else:
+the closers below are decided from live process state against the log, never from config
+content, so they still land. There is deliberately no second, exempt entry point — a
+caller that cannot name its bytes must not reconcile, and an exemption reachable by
+passing an empty stamp is one a caller reaches by accident.
 
 It reconciles the roster's `last_message` the same way
 (`eventlog_hooks.reconcile_member_preview`): the transcript's speech-only read is the

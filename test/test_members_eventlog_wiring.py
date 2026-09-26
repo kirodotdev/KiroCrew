@@ -69,6 +69,24 @@ def _fake_config(agents: dict[str, KiroCrewAgentConfig], default=CREW):
     return cfg
 
 
+def _seed_config_baseline(svc, slug, agent_cfg):
+    """Plant the member/config a sweep would then find already correct.
+
+    Appended directly rather than through ``reconcile_member_config``: seeding is not
+    the behaviour under test, and that entry now requires a stamp naming the LIVE
+    config bytes, which a test with no config file on disk cannot supply. Using it here
+    would make these tests depend on a currency check they are not about.
+    """
+    svc.append(
+        slug,
+        types.MEMBER_CONFIG,
+        {
+            **eventlog_hooks._config_snapshot_for_agent(agent_cfg),
+            "changed": list(eventlog_hooks._CONFIG_FIELDS),
+        },
+    )
+
+
 @pytest.fixture
 def live_config_stamp_matches(monkeypatch):
     """Make the live config stamp agree with what ``_fake_config`` claims to be.
@@ -450,8 +468,8 @@ class TestApiMembersProjections:
         )
         assert svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {}).get("model") == "opus"
 
-        changed = eventlog_hooks.reconcile_member_config_unstamped(
-            slug, CREW, _agent(model="haiku"), observed
+        changed = eventlog_hooks.reconcile_member_config(
+            slug, CREW, _agent(model="haiku"), observed, config_stamp=cfg._content_digest
         )
 
         folded = svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {}).get("model")
@@ -1252,14 +1270,15 @@ class TestRosterIsAPureRead:
 # 3. reconcile_members_at_startup: synthesize interrupted closers, once
 # ---------------------------------------------------------------------------
 class TestStartupReconcile:
-    def test_the_unstamped_entry_writes_where_the_stamped_one_refuses(self, monkeypatch):
-        """The sweep's exemption is a property of its entry point, not of a value.
+    def test_no_entry_reconciles_without_naming_the_live_config_bytes(self, monkeypatch):
+        """There is ONE reconcile entry and it always asserts content currency.
 
-        The sweep writes from the gateway's long-lived config object, whose bytes it
-        cannot name, so its entry asks nothing about content currency and appends. The
-        stamped entry under the same live content refuses, because the digest it was
-        given does not describe the file. Both behaviours are deliberate, and pinning
-        them together is what keeps the two entry points from collapsing into one.
+        A stamp that does not describe the live file refuses, and so does a caller with
+        no stamp at all -- there is no second, exempt entry point a caller could reach
+        for instead. The sweep loads config itself and passes that load's digest, so no
+        caller can write a member/config from bytes it cannot name. Both refusals are
+        pinned together because a single entry that accepted a falsy stamp would open
+        that exemption silently.
         """
         from kiro_crew.config import loader as loader_mod
 
@@ -1268,31 +1287,137 @@ class TestStartupReconcile:
         svc = get_service()
         svc.ensure(slug, CREW)
         monkeypatch.setattr(loader_mod, "config_content_stamp", lambda: "the-live-bytes")
-
-        # The stamped entry, handed a digest that does not describe the live file.
+        view = svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {})
         seq_before = svc.last_seq(slug)
+
+        # A digest that does not describe the live file.
         refused = eventlog_hooks.reconcile_member_config(
-            slug,
-            CREW,
-            cfg.agents[CREW],
-            svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {}),
-            config_stamp="bytes-this-caller-read-earlier",
+            slug, CREW, cfg.agents[CREW], view, config_stamp="bytes-this-caller-read-earlier"
         )
         assert refused is None, "a stamp that does not match the live config must refuse"
         assert svc.last_seq(slug) == seq_before, "the refusal must append nothing"
 
-        # The unstamped entry, same member and same live content.
-        wrote = eventlog_hooks.reconcile_member_config_unstamped(
-            slug,
-            CREW,
-            cfg.agents[CREW],
-            svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {}),
+        # No stamp at all: the sweep's old exemption, now closed.
+        for absent in (None, ""):
+            unnamed = eventlog_hooks.reconcile_member_config(
+                slug, CREW, cfg.agents[CREW], view, config_stamp=absent
+            )
+            assert unnamed is None, (
+                f"config_stamp={absent!r} reconciled without naming any bytes, which is "
+                "the startup-sweep exemption this change removed"
+            )
+            assert svc.last_seq(slug) == seq_before, "an unnamed reconcile must append nothing"
+
+        # The case the currency COMPARISON cannot decide: the live config cannot be
+        # named either, so `absent != config_content_stamp()` is False and the
+        # comparison reads two unknowns as a match. Unknown is never a match, so the
+        # refusal has to be reached before the comparison, not by it.
+        monkeypatch.setattr(loader_mod, "config_content_stamp", lambda: None)
+        for absent in (None, ""):
+            both_unnamed = eventlog_hooks.reconcile_member_config(
+                slug, CREW, cfg.agents[CREW], view, config_stamp=absent
+            )
+            assert both_unnamed is None, (
+                f"config_stamp={absent!r} against an equally unnamed live config "
+                "reconciled: two unknown provenances were compared as equal"
+            )
+            assert svc.last_seq(slug) == seq_before, "an unnamed reconcile must append nothing"
+        monkeypatch.setattr(loader_mod, "config_content_stamp", lambda: "the-live-bytes")
+
+        # The same member and view DO reconcile once the stamp names the live bytes,
+        # so the refusals above are about provenance and not about the comparison.
+        wrote = eventlog_hooks.reconcile_member_config(
+            slug, CREW, cfg.agents[CREW], view, config_stamp="the-live-bytes"
         )
-        assert wrote, "the sweep's entry must reconcile without asserting currency"
-        assert svc.last_seq(slug) > seq_before, "the unstamped reconcile must append"
+        assert wrote, "a stamp naming the live config must reconcile"
+        assert svc.last_seq(slug) > seq_before, "the stamped reconcile must append"
         assert (
             svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {}).get("model") == "sonnet"
-        ), "the unstamped reconcile must land the config it was handed"
+        ), "the stamped reconcile must land the config it was handed"
+
+    def test_the_sweep_writes_the_live_config_not_the_one_it_was_handed(self, monkeypatch):
+        """A save that landed after boot must survive the startup sweep.
+
+        The gateway hands the sweep the config object it loaded when it was
+        constructed, and the sweep runs later as a background task with the HTTP port
+        already listening -- so a dashboard save can have landed in between. Writing
+        the handed values would append the pre-save snapshot over the save's own
+        member/config and regress the projection, which has no compaction to undo it.
+        The sweep therefore loads config itself and reconciles from THAT, so the live
+        value is what reaches the log.
+        """
+        from kiro_crew.config import loader as loader_mod
+
+        boot_cfg = _fake_config({CREW: _agent(model="sonnet")})
+        live_cfg = _fake_config({CREW: _agent(model="opus")})
+        slug = members.slug_for_name(CREW)
+        svc = get_service()
+        svc.ensure(slug, CREW)
+        _seed_config_baseline(svc, slug, boot_cfg.agents[CREW])
+        assert svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {}).get("model") == "sonnet"
+
+        monkeypatch.setattr(
+            loader_mod, "load_config_with_content_stamp", lambda: (live_cfg, "live-bytes")
+        )
+        monkeypatch.setattr(loader_mod, "config_content_stamp", lambda: "live-bytes")
+
+        eventlog_hooks.reconcile_members_at_startup(
+            boot_cfg, SimpleNamespace(_slots={}), SimpleNamespace(get_by_slot=lambda key: None)
+        )
+
+        assert svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {}).get("model") == "opus", (
+            "the sweep wrote the config it was handed at boot, so a save that landed "
+            "while it was queued was overwritten in the projection"
+        )
+
+    @pytest.mark.parametrize(
+        ("stamp", "degraded"),
+        [
+            (None, frozenset()),
+            ("live-bytes", frozenset({"whole-config"})),
+        ],
+        ids=["no-digest", "degraded-to-defaults"],
+    )
+    def test_bad_provenance_withholds_the_config_write_but_not_the_closers(
+        self, monkeypatch, stamp, degraded
+    ):
+        """Unnamed or unfaithful config withholds the correcting write, nothing else.
+
+        A config that could not be read whole, or that read whole but would not parse,
+        leaves field DEFAULTS standing in for what the operator wrote; correcting the
+        log from those would overwrite good values because of a typo. The closers below
+        are decided from live process state against the log and never from config
+        content, so they must still land -- an interrupted slot reading open until the
+        next boot is a separate defect from a degraded config.
+        """
+        from kiro_crew.config import loader as loader_mod
+
+        cfg = _fake_config({CREW: _agent(model="sonnet")})
+        live_cfg = _fake_config({CREW: _agent(model="opus")})
+        live_cfg.degraded_sections = degraded
+        slug = members.slug_for_name(CREW)
+        svc = get_service()
+        svc.ensure(slug, CREW)
+        _seed_config_baseline(svc, slug, cfg.agents[CREW])
+        svc.append(slug, types.PATROL_STARTED, {"slot_key": "member-code-reviewer"})
+        svc.append(slug, types.SLOT_OPENED, {"slot_key": "worker-1"})
+        seq_before = svc.last_seq(slug)
+
+        monkeypatch.setattr(loader_mod, "load_config_with_content_stamp", lambda: (live_cfg, stamp))
+        monkeypatch.setattr(loader_mod, "config_content_stamp", lambda: "live-bytes")
+
+        wrote = eventlog_hooks.reconcile_members_at_startup(
+            cfg, SimpleNamespace(_slots={}), SimpleNamespace(get_by_slot=lambda key: None)
+        )
+
+        assert wrote == 2, "the closers are not about config content and must still land"
+        appended = svc.history(slug, before=None, limit=10)[: svc.last_seq(slug) - seq_before]
+        corrected = types.MEMBER_CONFIG in {e["type"] for e in appended}
+        assert not corrected, "bad provenance reached the log as a correcting member/config"
+        assert svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {}).get("model") == "sonnet", (
+            "the projection was corrected from a config that names no bytes or is "
+            "degraded to defaults"
+        )
 
     def test_writes_one_closer_each_then_nothing_on_rerun(self):
         cfg = _fake_config({CREW: _agent()})
@@ -1302,12 +1427,7 @@ class TestStartupReconcile:
         # Establish the config baseline first so the sweep's config-reconcile
         # step is a no-op — this test is about the two interrupted CLOSERS, not
         # the incidental first member/config.
-        eventlog_hooks.reconcile_member_config_unstamped(
-            slug,
-            CREW,
-            cfg.agents[CREW],
-            svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {}),
-        )
+        _seed_config_baseline(svc, slug, cfg.agents[CREW])
         # A wake armed for a slot the autonudge service does not hold, and a
         # driving.open slot missing from state._slots.
         svc.append(slug, types.PATROL_STARTED, {"slot_key": "member-code-reviewer"})
@@ -1349,12 +1469,7 @@ class TestStartupReconcile:
         slug = members.slug_for_name(CREW)
         svc = get_service()
         svc.ensure(slug, CREW)
-        eventlog_hooks.reconcile_member_config_unstamped(
-            slug,
-            CREW,
-            cfg.agents[CREW],
-            svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {}),
-        )
+        _seed_config_baseline(svc, slug, cfg.agents[CREW])
         svc.append(slug, types.PATROL_STARTED, {"slot_key": "member-code-reviewer"})
         svc.append(slug, types.SLOT_OPENED, {"slot_key": "worker-1"})
 
@@ -1406,12 +1521,7 @@ class TestStartupReconcile:
         slug = members.slug_for_name(CREW)
         svc = get_service()
         svc.ensure(slug, CREW)
-        eventlog_hooks.reconcile_member_config_unstamped(
-            slug,
-            CREW,
-            cfg.agents[CREW],
-            svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {}),
-        )
+        _seed_config_baseline(svc, slug, cfg.agents[CREW])
         svc.append(slug, types.PATROL_STARTED, {"slot_key": "member-code-reviewer"})
         svc.append(slug, types.SLOT_OPENED, {"slot_key": "worker-1"})
 
@@ -1463,12 +1573,7 @@ class TestStartupReconcile:
         slug = members.slug_for_name(CREW)
         svc = get_service()
         svc.ensure(slug, CREW)
-        eventlog_hooks.reconcile_member_config_unstamped(
-            slug,
-            CREW,
-            cfg.agents[CREW],
-            svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {}),
-        )
+        _seed_config_baseline(svc, slug, cfg.agents[CREW])
         svc.append(slug, types.PATROL_STARTED, {"slot_key": "member-code-reviewer"})
         svc.append(slug, types.SLOT_OPENED, {"slot_key": "worker-1"})
 
@@ -1539,12 +1644,7 @@ class TestStartupReconcile:
         slug = members.slug_for_name(CREW)
         svc = get_service()
         svc.ensure(slug, CREW)
-        eventlog_hooks.reconcile_member_config_unstamped(
-            slug,
-            CREW,
-            cfg.agents[CREW],
-            svc.snapshot(slug)["values"].get(types.PROJ_ROSTER, {}),
-        )
+        _seed_config_baseline(svc, slug, cfg.agents[CREW])
         svc.append(slug, types.PATROL_STARTED, {"slot_key": "member-code-reviewer"})
         svc.append(slug, types.SLOT_OPENED, {"slot_key": "worker-1"})
 
@@ -1756,9 +1856,7 @@ class TestStartupReconcile:
         # the slug (the nameless-writer placeholder shape).
         old_cfg = _fake_config({retired: _agent(model="retired-model")}, default=retired)
         svc.ensure(slug, retired)
-        eventlog_hooks.reconcile_member_config(
-            slug, retired, old_cfg.agents[retired], svc.snapshot(slug)["values"].get("roster", {})
-        )
+        _seed_config_baseline(svc, slug, old_cfg.agents[retired])
         svc.append(slug, types.PATROL_STARTED, {"slot_key": "member-issue-radar"})
         before = svc.last_seq(slug)
 
@@ -1788,19 +1886,30 @@ class TestStartupReconcile:
         ]
         assert new_name not in caplog.text
 
-    def test_an_explicit_member_id_decides_which_log_is_reconciled(self):
+    def test_an_explicit_member_id_decides_which_log_is_reconciled(self, monkeypatch):
         """Reconcile by persisted identity, not by folding the display name.
 
         A member carrying an explicit ``member_id`` owns the log at that id. A
         sweep that folds the name instead creates and reconciles a SECOND log,
         so the member's history splits and their real log is never corrected.
         """
-        name = "dr. eggbot"
-        member_id = "eggbot-two"
+        from kiro_crew.config import loader as loader_mod
+
+        # No space: the sweep skips any name failing _AGENT_NAME_RE, so a
+        # two-word fixture would be skipped and the test would pass vacuously.
+        name = "AliceExample"
+        member_id = "alice-two"
         folded = members.slug_for_name(name)
         assert folded != member_id, "fixture must distinguish the two identities"
 
         cfg = _fake_config({name: _agent(member_id=member_id)}, default=name)
+        # The sweep loads config itself, so this fixture must answer that load too --
+        # otherwise the reconcile reads the developer's real config, which does not
+        # carry this member, and the test passes or fails on the host's contents.
+        monkeypatch.setattr(
+            loader_mod, "load_config_with_content_stamp", lambda: (cfg, "live-bytes")
+        )
+        monkeypatch.setattr(loader_mod, "config_content_stamp", lambda: "live-bytes")
         svc = get_service()
         svc.ensure(member_id, name)
         before = svc.last_seq(member_id)

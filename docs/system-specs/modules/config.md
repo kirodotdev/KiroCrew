@@ -1069,6 +1069,28 @@ runtime edit is reflected on the next `load()`; `save()` also invalidates it
 eagerly via `_invalidate_config_cache()`. The defaults-only path (neither file
 present) is not cached.
 
+**Content provenance on the cache entry.** Beside the `data` dict and its sidecar, each
+cache entry carries a third fact: the digest of the bytes that data was parsed from.
+`load_config_with_content_stamp()` returns a config together with that digest, and
+`config_content_stamp()` reads the live files' digest on its own. The pair lets a caller
+that holds a config across other I/O and later writes something derived from it tell
+"my copy is still current" from "a save landed while I was working".
+
+The digest must be bound **inside** the load, which is why it lives on the entry rather
+than being read around the call. The fingerprint above is stat metadata, and a
+replacement presenting the same `(st_mtime_ns, st_size, st_mode)` returns the earlier
+cached object — so hashing the files on both sides of `load()` would pair the cached
+data with foreign bytes and report a match. An entry carrying its own digest reports
+the provenance of the data it holds: a hit answers for the bytes it was parsed from,
+a miss for the bytes just read. A change to this cache that drops or re-derives the
+digest therefore breaks exactly the case it exists for.
+
+`None` means no digest can be bound — the files could not be read whole, or the document
+was unusable and defaults were substituted. A caller must treat that as unknown and
+never as a match; two unknown provenances in particular are not equal. The member event
+log is the current consumer: see `member-event-log.md` for how a roster read and the
+startup sweep each refuse to correct the log from a config they cannot name.
+
 **Section construction.** Compound section constructors run in small private
 helpers: `config/section_builders.py` holds 28 of them and `config/loader.py`
 keeps the agent, session, telemetry and dashboard ones (see the Overview); the

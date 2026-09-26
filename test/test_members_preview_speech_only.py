@@ -199,6 +199,7 @@ class TestLegacyMachineryPreviewIsCorrectedOnRead:
             agents={CREW: KiroCrewAgentConfig(kiro_agent="kirocrew")},
             default_agent="kirocrew",
             memory_stores={},
+            degraded_sections=frozenset(),
         )
         monkeypatch.setattr("kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", lambda: cfg)
         state = _make_state(tmp_path)
@@ -239,6 +240,7 @@ class TestLegacyMachineryPreviewIsCorrectedOnRead:
             agents={CREW: KiroCrewAgentConfig(kiro_agent="kirocrew")},
             default_agent="kirocrew",
             memory_stores={},
+            degraded_sections=frozenset(),
         )
         monkeypatch.setattr("kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", lambda: cfg)
         state = _make_state(tmp_path)
@@ -274,6 +276,7 @@ class TestLegacyMachineryPreviewIsCorrectedOnRead:
             agents={CREW: KiroCrewAgentConfig(kiro_agent="kirocrew")},
             default_agent="kirocrew",
             memory_stores={},
+            degraded_sections=frozenset(),
         )
         monkeypatch.setattr("kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", lambda: cfg)
         state = _make_state(tmp_path)
@@ -486,6 +489,7 @@ class TestAnEmptyReadThatRanOutOfWindowIsNotAuthority:
             agents={CREW: KiroCrewAgentConfig(kiro_agent="kirocrew")},
             default_agent="kirocrew",
             memory_stores={},
+            degraded_sections=frozenset(),
         )
         monkeypatch.setattr("kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", lambda: cfg)
         state = _make_state(tmp_path)
@@ -601,6 +605,7 @@ class TestAnUnflushedSlotIsNotCorrectedFromDisk:
             agents={CREW: KiroCrewAgentConfig(kiro_agent="kirocrew")},
             default_agent="kirocrew",
             memory_stores={},
+            degraded_sections=frozenset(),
         )
         monkeypatch.setattr("kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", lambda: cfg)
         state = _make_state(tmp_path)
@@ -666,6 +671,7 @@ class TestAnUnflushedSlotIsNotCorrectedFromDisk:
             agents={CREW: KiroCrewAgentConfig(kiro_agent="kirocrew")},
             default_agent="kirocrew",
             memory_stores={},
+            degraded_sections=frozenset(),
         )
         monkeypatch.setattr("kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", lambda: cfg)
         state = _make_state(tmp_path)

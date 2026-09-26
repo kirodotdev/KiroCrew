@@ -525,6 +525,40 @@ def test_a_document_that_read_whole_but_would_not_parse_still_names_its_bytes(cf
     )
 
 
+def test_a_non_utf8_config_degrades_to_defaults_instead_of_raising(cfg_home):
+    """A hand-edited file saved in the wrong encoding must not stop the gateway.
+
+    ``UnicodeDecodeError`` is a ``ValueError``, not an ``OSError``, so the load's
+    except clauses did not name it and it escaped ``load()`` — every caller on the
+    hot path, not just the one that touched the file. The spec's rule is that a
+    malformed section degrades to defaults so a hand-edited file cannot prevent the
+    gateway from starting, and an encoding mistake is a malformed file like any other.
+
+    The read never completed, so unlike a parse failure there are no bytes to name and
+    the load reports no provenance — which is what stops anything correcting a durable
+    projection from these defaults.
+    """
+    L._CONFIG_CACHE.clear()
+    # A UTF-8 decoder cannot read this byte, so read_text raises before json sees it.
+    cfg_home.write_bytes(b'{"agent": {"provider": "\xff\xfe acp"}}')
+
+    cfg = L.KiroCrewConfig.load()
+
+    assert cfg.agent.provider != "\ufffd", "the loader substituted replacement characters"
+    assert cfg.degraded_sections, (
+        "a config that could not be decoded reported no degradation, so a caller "
+        "cannot tell these values are defaults rather than the operator's"
+    )
+    assert getattr(cfg, "_content_digest", None) is None, (
+        "bytes that never decoded were given a digest, so a later comparison would "
+        "read them as known provenance"
+    )
+    assert L.config_content_stamp() is None, (
+        "the live-file stamp named bytes it could not read, which a caller would "
+        "compare as a match"
+    )
+
+
 def test_a_load_that_could_not_read_the_files_records_no_provenance(cfg_home, monkeypatch):
     """A read that never completed captured nothing, so there are no bytes to name.
 
