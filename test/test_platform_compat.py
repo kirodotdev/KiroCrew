@@ -6039,6 +6039,174 @@ def test_aws_bin_declined_is_silent_about_a_copy_the_gate_accepts(tmp_path, monk
     assert platform_compat.aws_bin_declined_on_ownership() is None
 
 
+def test_agent_owns_or_can_write_flags_a_path_this_uid_owns(tmp_path):
+    """Ownership alone is writable: an owner may chmod its own file and rewrite it.
+
+    This is the arm that refuses a single-user Nix store, whose paths are owned by
+    the console user's own uid.
+    """
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX ownership
+        pytest.skip("POSIX ownership semantics")
+
+    mine = tmp_path / "coreutils"
+    mine.write_bytes(b"\x7fELF not-a-script\n")
+    mine.chmod(0o555)  # read-only, but I own it, so I can chmod it back
+    assert platform_compat._agent_owns_or_can_write(str(mine)) is True
+
+
+def test_agent_owns_or_can_write_trusts_a_foreign_unwritable_path(tmp_path, monkeypatch):
+    """Not owned by this uid and the kernel forbids writing it -> not agent-writable."""
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX ownership
+        pytest.skip("POSIX ownership semantics")
+
+    path = tmp_path / "coreutils"
+    path.write_bytes(b"\x7fELF not-a-script\n")
+    real_stat = os.stat
+
+    def fake_stat(p, *a, **kw):
+        st = real_stat(p, *a, **kw)
+        if os.path.realpath(str(p)) != os.path.realpath(str(path)):
+            return st
+        # Present it as owned by root, not this uid, so only the kernel arm decides.
+        return os.stat_result((st.st_mode, st.st_ino, st.st_dev, st.st_nlink, 0, 0) + tuple(st)[6:])
+
+    monkeypatch.setattr(os, "stat", fake_stat)
+    monkeypatch.setattr(os, "access", lambda p, mode, **kw: False)
+    assert platform_compat._agent_owns_or_can_write(str(path)) is False
+
+
+def test_agent_owns_or_can_write_uses_the_kernel_not_the_mode_bits(tmp_path, monkeypatch):
+    """The distinguishing case: mode bits look group-writable, but the kernel says no.
+
+    A sandbox user namespace remaps unmapped supplementary groups to the overflow gid
+    (``nobody``/65534); a ``st_mode`` group check then spuriously matches a
+    ``nobody``-owned store's group. ``os.access`` asks the kernel, which is not fooled,
+    so this predicate trusts a path the kernel actually forbids writing.
+    """
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX ownership
+        pytest.skip("POSIX ownership semantics")
+
+    path = tmp_path / "coreutils"
+    path.write_bytes(b"\x7fELF not-a-script\n")
+    real_stat = os.stat
+
+    def fake_stat(p, *a, **kw):
+        st = real_stat(p, *a, **kw)
+        if os.path.realpath(str(p)) != os.path.realpath(str(path)):
+            return st
+        # Foreign owner, group-writable, and group == one of THIS process's gids:
+        # a permission-BIT check would call this writable.
+        gid = os.getgroups()[0] if os.getgroups() else os.getgid()
+        return os.stat_result(
+            (st.st_mode | stat.S_IWGRP, st.st_ino, st.st_dev, st.st_nlink, 0, gid) + tuple(st)[6:]
+        )
+
+    monkeypatch.setattr(os, "stat", fake_stat)
+    # The kernel forbids the write despite the group bits (the namespace-overflow case).
+    monkeypatch.setattr(os, "access", lambda p, mode, **kw: False)
+    assert platform_compat._agent_owns_or_can_write(str(path)) is False
+
+
+def test_agent_owns_or_can_write_fails_closed(tmp_path, monkeypatch):
+    """An unstattable path, and a platform without faccessat, both round to writable."""
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX ownership
+        pytest.skip("POSIX ownership semantics")
+
+    missing = tmp_path / "gone"
+    assert platform_compat._agent_owns_or_can_write(str(missing)) is True
+
+    path = tmp_path / "coreutils"
+    path.write_bytes(b"\x7fELF\n")
+    real_stat = os.stat
+    monkeypatch.setattr(
+        os,
+        "stat",
+        lambda p, *a, **kw: os.stat_result(
+            (real_stat(p, *a, **kw).st_mode, 0, 0, 1, 0, 0) + tuple(real_stat(p, *a, **kw))[6:]
+        )
+        if os.path.realpath(str(p)) == os.path.realpath(str(path))
+        else real_stat(p, *a, **kw),
+    )
+    # No faccessat: the effective-id arm cannot run, so the honest answer is "writable".
+    monkeypatch.setattr(platform_compat, "_ACCESS_HONOURS_EFFECTIVE_IDS", False)
+    assert platform_compat._agent_owns_or_can_write(str(path)) is True
+
+
+def test_trusted_nix_store_file_rejects_a_path_outside_the_store(tmp_path):
+    """Only /nix/store is in scope; a system path is judged by the ordinary branch."""
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX convention
+        pytest.skip("the Nix store is a POSIX convention")
+
+    assert platform_compat.trusted_nix_store_file("/usr/bin/echo") is False
+
+
+def test_trusted_nix_store_file_trusts_an_unwritable_store_binary(tmp_path, monkeypatch):
+    """A store path no component of which this uid owns or can write is trusted."""
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX convention
+        pytest.skip("the Nix store is a POSIX convention")
+
+    store = tmp_path / "nix" / "store"
+    binary = store / "abcd-coreutils-9.11" / "bin" / "coreutils"
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b"\x7fELF not-a-script\n")
+    monkeypatch.setattr(platform_compat, "_NIX_STORE_DIR", str(store))
+    # No component is owned by this uid or writable by it: the multi-user store.
+    monkeypatch.setattr(platform_compat, "_agent_owns_or_can_write", lambda path: False)
+    assert platform_compat.trusted_nix_store_file(str(binary)) is True
+
+
+def test_trusted_nix_store_file_rejects_a_writable_store_component(tmp_path, monkeypatch):
+    """One agent-writable component anywhere on the walk refuses the whole path.
+
+    Covers the single-user store (leaf owned by this uid) and a store dir this uid
+    can genuinely write.
+    """
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX convention
+        pytest.skip("the Nix store is a POSIX convention")
+
+    store = tmp_path / "nix" / "store"
+    binary = store / "abcd-coreutils-9.11" / "bin" / "coreutils"
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b"\x7fELF not-a-script\n")
+    monkeypatch.setattr(platform_compat, "_NIX_STORE_DIR", str(store))
+    monkeypatch.setattr(
+        platform_compat,
+        "_agent_owns_or_can_write",
+        lambda path: os.path.basename(path) == "coreutils",
+    )
+    assert platform_compat.trusted_nix_store_file(str(binary)) is False
+
+
+def test_trusted_nix_store_file_fails_closed_on_an_unenumerable_walk(tmp_path, monkeypatch):
+    """A walk that cannot be enumerated is a decline, never a shorter (trusting) list."""
+    from kiro_crew import platform_compat
+
+    if platform_compat.IS_WINDOWS:  # pragma: no cover - POSIX convention
+        pytest.skip("the Nix store is a POSIX convention")
+
+    store = tmp_path / "nix" / "store"
+    binary = store / "abcd-coreutils-9.11" / "bin" / "coreutils"
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b"\x7fELF\n")
+    monkeypatch.setattr(platform_compat, "_NIX_STORE_DIR", str(store))
+    monkeypatch.setattr(platform_compat, "traversed_components", lambda path: None)
+    assert platform_compat.trusted_nix_store_file(str(binary)) is False
+
+
 @pytest.mark.skipif(
     sys.platform == "win32",
     reason=(

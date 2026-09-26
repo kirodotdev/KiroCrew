@@ -3197,6 +3197,108 @@ def aws_bin_declined_on_ownership() -> str | None:
     return candidate
 
 
+#: The Nix store prefix. A multi-user Nix install builds here as a privileged daemon
+#: and keeps the tree read-only to ordinary users, so a store path is content-addressed
+#: and cannot be replaced in place by the account Kiro Crew runs as — the same "another
+#: principal cannot substitute this file" property :data:`_TRUSTED_SYSTEM_BIN_DIRS`
+#: relies on for ``/usr/bin``. Ownership is deliberately NOT pinned to root: a stock
+#: multi-user store is ``root:nixbld`` and other layouts use a dedicated build user, so
+#: what matters is not WHO owns it but whether the agent's own uid can write it. A
+#: single-user store is owned by the console user's uid and so IS agent-writable, which
+#: is exactly the "a same-uid process can supply the binary" hole the trusted lookup
+#: exists to close. :func:`trusted_nix_store_file` therefore gates on writability by the
+#: current account, the same shape :func:`trusted_aws_bin` uses for ``/usr/local/bin``.
+_NIX_STORE_DIR = "/nix/store"
+
+
+def _agent_owns_or_can_write(path: str) -> bool:
+    """The account Kiro Crew runs as owns *path*, or can actually write it right now.
+
+    The two arms of the Nix-store trust gate, per component:
+
+    * **Ownership** — if the current uid owns *path*, it is writable whatever the mode
+      says, because an owner may ``chmod`` its own file (or unlink and recreate an entry
+      in its own directory). This is what refuses a single-user Nix store, whose paths
+      are owned by the console user's uid.
+    * **Effective writability** — otherwise, ask the KERNEL via
+      ``os.access(..., effective_ids=True)`` (``faccessat(AT_EACCESS)``), which evaluates
+      the real permission the process has: mode bits, group membership AND a POSIX ACL,
+      and honours a read-only mount. This is deliberately NOT a ``st_mode`` group/other
+      check: inside a user namespace that remaps unmapped supplementary groups to the
+      overflow gid (``nobody``/65534), a mode-bit test sees a spurious group match
+      against a store owned by that same gid and calls a store the kernel forbids writing
+      "writable". The kernel answer is not fooled by that aliasing.
+
+    Fails closed: an unstattable component, and the ``effective_ids``-less platform, both
+    round to "writable" (``True``) rather than vouch for a path that cannot be checked.
+    Running as root answers ``True`` for the effective arm (root writes anything), so a
+    root gateway simply loses this fallback — the safe direction, matching
+    :func:`trusted_aws_bin`.
+    """
+    try:
+        st = os.stat(path)
+    except OSError:
+        return True
+    if st.st_uid in (os.getuid(), os.geteuid()):
+        return True
+    if not _ACCESS_HONOURS_EFFECTIVE_IDS:
+        return True
+    return os.access(path, os.W_OK, effective_ids=True)
+
+
+def trusted_nix_store_file(real: str) -> bool:
+    """*real* is a Nix store path eligible for a one-time human pin, not a hard refusal.
+
+    A gateway ``PATH`` that leads with ``~/.nix-profile/bin`` makes every coreutils
+    name resolve THROUGH that profile symlink into ``/nix/store``, so a bare ``echo`` or
+    ``tail`` is refused as shadowing ``/usr/bin`` even though the file it runs is an
+    immutable store copy of the very same GNU program. Immutability is NOT identity —
+    the account Kiro Crew runs as controls the name->store mapping through the profile
+    symlink, which the collapsed ``realpath`` never walks — so this predicate does NOT
+    treat the file as the system program. It only decides whether the shadow branch
+    hard-refuses the copy as ``SHADOWED`` or lets it fall through to the one-time human
+    pin (``_pin_refusal``), which binds the approval to this exact file's bytes. The one
+    term that gates that: the account Kiro Crew runs as must be unable to substitute the
+    resolved file — neither owning nor being able to write it, nor any directory on the
+    way to it — so an agent-writable shim stays hard-``SHADOWED`` and is never offered for
+    a pin. :func:`_agent_owns_or_can_write` asks that per component over
+    :func:`traversed_components` (the symlink-robust walk :func:`_is_root_owned_path`
+    uses), so re-pointing a mid-chain symlink is covered too.
+
+    Two arms, not one, because each catches what the other misses. Ownership refuses a
+    single-user store (paths owned by the console user's own uid). The kernel
+    writability arm refuses a store this uid can genuinely write, AND — unlike a
+    permission-BIT check such as :func:`path_writable_by_current_user` — is not fooled by
+    a sandbox user namespace that remaps unmapped groups to the overflow gid: on such a
+    host a mode-bit test spuriously matches a ``nobody``-owned store's group and refuses a
+    store the kernel actually forbids writing, whereas ``os.access`` returns the truth.
+
+    *real* is expected already resolved (the caller passes ``os.path.realpath`` of the
+    name it found), so a profile symlink has been collapsed to its store target before
+    the containment test. Not a system-file replacement: the caller still runs its
+    ordinary shebang / dispatcher / interpreter checks on the accepted path, so a store
+    wrapper SCRIPT has its interpreter re-examined rather than trusted wholesale.
+
+    The answer is a plain bool: ``False`` on Windows (the store is a POSIX convention),
+    ``False`` for a path outside the store, and ``False`` when the walk cannot be
+    enumerated or a component cannot be checked (:func:`_agent_owns_or_can_write` fails
+    closed). A residual remains out of scope by design: ``nix profile install`` of a
+    hostile flake yields a store path this predicate would accept, because installing
+    software is an approval-gated action, not the agent-writable-shim on ``PATH`` this
+    guard exists to catch.
+    """
+
+    if IS_WINDOWS or not IS_POSIX:
+        return False
+    store = os.path.realpath(_NIX_STORE_DIR)
+    if real != store and not real.startswith(store + os.sep):
+        return False
+    components = traversed_components(real)
+    if components is None:
+        return False
+    return not any(_agent_owns_or_can_write(str(component)) for component in components)
+
+
 def trusted_system_path() -> str | None:
     """A ``PATH`` value containing only the trusted system directories.
 
