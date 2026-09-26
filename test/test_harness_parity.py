@@ -978,6 +978,15 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     "property means 'this host needs its agent re-sent'. Adding one would cost the "
     "kiro path an awaited step it does not need (H13).",
     (
+        "src/kiro_crew/acp/runtime.py",
+        "_reader_loop",
+    ): "The load-window recap is a KAS notification discriminant "
+    "(``session_info_update`` with ``kind: recap``), not a capability a host opts "
+    "into: only the host that emits the discriminant can produce the frame, so the "
+    "positive test is what keeps every other harness's ``session/update`` on the "
+    "shared init-buffer path instead of inheriting a KAS-only staging branch (H5). "
+    "Same decision as ``_is_kas_recap_frame`` in session_handle.py.",
+    (
         "src/kiro_crew/acp/session_handle.py",
         "stream_command",
     ): "``_kiro.dev/commands/execute`` is kiro-cli's own RPC. The positive test is what "
@@ -1002,6 +1011,13 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     ): "KAS emits its own notification discriminants. The positive gate restores those "
     "displays without touching the kiro parser, and returns None for anything not "
     "KAS-specific so shared frames still fall through (H5).",
+    (
+        "src/kiro_crew/acp/session_handle.py",
+        "_is_kas_recap_frame",
+    ): "The pre-turn recap capture reads the same KAS-only discriminant as the reader "
+    "loop's staging branch (``_reader_loop`` above); a frame is a recap only on the "
+    "host whose wire format defines one, so the positive test keeps every other "
+    "harness's ``session/update`` out of the recap path (H5).",
 }
 
 

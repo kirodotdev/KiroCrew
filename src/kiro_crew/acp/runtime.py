@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, NamedTuple, TypeVar
 
 from kiro_crew import acp_tool_gate, agent_scratch, platform_compat
+from kiro_crew.acp import kas_wire
 from kiro_crew.acp._dispatch import (
     agent_version_from_init,
     attach_kas_custom_agents,
@@ -104,6 +105,7 @@ from kiro_crew.acp.types import (
     METHOD_REQUEST_PERMISSION,
     METHOD_SESSION_LOAD,
     METHOD_SESSION_NEW,
+    METHOD_SESSION_UPDATE,
     METHOD_SET_MODE,
     JsonRpcMessage,
     JsonRpcRequest,
@@ -4322,6 +4324,21 @@ class AcpRuntime:
                         or self._start_collectors
                     ):
                         self._stage_init_frame(msg)
+                    elif (
+                        self._session_inits_in_flight
+                        and self._acp_backend == ACP_BACKEND_KAS
+                        and msg.is_method(METHOD_SESSION_UPDATE)
+                        and kas_wire.is_recap_update(msg.params)
+                    ):
+                        # KAS emits the recap DURING session/load — inside the
+                        # replay window, before the queue is registered — which
+                        # is exactly when the returning user needs it. Dropping
+                        # it here (the flood path below) would defeat the
+                        # feature at its designed moment: stage it with the
+                        # init frames; _finish_session_init hands it to the
+                        # freshly registered queue, where the pre-turn drain
+                        # captures it for the next turn's stream start.
+                        self._pending_init_notifications.append(msg)
                     else:
                         # Counted, not logged per frame: this is the measured
                         # flood (transcript replay during session/load, plus any
@@ -6970,7 +6987,19 @@ class AcpRuntime:
         # queue, so this reorder is safe.
         queue: asyncio.Queue[JsonRpcMessage | None] = asyncio.Queue()
         self._session_queues[resume_sid] = queue
+        # A KAS recap staged during the load window rides buffered_init but
+        # must NOT enter the queue: drain_init below consumes queued frames
+        # before the first prompt and would eat it. Extract the LAST one (a
+        # newer recap supersedes an older) and hand it to the handle after
+        # construction — the same _pending_recap slot the pre-turn drain
+        # fills for the between-turns case, so one emission path serves both.
+        _recap_update: dict[str, Any] | None = None
         for msg in buffered_init:
+            if kas_wire.is_recap_update(msg.params):
+                _params = msg.params if isinstance(msg.params, dict) else {}
+                _upd = _params.get("update")
+                _recap_update = _upd if isinstance(_upd, dict) else None
+                continue
             queue.put_nowait(msg)
 
         # Mirrors create_session: a resumed session gets the same
@@ -7009,6 +7038,12 @@ class AcpRuntime:
         except Exception:
             await self.terminate_session(resume_sid)
             raise
+        if _recap_update is not None:
+            # Hand the staged recap to the handle through its public seam —
+            # extraction authority stays in the handle (redaction included).
+            # No event is lost to drain_init below because the recap never
+            # entered the queue.
+            handle.stage_recap(_recap_update)
         # session/load re-initializes this session's servers, so the resumed
         # session gets its own report against the roster load re-declared.
         handle.mcp_session_report().begin_session(wire_servers)

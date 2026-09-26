@@ -115,6 +115,11 @@ EVENT_STEER_CLEARED = "steer_cleared"
 #: ``AcpSessionHandle._handle_update``.
 EVENT_STRUCTURED_STATUS = "structured_status"
 
+# A short "where we are" line for the RETURNING USER (goal, current task,
+# next action). Backend-neutral: any backend may produce it — KAS is the
+# first (session_info_update kind:"recap"); kiro-cli has no emitter yet.
+EVENT_SESSION_RECAP = "session_recap"
+
 # ── ACP Protocol Methods ──
 
 METHOD_INITIALIZE = "initialize"
