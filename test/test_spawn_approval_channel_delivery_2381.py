@@ -540,27 +540,31 @@ class TestASilentSendFailureFallsThroughAtOnce:
         # refusal the operator never made, and the host gate acts on it.
         assert result is None
 
-    def test_it_registers_no_wait_so_the_window_is_never_spent(self) -> None:
+    def test_it_never_enters_the_decision_wait_so_the_window_is_never_spent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         d, cli, _sess = _dispatcher({7})
         session_key = d._session_key(("direct", "7"))
         key = TelegramApprovalDecider.key(session_key, "spawn:abc")
         self._silent(cli)
-        seen: list[str] = []
+        entered: list[str] = []
 
-        async def _go() -> bool | None:
-            task = asyncio.ensure_future(
-                d.deliver_spawn_approval("spawn:abc", "spawn_run(build)", session_key)
-            )
-            while not task.done():
-                if key in TelegramApprovalDecider._REGISTRY:
-                    seen.append("wait")
-                await asyncio.sleep(0)
-            return await task
+        async def _never(self: TelegramApprovalDecider, *_a: object, **_k: object) -> bool:
+            entered.append("wait")
+            return False
 
-        assert asyncio.run(_go()) is None
-        # No wait was ever registered for the key, so no window was spent on a
-        # prompt that does not exist.
-        assert seen == []
+        # The future is armed BEFORE the post on purpose, so a press that lands
+        # while the send is in flight has somewhere to go. What must not happen
+        # is the decision wait itself: that is where the window is spent.
+        monkeypatch.setattr(TelegramApprovalDecider, "__call__", _never)
+
+        assert (
+            asyncio.run(d.deliver_spawn_approval("spawn:abc", "spawn_run(build)", session_key))
+            is None
+        )
+        assert entered == []
+        # And nothing is left armed for a prompt that is not on screen.
+        assert key not in TelegramApprovalDecider._REGISTRY
 
     def test_the_nonce_is_retired_so_a_later_prompt_cannot_be_answered_by_it(self) -> None:
         # Request ids are REUSABLE (an ACP sequence restarts per provider
