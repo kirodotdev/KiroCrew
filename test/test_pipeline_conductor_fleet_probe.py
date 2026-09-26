@@ -26,6 +26,8 @@ around its function list:
 
 from __future__ import annotations
 
+import ast
+import collections
 import json
 import os
 import re
@@ -828,9 +830,629 @@ def test_host_lines_reports_a_fleet_owned_unbounded_run(mod, tmp_path, monkeypat
     make_dir_link(entry / "cwd", fleet / "src")
     lines, host = mod._host_lines({"fleet_worktrees": [str(fleet)]})
     assert lines == [
-        f"BANNED pid=101 rule={mod.DEFAULT_BANNED_RES[0]} cwd=fleet age=500s scope=suite"
+        f"BANNED pid=101 rule={mod.DEFAULT_BANNED_RES[0]} cwd=fleet age=500s scope=suite "
+        f"cmd=pytest,-q"
     ]
     assert "banned 1 | foreign 0" in host
+
+
+#: A worker's test step, as the one multi-line script a single ``cmdline`` carries:
+#: a capped run, then a read of the log that run wrote. Both lines name ``pytest``
+#: and only one of them is a command.
+CAPPED_STEP = (
+    "set -euo pipefail\n"
+    'timeout 900 "$PY" -m pytest -n0 test/test_x.py -q > /wt/pytest.log 2>&1\n'
+    'grep -E "^(FAILED|ERROR)| passed|failed" /wt/pytest.log | tail -2\n'
+)
+
+
+def test_a_pytest_filename_is_not_a_pytest_command(mod, tmp_path, monkeypatch):
+    """A mention of the runner is not a run of it, in either of the two shapes.
+
+    Both quiet rows here were reported as violations by a rule that looked for the
+    word alone: ``.`` and ``-`` are non-word characters, so ``\\bpytest\\b`` holds
+    inside ``pytest.log`` and ``pytest-cov``, and the reading of a log a capped run
+    just wrote is the commonest command in a worker's test step. The cost of that
+    is entirely in the signal -- a conductor gates intake on a zero banned count,
+    so a false row withholds work while nothing is wrong, and it teaches whoever
+    reads the probe to discount the counter.
+
+    The packaging rows are the same defect wearing other punctuation, and they are
+    why the boundary is stated positively: naming the characters that CONTINUE a
+    token means naming ``.``, then ``-``, then ``:``, then ``=``, then ``@``, one
+    false stop at a time. Requiring a whole shell token covers all of them at once.
+
+    The loud rows are the reason this cannot be fixed by matching less: a bare run
+    and a run capped on a DIFFERENT line of the same script must still be told
+    apart, which is what the last row pins.
+    """
+    root = host_proc(tmp_path, monkeypatch)
+    fleet = tmp_path / "wt"
+    fleet.mkdir()
+    quiet = {
+        # The capped run itself, both spellings.
+        "201": ["python", "-m", "pytest", "-n0", "test/test_x.py", "-q"],
+        "202": ["pytest", "-n0", "test/test_x.py"],
+        # A filename that merely carries the word.
+        "203": ["grep", "-E", "^(FAILED|ERROR)| passed|failed", "/wt/pytest.log"],
+        "204": ["tail", "-2", "/wt/pytest.log"],
+        "205": ["pip", "install", "pytest-cov"],
+        # The word as a DIRECTORY, where a path separator rather than a dot ends
+        # the token: the command here is `grep`, and the runner names a folder.
+        "210": ["grep", "-rn", "FAILED", "/wt/pytest/results.log"],
+        "211": ["type", r"C:\wt\pytest\results.log"],
+        # The word as the head of a PACKAGING token. Each of these continues the
+        # token with a character a per-character exclusion list has to name one at a
+        # time, and each would otherwise stop a worker that is installing or pulling
+        # something rather than running a suite.
+        "212": ["docker", "run", "pytest:latest"],
+        "213": ["pip", "install", "pytest==7.4.0"],
+        "214": ["conda", "install", "pytest=7.4"],
+        "215": ["npm", "i", "pytest@1.2.3"],
+        # The whole step: a capped run and a log read in one argument.
+        "206": ["bash", "-c", CAPPED_STEP],
+    }
+    loud = {
+        # A run whose worker count nobody chose.
+        "207": ["pytest", "test/test_x.py"],
+        # The same step with an UNCAPPED run beside it, in both orders. A cap
+        # belongs to the command that carries it and can excuse no other, which is
+        # what a lookahead widened to the whole script text would break: scanning
+        # forward past the command's own end reaches the cap on the line BELOW,
+        # and scanning backward would reach the one above.
+        "208": ["bash", "-c", "pytest -q test/test_y.py\n" + CAPPED_STEP],
+        "209": ["bash", "-c", CAPPED_STEP + "pytest -q test/test_y.py\n"],
+    }
+    for pid, argv in {**quiet, **loud}.items():
+        entry = proc_pid(root, pid, argv, starttime=50_000)
+        make_dir_link(entry / "cwd", fleet)
+    lines, host = mod._host_lines({"fleet_worktrees": [str(fleet)]})
+    reported = {line.split("pid=")[1].split()[0] for line in lines}
+    assert reported == set(loud), lines
+    assert f"banned {len(loud)} | foreign 0" in host
+
+
+def test_the_banned_line_names_the_command_without_echoing_its_arguments(
+    mod, tmp_path, monkeypatch
+):
+    """``cmd=`` has to make a match judgeable, and carry nothing that can be secret.
+
+    A pid alone cannot separate a real uncapped run from a command that only names
+    one, and by the time anybody opens ``ps`` the process is usually gone. The
+    field answers that -- but a command line is where a credential and a checkout
+    layout ride, so only what cannot hold either is printed: program and runner
+    NAMES from a fixed vocabulary, recognised option names with the value dropped --
+    the cap flag's digits included -- and a count for the rest.
+    """
+    root = host_proc(tmp_path, monkeypatch)
+    fleet = tmp_path / "wt"
+    fleet.mkdir()
+    cases = {
+        # A path-qualified interpreter, a secret as an option VALUE under a flag name
+        # the printable list does not carry, a private path glued to a recognised
+        # option with `=`, and a target.
+        "301": [
+            "/wt/private-checkout/.venv/bin/python",
+            "-m",
+            "pytest",
+            "--token",
+            "s3cr3t-value",
+            "--cov=/wt/private-checkout/src",
+            "test/test_x.py",
+        ],
+        # An environment assignment in front of the command: the one place a secret
+        # sits in the LEADING token, where a program name would otherwise print.
+        "302": ["GITHUB_TOKEN=ghp-not-a-real-secret", "pytest", "test/test_x.py"],
+        # No flag keeps its value, the cap flag included, so `--maxfail=2` prints as
+        # its name and `-n auto` prints as `-n` with the word counted like any other
+        # bare token.
+        "303": ["pytest", "--maxfail=2", "-n", "auto", "test/test_x.py"],
+        # More flags than the field prints: the remainder is counted, never cut
+        # silently.
+        "304": ["pytest", *(f"-{letter}" for letter in "abcdefghij")],
+    }
+    for pid, argv in cases.items():
+        entry = proc_pid(root, pid, argv, starttime=50_000)
+        make_dir_link(entry / "cwd", fleet)
+    lines, _host = mod._host_lines({"fleet_worktrees": [str(fleet)]})
+    line = {ln.split("pid=")[1].split()[0]: ln for ln in lines}
+    assert set(line) == set(cases), lines
+
+    assert "cmd=python,-m,pytest,--cov,+3" in line["301"]
+    assert "cmd=pytest,+2" in line["302"]
+    assert "cmd=pytest,--maxfail,-n,+2" in line["303"]
+    assert "cmd=pytest,-a,-b,-c,-d,-e,-f,-g,+3" in line["304"]
+
+    whole = "\n".join(lines)
+    for secret in (
+        "s3cr3t-value",
+        "ghp-not-a-real-secret",
+        "private-checkout",
+        ".venv",
+        "test/test_x.py",
+        "auto",
+    ):
+        assert secret not in whole, secret
+
+
+def test_an_assignment_value_holding_a_separator_is_still_withheld(mod, tmp_path, monkeypatch):
+    """The ``=`` decides before the directory is dropped, or the strip leaks the tail.
+
+    An inline ``KEY=value`` in front of a command is the one place a secret sits in
+    the LEADING token, where a program name would otherwise print. Testing its
+    shape AFTER dropping everything up to the last separator cannot see that,
+    because base64 secrets and presigned URLs routinely contain ``/``: the tail of
+    ``AWS_SECRET_ACCESS_KEY=…/dEf9gHi`` is ``dEf9gHi``, which is a perfectly good
+    program name by shape. So the assignment is recognised on the whole token.
+    """
+    root = host_proc(tmp_path, monkeypatch)
+    fleet = tmp_path / "wt"
+    fleet.mkdir()
+    cases = {
+        # Slash-bearing, the shape a separator-stripping check gets wrong.
+        "311": ["OPAQUE_ONE=q7t/x2v/zPmKdR", "pytest", "test/test_x.py"],
+        # Backslash-bearing: the strip folds ``\`` to ``/`` first, so it is the
+        # same hole spelled for the other platform.
+        "312": [r"OPAQUE_TWO=abc\def\gHiJkL", "pytest", "test/test_x.py"],
+        # A separator-bearing value on a token that is NOT first, so neither the
+        # program branch nor the flag branch may take it.
+        "313": ["pytest", "TMPDIR=/wt/private-checkout/tmp", "test/test_x.py"],
+        # The case the ORDER alone decides: a value whose tail after the last
+        # separator is itself a name the printable list carries, so dropping the
+        # directory first hands the program branch a word it accepts.
+        "314": ["SECRET_PATH=/wt/private-checkout/bin/pytest", "pytest", "test/test_x.py"],
+    }
+    for pid, argv in cases.items():
+        entry = proc_pid(root, pid, argv, starttime=50_000)
+        make_dir_link(entry / "cwd", fleet)
+    lines, _host = mod._host_lines({"fleet_worktrees": [str(fleet)]})
+    line = {ln.split("pid=")[1].split()[0]: ln for ln in lines}
+    assert set(line) == set(cases), lines
+
+    assert "cmd=pytest,+2" in line["311"]
+    assert "cmd=pytest,+2" in line["312"]
+    assert "cmd=pytest,+2" in line["313"]
+    assert "cmd=pytest,+2" in line["314"]
+    # Exactly one runner name: a second would be the assignment's tail arriving at
+    # the program branch because the directory was dropped before the ``=`` was read.
+    assert line["314"].split("cmd=")[1].split()[0].count("pytest") == 1
+
+    whole = "\n".join(lines)
+    for fragment in (
+        "q7t",
+        "x2v",
+        "zPmKdR",
+        "gHiJkL",
+        "private-checkout",
+        "OPAQUE_ONE",
+        "OPAQUE_TWO",
+        "TMPDIR",
+        "SECRET_PATH",
+    ):
+        assert fragment not in whole, fragment
+
+
+def test_a_short_option_value_is_dropped_whether_glued_or_spaced(mod, tmp_path, monkeypatch):
+    """A short option glues its value on, so length is all that separates the two.
+
+    ``-k`` takes a selector, which the scope readout already treats as being as
+    sensitive as any other argument. Spelled ``-k name`` the value is its own token
+    and is withheld; spelled ``-kname`` there is no ``=`` to split at, so a shape
+    that accepts ``-`` plus letters accepts the value along with the name. Only a
+    bare two-character short flag is echoed whole.
+    """
+    root = host_proc(tmp_path, monkeypatch)
+    fleet = tmp_path / "wt"
+    fleet.mkdir()
+    cases = {
+        "321": ["pytest", "-kMyCustomerName", "test/test_x.py"],
+        "322": ["pytest", "-k", "MyCustomerName", "test/test_x.py"],
+        "323": ["pytest", "-k=MyCustomerName", "test/test_x.py"],
+    }
+    for pid, argv in cases.items():
+        entry = proc_pid(root, pid, argv, starttime=50_000)
+        make_dir_link(entry / "cwd", fleet)
+    lines, _host = mod._host_lines({"fleet_worktrees": [str(fleet)]})
+    line = {ln.split("pid=")[1].split()[0]: ln for ln in lines}
+    assert set(line) == set(cases), lines
+
+    assert "cmd=pytest,-k,+1" in line["321"]
+    assert "cmd=pytest,-k,+2" in line["322"]
+    assert "cmd=pytest,-k,+1" in line["323"]
+    assert "MyCustomerName" not in "\n".join(lines)
+
+
+def test_no_option_value_is_printed_not_even_the_cap_flags(mod, tmp_path, monkeypatch):
+    """No flag keeps its value, and the cap flag is not the exception it looks like.
+
+    A caller-supplied rule can point this scan at any program, and that program's
+    numeric option value can be a secret -- an account id, a token that happens to be
+    digits. The cap flag reads like the one value worth printing, since it is the
+    field the rule judged, but nothing separates ``-n4`` meaning four workers from
+    ``-n<account id>``: both are a flag whose value is digits. So its digits go too.
+    What that costs is the ``-n0``-versus-``-n auto`` readout, and only under a custom
+    rule -- a default-rule line never carries a digits-valued cap, because a run with
+    one is exactly the run the rule declines to report.
+    """
+    root = host_proc(tmp_path, monkeypatch)
+    fleet = tmp_path / "wt"
+    fleet.mkdir()
+    cases = {
+        "331": ["custom-runner", "-u1234567890", "--jobs=4"],
+        "332": ["custom-runner", "-n0", "--numprocesses=4"],
+        # Both cap spellings carrying a secret in place of a worker count.
+        "333": ["custom-runner", "-n4055511234", "--numprocesses=4055511234"],
+    }
+    for pid, argv in cases.items():
+        entry = proc_pid(root, pid, argv, starttime=50_000)
+        make_dir_link(entry / "cwd", fleet)
+    lines, _host = mod._host_lines(
+        {"fleet_worktrees": [str(fleet)], "banned_process_res": [r"\bcustom-runner\b"]}
+    )
+    line = {ln.split("pid=")[1].split()[0]: ln for ln in lines}
+    assert set(line) == set(cases), lines
+
+    assert "cmd=-u,--jobs,+1" in line["331"]
+    assert "cmd=-n,--numprocesses,+1" in line["332"]
+    assert "cmd=-n,--numprocesses,+1" in line["333"]
+
+    whole = "\n".join(lines)
+    assert "1234567890" not in whole
+    assert "4055511234" not in whole
+    # No digit of any option value survives anywhere in the printed field.
+    for pid in cases:
+        printed = line[pid].split("cmd=")[1].split()[0]
+        # The custom program's own NAME is withheld too: a rule may point this scan at
+        # any program, and "looks like a program name" is satisfied by an opaque
+        # credential. What identifies the command is ``rule=``, which the operator
+        # wrote. The only digits left are the withheld count after ``+``.
+        assert "custom-runner" not in printed, printed
+        assert not any(ch.isdigit() for ch in printed.split("+")[0]), printed
+
+
+def test_no_module_level_name_in_the_probe_is_defined_twice() -> None:
+    """A second definition binds and the first goes dead, carrying its docstring with it.
+
+    Rebinding a constant to the same value changes no behaviour, so nothing in the
+    normal evidence chain objects: the formatter, the linter and the type checker all
+    read a plain assignment as legal, and every test still passes because the value is
+    identical. What moves is which docstring the module ships -- the LAST block wins,
+    so an edited explanation sitting in the first copy is the one that stops being the
+    file's own account of the constant. This reads the file structurally rather than
+    importing it, because import keeps only the surviving binding and cannot see that
+    a second one existed.
+    """
+    tree = ast.parse(SCRIPT.read_text(encoding="utf-8"))
+    counts: collections.Counter[str] = collections.Counter()
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    counts[target.id] += 1
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            counts[node.target.id] += 1
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            counts[node.name] += 1
+
+    assert counts, "parsed no module-level definitions, so this guard proves nothing"
+    duplicated = {name: n for name, n in counts.items() if n > 1}
+    assert not duplicated, duplicated
+
+
+def test_every_printable_token_is_shorter_than_the_character_bound(mod):
+    """The clip is a BACKSTOP, so what needs proving is that nothing reaches it.
+
+    No option keeps its value, so every token this field can print is either a
+    two-character flag or an entry of a fixed vocabulary -- the per-token clip has
+    nothing to clip, and a runtime test feeding a long token cannot reach it. What
+    matters instead is the property that makes it unreachable, which is a statement
+    about the vocabularies themselves: check them directly, and the day somebody adds
+    a longer entry this fails rather than silently emitting a clipped token nobody
+    expected.
+    """
+    bound = mod._MAX_CMD_TOKEN_CHARS
+    vocabularies = {
+        "_RUNNER_BASES": mod._RUNNER_BASES,
+        "_LAUNCHER_BASES": mod._LAUNCHER_BASES,
+        "_SAFE_LONG_FLAG_NAMES": mod._SAFE_LONG_FLAG_NAMES,
+    }
+    for label, entries in vocabularies.items():
+        assert entries, label
+        for entry in entries:
+            assert len(entry) <= bound, (label, entry, len(entry))
+
+    # ``python3.12`` and the longest version this stem admits.
+    assert mod._PYTHON_BASE_RE.match("python3.12")
+    assert len("python3.99.exe") <= bound
+
+    # The clip itself still works, checked on the helper rather than through a
+    # process, since no process can produce a token this long any more.
+    assert mod._SAFE_SHORT_FLAG_RE.match("-n")
+
+
+def test_the_character_bound_clips_and_marks_an_over_long_token(mod, tmp_path, monkeypatch):
+    """The backstop is dead code unless it is exercised, so exercise it directly.
+
+    A vocabulary entry longer than the bound is the case this guards, and no argv can
+    produce one today. Adding such an entry for the length of one call is what shows
+    the clip fires and marks what it cut.
+    """
+    root = host_proc(tmp_path, monkeypatch)
+    fleet = tmp_path / "wt"
+    fleet.mkdir()
+    long_flag = "--" + "z" * 4096
+    monkeypatch.setattr(
+        mod, "_SAFE_LONG_FLAG_NAMES", frozenset(mod._SAFE_LONG_FLAG_NAMES | {long_flag})
+    )
+    entry = proc_pid(root, "341", ["pytest", long_flag], starttime=50_000)
+    make_dir_link(entry / "cwd", fleet)
+    lines, _host = mod._host_lines({"fleet_worktrees": [str(fleet)]})
+    assert len(lines) == 1, lines
+    printed = lines[0].split("cmd=")[1].split()[0]
+    assert printed == f"pytest,{long_flag[: mod._MAX_CMD_TOKEN_CHARS]}~"
+    assert len(printed) < len(long_flag)
+
+
+def test_a_launchers_own_option_cannot_supply_the_runners_cap(mod, tmp_path, monkeypatch):
+    """Suppressing a genuinely uncapped run is the fail-OPEN direction, so it must not.
+
+    Reading the cap from the tokens is what stops an argument's own bytes being read as
+    shell syntax, but it introduces the opposite risk: ``-n`` is not pytest's alone.
+    ``nice`` spells its priority that way and ``xvfb-run`` its display number, and both
+    are launchers this scan recognises, so a scan starting at argv[0] finds a number
+    attached to the wrong program and withholds a run nobody capped. A conductor gates
+    intake on a zero banned count, so that row going missing is worse than a false one:
+    the run keeps its unbounded worker pool and nothing says so.
+    """
+    root = host_proc(tmp_path, monkeypatch)
+    fleet = tmp_path / "wt"
+    fleet.mkdir()
+    loud = {
+        # The launcher's own numeric option, in each spelling, on an UNCAPPED run.
+        "391": ["nice", "-n", "10", "pytest", "test/"],
+        "392": ["nice", "-n19", "python", "-m", "pytest", "test/"],
+        "393": ["xvfb-run", "-n", "99", "pytest", "test/"],
+        # The launcher carries one AND the runner carries a non-numeric one.
+        "394": ["nice", "-n", "5", "pytest", "-n", "auto", "test/"],
+    }
+    quiet = {
+        # The RUNNER's own cap, behind the same launcher: genuinely capped.
+        "395": ["nice", "-n", "10", "pytest", "-n0", "test/"],
+        "396": ["nice", "-n19", "python", "-m", "pytest", "--numprocesses=4", "test/"],
+    }
+    for pid, argv in {**loud, **quiet}.items():
+        entry = proc_pid(root, pid, argv, starttime=50_000)
+        make_dir_link(entry / "cwd", fleet)
+    lines, _host = mod._host_lines({"fleet_worktrees": [str(fleet)]})
+    reported = {ln.split("pid=")[1].split()[0] for ln in lines}
+
+    assert set(loud) <= reported, sorted(set(loud) - reported)
+    assert reported & set(quiet) == set(), sorted(reported & set(quiet))
+
+    # Read the helper directly for the case the rule cannot deliver: an argv with no
+    # standalone runner token. The rule needs ``pytest`` as a whole shell token, and
+    # wherever that sits inside a script string the launcher's options sit there too,
+    # invisible to a token walk -- so this guard cannot be reached through
+    # ``_host_lines`` today. It is what keeps the answer conservative rather than
+    # launcher-derived if some future argv shape does arrive at it.
+    assert mod._argv_declares_a_worker_cap(["pytest", "-n0"]) is True
+    assert mod._argv_declares_a_worker_cap(["nice", "-n", "10", "pytest"]) is False
+    assert mod._argv_declares_a_worker_cap(["nice", "-n", "10"]) is False
+
+
+def test_the_cap_scan_does_not_backtrack_over_bracketed_spans(mod):
+    """Ambiguous alternatives turn an ordinary rerun argv into a stalled patrol.
+
+    The scan's first branch must not also match the characters that OPEN its span
+    branches, or every span has two parses -- whole, or character by character -- and k
+    spans admit 2**k of them. The star sits inside a NEGATIVE lookahead, so the case
+    forced to walk every parse is the one with no cap to find: exactly the ``BANNED``
+    case. A rerun naming a few dozen failed parametrized node ids is an ordinary command
+    line, nothing in this script bounds the cmdline length or the match time, and the
+    probe stalls inside the ``/proc`` walk, so the conductor loses the whole cycle.
+
+    Structural, not a stopwatch: a timing assertion on a shared runner is a flake, while
+    the disjointness is the property that makes the blow-up impossible.
+    """
+    # The first branch is a negated character class; splitting the pattern on ``|``
+    # would cut inside it, so the class is extracted and compiled instead.
+    leading = re.match(r"\(\?:(\[\^[^\]]*\])", mod._CAP_SCAN)
+    assert leading, mod._CAP_SCAN
+    first_branch = re.compile(leading.group(1))
+    for opener in ("[", "'", '"'):
+        assert not first_branch.match(opener), (opener, leading.group(1))
+
+    # And the cheap end-to-end check: a many-span uncapped argv still resolves.
+    rule = re.compile(mod.DEFAULT_BANNED_RES[0])
+    spans = " ".join(f"a.py::t[c{i}]" for i in range(40))
+    assert rule.search(f"pytest -n auto {spans}") is not None
+    assert rule.search(f"pytest -n0 {spans}") is None
+
+
+def test_a_separator_inside_one_argument_does_not_hide_the_runs_own_cap(mod, tmp_path, monkeypatch):
+    """``/proc`` gives NUL-separated arguments, so a metacharacter in one is not syntax.
+
+    The arguments are joined before matching, which puts every byte of every argument
+    into the text the cap search walks -- and a node id, a log format or a ``-k``
+    expression all carry the bytes that end a shell command. A capped run whose own
+    ``-n0`` sits behind one therefore reads as uncapped, and the response to a
+    ``cwd=fleet`` line is to stop the worker and discard the turn it was in, so this
+    direction of the mistake costs work rather than signal.
+
+    Two things answer it, and the second is what makes the first sufficient. The scan
+    crosses a bracketed or quoted span whole, which covers the spellings that mark
+    themselves as data. And for a pid that IS the runner rather than a shell holding a
+    script, the whole argv is ONE command, so the cap is re-asked of the TOKENS, where
+    an argument's own bytes can never be read as syntax -- which is the only thing that
+    covers an option value with no bracket or quote around it at all.
+
+    The loud rows keep the other direction: an UNQUOTED separator in shell text really
+    is one, and a bare run must not borrow a neighbour's cap.
+    """
+    root = host_proc(tmp_path, monkeypatch)
+    fleet = tmp_path / "wt"
+    fleet.mkdir()
+    quiet = {
+        # A pipe and a semicolon inside a node id, on a properly capped run.
+        "381": ["pytest", "test/test_x.py::test_y[a|b]", "-n0"],
+        "382": ["pytest", "test/test_x.py::test_y[a;b]", "-n0"],
+        # The same inside a quoted argument, and with the long cap spelling.
+        "383": ["pytest", "'test/test_x.py::test_y[a|b]'", "--numprocesses=4"],
+        # Cap BEFORE the bracketed separator rather than after it.
+        "384": ["pytest", "-n0", "test/test_x.py::test_y[a|b]", "--cov", "src"],
+        # A separator in an argument with NO bracket and NO quote around it: an option
+        # VALUE that happens to carry one. Nothing in the text marks it as data, which
+        # is why the TOKENS rather than the joined line have to answer.
+        "387": ["pytest", "--log-format=%(levelname)s|%(message)s", "-n0"],
+        "388": ["pytest", "-k", "not slow&not flaky", "-n", "4"],
+        "389": ["pytest", "--deselect", "f.py::t[a|b]", "--numprocesses", "2"],
+    }
+    loud = {
+        # A real pipe: the command before it carries no cap, so the run is unbounded.
+        "385": ["bash", "-c", "pytest test/test_x.py | tee out.log"],
+        # A bracketed separator must not let a LATER command's cap reach back.
+        "386": ["bash", "-c", "pytest test/test_x.py::test_y[a|b];pytest -n0 g.py"],
+    }
+    for pid, argv in {**quiet, **loud}.items():
+        entry = proc_pid(root, pid, argv, starttime=50_000)
+        make_dir_link(entry / "cwd", fleet)
+    lines, _host = mod._host_lines({"fleet_worktrees": [str(fleet)]})
+    reported = {ln.split("pid=")[1].split()[0] for ln in lines}
+
+    assert reported & set(quiet) == set(), sorted(reported & set(quiet))
+    assert set(loud) <= reported, sorted(set(loud) - reported)
+
+
+def test_a_recognised_name_prints_its_vocabulary_entry_not_the_token(mod, tmp_path, monkeypatch):
+    """The branch licences a vocabulary ENTRY, so the entry is what it may print.
+
+    Matching is case-insensitive, which leaves the token's casing as the one thing on
+    this line that the command being read still chooses: a word already known to equal
+    an entry of ``_RUNNER_BASES``, ``_LAUNCHER_BASES`` or the ``_PYTHON_BASE_RE`` family
+    carries no other information. That is a small disclosure, but it is the only
+    caller-chosen material the branch can reach, and printing the canonical form
+    removes it for the cost of one expression -- cheaper than tracking each token's
+    offset back to the regex match, which couples the redactor to the rule.
+
+    Both fixtures carry a lowercase invocation because the RULE is case-sensitive; the
+    vocabulary check in the redactor is not, and that difference is exactly why a
+    mixed-case token can reach the printing branch at all.
+    """
+    root = host_proc(tmp_path, monkeypatch)
+    fleet = tmp_path / "wt"
+    fleet.mkdir()
+    cases = {
+        # A runner name in an OPERAND slot, in a casing the command chose.
+        "371": ["pytest", "--password", "PyTeSt", "test/test_x.py"],
+        # A recognised launcher and a Windows-cased runner, both path-qualified.
+        "372": [
+            "/wt/private-checkout/.venv/bin/PYTHON3.12",
+            "-m",
+            "pytest",
+            "PyTest.EXE",
+            "f.py",
+        ],
+    }
+    for pid, argv in cases.items():
+        entry = proc_pid(root, pid, argv, starttime=50_000)
+        make_dir_link(entry / "cwd", fleet)
+    lines, _host = mod._host_lines({"fleet_worktrees": [str(fleet)]})
+    line = {ln.split("pid=")[1].split()[0]: ln for ln in lines}
+    assert set(line) == set(cases), lines
+
+    assert "cmd=pytest,pytest,+2" in line["371"]
+    assert "cmd=python3.12,-m,pytest,pytest.exe,+1" in line["372"]
+
+    whole = "\n".join(lines)
+    for chosen in ("PyTeSt", "PYTHON3.12", "PyTest.EXE", "--password"):
+        assert chosen not in whole, chosen
+
+
+def test_an_opaque_word_in_the_program_position_is_withheld(mod, tmp_path, monkeypatch):
+    """A program NAME and an opaque credential are the same text, so a shape cannot sort them.
+
+    The leading token is the one position where a bare word is printed rather than
+    counted, and a secret carrying no ``/`` and no ``=`` satisfies every rule a shape
+    can state about a program name: letters, digits, a leading alphanumeric. So the
+    branch asks a fixed list instead. Reading the name from the executable's path
+    would answer the same finding and blank the field on the ordinary case, which the
+    last two pids here are: a fleet's runner lives in a venv, and its BASENAME is what
+    this prints, so the directory it sits in does not decide whether it is readable.
+    """
+    root = host_proc(tmp_path, monkeypatch)
+    fleet = tmp_path / "wt"
+    fleet.mkdir()
+    opaque = "q7TkV2xPmKdR9sLbN4zH"
+    cases = {
+        # Program-shaped by every test a shape can apply, and not a program.
+        "351": [opaque, "pytest", "test/test_x.py"],
+        # A recognised launcher, version and all, out of a private venv.
+        "352": ["/wt/private-checkout/.venv/bin/python3.12", "-m", "pytest", "test/test_x.py"],
+        # The runner itself out of a venv: the case a path-derived name would blank.
+        "353": ["/wt/private-checkout/.venv/bin/pytest", "test/test_x.py"],
+    }
+    for pid, argv in cases.items():
+        entry = proc_pid(root, pid, argv, starttime=50_000)
+        make_dir_link(entry / "cwd", fleet)
+    lines, _host = mod._host_lines({"fleet_worktrees": [str(fleet)]})
+    line = {ln.split("pid=")[1].split()[0]: ln for ln in lines}
+    assert set(line) == set(cases), lines
+
+    assert "cmd=pytest,+2" in line["351"]
+    assert "cmd=python3.12,-m,pytest,+1" in line["352"]
+    assert "cmd=pytest,+1" in line["353"]
+
+    whole = "\n".join(lines)
+    assert opaque not in whole
+    assert "private-checkout" not in whole
+
+
+def test_an_opaque_word_spelled_as_a_long_option_is_withheld(mod, tmp_path, monkeypatch):
+    """``--`` and letters is a well-formed option name AND a well-formed credential.
+
+    A long option's value is dropped at the ``=`` whatever it holds, which is why the
+    NAME was the printable part -- but the name is as long as its author cares to make
+    it, so a secret spelled with two leading dashes arrived under the same branch that
+    prints ``--numprocesses``. The list of names this line has a reason to print is
+    fixed for that reason; an unrecognised flag is counted like any other token.
+    """
+    root = host_proc(tmp_path, monkeypatch)
+    fleet = tmp_path / "wt"
+    fleet.mkdir()
+    opaque = "q7TkV2xPmKdR9sLbN4zH"
+    cases = {
+        # The secret wearing an option's spelling, bare and with a value.
+        "361": ["pytest", f"--{opaque}", "test/test_x.py"],
+        "362": ["pytest", f"--{opaque}=1", "test/test_x.py"],
+        # A recognised concurrency flag still prints, with its value dropped.
+        "363": ["pytest", "--dist=loadscope", "test/test_x.py"],
+    }
+    for pid, argv in cases.items():
+        entry = proc_pid(root, pid, argv, starttime=50_000)
+        make_dir_link(entry / "cwd", fleet)
+    lines, _host = mod._host_lines({"fleet_worktrees": [str(fleet)]})
+    line = {ln.split("pid=")[1].split()[0]: ln for ln in lines}
+    assert set(line) == set(cases), lines
+
+    assert "cmd=pytest,+2" in line["361"]
+    assert "cmd=pytest,+2" in line["362"]
+    assert "cmd=pytest,--dist,+1" in line["363"]
+
+    whole = "\n".join(lines)
+    assert opaque not in whole
+    assert "loadscope" not in whole
+
+
+def test_every_default_rule_prints_as_one_whitespace_separated_field(mod):
+    """``rule=`` echoes the pattern verbatim onto a line read as fields.
+
+    The reader splits a ``BANNED`` line on whitespace to find ``cwd=``, ``age=``,
+    ``scope=`` and ``cmd=``, which is why ``cmd=`` joins its tokens with commas. A
+    pattern carrying a literal space would split ``rule=`` into several fields and
+    break the same reader, so whitespace inside a rule is spelled as an escape.
+    """
+    for pattern in mod.DEFAULT_BANNED_RES:
+        assert len(pattern.split()) == 1, pattern
 
 
 def test_host_lines_counts_someone_elses_run_without_printing_it(mod, tmp_path, monkeypatch):
