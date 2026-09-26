@@ -131,6 +131,9 @@ function legacyWire(loop: LegacyGoalLoop): AutoNudgeLoop {
     ...(loop.judge_last_verdict !== undefined
       ? { judge_last_verdict: loop.judge_last_verdict }
       : {}),
+    // The overwrite guard reads THESE: dropping them here left it inert on the only production mount, so a redacted goal was overwritten with no confirm and no 409.
+    ...(loop.messageFingerprint !== undefined ? { message_fingerprint: loop.messageFingerprint } : {}),
+    ...(loop.messageRedacted !== undefined ? { message_redacted: loop.messageRedacted } : {}),
   }
 }
 

@@ -709,9 +709,8 @@ describe('SessionAutomationPopover', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/autonudge/legacy-1', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        message: 'Keep checking.', idle_secs: 300, max_cycles: 24, active: true,
-      }),
+      // Sparse: only the PR URL was touched, so echoing back values nobody edited could clobber.
+      body: JSON.stringify({ active: true }),
     }))
   })
 

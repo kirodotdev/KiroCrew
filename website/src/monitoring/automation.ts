@@ -113,6 +113,13 @@ export interface LegacyGoalLoop {
    *  and the popover's own edited loop back into this shape. */
   judge?: { wake_when?: string; quiet_when?: string; targets?: string[] }
   judge_last_verdict?: { outcome?: string; evidence_items?: number; at?: number }
+  /** The overwrite guard's two inputs, carried so `legacyWire` can hand them to the goal
+   *  editor: without them the editor's confirm never arms and a redacted goal is
+   *  overwritten silently and irreversibly. Both are OMITTED rather than defaulted when
+   *  the wire withholds them, exactly as `stopSentinelPath` above is -- a record must not
+   *  invent a field the frame did not send, and a deep-equal test pins that shape. */
+  messageFingerprint?: string
+  messageRedacted?: boolean
 }
 
 export interface StructuredMonitor {
@@ -359,6 +366,13 @@ export function normalizeAutomationRecord(raw: unknown): AutomationRecord | null
         ? { stopSentinelPath: loop.stop_sentinel_path }
         : {}),
       ...judgeFields(loop),
+      // The CAS baseline the store's fence compares is ``goal_token`` (`loop.goal_token != expect_fingerprint`), and base already serves it; ``message_fingerprint`` is the name #10967 will add, so prefer that and fall back to what ships today.
+      ...(typeof (loop.message_fingerprint ?? loop.goal_token) === 'string'
+        ? { messageFingerprint: (loop.message_fingerprint ?? loop.goal_token) as string }
+        : {}),
+      ...(typeof loop.message_redacted === 'boolean'
+        ? { messageRedacted: loop.message_redacted }
+        : {}),
     }
   }
 
