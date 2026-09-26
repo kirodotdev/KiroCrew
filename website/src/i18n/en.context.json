@@ -166,6 +166,7 @@
     "components.avatarBuilder.tile_red": "Accessible color name for an avatar background swatch in the crew avatar builder: the color red.",
     "components.avatarBuilder.tile_rose": "Accessible color name for an avatar background swatch: the pinkish color rose, not the flower.",
     "components.avatarBuilder.tile_steel": "Accessible color name for an avatar background swatch: a muted gray-blue (\"steel blue\"), not the metal itself.",
+    "components.crewLayout.element.git": "Draggable palette tile and cell label in the composable-layout editor, naming the element that shows the Git view (branch, status, history) for the session's working directory. \"Git\" is the version-control product name — keep it verbatim, do not translate or transliterate.",
     "components.sessionAutomationPopover.agent_turns": "Usage evidence in a bounded monitor. A turn is one agent invocation caused by an actionable wake; {{count}} is already locale-formatted, so keep the label before it.",
     "components.sessionAutomationPopover.description": "Explains the token-saving monitor: cheap provider probes run on a cadence, while the agent is invoked only when the probe finds actionable review work.",
     "components.sessionAutomationPopover.gitlab_host_not_allowed": "Inline setup guidance after a valid self-managed GitLab merge-request URL is rejected because its host is absent from dashboard.gitlab_hosts. Tell the operator the host is not allowed and to add it in ~/.kiro/crew/config.json. Keep GitLab, dashboard.gitlab_hosts, and ~/.kiro/crew/config.json unchanged.",

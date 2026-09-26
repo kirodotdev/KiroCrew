@@ -9038,6 +9038,33 @@
       "from_app": "Enviado por la aplicación {{app}}",
       "delivery_failed": "No se pudo entregar tu mensaje. Inténtalo de nuevo.",
       "from_app_tooltip": "Esta app publicó un mensaje en el chat — Kiro lo trata como palabras de la app, no tuyas"
+    },
+    "crewLayout": {
+      "element": {
+        "chat": "Chat",
+        "sidePanel": "Panel lateral",
+        "files": "Archivos",
+        "git": "Git",
+        "changes": "Cambios",
+        "subagents": "Subagentes",
+        "terminal": "Terminal",
+        "notes": "Notas",
+        "workLog": "Registro de trabajo",
+        "group": "Grupo",
+        "tabs": "Pestañas"
+      },
+      "paletteContent": "Contenido",
+      "hint": "Arrastra una ficha a la cuadrícula · arrastra un panel fuera para quitarlo",
+      "remove": "Quitar",
+      "removeElement": "Quitar {{label}}",
+      "moveElement": "Mover {{label}}",
+      "dragTile": "Arrastra {{label}} a la cuadrícula",
+      "cols": "columnas",
+      "rows": "filas",
+      "fewerCols": "menos columnas",
+      "moreCols": "más columnas",
+      "fewerRows": "menos filas",
+      "moreRows": "más filas"
     }
   },
   "hooks": {
@@ -16549,6 +16576,10 @@
       "age_for": "desde hace {{age}}",
       "age_tip": "Tiempo en el estado que indica la insignia.",
       "open_chat": "Abrir el chat"
+    },
+    "layoutEditorHarness": {
+      "title": "Banco de pruebas del editor de diseño",
+      "reset": "Restablecer al valor inicial"
     }
   },
   "privacyDisclosure": {

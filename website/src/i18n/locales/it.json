@@ -9038,6 +9038,33 @@
       "from_app": "Inviato dall'app {{app}}",
       "delivery_failed": "Impossibile recapitare il messaggio: riprova.",
       "from_app_tooltip": "Questa app ha pubblicato un messaggio nella chat — Kiro lo tratta come parole dell'app, non tue"
+    },
+    "crewLayout": {
+      "element": {
+        "chat": "Chat",
+        "sidePanel": "Pannello laterale",
+        "files": "File",
+        "git": "Git",
+        "changes": "Modifiche",
+        "subagents": "Sottoagenti",
+        "terminal": "Terminale",
+        "notes": "Note",
+        "workLog": "Registro di lavoro",
+        "group": "Gruppo",
+        "tabs": "Schede"
+      },
+      "paletteContent": "Contenuto",
+      "hint": "Trascina una tessera sulla griglia · trascina un riquadro fuori per rimuoverlo",
+      "remove": "Rimuovi",
+      "removeElement": "Rimuovi {{label}}",
+      "moveElement": "Sposta {{label}}",
+      "dragTile": "Trascina {{label}} sulla griglia",
+      "cols": "colonne",
+      "rows": "righe",
+      "fewerCols": "meno colonne",
+      "moreCols": "più colonne",
+      "fewerRows": "meno righe",
+      "moreRows": "più righe"
     }
   },
   "hooks": {
@@ -16549,6 +16576,10 @@
       "age_for": "da {{age}}",
       "age_tip": "Tempo nello stato indicato dal badge.",
       "open_chat": "Apri la chat"
+    },
+    "layoutEditorHarness": {
+      "title": "Banco di prova dell’editor di layout",
+      "reset": "Ripristina al valore iniziale"
     }
   },
   "privacyDisclosure": {

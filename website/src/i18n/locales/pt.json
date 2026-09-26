@@ -9038,6 +9038,33 @@
       "from_app": "Enviado pelo aplicativo {{app}}",
       "delivery_failed": "Não foi possível entregar sua mensagem — tente novamente.",
       "from_app_tooltip": "Este app publicou uma mensagem no chat — o Kiro a trata como palavras do app, não suas"
+    },
+    "crewLayout": {
+      "element": {
+        "chat": "Chat",
+        "sidePanel": "Painel lateral",
+        "files": "Arquivos",
+        "git": "Git",
+        "changes": "Alterações",
+        "subagents": "Subagentes",
+        "terminal": "Terminal",
+        "notes": "Notas",
+        "workLog": "Registro de trabalho",
+        "group": "Grupo",
+        "tabs": "Abas"
+      },
+      "paletteContent": "Conteúdo",
+      "hint": "Arraste um bloco para a grade · arraste um painel para fora para remover",
+      "remove": "Remover",
+      "removeElement": "Remover {{label}}",
+      "moveElement": "Mover {{label}}",
+      "dragTile": "Arraste {{label}} para a grade",
+      "cols": "colunas",
+      "rows": "linhas",
+      "fewerCols": "menos colunas",
+      "moreCols": "mais colunas",
+      "fewerRows": "menos linhas",
+      "moreRows": "mais linhas"
     }
   },
   "hooks": {
@@ -16549,6 +16576,10 @@
       "age_for": "há {{age}}",
       "age_tip": "Tempo no estado que o selo indica.",
       "open_chat": "Abrir o chat"
+    },
+    "layoutEditorHarness": {
+      "title": "Ambiente de teste do editor de layout",
+      "reset": "Redefinir para o valor inicial"
     }
   },
   "privacyDisclosure": {

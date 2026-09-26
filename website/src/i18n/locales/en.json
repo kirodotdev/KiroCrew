@@ -5697,6 +5697,33 @@
       "ttl_expires_in_hours": "Expires in {{hours}} hours",
       "deploys_from_here_confirm_gated": "Deploys from this card after you confirm.",
       "propagating_note": "A first deploy can take 5-15 minutes before it opens everywhere."
+    },
+    "crewLayout": {
+      "element": {
+        "chat": "Chat",
+        "sidePanel": "Side panel",
+        "files": "Files",
+        "git": "Git",
+        "changes": "Changes",
+        "subagents": "Subagents",
+        "terminal": "Terminal",
+        "notes": "Notes",
+        "workLog": "Work log",
+        "group": "Group",
+        "tabs": "Tabs"
+      },
+      "paletteContent": "Content",
+      "hint": "Drag a tile onto the grid · drag a pane off to remove",
+      "remove": "Remove",
+      "removeElement": "Remove {{label}}",
+      "moveElement": "Move {{label}}",
+      "dragTile": "Drag {{label}} onto the grid",
+      "cols": "cols",
+      "rows": "rows",
+      "fewerCols": "fewer cols",
+      "moreCols": "more cols",
+      "fewerRows": "fewer rows",
+      "moreRows": "more rows"
     }
   },
   "hooks": {
@@ -9562,6 +9589,10 @@
       "present": "present,",
       "slot_one": "{{count}} slot",
       "slot_other": "{{count}} slots"
+    },
+    "layoutEditorHarness": {
+      "title": "Layout editor harness",
+      "reset": "Reset to seed"
     }
   },
   "settings": {

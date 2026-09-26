@@ -8796,6 +8796,33 @@
       "from_app": "{{app}} アプリから送信",
       "delivery_failed": "メッセージを送信できませんでした。もう一度お試しください。",
       "from_app_tooltip": "このアプリがチャットにメッセージを投稿しました — Kiro はこれをあなたの発言ではなくアプリの発言として扱います"
+    },
+    "crewLayout": {
+      "element": {
+        "chat": "チャット",
+        "sidePanel": "サイドパネル",
+        "files": "ファイル",
+        "git": "Git",
+        "changes": "変更",
+        "subagents": "サブエージェント",
+        "terminal": "ターミナル",
+        "notes": "メモ",
+        "workLog": "作業ログ",
+        "group": "グループ",
+        "tabs": "タブ"
+      },
+      "paletteContent": "コンテンツ",
+      "hint": "タイルをグリッドにドラッグ · 削除するにはペインを外へドラッグ",
+      "remove": "削除",
+      "removeElement": "{{label}} を削除",
+      "moveElement": "{{label}}を移動",
+      "dragTile": "{{label}} をグリッドにドラッグ",
+      "cols": "列",
+      "rows": "行",
+      "fewerCols": "列を減らす",
+      "moreCols": "列を増やす",
+      "fewerRows": "行を減らす",
+      "moreRows": "行を増やす"
     }
   },
   "hooks": {
@@ -16097,6 +16124,10 @@
       "age_for": "{{age}} 経過",
       "age_tip": "バッジの状態にとどまっている時間。",
       "open_chat": "チャットを開く"
+    },
+    "layoutEditorHarness": {
+      "title": "レイアウトエディタのハーネス",
+      "reset": "初期値にリセット"
     }
   },
   "privacyDisclosure": {

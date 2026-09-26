@@ -8796,6 +8796,33 @@
       "from_app": "{{app}} 앱에서 보냄",
       "delivery_failed": "메시지를 전달하지 못했습니다. 다시 시도해 주세요.",
       "from_app_tooltip": "이 앱이 채팅에 메시지를 게시했습니다 — Kiro는 이를 사용자의 말이 아닌 앱의 말로 취급합니다"
+    },
+    "crewLayout": {
+      "element": {
+        "chat": "채팅",
+        "sidePanel": "사이드 패널",
+        "files": "파일",
+        "git": "Git",
+        "changes": "변경 사항",
+        "subagents": "하위 에이전트",
+        "terminal": "터미널",
+        "notes": "메모",
+        "workLog": "작업 로그",
+        "group": "그룹",
+        "tabs": "탭"
+      },
+      "paletteContent": "콘텐츠",
+      "hint": "타일을 그리드로 드래그 · 제거하려면 창을 밖으로 드래그",
+      "remove": "제거",
+      "removeElement": "{{label}} 제거",
+      "moveElement": "{{label}} 이동",
+      "dragTile": "{{label}}을(를) 그리드로 드래그",
+      "cols": "열",
+      "rows": "행",
+      "fewerCols": "열 줄이기",
+      "moreCols": "열 늘리기",
+      "fewerRows": "행 줄이기",
+      "moreRows": "행 늘리기"
     }
   },
   "hooks": {
@@ -16097,6 +16124,10 @@
       "age_for": "{{age}} 경과",
       "age_tip": "배지가 나타내는 상태에 머문 시간입니다.",
       "open_chat": "채팅 열기"
+    },
+    "layoutEditorHarness": {
+      "title": "레이아웃 편집기 하네스",
+      "reset": "초기값으로 재설정"
     }
   },
   "privacyDisclosure": {
