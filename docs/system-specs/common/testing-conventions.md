@@ -130,6 +130,49 @@ the owner of a coalesced embed) is expired by the test through `work.cancelled.s
 once the native call is provably in flight -- `expired()` honours it -- never by
 sleeping past a shortened deadline that also has to outlast a thread start.
 
+Both of those are one rule: **an assertion about an interleaving must not be an assertion
+about a window.** "Long enough for the other side to get there" is a claim about how much
+progress a loaded runner makes in that many milliseconds, so when it makes less the test
+reports the property as violated when the truth is that the setup was never reached.
+Enlarging the constant is the same defect in a longer sleeve.
+`test_config_purged_on_phase1_cancellation` is the worked example: it cancelled a
+two-phase MCP apply 50 ms after starting it, but the prologue before the
+guaranteed-cleanup `try` -- a bounded body read plus a read-only preflight on a worker
+thread -- can outlast that window, and a cancellation landing there owes no sweep, which
+the assertion reads as a missing purge. Priced at 300 ms, it fails every run. The fake
+confirmed uninstall now sets an `asyncio.Event` as it returns and the test awaits that,
+so the ordering is a fact and the constant is gone.
+
+Three forms satisfy the rule, and the tree has a worked example of each.
+
+- **Hold the state until it is observed, then release it.**
+  `test/test_runloop_integration.py::test_throttle_parks_two_runs_on_one_scope_and_wakes_by_capacity`
+  parks on `_HELD_PARK_SECS` (600 s, longer than every barrier below it) and releases
+  through `coordinator.recovered`, so the parked state is one the test reads rather than
+  one it must catch.
+- **Observe at the seam, so the state cannot become visible unobserved.**
+  `ops_mission_control/tests/test_policy_store.py::TestConcurrentWritesCannotRestoreAStaleCeiling::test_the_two_halves_of_the_ceiling_commit_together`
+  wraps the publish primitive and asserts every state `set_ceiling` publishes is
+  coherent. Because `atomic_write` publishes by rename, a published state is the only
+  thing an unsynchronised reader can ever see, so this proves the property for every
+  schedule instead of sampling schedules -- and needs no concurrency at all.
+- **Wait for a handshake the production path raises, then act.** The two cancellation
+  cases above.
+
+Two rules travel with all three. **Make the precondition a separate, deterministic
+assertion from the property**: bound the handshake wait as a hang guard and fail it in
+the precondition's own words ("the interleaving under test did not occur"), so an unmet
+setup is never read as a broken invariant. **An assertion must be unable to fail for the
+wrong reason**: scope it to the subject under test -- this logger, this file, this object
+-- so an unrelated event in the same process cannot red it.
+
+Do not factor these into a shared helper. The seam differs in kind every time (a SQLite
+write lock, an asyncio task reaching an attributable state, a multi-phase uninstall's
+phase 1, a dependency coordinator's park, a policy-file publish), anything spanning them
+is a thin wrapper over `threading.Event` / `asyncio.Event` plus `try`/`finally` behind an
+indirection every reader must learn, and the seam form holds nothing at all, so a hold
+helper would not even cover it.
+
 A mock subprocess handed to a real kill path must not carry a pid a live process
 can own. The kill helpers' only handle on their target is the integer `pid`:
 they resolve it against the runner's real process table and signal whatever owns

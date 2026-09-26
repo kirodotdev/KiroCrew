@@ -1208,8 +1208,16 @@ class TestUninstallCrashWindowCleanup:
 
         # 'done' returns immediately (confirmed uninstalled); 'pending' blocks so
         # the gather is still awaiting Phase 1 when we cancel the outer task.
+        # 'done' raises a handshake as it returns, so the cancellation below is
+        # positioned by a state the production path reached, not by elapsed time:
+        # the prologue before the guaranteed-cleanup try (the bounded body read and
+        # the read-only preflight, which runs on a worker thread) is provably behind
+        # us, and Phase 1 is provably in flight.
+        done_confirmed = _asyncio.Event()
+
         async def _uninstall(server_id):
             if server_id == "done":
+                done_confirmed.set()
                 return MagicMock(ok=True, message="done")
             await _asyncio.sleep(10)  # still running at cancellation
             return MagicMock(ok=True, message="never")
@@ -1229,8 +1237,14 @@ class TestUninstallCrashWindowCleanup:
         )
 
         task = _asyncio.ensure_future(mcp_mod.api_mcp_apply(request))
-        # Let Phase 1 start and 'done' confirm, then cancel mid-Phase-1.
-        await _asyncio.sleep(0.05)
+        # The handshake, not a window. Its own bound is a hang guard, never a
+        # position, and it reports the PRECONDITION in those words so a failure
+        # here is never read as a missing purge.
+        try:
+            await _asyncio.wait_for(done_confirmed.wait(), timeout=10)
+        except _asyncio.TimeoutError:  # pragma: no cover - guard
+            task.cancel()
+            pytest.fail("Phase 1 never confirmed 'done': the interleaving under test did not occur")
         task.cancel()
         with pytest.raises(_asyncio.CancelledError):
             await task
