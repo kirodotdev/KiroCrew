@@ -118,6 +118,33 @@ describe('PierreWorkspaceTreeImpl — data loading', () => {
     expect(treeMock.last().calls.resetPaths).toEqual([PATHS])
   })
 
+  it('drops a file row that shadows a directory of the same name (post-redaction collision)', async () => {
+    // Egress redaction can flatten two distinct segments to one string, so a
+    // FILE and an implied DIRECTORY end up sharing a name in the same parent.
+    // @pierre/trees throws 'Path collides with an existing entry' on that; the
+    // directory must win so its subtree still renders.
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({
+      paths: ['a/[REDACTED: credential]', 'a/[REDACTED: credential]/x.txt', 'a/[REDACTED: credential]'],
+    }))
+
+    renderTree()
+    await waitForTree()
+
+    expect(treeMock.last().calls.resetPaths).toEqual([['a/[REDACTED: credential]/x.txt']])
+  })
+
+  it('keeps an explicit directory row over a same-named file', async () => {
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({
+      paths: ['secrets', 'README.md'],
+      directories: ['secrets/'],
+    }))
+
+    renderTree()
+    await waitForTree()
+
+    expect(treeMock.last().calls.resetPaths).toEqual([['README.md', 'secrets/']])
+  })
+
   it('mounts the tree collapsed, with flattening on and the built-in search bar off', async () => {
     renderTree()
     await waitForTree()

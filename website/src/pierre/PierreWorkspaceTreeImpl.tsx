@@ -298,6 +298,33 @@ function TreeContextMenu({ item, context, root, onAddToContext, contribItems, on
   }
 }
 
+/**
+ * Collapse a path list into something `@pierre/trees` will accept.
+ *
+ * Two hazards, both reachable after egress redaction flattens differing
+ * segments to one `[REDACTED: ...]` string:
+ *  - identical strings: `appendPresortedPaths` throws 'Duplicate path';
+ *  - a FILE whose path is also a DIRECTORY (an explicit `dir/` entry or the
+ *    implied parent of another path): the tree indexes a directory's children
+ *    by name, so `createFileChild` throws 'Path collides with an existing
+ *    entry'. Both throws are uncaught inside the resetPaths layout effect and
+ *    take down the whole Files route.
+ *
+ * Order and first occurrence are preserved. The directory wins a collision so
+ * its subtree still renders; the shadowed file degrades to a missing row.
+ */
+export function dedupeTreePaths(paths: string[]): string[] {
+  const unique = Array.from(new Set(paths))
+  const directories = new Set<string>()
+  for (const path of unique) {
+    const bare = path.endsWith('/') ? path.slice(0, -1) : path
+    if (path.endsWith('/')) directories.add(bare)
+    const segments = bare.split('/')
+    for (let i = 1; i < segments.length; i++) directories.add(segments.slice(0, i).join('/'))
+  }
+  return unique.filter(path => path.endsWith('/') || !directories.has(path))
+}
+
 export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext, searchQuery, mode = 'all', selectedPath, persistExpansion = false }: {
   projectDir: string
   onFileOpen?: (absPath: string) => void
@@ -403,7 +430,7 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
   const paths = useMemo<string[]>(
     () =>
       mode === 'changed'
-        ? statusEntries.map(e => e.path)
+        ? dedupeTreePaths(statusEntries.map(e => e.path))
         : // The full-workspace list can still carry a duplicate — e.g. two
           // genuinely different paths that collapse to the same string once
           // egress redaction flattens a differing segment. @pierre/trees
@@ -415,10 +442,10 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
           // to a single (missing) row instead of a render crash. Explicit
           // trailing-slash paths keep directory rows even when every direct
           // file in that directory fell beyond the file budget.
-          Array.from(new Set([
+          dedupeTreePaths([
             ...(tree?.paths ?? []),
             ...(tree?.directories ?? []).map(path => `${path.replace(/\/$/, '')}/`),
-          ])),
+          ]),
     [mode, statusEntries, tree],
   )
   const ready = mode === 'changed' ? status != null : tree != null
