@@ -6057,6 +6057,10 @@
       "copy": "コピー",
       "generating": "生成中…"
     },
+    "columnResizer": {
+      "resize_column": "列の幅を変更: {{column}}",
+      "resize_hint": "ドラッグしてリサイズ (ダブルクリックでリセット)"
+    },
     "commandPalette": {
       "clear_filter": "フィルタをクリア",
       "close": "閉じる",

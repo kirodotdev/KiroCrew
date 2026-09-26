@@ -6345,6 +6345,10 @@
       "copy": "Копировать",
       "generating": "генерация…"
     },
+    "columnResizer": {
+      "resize_column": "Изменить ширину столбца: {{column}}",
+      "resize_hint": "Потяни, чтобы изменить размер (двойной щелчок — сброс)"
+    },
     "commandPalette": {
       "clear_filter": "Очистить фильтр",
       "close": "Закрыть",

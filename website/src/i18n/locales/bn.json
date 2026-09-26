@@ -6153,6 +6153,10 @@
       "copy": "কপি",
       "generating": "তৈরি হচ্ছে…"
     },
+    "columnResizer": {
+      "resize_column": "কলামের আকার বদলাও: {{column}}",
+      "resize_hint": "আকার বদলাতে টানো (রিসেট করতে ডাবল-ক্লিক করো)"
+    },
     "commandPalette": {
       "clear_filter": "ফিল্টার মুছুন",
       "close": "বন্ধ করুন",

@@ -6249,6 +6249,10 @@
       "copy": "Copiar",
       "generating": "generando…"
     },
+    "columnResizer": {
+      "resize_column": "Redimensionar columna: {{column}}",
+      "resize_hint": "Arrastra para redimensionar (doble clic para restablecer)"
+    },
     "commandPalette": {
       "clear_filter": "Borrar el filtro",
       "close": "Cerrar",

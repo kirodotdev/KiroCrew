@@ -6057,6 +6057,10 @@
       "copy": "复制",
       "generating": "生成中…"
     },
+    "columnResizer": {
+      "resize_column": "调整列宽：{{column}}",
+      "resize_hint": "拖动调整大小（双击重置）"
+    },
     "commandPalette": {
       "clear_filter": "清除筛选",
       "close": "关闭",

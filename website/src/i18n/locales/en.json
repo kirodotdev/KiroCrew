@@ -4323,6 +4323,10 @@
     "codeBlock": {
       "generating": "generating…"
     },
+    "columnResizer": {
+      "resize_column": "Resize column: {{column}}",
+      "resize_hint": "Drag to resize (double-click to reset)"
+    },
     "commandPalette": {
       "clear_filter": "Clear filter",
       "close": "Close",
