@@ -2116,7 +2116,7 @@ def test_the_name_screen_refuses_a_linked_order_file_on_every_platform(tmp_path,
     )
 
     with pytest.raises(OSError, match="reached through a link"):
-        cs._write_unit_order(order, (sid,))
+        cs._write_unit_order(order, (sid,), max_depth=_generous(order.parent))
     assert (
         order.read_text(encoding="utf-8") == "operator data\n"
     ), "the writer wrote through a name the screen refused"
@@ -2171,16 +2171,16 @@ def test_the_unit_order_fallback_screen_answers_for_a_junction_not_only_a_symlin
         cs.platform_compat, "is_link_or_junction", lambda p: os.fspath(p) == os.fspath(order)
     )
     with pytest.raises(OSError, match="reached through a link"):
-        cs._write_unit_order(order, (sid,))
+        cs._write_unit_order(order, (sid,), max_depth=_generous(order.parent))
 
     monkeypatch.setattr(cs.platform_compat, "is_link_or_junction", lambda p: False)
     monkeypatch.setattr(cs.platform_compat, "first_linked_ancestor", lambda p: str(order.parent))
     with pytest.raises(OSError, match="reached through a link"):
-        cs._write_unit_order(order, (sid,))
+        cs._write_unit_order(order, (sid,), max_depth=_generous(order.parent))
     assert not order.exists(), "neither refusal wrote the file"
 
     monkeypatch.setattr(cs.platform_compat, "first_linked_ancestor", lambda p: None)
-    cs._write_unit_order(order, (sid,))
+    cs._write_unit_order(order, (sid,), max_depth=_generous(order.parent))
     assert order.read_text(encoding="utf-8").split() == [sid], "the control: it writes otherwise"
 
 
@@ -3630,8 +3630,8 @@ def test_the_unit_order_fallback_holds_every_component_open_across_the_write(tmp
     handed: list[int] = []
     real_walk = cs._hold_chain_no_follow
 
-    def remember(directory):
-        fds = real_walk(directory)
+    def remember(directory, *, max_depth):
+        fds = real_walk(directory, max_depth=max_depth)
         handed.extend(fds)
         return fds
 
@@ -3655,7 +3655,7 @@ def test_the_unit_order_fallback_holds_every_component_open_across_the_write(tmp
 
     monkeypatch.setattr(cs, "_hold_chain_no_follow", remember)
     monkeypatch.setattr(cs, "atomic_write", write_with_the_chain_still_held)
-    cs._write_unit_order(order, (sid,))
+    cs._write_unit_order(order, (sid,), max_depth=_generous(order.parent))
 
     assert order.read_text(encoding="utf-8").split() == [sid], "the write still landed"
     assert checked == [os.fspath(c) for c in components], "every component was checked while held"
@@ -3687,7 +3687,7 @@ def test_the_unit_order_fallback_refuses_a_real_link_at_a_component(tmp_path, mo
     make_dir_link(crews, victim)
     try:
         with pytest.raises(OSError, match="could not be held open"):
-            cs._write_unit_order(order, (sid,))
+            cs._write_unit_order(order, (sid,), max_depth=_generous(order.parent))
         assert list(victim.iterdir()) == [], "nothing was written into the link's target"
     finally:
         cs.platform_compat.unlink_link_or_junction(crews)
@@ -3723,7 +3723,7 @@ def test_the_unit_order_fallback_refuses_a_missing_tail_and_creates_nothing(tmp_
 
     monkeypatch.setattr(cs.os, "mkdir", record)
     with pytest.raises(FileNotFoundError):
-        cs._write_unit_order(order, (sid,))
+        cs._write_unit_order(order, (sid,), max_depth=_generous(order.parent))
 
     assert created == [], f"the walk created something: {created}"
     assert not repo_dir.exists(), "and nothing is on disk"
@@ -3777,7 +3777,7 @@ def test_the_unit_order_fallback_refuses_a_component_it_cannot_open(tmp_path, mo
 
     monkeypatch.setattr(cs.platform_compat, "pin_directory", refuse_that_one)
     with pytest.raises(OSError, match="could not be held open"):
-        cs._write_unit_order(order, (sid,))
+        cs._write_unit_order(order, (sid,), max_depth=_generous(order.parent))
     assert not order.exists(), "an unopenable component wrote nothing"
 
 
@@ -3794,11 +3794,11 @@ def test_the_unit_order_fallback_writes_an_ordinary_file_and_replaces_it(tmp_pat
     order = cs._unit_order_path(OWNER, REPO, cid, tmp_path)
     _fallback_only(monkeypatch)
 
-    cs._write_unit_order(order, (sid,))
+    cs._write_unit_order(order, (sid,), max_depth=_generous(order.parent))
     assert order.read_text(encoding="utf-8") == f"{sid}\n"
     first = order.stat()
 
-    cs._write_unit_order(order, (other, sid))
+    cs._write_unit_order(order, (other, sid), max_depth=_generous(order.parent))
     assert order.read_text(encoding="utf-8") == f"{other}\n{sid}\n", "replaced, not appended"
     assert order.stat().st_ino != first.st_ino, "replaced by rename, not written in place"
 
@@ -3819,12 +3819,12 @@ def test_the_unit_order_fallback_keeps_the_name_screens_on_top_of_the_hold(tmp_p
         cs.platform_compat, "is_link_or_junction", lambda p: os.fspath(p) == os.fspath(order)
     )
     with pytest.raises(OSError, match="reached through a link"):
-        cs._write_unit_order(order, (sid,))
+        cs._write_unit_order(order, (sid,), max_depth=_generous(order.parent))
 
     monkeypatch.setattr(cs.platform_compat, "is_link_or_junction", lambda p: False)
     monkeypatch.setattr(cs.platform_compat, "first_linked_ancestor", lambda p: str(order.parent))
     with pytest.raises(OSError, match="reached through a link"):
-        cs._write_unit_order(order, (sid,))
+        cs._write_unit_order(order, (sid,), max_depth=_generous(order.parent))
     assert not order.exists(), "neither refusal wrote the file"
 
 
@@ -3846,13 +3846,13 @@ def test_the_pinned_parent_branch_is_unchanged_on_a_posix_host(tmp_path):
     walked: list[str] = []
     real_walk = cs._hold_chain_no_follow
 
-    def note(directory):
+    def note(directory, *, max_depth):
         walked.append(os.fspath(directory))
-        return real_walk(directory)
+        return real_walk(directory, max_depth=max_depth)
 
     cs._hold_chain_no_follow = note  # noqa: B010 - restored below
     try:
-        cs._write_unit_order(order, (sid,))
+        cs._write_unit_order(order, (sid,), max_depth=_generous(order.parent))
     finally:
         cs._hold_chain_no_follow = real_walk
     assert walked == [], "the pinned-parent branch must not take the by-name walk"
@@ -3883,8 +3883,8 @@ def test_the_unit_order_record_holds_the_chain_before_it_reads_the_name(tmp_path
 
     real_walk = cs._hold_chain_no_follow
 
-    def walk(directory):
-        fds = real_walk(directory)
+    def walk(directory, *, max_depth):
+        fds = real_walk(directory, max_depth=max_depth)
         handed.extend(fds)
         trace.append("hold")
         return fds
@@ -3945,8 +3945,8 @@ def test_a_record_that_changes_nothing_still_releases_the_chain(tmp_path, monkey
     handed: list[int] = []
     real_walk = cs._hold_chain_no_follow
 
-    def walk(directory):
-        fds = real_walk(directory)
+    def walk(directory, *, max_depth):
+        fds = real_walk(directory, max_depth=max_depth)
         handed.extend(fds)
         return fds
 
@@ -3982,14 +3982,19 @@ def test_the_reads_walk_creates_nothing_under_the_directory_it_holds(tmp_path, m
     assert not nowhere.exists(), "the directory starts absent"
 
     with pytest.raises(FileNotFoundError):
-        cs._hold_chain_for_by_name_use(nowhere)
+        cs._hold_chain_for_by_name_use(nowhere, max_depth=_generous(nowhere))
     assert not nowhere.exists(), "the walk created nothing"
 
-    assert cs._read_unit_order_held(nowhere / f"c_00000000{cs._UNIT_ORDER_SUFFIX}") == ()
+    assert (
+        cs._read_unit_order_held(
+            nowhere / f"c_00000000{cs._UNIT_ORDER_SUFFIX}", max_depth=_generous(nowhere)
+        )
+        == ()
+    )
     assert not nowhere.exists(), "and the read answered without creating it"
 
     with pytest.raises(FileNotFoundError):
-        cs._hold_chain_no_follow(nowhere)
+        cs._hold_chain_no_follow(nowhere, max_depth=_generous(nowhere))
     assert not nowhere.exists(), "the write's walk does not create it either"
 
 
@@ -4045,7 +4050,9 @@ def test_the_posix_read_path_takes_no_hold(tmp_path):
     cid = crew["id"]
     cs._record_unit_order(OWNER, REPO, cid, sid, tmp_path)
 
-    assert cs._hold_chain_for_by_name_use(tmp_path) == [], "no hold is taken"
+    assert (
+        cs._hold_chain_for_by_name_use(tmp_path, max_depth=_generous(tmp_path)) == []
+    ), "no hold is taken"
     assert cs._recorded_unit_order(OWNER, REPO, cid, tmp_path) == (sid,), "the read still works"
 
 
@@ -4274,15 +4281,25 @@ def test_a_leaf_that_is_not_a_regular_file_still_closes_its_descriptor(tmp_path,
     assert closed, "the descriptor was closed by this function, not leaked"
 
 
-def _past_the_bound(start: Path) -> Path:
-    """*start* extended until it is one component past the walk's bound.
+def _generous(path: Path) -> int:
+    """A bound that always admits *path*, for a test not probing depth itself.
+
+    Mirrors :func:`crew_store._chain_depth_bound`'s shape -- the base's own depth plus
+    the suffix allowance -- so a test that is not about the bound cannot trip it, and
+    cannot pass by accident either if the allowance shrinks to zero.
+    """
+    return len(path.parts) + cs._MAX_SUFFIX_DEPTH
+
+
+def _past_the_bound(start: Path, bound: int) -> Path:
+    """*start* extended until it is one component past *bound*.
 
     The depth is MEASURED off the path rather than written down here. A fixture built
     to a literal number agrees with the bound only until one of them moves, and the
     one that moves silently is the literal.
     """
     deep = start
-    while len(deep.parts) <= cs._MAX_CHAIN_DEPTH:
+    while len(deep.parts) <= bound:
         deep = deep / "g"
     return deep
 
@@ -4321,7 +4338,7 @@ def test_a_relative_chain_is_refused_before_any_component_is_opened(tmp_path, mo
 
     for relative in (Path("."), Path("child"), Path("child/deeper")):
         with pytest.raises(ValueError, match="relative"):
-            cs._hold_chain_no_follow(relative)
+            cs._hold_chain_no_follow(relative, max_depth=_generous(inside))
 
     assert opened == [], "no component of a relative path is opened"
 
@@ -4340,12 +4357,13 @@ def test_a_chain_past_the_depth_bound_is_refused_before_any_component_is_opened(
     was too deep rather than only that some path was.
     """
     opened = _pin_spy(monkeypatch)
-    deep = _past_the_bound(tmp_path)
+    bound = _generous(tmp_path)
+    deep = _past_the_bound(tmp_path, bound)
     measured = len(deep.parts)
-    assert measured > cs._MAX_CHAIN_DEPTH, "the fixture is past the bound"
+    assert measured > bound, "the fixture is past the bound"
 
     with pytest.raises(ValueError) as refusal:
-        cs._hold_chain_no_follow(deep)
+        cs._hold_chain_no_follow(deep, max_depth=bound)
 
     assert str(measured) in str(refusal.value), "the refusal reports the depth it measured"
     assert opened == [], "the bound refused before the walk opened anything"
@@ -4364,20 +4382,21 @@ def test_the_depth_bound_refuses_a_chain_the_walk_would_otherwise_hold(tmp_path)
     chain one component inside the bound has to come back fully held, with the
     descriptor count measured off the path rather than written down.
     """
-    deep = _past_the_bound(tmp_path)
+    bound = _generous(tmp_path)
+    deep = _past_the_bound(tmp_path, bound)
     deep.mkdir(parents=True)
     measured = len(deep.parts)
 
     with pytest.raises(ValueError) as refusal:
-        cs._hold_chain_no_follow(deep)
+        cs._hold_chain_no_follow(deep, max_depth=bound)
     assert str(measured) in str(refusal.value), "the refusal reports the depth it measured"
 
     at_the_bound = deep
-    while len(at_the_bound.parts) > cs._MAX_CHAIN_DEPTH:
+    while len(at_the_bound.parts) > bound:
         at_the_bound = at_the_bound.parent
     assert at_the_bound.is_dir(), "the control chain exists too"
 
-    held = cs._hold_chain_no_follow(at_the_bound)
+    held = cs._hold_chain_no_follow(at_the_bound, max_depth=bound)
     try:
         assert len(held) == len(at_the_bound.parts), (
             "a chain inside the bound is held component for component, so the bound "
@@ -4396,16 +4415,19 @@ def test_a_chain_the_walk_refuses_reads_as_header_order(tmp_path, monkeypatch):
     an exception, which is the one outcome the fallback exists to avoid.
     """
     _fallback_only(monkeypatch)
-    deep = _past_the_bound(tmp_path)
+    bound = _generous(tmp_path)
+    deep = _past_the_bound(tmp_path, bound)
     deep.mkdir(parents=True)
 
     with pytest.raises(ValueError):
-        cs._hold_chain_for_by_name_use(deep)
-    over_deep = cs._read_unit_order_held(deep / f"c_00000000{cs._UNIT_ORDER_SUFFIX}")
+        cs._hold_chain_for_by_name_use(deep, max_depth=bound)
+    over_deep = cs._read_unit_order_held(
+        deep / f"c_00000000{cs._UNIT_ORDER_SUFFIX}", max_depth=bound
+    )
     assert over_deep == (), "an over-deep chain reads as header order"
 
     monkeypatch.chdir(tmp_path)
-    relative = cs._read_unit_order_held(Path(f"c_00000000{cs._UNIT_ORDER_SUFFIX}"))
+    relative = cs._read_unit_order_held(Path(f"c_00000000{cs._UNIT_ORDER_SUFFIX}"), max_depth=bound)
     assert relative == (), "and so does a relative one"
 
 
@@ -4433,17 +4455,64 @@ def test_a_walk_refusal_does_not_escape_the_recorder(tmp_path, monkeypatch):
     crew, sid = _live_crew(tmp_path)
     cid = crew["id"]
 
-    # The depth is MEASURED off the constructed path, never written down: a literal would
-    # agree with the bound only until one of them moved, and the literal moves silently.
-    deep_root = tmp_path
-    while len(cs._unit_order_path(OWNER, REPO, cid, deep_root).parent.parts) <= cs._MAX_CHAIN_DEPTH:
-        deep_root = deep_root / "g"
-    chain = cs._unit_order_path(OWNER, REPO, cid, deep_root).parent
+    # The refusal must come from the UNTRUSTED suffix, not from a deep data root: after
+    # the suffix bound replaced the total-depth cap, a deep root cannot refuse at all,
+    # which is the whole point. So the depth is grown in `owner`, the provider namespace.
+    # Measured off the constructed path, never written down as a literal.
+    owner = "g"
+    while len(cs._crews_path(owner, REPO, tmp_path).parts) <= cs._chain_depth_bound(tmp_path):
+        owner = f"{owner}/g"
+    chain = cs._crews_path(owner, REPO, tmp_path)
 
     with pytest.raises(ValueError):
-        cs._hold_chain_for_by_name_use(chain)
+        cs._hold_chain_for_by_name_use(chain, max_depth=cs._chain_depth_bound(tmp_path))
 
+    cs._record_unit_order(owner, REPO, cid, sid, tmp_path)
+
+    written = cs._unit_order_path(owner, REPO, cid, tmp_path)
+    assert not written.exists(), "the refusal dropped the write instead of writing unheld"
+
+
+def test_a_deep_data_home_still_records_its_unit_order(tmp_path, monkeypatch):
+    """A legitimately deep data root records and reads its order file, ordering intact.
+
+    This is the ORDERING property, pinned directly rather than through the cap's value.
+    An operator's data root is configuration, not untrusted input, so spending one budget
+    on it and on the provider namespace made a deep-but-valid home refuse every write --
+    which drops the order file, leaves the header-clock fallback permanently in force for
+    that home, and lets a fold apply a retired unit's phases over the current ones after
+    a backward clock step (see :data:`crew_store._UNIT_ORDER_SUFFIX`).
+
+    So the assertion is that the recorded order survives, not that some number is below
+    some other number: a later refactor fails here because ordering broke, not because a
+    bound moved.
+    """
+    _fallback_only(monkeypatch)
+
+    deep_root = tmp_path
+    while len(deep_root.parts) < len(tmp_path.parts) + 40:
+        deep_root = deep_root / "d"
+    deep_root.mkdir(parents=True, exist_ok=True)
+
+    crew, sid = _live_crew(deep_root)
+    cid = crew["id"]
     cs._record_unit_order(OWNER, REPO, cid, sid, deep_root)
 
-    written = cs._unit_order_path(OWNER, REPO, cid, deep_root)
-    assert not written.exists(), "the refusal dropped the write instead of writing unheld"
+    assert cs._recorded_unit_order(OWNER, REPO, cid, deep_root) == (
+        sid,
+    ), "a deep but legitimate data home keeps its recorded unit order"
+
+
+def test_the_walk_will_not_run_without_a_declared_bound(tmp_path):
+    """Omitting the bound is refused, so a missing cap can never mean an unbounded walk.
+
+    The bound is the caller's declared intent and the walk cannot infer it -- a default
+    would be a policy the walk chose for callers it cannot see. Making it a REQUIRED
+    keyword turns an omission into a failure at the call, which is the fail-closed
+    direction; a defaulted parameter would make the same omission silently permissive.
+    """
+    with pytest.raises(TypeError):
+        cs._hold_chain_no_follow(tmp_path)  # type: ignore[call-arg]
+
+    with pytest.raises(TypeError):
+        cs._hold_chain_for_by_name_use(tmp_path)  # type: ignore[call-arg]
