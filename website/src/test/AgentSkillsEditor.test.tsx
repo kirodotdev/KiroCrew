@@ -91,12 +91,13 @@ describe('AgentSkillsEditor', () => {
   })
 
   it('removing a chip PATCHes the remaining keys', async () => {
-    renderEditor({ skills: ['babysit', 'widgets'] })
+    const { onChange } = renderEditor({ skills: ['babysit', 'widgets'] })
     fireEvent.click(await screen.findByRole('button', { name: /remove skill babysit/i }))
 
     await waitFor(() =>
       expect(mockApi.agentPatch).toHaveBeenCalledWith('specialist', { skills: ['widgets'] }),
     )
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith('specialist', ['widgets']))
   })
 
   it('prefers the server-returned key list over the optimistic one', async () => {
@@ -135,14 +136,18 @@ describe('AgentSkillsEditor', () => {
   })
 
   it('lists unmanaged skill:// URIs read-only with no remove control', async () => {
+    // The catalog cannot express these, so there is no picker row to put one back.
+    // They are shown so an agent that loads more than the chips suggest is explained,
+    // but the backend on base owns their removal — the editor does not offer it.
     renderEditor({ skills: [], unmanaged: ['skill://~/.kiro/skills/*/SKILL.md'] })
     await waitFor(() =>
       expect(screen.getByText('skill://~/.kiro/skills/*/SKILL.md')).toBeInTheDocument(),
     )
-    expect(screen.queryByRole('button', { name: /^Remove skill/i })).not.toBeInTheDocument()
     // A wildcard mapping is still a mapping — the empty state must not claim
     // the agent has none.
     expect(screen.queryByText(/No skills mapped/i)).not.toBeInTheDocument()
+    // No remove control on an unmanaged URI: only the picker-managed chips carry one.
+    expect(screen.queryByRole('button', { name: /remove skill/i })).not.toBeInTheDocument()
   })
 
   it('disables Add when every catalog skill is already mapped', async () => {
@@ -198,7 +203,9 @@ describe('shared instant-save chain (GPT round-26)', () => {
 
     // Remove the mapped chip -> a save starts and is held open.
     fireEvent.click(await screen.findByRole('button', { name: /Remove/ }))
-    await waitFor(() => expect(mockApi.agentPatch).toHaveBeenCalledWith('atlas', { skills: [] }))
+    await waitFor(() =>
+      expect(mockApi.agentPatch).toHaveBeenCalledWith('atlas', { skills: [] }),
+    )
     await waitFor(() => expect(onSavePending).toHaveBeenCalledWith(true))
 
     // The chain does NOT settle while the save is in the air…
@@ -211,5 +218,198 @@ describe('shared instant-save chain (GPT round-26)', () => {
     releasePatch({ ok: true })
     await waitFor(() => expect(settled).toBe(true))
     await waitFor(() => expect(onSavePending).toHaveBeenCalledWith(false))
+  })
+})
+
+/* ── Colliding package copies ── */
+
+const DIGEST_A = 'a'.repeat(32)
+const DIGEST_B = 'b'.repeat(32)
+const KEY_A = `package/${DIGEST_A}:code-review/SKILL.md`
+const KEY_B = `package/${DIGEST_B}:code-review/SKILL.md`
+
+/** Two package rows sharing one display name, differing only in the directories above it. */
+function colliding(pathA: string, pathB: string) {
+  return [
+    { key: KEY_A, name: 'code-review', description: 'Review a change', source: 'package', path: pathA },
+    { key: KEY_B, name: 'code-review', description: 'Review a change', source: 'package', path: pathB },
+  ]
+}
+
+describe('disambiguating colliding package copies', () => {
+  it('labels each colliding copy by the directories above the skill', async () => {
+    mockApi.skills.mockResolvedValue(
+      colliding(
+        '/home/u/.kiro/skills/papyrus-writer/code-review/SKILL.md',
+        '/home/u/.kiro/skills/atlas-tools/code-review/SKILL.md',
+      ),
+    )
+    renderEditor({ skills: [KEY_A, KEY_B] })
+
+    expect(await screen.findByText('Located in skills/papyrus-writer')).toBeInTheDocument()
+    expect(screen.getByText('Located in skills/atlas-tools')).toBeInTheDocument()
+  })
+
+  it('leaves a name carried by only one copy unqualified', async () => {
+    // The qualifier exists for ambiguity, so an ordinary skill must not grow one.
+    mockApi.skills.mockResolvedValue([
+      { key: 'package/cccc:memory/SKILL.md', name: 'memory', source: 'package', path: '/home/u/.kiro/skills/memory/SKILL.md' },
+    ])
+    renderEditor({ skills: ['package/cccc:memory/SKILL.md'] })
+
+    await waitFor(() => expect(screen.getByText('memory')).toBeInTheDocument())
+    expect(screen.queryByText(/Located in/)).not.toBeInTheDocument()
+  })
+
+  it('widens the window past two segments when the nearest two are identical', async () => {
+    // A fixed two-segment window renders these twins identically, which is the case the
+    // widening exists for: they diverge only ABOVE it.
+    mockApi.skills.mockResolvedValue(
+      colliding(
+        '/opt/one/shared/pack/skills/code-review/SKILL.md',
+        '/opt/two/shared/pack/skills/code-review/SKILL.md',
+      ),
+    )
+    renderEditor({ skills: [KEY_A, KEY_B] })
+
+    expect(await screen.findByText('Located in one/shared/pack')).toBeInTheDocument()
+    expect(screen.getByText('Located in two/shared/pack')).toBeInTheDocument()
+  })
+
+  it('invents no distinction when the path cannot separate the copies', async () => {
+    // Two copies at one path have no distinguishing segment, so the group-level widening
+    // declines and both fall back to the same shared location rather than a made-up one.
+    mockApi.skills.mockResolvedValue(
+      colliding('/opt/pack/skills/code-review/SKILL.md', '/opt/pack/skills/code-review/SKILL.md'),
+    )
+    renderEditor({ skills: [KEY_A, KEY_B] })
+
+    await waitFor(() => expect(screen.getAllByText('code-review')).toHaveLength(2))
+    expect(screen.getAllByText('Located in opt/pack')).toHaveLength(2)
+  })
+
+  it('splits a Windows path on backslashes', async () => {
+    // Without the backslash the whole path is ONE segment that ends in `.md`, which the
+    // filter drops -- leaving no label on either copy.
+    mockApi.skills.mockResolvedValue(
+      colliding(
+        'C:\\Users\\u\\.kiro\\skills\\alpha\\code-review\\SKILL.md',
+        'C:\\Users\\u\\.kiro\\skills\\beta\\code-review\\SKILL.md',
+      ),
+    )
+    renderEditor({ skills: [KEY_A, KEY_B] })
+
+    expect(await screen.findByText('Located in skills/alpha')).toBeInTheDocument()
+    expect(screen.getByText('Located in skills/beta')).toBeInTheDocument()
+  })
+
+  it('drops a trailing skills segment, which is the same for every root', async () => {
+    // Keeping it would spend one of the two slots on a constant and render twins alike.
+    mockApi.skills.mockResolvedValue(
+      colliding(
+        '/srv/alpha-bundle/skills/code-review/SKILL.md',
+        '/srv/beta-bundle/skills/code-review/SKILL.md',
+      ),
+    )
+    renderEditor({ skills: [KEY_A, KEY_B] })
+
+    expect(await screen.findByText('Located in srv/alpha-bundle')).toBeInTheDocument()
+    expect(screen.getByText('Located in srv/beta-bundle')).toBeInTheDocument()
+  })
+
+  it('elides the middle of a long label, keeping the head and the tail', async () => {
+    // End-truncation would hide the one segment that tells these two apart.
+    mockApi.skills.mockResolvedValue(
+      colliding(
+        '/srv/organization-wide-shared-bundles/team-alpha/skills/code-review/SKILL.md',
+        '/srv/organization-wide-shared-bundles/team-beta/skills/code-review/SKILL.md',
+      ),
+    )
+    renderEditor({ skills: [KEY_A, KEY_B] })
+
+    const shown = await screen.findByText(/^Located in .*team-alpha$/)
+    const where = shown.textContent!.replace('Located in ', '')
+    expect(where).toContain(String.fromCharCode(0x2026))
+    expect(where.length).toBeLessThanOrEqual(28)
+    expect(where.startsWith('organization-')).toBe(true)
+  })
+
+  it('shows the full label when eliding would collapse two copies into one string', async () => {
+    // These tails differ ONLY inside the region the ellipsis replaces, so eliding both
+    // yields one string and the disambiguator would name neither copy.
+    mockApi.skills.mockResolvedValue(
+      colliding(
+        '/r/aaaaaaaaaaaa/1Xbbbbbbbbbbbbbb/skills/code-review/SKILL.md',
+        '/r/aaaaaaaaaaaa/2Xbbbbbbbbbbbbbb/skills/code-review/SKILL.md',
+      ),
+    )
+    renderEditor({ skills: [KEY_A, KEY_B] })
+
+    expect(
+      await screen.findByText('Located in aaaaaaaaaaaa/1Xbbbbbbbbbbbbbb'),
+    ).toBeInTheDocument()
+    expect(screen.getByText('Located in aaaaaaaaaaaa/2Xbbbbbbbbbbbbbb')).toBeInTheDocument()
+    expect(screen.queryByText(new RegExp(String.fromCharCode(0x2026)))).not.toBeInTheDocument()
+  })
+
+  it('separates the two colliding copies in the picker as well as on the chip', async () => {
+    // The chip must say what the picker row said, or the user cannot tell which they bound.
+    mockApi.skills.mockResolvedValue(
+      colliding(
+        '/home/u/.kiro/skills/papyrus-writer/code-review/SKILL.md',
+        '/home/u/.kiro/skills/atlas-tools/code-review/SKILL.md',
+      ),
+    )
+    renderEditor({ skills: [] })
+    await openAddMenu()
+
+    await waitFor(() =>
+      expect(screen.getByText('Located in skills/papyrus-writer')).toBeInTheDocument(),
+    )
+    expect(screen.getByText('Located in skills/atlas-tools')).toBeInTheDocument()
+  })
+})
+
+describe('an unresolved mapping', () => {
+  it('marks a NON-package mapping with no installed copy as unresolved and counts it', async () => {
+    // A non-package key the catalog no longer lists is a genuine dead mapping (its source
+    // does not silently degrade to empty), so it gets the warn style plus a count line.
+    mockApi.skills.mockResolvedValue(CATALOG)
+    renderEditor({ skills: ['babysit', 'kiro-workspace/gone/SKILL.md'] })
+
+    await waitFor(() => expect(screen.getByText('babysit')).toBeInTheDocument())
+    // The count line at the bottom names the number of dead mappings.
+    expect(
+      await screen.findByText(/1 mapped skill no longer matches an installed copy/i),
+    ).toBeInTheDocument()
+  })
+
+  it('does NOT mark an absent package mapping as dead, since /api/skills can degrade to an empty package set', async () => {
+    // `GET /api/skills` sources package rows from a timeout-bounded `list_skills()` that
+    // degrades to [] with a 200 on timeout, with no completeness signal to the client. A
+    // package key missing from that partial response is not evidence the copy is gone, so it
+    // must not be flagged — flagging it would tell the user to delete a live mapping.
+    mockApi.skills.mockResolvedValue(CATALOG)
+    renderEditor({ skills: ['babysit', 'package/deadbeef:code-review/SKILL.md'] })
+
+    await waitFor(() => expect(screen.getByText('babysit')).toBeInTheDocument())
+    // No warn count line, and no removal instruction, for the absent package key.
+    expect(
+      screen.queryByText(/no longer matches an installed copy/i),
+    ).not.toBeInTheDocument()
+  })
+
+  it('states the reason when the catalog fails to load and disables Add', async () => {
+    // A failed load must not look like "you have no skills": it states its reason, and it
+    // must not leave the picker enabled offering stale cached options.
+    mockApi.skills.mockRejectedValue(new Error('boom'))
+    renderEditor({ skills: [] })
+
+    expect(
+      await screen.findByText(/Could not load the skill catalog/i),
+    ).toBeInTheDocument()
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /add skill/i })).toBeDisabled(),
+    )
   })
 })
