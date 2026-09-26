@@ -44,6 +44,7 @@ from kiro_crew.mcp_discovery import (
     probe_metadata,
     redact_mcp_error,
     redact_mcp_headers,
+    strip_jsonc,
 )
 from kiro_crew.mcp_gateway import hazards, is_gateway_supported
 from kiro_crew.mcp_gateway.hashing import hash_command
@@ -292,6 +293,123 @@ _apply_lock = LoopBoundLock()
 def _get_apply_lock() -> LoopBoundLock:
     """Return the /api/mcp/apply mutex (loop-bound; rebinds per running loop)."""
     return _apply_lock
+
+
+def _parse_global_mcp_json(raw: str | None) -> tuple[dict[str, Any], bool] | None:
+    """Parse the kiro-global mcp.json text, tolerating the JSONC the IDE and CLI accept.
+
+    Returns ``(parsed, tolerated)``: ``tolerated`` is False when the strict
+    parse succeeded, True when the text only parsed after the same JSONC
+    tolerance the discovery reader applies. Returns ``None`` when the text
+    exists but cannot be parsed even tolerantly. A ``None`` caller must not
+    rewrite the file, and a tolerated caller must not rewrite it either: the
+    only writes available below are plain-JSON rewrites, which would destroy
+    the comments the tolerance just worked around -- refuse instead.
+    """
+    if raw is None:
+        return {"mcpServers": {}}, False
+    try:
+        return json.loads(raw), False
+    except json.JSONDecodeError:
+        pass
+    try:
+        return json.loads(strip_jsonc(raw)), True
+    except ValueError:
+        # JSONDecodeError from the stripped text, or strip_jsonc's own
+        # refusal of an unterminated block comment: the text cannot be
+        # parsed honestly, so no caller may rewrite it.
+        return None
+
+
+def _read_scope_json(path: Path) -> tuple[dict[str, Any], str]:
+    """Read a scope ``mcp.json`` with the JSONC tolerance the IDE applies.
+
+    Returns ``(data, state)``. ``state`` is one of:
+
+    * ``"absent"`` -- no file; ``data`` is an empty skeleton, safe to write.
+    * ``"ok"`` -- strict parse; ``data`` is the parsed content.
+    * ``"jsonc"`` -- parsed only after stripping JSONC comments, the same
+      tolerance the discovery reader applies. The comments (and any
+      commented-out server blocks) are prose this module cannot reproduce:
+      every write available here rewrites the whole file as plain JSON, so a
+      ``"jsonc"`` caller MUST NOT write. Read-only use (presence, spec
+      lookup) is exactly what discovery already does with the same file.
+    * ``"unparseable"`` -- not parseable even tolerantly, or unreadable;
+      ``data`` is ``{}`` and the caller MUST NOT write: writing would reset
+      the user's file to a skeleton.
+
+    A file that parses strictly is read ONCE, through :func:`_load_json_or_empty`
+    (the structural pin on the uninstall counts one read per store under the
+    lock through that loader); the raw tolerant re-read below runs only when
+    that read saw nothing -- a missing, JSONC, or unparseable file -- and the
+    two reads sit adjacent under the same lock the caller already holds.
+    """
+    data = _load_json_or_empty(path)
+    if data:
+        return data, "ok"
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {"mcpServers": {}}, "absent"
+    except OSError:
+        return {}, "unparseable"
+    parsed = _parse_global_mcp_json(raw)
+    if parsed is None:
+        return {}, "unparseable"
+    data, tolerated = parsed
+    if not isinstance(data, dict):
+        # A valid JSON scalar or array is not an MCP config object: every
+        # writer here builds ``{"mcpServers": ...}`` on top of the document,
+        # so rewriting would also change the file's whole shape.
+        return {}, "unparseable"
+    return data, ("jsonc" if tolerated else "ok")
+
+
+class _McpConfigRefused(Exception):
+    """A would-be writer of a scope ``mcp.json`` hit a state it must not rewrite.
+
+    Raised by the scope writers when the target file parsed only tolerantly
+    (JSONC) or not at all: the only writes available are plain-JSON rewrites
+    of the whole document, which would destroy the comments (or replace a
+    document of a different shape) the read just declined to lose. Carries
+    the response ``code`` the dashboard handlers report and a message that
+    names the file and the fix.
+    """
+
+    def __init__(self, state: str, path: Path) -> None:
+        self.state = state
+        self.code = "mcp_config_jsonc" if state == "jsonc" else "mcp_config_unparseable"
+        what = "contains JSONC comments" if state == "jsonc" else "cannot be parsed"
+        super().__init__(f"{path} {what}; this endpoint writes plain JSON and would destroy it")
+
+
+def _refusal_response(state: str) -> web.Response | None:
+    """The 500 a JSONC/unparseable global mcp.json earns a would-be writer.
+
+    Returns ``None`` for the states a writer may proceed on (``"absent"``
+    and ``"ok"``). Every writer of the kiro-global file routes its guarded
+    read through here, so the refusal -- and its actionable text -- is one
+    shared behavior, not six near-copies that can drift.
+    """
+    if state == "unparseable":
+        return web.json_response(
+            {"error": "cannot parse global mcp.json", "code": "mcp_config_unparseable"},
+            status=500,
+        )
+    if state == "jsonc":
+        return web.json_response(
+            {
+                "error": (
+                    "global mcp.json contains JSONC comments; this endpoint "
+                    "writes plain JSON and would delete them. Rewrite "
+                    "~/.kiro/settings/mcp.json as plain JSON (comments "
+                    "removed) and try again."
+                ),
+                "code": "mcp_config_jsonc",
+            },
+            status=500,
+        )
+    return None
 
 
 def _write_mcp_json(data: dict) -> None:
@@ -1462,10 +1580,27 @@ async def api_mcp_sync(request: web.Request) -> web.Response:
     denied = await require_owner_dashboard_request(request, "mcp_sync")
     if denied is not None:
         return denied
+    # Classify the global file BEFORE anything durable runs. The discovery
+    # pass below is read-only, but ``sync_discovered_servers`` is not: it
+    # rebuilds the agent config unconditionally and, for a delta, writes the
+    # Claude Code sidecar. A refusal AFTER that would strand committed writes
+    # behind a 500 (and skip the tools/allowedTools batch and the session
+    # reset), retrying into the same partial state forever. A pending delta
+    # into a file this handler cannot rewrite safely therefore refuses here,
+    # with zero durable writes; a no-op sync (empty delta) touches nothing
+    # and proceeds.
     from kiro_crew.mcp_discovery import (  # noqa: F811
+        discover_servers_to_sync,
         kirocrew_managed_names,
         sync_discovered_servers,
     )
+
+    pending = await asyncio.to_thread(discover_servers_to_sync)
+    _, gstate = await asyncio.to_thread(_read_scope_json, _GLOBAL_MCP_JSON)
+    if pending:
+        refused = _refusal_response(gstate)
+        if refused is not None:
+            return refused
 
     # One serialized discover→write pass (agent config + CC sidecar), off the
     # event loop — the sync is blocking file I/O, and sync_discovered_servers'
@@ -1476,10 +1611,13 @@ async def api_mcp_sync(request: web.Request) -> web.Response:
     if to_sync:
         # Also add to global mcp.json (what ACP actually reads)
         async with _get_mcp_lock():
-            try:
-                gdata = json.loads(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
-            except (FileNotFoundError, json.JSONDecodeError):
-                gdata = {"mcpServers": {}}
+            # Re-classify under the lock: the pre-check above ran outside it,
+            # and a concurrent edit could have made the file unrewritable in
+            # between. Same refusal, same reasoning, last line of defense.
+            gdata, gstate = _read_scope_json(_GLOBAL_MCP_JSON)
+            refused = _refusal_response(gstate)
+            if refused is not None:
+                return refused
             gservers = gdata.setdefault("mcpServers", {})
             # The kiro-global mcp.json is NOT ours, and a name cannot say who
             # wrote an entry in it: the minimal ``{"url": ...}`` this emitter
@@ -2005,10 +2143,13 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
     if request.method == "DELETE":
         # Remove from global mcp.json
         async with _get_mcp_lock():
-            try:
-                data = json.loads(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
-            except (FileNotFoundError, json.JSONDecodeError):
-                data = {"mcpServers": {}}
+            data, gstate = _read_scope_json(_GLOBAL_MCP_JSON)
+            if gstate not in ("absent", "ok") and name in data.get("mcpServers", {}):
+                # The entry the caller wants gone lives in a file whose only
+                # write here is a plain-JSON rewrite: refuse rather than take
+                # the user's comments down with it. An entry this file does
+                # not hold is a plain noop either way.
+                return _refusal_response(gstate)
             removed = data.get("mcpServers", {}).pop(name, None) is not None
             if removed:
                 _write_mcp_json(data)
@@ -2080,10 +2221,15 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
 
     # Write to global mcp.json
     async with _get_mcp_lock():
-        try:
-            data = json.loads(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
-        except (FileNotFoundError, json.JSONDecodeError):
-            data = {"mcpServers": {}}
+        # Classify before writing: a strict parse would silently reset the
+        # file to an empty skeleton and write that back, so one REST register
+        # could atomically replace a tolerated JSONC config (comments and
+        # all) with just this entry. A file this handler cannot rewrite
+        # safely refuses with the same actionable error as sync/toggle.
+        data, gstate = _read_scope_json(_GLOBAL_MCP_JSON)
+        refused = _refusal_response(gstate)
+        if refused is not None:
+            return refused
         data.setdefault("mcpServers", {})[name] = entry
         _GLOBAL_MCP_JSON.parent.mkdir(parents=True, exist_ok=True)
         _write_mcp_json(data)
@@ -2292,7 +2438,10 @@ def _find_server_spec_anywhere(name: str) -> dict | None:
         _GLOBAL_MCP_JSON,
         *[s.global_json for s in _extra_mcp_scopes()],
     ):
-        found = _usable(_load_json_or_empty(path))
+        # Same tolerant read discovery uses, so a spec the user hand-typed
+        # beside a JSONC comment is still findable; an unparseable file
+        # degrades to ``{}`` exactly as before.
+        found = _usable(_read_scope_json(path)[0])
         if found is not None:
             return found
     return None
@@ -2302,7 +2451,11 @@ def _scope_has_entry(name: str, path: Path) -> bool:
     """Whether *path* holds an entry for the row *name* -- by the ONE key the row
     stands for (:func:`_config_entry_for`), so a raw ``npm:@...`` entry counts
     for its canonical row and an ambiguous name counts as absent."""
-    return _config_entry_for(_load_json_or_empty(path).get("mcpServers", {}), name) is not None
+    # Tolerant, like discovery's presence read of the same file: a strict
+    # read here answered "absent" for a JSONC file the panel correctly showed
+    # as present, which is what steered the apply into the destructive
+    # skeleton rewrite ``_set_scope_entry`` now refuses.
+    return _config_entry_for(_read_scope_json(path)[0].get("mcpServers", {}), name) is not None
 
 
 def _set_kirocrew_entry(
@@ -2435,8 +2588,15 @@ def _rmw_remove_entry(path: Path, name: str, *, preferred: str | None = None) ->
     ``"noop"`` when the read holds nothing for the name, ``"ambiguous"`` when
     the read holds several raw keys for it and *preferred* is not one of them --
     then nothing is written, because one of them may be a distinct server.
+
+    Tolerant read, like :func:`_set_scope_entry`: the panel can show an entry
+    from a JSONC file that discovery read tolerantly, so removal is judged on
+    what the file actually holds; and because the only write here is a
+    plain-JSON rewrite of the whole document, a file that parsed only
+    tolerantly -- or not at all -- is refused via :class:`_McpConfigRefused`
+    instead of rewritten, which the callers report rather than swallow.
     """
-    data = _load_json_or_empty(path)
+    data, state = _read_scope_json(path)
     servers = data.get("mcpServers", {})
     try:
         key = _resolve_key_from_read(servers, name, preferred)
@@ -2445,7 +2605,7 @@ def _rmw_remove_entry(path: Path, name: str, *, preferred: str | None = None) ->
     if key is None or not isinstance(servers, dict) or key not in servers:
         return "noop"
     del servers[key]
-    _atomic_write(path, data)
+    _write_scope_or_refuse(path, data, state)
     return "removed"
 
 
@@ -2517,8 +2677,16 @@ def _set_scope_entry(
     alias-keyed copy beside a raw-keyed one. A read that stays ambiguous returns
     ``"ambiguous"`` and writes nothing: one of those keys may be a distinct
     server.
+
+    The read applies the same JSONC tolerance discovery does, so presence is
+    judged on what the file actually holds; a strict re-read of a tolerated
+    file would see ``{}`` and an add would write a skeleton-plus-entry over
+    the user's whole config. Every write is a plain-JSON rewrite of the
+    entire document, so a file that parsed only tolerantly -- or not at all
+    -- is refused via :class:`_McpConfigRefused` instead of written: no-op
+    paths that touch nothing still succeed on such a file.
     """
-    data = _load_json_or_empty(path)
+    data, state = _read_scope_json(path)
     servers = data.setdefault("mcpServers", {})
     try:
         key = _resolve_key_from_read(servers, name, preferred)
@@ -2532,7 +2700,7 @@ def _set_scope_entry(
             # the launch predicate reads fail-closed), clear it.
             if mcp_entry_is_muted(entry):
                 entry.pop("disabled", None)
-                _atomic_write(path, data)
+                _write_scope_or_refuse(path, data, state)
                 return "enabled"
             return "noop"
         if spec is None:
@@ -2540,14 +2708,21 @@ def _set_scope_entry(
         if spec is None:
             return "missing_spec"
         servers[name] = {k: v for k, v in spec.items() if k != "disabled"}
-        _atomic_write(path, data)
+        _write_scope_or_refuse(path, data, state)
         return "added"
     # enabled=False — hard remove.
     if key is None or not isinstance(entry, dict):
         return "noop"
     del servers[key]
-    _atomic_write(path, data)
+    _write_scope_or_refuse(path, data, state)
     return "removed"
+
+
+def _write_scope_or_refuse(path: Path, data: dict, state: str) -> None:
+    """Commit a scope write, or refuse it on a state that must not be rewritten."""
+    if state not in ("absent", "ok"):
+        raise _McpConfigRefused(state, path)
+    _atomic_write(path, data)
 
 
 #: One change's preflight resolution: scope label -> the raw key that scope held
@@ -3074,11 +3249,20 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
                     # ordering); _purge_server_config strips every scope + agent
                     # file idempotently -- exactly the entries Phase 0 pinned, so
                     # nothing is resolved (or refused) after the package is gone.
-                    outcome["actions"].update(
-                        await _offload_config_write(
-                            _purge_server_config, name, preferred=uninstall_keys.get(name, {})
+                    try:
+                        outcome["actions"].update(
+                            await _offload_config_write(
+                                _purge_server_config, name, preferred=uninstall_keys.get(name, {})
+                            )
                         )
-                    )
+                    except _McpConfigRefused as exc:
+                        # A user global file holds JSONC (or worse) and the
+                        # entry is IN it, so the purge's rewrite was refused --
+                        # reported, not swallowed: the config still references
+                        # this name until the file is rewritten as plain JSON.
+                        outcome["actions"][SCOPE_KIRO_GLOBAL] = "refused"
+                        outcome["error"] = str(exc)
+                        outcome["code"] = exc.code
                     purged_names.add(name)
                     # Companion package removal already ran in Phase 1 (before the
                     # lock); merge its recorded result here.
@@ -3134,23 +3318,39 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
                 # spec, and the CC add would get "missing_spec" even though
                 # the user clearly intended it to move over.
                 resolved_spec = _find_server_spec_anywhere(name)
-                outcome["actions"]["kiroGlobal"] = await _offload_config_write(
-                    _set_scope_entry,
-                    _GLOBAL_MCP_JSON,
-                    name,
-                    enabled=desired_kiro,
-                    spec=resolved_spec,
-                    preferred=keys.get(SCOPE_KIRO_GLOBAL),
-                )
-                for scope in extra_scopes:
-                    outcome["actions"][f"{scope.id}Global"] = await _offload_config_write(
+                try:
+                    outcome["actions"]["kiroGlobal"] = await _offload_config_write(
                         _set_scope_entry,
-                        scope.global_json,
+                        _GLOBAL_MCP_JSON,
                         name,
-                        enabled=desired_extra[scope.id],
+                        enabled=desired_kiro,
                         spec=resolved_spec,
-                        preferred=keys.get(f"{scope.id}Global"),
+                        preferred=keys.get(SCOPE_KIRO_GLOBAL),
                     )
+                except _McpConfigRefused as exc:
+                    # Refuse the plain-JSON rewrite of a JSONC/unparseable
+                    # global file; the managed (kirocrew) write above already
+                    # happened, so the outcome says exactly what was and was
+                    # not applied instead of 500ing the whole batch after a
+                    # partial commit.
+                    outcome["actions"]["kiroGlobal"] = "refused"
+                    outcome["error"] = str(exc)
+                    outcome["code"] = exc.code
+                for scope in extra_scopes:
+                    label = f"{scope.id}Global"
+                    try:
+                        outcome["actions"][label] = await _offload_config_write(
+                            _set_scope_entry,
+                            scope.global_json,
+                            name,
+                            enabled=desired_extra[scope.id],
+                            spec=resolved_spec,
+                            preferred=keys.get(label),
+                        )
+                    except _McpConfigRefused as exc:
+                        outcome["actions"][label] = "refused"
+                        outcome["error"] = str(exc)
+                        outcome["code"] = exc.code
 
                 # ── Per-tool overrides (disabledTools in <data home>/mcp.json) ──
                 tool_overrides = change.get("toolOverrides")

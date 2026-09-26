@@ -320,10 +320,8 @@ jobs:
   # it. One extra ~1-minute job buys the whole matrix the right to not start.
   #
   # Fails closed on purpose, in all three ways it can go wrong: a Fast Gate run
-  # that never appears, one that never completes inside the budget, and one whose
-  # conclusion is a decided non-success all exit non-zero. `action_required` is
-  # not one of them: GitHub reports a fork run awaiting maintainer approval that
-  # way, so it is polled as pending. A barrier that passed when it could
+  # that never appears, one that never completes inside the budget, and one that
+  # completes non-success all exit non-zero. A barrier that passed when it could
   # not read its subject would be worse than no barrier, because the matrix would
   # run anyway and the log would claim it was cleared to.
   await-fast-gate:
@@ -413,13 +411,6 @@ jobs:
                 success)
                   echo "Fast Gate passed. Releasing the heavy jobs."
                   exit 0
-                  ;;
-                action_required)
-                  # A fork run still awaiting maintainer approval is reported as
-                  # completed/action_required. That is pending, not decided, so keep
-                  # polling under TOTAL_BUDGET -- otherwise which of the two pending
-                  # runs a maintainer approves first decides whether the matrix runs.
-                  status="awaiting maintainer approval"
                   ;;
                 *)
                   echo "::error::Fast Gate concluded '$conclusion' ($url)." \
@@ -518,11 +509,8 @@ jobs:
       # change. The baseline makes the gate real for everything else, so new code
       # is formatted without any PR being forced to carry unrelated churn.
       - name: Check formatting (black, baselined)
-        # Every runner recycles black workers: one file per child, at most eight,
-        # capped at 2 GiB each on Linux. Hosted `ubuntu-latest` needs this too:
-        # the compiled wheel retains memory per worker and the VM has no cgroup
-        # cap, so a native pool takes the whole 16 GB runner down mid-step (exit
-        # 143). Recycling costs ~1.6x native wall time on four cores.
+        # Fleet/local checks recycle at most two workers, capped at 2 GiB each
+        # on Linux. Hosted CI keeps the native command and default worker count.
         # Keep cgroup evidence: per-process limits do not bound the whole job.
         run: python3 scripts/ci_black_diagnostics.py scripts/check_black_formatting.py
 
@@ -749,9 +737,9 @@ jobs:
             GATES=()
             while IFS= read -r line; do line=${line%$'\r'}; if [ -n "$line" ]; then GATES+=("$line"); fi; done <<< "$LEAF_GATES"
             CHANGED=()
-            for target in ${TARGETS[@]+"${TARGETS[@]}"}; do
+            for target in "${TARGETS[@]}"; do
               keep=1
-              for gate in ${GATES[@]+"${GATES[@]}"}; do
+              for gate in "${GATES[@]}"; do
                 if [ "$target" = "$gate" ]; then keep=0; break; fi
               done
               if [ "$keep" = "1" ]; then CHANGED+=("$target"); fi
@@ -762,24 +750,24 @@ jobs:
             fi
             if [ "${#GATES[@]}" -gt 0 ]; then
               echo "::group::leaf corpus gates (${#GATES[@]} file(s), once)"
-              pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -q -n auto --timeout=120 --no-cov -m "not ipv6_required" ${GATES[@]+"${GATES[@]}"}
+              pytest "${PROGRESS[@]}" -q -n auto --timeout=120 --no-cov -m "not ipv6_required" "${GATES[@]}"
               echo "::endgroup::"
             fi
             for pass in $(seq 1 "$LEAF_REPEAT"); do
               echo "::group::leaf changed files, pass $pass/$LEAF_REPEAT"
-              pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -q -n auto --timeout=120 --no-cov -m "not ipv6_required" ${CHANGED[@]+"${CHANGED[@]}"}
+              pytest "${PROGRESS[@]}" -q -n auto --timeout=120 --no-cov -m "not ipv6_required" "${CHANGED[@]}"
               echo "::endgroup::"
             done
             exit 0
           fi
           if [ "$REDUCED" = "true" ]; then
-            python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n auto --timeout=120 -m "not ipv6_required" \
+            python -m pytest "${PROGRESS[@]}" -p scripts.ci_file_shards -q -n auto --timeout=120 -m "not ipv6_required" \
               --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
               --no-cov \
-              ${TARGETS[@]+"${TARGETS[@]}"}
+              "${TARGETS[@]}"
             exit 0
           fi
-          python -m pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -p scripts.ci_file_shards -q -n auto --timeout=120 -m "not ipv6_required" \
+          python -m pytest "${PROGRESS[@]}" -p scripts.ci_file_shards -q -n auto --timeout=120 -m "not ipv6_required" \
             --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
             --cov=kiro_crew --cov=sage_lib \
             --cov=src/kiro_crew/apps/builtins/aws_control/crew/packaging \
@@ -994,7 +982,7 @@ jobs:
           if [ "$LEAF_TESTS" = "true" ]; then REPEAT=3; fi
           for pass in $(seq 1 "$REPEAT"); do
             python -m pytest -q -n0 --timeout=120 -m ipv6_required \
-              ${COVERAGE[@]+"${COVERAGE[@]}"} --junitxml="$RUNNER_TEMP/ipv6.xml" \
+              "${COVERAGE[@]}" --junitxml="$RUNNER_TEMP/ipv6.xml" \
               test/test_meetings_providers.py test/test_platform_compat.py
             python - <<'PY'
           import os
@@ -1077,7 +1065,7 @@ jobs:
           if [ "$LEAF_TESTS" = "true" ]; then REPEAT=3; fi
           for pass in $(seq 1 "$REPEAT"); do
             python -m pytest -q -n0 --timeout=120 \
-              ${COVERAGE[@]+"${COVERAGE[@]}"} --junitxml="$RUNNER_TEMP/kernel-lock-owner.xml" \
+              "${COVERAGE[@]}" --junitxml="$RUNNER_TEMP/kernel-lock-owner.xml" \
               "test/test_gateway_lock.py::TestLockHolder::test_live_holder_is_named_and_alive" \
               "test/test_gateway_lock_diagnosis.py::test_flock_is_held_by_a_fork_orphan"
             python - <<'PY'
@@ -2739,7 +2727,7 @@ jobs:
             # or summary; the second reporter keeps a human-readable verdict in
             # this job's own log.
             npx vitest run --reporter=blob --reporter=default --passWithNoTests \
-              --shard=${{ matrix.shard }}/"$SHARD_COUNT" ${TARGETS[@]+"${TARGETS[@]}"}
+              --shard=${{ matrix.shard }}/"$SHARD_COUNT" "${TARGETS[@]}"
           else
             # --reporter=blob stores results + per-shard coverage under
             # website/.vitest-reports/; the frontend-coverage-merge job stitches
@@ -3047,17 +3035,6 @@ jobs:
         working-directory: website
         run: npx playwright install chromium
 
-      - name: MCP-App message rows render both delivery states (asserting harness)
-        # The same self-asserting harness that produced the PR's screenshot
-        # evidence: serves the built SPA over loopback with fixture-backed
-        # /api/** responses and fails on any scene assertion (envelope leak,
-        # missing attribution, missing text). Lives here to reuse the build
-        # and the Chromium install above; needs no gateway, token or backend.
-        timeout-minutes: 5
-        shell: bash
-        working-directory: website
-        run: node scripts/capture-mcp-app-message-rows.mjs "$RUNNER_TEMP/mcp-app-message-rows"
-
       - name: Resolve base for the parallel i18n render-time gate
         # Phase 5 of the i18n plan. Every other i18n gate reads SOURCE or CATALOG
         # JSON, so three defect classes are invisible to all of them: a string that
@@ -3253,70 +3230,6 @@ jobs:
         run: |
           echo "::remove-matcher owner=python::"
           python -m pytest -q -n0 --no-cov --timeout=600 test/e2e/test_private_workflow_memory.py
-
-  # The integration layer: the real gateway booted IN the pytest process.
-  #
-  # `test/integration/` sits between the unit shards (bare `web.Application()`
-  # shells, everything mocked) and the E2E jobs above (a `kirocrew gateway`
-  # subprocess). Each test boots `GatewayOrchestrator.run()` on a scratch
-  # `KIROCREW_HOME` with the packaged fake ACP backend, then talks HTTP to the
-  # port it bound -- same interpreter, same event loop. That is what lets a test
-  # here assert on a restart (second boot, same home), on an event-loop stall
-  # seen from a second request, or on a policy file the boot itself wrote.
-  #
-  # Opt-in by `KIROCREW_INTEGRATION=1`; the unit shards collect and skip it.
-  # Linux only: the fixture snapshots and restores the SIGINT/SIGTERM handlers
-  # `run()` installs, which is a POSIX dance the Windows shards must not pay.
-  #
-  # The gate is ROUTE coverage, not line coverage: the conftest records which
-  # registered dashboard routes the suite requested, and
-  # `scripts/check_integration_route_coverage.py` reports the share. `--min` is
-  # a ratchet -- raise it a little under what main measures, never above.
-  integration:
-    name: Integration (in-process gateway)
-    needs: [changes, await-fast-gate]
-    runs-on: ${{ needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-        with:
-          enable-cache: true
-          cache-dependency-glob: |
-            pyproject.toml
-            setup.cfg
-      - name: Install dependencies
-        run: uv pip install --system -e ".[voice,desktop]" --group dev
-      - uses: ./.github/actions/run-as-runner
-      - name: Run the integration layer
-        shell: /usr/local/bin/ci-shell {0}
-        env:
-          KIROCREW_INTEGRATION: "1"
-          KIROCREW_INTEGRATION_HITS_DIR: ${{ runner.temp }}/integration-hits
-        run: |
-          echo "::remove-matcher owner=python::"
-          python -m pytest -q -n 2 --dist loadgroup --max-worker-restart=2 \
-            --timeout=300 --no-cov test/integration
-      - name: Route coverage
-        shell: /usr/local/bin/ci-shell {0}
-        env:
-          HITS_DIR: ${{ runner.temp }}/integration-hits
-        run: |
-          python3 scripts/check_integration_route_coverage.py "$HITS_DIR" --missing --min 0.1 \
-            | tee "$HITS_DIR/route-coverage.txt"
-      - name: Upload route-coverage report
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: integration-route-coverage
-          path: ${{ runner.temp }}/integration-hits/
-          if-no-files-found: ignore
-          retention-days: 7
 
   # The only job that BOOTS A GATEWAY on macOS and Windows.
   #

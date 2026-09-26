@@ -187,10 +187,10 @@ jobs:
           # resolves relative to the bundle wherever it lands.
           New-Item -ItemType Directory -Force (Join-Path $out "bin") | Out-Null
           Set-Content -Encoding ascii -LiteralPath (Join-Path $out "bin\kirocrew.cmd") `
-            -Value @('@echo off', '"%~dp0..\python.exe" -s -P -m kiro_crew %*')
+            -Value @('@echo off', '"%~dp0..\python.exe" -s -m kiro_crew %*')
           # Self-containment gate, same as the packaging script's: a missing
           # dependency must fail here, not at gateway boot.
-          & $python -s -P -m kiro_crew --version
+          & $python -s -m kiro_crew --version
           if ($LASTEXITCODE -ne 0) {
             throw "the bundled backend is NOT self-contained under PYTHONNOUSERSITE=1."
           }

@@ -347,6 +347,7 @@ async def remove_provider_entry(
     """
     from kiro_crew.connections.tool_aliases import normalized_endpoint
     from kiro_crew.dashboard.handlers.mcp import (
+        _McpConfigRefused,
         _get_mcp_lock,
         _offload_config_write,
         _purge_server_config,
@@ -563,7 +564,19 @@ async def remove_provider_entry(
             # the MCP lock while the worker is still rewriting the store, letting a
             # concurrent purge interleave with this stale snapshot. mcp.py ships this
             # helper for exactly that, and its docstring names the hazard.
-            await _offload_config_write(_purge_server_config, slug, scopes=owned_scopes)
+            try:
+                await _offload_config_write(_purge_server_config, slug, scopes=owned_scopes)
+            except _McpConfigRefused as exc:
+                # The entry lives in a scope file that parsed only tolerantly
+                # (or not at all), so the purge's plain-JSON rewrite was
+                # refused rather than destroying the user's config. The
+                # disconnect itself still commits -- the grant artifacts below
+                # are what it owns -- but the leftover config entry is
+                # reported, like every other committed-but-not-projected state
+                # here, so the operator knows the file needs rewriting.
+                logger.warning(
+                    "Disconnect left %r's config entry in place: %s", slug, exc
+                )
         else:
             logger.info(
                 "Disconnect left the %r entry alone: no scope configures it at this endpoint",

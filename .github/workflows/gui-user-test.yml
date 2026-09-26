@@ -31,11 +31,9 @@ name: GUI User Test
 # under test can be the PR's while the code holding credentials is not.
 #
 # COST GATES: per-scenario max_steps / max_seconds live in the scenario YAML;
-# the run-level USD budget is an input (default $40, and the nightly schedule
-# runs under the same $40 cap -- the full nightly tier on Opus costs about $30,
-# and the earlier $5 / $8 / $20 caps tripped mid-run); a failed scenario is
-# retried once. The per-token prices passed to the harness are Opus list prices
-# so the budget gate measures real dollars, not Sonnet-priced ones.
+# the run-level USD budget is an input (default $20, and the nightly schedule
+# runs under the same $20 cap -- the full nightly tier costs about $8, and the
+# earlier $5 / $8 caps tripped mid-run); a failed scenario is retried once.
 
 on:
   workflow_dispatch:
@@ -52,11 +50,11 @@ on:
       model:
         description: "Bedrock model / inference-profile id"
         type: string
-        default: "us.anthropic.claude-opus-5"
+        default: "us.anthropic.claude-sonnet-4-6"
       budget_usd:
         description: "Stop the run once estimated spend reaches this many USD"
         type: string
-        default: "40"
+        default: "20"
   schedule:
     - cron: "20 9 * * *" # 09:20 UTC, clear of the 06:00 nightly build and the 08:xx benchmarks
 
@@ -160,8 +158,8 @@ jobs:
         run: |
           set -euo pipefail
           case "$EVENT" in
-            workflow_dispatch) tier="${IN_TIER:-smoke}"; model="${IN_MODEL:-us.anthropic.claude-opus-5}"; budget="${IN_BUDGET:-40}" ;;
-            *)                 tier="nightly"; model="us.anthropic.claude-opus-5"; budget="40" ;;
+            workflow_dispatch) tier="${IN_TIER:-smoke}"; model="${IN_MODEL:-us.anthropic.claude-sonnet-4-6}"; budget="${IN_BUDGET:-20}" ;;
+            *)                 tier="nightly"; model="us.anthropic.claude-sonnet-4-6"; budget="20" ;;
           esac
           scenario_args=""
           if [ -n "${IN_SCENARIO:-}" ] && [ "$EVENT" = "workflow_dispatch" ]; then
@@ -219,7 +217,6 @@ jobs:
             --region us-west-2 \
             --tier "$TIER" \
             --budget-usd "$BUDGET" \
-            --price-in 15 --price-out 75 \
             --display "$GUI_DISPLAY" \
             --screen "$GUI_SCREEN" \
             --retries 1 \
@@ -263,7 +260,7 @@ jobs:
           summary="$GUI_OUT/results/summary.json"
           summary_args=()
           [ -f "$summary" ] && summary_args=(--summary "$summary")
-          python test/gui_user/report.py --format features --run-url "$RUN_URL" ${summary_args[@]+"${summary_args[@]}"} \
+          python test/gui_user/report.py --format features --run-url "$RUN_URL" "${summary_args[@]}" \
             > "$GUI_OUT/results/features.md"
 
       # New-user friction: what confused the tester persona, carried across
@@ -337,7 +334,7 @@ jobs:
             echo "no scheduled run on $LEDGER_BRANCH holds a ledger artifact; starting one"
           fi
           if [ -f "$summary" ]; then
-            python test/gui_user/friction.py merge --summary "$summary" ${ledger_args[@]+"${ledger_args[@]}"} \
+            python test/gui_user/friction.py merge --summary "$summary" "${ledger_args[@]}" \
               --out "$GUI_OUT/results/friction.json" --out-ledger "$GUI_OUT/results/friction_ledger.json" \
               --date "$date" --run-url "$RUN_URL" --head-sha "$SHA"
             # The harness wrote verdict.md before the ledger existed; re-render it
@@ -413,7 +410,7 @@ jobs:
             {
               echo "## GUI user test — $verdict"
               echo
-              python test/gui_user/report.py --summary "$summary" --run-url "$RUN_URL" --artifact-url "$ARTIFACT_URL" ${friction_args[@]+"${friction_args[@]}"}
+              python test/gui_user/report.py --summary "$summary" --run-url "$RUN_URL" --artifact-url "$ARTIFACT_URL" "${friction_args[@]}"
             } >> "$GITHUB_STEP_SUMMARY"
           else
             verdict="ERROR"
@@ -452,7 +449,7 @@ jobs:
           if [ -f "$summary" ]; then
             python test/gui_user/report.py --summary "$summary" --format issue-title --head-sha "$SHA" > "$title_file"
             python test/gui_user/report.py --summary "$summary" --format issue-body --head-sha "$SHA" \
-              --run-url "$RUN_URL" --artifact-url "$ARTIFACT_URL" ${friction_args[@]+"${friction_args[@]}"} > "$body_file"
+              --run-url "$RUN_URL" --artifact-url "$ARTIFACT_URL" "${friction_args[@]}" > "$body_file"
           else
             echo "Nightly GUI user test ERROR: target did not boot" > "$title_file"
             printf 'The nightly agentic GUI user test produced no summary at `%s`: the target did not boot or the harness crashed.\n\nSee the [workflow run](%s).\n\nLane: `.github/workflows/gui-user-test.yml` · tracking: #9578\n' "$SHA" "$RUN_URL" > "$body_file"

@@ -1735,3 +1735,118 @@ class TestSyncDiscoveredServers:
             t1.start(), t2.start()
             t1.join(), t2.join()
         assert not overlap, "the sync mutex must serialize concurrent callers"
+
+
+class TestASyncDoesNotRewriteAJsoncGlobalFile:
+    """api_mcp_sync re-reads the file whose tolerant read fed the sync.
+
+    Discovery reads the kiro-global mcp.json with JSONC tolerance, so a JSONC
+    file can put names into ``to_sync`` by itself. The handler then re-reads
+    the SAME file to merge those names in. Every write available below is a
+    plain-JSON rewrite, so a file that parsed only tolerantly can never be
+    written back without destroying the comments the tolerance just worked
+    around -- and a file that cannot be parsed at all would be reset to an
+    empty skeleton. Both REFUSE the write, exactly like the toggle handlers on
+    this file already do: an error the user can act on beats a silent rewrite
+    of a hand-written config this handler does not own. Both refusals fire
+    BEFORE the durable discover→write pass starts: ``sync_discovered_servers``
+    rebuilds the agent config and writes the CC sidecar unconditionally, and a
+    refusal after that would strand those committed writes behind the 500.
+    """
+
+    JSONC = """{
+  // "commented-out": { "command": "npx", "args": ["-y", "gone"] }
+  "mcpServers": {
+    "kept-server": {"command": "kept-mcp"},
+  },
+}
+"""
+
+    @staticmethod
+    def _remote():
+        from kiro_crew.mcp_discovery import McpServerInfo
+
+        return McpServerInfo(
+            name="handmade",
+            url="https://kirocrew.example.com/mcp",
+            source="discovered",
+        )
+
+    @classmethod
+    async def _run_sync(cls, mcp_env, *, owned: bool = True):
+        from kiro_crew.dashboard.handlers.mcp import api_mcp_sync
+        from kiro_crew.mcp_discovery import SCOPE_KIROCREW
+
+        remote = cls._remote()
+        req = MagicMock()
+        req.app = {"state": MagicMock()}
+        _store = {remote.name: {"url": "https://store"}} if owned else {}
+        with (
+            patch("kiro_crew.mcp_discovery.discover_servers_to_sync", return_value=[remote]),
+            patch(
+                "kiro_crew.mcp_discovery.sync_discovered_servers"
+            ) as mock_sync_discovered,
+            patch("kiro_crew.mcp_discovery.sync_to_agent_config", return_value=True),
+            patch("kiro_crew.mcp_discovery.register_servers_for_cc"),
+            patch(
+                "kiro_crew.mcp_discovery._load_mcp_json_by_source",
+                return_value={SCOPE_KIROCREW: _store},
+            ),
+            patch("kiro_crew.dashboard.handlers.mcp._get_mcp_lock") as mock_lock,
+            patch("kiro_crew.dashboard.handlers.mcp._write_mcp_json") as mock_write,
+            patch("kiro_crew.dashboard.handlers.mcp._sync_mcp_to_agent_batch"),
+            patch(
+                "kiro_crew.dashboard.handlers.sessions._reset_all_sessions",
+                new_callable=AsyncMock,
+                return_value=1,
+            ),
+        ):
+            mock_lock.return_value = AsyncMock()
+            resp = await api_mcp_sync(req)
+        return resp, mock_write, mock_sync_discovered
+
+    @pytest.mark.asyncio
+    async def test_a_jsonc_global_file_refuses_the_sync_write(self, mcp_env):
+        """Tolerant parse -> the only write below is a plain-JSON rewrite that
+        would delete the comments, so the sync refuses instead."""
+        _, mcp_json = mcp_env
+        mcp_json.write_text(self.JSONC, encoding="utf-8")
+        resp, mock_write, mock_sync = await self._run_sync(mcp_env, owned=True)
+        assert resp.status == 500
+        body = json.loads(resp.text)
+        assert body["code"] == "mcp_config_jsonc"
+        assert "plain JSON" in body["error"]
+        mock_write.assert_not_called()
+        # The refusal precedes the whole durable discover→write pass: no agent
+        # rebuild, no sidecar write, no session reset committed behind the 500.
+        mock_sync.assert_not_called()
+        # Not one byte of the user's file changed.
+        assert mcp_json.read_text(encoding="utf-8") == self.JSONC
+
+    @pytest.mark.asyncio
+    async def test_a_genuinely_broken_global_file_refuses_the_sync_write(self, mcp_env):
+        """Not parseable even tolerantly -> 500, and the file is NOT replaced."""
+        _, mcp_json = mcp_env
+        mcp_json.write_text("{ this is not json at all", encoding="utf-8")
+        resp, mock_write, mock_sync = await self._run_sync(mcp_env, owned=True)
+        assert resp.status == 500
+        assert "cannot parse global mcp.json" in json.loads(resp.text)["error"]
+        mock_write.assert_not_called()
+        mock_sync.assert_not_called()
+        # Not one byte of the user's file changed.
+        assert mcp_json.read_text(encoding="utf-8") == "{ this is not json at all"
+
+    @pytest.mark.asyncio
+    async def test_an_unterminated_block_comment_refuses_the_sync_write(self, mcp_env):
+        """A block comment that never closes is malformed, not JSONC: strip_jsonc
+        refuses it, the pre-sync classification folds that into unparseable,
+        and the durable pass never starts."""
+        _, mcp_json = mcp_env
+        malformed = self.JSONC + " /* never closed\n"
+        mcp_json.write_text(malformed, encoding="utf-8")
+        resp, mock_write, mock_sync = await self._run_sync(mcp_env, owned=True)
+        assert resp.status == 500
+        assert "cannot parse global mcp.json" in json.loads(resp.text)["error"]
+        mock_write.assert_not_called()
+        mock_sync.assert_not_called()
+        assert mcp_json.read_text(encoding="utf-8") == malformed

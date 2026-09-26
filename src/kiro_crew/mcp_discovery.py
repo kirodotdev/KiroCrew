@@ -963,6 +963,124 @@ def configured_mcp_aliases(*, data_home: Path, user_home: Path) -> set[str]:
     return {mcp_server_alias(name) for name in names}
 
 
+def strip_jsonc(text: str) -> str:
+    """Strip JSONC constructs (``//`` and ``/* */`` comments, trailing commas).
+
+    The Kiro IDE and CLI accept JSONC in ``~/.kiro/settings/mcp.json``, so a
+    config that works there can carry ``//``-commented-out server blocks. A
+    strict :func:`json.loads` rejects the whole file for one comment, dropping
+    every server it defines.
+
+    String-aware: ``//`` inside a string literal (e.g. an https:// URL) is
+    left alone, as are quotes and backslash escapes. Trailing commas before
+    ``}``/``]`` are removed, matching the same tolerance. If the text is not
+    JSON-like at all the result simply fails the caller's ``json.loads``
+    exactly as before, so this never masks a genuinely broken file. An
+    unterminated ``/*`` raises :class:`ValueError` instead of dropping the
+    rest of the file: a comment that never closes is a broken file, not a
+    tolerated one, and the callers below fold that into the same
+    log-and-skip (reader) / refuse (writer) paths as any other parse
+    failure.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    in_string = False
+    while i < n:
+        ch = text[i]
+        if in_string:
+            out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                in_string = False
+            i += 1
+            continue
+        if ch == '"':
+            in_string = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "/" and i + 1 < n and text[i + 1] == "/":
+            nl = text.find("\n", i)
+            i = n if nl == -1 else nl  # keep the newline itself
+            continue
+        if ch == "/" and i + 1 < n and text[i + 1] == "*":
+            end = text.find("*/", i + 2)
+            if end == -1:
+                # Unterminated block comment: refusing (not swallowing to
+                # EOF) keeps the tolerance honest -- a malformed file must
+                # not parse just because its first comment was open-ended.
+                raise ValueError(
+                    "unterminated block comment in JSONC; not tolerating a "
+                    "file whose comments do not terminate"
+                )
+            i = end + 2
+            out.append(" ")  # preserve token separation
+            continue
+        if ch == ",":
+            # Trailing comma: drop it only here, outside strings, by looking
+            # ahead past whitespace AND comments for the closing brace/bracket.
+            # A post-hoc regex over the joined output would also rewrite a comma
+            # that is part of a string value ("literal,}" -> "literal}"), and
+            # that corrupted value flows on into every downstream write. The
+            # lookahead has to cross comments too: `"a": {...},` followed by a
+            # commented-out LAST server (`// "dead": ...`) is exactly the edit
+            # the IDE's own conventions invite, and stopping the lookahead at
+            # the comment would keep the comma and fail the whole file again.
+            j = i + 1
+            while j < n:
+                if text[j] in " \t\r\n":
+                    j += 1
+                    continue
+                if text[j] == "/" and j + 1 < n and text[j + 1] == "/":
+                    nl = text.find("\n", j)
+                    j = n if nl == -1 else nl + 1
+                    continue
+                if text[j] == "/" and j + 1 < n and text[j + 1] == "*":
+                    end = text.find("*/", j + 2)
+                    j = n if end == -1 else end + 2
+                    continue
+                break
+            if j < n and text[j] in "}]":
+                i += 1  # drop the comma; the whitespace itself is kept
+                continue
+            out.append(ch)
+            i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+_jsonc_dialect_warned: dict[str, object] = {}
+
+
+def _warn_jsonc_dialect(p: Path) -> None:
+    """Log the JSONC-dialect note once per file version, not per discovery pass.
+
+    Discovery runs on a 60 s gauge and on every sync pass, so an unguarded
+    warning would re-fire forever for a steady state this reader chose to
+    tolerate. Keyed on mtime so a later edit to the file warns again.
+    """
+    try:
+        version: object = p.stat().st_mtime_ns
+    except OSError:
+        version = None
+    key = str(p)
+    if _jsonc_dialect_warned.get(key) == version:
+        return
+    _jsonc_dialect_warned[key] = version
+    logger.warning(
+        "MCP config %s contains JSONC (comments/trailing commas); parsed "
+        "tolerantly. Prefer plain JSON: not every consumer of this file "
+        "accepts comments.",
+        p,
+    )
+
+
 def _load_mcp_json_by_source() -> dict[str, dict[str, Any]]:
     """Return ``{scope: {name: spec}}`` keyed by scope name.
 
@@ -994,12 +1112,28 @@ def _load_mcp_json_by_source() -> dict[str, dict[str, Any]]:
         if not p.is_file():
             continue
         try:
-            data = json.loads(safe_read_file(str(p)))
-        except (json.JSONDecodeError, OSError) as exc:
+            raw = safe_read_file(str(p))
+        except OSError as exc:
             # PermissionError (subclass of OSError) is raised by
             # safe_read_file when is_sensitive_path() blocks the read.
             logger.warning("Failed to load MCP config from %s: %s", p, exc)
             continue
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            # The IDE accepts JSONC in this same file, so a config that works
+            # there must not silently vanish here: one ``//`` comment drops
+            # every server in the file, not just the commented one.
+            try:
+                data = json.loads(strip_jsonc(raw))
+            except ValueError:
+                # A JSONDecodeError from the stripped text, or strip_jsonc's
+                # own refusal of an unterminated block comment: either way
+                # this is a broken file, not a tolerant one. Same
+                # log-and-skip a strict-parse failure has always had.
+                logger.warning("Failed to load MCP config from %s: %s", p, exc)
+                continue
+            _warn_jsonc_dialect(p)
         if not isinstance(data, dict):
             continue
         servers = data.get("mcpServers", {})
