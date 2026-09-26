@@ -255,4 +255,17 @@ describe('what deliberately gets no retry', () => {
     expect(intercepts('/fonts/Inter-Regular.woff2', 'no-cors')).toBe(false)
     expect(intercepts('/sprites/icons.svg', 'no-cors')).toBe(false)
   })
+
+  it('leaves the /pcm-worklet.js dictation module to the browser', () => {
+    // The worklet is fetched by audioWorklet.addModule('/pcm-worklet.js') when a
+    // voice session mounts. Being a top-level path, without its skip rule it fell
+    // through to the shell-navigation handler, whose non-navigation fallback
+    // resolves a transient failure to Response.error() (no shell cache entry) —
+    // which addModule throws as the "audio worklet unavailable" toast. Interception
+    // here would restore that intermittent toast on every new chat, so the browser
+    // must own the fetch (a normal retryable network error, not a synthetic one).
+    // no-cors is the real mode of an addModule fetch.
+    expect(intercepts('/pcm-worklet.js', 'no-cors')).toBe(false)
+    expect(intercepts('/pcm-worklet.js', 'navigate')).toBe(false)
+  })
 })
