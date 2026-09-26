@@ -3895,9 +3895,11 @@ def _replacement_shares_transcript(state: DashboardState, name: str, slot: _Chat
     ``slack:<ts>`` and the ``slack_<ts>`` filename stem onto one ``.jsonl``, and a
     Slack thread predating the canonical key still resolves to its bare
     ``thread_ts`` stem (:func:`~kiro_crew.history.transcript_stems` carries both).
-    The two errors are not symmetric: over-reporting "shared" only declines an
-    archive the next close will make, while under-reporting stamps ``closed`` onto a
-    file a live slot is still writing, which is the whole harm being guarded.
+    Neither error is benign. Under-reporting stamps ``closed`` onto a file a live
+    slot is still writing. Over-reporting declines an archive the replacement's own
+    close does not make: that save also targets ``slot_history_key``, so an unbound
+    replacement stamps ``dashboard:{name}`` and never the original's linked key,
+    leaving the flag absent and the tab to resurface.
     """
     current = state._slots.get(name)
     if current is None or current is slot:
