@@ -3,21 +3,26 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertTriangle,
   ArrowRight,
+  Boxes,
   Check,
   CheckCircle2,
+  ChevronDown,
   Copy,
   Download,
   ExternalLink,
-  LogIn,
   Package,
   RefreshCw,
   ShieldCheck,
+  Sparkles,
 } from 'lucide-react'
 import {
   ApiError,
   api,
+  type AcpBackendProbe,
   type KiroPrerequisiteStatus,
 } from '../api/client'
+import { ACP_BACKEND_KIRO } from '../api/acpBackend'
+import { clearCachedModels } from '../providers/adapters/acp'
 import {
   PANEL_CLASS,
   SCRIM_CLASS,
@@ -30,6 +35,7 @@ import { useScrollEdgesY } from '../hooks/useScrollEdges'
 import { Badge, Btn, Card, SendBtn } from './ui'
 import ErrorNotice from './ErrorNotice'
 
+import { Trans } from 'react-i18next'
 import { i18nT } from '../i18n/t'
 const QUERY_KEY = ['kiro-prerequisite'] as const
 
@@ -862,6 +868,436 @@ function AgentSpecsRejected({
   )
 }
 
+// ── Agent choice ─────────────────────────────────────────────────────────────
+//
+// Kiro CLI is the DEFAULT agent, not the only one: the gateway can drive any
+// selectable ACP harness (Settings → Agent). This gate used to check Kiro CLI
+// alone, so an operator who runs Claude Code (or Codex, …) and has no Kiro CLI
+// was held on "Set up Kiro" forever. The gate now asks the configured backend:
+// Kiro checks apply only while Kiro CLI is the configured agent.
+
+/** The config field Settings → Agent owns; the same key is written here. */
+const ACP_BACKEND_CONFIG_KEY = 'agent.acp_backend'
+/**
+ * The core spells the Kiro CLI backend as the empty string — a real value. The
+ * one definition lives in acpBackend.ts, beside `isKiroBackend`, so this gate
+ * and Settings → Agent cannot drift on what "kiro" is spelled as.
+ */
+const KIRO_BACKEND = ACP_BACKEND_KIRO
+/**
+ * Kiro's own agent server. Not "another coding agent" — it signs in with the
+ * Kiro account and has its own gate (KasLoginGate) — so it is left to Settings
+ * rather than offered here beside third-party harnesses.
+ */
+const KAS_BACKEND = 'kas'
+/** Shared with Settings → Agent so a switch made here is what that panel reads. */
+const CONFIG_QUERY_KEY = ['kirocrewConfig'] as const
+const BACKENDS_QUERY_KEY = ['acpBackends'] as const
+/**
+ * Poll while the picker is on screen, so an install is noticed without a click.
+ * Matched to the server's probe cache (`backend_install.CACHE_TTL_SECONDS`, 30s)
+ * like Settings → Agent's `PROBE_REFRESH_MS`: the endpoint serves that cache, so
+ * polling faster only returns the same bytes. The per-agent Check again drops
+ * the cache for a user who cannot wait.
+ */
+const BACKENDS_POLL_MS = 30_000
+
+/**
+ * Whether a harness can start a session now. Same reading Settings → Agent uses
+ * to disable a row: absent components or a gateway that must restart first.
+ * `unknown` is NOT a refusal — the check failed, not the harness — so it stays
+ * usable and the first turn reports a real problem in context.
+ */
+function backendUsable(probe: AcpBackendProbe | undefined): boolean {
+  if (!probe) return false
+  if (probe.selectable === false) return false
+  return probe.installed !== 'missing' && !probe.restart_required
+}
+
+/**
+ * When the harness probe re-polls. Only while a setup screen is what the user
+ * sees: once the dashboard is open — Kiro ready, a returning user, a usable
+ * configured agent — the answer that let them through is not re-litigated, and
+ * a configured agent that is NOT usable on an established install is reported
+ * by its first turn, not by a poll behind a screen nobody is looking at.
+ */
+export function acpBackendsRefetchInterval(
+  status: KiroPrerequisiteStatus | undefined,
+  otherBackendConfigured: boolean,
+  configured: AcpBackendProbe | undefined,
+): number | false {
+  if (!kiroPrerequisiteIsBlocking(status)) return false
+  if (otherBackendConfigured && backendUsable(configured)) return false
+  return BACKENDS_POLL_MS
+}
+
+/** Installed, confirmed and runnable now -- the one state with nothing left to check. */
+function agentReady(probe: AcpBackendProbe): boolean {
+  return probe.installed === 'installed' && !probe.restart_required && probe.selectable !== false
+}
+
+/** The backends this screen offers as alternatives to Kiro CLI. */
+function otherCodingAgents(backends: AcpBackendProbe[]): AcpBackendProbe[] {
+  return backends.filter(
+    b => b.id !== KIRO_BACKEND && b.id !== KAS_BACKEND && b.selectable !== false,
+  )
+}
+
+/**
+ * The same names Settings → Agent shows, from the same keys: that panel is the
+ * one catalog of translated harness names, and an id it does not name renders
+ * under the server's `policy_id` there too. A second catalog here would let the
+ * two screens call one agent two things.
+ */
+function agentName(probe: AcpBackendProbe): string {
+  switch (probe.id) {
+    case 'claude': return i18nT('pages.developer.agentBackendTab.claude_code')
+    default: return probe.policy_id || probe.id
+  }
+}
+
+function AgentStatusBadge({ probe }: { probe: AcpBackendProbe }) {
+  if (probe.installed === 'missing') {
+    return <Badge variant="muted">{i18nT('components.kiroPrerequisiteGate.agent_not_installed')}</Badge>
+  }
+  if (probe.restart_required) {
+    return <Badge variant="warn">{i18nT('components.kiroPrerequisiteGate.agent_restart_needed')}</Badge>
+  }
+  if (probe.installed === 'unknown') {
+    return <Badge variant="muted">{i18nT('components.kiroPrerequisiteGate.agent_unverified')}</Badge>
+  }
+  return (
+    <Badge variant="ok">
+      <CheckCircle2 className="lucide-inline" /> {i18nT('components.kiroPrerequisiteGate.agent_installed')}
+    </Badge>
+  )
+}
+
+/**
+ * The install command for Kiro CLI, for the gateway's platform.
+ *
+ * Kiro Crew still does not RUN it: the command is shown for the user to paste on
+ * the gateway host, and Kiro's own setup page stays one click away for every
+ * other install route (RPM, AppImage, musl). The commands are `<code>` children,
+ * never catalog values — a translated command cannot be typed.
+ */
+function KiroInstallCommands({ platform }: { platform: string }) {
+  const windows = platform === 'Windows'
+  const unix = platform === 'macOS' || platform === 'Linux'
+  const known = windows || unix
+  return (
+    <div className="space-y-3">
+      <p className="text-[13px] leading-relaxed text-text">
+        {known
+          ? i18nT('components.kiroPrerequisiteGate.install_kiro_cli_run_on_host', { platform })
+          : i18nT('components.kiroPrerequisiteGate.install_kiro_cli_run_for_platform')}
+      </p>
+      {!windows && (
+        <div>
+          {!known && (
+            <p className="text-[12px] font-medium text-muted">
+              {i18nT('components.kiroPrerequisiteGate.install_command_macos_linux')}
+            </p>
+          )}
+          <CopyCommand>
+            <code>curl -fsSL https://cli.kiro.dev/install | bash</code>
+          </CopyCommand>
+        </div>
+      )}
+      {!unix && (
+        <div>
+          <p className="text-[12px] font-medium text-muted">
+            {i18nT('components.kiroPrerequisiteGate.install_command_windows')}
+          </p>
+          <CopyCommand>
+            <code>irm &apos;https://cli.kiro.dev/install.ps1&apos; | iex</code>
+          </CopyCommand>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * "Use other coding agents": a collapsed alternative to Kiro CLI, modelled on
+ * Settings → Agent (same probe, same config key, same install commands).
+ *
+ * Collapsed by default because Kiro CLI is the recommended path; opened by
+ * default when the config already names another agent, because then this
+ * section — not the Kiro cards — is what stands between the user and the app.
+ * Choosing an agent writes the config; the gate then re-reads it and opens the
+ * dashboard as soon as that agent is usable. Nothing is installed from here.
+ */
+function OtherCodingAgents({
+  configured,
+  backends,
+  loading,
+  failed,
+}: {
+  configured: string
+  backends: AcpBackendProbe[]
+  loading: boolean
+  failed: boolean
+}) {
+  const qc = useQueryClient()
+  const others = otherCodingAgents(backends)
+  const configuredOther = configured !== KIRO_BACKEND ? configured : ''
+  const [open, setOpen] = useState(() => configuredOther !== '')
+  const [picked, setPicked] = useState<string | null>(null)
+  // Resolved every render, like Settings → Agent's highlight: the list arrives
+  // after first paint, so seeding state would pin the choice to a guess.
+  const shownId =
+    picked !== null && others.some(b => b.id === picked)
+      ? picked
+      : others.some(b => b.id === configuredOther)
+        ? configuredOther
+        : (others.find(backendUsable)?.id ?? others[0]?.id ?? '')
+  const shown = others.find(b => b.id === shownId)
+  const configuredProbe = backends.find(b => b.id === configuredOther)
+
+  const switchMut = useMutation({
+    mutationFn: (value: string) => api.patchConfig(ACP_BACKEND_CONFIG_KEY, value),
+    onSuccess: () => {
+      // Same invalidations as Settings → Agent: a model list cached for the
+      // previous agent would otherwise offer models the new one cannot run.
+      clearCachedModels()
+      void qc.resetQueries({ queryKey: ['available-models'] })
+      return qc.invalidateQueries({ queryKey: CONFIG_QUERY_KEY })
+    },
+  })
+  // Re-take ONE verdict with the gateway's cached absence dropped first — the
+  // only way an install done after boot stops reading "restart needed".
+  const recheckMut = useMutation({
+    onMutate: () => qc.cancelQueries({ queryKey: BACKENDS_QUERY_KEY }),
+    mutationFn: (value: string) => api.acpBackendRecheck(value),
+    onSuccess: ({ backend }) => {
+      qc.setQueryData<{ backends: AcpBackendProbe[] }>(BACKENDS_QUERY_KEY, prev =>
+        prev
+          ? {
+              backends: prev.backends.some(b => b.id === backend.id)
+                ? prev.backends.map(b => (b.id === backend.id ? backend : b))
+                : [...prev.backends, backend],
+            }
+          : { backends: [backend] },
+      )
+    },
+  })
+
+  const panelId = 'other-coding-agents-panel'
+  const name = shown ? agentName(shown) : ''
+  const busy = switchMut.isPending || recheckMut.isPending
+  const switchError = switchMut.isError
+    ? (switchMut.variables === KIRO_BACKEND
+      ? i18nT('components.kiroPrerequisiteGate.could_not_switch_to_kiro')
+      : i18nT('components.kiroPrerequisiteGate.could_not_switch_agent', { name }))
+    : ''
+
+  return (
+    <div className="mb-5 rounded-xl border border-border bg-bg-elevated/40" data-testid="other-coding-agents">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={panelId}
+        onClick={() => setOpen(v => !v)}
+        className="flex w-full cursor-pointer items-center justify-between gap-3 rounded-xl border-none bg-transparent px-4 py-3 text-left hover:bg-bg-hover focus-ring"
+      >
+        <span className="flex items-center gap-2 text-sm font-semibold text-text-strong">
+          <Boxes className="lucide-inline text-muted" />
+          {i18nT('components.kiroPrerequisiteGate.use_other_coding_agents')}
+        </span>
+        <ChevronDown
+          aria-hidden="true"
+          className={`lucide-inline text-muted transition-transform ${open ? 'rotate-180' : ''}`}
+        />
+      </button>
+      {open && (
+        <div id={panelId} className="space-y-4 border-t border-border px-4 py-4">
+          {configuredOther && !backendUsable(configuredProbe) && (
+            <div className="rounded-lg border border-warn/40 bg-warn-subtle px-3 py-2.5 text-[13px] leading-relaxed text-text">
+              <p>
+                {i18nT('components.kiroPrerequisiteGate.configured_agent_not_ready', {
+                  name: configuredProbe ? agentName(configuredProbe) : configuredOther,
+                })}
+              </p>
+              <Btn
+                type="button"
+                className="mt-2 h-8 rounded-lg px-3 text-[13px]"
+                disabled={busy}
+                onClick={() => switchMut.mutate(KIRO_BACKEND)}
+              >
+                {i18nT('components.kiroPrerequisiteGate.use_kiro_cli_instead')}
+              </Btn>
+            </div>
+          )}
+          <p className="text-[13px] leading-relaxed text-muted">
+            {i18nT('components.kiroPrerequisiteGate.other_agents_intro')}
+          </p>
+          {loading && others.length === 0 ? (
+            <p className="text-[13px] text-muted" aria-live="polite">
+              {i18nT('components.kiroPrerequisiteGate.other_agents_checking')}
+            </p>
+          ) : failed && others.length === 0 ? (
+            <>
+              {/* No hand-off: no usable agent has been confirmed, and this setup
+                  gate hides the chat the hand-off would open. */}
+              <ErrorNotice
+                message={i18nT('components.kiroPrerequisiteGate.other_agents_unavailable')}
+                testId="other-agents-probe-error"
+              />
+            </>
+          ) : others.length === 0 ? (
+            <p className="text-[13px] text-muted">
+              {i18nT('components.kiroPrerequisiteGate.other_agents_none')}
+            </p>
+          ) : (
+            <>
+              <fieldset className="mx-0 space-y-2 border-none p-0">
+                <legend className="sr-only">
+                  {i18nT('components.kiroPrerequisiteGate.other_agents_list_label')}
+                </legend>
+                {others.map(b => {
+                  const selected = b.id === shownId
+                  // The detail opens directly under the row it describes, inside
+                  // the same outline, so it reads as that agent's panel rather
+                  // than a card detached at the foot of the list.
+                  const detailId = `other-agent-detail-${b.id}`
+                  return (
+                    <div
+                      key={b.id}
+                      // The focus ring lives on this rounded outline, keyed to the
+                      // radio alone: drawn inset on the square row inside it, the
+                      // ring's corners were clipped by the rounding.
+                      className={`overflow-hidden rounded-lg border transition-colors has-[input:focus-visible]:ring-2 has-[input:focus-visible]:ring-[var(--accent)] ${
+                        selected ? 'border-accent/60' : 'border-border'
+                      }`}
+                    >
+                      <label
+                        className={`flex cursor-pointer items-center justify-between gap-3 px-3 py-2 transition-colors ${
+                          selected ? 'bg-accent-subtle' : 'bg-card hover:bg-bg-hover'
+                        }`}
+                      >
+                        <span className="flex min-w-0 items-center gap-2.5">
+                          <input
+                            type="radio"
+                            name="other-coding-agent"
+                            value={b.id}
+                            checked={selected}
+                            aria-label={agentName(b)}
+                            aria-controls={selected ? detailId : undefined}
+                            onChange={() => setPicked(b.id)}
+                            /* focus-cue-ok: the cue is on the row's rounded outline
+                               above — `has-[input:focus-visible]:ring-2` on the
+                               wrapping div — so this radio's own outline would paint
+                               a second, corner-clipped ring inside it. */
+                            className="h-4 w-4 shrink-0 accent-[var(--accent)] focus-visible:outline-none"
+                          />
+                          <Sparkles className="lucide-inline shrink-0 text-muted" aria-hidden="true" />
+                          <span className="truncate text-sm font-medium text-text-strong">{agentName(b)}</span>
+                        </span>
+                        <AgentStatusBadge probe={b} />
+                      </label>
+                      {selected && shown && (
+                        <div id={detailId} className="space-y-3 border-t border-accent/30 bg-card p-4" data-testid="other-agent-detail">
+                          {shown.installed === 'missing' ? (
+                            <>
+                              <p className="text-[13px] font-medium text-text">
+                                {i18nT('components.kiroPrerequisiteGate.agent_install_on_host', { name })}
+                              </p>
+                              {shown.install_command ? (
+                                <CopyCommand>
+                                  <code>{shown.install_command}</code>
+                                </CopyCommand>
+                              ) : shown.missing_components.length > 0 ? (
+                                // Only when there is no command to run: beside
+                                // `npm install -g @zed-industries/claude-code-acp`
+                                // a "Missing: claude-acp" line names a second thing,
+                                // and the reader second-guesses which one to install.
+                                <p className="text-[12px] text-muted">
+                                  {i18nT('components.kiroPrerequisiteGate.agent_missing_components', {
+                                    components: shown.missing_components.join(', '),
+                                  })}
+                                </p>
+                              ) : null}
+                              <p className="text-[12px] leading-relaxed text-muted">
+                                {i18nT('components.kiroPrerequisiteGate.agent_install_then_check', { name })}
+                              </p>
+                            </>
+                          ) : shown.restart_required ? (
+                            <p className="text-[13px] leading-relaxed text-text">
+                              {i18nT('components.kiroPrerequisiteGate.agent_restart_required_detail', { name })}
+                            </p>
+                          ) : shown.installed === 'unknown' ? (
+                            <p className="text-[13px] leading-relaxed text-text">
+                              {i18nT('components.kiroPrerequisiteGate.agent_unverified_detail', { name })}
+                            </p>
+                          ) : (
+                            <p className="text-[13px] leading-relaxed text-text">
+                              {i18nT('components.kiroPrerequisiteGate.agent_ready_to_use', { name })}
+                            </p>
+                          )}
+                          {/* Server-owned sentence, rendered verbatim like Settings → Agent
+                              does: it names this harness's own sign-in, which Kiro Crew
+                              neither performs nor can check. */}
+                          {shown.auth?.signs_in_separately && shown.auth.sign_in_remedy ? (
+                            <p className="text-[12px] leading-relaxed text-muted">{shown.auth.sign_in_remedy}</p>
+                          ) : null}
+                          <div className="flex flex-wrap items-center gap-2 pt-1">
+                            <SendBtn
+                              type="button"
+                              className="inline-flex items-center gap-1.5"
+                              disabled={busy || !backendUsable(shown)}
+                              onClick={() => switchMut.mutate(shown.id)}
+                            >
+                              {switchMut.isPending && switchMut.variables === shown.id
+                                ? i18nT('components.kiroPrerequisiteGate.switching_agent')
+                                : i18nT('components.kiroPrerequisiteGate.use_agent', { name })}
+                              <ArrowRight className="lucide-inline" />
+                            </SendBtn>
+                            {/* Nothing to re-check on an agent that is installed
+                                and ready: the only action left is to use it. */}
+                            {!agentReady(shown) && (
+                              <Btn
+                                type="button"
+                                className="h-9 rounded-lg px-3"
+                                disabled={busy}
+                                onClick={() => recheckMut.mutate(shown.id)}
+                              >
+                                <RefreshCw className={`lucide-inline ${recheckMut.isPending ? 'animate-spin' : ''}`} />
+                                {i18nT('components.kiroPrerequisiteGate.check_again')}
+                              </Btn>
+                            )}
+                          </div>
+                          {/* No hand-off: preserve the unsaved agent choice; this
+                              setup gate also hides the chat the hand-off would open. */}
+                          <ErrorNotice
+                            className="text-xs"
+                            message={
+                              recheckMut.isError && recheckMut.variables === shown.id
+                                ? i18nT('components.kiroPrerequisiteGate.agent_recheck_failed', { name })
+                                : null
+                            }
+                            testId="other-agent-recheck-error"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </fieldset>
+              <p className="text-[12px] leading-relaxed text-muted">
+                {i18nT('components.kiroPrerequisiteGate.switch_agent_later_in_settings')}
+              </p>
+            </>
+          )}
+          {/* No hand-off: the agent choice failed to save, and this setup gate
+              hides the chat the hand-off would open. Keep the choice for retry. */}
+          <ErrorNotice className="text-xs" message={switchError || null} testId="other-agent-switch-error" />
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function KiroPrerequisiteGate({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
   // The gateway probes kiro-cli at boot and on explicit request only, so the
@@ -907,12 +1343,53 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
     onSuccess: updateStatus,
   })
 
+  // Which agent the gateway is configured to drive. Read only once the Kiro
+  // check says "not ready": a ready Kiro install never needs it, and a returning
+  // user's load stays exactly as cheap as before. A failed read falls back to
+  // the Kiro checks — the behaviour this gate always had — never to a bypass.
+  const kiroNotReady = !!statusQuery.data && !statusQuery.data.ready
+  const configQuery = useQuery<{ agent?: { acp_backend?: string } }>({
+    queryKey: CONFIG_QUERY_KEY,
+    queryFn: () => api.kirocrewConfig(),
+    enabled: kiroNotReady,
+    retry: false,
+  })
+  const configuredBackend = configQuery.data
+    ? (configQuery.data.agent?.acp_backend ?? KIRO_BACKEND)
+    : undefined
+  const otherBackendConfigured = configuredBackend !== undefined && configuredBackend !== KIRO_BACKEND
+  const kiroBlocking = kiroPrerequisiteIsBlocking(statusQuery.data)
+  // The harness probe Settings → Agent reads. Needed for two things: to let a
+  // configured non-Kiro agent through, and to fill the picker on the first-run
+  // screen. `retry: false` because its expected failures (403 non-owner, 404 an
+  // older gateway) are permanent answers; the gate then keeps the Kiro checks.
+  const backendsQuery = useQuery<{ backends: AcpBackendProbe[] }>({
+    queryKey: BACKENDS_QUERY_KEY,
+    queryFn: () => api.acpBackends(),
+    enabled: kiroNotReady && (otherBackendConfigured || kiroBlocking),
+    retry: false,
+    staleTime: 0,
+    refetchInterval: (query) => acpBackendsRefetchInterval(
+      statusQuery.data,
+      otherBackendConfigured,
+      query.state.data?.backends.find(b => b.id === configuredBackend),
+    ),
+  })
+  const configuredProbe = otherBackendConfigured
+    ? backendsQuery.data?.backends.find(b => b.id === configuredBackend)
+    : undefined
+  // The Kiro CLI checks below describe Kiro CLI. When the operator chose
+  // another agent and it is usable, none of them is about the agent that will
+  // actually run, so the dashboard opens.
+  const otherBackendReady = otherBackendConfigured && backendUsable(configuredProbe)
+
   // Remember that this gateway has completed first-run setup, so a later COLD
   // load can classify the user before (or without) a successful status
   // response. `ready` implies setup is done, and covers gateways that report
   // readiness without the first-run bit.
-  const setupComplete = !!statusQuery.data
-    && (statusQuery.data.initial_setup_complete || statusQuery.data.ready)
+  const setupComplete = (!!statusQuery.data
+    && (statusQuery.data.initial_setup_complete || statusQuery.data.ready))
+    || otherBackendReady
   useEffect(() => {
     if (setupComplete) safeSetItem(SETUP_COMPLETE_KEY, '1')
   }, [setupComplete])
@@ -965,6 +1442,14 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
     )
   }
   if (prerequisite.ready) {
+    return <>{children}</>
+  }
+  // Which agent will run is still unknown: same rule as the pending status
+  // above — an unresolved check never paints setup chrome.
+  if (configQuery.isPending || (otherBackendConfigured && backendsQuery.isPending)) {
+    return <>{children}</>
+  }
+  if (otherBackendReady) {
     return <>{children}</>
   }
   const status = prerequisite
@@ -1098,12 +1583,35 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
             </div>
             <h1 className="text-3xl font-bold tracking-tight text-text-strong">{i18nT('components.kiroPrerequisiteGate.set_up_kiro')}</h1>
             <p className="mt-2 max-w-xl text-sm leading-relaxed text-muted">
-              {i18nT('components.kiroPrerequisiteGate.kiro_crew_uses_kiro_cli_as_its_agent_engine_comp')}{' '}
-              <strong className="font-semibold text-text">{platform} {i18nT('components.kiroPrerequisiteGate.gateway_host')}</strong>{i18nT('components.kiroPrerequisiteGate.then_the_dashboard_will_open_automatically')}
+              {/* One sentence in one key, so each language orders the host
+                  phrase where its grammar puts it. */}
+              <Trans
+                i18nKey="components.kiroPrerequisiteGate.setup_intro"
+                values={{ platform }}
+                components={[<strong key="host" className="font-semibold text-text" />]}
+              />
             </p>
           </div>
 
-          <Card className={!status.installed ? 'border-accent/60 shadow-[0_10px_35px_var(--accent-glow)]' : ''}>
+          {configQuery.isError && (
+            <>
+              {/* No hand-off: the configured agent is unknown, and this setup
+                  gate hides the chat the hand-off would open. Retry the read here.
+                  Outside the collapsed picker so the Kiro fallback is not silent. */}
+              <ErrorNotice
+                className="mb-5"
+                message={i18nT('pages.developer.agentBackendTab.could_not_load_the_agent_backend')}
+                testId="kiro-gate-config-error"
+                footer={
+                  <Btn type="button" disabled={configQuery.isFetching} onClick={() => void configQuery.refetch()}>
+                    {i18nT('components.kiroPrerequisiteGate.try_again')}
+                  </Btn>
+                }
+              />
+            </>
+          )}
+
+          <Card className="border-accent/60 shadow-[0_10px_35px_var(--accent-glow)]">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h2 className="flex items-center gap-2 text-base font-semibold text-text-strong">
@@ -1112,21 +1620,27 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
                   </span>
                   {i18nT('components.kiroPrerequisiteGate.get_kiro_cli')}
                 </h2>
+                {/* The card's first line is the state, in both states: "isn't
+                    installed yet" or "is installed, finish signing in". The
+                    footer used to carry the installed line, below the other
+                    agents section, where it read as an afterthought. */}
                 <p className="mt-2 text-sm leading-relaxed text-muted">
                   {status.installed
-                    ? i18nT('components.kiroPrerequisiteGate.kiro_cli_was_found_on_this_host')
-                    : i18nT('components.kiroPrerequisiteGate.install_kiro_cli_from_kiros_official_setup_page')}
+                    ? i18nT('components.kiroPrerequisiteGate.kiro_cli_is_installed_finish_signing_in_to_conti')
+                    : i18nT('components.kiroPrerequisiteGate.kiro_cli_is_not_installed_yet')}
                 </p>
               </div>
-              <StepStatus complete={status.installed} current={!status.installed} />
+              <StepStatus complete={false} current />
             </div>
-            {/* A link, not a button: Kiro Crew does not install Kiro CLI. Kiro's
-                own page carries the per-platform steps and stays correct as they
-                change, which a digest-pinned in-app installer did not. */}
+            {/* The one-line installer is SHOWN, never run: Kiro Crew does not
+                install Kiro CLI. The setup page stays as the route for every
+                other install form (RPM, AppImage, musl) and stays correct as
+                those change. */}
             {!status.installed && (
               <div className="mt-4">
+                <KiroInstallCommands platform={platform} />
                 <a
-                  className="btn-sweep inline-flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-[13px] font-semibold text-accent-fg hover:bg-accent-hover hover:shadow-[0_0_20px_var(--accent-glow)] transition-all focus-ring"
+                  className="mt-3 inline-flex items-center gap-1.5 text-[13px] font-medium text-accent hover:underline focus-ring"
                   href={status.docs_url}
                   target="_blank"
                   rel="noopener noreferrer"
@@ -1139,44 +1653,26 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
                 </p>
               </div>
             )}
-          </Card>
+            {/* No separate sign-in step: until Kiro CLI exists there is nothing
+                to sign into, so the screen does not ask for it. Once installed
+                but signed out, the same card swaps its installer for the
+                sign-in commands, so that state still says what to run.
 
-          <Card className={status.installed && !status.authenticated ? 'border-accent/60 shadow-[0_10px_35px_var(--accent-glow)]' : ''}>
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h2 className="flex items-center gap-2 text-base font-semibold text-text-strong">
-                  <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent-subtle text-accent">
-                    <LogIn className="lucide-inline" />
-                  </span>
-                  {i18nT('components.kiroPrerequisiteGate.sign_in_to_kiro')}
-                </h2>
-                <p className="mt-2 text-sm leading-relaxed text-muted">
-                  {status.authenticated
-                    ? i18nT('components.kiroPrerequisiteGate.this_kiro_cli_is_signed_in')
-                    : i18nT('components.kiroPrerequisiteGate.sign_in_with_kiro_cli_on_the_gateway_host')}
-                </p>
-              </div>
-              <StepStatus
-                complete={status.authenticated}
-                current={status.installed && !status.authenticated}
-              />
-            </div>
-            {/* Rendered VERBATIM from the backend constants, never catalog
-                values: a translated command cannot be typed. Shown only once a CLI
-                exists to sign into — before that the step above owns the screen.
-                Kiro Crew does not run them; the footer's Check again reads the
-                result.
+                Rendered VERBATIM from the backend constants, never catalog
+                values: a translated command cannot be typed. Kiro Crew does not
+                run them; the footer's Check again reads the result.
 
                 BOTH tiers are offered, because the sign-in page the bare command
                 opens presents a free Builder ID as a peer of organization SSO:
                 a user on an SSO plan who picks the wrong one authenticates
                 successfully and only discovers the mismatch later, as missing
-                models. Naming the tier here makes it a decision instead of a
-                guess. Kiro Crew does not detect which one applies — that would
-                mean inspecting the host's identity configuration — so the copy
+                models. Kiro Crew does not detect which one applies, so the copy
                 describes the choice and lets the user make it. */}
             {status.installed && !status.authenticated && (
               <div className="mt-4 space-y-4">
+                <p className="text-sm leading-relaxed text-text">
+                  {i18nT('components.kiroPrerequisiteGate.sign_in_with_kiro_cli_on_the_gateway_host')}
+                </p>
                 <div>
                   <p className="text-[13px] font-medium text-text">
                     {i18nT('components.kiroPrerequisiteGate.sign_in_personal_label')}
@@ -1201,24 +1697,32 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
                 </p>
               </div>
             )}
+            {/* The card owns its Check again, the way each other agent's panel
+                owns its own: the action sits with the thing it re-checks, not
+                in a page footer that read as Kiro-only once other agents were
+                on screen. Its label names Kiro CLI because a second, identical
+                "Check again" can be open in an agent's panel below, and two
+                same-labelled buttons that check different things invite the
+                wrong press. The agent panel's is scoped by the row it sits in. */}
+            <div className="mt-4 flex items-center gap-2">
+              <SendBtn
+                type="button"
+                className="inline-flex items-center gap-1.5"
+                disabled={statusQuery.isFetching}
+                onClick={retryStatus}
+              >
+                <RefreshCw className={`lucide-inline ${statusQuery.isFetching ? 'animate-spin' : ''}`} />
+                {i18nT('components.kiroPrerequisiteGate.check_again_for_kiro_cli')}
+              </SendBtn>
+            </div>
           </Card>
 
-          <div className="flex items-center justify-between gap-4 border-t border-border pt-5">
-            <p className="text-[13px] text-muted" aria-live="polite">
-              {status.installed
-                ? i18nT('components.kiroPrerequisiteGate.kiro_cli_is_installed_finish_signing_in_to_conti')
-                : i18nT('components.kiroPrerequisiteGate.kiro_cli_is_required_on_the_gateway_host', { platform })}
-            </p>
-            <SendBtn
-              type="button"
-              className="inline-flex items-center gap-1.5"
-              disabled={statusQuery.isFetching}
-              onClick={retryStatus}
-            >
-              <RefreshCw className={`lucide-inline ${statusQuery.isFetching ? 'animate-spin' : ''}`} />
-              {i18nT('components.kiroPrerequisiteGate.check_again')}
-            </SendBtn>
-          </div>
+          <OtherCodingAgents
+            configured={configuredBackend ?? KIRO_BACKEND}
+            backends={backendsQuery.data?.backends ?? []}
+            loading={backendsQuery.isPending && backendsQuery.fetchStatus !== 'idle'}
+            failed={backendsQuery.isError}
+          />
         </>
     </SetupShell>
   )
