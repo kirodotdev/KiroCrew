@@ -308,8 +308,13 @@ async def test_http_resume_cannot_authorize_private_transcript(tmp_path, member_
     writer, _ = member_stores
     state = _make_state(tmp_path)
     key = "dashboard:resume-private"
-    state.conversation_log.append(key, "user", "ordinary V1 history")
-    state.conversation_log.update_metadata(key, {"agent": "writer"})
+    # Offloaded, like the production callers this test exercises. A sync mutator
+    # called straight from an async test body runs ON the event loop, where
+    # atomic_write's rename deliberately makes a single attempt and re-raises
+    # instead of sleeping the loop -- so on Windows one transient reader handle
+    # on the destination is enough to fail the rename outright.
+    await asyncio.to_thread(state.conversation_log.append, key, "user", "ordinary V1 history")
+    await asyncio.to_thread(state.conversation_log.update_metadata, key, {"agent": "writer"})
     with patch("kiro_crew.dashboard.chat_handlers.schedule_eager_spawn"):
         async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
             response = await client.post("/api/chat/slots/resume-private/resume", json={"key": key})
