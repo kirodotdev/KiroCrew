@@ -117,6 +117,15 @@ class TestModelRouteIsWritable:
     """The three tier pickers on the card write through this route."""
 
     @pytest.mark.asyncio
+    async def test_a_provider_qualified_picker_model_can_be_saved(self, config_file):
+        """OpenCode advertises provider/model ids; the picker must be able to save one."""
+        model = "example-provider/example-model"
+        async with TestClient(TestServer(_app())) as client:
+            resp = await _patch(client, "decisions.model_route.simple", model)
+            assert resp.status == 200, await resp.text()
+        assert _stored(config_file)["model_route"]["simple"] == model
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("tier", DECISION_MODEL_ROUTE_TIERS)
     async def test_a_tier_accepts_inherit_and_stores_it(self, config_file, tier):
         """``""`` is INHERIT -- the turn keeps its session's model, the shipped default.
@@ -169,10 +178,13 @@ class TestModelRouteIsWritable:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("tier", DECISION_MODEL_ROUTE_TIERS)
-    async def test_a_tier_refuses_a_value_outside_the_model_id_grammar(self, config_file, tier):
-        """Same grammar the ``agent.role_models.*`` pins beside it enforce."""
+    @pytest.mark.parametrize("value", ["a; rm -rf /", "provider//model", "/model"])
+    async def test_a_tier_refuses_a_value_outside_the_model_id_grammar(
+        self, config_file, tier, value
+    ):
+        """Opening a provider/model path never admits malformed segments or commands."""
         async with TestClient(TestServer(_app())) as client:
-            resp = await _patch(client, f"decisions.model_route.{tier}", "a; rm -rf /")
+            resp = await _patch(client, f"decisions.model_route.{tier}", value)
             assert resp.status == 400
         assert _stored(config_file) == {}
 

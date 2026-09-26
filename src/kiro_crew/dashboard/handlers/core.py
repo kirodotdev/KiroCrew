@@ -2678,7 +2678,9 @@ for _tier in DECISION_MODEL_ROUTE_TIERS:
     _EDITABLE_CONFIG[f"decisions.model_route.{_tier}"] = {
         "type": "str",
         "max_len": 64,
-        "pattern": r"^[A-Za-z0-9._\-\[\]]*$",
+        # OpenCode's picker advertises provider/model ids. Allow those while
+        # retaining the empty INHERIT value and rejecting malformed segments.
+        "pattern": r"(?:[A-Za-z0-9][A-Za-z0-9._\-\[\]]*|[A-Za-z0-9][A-Za-z0-9._\-]*(?:/[A-Za-z0-9][A-Za-z0-9._\-]*)+)?\Z",
         "validate_fn": _validate_role_model,
     }
 
