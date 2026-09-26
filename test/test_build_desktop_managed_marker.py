@@ -49,23 +49,40 @@ def _extract_step() -> str:
     stale-marker cleanup (which sits ahead of the SKIP_ELECTRON early exit),
     the SKIP_ELECTRON branch itself, and step 3b, up to the step-4 header."""
     text = SCRIPT.read_text(encoding="utf-8")
+    cleanup = re.search(
+        r"(^cleanup_desktop_staging\(\).*?^trap cleanup_desktop_staging EXIT)",
+        text,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert cleanup, "desktop input cleanup not found"
     m = re.search(
-        r"(# A leftover staged marker from an earlier interrupted build.*?)"
+        r'(^if \[ "\$\{SKIP_ELECTRON:-0\}" = "1" \]; then.*?)'
         r"\n# --- 4\. Package the desktop app",
         text,
-        re.DOTALL,
+        re.DOTALL | re.MULTILINE,
     )
     assert m, "step 3b (baked EXTERNALLY-MANAGED marker) not found in packaging/build-desktop.sh"
-    return m.group(1)
+    return cleanup.group(1) + "\n" + m.group(1)
 
 
 def _run(tmp_path: Path, marker_env: str | None) -> tuple[subprocess.CompletedProcess, Path]:
     electron_dir = tmp_path / "electron"
     electron_dir.mkdir(exist_ok=True)
-    env = {k: v for k, v in os.environ.items() if k != "KIROCREW_MANAGED_INSTALL_MARKER"}
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k
+        not in {
+            "KIROCREW_MANAGED_INSTALL_MARKER",
+            "KIROCREW_EDITION_DIR",
+            "KIROCREW_ALLOW_EDITION",
+            "SKIP_ELECTRON",
+        }
+    }
     if marker_env is not None:
         env["KIROCREW_MANAGED_INSTALL_MARKER"] = marker_env
     env["ELECTRON_DIR"] = str(electron_dir)
+    env["ROOT"] = str(SCRIPT.parent.parent)
     # The same strict mode the real script runs under, and its `log` helper.
     # The step arms an EXIT trap that removes the staged copy, so its content is
     # captured into a witness file BEFORE the shell exits; the test then asserts
@@ -194,9 +211,25 @@ def test_cleanup_trap_is_armed_before_the_copy_exists() -> None:
     cleanup: an interrupt between `cp` and `trap` would leave a stale marker
     for a hand-run electron-builder to pack into a later, different edition."""
     text = SCRIPT.read_text(encoding="utf-8")
-    trap_at = text.index("trap 'rm -f \"$ELECTRON_DIR/EXTERNALLY-MANAGED\"' EXIT")
+    trap_at = text.index("trap cleanup_desktop_staging EXIT")
     copy_at = text.index('cp "$MARKER_SRC" "$ELECTRON_DIR/EXTERNALLY-MANAGED"')
     assert trap_at < copy_at, "arm the EXIT trap before copying the marker"
+
+
+def test_edition_staging_runs_after_desktop_dependencies_are_installed() -> None:
+    """SKIP_FRONTEND reuses a dist without website/node_modules, so the CSP
+    parser must come from the desktop package and be installed before staging."""
+    text = SCRIPT.read_text(encoding="utf-8")
+    package_step = text.index("# --- 4. Package the desktop app")
+    desktop_install = text.index("npm ci --no-audit --no-fund", package_step)
+    edition_stage = text.index("editionDesktop.mjs", package_step)
+    assert desktop_install < edition_stage
+
+    root = SCRIPT.parent.parent
+    desktop_pkg = json.loads((root / "website" / "electron" / "package.json").read_text())
+    assert desktop_pkg["dependencies"]["parse5"] == "7.3.0"
+    helper = (root / "website" / "scripts" / "lib" / "editionDesktop.mjs").read_text()
+    assert "createRequire(new URL('../../electron/package.json', import.meta.url))" in helper
 
 
 def test_step_caps_match_the_readers_constants() -> None:
@@ -235,3 +268,34 @@ def test_stale_marker_cleanup_runs_before_the_skip_electron_exit() -> None:
     cleanup_at = text.index('rm -f "$ELECTRON_DIR/EXTERNALLY-MANAGED"')
     skip_at = text.index('if [ "${SKIP_ELECTRON:-0}" = "1" ]; then')
     assert cleanup_at < skip_at, "clean the stale marker before the SKIP_ELECTRON early exit"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the desktop build entry point requires bash")
+def test_early_build_failure_removes_interrupted_edition_inputs(tmp_path: Path) -> None:
+    """Run the real entry point in a checkout missing its version source.
+
+    Failure before any build step must still remove crash leftovers, without
+    depending on Node or a working backend toolchain for cleanup.
+    """
+    packaging = tmp_path / "packaging"
+    packaging.mkdir()
+    script = packaging / SCRIPT.name
+    shutil.copyfile(SCRIPT, script)
+    electron = tmp_path / "website" / "electron"
+    electron.mkdir(parents=True)
+    leftovers = [electron / "EXTERNALLY-MANAGED", electron / "edition-loading.html"]
+    for leftover in leftovers:
+        leftover.write_text("previous edition", encoding="utf-8")
+    env = {**os.environ, "UNIVERSAL": "0"}
+    proc = subprocess.run(
+        ["bash", str(script)],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=15,
+    )
+    assert proc.returncode != 0
+    assert "__init__.py" in proc.stderr
+    assert not any(leftover.exists() for leftover in leftovers)

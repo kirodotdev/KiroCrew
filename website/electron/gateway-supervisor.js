@@ -125,6 +125,16 @@ const SUCCESSOR_BOOT_MARGIN_MS = 30_000;
 const SUCCESSOR_POLL_MS = 500;
 const LSOF_CANDIDATES = ["/usr/sbin/lsof", "/usr/bin/lsof"];
 
+function resolveLoadingPagePath(
+  dirname,
+  { fs = defaultFs, path = defaultPath } = {},
+) {
+  const editionPath = path.join(dirname, "edition-loading.html");
+  return typeof fs.existsSync === "function" && fs.existsSync(editionPath)
+    ? editionPath
+    : path.join(dirname, "loading.html");
+}
+
 /**
  * Own the embedded gateway's complete lifecycle without owning the Electron
  * application's window or quit lifecycle. Electron objects and the few shared
@@ -378,7 +388,7 @@ function createGatewaySupervisor({
       const window = mainWindow();
       if (window && !window.isDestroyed()) {
         try {
-          window.webContents.loadFile(path.join(dirname, "loading.html"), {
+          window.webContents.loadFile(resolveLoadingPagePath(dirname, { fs, path }), {
             query: splashQuery(window, { accent: currentThemeAccent() }),
           });
         } catch { /* window may be tearing down */ }
@@ -1973,7 +1983,11 @@ function createGatewaySupervisor({
 
   async function reconnectExternalGateway(window) {
     const webContents = window.webContents;
-    try { webContents.loadFile(path.join(dirname, "loading.html"), { query: splashQuery(window, { reconnect: true }) }); }
+    try {
+      webContents.loadFile(resolveLoadingPagePath(dirname, { fs, path }), {
+        query: splashQuery(window, { reconnect: true }),
+      });
+    }
     catch { /* window may be tearing down */ }
     if (!window || window.isDestroyed() || quitting()) return;
     // No reveal here: network/tunnel healing must not re-surface a window the
@@ -1995,7 +2009,11 @@ function createGatewaySupervisor({
 
   async function reconnectOrRespawnAdoptedGateway(window) {
     const webContents = window.webContents;
-    try { webContents.loadFile(path.join(dirname, "loading.html"), { query: splashQuery(window, { reconnect: true }) }); }
+    try {
+      webContents.loadFile(resolveLoadingPagePath(dirname, { fs, path }), {
+        query: splashQuery(window, { reconnect: true }),
+      });
+    }
     catch { /* window may be tearing down */ }
     if (!window || window.isDestroyed() || quitting()) return;
     sendStatus("Gateway stopped responding — waiting for it to recover…");
@@ -2134,7 +2152,7 @@ function createGatewaySupervisor({
   ) {
     const healthUrl = `${targetBackendUrl}/api/status`;
     const webContents = window.webContents;
-    webContents.loadFile(path.join(dirname, "loading.html"), {
+    webContents.loadFile(resolveLoadingPagePath(dirname, { fs, path }), {
       query: splashQuery(window, { reconnect, accent: currentThemeAccent() }),
     });
     // Cold boot and user-clicked retries raise. Autonomous liveness recovery
@@ -2558,4 +2576,4 @@ function createGatewaySupervisor({
   });
 }
 
-module.exports = { createGatewaySupervisor };
+module.exports = { createGatewaySupervisor, resolveLoadingPagePath };
