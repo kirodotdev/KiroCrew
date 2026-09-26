@@ -15,7 +15,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { createElement } from 'react'
 import { Provider } from 'react-redux'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react-query'
 import { createTestStore } from './helpers'
 import { useWebSocket } from '../hooks/useWebSocket'
 
@@ -159,5 +159,39 @@ describe('useWebSocket GitLab allowlist invalidation', () => {
     act(() => { ws2.simulateMessage({ type: 'slots', data: [], governanceGeneration: 1 }) })
 
     expect(configInvalidations()).toBe(2)
+  })
+
+  // Both generation arms, and the folder seed plus its generation, can ask for
+  // the same key on one frame. Each invalidate cancels the refetch the previous
+  // one started and sends another GET, so the frame must invalidate each key once.
+  it('invalidates each key once when several arms of one frame ask for it', () => {
+    renderHook(() => useWebSocket(), { wrapper })
+    const ws = WS_INSTANCES[0]
+    act(() => { ws.simulateOpen() })
+
+    act(() => {
+      ws.simulateMessage({
+        type: 'slots', data: [], folders: [],
+        foldersGeneration: 1, gitlabHostsGeneration: 3, governanceGeneration: 1,
+      })
+    })
+    expect(configInvalidations()).toBe(1)
+    expect(invalidated.filter(key => Array.isArray(key) && key[0] === 'chat-folders').length).toBe(1)
+  })
+
+  it('puts one refetch of GET /api/dashboard/config on the wire for such a frame', async () => {
+    const dashboardConfig = vi.fn().mockResolvedValue({})
+    renderHook(() => useWebSocket(), { wrapper })
+    await act(async () => { await qc.fetchQuery({ queryKey: ['dashboardConfig'], queryFn: dashboardConfig }) })
+    // An observer keeps the query active, as the shell's readers do.
+    const unsubscribe = new QueryObserver(qc, {
+      queryKey: ['dashboardConfig'], queryFn: dashboardConfig, staleTime: Infinity,
+    }).subscribe(() => {})
+    const ws = WS_INSTANCES[0]
+    act(() => { ws.simulateOpen() })
+    act(() => { ws.simulateMessage({ type: 'slots', data: [], gitlabHostsGeneration: 3, governanceGeneration: 1 }) })
+    await act(async () => { await Promise.resolve() })
+    expect(dashboardConfig).toHaveBeenCalledTimes(2)
+    unsubscribe()
   })
 })

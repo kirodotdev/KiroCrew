@@ -2408,13 +2408,26 @@ export default function App() {
   const appNavGenRef = useRef(0)
   const [slotOwners, setSlotOwners] = useState<SlotOwners>({})
   const queryClient = useQueryClient()
-  const refreshAppNav = useCallback((attempt = 0) => {
+  const refreshAppNav = useCallback((attempt = 0, joinPending = false) => {
     // Cancel any pending retry up-front so external triggers (the reconnect
     // effect, the mc:apps-changed handler) or a just-fired retry can never run
     // overlapping fetch chains — exactly one chain is ever active.
     if (appNavRetryRef.current) { clearTimeout(appNavRetryRef.current); appNavRetryRef.current = null }
     const gen = ++appNavGenRef.current
-    api.listApps()
+    // The mount read goes through the shared ['apps'] query so it joins the GET
+    // an ['apps'] observer mounted in the same commit (the panel-tab registry,
+    // the composer's session controls) has already started, instead of sending
+    // a second identical one. staleTime 0 still fetches when nothing is in
+    // flight; retry stays false because the backoff below owns retries.
+    //
+    // A refresh after a change or reconnect first cancels that shared boot
+    // query. Its request may still finish at the transport, but React Query no
+    // longer accepts its result, so it cannot overwrite the newer direct read.
+    // The direct read then publishes one response to both the nav and cache.
+    const read: Promise<AppListEntry[]> = joinPending
+      ? queryClient.fetchQuery({ queryKey: ['apps'], queryFn: () => api.listApps(), staleTime: 0, retry: false })
+      : queryClient.cancelQueries({ queryKey: ['apps'] }).then(() => api.listApps())
+    read
       .then((apps: AppListEntry[]) => {
         if (gen !== appNavGenRef.current) return
         const items = apps
@@ -2485,7 +2498,7 @@ export default function App() {
       })
   }, [dispatch, queryClient])
   useEffect(() => {
-    refreshAppNav()
+    refreshAppNav(0, true)
     return () => { if (appNavRetryRef.current) clearTimeout(appNavRetryRef.current) }
   }, [refreshAppNav])
   useEffect(() => {

@@ -1489,6 +1489,8 @@ export function useWebSocket() {
             if (raw === lastSlotsRawRef.current
                 && store.getState().dashboard.slots === lastSlotsArrayRef.current) break
             lastSlotsRawRef.current = raw
+            // Query keys this frame has made stale; flushed once at the end.
+            const staleKeys = new Set<'chat-folders' | 'dashboardConfig'>()
             dispatch(sseSlots(data as ChatSlot[]))
             lastSlotsArrayRef.current = store.getState().dashboard.slots
             if (msg.yolo !== undefined) {
@@ -1536,7 +1538,7 @@ export function useWebSocket() {
                 queryClient.setQueryData<ChatFolder[]>(['chat-folders'], msg.folders as ChatFolder[])
                 // Backfill history_count (omitted from the WS payload) — the seed
                 // marked the query fresh, so nudge the real GET to run.
-                queryClient.invalidateQueries({ queryKey: ['chat-folders'] })
+                staleKeys.add('chat-folders')
               }
             }
             // Refetch the folder tree when the STORE changed, for every source of
@@ -1562,7 +1564,7 @@ export function useWebSocket() {
               const prevFoldersGen = lastFoldersGenRef.current
               lastFoldersGenRef.current = msg.foldersGeneration
               if (prevFoldersGen === null || prevFoldersGen !== msg.foldersGeneration) {
-                queryClient.invalidateQueries({ queryKey: ['chat-folders'] })
+                staleKeys.add('chat-folders')
               }
             }
             // Refresh the cached GitLab-hosts allowlist when it may have changed.
@@ -1575,7 +1577,7 @@ export function useWebSocket() {
               const prevGen = lastGitlabHostsGenRef.current
               lastGitlabHostsGenRef.current = msg.gitlabHostsGeneration
               if (prevGen === null || prevGen !== msg.gitlabHostsGeneration) {
-                queryClient.invalidateQueries({ queryKey: ['dashboardConfig'] })
+                staleKeys.add('dashboardConfig')
               }
             }
             // Same contract for the governance ceiling: a centrally pushed policy
@@ -1587,9 +1589,16 @@ export function useWebSocket() {
               const prevGovGen = lastGovernanceGenRef.current
               lastGovernanceGenRef.current = msg.governanceGeneration
               if (prevGovGen === null || prevGovGen !== msg.governanceGeneration) {
-                queryClient.invalidateQueries({ queryKey: ['dashboardConfig'] })
+                staleKeys.add('dashboardConfig')
               }
             }
+            // One invalidation per key per frame. Several arms above can each
+            // ask for the same key on one frame (the first frame of a connection
+            // trips both generation arms, and the folder seed plus its generation),
+            // and every invalidate cancels the refetch the previous one started
+            // and issues another, so separate calls put two identical GETs on the
+            // wire where one answers them all.
+            for (const key of staleKeys) queryClient.invalidateQueries({ queryKey: [key] })
             break
           }
           case 'credential_redaction_changed': {

@@ -355,6 +355,7 @@ import type { ChatMessage } from '../types'
 import { shouldMountSidePanel, isSidePanelHidden, sidePanelDockMotion } from './chat/sidePanelMount'
 import type { ParsedSubagentCompletion } from './chat/subagentCompletion'
 import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
+import { useKirocrewConfigReader } from '../hooks/useKirocrewConfigReader'
 import TurnBlock from './chat/TurnBlock'
 import Clickable from '../components/Clickable'
 import WorkflowProgressBar from './chat/WorkflowProgressBar'
@@ -4038,9 +4039,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // default — the backend applies `slot.reasoning_effort or agent.reasoning_effort`
   // — so the composer must show the inherited value rather than a bare
   // "Default", which read as "the model decides" and hid the real setting.
+  const readKirocrewConfig = useKirocrewConfigReader()
   const { data: _defaultEffort } = useQuery({
     queryKey: ['default-effort', provider.id],
-    queryFn: () => provider.resolveDefaultEffort(),
+    queryFn: () => provider.resolveDefaultEffort(readKirocrewConfig),
     enabled: provider.capabilities.reasoningEffort,
   })
   const defaultEffort = _defaultEffort || ''

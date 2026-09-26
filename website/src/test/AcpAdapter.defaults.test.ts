@@ -69,16 +69,16 @@ describe('AcpAdapter.resolveDefaultEffort', () => {
 
   it('returns the configured default effort', async () => {
     kirocrewConfig.mockResolvedValue({ agent: { reasoning_effort: 'high' } })
-    expect(await new AcpAdapter().resolveDefaultEffort()).toBe('high')
+    expect(await new AcpAdapter().resolveDefaultEffort(() => kirocrewConfig())).toBe('high')
   })
 
   it('returns "" when unset, so callers keep the model-default semantics', async () => {
     kirocrewConfig.mockResolvedValue({ agent: {} })
-    expect(await new AcpAdapter().resolveDefaultEffort()).toBe('')
+    expect(await new AcpAdapter().resolveDefaultEffort(() => kirocrewConfig())).toBe('')
   })
 
   it('returns "" on a failed config read rather than throwing', async () => {
     kirocrewConfig.mockRejectedValue(new Error('boom'))
-    expect(await new AcpAdapter().resolveDefaultEffort()).toBe('')
+    expect(await new AcpAdapter().resolveDefaultEffort(() => kirocrewConfig())).toBe('')
   })
 })
