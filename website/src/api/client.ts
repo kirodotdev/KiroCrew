@@ -2049,7 +2049,7 @@ export const isAuthExpiredError = (e: unknown): boolean =>
  * `e.message`. `utils/errorReport` then lets a shared error banner recover that
  * context from the message alone — see AskAgentButton / ErrorNotice.
  */
-const apiFailure = (r: Response, errText: string): ApiError => {
+const apiFailure = (r: Response, errText: string, expectStatuses?: ReadonlySet<number>): ApiError => {
   // An auth denial's own reason text ("invalid signature") describes HMAC
   // verification, not anything the user can act on, and every card that renders
   // it hides the fact that one re-auth clears all of them at once. Substitute
@@ -2067,14 +2067,24 @@ const apiFailure = (r: Response, errText: string): ApiError => {
     : authRequired
       ? i18nT('api.client.session_expired_sign_in_again')
       : friendlyErrText(r.status, errText) || `HTTP ${r.status}`
-  recordError({
-    source: 'api',
-    message,
-    status: r.status,
-    code: parseErrorCode(errText),
-    endpoint: requestPath(r.url),
-    detail: errText,
-  })
+  // Some statuses are a DESIGNED, benign signal on a given endpoint rather than a
+  // failure worth showing the user — a disabled optional feature answering 403 to
+  // its own probe (instances is deny-by-default; see listInstances). The caller
+  // opts those out via `expectStatuses`: the ApiError is still THROWN so the
+  // caller's catch runs, but it is not journaled, so it cannot surface as a
+  // spurious error report on an unrelated route (e.g. /chat/new-session mounting
+  // the sidebar). Auth-recovery (stale-owner / X-Auth-Required) above is
+  // deliberately still evaluated first — those are never "expected" away.
+  if (!(expectStatuses?.has(r.status) && !authRequired && !staleOwnerSession)) {
+    recordError({
+      source: 'api',
+      message,
+      status: r.status,
+      code: parseErrorCode(errText),
+      endpoint: requestPath(r.url),
+      detail: errText,
+    })
+  }
   // A stale-owner denial is authRequired in the sense call sites care about:
   // no retry can succeed until the user signs in again.
   return new ApiError(r.status, message, errText, authRequired || staleOwnerSession)
@@ -2125,7 +2135,34 @@ const jNullable = async (r: Response) => {
   }
   return r.json()
 }
-// X-Session-Key ensures the server-side ephemeral gate always runs.
+
+/**
+ * `j` variant for an endpoint where certain non-2xx statuses are a DESIGNED,
+ * benign signal the caller handles itself — not a failure to journal.
+ *
+ * Returns a parser with `j`'s exact semantics (auth recovery, `ApiError` on
+ * non-2xx) EXCEPT that a response whose status is in `statuses` is thrown but
+ * NOT recorded in the error journal. Use it only where the caller reliably
+ * catches that status; a genuinely unexpected status still journals normally.
+ *
+ * The motivating case is `listInstances()`: the instances control plane is
+ * owner-only and deny-by-default (`instances.enabled` off), so a 403 to its own
+ * list probe is expected on most installs. Journaling it made the sidebar's
+ * routine `['instances']` query publish a spurious "/api/instances -> 403" error
+ * report on whatever route mounted the sidebar (e.g. /chat/new-session).
+ */
+const jExpecting = (...statuses: number[]) => {
+  const expected = new Set(statuses)
+  return async (r: Response) => {
+    checkSessionExpired(r)
+    if (r.ok) removeAuthBanner()
+    if (!r.ok) {
+      const errText = await r.text()
+      throw apiFailure(r, errText, expected)
+    }
+    return r.json()
+  }
+}
 // Without it, browser requests would skip the `if sk:` check — a fail-open
 // path that an MCP subprocess could exploit by omitting its own header.
 const _sk = { 'X-Session-Key': 'dashboard:ui' }
@@ -3475,7 +3512,7 @@ export const api = {
   // should catch and render the enable toggle rather than an error. `active`
   // is true only when the SSH manager is actually running (the flag was on at
   // gateway startup) — enabled-but-not-active means a restart is required.
-  listInstances: () => get('/api/instances').then(j) as Promise<{ active: boolean; instances: InstanceView[]; warm_set_cap: number; sso: SsoStatus }>,
+  listInstances: () => get('/api/instances').then(jExpecting(403)) as Promise<{ active: boolean; instances: InstanceView[]; warm_set_cap: number; sso: SsoStatus }>,
   addInstance: (body: AddInstanceBody) => post('/api/instances', body).then(j) as Promise<InstanceView>,
   updateInstance: (id: string, body: Partial<AddInstanceBody>, opts?: { signal?: AbortSignal }) =>
     patch('/api/instances/' + encodeURIComponent(id), body, undefined, opts?.signal).then(j) as Promise<InstanceView>,

@@ -5,6 +5,7 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { api, ApiError } from '../api/client'
+import { recentErrors, __resetErrorJournalForTests } from '../utils/errorReport'
 
 function okJson(body: unknown) {
   return {
@@ -21,6 +22,7 @@ const fetchMock = vi.fn()
 beforeEach(() => {
   fetchMock.mockReset()
   vi.stubGlobal('fetch', fetchMock)
+  __resetErrorJournalForTests()
 })
 
 describe('api instances methods', () => {
@@ -103,5 +105,34 @@ describe('api instances methods', () => {
       text: async () => 'instances feature is disabled',
     } as unknown as Response)
     await expect(api.listInstances()).rejects.toBeInstanceOf(ApiError)
+  })
+
+  it('does NOT journal the disabled-feature 403 (it is a designed, benign signal)', async () => {
+    // The instances control plane is owner-only and deny-by-default, so a 403 to
+    // its own list probe is expected on most installs. The caller catches it and
+    // renders the enable toggle; it must not surface as a spurious error report
+    // on whatever route mounted the sidebar (e.g. /chat/new-session).
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 403,
+      url: '/api/instances',
+      headers: { get: () => null },
+      text: async () => JSON.stringify({ error: 'instances feature is disabled (set instances.enabled=true)' }),
+    } as unknown as Response)
+    await expect(api.listInstances()).rejects.toBeInstanceOf(ApiError)
+    expect(recentErrors()).toHaveLength(0)
+  })
+
+  it('still journals an UNEXPECTED failure from listInstances (e.g. 500)', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 500,
+      url: '/api/instances',
+      headers: { get: () => null },
+      text: async () => 'boom',
+    } as unknown as Response)
+    await expect(api.listInstances()).rejects.toBeInstanceOf(ApiError)
+    expect(recentErrors()).toHaveLength(1)
+    expect(recentErrors()[0]).toMatchObject({ source: 'api', status: 500 })
   })
 })
