@@ -3453,6 +3453,55 @@ class TestRunChatLocalCommands:
         else:
             state.sessions.get_or_create.assert_awaited()
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "config_backend,live_backend,refused",
+        [
+            # agent.acp_backend is a factory default: switching it spawns NEW
+            # sessions on the new backend and leaves a live one running on the
+            # old, so the live provider is the harness /todos would reach.
+            ("claude", "", True),
+            ("", "claude", False),
+            # Agreeing axes keep the config answer.
+            ("claude", "claude", False),
+            ("", "", True),
+        ],
+    )
+    async def test_todos_gate_asks_the_live_session_before_config(
+        self, tmp_path, config_backend, live_backend, refused
+    ):
+        """/todos must be refused where the session that would receive it is kiro.
+
+        Forwarded to a live kiro session it reaches ``_kiro.dev/commands/execute``,
+        which rejects /todos as an unknown variant -- the failure the block exists
+        to prevent. ``/compact``'s pre-dispatch gate already reads the live
+        provider first; this pins the same authority for the kiro-only members.
+        """
+        from kiro_crew.providers.acp import AcpProvider
+
+        state, client = _runner_state(tmp_path)
+        _set_stream(client, [_complete()])
+        slot = _slot()
+        live = AcpProvider(acp_backend=live_backend)
+        state.sessions._sessions = {
+            chat_runner.effective_session_key(slot): SimpleNamespace(provider=live)
+        }
+        cfg = await asyncio.to_thread(chat_runner.KiroCrewConfig.load)
+        cfg.agent.provider = "acp"
+        cfg.agent.acp_backend = config_backend
+
+        with patch.object(chat_runner.KiroCrewConfig, "load", return_value=cfg):
+            await _drive(state, slot, "/todos")
+
+        notices = [
+            m for m in slot.messages if "not available in the dashboard" in m.get("content", "")
+        ]
+        assert bool(notices) is refused
+        if refused:
+            state.sessions.get_or_create.assert_not_awaited()
+        else:
+            state.sessions.get_or_create.assert_awaited()
+
     def test_kiro_only_members_are_still_forwarded_once_unblocked(self):
         """The gate drops these for the claude harness; forwarding must then happen.
 
