@@ -11,6 +11,7 @@ if TYPE_CHECKING:
 
 from kiro_crew import agent_state
 from kiro_crew.agent_capabilities import (
+    CapabilityError,
     prepare_member_capabilities,
     reconcile_member_capabilities,
 )
@@ -65,11 +66,17 @@ def prepare_runtime(
         raise CapabilityStartupError("capability_state_unreadable") from None
     if intent is None:
         return CapabilityPreparation(member)
-    reconcile_member_capabilities(member)
-    if not cwd:
-        cfg = KiroCrewConfig.load()
-        cwd = default_project_dir(cfg.agents[member].workspace)
-    prepared = prepare_member_capabilities(member, cwd)
+    try:
+        reconcile_member_capabilities(member)
+        if not cwd:
+            cfg = KiroCrewConfig.load()
+            cwd = default_project_dir(cfg.agents[member].workspace)
+        prepared = prepare_member_capabilities(member, cwd)
+    except CapabilityError as exc:
+        # The chat error card links to THIS member's Capabilities pane, where
+        # the change is reviewed; the code alone does not say whose file it is.
+        exc.member = member
+        raise
     if not prepared.get("revision") or not prepared.get("template"):
         raise CapabilityStartupError("capability_generation_missing")
     return CapabilityPreparation(
