@@ -22,7 +22,7 @@ import subprocess
 from typing import Any, Optional
 
 from kiro_crew.deploy.engine import resolve_aws_bin
-from kiro_crew.sandbox import cgroup_scope_argv, popen_limited, wrap_argv
+from kiro_crew.sandbox import _PYTHON_ENV_PREFIXES, cgroup_scope_argv, popen_limited, wrap_argv
 
 logger = logging.getLogger(__name__)
 
@@ -227,6 +227,15 @@ def run_aws(
     argv = _build_argv(args, profile, region)
     sandboxed, cleanup = wrap_argv(argv, mode="standard")
     sandboxed = cgroup_scope_argv(sandboxed)  # cgroup DoS ceiling
+    # A Python ``aws`` (aws-cli v1) must not import the gateway's own
+    # interpreter packages, so the launcher's Python settings stay behind: the
+    # same drop the voice list's ``aws`` child gets in ``dashboard/chat_voice.py``.
+    # Everything else, AWS settings included, still reaches the CLI.
+    aws_env = {
+        key: value
+        for key, value in os.environ.items()
+        if not any(key.startswith(prefix) for prefix in _PYTHON_ENV_PREFIXES)
+    }
     proc: Optional[subprocess.Popen[str]] = None
     try:
         try:
@@ -235,6 +244,7 @@ def run_aws(
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                env=aws_env,
             )
             if proc_sink is not None:
                 try:

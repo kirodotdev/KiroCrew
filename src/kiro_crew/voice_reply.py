@@ -45,6 +45,7 @@ from kiro_crew.piper_worker import MAX_AUDIO_BYTES as _PIPER_MAX_AUDIO_BYTES
 from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.platform_compat import IS_MACOS, IS_WINDOWS, trusted_system_bin
 from kiro_crew.sandbox import (
+    _PYTHON_ENV_PREFIXES,
     SandboxUnavailableError,
     cgroup_scope_argv,
     create_subprocess_limited,
@@ -1102,10 +1103,21 @@ async def _synthesize_polly(
             # the child exits.
             cmd, sandbox_cleanup = await wrap_argv_async(cmd, mode="standard", _prepare=wrap_argv)
             cmd = cgroup_scope_argv(cmd)  # cgroup DoS ceiling
+            # A Python ``aws`` (aws-cli v1) must not import the gateway's own
+            # interpreter packages, so the launcher's Python settings stay
+            # behind: the same drop the voice list's ``aws`` child gets in
+            # ``dashboard/chat_voice.py``. Everything else, AWS settings
+            # included, still reaches the CLI.
+            aws_env = {
+                key: value
+                for key, value in os.environ.items()
+                if not any(key.startswith(prefix) for prefix in _PYTHON_ENV_PREFIXES)
+            }
             proc = await create_subprocess_limited(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=aws_env,
             )
             try:
                 _, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
