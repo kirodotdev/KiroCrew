@@ -3,6 +3,8 @@ import { useQuery } from '@tanstack/react-query'
 import { Pencil, Circle, Pin, Zap, Locate, Link2, Tag as TagIcon, X, ExternalLink, Monitor, Undo2, RotateCw, PanelTop } from 'lucide-react'
 import type { ChatFolder } from '../types'
 import FolderMoveSubmenu from './FolderMoveSubmenu'
+import ErrorNotice, { ErrorNoticeMenuItem } from './ErrorNotice'
+import { useFolderSortMode } from '../hooks/useFolderSortMode'
 import SendToInstanceSubmenu from './SendToInstanceSubmenu'
 import ExportSessionItem from './ExportSessionItem'
 import ImportSessionItem from './ImportSessionItem'
@@ -49,6 +51,19 @@ export interface SessionActionsMenuProps {
   infoSlots?: React.ReactNode[]
   /** Called after a colour pick; lets a caller that controls its own menu close it (the header does). */
   onColorPicked?: () => void
+  /**
+   * Whether the chat sidebar -- and with it the banner that says a failed
+   * folder-order read -- is on screen while this menu is open. The sidebar's
+   * own row menus pass `true`; the chat header passes the drawer's state, which
+   * is `false` on mobile with the drawer closed and on desktop with the sidebar
+   * collapsed. When it is `false` and the read has failed, the **Move to
+   * folder** row carries the plain subline the banner would have shown (what
+   * is listed, and that the read retries on its own) -- the one place the
+   * person can see it before acting on the folder list. Not a second banner:
+   * one screen says a failure once, and here the banner is not on the screen.
+   * Omitted means "not on screen", the direction that never hides the fact.
+   */
+  sidebarOnScreen?: boolean
 }
 
 /**
@@ -88,7 +103,7 @@ export function collapseGroups<T>(groups: (T | false | null | undefined)[][]): T
  *   [close]          Close session
  */
 export default function SessionActionsMenu({
-  variant, slotKey, mode, onReveal, onRename, onOpenInNewTab, infoSlots, onColorPicked,
+  variant, slotKey, mode, onReveal, onRename, onOpenInNewTab, infoSlots, onColorPicked, sidebarOnScreen = false,
 }: SessionActionsMenuProps) {
   const Item = variant === 'context' ? ContextMenuItem : DropdownMenuItem
   const Separator = variant === 'context' ? ContextMenuSeparator : DropdownMenuSeparator
@@ -113,6 +128,15 @@ export default function SessionActionsMenu({
   const slot = useAppSelector(s => s.dashboard.slots.find(x => x.key === slotKey))
   const isPinned = !!slot?.pinned
   const isRunning = !!slot?.running
+  // The move-to submenu lists chat folders in the order the sidebar draws them.
+  // A failed read (no body to draw from) is said once per screen, by the
+  // sidebar's banner over the tree -- so while that banner is on screen this
+  // menu says nothing. When it is not (mobile with the drawer closed, desktop
+  // with the sidebar collapsed), the fact would be invisible exactly where the
+  // folder list is acted on, so the row carries the banner's plain subline.
+  const { mode: folderSortMode, error: folderSortError } = useFolderSortMode()
+  const folderOrderUnsaid = folderSortError !== null && !sidebarOnScreen
+  const folderOrderErrorId = React.useId()
   // Reload is also refused while sub-agent children are attached (the reset
   // would tear down their shared runtime) — mirror that in the disable so a
   // slot whose turn ended but whose children still run doesn't offer a click
@@ -158,7 +182,53 @@ export default function SessionActionsMenu({
           currentFolderId={currentFolderId}
           onPick={(folderId) => move(slotKey, folderId)}
           label={i18nT('components.sessionActionsMenu.move_to_folder')}
+          sortMode={folderSortMode}
         />
+      ),
+      // Under the row whose list it describes, and only with folders to list,
+      // and ONLY while the sidebar's banner is off screen -- on screen the banner
+      // says it once and this menu stays quiet. The rule's in-menu form
+      // (`errors-use-error-notice`): a PASSIVE notice carrying the server's own
+      // words, an `id`, and the hand-off as a sibling menu item the roving focus
+      // reaches (a button nested in an item is skipped), described by that id;
+      // the plain line under the notice says what the list is showing and that
+      // the read retries on its own.
+      folders.length > 0 && folderOrderUnsaid && (
+        <React.Fragment key="folder-order-error">
+          {/* Bounded width: the notice is the menu's widest child when the
+              server string is long, and an unbounded inline-flex would stretch
+              the whole menu past the viewport. Inside a bounded block the
+              notice wraps onto lines (`flex-wrap`; the message span itself wraps
+              through `min-w-0` + `overflow-wrap: anywhere`). */}
+          <div className="max-w-[300px] px-2 py-1.5">
+            <ErrorNotice
+              id={folderOrderErrorId}
+              variant="inline"
+              className="flex-wrap"
+              title={i18nT('pages.chatSidebar.folder_order_unavailable')}
+              message={folderSortError}
+              messagePlacement="below"
+              testId="session-menu-folder-order-unavailable"
+            />
+            {/* The ONE line every notice of this failure carries (sidebar, pickers,
+                card alike -- two phrasings for one failure read as two failures);
+                without the sidebar pointer the job form and the Command Bar add,
+                because the hand-off is the very next item. */}
+            <p className="mt-0.5 text-[11px] text-muted italic whitespace-normal" data-testid="session-menu-folder-order-detail">
+              {i18nT('pages.chatSidebar.folder_order_unavailable_detail')}
+            </p>
+          </div>
+          <ErrorNoticeMenuItem
+            Item={Item}
+            message={folderSortError}
+            describedBy={folderOrderErrorId}
+          />
+          {/* Closes the error block: without a rule here "Ask the agent" and the
+              regular items below it read as one run, and the reader cannot tell
+              where the failure's reach ends. The notice stays attached to the
+              Move to folder row above it, whose list it explains. */}
+          <Separator />
+        </React.Fragment>
       ),
       <Item key="tags" onSelect={() => openTagPopover(slotKey)}>
         <TagIcon size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.tags')}

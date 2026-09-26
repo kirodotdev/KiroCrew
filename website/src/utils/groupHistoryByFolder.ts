@@ -1,5 +1,5 @@
 import type { ChatFolder } from '../types'
-import { bySidebarOrder } from './folderTree'
+import { folderComparator, type FolderSortMode } from './folderTree'
 
 /** Stable key for the Unfiled bucket (no folder_id, or a deleted folder). */
 export const UNFILED_GROUP_KEY = '__unfiled__'
@@ -16,25 +16,28 @@ export interface HistoryFolderGroup<T> {
  * Bucket history search results by the folder each session was filed in.
  *
  * Groups follow sidebar folder order — a depth-first walk over root folders
- * (each level sorted by `order`) — so the grouping mirrors what the user sees
- * in the active list. The Unfiled bucket (a row with no `folder_id`, or one
- * pointing at a deleted folder) always comes last. Row order within each bucket
- * is preserved, so callers passing relevance-ranked results keep that ranking.
+ * (each level sorted with the person's folder sort mode, `custom` = stored
+ * `order`) — so the grouping mirrors what the user sees in the active list. The
+ * Unfiled bucket (a row with no `folder_id`, or one pointing at a deleted folder)
+ * always comes last. Row order within each bucket is preserved, so callers
+ * passing relevance-ranked results keep that ranking.
  */
 export function groupHistoryByFolder<T extends { folder_id?: string }>(
   rows: readonly T[],
   folders: readonly ChatFolder[],
+  mode: FolderSortMode = 'custom',
 ): HistoryFolderGroup<T>[] {
   const folderById = new Map(folders.map(f => [f.id, f]))
+  const compare = folderComparator(mode)
   const orderIndex = new Map<string, number>()
   let oi = 0
   const walk = (fs: ChatFolder[]) => {
     for (const f of fs) {
       orderIndex.set(f.id, oi++)
-      walk(folders.filter(c => c.parent_id === f.id).sort(bySidebarOrder))
+      walk(folders.filter(c => c.parent_id === f.id).sort(compare))
     }
   }
-  walk(folders.filter(f => !f.parent_id).sort(bySidebarOrder))
+  walk(folders.filter(f => !f.parent_id).sort(compare))
 
   const buckets = new Map<string, T[]>()
   for (const row of rows) {

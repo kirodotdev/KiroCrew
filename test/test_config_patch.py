@@ -348,6 +348,60 @@ class TestEnumValidator:
             assert resp.status == 400
 
 
+# ── Sidebar folder sort mode ─────────────────────────────────────────────
+
+
+class TestFolderSortRoundTrip:
+    """``dashboard.folder_sort`` is the one stored copy of the sidebar's folder
+    order, written by the sidebar menu and read back by the sidebar AND by the
+    ``kirocrew-dashboard`` MCP server -- so what a PATCH stores must be exactly
+    what a fresh load reads, and nothing outside the mode list may land."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", ["custom", "name", "created"])
+    async def test_every_mode_round_trips_through_the_config_file(self, tmp_config, mode) -> None:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "dashboard.folder_sort", mode)
+            assert resp.status == 200, await resp.text()
+        stored = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert stored["dashboard"]["folder_sort"] == mode
+        assert KiroCrewConfig.load().dashboard.folder_sort == mode
+
+    @pytest.mark.asyncio
+    async def test_a_value_outside_the_mode_list_is_refused_and_the_file_untouched(
+        self, tmp_config
+    ) -> None:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        async with TestClient(TestServer(_make_app())) as c:
+            assert (await _patch(c, "dashboard.folder_sort", "name")).status == 200
+            for bad in ("alphabetical", "", "Name", 1, None, ["name"]):
+                resp = await _patch(c, "dashboard.folder_sort", bad)
+                assert resp.status == 400, bad
+        assert KiroCrewConfig.load().dashboard.folder_sort == "name"
+
+    def test_the_allowlist_enum_is_the_loader_list_spelled_once(self) -> None:
+        """Three spellings of the same set -- the dataclass field's enum metadata,
+        the shared constant, and the PATCH allowlist -- pinned equal, so a fourth
+        mode cannot be writable without being loadable or the other way round."""
+        from dataclasses import fields
+
+        from kiro_crew.config.sections import (
+            FOLDER_SORT_DEFAULT,
+            FOLDER_SORT_MODES,
+            DashboardConfig,
+        )
+        from kiro_crew.dashboard.handlers.core import _EDITABLE_CONFIG
+
+        spec = _EDITABLE_CONFIG["dashboard.folder_sort"]
+        assert spec == {"type": "enum", "values": list(FOLDER_SORT_MODES)}
+        field = next(f for f in fields(DashboardConfig) if f.name == "folder_sort")
+        assert field.metadata["enum"] == list(FOLDER_SORT_MODES)
+        assert field.default == FOLDER_SORT_DEFAULT == "custom"
+
+
 # ── Int validator ────────────────────────────────────────────────────────
 
 

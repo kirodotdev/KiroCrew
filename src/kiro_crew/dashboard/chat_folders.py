@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 import unicodedata
 import uuid
 import weakref
@@ -1165,6 +1166,11 @@ async def create_folder_record(
         "parent_id": parent_id,
         "project_dir": project_dir,
         "default_agent": default_agent,
+        # Epoch seconds, a JSON number, so the sidebar and the MCP tree read it
+        # with the same rule they read ``order`` by. It is what the sidebar's
+        # ``created`` folder sort orders on; a row from before this key existed
+        # has none and sorts as older than every stamped row.
+        "created_at": time.time(),
     }
     if color:
         folder["color"] = color

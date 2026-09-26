@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING
@@ -328,6 +329,9 @@ async def ensure_channel_folder(
             "hidden": False,
             "parent_id": "",
             "project_dir": "",
+            # Same stamp every other folder creator writes, read by the sidebar's
+            # ``created`` folder sort.
+            "created_at": time.time(),
             # The brand mark IS this folder's icon, so no emoji is generated for
             # it (the LLM icon task folder creation normally kicks off is
             # skipped).

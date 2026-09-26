@@ -1,7 +1,7 @@
 import { useState, useRef, useReducer, useEffect, useLayoutEffect, memo, useMemo, useCallback, useId, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
-import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Ghost, FolderPlus, MessageSquare, MessageSquarePlus, MessagesSquare, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, CornerDownRight, GripVertical, Zap, Check, Copy, List, ListTree, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Repeat, Server } from 'lucide-react'
+import { Plus, X, Pin, Monitor, ArrowUpDown, Eye, EyeOff, VenetianMask, Ghost, FolderPlus, MessageSquare, MessageSquarePlus, MessagesSquare, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, CornerDownRight, GripVertical, Zap, Check, Copy, List, ListTree, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Repeat, Server } from 'lucide-react'
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import { FolderBody } from '../components/FolderBody'
@@ -78,7 +78,9 @@ import { ChannelBrandIcon, hasChannelBrandIcon } from '../components/ChannelBran
 import { RemoteCrewChip } from '../components/RemoteCrewChip'
 import TagManagerList from '../components/TagManagerList'
 import { DndActiveProbe, DndDraggable, DndDroppable, pointerWithinDeepest, closestEdge } from '../components/dnd'
-import { bySidebarOrder, collectFolderSubtreeIds, coveredByHiddenAncestor, folderNameText } from '../utils/folderTree'
+import { FOLDER_SORT_MODES, collectFolderSubtreeIds, coveredByHiddenAncestor, folderComparator, folderHasCreatedStamp, folderNameText, type FolderSortMode } from '../utils/folderTree'
+import { useFolderSortRead } from '../hooks/useFolderSortMode'
+import { setConfigPathValue, useOptimisticConfigPaths } from './settings/useOptimisticConfigPaths'
 import { normalizeRunSessionKey } from '../apps/workflows/runModel'
 import { sanitizeLlmOutput } from '../utils/sanitize'
 import type { PaletteBoost } from '../utils/sessionColors'
@@ -642,8 +644,17 @@ function DisclosureChevron({ open, size, className = '' }: { open: boolean; size
   return <ChevronRight size={size} className={`shrink-0 transition-transform duration-200 ${open ? 'rotate-90' : ''} ${className}`.trimEnd()} />
 }
 
-function SortableFolderBlock({ folder, subtree, siblings, renderFolderBlock }: { folder: ChatFolder; subtree?: readonly string[]; siblings?: readonly string[]; renderFolderBlock: (f: ChatFolder, depth: number, visited?: Set<string>, dragHandleProps?: React.HTMLAttributes<HTMLElement>, forceCollapsed?: boolean) => React.ReactNode[] }) {
-  const { listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: folder.id, data: { type: 'folder', subtree, siblings } })
+function SortableFolderBlock({ folder, subtree, siblings, reorderable, dragWithheld, renderFolderBlock }: { folder: ChatFolder; subtree?: readonly string[]; siblings?: readonly string[]; reorderable: boolean; dragWithheld: boolean; renderFolderBlock: (f: ChatFolder, depth: number, visited?: Set<string>, dragHandleProps?: React.HTMLAttributes<HTMLElement>, forceCollapsed?: boolean) => React.ReactNode[] }) {
+  // Outside the custom folder order the row stays DRAGGABLE (the nest band on a
+  // folder header still re-parents) but stops being a reorder TARGET: with its
+  // droppable off, dnd-kit never resolves a sibling as `over`, so no slot opens
+  // and nothing displaces -- the affordance is gone rather than refused after
+  // the fact. See `folderReorderable`. Before the FIRST read of the mode
+  // (`dragWithheld`) both sides are off: the reorder cannot be honoured, nothing
+  // on screen could yet say why a lift died at the drop, and the mode arrives
+  // with the read -- so for that moment the row is simply not grabbable (dnd-kit
+  // hands it no listeners, and the header draws no grab cursor).
+  const { listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: folder.id, data: { type: 'folder', subtree, siblings }, disabled: dragWithheld ? { draggable: true, droppable: true } : reorderable ? undefined : { droppable: true } })
   const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1, position: 'relative' as const }
   // The whole folder header is the drag handle (pointer + touch): dragging the
   // row reorders the folder — no grip, consistent with session-card drag. Only
@@ -682,18 +693,26 @@ function SortableFolderBlock({ folder, subtree, siblings, renderFolderBlock }: {
  * `disabled` while renaming, matching the bare-draggable behaviour it replaces:
  * a drag started on a text input would steal the caret.
  */
-function SortableSubfolderBlock({ folder, depth, visited, subtree, siblings, disabled, renderFolderBlock }: {
+function SortableSubfolderBlock({ folder, depth, visited, subtree, siblings, disabled, reorderable, dragWithheld, renderFolderBlock }: {
   folder: ChatFolder
   depth: number
   visited: ReadonlySet<string>
   subtree?: readonly string[]
   siblings?: readonly string[]
   disabled?: boolean
+  reorderable: boolean
+  dragWithheld: boolean
   renderFolderBlock: (f: ChatFolder, depth: number, visited?: Set<string>, dragHandleProps?: React.HTMLAttributes<HTMLElement>, forceCollapsed?: boolean) => React.ReactNode[]
 }) {
+  // Two reasons, one per side: renaming turns the DRAGGABLE off (a drag started
+  // on the text input would steal the caret -- dnd-kit's boolean `true` only ever
+  // disabled that side), and a non-custom folder order turns the DROPPABLE off,
+  // the same way SortableFolderBlock does for a root row. Spelled per side so the
+  // two compose: a subfolder mid-rename is no reorder target outside Custom either.
+  // Before the first read of the mode both sides are off (see the root wrapper).
   const { listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: folder.id,
-    disabled,
+    disabled: { draggable: !!disabled || dragWithheld, droppable: !reorderable || dragWithheld },
     data: { type: 'folder', nested: true, subtree, siblings },
   })
   const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1 }
@@ -717,18 +736,22 @@ function SortableSubfolderBlock({ folder, depth, visited, subtree, siblings, dis
  *  sortable positioning — identical to the list-view pattern. Reorders route
  *  through the same global reorderFolders() path, so order stays consistent
  *  across every column and the list view. */
-function SortableColumnFolder({ folder, columnId, colSlotKeys, subtree, renderColumnFolder }: {
+function SortableColumnFolder({ folder, columnId, colSlotKeys, subtree, reorderable, dragWithheld, renderColumnFolder }: {
   folder: ChatFolder
   columnId: string
   colSlotKeys: Set<string>
   subtree?: readonly string[]
+  reorderable: boolean
+  dragWithheld: boolean
   renderColumnFolder: (f: ChatFolder, columnId: string, colSlotKeys: Set<string>, dragHandleProps?: React.HTMLAttributes<HTMLElement>, forceCollapsed?: boolean) => React.ReactNode
 }) {
   // `subtree` mirrors the list-view SortableFolderBlock: sidebarCollision reads it
   // to exclude the dragged folder's own descendants from the nest drop targets, so
   // a folder can never be dropped into itself or a child (moveFolderTo guards this
-  // too, but excluding them up front keeps the highlight honest).
-  const { listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: folder.id, data: { type: 'folder', subtree } })
+  // too, but excluding them up front keeps the highlight honest). `reorderable`
+  // mirrors it too: outside the custom order the column's folders are no reorder
+  // targets.
+  const { listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: folder.id, data: { type: 'folder', subtree }, disabled: dragWithheld ? { draggable: true, droppable: true } : reorderable ? undefined : { droppable: true } })
   const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1, position: 'relative' as const }
   // While dragging, the body is force-collapsed so the source shrinks to a
   // single row — the drop-target gap (and the DragOverlay ghost) stay compact,
@@ -2577,6 +2600,9 @@ const SessionRow = memo(function SessionRow({
       mode,
       onRename: () => onRenameStart(s.key, scope, s.title && s.title !== s.key ? s.title : '', true),
       onOpenInNewTab: onOpenSlotInNewTab ? () => onOpenSlotInNewTab(s.key) : undefined,
+      // A row menu opens from inside this panel, where the folder-order banner
+      // (when there is one) sits over the tree -- the menu need not repeat it.
+      sidebarOnScreen: true,
     }
     return (
       <DndDroppable
@@ -3216,6 +3242,15 @@ export const SORT_LABEL_KEY: Record<SortKey, string> = {
   'created-asc': 'pages.chatSidebar.sort_created_oldest',
   'name-asc': 'pages.chatSidebar.sort_name_asc',
   'name-desc': 'pages.chatSidebar.sort_name_desc',
+}
+/** Catalog key per folder sort mode -- the "Folder order" rows in the same menu.
+ *  Three rows because there are three modes; the list itself is
+ *  `FOLDER_SORT_MODES`, so a fourth mode fails typing here rather than rendering
+ *  with no label. */
+export const FOLDER_SORT_LABEL_KEY: Record<FolderSortMode, string> = {
+  custom: 'pages.chatSidebar.folder_order_custom',
+  name: 'pages.chatSidebar.folder_order_name',
+  created: 'pages.chatSidebar.folder_order_created',
 }
 /** Flat view ("explode chats out of folders") persistence key.
  *
@@ -4674,9 +4709,128 @@ function ChatSidebar({
   // Ranks up to the configured count of sessions by settled recency for the sidebar tint —
   // see ../utils/recencyTint. Count = server-side dashboard.recent_tint_count (shared
   // kirocrewConfig query); recomputes when the slots or the configured count change.
-  const { data: mcCfg } = useQuery({ queryKey: ['kirocrewConfig'], queryFn: () => api.kirocrewConfig() })
+  const { data: mcCfg, status: mcCfgStatus, error: mcCfgError, errorUpdatedAt: mcCfgErrorUpdatedAt } = useQuery({ queryKey: ['kirocrewConfig'], queryFn: () => api.kirocrewConfig() })
   const recentTintCount = clampTintCount(mcCfg?.dashboard?.recent_tint_count)
   const recentRank = useMemo(() => computeRecentRank(localSlots, recentTintCount), [localSlots, recentTintCount])
+
+  // ── Folder sort mode ──
+  // How the folder tree orders siblings: the person's stored positions (custom),
+  // a natural name order, or newest first. Server-side (dashboard.folder_sort, the
+  // same kirocrewConfig query as the tint above) rather than localStorage, because
+  // the kirocrew-dashboard MCP server's chat_folder_tree lists folders in this
+  // same order and an agent picking a before/after anchor from it must read the
+  // sequence the person sees on every client. Every folder sort in this file goes
+  // through `folderCompare`; a site sorting with `bySidebarOrder` directly would
+  // draw the stored order beside a tree the person has sorted by name.
+  const cfgOverlay = useOptimisticConfigPaths(queryClient)
+  // What this sidebar KNOWS about the mode, from the one derivation every
+  // surface shares (`useFolderSortRead`): `mode` -- the person's once a config
+  // body is on hand, the stored-order fallback otherwise; `known` -- that body
+  // is on hand, fresh or cached; `error` -- a read that failed with nothing to
+  // fall back on, held until a body arrives. Read from the SHARED cache, not
+  // from the menu's own optimistic overlay: the folder-suggestion card, the
+  // session menu, the Command Bar and the MCP tree all read that cache, and a
+  // sidebar drawing a picked mode one round-trip before they do would show two
+  // orders for one tree. So a pick re-sorts when the save lands -- the menu's
+  // success write puts the accepted value into the cache at that instant and
+  // every reader switches together -- and a refused save never leaves the
+  // stored order. The fallback draws fine -- it is the order every earlier
+  // build drew -- but a sibling drag may not write against it: that renumber is
+  // computed from the DRAWN order, and only in the custom mode is that the
+  // STORED order, so in any other mode it would rewrite the manual arrangement
+  // behind a view the person is not looking at, and behind an unknown mode it
+  // might. Hence the reorder affordance (each folder sortable's droppable side)
+  // is on only when the mode is known to be custom and no failure is being
+  // said. Known is the body, not the query status: a failed BACKGROUND refetch
+  // keeps the previous body, react-query retries it on its own, and this
+  // sidebar keeps drawing and acting on that body without a word -- while a
+  // failure with no body is said once, on the banner below, and held through
+  // the retry's pending phase rather than unmounted and remounted around it.
+  const folderSortRead = useFolderSortRead({ data: mcCfg, status: mcCfgStatus, error: mcCfgError, errorUpdatedAt: mcCfgErrorUpdatedAt })
+  const folderSortMode: FolderSortMode = folderSortRead.mode
+  const folderCompare = useMemo(() => folderComparator(folderSortMode), [folderSortMode])
+  const folderReorderable = folderSortRead.known && folderSortMode === 'custom' && folderSortRead.error === null
+  // The first-load window: the folder list is drawn (its own query resolved)
+  // while the mode is still being read -- not known, and no failure to say. The
+  // rows' droppable side is off in that state, and a lift that then dies at the
+  // drop would have nothing on screen to explain it (no banner: nothing failed;
+  // no hint: the hint's words presume a known mode). The failed-read state's
+  // rule is no refusal after the fact, so here the affordance is withheld
+  // outright: both sides of every folder sortable off, no grab cursor, until
+  // the read lands. Once it fails, the banner takes over and the lift returns
+  // (re-parenting never needed the mode).
+  const folderDragWithheld = !folderSortRead.known && folderSortRead.error === null
+  // The withdrawn affordance said at the moment it is missed. A folder drag
+  // outside Custom still LIFTS the row (the same gesture re-parents, and the
+  // two cannot be told apart until the drop resolves), so a sibling drop that
+  // opens no slot and moves nothing would otherwise read as broken -- weeks
+  // after the mode was picked, with the only indicator a check mark inside a
+  // closed menu. `handleSidebarDragEnd` sets this when such a drag ends with no
+  // re-parent target. It clears on the person's NEXT interaction -- a pointer
+  // or key landing anywhere but on the line itself -- on a switch back to
+  // Custom, or when the next drag starts; never on a clock, which removed the
+  // "Switch to Custom" action from under a hand reaching for it. A status, not
+  // an error: nothing failed.
+  const [folderReorderHint, setFolderReorderHint] = useState(false)
+  const folderReorderHintRef = useRef<HTMLDivElement | null>(null)
+  const showFolderReorderHint = useCallback(() => setFolderReorderHint(true), [])
+  const hideFolderReorderHint = useCallback(() => setFolderReorderHint(false), [])
+  useEffect(() => { if (folderReorderable) hideFolderReorderHint() }, [folderReorderable, hideFolderReorderHint])
+  useEffect(() => {
+    if (!folderReorderHint) return
+    // Capture phase, document-wide: the interaction that retires the line may
+    // be a click that another handler stops (a menu item, a drag handle), and
+    // it may land outside this sidebar (the chat pane). Inside the line -- on
+    // its own action -- it is not an interaction AWAY from it.
+    const onInteract = (e: Event) => {
+      const t = e.target
+      if (t instanceof Node && folderReorderHintRef.current?.contains(t)) return
+      setFolderReorderHint(false)
+    }
+    document.addEventListener('pointerdown', onInteract, true)
+    document.addEventListener('keydown', onInteract, true)
+    return () => {
+      document.removeEventListener('pointerdown', onInteract, true)
+      document.removeEventListener('keydown', onInteract, true)
+    }
+  }, [folderReorderHint])
+  // Choosing a mode is a VIEW change: it writes one enum and never a folder's
+  // stored `order`, which is what lets Custom restore the manual arrangement
+  // exactly. The mutation rides the shared config overlay's SETTLE path --
+  // token-guarded success write of the accepted value into the cache at this
+  // one path (every reader of `['kirocrewConfig']` switches on that write),
+  // then the settle-time refetch, and a failure report only while this save
+  // still owns the path -- but not its optimistic display: see `folderSortRead`
+  // above for why the tree waits for the save to land.
+  const folderSortMut = useMutation({
+    ...cfgOverlay.mutationOpts<FolderSortMode>({
+      queryKey: ['kirocrewConfig'],
+      mutationFn: (mode: FolderSortMode) => api.patchConfig('dashboard.folder_sort', mode),
+      path: () => 'dashboard.folder_sort',
+      displayValue: v => v,
+      applyToCache: (cached, mode) => setConfigPathValue(cached, 'dashboard.folder_sort', mode),
+      // Nothing changed on screen (the tree never left the stored order), so the
+      // person has to be told why their pick did not take, on the same notice the
+      // other folder actions report through.
+      onFailure: e => setFolderActionError(errMessage(e) || i18nT('components.errorBoundary.something_went_wrong')),
+    }),
+    // ONE save on the wire at a time, in pick order. Two picks inside one
+    // round-trip would otherwise be two concurrent PATCHes to the same path,
+    // and the server persists whichever ARRIVES last -- a delayed first
+    // request lands after the second and the stored mode is the earlier pick,
+    // while the settle-time refetch then draws that earlier order as if it
+    // were chosen. Dropping the first response client-side (a sequence number,
+    // an abort) cannot fix that: the write already happened on the server. So
+    // react-query's mutation scope queues a pick made while a save is in
+    // flight -- its `onMutate` runs at once (the overlay's newest token is the
+    // newest pick, so the superseded save's success never writes the cache),
+    // its request starts only when the previous one has settled, success or
+    // refusal -- and the last pick is both the last request the server sees
+    // and the persisted one. A refusal behind a newer pick stays silent: the
+    // newer save's own outcome is the one that matters and is the one
+    // reported.
+    scope: { id: 'dashboard.folder_sort' },
+  })
 
   // Folder editing state
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -5609,6 +5763,12 @@ function ChatSidebar({
   // no control to leave. Falling back is the safe direction -- the lane returns by
   // itself the moment any row carries a creator again.
   const conductorLaneActive = !boardLaneActive && conductorView && lineageAvailable
+  // Whether any folder ROW is on screen to drag: the tree, and the board unless
+  // flat view empties its columns of folders (`relevantFolders`). The flat lane
+  // explodes chats out of their folders and the conductor lane nests by lineage.
+  // Gates only the copy about DRAGGING (the menu's reorder note) -- the folder
+  // order itself is read and offered in every lane.
+  const folderRowsDrawn = boardLaneActive ? !flatView : !flatLaneActive && !conductorLaneActive
 
   // Scroll memory for the session lane. Collapsing the sessions sidebar (or
   // closing the mobile drawer) UNMOUNTS ChatSidebar — OverlayDrawer gates its
@@ -5756,15 +5916,15 @@ function ChatSidebar({
       const list = m.get(key)
       if (list) list.push(f); else m.set(key, [f])
     }
-    for (const list of m.values()) list.sort(bySidebarOrder)
+    for (const list of m.values()) list.sort(folderCompare)
     return m
-  }, [folders, folderFilterActive, filterHiddenFolders, isFolderHidden])
+  }, [folders, folderFilterActive, filterHiddenFolders, isFolderHidden, folderCompare])
 
   // Every folder the filter is hiding, flattened — the flat lane has no
   // containers to anchor to, so all hides collapse into its single row.
   const allHiddenFolders = useMemo(
-    () => [...hiddenByContainer.values()].flat().sort(bySidebarOrder),
-    [hiddenByContainer],
+    () => [...hiddenByContainer.values()].flat().sort(folderCompare),
+    [hiddenByContainer, folderCompare],
   )
 
   /** Folders the person's uncheck is withholding from THE LANE ON SCREEN, announced.
@@ -6239,8 +6399,8 @@ function ChatSidebar({
     }
     // Same roots + childrenOf walk the "New chat in folder" menu uses, with a
     // visited set so a parent_id cycle terminates instead of recursing forever.
-    const roots = folders.filter(f => !f.parent_id).sort(bySidebarOrder)
-    const childrenOf = (pid: string) => folders.filter(f => f.parent_id === pid).sort(bySidebarOrder)
+    const roots = folders.filter(f => !f.parent_id).sort(folderCompare)
+    const childrenOf = (pid: string) => folders.filter(f => f.parent_id === pid).sort(folderCompare)
     const rows: { folder: ChatFolder; depth: number; count: number; hidden: boolean; hiddenByAncestor: boolean }[] = []
     const visited = new Set<string>()
     const walk = (list: ChatFolder[], depth: number) => {
@@ -6272,7 +6432,7 @@ function ChatSidebar({
       })
     }
     return rows
-  }, [folders, filteredSlots, slotFolders, filterHiddenFolders, filterHiddenSubtree])
+  }, [folders, filteredSlots, slotFolders, filterHiddenFolders, filterHiddenSubtree, folderCompare])
 
   // Folder mutations
   const createFolderMutation = useMutation({
@@ -6368,6 +6528,14 @@ function ChatSidebar({
   const [activeDrag, setActiveDrag] = useState<{ type: string; id: string } | null>(null)
   const reorderFolders = useCallback((activeId: string, overId: string) => {
     if (activeId === overId) return
+    // A sibling reorder is a write to the STORED positions computed against the
+    // DRAWN order, sound only when the mode is known to be custom (see
+    // `folderReorderable`). Outside that, the folder rows' droppable side is off,
+    // so no pointer drag reaches here with a sibling as `over`; this guard is the
+    // belt for the keyboard and scripted paths, and it is silent because the
+    // restriction is expected -- the affordance is withdrawn, not a write that
+    // failed. Re-parenting by drag is routed before this and still works.
+    if (!folderReorderable) return
     // Read latest from cache to avoid stale-closure ordering on rapid successive drags
     const current = queryClient.getQueryData<ChatFolder[]>(['chat-folders']) ?? []
     // Scoped to the dragged folder's own container, not to the root lane: a
@@ -6407,7 +6575,7 @@ function ChatSidebar({
       )
       queryClient.invalidateQueries({ queryKey: ['chat-folders'] })
     })
-  }, [queryClient])
+  }, [queryClient, folderReorderable])
   // Re-parent a folder: move it into `parentId`, or to the top level (null).
   // Client-side guards mirror the server (self/descendant targets rejected)
   // so an invalid pick or drop is a silent no-op instead of a 400 round-trip.
@@ -6799,10 +6967,12 @@ function ChatSidebar({
     // computed against, and a displaced row would make the render disagree with it.
     releaseHoverPin()
     setDragFrozen(true)
+    // A new gesture retires the previous one's hint; its drop will say its own.
+    hideFolderReorderHint()
     const d = e.active.data.current as { type?: string; key?: string } | undefined
     if (d?.type === 'session' && d.key) setActiveDrag({ type: 'session', id: d.key })
     else if (d?.type === 'folder') setActiveDrag({ type: 'folder', id: e.active.id as string })
-  }, [releaseHoverPin])
+  }, [releaseHoverPin, hideFolderReorderHint])
   // The one place the drag mirror is torn down: end, cancel, and the
   // reconciler below all go through it so none can leave a piece behind.
   const resetSidebarDrag = useCallback(() => {
@@ -6831,7 +7001,6 @@ function ChatSidebar({
   const handleSidebarDragEnd = useCallback((event: DragEndEvent) => {
     resetSidebarDrag()
     const { active, over } = event
-    if (!over) return
     const a = active.data.current as {
       type?: string
       key?: string
@@ -6839,12 +7008,25 @@ function ChatSidebar({
       pinned?: boolean
       container?: string
     } | undefined
-    const o = over.data.current as {
+    const o = over?.data.current as {
       type?: string
       key?: string
       folderId?: string | null
       container?: string
     } | undefined
+    // Outside Custom the folder rows' droppable side is off, so a sibling
+    // reorder drag resolves to NO target (or, on a scripted path, to a sortable
+    // hit that `reorderFolders` refuses) -- either way nothing moves, and the
+    // person is told why at the point of the drop. A folder-drop hit is the
+    // re-parent gesture, which still works in every mode, so it falls through to
+    // the handling below. Only when the mode is KNOWN (a config body is on hand):
+    // before the first read, or after one that failed with nothing to fall back
+    // on, the withdrawal is the read's, and the read's own banner says so.
+    if (a?.type === 'folder' && !folderReorderable && folderSortRead.known && o?.type !== 'folder-drop') {
+      showFolderReorderHint()
+      return
+    }
+    if (!over) return
     if (a?.type === 'folder') {
       if (a.nested) {
         // Nested subfolder drag, both gestures. A folder-drop hit is the
@@ -6900,7 +7082,7 @@ function ChatSidebar({
       if (o?.type === 'folder-drop') moveByDrag(a.key, o.folderId ?? null)
       else if (o?.type === 'folder') moveByDrag(a.key, over.id as string)
     }
-  }, [resetSidebarDrag, reorderFolders, reorderPinned, searchRanked, pinned, moveByDrag, moveFolderByDrag, localSlots, activeSlot, onDropSessionRef])
+  }, [resetSidebarDrag, reorderFolders, reorderPinned, searchRanked, pinned, moveByDrag, moveFolderByDrag, localSlots, activeSlot, onDropSessionRef, folderReorderable, folderSortRead.known, showFolderReorderHint])
   const handleSidebarDragCancel = resetSidebarDrag
   // Auto-expand collapsed folders when a dragged item hovers over them for 500ms.
   const dragExpandTimer = useRef<{ id: string; timer: ReturnType<typeof setTimeout> } | null>(null)
@@ -7266,7 +7448,7 @@ function ChatSidebar({
   // Render a folder block scoped to a single column: only slots matching the column predicate.
   // Always render the folder header (even with 0 matches) so users can see + drop into it.
   const renderColumnFolder = (folder: ChatFolder, columnId: string, colSlotKeys: Set<string>, dragHandleProps?: React.HTMLAttributes<HTMLElement>, forceCollapsed?: boolean): React.ReactNode => {
-    const childFolders = folders.filter(f => f.parent_id === folder.id).sort(bySidebarOrder)
+    const childFolders = folders.filter(f => f.parent_id === folder.id).sort(folderCompare)
     const { rows: childSlots, navScope: folderLaneScope, container: folderHoldContainer } = heldLane(filteredSlots.filter(s => colSlotKeys.has(sessionRowIdentity(s)) && localSlotFolder(s, slotFolders) === folder.id), columnId, `board:${columnId}:folder:${folder.id}`)
     // A nested folder the person unchecked drops out of the recursion, so neither its
     // header nor anything under it renders. Checking the folder's OWN id is enough:
@@ -7458,7 +7640,7 @@ function ChatSidebar({
                   )
                 })()}
                 {/* Re-parent: board-view parity with the list-view folder menu. */}
-                <FolderMoveSubmenu variant="dropdown" label={i18nT('pages.chatSidebar.move_folder_to')}
+                <FolderMoveSubmenu variant="dropdown" label={i18nT('pages.chatSidebar.move_folder_to')} sortMode={folderSortMode}
                   folders={reparentTargets}
                   currentFolderId={folder.parent_id || null}
                   onPick={pid => moveFolderTo(folder.id, pid)} />
@@ -7755,7 +7937,7 @@ function ChatSidebar({
     folders.filter(f => f.parent_id === folder.id
       && !isFolderHidden(f) && !isFolderFilteredOut(f)
       && (!listNarrowed || narrowedSubtreeShowsSomething(f)))
-      .sort(bySidebarOrder)
+      .sort(folderCompare)
 
   const renderFolderHeader = (folder: ChatFolder, dragHandleProps?: React.HTMLAttributes<HTMLElement>, emptyBody = false) => {
     // Same predicate `renderFolderBlock` renders by, so the number describes what
@@ -8021,7 +8203,7 @@ function ChatSidebar({
               })()}
               {/* Re-parent: move this folder under another folder or back to the
                *  top level. Self + descendants are excluded (cycle guard). */}
-              <FolderMoveSubmenu variant="dropdown" label={i18nT('pages.chatSidebar.move_folder_to')}
+              <FolderMoveSubmenu variant="dropdown" label={i18nT('pages.chatSidebar.move_folder_to')} sortMode={folderSortMode}
                 folders={reparentTargets}
                 currentFolderId={folder.parent_id || null}
                 onPick={pid => moveFolderTo(folder.id, pid)} />
@@ -8126,7 +8308,7 @@ function ChatSidebar({
       childNodes.push(
         <SortableContext key={`subfolder-ring-${folder.id}`} items={siblingIds} strategy={verticalListSortingStrategy}>
           {childFolderRows.map(cf => (
-            <SortableSubfolderBlock key={`subfolder-drag-${cf.id}`} folder={cf}
+            <SortableSubfolderBlock key={`subfolder-drag-${cf.id}`} folder={cf} reorderable={folderReorderable} dragWithheld={folderDragWithheld}
               depth={depth + 1} visited={visited}
               subtree={[...(folderSubtrees.get(cf.id) ?? collectFolderSubtreeIds(folders, cf.id))]}
               siblings={siblingIds}
@@ -8230,7 +8412,7 @@ function ChatSidebar({
     ]
   }
 
-  const rootFolders = useMemo(() => folders.filter(f => !f.parent_id).sort(bySidebarOrder), [folders])
+  const rootFolders = useMemo(() => folders.filter(f => !f.parent_id).sort(folderCompare), [folders, folderCompare])
   const visibleRootFolders = useMemo(() => rootFolders.filter(f => !isFolderHidden(f) && !isFolderFilteredOut(f)), [rootFolders, isFolderHidden, isFolderFilteredOut])
   const rootFolderIds = useMemo(() => visibleRootFolders.map(f => f.id), [visibleRootFolders])
   const ungroupedSlots = useMemo(
@@ -8537,8 +8719,8 @@ function ChatSidebar({
                 </DropdownMenuItem>
                 {folders.length > 0 && (() => {
                   const folderRows = (() => {
-                    const roots = folders.filter(f => !f.parent_id).sort(bySidebarOrder)
-                    const childrenOf = (pid: string) => folders.filter(f => f.parent_id === pid).sort(bySidebarOrder)
+                    const roots = folders.filter(f => !f.parent_id).sort(folderCompare)
+                    const childrenOf = (pid: string) => folders.filter(f => f.parent_id === pid).sort(folderCompare)
                     const items: { f: ChatFolder; depth: number }[] = []
                     const walk = (list: ChatFolder[], depth: number) => { for (const f of list) { items.push({ f, depth }); walk(childrenOf(f.id), depth + 1) } }
                     walk(roots, 0)
@@ -9036,7 +9218,12 @@ function ChatSidebar({
                   )
                 })}
                 <DropdownMenuSeparator />
-                <FilterMenuLabel>{i18nT('pages.chatSidebar.sort_by')}</FilterMenuLabel>
+                {/* Names its object: this menu also carries "Folder order" two
+                    sections down, and a bare "Sort by" over one list beside an
+                    order over another read as sorting twice, with a guess about
+                    which list each one changes. The members page keeps the bare
+                    key -- it has no second list. */}
+                <FilterMenuLabel>{i18nT('pages.chatSidebar.sort_sessions_by')}</FilterMenuLabel>
                 {SORT_OPTIONS.map(o => (
                   <DropdownMenuItem
                     key={o.value}
@@ -9046,6 +9233,72 @@ function ChatSidebar({
                     {sortKey === o.value && <Check size={14} className="text-accent shrink-0" />}
                   </DropdownMenuItem>
                 ))}
+                {/* Folder order: the same row grammar as Sort by, one section down,
+                    because it answers the same kind of question about this list.
+                    Custom is the person's own arrangement (drag, or an agent's
+                    chat_folder_move); Name and Created are views over it that
+                    never rewrite a stored position. Offered in EVERY lane, unlike
+                    the stale control below: the flat lane explodes chats out of
+                    their folders and the conductor lane nests by lineage, but the
+                    mode is not idle there -- every row menu's "Move to folder"
+                    picker, the history search's folder groups, the Command Bar,
+                    the job form and the MCP tree all list in it -- and this is the
+                    only control that writes it. A mode a person cannot change from
+                    the lane they are in is the trap. */}
+                <DropdownMenuSeparator />
+                <FilterMenuLabel>{i18nT('pages.chatSidebar.folder_order')}</FilterMenuLabel>
+                {FOLDER_SORT_MODES.map(mode => (
+                  <DropdownMenuItem
+                    key={mode}
+                    data-testid={`folder-order-${mode}`}
+                    // "Already the mode" is the value in flight while a save is
+                    // pending (the newest pick, queued or on the wire), not the
+                    // cache (which moves only when a save lands): pick Name,
+                    // reopen, pick Custom -- Custom must go out, not be read as
+                    // a no-op against the still-Custom cache. A pick that is a
+                    // change goes into `folderSortMut`'s one-at-a-time queue.
+                    onSelect={() => {
+                      const current = folderSortMut.isPending ? folderSortMut.variables : folderSortMode
+                      if (mode !== current) folderSortMut.mutate(mode)
+                    }}
+                  >
+                    <span className="flex-1">{i18nT(FOLDER_SORT_LABEL_KEY[mode])}</span>
+                    {folderSortMode === mode && <Check size={14} className="text-accent shrink-0" />}
+                  </DropdownMenuItem>
+                ))}
+                {/* Outside Custom a folder drag can re-parent but not reorder
+                    (the rows' droppable side is off). Said here, where the mode
+                    is chosen, the same caption grammar as the stale control's
+                    paused hint below -- and as a FACT about the modes, not the
+                    sidebar hint's "Switch to Custom" sentence: that one sits
+                    beside a button that does the switching, and the same words
+                    here, two rows under the Custom row itself, read as an action
+                    that does nothing. The drop itself speaks again when a drag
+                    ends with nothing moved (`folderReorderHint`). Only where a
+                    folder row is drawn to drag (`folderRowsDrawn`) -- a note
+                    promising a reorder the flat and conductor lanes cannot offer
+                    would mislead. */}
+                {folderSortMode !== 'custom' && folderRowsDrawn && (
+                  <div className="px-2 pt-0.5 pb-1.5 text-[11px] text-muted italic whitespace-normal" data-testid="folder-order-reorder-note">
+                    {i18nT('pages.chatSidebar.folder_order_reorder_note')}
+                  </div>
+                )}
+                {/* A folder from before the `created_at` stamp existed has no date, so
+                    the created comparator puts it after every stamped row, in the
+                    stored order -- on an existing tree that is the order the person
+                    already had, and picking the mode looks like nothing happened.
+                    The same fact-line pattern as the drag note, shown only while the
+                    mode is active and such a folder is in the list (a fresh install
+                    never sees it); every folder creator has stamped since the mode
+                    shipped, so the line retires as those folders go. */}
+                {folderSortMode === 'created' && folders.some(f => !folderHasCreatedStamp(f)) && (
+                  // Bounded: the menu sizes to its widest child, and a one-line
+                  // sentence this long would widen every row to it. Wrapped at the
+                  // width the rows already have, it reads as the caption it is.
+                  <div className="px-2 pt-0.5 pb-1.5 text-[11px] text-muted italic whitespace-normal max-w-[300px]" data-testid="folder-order-unstamped-note">
+                    {i18nT('pages.chatSidebar.folder_order_unstamped_note')}
+                  </div>
+                )}
                 <DropdownMenuSeparator />
                 {/* Stale-session collapse threshold. Lives beside Sort rather than
                     in Settings: it shapes how this list reads, exactly like the
@@ -9384,6 +9637,65 @@ function ChatSidebar({
         className="mx-2 mt-2 shrink-0"
         testId="folder-action-error"
       />
+      {/* The folder order (dashboard.folder_sort) could not be read AND there is
+       *  no body to fall back on: the tree is drawn in the stored order meanwhile
+       *  and sibling drags are withdrawn, so the person is told why the order they
+       *  chose is not the one they see -- and that nothing is asked of them (the
+       *  read retries on its own). Not dismissable: it is a state, not a moment.
+       *  Keyed on the LATCHED failure, not the query status, so a retry's pending
+       *  phase does not unmount it; it clears when a body arrives. A failed
+       *  background refetch with a body on hand says nothing here. */}
+      {folderSortRead.error !== null && (
+        <ErrorNotice
+          title={i18nT('pages.chatSidebar.folder_order_unavailable')}
+          message={folderSortRead.error}
+          // The server's own words ("config store", "gateway") stay the message --
+          // they are the journal key the hand-off reads -- but under the title as
+          // a smaller line, not as the lead: the title says what happened.
+          messagePlacement="below"
+          footer={i18nT('pages.chatSidebar.folder_order_unavailable_detail')}
+          askAgent
+          // Under the text, not beside it: a sibling column in this ~300px
+          // panel left the title and server string one or two words a line.
+          actionPlacement="below"
+          className="mx-2 mt-2 shrink-0"
+          testId="folder-order-unavailable"
+        />
+      )}
+      {/* A folder drag just ended with nothing moved because the drawn order is
+       *  not the stored one (see `folderReorderHint`). Status, not error: no
+       *  request failed and nothing is broken -- the gesture is withdrawn in this
+       *  mode, and this line says where it comes back and offers the way there:
+       *  the action writes Custom through the same path the menu row does, so the
+       *  person who just tried to reorder does not have to find the menu. It stays
+       *  until the person does something else (no clock takes the action away).
+       *  Announced live so a keyboard drag gets the same answer a pointer drag does. */}
+      {folderReorderHint && (
+        <div
+          ref={folderReorderHintRef}
+          role="status"
+          className="mx-2 mt-2 shrink-0 rounded-lg border border-border bg-bg-elevated px-3 py-2 text-[12px] text-muted"
+          data-testid="folder-reorder-hint"
+        >
+          <div className="flex items-center gap-2">
+            <ArrowUpDown size={14} className="shrink-0" aria-hidden="true" />
+            <span className="min-w-0 flex-1">{i18nT('pages.chatSidebar.folder_order_reorder_hint')}</span>
+          </div>
+          {/* On its own line, aligned with the sentence: beside it, the two fight
+              for the sidebar's width and the sentence wraps to a word a line.
+              The shared primitive, restyled to a link: its disabled state (the
+              PATCH in flight) then reads disabled instead of keeping the accent
+              and the pointer cursor. */}
+          <Btn
+            className="mt-1 ml-[22px] p-0 border-none bg-transparent rounded-none text-accent hover:bg-transparent hover:underline text-[12px] font-medium active:scale-100"
+            data-testid="folder-reorder-hint-switch"
+            disabled={folderSortMut.isPending}
+            onClick={() => { if (folderSortMode !== 'custom') folderSortMut.mutate('custom') }}
+          >
+            {i18nT('pages.chatSidebar.folder_order_switch_custom')}
+          </Btn>
+        </div>
+      )}
       <ErrorNotice
         message={newChatError}
         askAgent
@@ -9727,7 +10039,7 @@ function ChatSidebar({
                 {({ setNodeRef }) => (
                   <div ref={setNodeRef} className="flex flex-col flex-1 min-h-0">
                     <SortableContext items={rootFolderIds} strategy={verticalListSortingStrategy}>
-                      {visibleRootFolders.map(f => <SortableFolderBlock key={f.id} folder={f} subtree={[...(folderSubtrees.get(f.id) ?? collectFolderSubtreeIds(folders, f.id))]} siblings={rootFolderIds} renderFolderBlock={renderFolderBlock} />)}
+                      {visibleRootFolders.map(f => <SortableFolderBlock key={f.id} folder={f} subtree={[...(folderSubtrees.get(f.id) ?? collectFolderSubtreeIds(folders, f.id))]} siblings={rootFolderIds} reorderable={folderReorderable} dragWithheld={folderDragWithheld} renderFolderBlock={renderFolderBlock} />)}
                     </SortableContext>
                     {/* Bottom of the ROOT folder list. For a top-level hide this
                      *  is the sidebar's own bottom, which is exactly the "single
@@ -10135,7 +10447,7 @@ function ChatSidebar({
                           <DndContext sensors={dndSensors} collisionDetection={sidebarCollision} measuring={{ droppable: { strategy: MeasuringStrategy.Always } }} onDragStart={handleSidebarDragStart} onDragEnd={handleSidebarDragEnd} onDragCancel={handleSidebarDragCancel}>
                             <DndActiveProbe report={reportDndActive} />
                             <SortableContext items={relevantFolders.map(f => f.id)} strategy={verticalListSortingStrategy}>
-                              {relevantFolders.map(f => <SortableColumnFolder key={f.id} folder={f} columnId={col.id} colSlotKeys={colSlotKeys} subtree={[...(folderSubtrees.get(f.id) ?? collectFolderSubtreeIds(folders, f.id))]} renderColumnFolder={renderColumnFolder} />)}
+                              {relevantFolders.map(f => <SortableColumnFolder key={f.id} folder={f} columnId={col.id} colSlotKeys={colSlotKeys} subtree={[...(folderSubtrees.get(f.id) ?? collectFolderSubtreeIds(folders, f.id))]} reorderable={folderReorderable} dragWithheld={folderDragWithheld} renderColumnFolder={renderColumnFolder} />)}
                             </SortableContext>
                             {/* Compact ghost follows the pointer while a folder drags —
                              *  same visual as the list-view overlay. DragOverlay renders
@@ -10477,7 +10789,7 @@ function ChatSidebar({
                 // relevance-ranked results under collapsible folder headers (+ Unfiled)
                 // by the folder each session was filed in, instead of date segments.
                 if (searchActive) {
-                  return groupHistoryByFolder(sortedHistory, folders).map(({ key: gid, folder, rows }) => {
+                  return groupHistoryByFolder(sortedHistory, folders, folderSortMode).map(({ key: gid, folder, rows }) => {
                     const collapsed = collapsedHistoryGroups.has(gid)
                     const groupName = folder ? folder.name : i18nT('pages.chatSidebar.unfiled')
                     return (

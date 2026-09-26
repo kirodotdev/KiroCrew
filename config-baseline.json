@@ -6992,6 +6992,7 @@
         "theme_color": "",
         "language": "",
         "recent_tint_count": 0,
+        "folder_sort": "custom",
         "update_nudge": {},
         "onboarded": false,
         "import_onboarded": false,
@@ -7794,6 +7795,24 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0
+    },
+    {
+      "path": "dashboard.folder_sort",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Sidebar Folder Order",
+      "help": "How the chat sidebar orders session folders: 'custom' keeps the stored positions (set by dragging a folder or by chat_folder_move), 'name' is an ASCII-case-insensitive natural order (01. < 02. < 10.; A-Z fold to a-z, other letters compare as written), 'created' is newest first. A view preference only -- choosing a mode never rewrites the stored positions, so switching back to 'custom' restores them exactly. Read by the sidebar and by chat_folder_tree, which lists folders in the order the sidebar draws them.",
+      "hasChildren": false,
+      "enumValues": [
+        "custom",
+        "name",
+        "created"
+      ],
+      "defaultValue": "custom"
     },
     {
       "path": "dashboard.update_nudge",

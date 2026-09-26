@@ -188,7 +188,7 @@ describe('chat sidebar — flat view respects the folder filter', () => {
     // bottom and simply overflows into the menu's own scroll. Anything placed
     // below it would drift out of easy reach. jsdom cannot measure layout, so
     // assert the two contracts that produce the behavior: the menu itself is the
-    // single scroll container, and every folder row follows the Sort by heading.
+    // single scroll container, and every folder row follows the Sort sessions by heading.
     const folders = Array.from({ length: 30 }, (_, i) => ({ id: `f${i}`, name: `folder-${i}`, collapsed: false, order: i }))
     const { getByLabelText, findByTestId } = renderSidebar([looseChat], folders)
     fireEvent.keyDown(getByLabelText('Sort and filter sessions'), { key: 'Enter' })
@@ -200,9 +200,9 @@ describe('chat sidebar — flat view respects the folder filter', () => {
     expect(menu.querySelectorAll('.overflow-y-auto').length).toBe(0)
     const rows = [...menu.querySelectorAll('[data-testid^="folder-filter-f"]')]
     expect(rows.length).toBe(30)
-    const sortLabel = [...menu.children].find(el => el.textContent?.trim() === 'Sort by')!
+    const sortLabel = [...menu.children].find(el => el.textContent?.trim() === 'Sort sessions by')!
     expect(sortLabel).toBeTruthy()
-    // DOCUMENT_POSITION_FOLLOWING (4): the first folder row comes after Sort by.
+    // DOCUMENT_POSITION_FOLLOWING (4): the first folder row comes after Sort sessions by.
     expect(sortLabel.compareDocumentPosition(rows[0]) & 4).toBeTruthy()
   })
 

@@ -53,6 +53,130 @@ export const bySidebarOrder = (a: ChatFolder, b: ChatFolder): number => {
 }
 
 /**
+ * The sidebar's folder sort modes — `dashboard.folder_sort` in the gateway config.
+ * `custom` is the stored order above (the default, and the only order that existed
+ * before the mode did); `name` is an ASCII-case-insensitive natural order (only
+ * `A`-`Z` fold — see `folderName`); `created` is
+ * newest first. Mirrors `FOLDER_SORT_MODES` in `config/sections.py`, and the Python
+ * reader in `mcp_dashboard.py` sorts with the same three keys — the shared fixture
+ * carries a `mode` per case so that agreement is checked, not asserted.
+ */
+export type FolderSortMode = 'custom' | 'name' | 'created'
+export const FOLDER_SORT_MODES: readonly FolderSortMode[] = ['custom', 'name', 'created']
+
+/**
+ * The stored mode, or `custom` for anything else — the same fallback the loader
+ * makes, so a value this build does not know (an absent key on an older gateway, a
+ * hand edit) renders the order every earlier build drew rather than nothing.
+ */
+export const readFolderSortMode = (raw: unknown): FolderSortMode =>
+  typeof raw === 'string' && (FOLDER_SORT_MODES as readonly string[]).includes(raw)
+    ? (raw as FolderSortMode)
+    : 'custom'
+
+/**
+ * The comparator for one folder sort mode. `custom` IS `bySidebarOrder`, by identity,
+ * so nothing about today's order changes for a person who never picks a mode. The
+ * other two are VIEW orders layered on top of it: each falls through to
+ * `bySidebarOrder` for the pairs it cannot separate (equal names up to zero
+ * padding, equal or missing stamps), so the manual arrangement still decides
+ * those and the order stays total. None of them writes anything — choosing a mode
+ * never rewrites a stored `order`, which is what lets Custom restore the manual
+ * arrangement exactly.
+ *
+ * Every surface that draws siblings must sort with the person's mode through here
+ * (the sidebar at every depth, the folder pickers, and the MCP tree on the Python
+ * side); a surface sorting with `bySidebarOrder` while the person has picked
+ * `name` shows a sequence they never chose.
+ */
+export const folderComparator = (mode: FolderSortMode): ((a: ChatFolder, b: ChatFolder) => number) => {
+  if (mode === 'name') {
+    return (a, b) => naturalNameCompare(folderName(a), folderName(b)) || bySidebarOrder(a, b)
+  }
+  if (mode === 'created') {
+    return (a, b) => {
+      const ca = folderCreated(a)
+      const cb = folderCreated(b)
+      // A row with no stamp predates the stamp itself, so it is older than every
+      // stamped row: newest first puts it last. Two unstamped rows fall through.
+      if ((ca === null) !== (cb === null)) return ca === null ? 1 : -1
+      if (ca !== null && cb !== null && ca !== cb) return cb - ca
+      return bySidebarOrder(a, b)
+    }
+  }
+  return bySidebarOrder
+}
+
+/**
+ * A folder's `created_at` (epoch seconds, written by every folder creator since the
+ * `created` mode existed) as a finite number, or `null` when the row has none.
+ * Accepts exactly what `folderOrder` accepts and for the same reason: the Python
+ * reader's `_chat_folder_created` takes the same set, so a junk value reads as
+ * "no stamp" on both sides instead of sorting differently on each. Clamped to the
+ * range JavaScript holds exactly so a hand-written stamp past it compares the same
+ * as Python's unbounded int does after its own clamp.
+ */
+const folderCreated = (f: ChatFolder): number | null => {
+  const v: unknown = f.created_at
+  if (typeof v !== 'number' || !Number.isFinite(v)) return null
+  return Math.max(-Number.MAX_SAFE_INTEGER, Math.min(Number.MAX_SAFE_INTEGER, v))
+}
+
+/**
+ * Whether the `created` comparator can place this folder by date at all. A folder
+ * from before the stamp existed has none, so in `created` mode it sorts after every
+ * stamped row in the stored order — the person who picks the mode on an existing
+ * tree sees the order they already had. The surfaces that offer the mode read this
+ * to say so; it is the comparator's own rule (`folderCreated`), not a second one.
+ */
+export const folderHasCreatedStamp = (f: ChatFolder): boolean => folderCreated(f) !== null
+
+/** Maximal runs of ASCII digits and of everything else, in order. `[0-9]` and not
+ *  `\d`: `\d` is ASCII-only in JavaScript anyway, but the Python side's `str.isdigit`
+ *  would not be, so the rule is spelled the same way on both sides. */
+const NAME_RUNS = /[0-9]+|[^0-9]+/g
+
+/**
+ * Case-folded natural order for the `name` mode: `01.` < `02.` < `10.`, which is
+ * what a person numbering folders means, and what code-unit order gets wrong
+ * (`"10"` < `"2"`). Both inputs are already `folderName`-folded.
+ *
+ * The two names are cut into runs (see `NAME_RUNS`) and compared run by run. A
+ * digit run against a digit run compares by VALUE — leading zeros stripped, then
+ * length, then the digits themselves — so the number is never converted and a
+ * long run cannot overflow. A text run against a text run compares by code unit,
+ * exactly as `bySidebarOrder`'s tie-break does. A digit run sorts before a text run
+ * at the same position. When every compared run is equal, the shorter name sorts
+ * first; two names equal up to zero padding compare as 0 and the caller falls
+ * through to `bySidebarOrder`.
+ *
+ * Mirrors `_chat_folder_natural_key` in `mcp_dashboard.py` operation for operation,
+ * because `chat_folder_tree` in this mode must list what the sidebar draws; the
+ * shared fixture's `name` cases are where that is checked.
+ */
+export const naturalNameCompare = (a: string, b: string): number => {
+  const ra = a.match(NAME_RUNS) ?? []
+  const rb = b.match(NAME_RUNS) ?? []
+  const n = Math.min(ra.length, rb.length)
+  for (let i = 0; i < n; i++) {
+    const x = ra[i]
+    const y = rb[i]
+    const xDigits = x.charCodeAt(0) >= 48 && x.charCodeAt(0) <= 57
+    const yDigits = y.charCodeAt(0) >= 48 && y.charCodeAt(0) <= 57
+    if (xDigits !== yDigits) return xDigits ? -1 : 1
+    if (xDigits) {
+      const xs = x.replace(/^0+/, '')
+      const ys = y.replace(/^0+/, '')
+      if (xs.length !== ys.length) return xs.length - ys.length
+      if (xs !== ys) return xs < ys ? -1 : 1
+    } else if (x !== y) {
+      return x < y ? -1 : 1
+    }
+  }
+  return ra.length - rb.length
+}
+
+/**
  * A folder's `order` as a finite number, accepting exactly the set Python's
  * `_chat_folder_order` accepts.
  *
@@ -120,23 +244,30 @@ export const folderNameText = (f: ChatFolder): string =>
 
 /**
  * Flatten folders into pre-order (tree) sequence so children sit directly under
- * their parent, siblings sorted by `order` then name. Each entry carries its
- * ancestor names (for breadcrumb rendering) and depth (for indentation).
+ * their parent, siblings sorted with the person's folder sort mode (`custom` =
+ * stored `order` then name). Each entry carries its ancestor names (for breadcrumb
+ * rendering) and depth (for indentation).
  * Orphans (parent_id pointing at a missing folder) are treated as roots.
  * Cycle/depth guarded.
  *
  * Shared by the folder pickers (move-to-folder submenu, new-chat-in-folder)
- * so the indented tree ordering stays identical everywhere.
+ * so the indented tree ordering stays identical everywhere — which is why the
+ * mode is a parameter: a picker drawing the stored order beside a sidebar sorted
+ * by name would show two sequences for one tree.
  */
-export function orderFoldersWithPaths(folders: readonly ChatFolder[]): OrderedFolder[] {
+export function orderFoldersWithPaths(
+  folders: readonly ChatFolder[],
+  mode: FolderSortMode = 'custom',
+): OrderedFolder[] {
   const byId = new Map(folders.map(f => [f.id, f]))
+  const compare = folderComparator(mode)
   const childrenOf = (pid: string) =>
     folders
       .filter(f => {
         const parent = f.parent_id && byId.has(f.parent_id) ? f.parent_id : ''
         return parent === pid
       })
-      .sort(bySidebarOrder)
+      .sort(compare)
 
   const out: OrderedFolder[] = []
   const walk = (folder: ChatFolder, ancestors: string[], visited: Set<string>) => {

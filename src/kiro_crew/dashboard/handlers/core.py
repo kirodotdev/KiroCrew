@@ -62,6 +62,7 @@ from kiro_crew.config.sections import (
     DECISION_BUCKET_MAX,
     DECISION_BUCKET_MIN,
     DECISION_MODEL_ROUTE_TIERS,
+    FOLDER_SORT_MODES,
     JUDGE_PROVIDERS,
     STT_LANGUAGE_AUTO,
 )
@@ -2488,6 +2489,10 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "min": RECENT_TINT_COUNT_MIN,
         "max": RECENT_TINT_COUNT_MAX,
     },
+    # The sidebar's folder sort mode. A view preference the sidebar menu writes and
+    # the kirocrew-dashboard MCP server reads back, so the two draw the tree in
+    # the same order; the enum is the loader's own list, spelled once.
+    "dashboard.folder_sort": {"type": "enum", "values": list(FOLDER_SORT_MODES)},
     # Per-version snooze/skip verdict for the proactive update popup, written
     # as ONE atomic record: the three fields only mean anything together, so
     # per-field writes would open both a crash window (old verdict paired

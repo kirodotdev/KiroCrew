@@ -99,6 +99,10 @@ function renderSidebar(foldersOverride: ChatFolder[] = folders) {
   qc.setQueryData(['chat-tags'], tags)
   qc.setQueryData(['tag-columns'], columns)
   qc.setQueryData(['chat-folders'], foldersOverride)
+  // The settings body the shell holds from boot: with it on hand the folder
+  // sort mode is known (Custom), and the rows offer their drag -- before the
+  // first read the sidebar offers no folder drag at all, by design.
+  qc.setQueryData(['kirocrewConfig'], { dashboard: {} })
   return render(
     <QueryClientProvider client={qc}>
       <Provider store={store}>

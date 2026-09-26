@@ -5,7 +5,10 @@
  * Radix submenu it feeds.
  */
 import { describe, it, expect } from 'vitest'
-import { orderFoldersWithPaths, bySidebarOrder, FOLDER_PATH_SEP } from '../utils/folderTree'
+import {
+  FOLDER_SORT_MODES, FOLDER_PATH_SEP, bySidebarOrder, folderComparator, naturalNameCompare,
+  orderFoldersWithPaths, readFolderSortMode, type FolderSortMode,
+} from '../utils/folderTree'
 import type { ChatFolder } from '../types'
 
 const nested: ChatFolder[] = [
@@ -201,6 +204,7 @@ describe('the shared golden fixture (test/fixtures/chat_folder_sibling_order.jso
   // `_chat_folder_siblings`, so a coercion that agrees here and diverges there
   // (or the reverse) fails in one of the two runs instead of shipping as an
   // anchor that names a different gap than the tool reported.
+  const modesSeen = new Set<string>()
   for (const c of goldenFixture.cases) {
     it(c.name, () => {
       const rows = c.rows.map((r) => {
@@ -210,10 +214,93 @@ describe('the shared golden fixture (test/fixtures/chat_folder_sibling_order.jso
         const name = units ? String.fromCharCode(...units) : (r as { name?: unknown }).name
         return { ...r, name, parent_id: '' }
       }) as unknown as ChatFolder[]
-      const got = [...rows].sort(bySidebarOrder).map((r) => r.id)
+      // A case without a mode is `custom`, the order every build before the mode
+      // drew; the Python side reads the same field the same way.
+      const mode = readFolderSortMode((c as { mode?: string }).mode)
+      modesSeen.add(mode)
+      const got = [...rows].sort(folderComparator(mode)).map((r) => r.id)
       expect(got).toEqual(c.expected)
+      // The tree walk the pickers draw with must agree with the bare comparator
+      // for the same mode, as `_chat_folder_render_order` must on the other side.
+      expect(orderFoldersWithPaths(rows, mode).map((o) => o.folder.id)).toEqual(c.expected)
     })
   }
+  it('exercises every mode the sidebar offers', () => {
+    expect([...modesSeen].sort()).toEqual([...FOLDER_SORT_MODES].sort())
+  })
+})
+
+describe('folderComparator', () => {
+  const f = (id: string, name: string, order: number, created_at?: number) =>
+    ({ id, name, order, parent_id: '', created_at }) as unknown as ChatFolder
+
+  it('is bySidebarOrder itself in custom mode, so nothing changes for a person who never picks one', () => {
+    expect(folderComparator('custom')).toBe(bySidebarOrder)
+  })
+
+  it('sorts the reporter\'s zero-padded prefixes numerically in name mode, whatever the stored positions', () => {
+    const rows = [f('n10', '10. Zulu', 0), f('n99', '99. Omega', 1), f('n98', '98. Tango', 2), f('n02', '02. Mike', 3), f('n04', '04. Kilo', 4), f('n01', '01. Alpha', 5)]
+    expect([...rows].sort(folderComparator('name')).map(r => r.id)).toEqual(['n01', 'n02', 'n04', 'n10', 'n98', 'n99'])
+    // And the same rows in custom mode still read in stored order -- the modes
+    // are views over one set of positions, and picking one rewrites nothing.
+    expect([...rows].sort(folderComparator('custom')).map(r => r.id)).toEqual(['n10', 'n99', 'n98', 'n02', 'n04', 'n01'])
+    expect(rows.map(r => r.order)).toEqual([0, 1, 2, 3, 4, 5])
+  })
+
+  it('lists newest first in created mode, unstamped rows last in their stored order', () => {
+    const legacyA = { id: 'legacyA', name: 'old A', order: 7, parent_id: '' } as unknown as ChatFolder
+    const legacyB = { id: 'legacyB', name: 'old B', order: 3, parent_id: '' } as unknown as ChatFolder
+    const rows = [f('mid', 'm', 0, 2_000), legacyA, f('new', 'n', 1, 3_000), legacyB, f('old', 'o', 2, 1_000)]
+    expect([...rows].sort(folderComparator('created')).map(r => r.id)).toEqual(['new', 'mid', 'old', 'legacyB', 'legacyA'])
+  })
+
+  it('is never NaN in any mode, whatever junk the store holds', () => {
+    const junk = ['abc', null, undefined, {}, [], '', NaN, Infinity, -Infinity, true, '3']
+    for (const mode of FOLDER_SORT_MODES) {
+      const compare = folderComparator(mode)
+      for (const v of junk) {
+        const a = { id: 'a', name: v, parent_id: '', order: v, created_at: v } as unknown as ChatFolder
+        const b = { id: 'b', name: 'b', parent_id: '', order: 1, created_at: 1 } as unknown as ChatFolder
+        expect(Number.isNaN(compare(a, b))).toBe(false)
+        expect(Number.isNaN(compare(b, a))).toBe(false)
+        // Antisymmetric, or a sort could loop or land in an unspecified order.
+        expect(Math.sign(compare(a, b))).toBe(-Math.sign(compare(b, a)))
+      }
+    }
+  })
+})
+
+describe('naturalNameCompare', () => {
+  it('compares digit runs by value, not by code unit', () => {
+    expect(naturalNameCompare('2', '10')).toBeLessThan(0)
+    expect(naturalNameCompare('v10', 'v9')).toBeGreaterThan(0)
+    expect(naturalNameCompare('01.', '1.')).toBe(0)
+    expect(naturalNameCompare('release 2', 'release 10')).toBeLessThan(0)
+  })
+  it('never converts a digit run to a number, so an overlong run still orders', () => {
+    const big = '9'.repeat(400)
+    expect(naturalNameCompare(big, '1' + '0'.repeat(400))).toBeLessThan(0)
+    expect(naturalNameCompare(big, big)).toBe(0)
+  })
+  it('puts a digit run before a text run and a shorter prefix before its extension', () => {
+    expect(naturalNameCompare('7up', '#tag')).toBeLessThan(0)
+    expect(naturalNameCompare('release', 'release 2')).toBeLessThan(0)
+    expect(naturalNameCompare('', 'a')).toBeLessThan(0)
+  })
+  it('treats only 0-9 as digits, like the Python reader', () => {
+    // U+0662 (ARABIC-INDIC DIGIT TWO) is text here, so the ASCII digit sorts first.
+    expect(naturalNameCompare('3', '\u0662')).toBeLessThan(0)
+  })
+})
+
+describe('readFolderSortMode', () => {
+  it('accepts exactly the three modes and reads anything else as custom', () => {
+    const modes: FolderSortMode[] = ['custom', 'name', 'created']
+    for (const m of modes) expect(readFolderSortMode(m)).toBe(m)
+    for (const junk of [undefined, null, '', 'Name', 'alphabetical', 3, ['name'], {}]) {
+      expect(readFolderSortMode(junk)).toBe('custom')
+    }
+  })
 })
 
 describe('bySidebarOrder is never NaN', () => {

@@ -36,8 +36,10 @@ import {
 import { findTokenRanges, recollapsePastes, type PasteBlock } from '../../utils/pasteTokens'
 import McpToolsPanel from './McpToolsPanel'
 
-export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, mode }: {
+export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, mode, sidebarOnScreen }: {
   activeSlot: string | null; agent?: string; onReveal?: () => void; onRename?: () => void; mode?: string
+  /** Whether the sidebar (and its folder-order banner) is on screen -- see SessionActionsMenu. */
+  sidebarOnScreen?: boolean
 }) {
   // Controlled open state: lets the colour-swatch row (not a Radix menu item)
   // close the menu after a pick, via the onColorPicked hook passed below.
@@ -97,6 +99,7 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, mode }: 
           variant="dropdown"
           slotKey={activeSlot}
           mode={mode}
+          sidebarOnScreen={sidebarOnScreen}
           // MCP servers: stateful (lazy fetch gated on the sub's open state), so
           // it stays here as an info slot rather than a generic capability.
           infoSlots={[

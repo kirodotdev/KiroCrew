@@ -3649,6 +3649,26 @@ class DashboardConfig:
             "graded accent stripe (0-10; 0 = off).",
         ),
     )
+    # Literal enum rather than FOLDER_SORT_MODES: that constant is defined below
+    # this class (with the other write/load bounds) and a class body is evaluated
+    # top to bottom. test_config_patch.py::TestFolderSortRoundTrip::
+    # test_the_allowlist_enum_is_the_loader_list_spelled_once pins the two
+    # spellings equal.
+    folder_sort: str = field(
+        default="custom",
+        metadata=_meta(
+            "Sidebar Folder Order",
+            "How the chat sidebar orders session folders: 'custom' keeps the stored "
+            "positions (set by dragging a folder or by chat_folder_move), 'name' is an "
+            "ASCII-case-insensitive natural order (01. < 02. < 10.; A-Z fold to a-z, "
+            "other letters compare as written), 'created' is newest "
+            "first. A view preference only -- choosing a mode never rewrites the "
+            "stored positions, so switching back to 'custom' restores them exactly. "
+            "Read by the sidebar and by chat_folder_tree, which lists folders in the "
+            "order the sidebar draws them.",
+            enum=["custom", "name", "created"],
+        ),
+    )
     update_nudge: dict = field(
         default_factory=dict,
         metadata=_meta(
@@ -4647,6 +4667,14 @@ MCP_PROBE_TIMEOUT_MIN = 5
 MCP_PROBE_TIMEOUT_MAX = 120
 RECENT_TINT_COUNT_MIN = 0
 RECENT_TINT_COUNT_MAX = 10
+# The sidebar's folder sort modes, spelled once for the same reason as the bounds
+# above: the loader normalizes to this set, the PATCH allowlist accepts exactly
+# it, and the ``kirocrew-dashboard`` MCP server reads the stored value back
+# through it. ``custom`` is the stored ``order`` positions (today's behaviour and
+# the default), ``name`` an ASCII-case-insensitive natural order, ``created`` newest
+# first. The frontend's ``readFolderSortMode`` mirrors this list.
+FOLDER_SORT_MODES: tuple[str, ...] = ("custom", "name", "created")
+FOLDER_SORT_DEFAULT = "custom"
 SESSION_TIMEOUT_MIN = 0
 SESSION_TIMEOUT_MAX = 86400
 POOL_TTL_SECS_MIN = 0

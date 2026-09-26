@@ -1762,6 +1762,35 @@ carries no `order` at all, so a comparator without that coercion would compare
 `NaN`, fall through to its tie-break, and show the agent a different sequence than
 the person sees.
 
+That stored order is one of three the sidebar can draw. `dashboard.folder_sort`
+(config.json, written through the config PATCH allowlist from the sidebar's
+sort-and-filter menu; read back by the sidebar through its `GET /api/config/kirocrew`
+query and by the tool from the same file through the loader — that route is
+cookie-only, in neither internal-secret allowlist, and admitting it would open the
+whole config surface to secret-bearing callers to read one enum) selects `custom` —
+the stored order above, the default,
+so nothing changes for a person who never picks a mode — `name`, an ASCII-case-insensitive
+natural order in which `01.` < `02.` < `10.` (only `A`-`Z` fold), or `created`, newest first on the
+`created_at` epoch stamp every folder creator writes (a row from before the stamp
+sorts as older than every stamped one). The two view modes are layered on the custom
+key — a pair they cannot separate keeps its stored order — and choosing a mode
+rewrites no `order`, so switching back to `custom` restores the manual arrangement
+exactly. `folderTree.folderComparator(mode)` is the sidebar's comparator and
+`_chat_folder_sort_key(mode)` the tool's; the shared fixture
+`test/fixtures/chat_folder_sibling_order.json` carries a `mode` per case so the two
+are checked against one artifact. Digits are ASCII `0-9` on both sides (never
+`str.isdigit`, which reads the interpreter's tables) and a digit run compares by
+value without ever becoming a number, for the same reason the name compare never
+folds outside `A`-`Z`.
+
+The tool's header line names the active mode (`folder order: name`). A POSITION is
+still a stored-order concept: the placement helpers compute a `before`/`after` gap in
+the custom order whatever the mode, so when the mode is not `custom` the listing says
+so on its second line and states that an anchor sets the stored position without
+changing the order shown — otherwise an agent would move A after B, re-read the tree,
+and see nothing move. When the config read itself fails the tree is still listed, in
+the stored order, with the header saying the order is assumed rather than known.
+
 Moving the decision to the endpoint makes the write's IDENTITY load-bearing, so
 the gate returns the key it verified and every folder write sends that key
 unchanged. The write helpers default to `_resolve_session_key`, whose `/proc`

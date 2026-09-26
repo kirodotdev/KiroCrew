@@ -13,6 +13,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { createFoldersProvider } from './foldersProvider'
 import type { ChatFolder } from '../../types'
+import type { FolderSortMode } from '../../utils/folderTree'
 
 /**
  * `oss` appears twice: once as a root folder and once nested under `kirocrew`.
@@ -26,11 +27,24 @@ const FOLDERS: ChatFolder[] = [
   { id: 'f-travel', name: 'Travel Desk', order: 2 },
 ]
 
-function build(folders: ChatFolder[] = FOLDERS) {
+/**
+ * Roots whose STORED order disagrees with both view orders, so a mode that was
+ * dropped on the way to the ordering helper is visible as a wrong sequence rather
+ * than hidden behind a fixture that happens to agree with it: stored `Zulu, alpha,
+ * Mike`; by name `alpha, Mike, Zulu`; newest first `Mike, Zulu, alpha`.
+ */
+const MODE_FOLDERS: ChatFolder[] = [
+  { id: 'f-zulu', name: 'Zulu', order: 0, created_at: 200 },
+  { id: 'f-alpha', name: 'alpha', order: 1, created_at: 100 },
+  { id: 'f-mike', name: 'Mike', order: 2, created_at: 300 },
+]
+
+function build(folders: ChatFolder[] = FOLDERS, mode: FolderSortMode = 'custom') {
   const revealFolder = vi.fn()
   const provider = createFoldersProvider({
     fetchFolders: async () => folders,
     revealFolder,
+    mode,
   })
   return { provider, revealFolder }
 }
@@ -96,6 +110,38 @@ describe('createFoldersProvider — matching', () => {
       'folders:f-oss-root',
       'folders:f-travel',
     ])
+  })
+
+  it('lists in NAME order for a name-mode provider on an empty query', async () => {
+    // The mode is the person's sidebar setting (`dashboard.folder_sort`), and the
+    // view's promise is the order the sidebar draws. A provider that dropped it on
+    // the way to the ordering helper would list the stored order under a sidebar
+    // sorted by name — the feature map's "every picker lists in the mode" would be
+    // false of this one surface.
+    const { provider } = build(MODE_FOLDERS, 'name')
+    const results = await provider.search('')
+    expect(results.map(r => r.title)).toEqual(['alpha', 'Mike', 'Zulu'])
+  })
+
+  it('lists newest first for a created-mode provider, and the stored order for custom', async () => {
+    const created = build(MODE_FOLDERS, 'created')
+    expect((await created.provider.search('')).map(r => r.title)).toEqual(['Mike', 'Zulu', 'alpha'])
+    const custom = build(MODE_FOLDERS, 'custom')
+    expect((await custom.provider.search('')).map(r => r.title)).toEqual(['Zulu', 'alpha', 'Mike'])
+  })
+
+  it('breaks a score tie in the MODE order, not the stored order', async () => {
+    // Every name here matches `a` with the same score class, so the tiebreak is
+    // what decides the list — and it must be the same sequence the sidebar shows.
+    const { provider } = build(
+      [
+        { id: 'f-b', name: 'ab', order: 0 },
+        { id: 'f-a', name: 'aa', order: 1 },
+      ],
+      'name',
+    )
+    const results = await provider.search('a')
+    expect(results.map(r => r.title)).toEqual(['aa', 'ab'])
   })
 
   it('survives a parent_id cycle instead of hanging', async () => {

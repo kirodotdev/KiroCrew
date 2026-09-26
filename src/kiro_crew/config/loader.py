@@ -2383,6 +2383,18 @@ def _default_memory_mode_from(raw: object) -> str:
     return raw if isinstance(raw, str) and raw in _DEFAULT_MEMORY_MODES else "temporary"
 
 
+def _folder_sort_from(raw: object) -> str:
+    """Normalize the sidebar folder sort mode; anything unknown is ``custom``.
+
+    ``custom`` is the stored-order behaviour every install had before the field
+    existed, so a missing, hand-edited or downgraded value changes nothing the
+    person sees. The sidebar's own reader makes the same choice.
+    """
+    if isinstance(raw, str) and raw in _sections.FOLDER_SORT_MODES:
+        return raw
+    return _sections.FOLDER_SORT_DEFAULT
+
+
 # (section, key, min, max) for each bounded field clamped at load time. The
 # mins match the runtime floors: subagent_auto_max has a floor of 3
 # (``subagent._LEGACY_DEFAULT_MAX`` — the auto-size minimum), so a value < 3 is
@@ -3481,6 +3493,9 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
             0,
             RECENT_TINT_COUNT_MIN,
             RECENT_TINT_COUNT_MAX,
+        ),
+        folder_sort=_folder_sort_from(
+            dashboard_data.get("folder_sort", _sections.FOLDER_SORT_DEFAULT)
         ),
         update_nudge=(
             dashboard_data.get("update_nudge", {})
