@@ -6924,6 +6924,8 @@
       "in_artifacts": "아티팩트에 있음",
       "in_knowledge_library": "지식 라이브러리에 있음",
       "in_library": "라이브러리에 있음",
+      "remove_from_knowledge_library": "지식 라이브러리에서 제거",
+      "failed_to_remove_source": "소스를 제거하지 못했습니다.",
       "line_numbers": "줄 번호",
       "more_options": "옵션 더 보기",
       "next_enter": "다음 (Enter)",

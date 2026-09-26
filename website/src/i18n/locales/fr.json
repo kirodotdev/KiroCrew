@@ -7138,6 +7138,8 @@
       "in_artifacts": "Dans les artefacts",
       "in_knowledge_library": "Dans la bibliothèque de connaissances",
       "in_library": "Dans la bibliothèque",
+      "remove_from_knowledge_library": "Retirer de la bibliothèque de connaissances",
+      "failed_to_remove_source": "Impossible de retirer la source.",
       "line_numbers": "Numéros de ligne",
       "more_options": "Plus d'options",
       "next_enter": "Suivant (Enter)",

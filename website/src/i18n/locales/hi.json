@@ -7031,6 +7031,8 @@
       "in_artifacts": "आर्टिफ़ैक्ट में",
       "in_knowledge_library": "ज्ञान लाइब्रेरी में",
       "in_library": "लाइब्रेरी में",
+      "remove_from_knowledge_library": "ज्ञान लाइब्रेरी से हटाओ",
+      "failed_to_remove_source": "स्रोत हटाने में विफल",
       "line_numbers": "पंक्ति संख्याएँ",
       "more_options": "अधिक विकल्प",
       "next_enter": "अगला (Enter)",

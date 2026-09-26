@@ -2484,6 +2484,8 @@
       "open_with_default_app": "Open with default app",
       "preview": "Preview",
       "refresh_file_re_read_from_disk": "Refresh file (re-read from disk)",
+      "remove_from_knowledge_library": "Remove from Knowledge Library",
+      "failed_to_remove_source": "Couldn’t remove the source.",
       "save": "Save",
       "save_failed": "Save failed",
       "save_or_discard_changes_first": "Save or discard changes first",

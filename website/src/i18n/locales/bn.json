@@ -7031,6 +7031,8 @@
       "in_artifacts": "আর্টিফ্যাক্টে",
       "in_knowledge_library": "নলেজ লাইব্রেরিতে",
       "in_library": "লাইব্রেরিতে",
+      "remove_from_knowledge_library": "নলেজ লাইব্রেরি থেকে সরাও",
+      "failed_to_remove_source": "সোর্স সরানো যায়নি।",
       "line_numbers": "লাইন নম্বর",
       "more_options": "আরও অপশন",
       "next_enter": "পরবর্তী (Enter)",
