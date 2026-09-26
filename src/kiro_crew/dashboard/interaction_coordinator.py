@@ -230,7 +230,20 @@ class QuestionCoordinator:
         return safe_questions
 
     @staticmethod
-    async def post_card(state: Any, slot_key: str, questions: list[dict]) -> int:
+    async def post_card(
+        state: Any, slot_key: str, questions: list[dict], *, native: bool = False
+    ) -> int:
+        """Post one non-blocking card and record it on the slot.
+
+        ``native`` marks kiro-cli's own ``AskUserQuestion`` card, raised while
+        its turn is still running and waiting on the answer. The client routes
+        that card's answer as a steer into the live turn, where the MCP
+        ``ask_question`` card (posted after the turn ended) starts a next turn
+        even while sub-agents keep the slot busy. Both are otherwise the same
+        server-owned card: one ``card_id``, one record, one retirement. The
+        flag rides the frame AND the record so a reload rehydrates the routing
+        with the card.
+        """
         safe_questions = state._redact_questions(questions)
         card_id = f"card-{uuid.uuid4().hex[:16]}"
         # Register before an await so a user row racing a backpressured socket
@@ -240,11 +253,13 @@ class QuestionCoordinator:
             blocking=False,
             card_id=card_id,
             questions=safe_questions,
+            native=native,
         )
         payload = {
             "slot": slot_key,
             "card_id": card_id,
             "questions": safe_questions,
+            "native": native,
             "ts": time.time(),
         }
         return int(await state.deliver_ws_owners("question_card", payload))
@@ -257,6 +272,7 @@ class QuestionCoordinator:
         blocking: bool,
         card_id: str,
         questions: list[dict] | None,
+        native: bool = False,
     ) -> None:
         slot = state._slots.get(slot_key)
         if slot is None or not card_id:
@@ -270,6 +286,8 @@ class QuestionCoordinator:
         entry: dict = {"ts": time.time(), "blocking": blocking}
         if questions is not None:
             entry["questions"] = questions
+        if native:
+            entry["native"] = True
         slot._question_pending[card_id] = entry
         state._push_slots()
 

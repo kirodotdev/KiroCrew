@@ -6313,9 +6313,15 @@ class DashboardState:
             redact_secret=redact_credentials,
         )
 
-    async def post_question_card(self, slot_key: str, questions: list[dict]) -> int:
-        """Post a non-blocking owner-only question card."""
-        return await _questions_for(self).post_card(self, slot_key, questions)
+    async def post_question_card(
+        self, slot_key: str, questions: list[dict], *, native: bool = False
+    ) -> int:
+        """Post a non-blocking owner-only question card.
+
+        ``native`` marks kiro-cli's own mid-turn ``AskUserQuestion`` card; see
+        ``QuestionCoordinator.post_card``.
+        """
+        return await _questions_for(self).post_card(self, slot_key, questions, native=native)
 
     def mark_question_pending(
         self,
@@ -6324,6 +6330,7 @@ class DashboardState:
         blocking: bool,
         card_id: str,
         questions: list[dict] | None = None,
+        native: bool = False,
     ) -> None:
         """Record one unanswered question and push the slot status."""
         _questions_for(self).mark_pending(
@@ -6332,6 +6339,7 @@ class DashboardState:
             blocking=blocking,
             card_id=card_id,
             questions=questions,
+            native=native,
         )
 
     def clear_question_pending(
