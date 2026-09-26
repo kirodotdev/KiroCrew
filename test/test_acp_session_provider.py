@@ -1299,7 +1299,7 @@ class TestLivePathModelEntitlement:
             {"modelId": "claude-opus-5", "name": "claude-opus-5", "description": ""},
         ]
 
-        async def _refresh():
+        async def _refresh(*_a, **_kw):
             handle.available_models = fresh
             return fresh
 
@@ -1354,6 +1354,21 @@ class TestLivePathModelEntitlement:
 
         handle.refresh_available_models.assert_not_awaited()
         handle.set_model.assert_awaited_once_with("claude-opus-4.8")
+
+    @pytest.mark.asyncio
+    async def test_refusal_heal_forces_a_fresh_probe(self):
+        """D1: an explicit pick is a user action, so its revalidation passes
+        force=True — it must not be refused on a no-evidence failure the picker
+        read path may have cached in the shared attempt-clock window."""
+        from kiro_crew.acp.client import AcpModelUnavailable
+
+        provider, handle = self._provider(["claude-sonnet-4.6"])
+
+        with pytest.raises(AcpModelUnavailable):
+            await provider.set_model("claude-opus-4.8")
+
+        handle.refresh_available_models.assert_awaited_once()
+        assert handle.refresh_available_models.await_args.kwargs.get("force") is True
 
 
 class TestAdvertisedModelIds:

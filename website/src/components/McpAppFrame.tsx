@@ -30,6 +30,11 @@ const MAX_HEIGHT = 1200
 const PROTOCOL_VERSION = '2026-01-26'
 const M_INITIALIZE = 'ui/initialize'
 const M_TOOLS_CALL = 'tools/call'
+/** App → conversation delivery (SEP-1865): the app sends a user-role message
+ *  (an Acknowledge click, a form submission) and it lands in the session that
+ *  rendered the app, starting or queueing a model turn. Relayed to
+ *  `POST /api/mcp-apps/message`, which verifies the callback capability. */
+const M_MESSAGE = 'ui/message'
 const M_REQUEST_DISPLAY_MODE = 'ui/request-display-mode'
 const M_OPEN_LINK = 'ui/open-link'
 const N_INITIALIZED = 'ui/notifications/initialized'
@@ -52,6 +57,9 @@ const N_LOG_MESSAGE = 'notifications/message'
 const HOST_CAPABILITIES = {
   serverTools: {},
   openLinks: {},
+  // ui/message with text content blocks only — what the backend endpoint
+  // accepts (non-text blocks are refused there, not dropped).
+  message: { text: {} },
 } as const
 
 /** The APP-FACING display mode (SEP-1865). Deliberately still the spec's two
@@ -735,6 +743,63 @@ export default function McpAppFrame({ payload }: { payload: McpAppRenderPayload 
           return
         }
 
+        case M_MESSAGE: {
+          // App → conversation delivery. The endpoint verifies the callback
+          // capability (unlike /call there is no gateway leg, so the dashboard
+          // is the authority) and injects the message into the session that
+          // rendered this app — queued behind a live turn, or as a new turn.
+          //
+          // Failures are reported IN-BAND as the spec's `isError` result, not
+          // as protocol errors: delivery failure ("session is closed", rate
+          // limited) is something the app can surface to the user, and the
+          // SDK's sendMessage contract resolves with { isError } either way.
+          if (!isRequest) return
+          if (inFlightRef.current >= 16) {
+            post({ jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: 'too many concurrent calls' } })
+            return
+          }
+          inFlightRef.current += 1
+          void (async () => {
+            try {
+              const params = (msg.params ?? {}) as { role?: unknown; content?: unknown }
+              const resp = await fetch('/api/mcp-apps/message', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  // Session-ownership binding, as on /call.
+                  'X-Session-Key': sessionKeyRef.current,
+                },
+                body: JSON.stringify({
+                  spool_id: spoolIdRef.current,
+                  // The capability the endpoint authorizes on.
+                  callback_secret: callbackSecretRef.current,
+                  role: params.role,
+                  content: params.content,
+                }),
+              })
+              const body = (await resp.json().catch(() => null)) as
+                | { result?: unknown; error?: unknown }
+                | null
+              if (!resp.ok) noteStaleOwnerResponse(resp.status, body)
+              if (resp.ok && body && 'result' in body) {
+                post({ jsonrpc: '2.0', id: msg.id, result: body.result })
+              } else {
+                // In-band failure, with the backend's reason as a text block
+                // (spec result is passthrough) — "session is closed" or a
+                // rate-limit is something the app can surface to the user,
+                // and a bare isError discards it.
+                const reason = body && typeof body.error === 'string' ? body.error : i18nT('components.mcpApp.delivery_failed')
+                post({ jsonrpc: '2.0', id: msg.id, result: { isError: true, content: [{ type: 'text', text: reason }] } })
+              }
+            } catch {
+              post({ jsonrpc: '2.0', id: msg.id, result: { isError: true, content: [{ type: 'text', text: i18nT('components.mcpApp.delivery_failed') }] } })
+            } finally {
+              inFlightRef.current -= 1
+            }
+          })()
+          return
+        }
+
         case M_REQUEST_DISPLAY_MODE: {
           // App-initiated display-mode change (e.g. excalidraw's fullscreen
           // button, which is how it enters its EDITABLE canvas — in `inline` it
@@ -800,10 +865,12 @@ export default function McpAppFrame({ payload }: { payload: McpAppRenderPayload 
         }
 
         // NOTE: ui/update-model-context is deliberately NOT handled yet, so it
-        // still returns -32601 below. The app uses it to tell the MODEL about
-        // user edits, and there is no dashboard->session route to deliver that
-        // today; answering with an EmptyResult would falsely tell the app the
-        // context landed. Honest refusal until the backend route exists.
+        // still returns -32601 below. Unlike ui/message (which starts or queues
+        // a turn via /api/mcp-apps/message), update-model-context must attach
+        // context SILENTLY for future turns without waking the model — a
+        // delivery shape no session route offers today; answering with an
+        // EmptyResult would falsely tell the app the context landed. Honest
+        // refusal until that backend route exists.
 
         case N_LOG_MESSAGE: {
           // App-emitted diagnostics. Dropping these (spec-legal for an unknown

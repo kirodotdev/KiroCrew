@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import sys
 import threading
 import time
 from pathlib import Path
@@ -1362,29 +1363,378 @@ class TestSlotDetailPagination:
             assert data["has_more"] is True
 
     @pytest.mark.asyncio
-    async def test_cursor_branch_reads_disk_off_the_loop_thread(self, tmp_path, monkeypatch):
-        """The read must not run on the loop thread that serves every other request.
+    async def test_bounded_request_never_calls_full_chained_reader(self, tmp_path, monkeypatch):
+        """The bounded branch reads only ranges, and every disk read leaves the loop.
 
-        Asserts only that the call executed on a different thread. It does not
-        measure loop latency, so it cannot prove the loop was never blocked for
-        some other reason — but it does fail if the ``to_thread`` hop is removed.
+        The thread assertion is the off-loop ratchet for this branch: it fails if
+        any of the archive probe, the page composition, or the re-probe is inlined
+        onto the event loop.
         """
+        from kiro_crew.dashboard import chat_handlers
+
+        state = await self._slot_with_history(tmp_path, monkeypatch, "bounded-reader", count=30)
+
+        def full_read_forbidden(_key):
+            raise AssertionError("bounded slot detail called the full chained reader")
+
+        monkeypatch.setattr(state.conversation_log, "read_messages_chained", full_read_forbidden)
+        seen: list[int] = []
+        original_page = chat_handlers._bounded_slot_page
+        original_probe = state.conversation_log.read_rotated_messages_chained
+
+        def recording_page(*args, **kwargs):
+            seen.append(threading.get_ident())
+            return original_page(*args, **kwargs)
+
+        def recording_probe(*args, **kwargs):
+            seen.append(threading.get_ident())
+            return original_probe(*args, **kwargs)
+
+        monkeypatch.setattr(chat_handlers, "_bounded_slot_page", recording_page)
+        monkeypatch.setattr(
+            state.conversation_log, "read_rotated_messages_chained", recording_probe
+        )
+        loop_thread = threading.get_ident()
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/bounded-reader?limit=10")
+            assert resp.status == 200, await resp.text()
+            data = await resp.json()
+
+        assert [message["content"] for message in data["messages"]] == [
+            f"msg {i}" for i in range(20, 30)
+        ]
+        assert len(seen) >= 3, "expected the archive probe, the page composition, and the re-probe"
+        assert loop_thread not in seen
+
+    @pytest.mark.asyncio
+    async def test_overdeep_json_row_fails_closed_on_bounded_page(self, tmp_path, monkeypatch):
+        """A row nested past the JSON parser's depth is a 503, never a 500."""
+        state = await self._slot_with_history(tmp_path, monkeypatch, "deep-json", count=30)
+        path = state.conversation_log._path("dashboard:deep-json")
+        with open(path, "ab") as handle:
+            handle.write(b"[" * 200_000 + b"\n")
+        state.conversation_log._invalidate_cache("dashboard:deep-json")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/deep-json?limit=10")
+            assert resp.status == 503, await resp.text()
+            body = await resp.json()
+            assert body["code"] == "history_corpus_unreadable"
+
+    @pytest.mark.asyncio
+    async def test_overlong_integer_row_fails_closed_on_bounded_page(self, tmp_path, monkeypatch):
+        """A row ``json.loads`` refuses for a non-syntax reason is a 503, not a shorter transcript.
+
+        An integer literal past ``sys.get_int_max_str_digits()`` raises a plain
+        ``ValueError`` (not ``JSONDecodeError``). The full reader skips only
+        ``JSONDecodeError`` and fails closed on this; the bounded reader must not
+        skip the row instead, or every cursor above it shifts.
+        """
+        state = await self._slot_with_history(tmp_path, monkeypatch, "big-int", count=30)
+        path = state.conversation_log._path("dashboard:big-int")
+        digits = str(sys.get_int_max_str_digits() + 1)
+        with open(path, "ab") as handle:
+            handle.write(b'{"role": "user", "content": "x", "n": ' + b"9" * int(digits) + b"}\n")
+        state.conversation_log._invalidate_cache("dashboard:big-int")
+        with pytest.raises(ValueError):
+            state.conversation_log.read_messages_chained("dashboard:big-int")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/big-int?limit=10")
+            assert resp.status == 503, await resp.text()
+            body = await resp.json()
+            assert body["code"] == "history_corpus_unreadable"
+
+    @pytest.mark.asyncio
+    async def test_undecodable_transcript_bytes_fail_closed_on_bounded_page(
+        self, tmp_path, monkeypatch
+    ):
+        """Invalid UTF-8 past the first page is a 503, never a shorter transcript."""
+        state = await self._slot_with_history(tmp_path, monkeypatch, "bad-utf8", count=30)
+        path = state.conversation_log._path("dashboard:bad-utf8")
+        corrupt = path.read_bytes().replace(b'"msg 25"', b'"msg 2\xff"', 1)
+        assert b"\xff" in corrupt
+        path.write_bytes(corrupt)
+        state.conversation_log._invalidate_cache("dashboard:bad-utf8")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/bad-utf8?limit=10")
+            assert resp.status == 503, await resp.text()
+            body = await resp.json()
+            assert body["code"] == "history_corpus_unreadable"
+
+    @pytest.mark.asyncio
+    async def test_splitlines_boundary_row_uses_full_reader_without_retrying(
+        self, tmp_path, monkeypatch
+    ):
+        """A raw U+2028 row is deterministic; answer from the full reader, once."""
+        from kiro_crew.dashboard import chat_handlers
+
+        state = await self._slot_with_history(tmp_path, monkeypatch, "u2028-row", count=30)
+        path = state.conversation_log._path("dashboard:u2028-row")
+        with open(path, "ab") as handle:
+            handle.write(b'{"role": "user", "content": "a\xe2\x80\xa8b"}\n')
+        state.conversation_log._invalidate_cache("dashboard:u2028-row")
+        attempts: list[int] = []
+        original = chat_handlers._bounded_slot_page
+
+        def counting(*args, **kwargs):
+            attempts.append(1)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(chat_handlers, "_bounded_slot_page", counting)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/u2028-row?limit=10")
+            assert resp.status == 200, await resp.text()
+            data = await resp.json()
+
+        assert len(attempts) == 1, "a splitlines-only boundary is deterministic; do not retry"
+        full = state.conversation_log.read_messages_chained("dashboard:u2028-row")
+        assert data["total"] == len(full)
+        assert [m["content"] for m in data["messages"]] == [m["content"] for m in full[-10:]]
+
+    @pytest.mark.asyncio
+    async def test_oversized_row_uses_full_reader_without_retrying(self, tmp_path, monkeypatch):
+        """A deterministic over-cap row must not be re-scanned per retry attempt."""
+        from kiro_crew import history_projection
+        from kiro_crew.jsonl_util import OversizedRecord
+
+        state = await self._slot_with_history(tmp_path, monkeypatch, "big-row", count=30)
+        attempts: list[int] = []
+
+        def always_oversized(*_args, **_kwargs):
+            attempts.append(1)
+            raise OversizedRecord("record over cap")
+
+        monkeypatch.setattr(history_projection, "strict_raw_records_with_offsets", always_oversized)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/big-row?limit=10")
+            assert resp.status == 200, await resp.text()
+            data = await resp.json()
+
+        assert len(attempts) == 1, "an oversized row is deterministic; do not retry the scan"
+        assert data["total"] == 30
+        assert [m["content"] for m in data["messages"]] == [f"msg {i}" for i in range(20, 30)]
+
+    @pytest.mark.asyncio
+    async def test_prefix_counter_mismatch_uses_full_reader_without_retry_or_warning(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """Raw/durable prefix counters disagreeing is deterministic for the snapshot."""
+        from kiro_crew.dashboard import chat_handlers
+
+        state = await self._slot_with_history(tmp_path, monkeypatch, "prefix-skew", count=30)
+        slot = state.get_or_create_slot("prefix-skew")
+        # Force the two counters apart the way a half-finished flush leaves them.
+        slot._disk_older_durable_count = slot._disk_older_count + 1
+        attempts: list[int] = []
+        original = chat_handlers._bounded_slot_page
+
+        def counting(*args, **kwargs):
+            attempts.append(1)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(chat_handlers, "_bounded_slot_page", counting)
+        with caplog.at_level(logging.DEBUG, logger=chat_handlers.logger.name):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.get("/api/chat/slots/prefix-skew?limit=10")
+                assert resp.status == 200, await resp.text()
+                data = await resp.json()
+
+        assert len(attempts) == 1, "a counter mismatch is deterministic; do not retry"
+        assert data["total"] == 30
+        assert [m["content"] for m in data["messages"]] == [f"msg {i}" for i in range(20, 30)]
+        bounded = [
+            r
+            for r in caplog.records
+            if r.name == chat_handlers.logger.name and "bounded slot history" in r.getMessage()
+        ]
+        assert [r.levelno for r in bounded] == [logging.DEBUG], [
+            (r.levelname, r.getMessage()) for r in bounded
+        ]
+
+    @pytest.mark.asyncio
+    async def test_never_flushed_slot_pages_without_retry_or_warning(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """A fresh tab with no transcript file is a stable empty durable revision."""
+        from kiro_crew.dashboard import chat_handlers
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("fresh-tab")
+        slot.append("user", "hello")
+        assert not state.conversation_log._path("dashboard:fresh-tab").exists()
+
+        with caplog.at_level(logging.DEBUG, logger=chat_handlers.logger.name):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.get("/api/chat/slots/fresh-tab?limit=10")
+                assert resp.status == 200, await resp.text()
+                data = await resp.json()
+
+        assert [m["content"] for m in data["messages"]] == ["hello"]
+        assert data["total"] == 1
+        failed = [r for r in caplog.records if "bounded slot history read failed" in r.getMessage()]
+        assert failed == [], [r.getMessage() for r in failed]
+
+    @pytest.mark.asyncio
+    async def test_memory_only_slot_pagination_serves_the_resident_window(
+        self, tmp_path, monkeypatch
+    ):
+        """No conversation log (memory-only gateway): paginate from the resident window, never 500."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.conversation_log = None
+        slot = state.get_or_create_slot("memonly")
+        for i in range(30):
+            slot.append("user", f"msg {i}")
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/memonly?limit=10")
+            assert resp.status == 200, await resp.text()
+            data = await resp.json()
+            assert data["total"] == 30
+            assert [m["content"] for m in data["messages"]] == [f"msg {i}" for i in range(20, 30)]
+            assert data["has_more"] is True
+
+            older = await client.get("/api/chat/slots/memonly?limit=10&before=10")
+            assert older.status == 200, await older.text()
+            body = await older.json()
+            assert [m["content"] for m in body["messages"]] == [f"msg {i}" for i in range(0, 10)]
+            assert body["has_more"] is False
+
+    @pytest.mark.asyncio
+    async def test_rotation_racing_bounded_page_falls_back_to_archive_reader(
+        self, tmp_path, monkeypatch
+    ):
+        """An archive appearing mid-request must not be hidden by the bounded page."""
+        state = await self._slot_with_history(tmp_path, monkeypatch, "rotate-race", count=30)
+        log = state.conversation_log
+        archived = [
+            {"role": "user", "content": f"old {i}", "ts": "2026-09-03T00:00:00+00:00"}
+            for i in range(5)
+        ]
+        probes: list[int] = []
+
+        def rotated_probe(_key):
+            # Empty before the bounded read (no archive yet), populated after it:
+            # the size rotation landed while the page was being composed.
+            probes.append(len(probes))
+            return [] if len(probes) == 1 else list(archived)
+
+        full_reads: list[str] = []
+        real_full = log.read_messages_chained_full
+
+        def full_reader(key):
+            full_reads.append(key)
+            return list(archived) + real_full(key)
+
+        monkeypatch.setattr(log, "read_rotated_messages_chained", rotated_probe)
+        monkeypatch.setattr(log, "read_messages_chained_full", full_reader)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/rotate-race?limit=10&before=12")
+            assert resp.status == 200, await resp.text()
+            data = await resp.json()
+
+        assert len(probes) >= 2, "archive state must be re-probed after composition"
+        assert full_reads, "an archive that appeared mid-request must route to the full reader"
+        assert data["total"] == 35
+        assert [message["content"] for message in data["messages"]] == [
+            f"old {i}" for i in range(2, 5)
+        ] + [f"msg {i}" for i in range(7)]
+        assert data["has_more"] is True
+        assert data["next_before"] == 2
+
+    @pytest.mark.asyncio
+    async def test_raw_and_durable_prefix_mismatch_uses_full_reader(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("mixed-prefix")
+        state.conversation_log.append("dashboard:mixed-prefix", "done", "")
+        state.conversation_log.append("dashboard:mixed-prefix", "user", "msg 1")
+        state.conversation_log.append("dashboard:mixed-prefix", "user", "msg 2")
+        slot.append("user", "msg 2")
+        slot.drain()
+        slot._disk_older_count = 2
+        slot._disk_older_durable_count = 1
+
+        real = state.conversation_log.read_messages_chained_page
+        bounded_calls = 0
+
+        def counting_page(*args, **kwargs):
+            nonlocal bounded_calls
+            bounded_calls += 1
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(state.conversation_log, "read_messages_chained_page", counting_page)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/mixed-prefix?limit=10")
+            assert resp.status == 200, await resp.text()
+            data = await resp.json()
+
+        assert bounded_calls == 0
+        assert data["total"] == 2
+        assert [message["content"] for message in data["messages"]] == [
+            "msg 1",
+            "msg 2",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_bounded_composition_retries_on_chain_revision_change(
+        self, tmp_path, monkeypatch
+    ):
+        state = await self._slot_with_history(tmp_path, monkeypatch, "revision-race", count=30)
+        log = state.conversation_log
+        real = log.read_messages_chained_page
+        inserted = False
+
+        def append_between_ranges(key, *, limit, before=None, expected_revision=None):
+            nonlocal inserted
+            page = real(
+                key,
+                limit=limit,
+                before=before,
+                expected_revision=expected_revision,
+            )
+            if not inserted:
+                inserted = True
+                log.append(key, "assistant", "foreign mid-read")
+            return page
+
+        monkeypatch.setattr(log, "read_messages_chained_page", append_between_ranges)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/revision-race?limit=50")
+            assert resp.status == 200, await resp.text()
+            data = await resp.json()
+
+        contents = [message["content"] for message in data["messages"]]
+        assert contents == [f"msg {i}" for i in range(30)] + ["foreign mid-read"]
+
+    @pytest.mark.asyncio
+    async def test_cursor_branch_reads_bounded_page_off_the_loop_thread(
+        self, tmp_path, monkeypatch
+    ):
+        """The bounded reader must run away from the loop serving other requests."""
         state = await self._slot_with_history(tmp_path, monkeypatch, "offloop")
         log = state.conversation_log
-        real = log.read_messages_chained_full
+        real = log.read_messages_chained_page
         seen: list[int] = []
 
-        def recording(key):
+        def recording(key, *, limit, before=None, expected_revision=None):
             seen.append(threading.get_ident())
-            return real(key)
+            return real(
+                key,
+                limit=limit,
+                before=before,
+                expected_revision=expected_revision,
+            )
 
-        monkeypatch.setattr(log, "read_messages_chained_full", recording)
+        monkeypatch.setattr(log, "read_messages_chained_page", recording)
         loop_thread = threading.get_ident()
 
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.get("/api/chat/slots/offloop?limit=5")
             assert resp.status == 200
-        assert seen, "read_messages_chained_full was never called"
+        assert seen, "read_messages_chained_page was never called"
         assert loop_thread not in seen
 
     @pytest.mark.asyncio
@@ -2239,13 +2589,13 @@ class TestSlotDetailPagination:
 
         loop_thread = threading.get_ident()
         seen: dict[str, int] = {}
-        original = ch._append_unflushed_tail
+        original = ch._append_unflushed_tail_from_offset
 
         def spy(*args, **kwargs):
             seen["thread"] = threading.get_ident()
             return original(*args, **kwargs)
 
-        monkeypatch.setattr(ch, "_append_unflushed_tail", spy)
+        monkeypatch.setattr(ch, "_append_unflushed_tail_from_offset", spy)
 
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.get("/api/chat/slots/offloop?limit=10")
@@ -24824,7 +25174,7 @@ class TestUnflushedTailOrderingAndSnapshot:
         slot.messages.append(owed)
         assert owed["meta"]["mid"] not in disk_mids, "fixture row must be un-persisted"
 
-        original = ch._append_unflushed_tail
+        original = ch._append_unflushed_tail_from_offset
         seen: dict[str, object] = {}
 
         def worker_entered(slot_arg, all_msgs_arg, **kwargs):
@@ -24836,7 +25186,7 @@ class TestUnflushedTailOrderingAndSnapshot:
             ]
             return original(slot_arg, all_msgs_arg, **kwargs)
 
-        monkeypatch.setattr(ch, "_append_unflushed_tail", worker_entered)
+        monkeypatch.setattr(ch, "_append_unflushed_tail_from_offset", worker_entered)
 
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.get("/api/chat/slots/loopsnap?limit=10")

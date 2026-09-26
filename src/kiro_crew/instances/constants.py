@@ -258,8 +258,14 @@ DEFAULT_CAPABILITY_PROXY_TIMEOUT_SECS: float = 8.0
 # Timeout (secs) for the peer's /api/models capability read specifically. The
 # other four reads answer from state the peer already holds, but the model list
 # is the one read whose COLD path runs real subprocess work on the peer: up to
-# 5s of sandbox-backend detection plus up to 10s of `kiro-cli chat
-# --list-models` before the first reply is cached, ~15s worst case end to end.
+# 5s of sandbox-backend detection (_SANDBOX_BACKEND_PROBE_TIMEOUT_SECS in
+# sandbox.py) plus up to 10s of `kiro-cli chat --list-models`
+# (_LIST_MODELS_SUBPROCESS_TIMEOUT_SECS in dashboard/handlers/agents.py), plus
+# up to 3s of entitlement revalidation
+# (_READ_PATH_PROBE_DEADLINE_SECS in acp/session_handle.py, bounding the
+# read-path probe before the picker narrows) before the first reply is cached,
+# ~18s worst case end to end (5 + 10 + 3 < 20). Each term is a named production
+# bound, and the proxy test sums those names.
 # Budgeting it at the shared 8s guarantees the cold read is killed by this side
 # while the peer's own bounded work is still running, and the aggregator then
 # reports `capability_unreachable` for a peer that is healthy — the model

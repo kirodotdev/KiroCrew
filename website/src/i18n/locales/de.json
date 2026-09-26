@@ -8912,6 +8912,11 @@
       "unexpected_response": "Unerwartete Antwort",
       "deploy_failed": "Bereitstellung fehlgeschlagen",
       "stale_preview_retry": "Die App hat sich seit der Prüfung geändert — versuche es erneut."
+    },
+    "mcpApp": {
+      "from_app": "Von der App {{app}} gesendet",
+      "delivery_failed": "Deine Nachricht konnte nicht zugestellt werden – versuch es erneut.",
+      "from_app_tooltip": "Diese App hat eine Nachricht in den Chat gestellt — Kiro behandelt sie als Worte der App, nicht als deine"
     }
   },
   "hooks": {
@@ -10757,6 +10762,7 @@
       "could_not_start_a_new_session": "Neue Sitzung konnte nicht gestartet werden",
       "could_not_start_session_message_restored": "Eine neue Sitzung konnte nicht gestartet werden: {{error}}. Deine Nachricht wurde wiederhergestellt — sende sie erneut, um es noch einmal zu versuchen.",
       "enter_split_view": "Geteilte Ansicht öffnen",
+      "effort_options_unavailable": "Die Optionen für den Reasoning-Aufwand dieser Sitzung konnten nicht überprüft werden. Die Aufwandsteuerung ist erst nach Wiederherstellung der Verbindung verfügbar.",
       "esc_to_dismiss": "Esc zum Schließen",
       "expand_knowledge_context": "Wissenskontext ausklappen",
       "failed_to_apply_plan": "Plan konnte nicht angewendet werden",

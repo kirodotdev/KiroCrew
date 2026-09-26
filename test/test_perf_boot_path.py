@@ -155,9 +155,9 @@ class TestOtelSdkImportIsDeferred:
             "    'available': p._OTEL_AVAILABLE,\n"
             "}))\n"
         )
-        assert result["sdk"] is False, (
-            "importing metrics.provider must not import the OTel metrics SDK"
-        )
+        assert (
+            result["sdk"] is False
+        ), "importing metrics.provider must not import the OTel metrics SDK"
         # The availability probe must still work — it is what keeps a partial
         # install degrading to the no-op recorder instead of crashing.
         assert result["available"] is True
@@ -173,9 +173,7 @@ class TestOtelSdkImportIsDeferred:
             "}))\n"
         )
         assert result["enabled"] is False  # default-off consent gate
-        assert result["sdk"] is False, (
-            "a disabled recorder must not pay for the OTel SDK import"
-        )
+        assert result["sdk"] is False, "a disabled recorder must not pay for the OTel SDK import"
 
     def test_enabled_recorder_still_loads_the_sdk(self, tmp_path: Path) -> None:
         """The deferral must not break the opt-in path."""
@@ -282,6 +280,26 @@ class TestDashboardImportIsLeaf:
         assert result["aiohttp"] is False, "the URL leaf must stay stdlib-only"
         assert result["parsed"] == ["h", 9999]
 
+    def test_server_boot_leaves_mcp_apps_and_gateway_backend_unloaded(self) -> None:
+        """The MCP Apps handler is feature-gated and imports the gateway backend
+        at module scope, so it must stay off the dashboard boot path: the routes
+        bind through ``server._deferred`` and the module loads on first request
+        (no-new-work-on-gateway-boot-path clause 5 — gate the import, not just
+        the handler). A cold import of a low fan-out entry (``chat_folders``)
+        must also succeed: the eager handlers/__init__ re-export this test pins
+        against once closed a boot-order cycle through session_control."""
+        result = _probe(
+            "import json, sys\n"
+            "import kiro_crew.dashboard.server\n"
+            "import kiro_crew.dashboard.chat_folders\n"
+            "print(json.dumps({\n"
+            "    'mcp_apps': 'kiro_crew.dashboard.handlers.mcp_apps' in sys.modules,\n"
+            "    'backend': 'kiro_crew.mcp_gateway.backend' in sys.modules,\n"
+            "}))\n"
+        )
+        assert result["mcp_apps"] is False, "mcp_apps must load on first request, not at boot"
+        assert result["backend"] is False, "the gateway backend must not ride dashboard boot"
+
     def test_importing_origin_pulls_no_handler_tree(self) -> None:
         result = _probe(
             "import json, sys\n"
@@ -300,9 +318,7 @@ class TestDashboardImportIsLeaf:
             "    )),\n"
             "}))\n"
         )
-        assert result["server"] is False, (
-            "dashboard/__init__ must not eagerly import server"
-        )
+        assert result["server"] is False, "dashboard/__init__ must not eagerly import server"
         assert result["handlers"] is False
         assert result["aiohttp"] is False, (
             "origin's aiohttp import must stay under TYPE_CHECKING — the CSRF "
@@ -313,9 +329,9 @@ class TestDashboardImportIsLeaf:
             f"dashboard.origin pulled {result['modules']} modules; it was 1124 "
             "before the split and must stay a leaf"
         )
-        assert result["reexports_ok"] is True, (
-            "origin must keep re-exporting every name it used to define"
-        )
+        assert (
+            result["reexports_ok"] is True
+        ), "origin must keep re-exporting every name it used to define"
 
     def test_lazy_package_attributes_still_resolve(self) -> None:
         result = _probe(
@@ -374,9 +390,7 @@ class TestFolderWatcherScanQueryCount:
     once per discovered file — up to 10,000 on-loop sqlite ops per scan."""
 
     @pytest.mark.asyncio
-    async def test_pause_check_and_last_seen_are_not_per_file(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_pause_check_and_last_seen_are_not_per_file(self, tmp_path: Path) -> None:
         from kiro_crew.knowledge.folder_watcher import (
             _PAUSE_RECHECK_FILES,
             FolderWatcher,
@@ -432,12 +446,12 @@ class TestFolderWatcherScanQueryCount:
             f"{counting.select_sources} sources queries for {n_files} files — "
             "the pause check must not run per file"
         )
-        assert counting.last_seen_execute == 0, (
-            "last_seen touches must be batched, not issued one per file"
-        )
-        assert batch_sizes == [n_files], (
-            "all unchanged-file last_seen touches must land in one worker batch"
-        )
+        assert (
+            counting.last_seen_execute == 0
+        ), "last_seen touches must be batched, not issued one per file"
+        assert batch_sizes == [
+            n_files
+        ], "all unchanged-file last_seen touches must land in one worker batch"
 
     @pytest.mark.asyncio
     async def test_last_seen_is_still_written(self, tmp_path: Path) -> None:
@@ -545,9 +559,7 @@ class TestChangelogReadIsCached:
         assert reads["n"] == 1, f"CHANGELOG.md was read {reads['n']} times, expected 1"
 
     @pytest.mark.asyncio
-    async def test_edit_is_picked_up(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_edit_is_picked_up(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """The cache is keyed on the stat signature, so a dev-install edit must
         still be visible without a restart."""
         proj = tmp_path / "proj"
@@ -557,17 +569,16 @@ class TestChangelogReadIsCached:
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(proj))
         monkeypatch.setattr(updates, "_changelog_cache", None, raising=False)
 
-        assert json.loads((await updates.api_changelog(MagicMock())).body)[
-            "content"
-        ] == "first\n"
+        assert json.loads((await updates.api_changelog(MagicMock())).body)["content"] == "first\n"
 
         changelog.write_text("second edition\n", encoding="utf-8")
         st = changelog.stat()
         os.utime(changelog, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
 
-        assert json.loads((await updates.api_changelog(MagicMock())).body)[
-            "content"
-        ] == "second edition\n"
+        assert (
+            json.loads((await updates.api_changelog(MagicMock())).body)["content"]
+            == "second edition\n"
+        )
 
 
 class TestChannelPresetsReadIsCached:
@@ -601,9 +612,7 @@ class TestChannelPresetsReadIsCached:
         assert reads["n"] == 1, f"config.json was read {reads['n']} times, expected 1"
 
     @pytest.mark.asyncio
-    async def test_edit_is_picked_up(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_edit_is_picked_up(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         cfg = tmp_path / "config.json"
         cfg.write_text(json.dumps({"channel_presets": [{"id": "a"}]}), encoding="utf-8")
         monkeypatch.setattr(handlers_channel, "config_path", lambda: cfg)
@@ -678,6 +687,6 @@ class TestPanelSubsystemIsNotLoadedAtBoot:
             "the members handlers are no longer on the boot import chain; "
             "move this pin to whatever imports agent_panel now"
         )
-        assert result["panel"] is False, (
-            "importing the dashboard handlers must not load kiro_crew.agent_panel"
-        )
+        assert (
+            result["panel"] is False
+        ), "importing the dashboard handlers must not load kiro_crew.agent_panel"

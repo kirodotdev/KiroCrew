@@ -61,7 +61,7 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, Iterator
 from aiohttp import web
 
 import kiro_crew
-from kiro_crew.apps.version import parse_version
+from kiro_crew.apps.version import versions_compatible
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_utils import _redact_deep, chunk_generation
 from kiro_crew.dashboard.remote_mirror import MIRROR_CLS_PREFIX
@@ -140,18 +140,8 @@ async def ensure_version_parity(mgr: Any, instance_id: str) -> None:
             "Could not confirm this crew's Kiro Crew version, so the session was "
             "not dispatched to it. Reconnect the crew and try again."
         )
-    # Compare the major.minor SERIES via the shared parser rather than a second
-    # hand-rolled regex. ``parse_version`` raises ``ValueError`` both on a
-    # non-semver string (a packaging build id) AND on an oversized numeric segment
-    # — CPython caps ``int(str)`` at 4300 digits, so a peer returning thousands of
-    # leading digits would otherwise raise OUTSIDE the RemoteTurnError handler and
-    # 500 the create. Either way we cannot prove series
-    # compatibility, so fall back to strict full-string equality.
-    try:
-        mismatch = parse_version(local)[:2] != parse_version(value)[:2]
-    except ValueError:
-        mismatch = value != local
-    if mismatch:
+    # The capability response and the dispatch fence use the same rule.
+    if not versions_compatible(local, value):
         # The peer's reported version is an ARBITRARY string: the transport proves
         # only that ``/api/version`` answered with a non-empty str. Redact BEFORE
         # bounding — truncating first could split a credential across the cut and

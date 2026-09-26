@@ -63,6 +63,12 @@ and collapses them, honoring their very different costs:
 | **venv** | ~1 min, idempotent | `pod up` **auto-builds** it on demand |
 | **dist** | minutes (Vite SPA build) | only on **explicit consent** |
 
+The venv is built with Python 3.12, found as `python3.12` in the usual POSIX
+locations and then on `PATH`. A python.org install on Windows ships `python.exe`
+and never a `python3.12.exe`, so there the `py` launcher is asked next
+(`py -3.12`): it is the platform's own index of installed interpreters, and it
+picks the right one on a host that has several.
+
 So plain `pod up <wt>` builds the cheap venv for you but **fails loud** if the
 dist is missing — pointing you at the slow build — while `pod up <wt> --provision`
 (or `pod provision <wt>`) runs the full chain: venv + `npm run build` in

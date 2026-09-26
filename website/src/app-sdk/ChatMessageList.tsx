@@ -107,8 +107,14 @@ export interface ChatMessageListProps {
    *  first hid the wrong row (the "two stacked boxes" bug the main chat fixed).
    *  Deliberately a single hidden-row key, not a per-row style hook: one
    *  consumer needs exactly this, and the ts-vs-index rule lives here once
-   *  instead of in every host. */
-  hiddenRow?: { ts?: string | null; index: number }
+   *  instead of in every host. `stripUncovered` says the row's action strip is
+   *  still on screen below the card standing in for its bubble (the host's
+   *  pinned state derives it from the strip's own rect against the card's
+   *  resting bottom): the row is then marked `data-pinned-standin="folding"`,
+   *  the value index.css keys the row's re-shown action strip on, and the bare
+   *  marker otherwise — once the strip has slid under the card or behind the
+   *  header it must not be visible (nor focusable) there. */
+  hiddenRow?: { ts?: string | null; index: number; stripUncovered?: boolean }
   /** Mount the rows inside the list's own virtualized scroller. Supplying it
    *  is what makes this component the scroll container: the host drops its
    *  `overflow-y-auto` div and its follow hook, and reaches the scroller
@@ -371,8 +377,11 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
     // A plain block wrapper: it takes the row's own box (padding included), so
     // its rect IS the row's rect for the geometry that reads it, and it adds no
     // class of its own so the theming contract on the inner row is untouched.
+    // `data-pinned-standin` marks the hidden row for index.css, which re-shows
+    // the message's action strip beneath the card standing in for its bubble —
+    // only while the value is `folding`, i.e. while that strip is still uncovered.
     return (
-      <div key={'row-' + i} data-display-index={i} style={hidden ? { visibility: 'hidden' } : undefined}>
+      <div key={'row-' + i} data-display-index={i} data-pinned-standin={hidden ? (hiddenRow?.stripUncovered ? 'folding' : '') : undefined} style={hidden ? { visibility: 'hidden' } : undefined}>
         {node}
       </div>
     )
@@ -428,6 +437,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
         onTopReached={transcript.onTopReached}
         prefetchStartIndex={transcript.prefetchStartIndex}
         isRowHidden={hiddenRow != null ? isRowHidden : undefined}
+        hiddenRowStripUncovered={hiddenRow?.stripUncovered === true}
       />
     )
   }

@@ -887,8 +887,11 @@ class AcpSessionProvider(LLMProvider):
         """
         advertised = advertised_model_ids(self._handle.available_models)
         if model_is_unusable(model_id, advertised):
+            # A user's explicit pick must earn a FRESH probe, not be refused on a
+            # recent no-evidence failure the picker read path may have cached
+            # (force=True skips the failure/empty attempt-clock replay).
             fresh = advertised_model_ids(
-                await self._guarded(self._handle.refresh_available_models())
+                await self._guarded(self._handle.refresh_available_models(force=True))
             )
             if model_is_unusable(model_id, fresh or advertised):
                 raise AcpModelUnavailable(model_id, fresh or advertised)
@@ -953,6 +956,23 @@ class AcpSessionProvider(LLMProvider):
     def available_models(self) -> list[dict[str, str]]:
         """Models advertised by the backend."""
         return self._handle.available_models
+
+    async def maybe_refresh_available_models(self, catalog_ids: list[str]) -> list[dict[str, str]]:
+        """Revalidate the advertised-model snapshot on the read path.
+
+        The read-path counterpart to the refresh-before-refuse in
+        :meth:`set_model`: the dashboard picker filter narrows the catalog
+        through this session's snapshot, and an unconfirmed startup-race snapshot
+        would hide models the account actually has with no explicit pick to
+        trigger the refusal-path heal. Delegates the staleness decision and the
+        single-flight probe to
+        :meth:`AcpSessionHandle.maybe_refresh_available_models`, and propagates
+        its contract: on the read deadline it raises
+        :class:`~kiro_crew.acp.session_handle.EntitlementRevalidating` (the probe
+        keeps running); on a probe FAILURE it returns the current snapshot (fail
+        open).
+        """
+        return await self._guarded(self._handle.maybe_refresh_available_models(catalog_ids))
 
     def pop_pending_oauth_requests(self) -> list[dict[str, str]]:
         """Drain OAuth requests captured while the shared session initialized."""

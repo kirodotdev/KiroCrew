@@ -27,6 +27,20 @@ def parse_version(v: str) -> tuple[int, ...]:
     return tuple(parts + [0] * (3 - len(parts)))
 
 
+def versions_compatible(local: str, peer: str) -> bool:
+    """Whether two crews can exchange remote-session frames.
+
+    A patch skew is safe within the same major.minor series. Non-version build
+    IDs can only be matched by exact equality.
+    """
+    if not peer:
+        return False
+    try:
+        return parse_version(local)[:2] == parse_version(peer)[:2]
+    except ValueError:
+        return peer == local
+
+
 def check_min_version(min_version: str) -> str | None:
     """Return an error string if the current KiroCrew version is too old.
 

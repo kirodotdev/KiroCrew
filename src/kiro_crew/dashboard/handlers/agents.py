@@ -56,7 +56,11 @@ from kiro_crew.agent_discovery import (
 )
 from kiro_crew.agent_files import KAS_RESERVED_AGENT_IDS
 from kiro_crew.agent_sdk.capabilities import capabilities_for, capabilities_of
-from kiro_crew.agent_sdk.drivers.acp import resolve_pin_spelling
+from kiro_crew.agent_sdk.drivers.acp import (
+    EntitlementRevalidating,
+    catalog_row_would_drop,
+    resolve_pin_spelling,
+)
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.agent_spec_format import (
     agent_spec_candidates,
@@ -157,6 +161,8 @@ from kiro_crew.sandbox import (
 from kiro_crew.validation import _AGENT_NAME_RE
 
 _MODEL_LIST_STDERR_TAIL_CHARS = 1000
+# Upper bound on the `kiro-cli chat --list-models` subprocess behind the model list.
+_LIST_MODELS_SUBPROCESS_TIMEOUT_SECS: float = 10.0
 
 logger = logging.getLogger(__name__)
 
@@ -1943,7 +1949,7 @@ def _advertised_cc_models(request: web.Request, namespace: str) -> list[dict]:
     return []
 
 
-def _entitled_kiro_models(request: web.Request, models: list[dict]) -> list[dict]:
+async def _entitled_kiro_models(request: web.Request, models: list[dict]) -> list[dict]:
     """Narrow the ``--list-models`` catalog to what a live session advertises.
 
     ``kiro chat --list-models`` is a CATALOG, not an entitlement: it returns the
@@ -1991,6 +1997,7 @@ def _entitled_kiro_models(request: web.Request, models: list[dict]) -> list[dict
     except (KeyError, AttributeError):
         return models
     advertised: list[str] = []
+    catalog_ids = [m.get("model_name", "") for m in models]
     # Newest session first. `active_providers()` walks a dict of live sessions, so
     # forward order is creation order — and a session that started BEFORE a plan
     # change still holds the advertised list it captured at its own session/new.
@@ -2009,9 +2016,32 @@ def _entitled_kiro_models(request: web.Request, models: list[dict]) -> list[dict
             ids = advertised_model_ids(getter())
         except Exception:
             continue
-        if ids:
-            advertised = ids
-            break
+        if not ids:
+            continue
+        # The snapshot for the session that will narrow the picker gets a chance
+        # to prove itself first. When it would drop a catalog model, the read
+        # path has no explicit-pick refusal to trigger the refresh-before-refuse
+        # heal, so an unconfirmed startup-race snapshot would silently hide
+        # entitled models here. ``maybe_refresh_available_models`` is declared on
+        # the provider ABC (default: return the current snapshot), owns the
+        # staleness heuristic and the single-flight, fail-open probe; a probe
+        # that fails or agrees leaves ``ids`` exactly as they were.
+        try:
+            refreshed = advertised_model_ids(
+                await provider.maybe_refresh_available_models(catalog_ids)
+            )
+            if refreshed:
+                ids = refreshed
+        except EntitlementRevalidating:
+            # The probe is in flight past the deadline. Propagate so the endpoint
+            # returns its degraded response and the frontend polls again rather
+            # than caching the un-revalidated snapshot; the next read serves the
+            # landed result. Never swallowed as a fail-open.
+            raise
+        except Exception:
+            pass
+        advertised = ids
+        break
     if not advertised:
         return models
     advertises_auto = any(_normalize_model_key(i) == "auto" for i in advertised)
@@ -2024,6 +2054,11 @@ def _entitled_kiro_models(request: web.Request, models: list[dict]) -> list[dict
     kept: list[dict] = []
     for m in models:
         name = m.get("model_name", "")
+        # The per-row keep/drop verdict is shared with the read-path
+        # revalidation, so the probe decision and this filter agree on which
+        # rows a snapshot hides.
+        if catalog_row_would_drop(name, advertised):
+            continue
         if _normalize_model_key(name) == "auto" or not model_is_unusable(name, advertised):
             kept.append(m)
             continue
@@ -2342,10 +2377,12 @@ async def api_models(request: web.Request) -> web.Response:
         # too rather than passed in.
         #
         # A remote hub proxying this endpoint budgets its WHOLE cold path (the
-        # sandbox detection above plus the list-models subprocess below) via
+        # sandbox detection above, the list-models subprocess below, and the up
+        # to _READ_PATH_PROBE_DEADLINE_SECS the read-path entitlement
+        # revalidation waits in _entitled_kiro_models) via
         # DEFAULT_MODELS_CAPABILITY_PROXY_TIMEOUT_SECS in
-        # kiro_crew/instances/constants.py — growing any bound here means
-        # moving that constant with it.
+        # kiro_crew/instances/constants.py — 5 + 10 + 3 < 20. Growing any bound
+        # here means moving that constant with it.
         argv, cleanup = await asyncio.get_running_loop().run_in_executor(
             subprocess_executor(), _wrap_list_models_argv, argv
         )
@@ -2373,7 +2410,9 @@ async def api_models(request: web.Request) -> web.Response:
                 env=env,
             )
             try:
-                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(), timeout=_LIST_MODELS_SUBPROCESS_TIMEOUT_SECS
+                )
             except asyncio.TimeoutError:
                 try:
                     proc.kill()
@@ -2468,8 +2507,20 @@ async def api_models(request: web.Request) -> web.Response:
                 maintenance_executor(), model_registry.persist_advertised_models
             )
         models = [m for m in models if not is_deprecated_model(m.get("model_name", ""))]
-        models = _entitled_kiro_models(request, models)
+        models = await _entitled_kiro_models(request, models)
         return web.json_response(models)
+    except EntitlementRevalidating:
+        # An entitlement revalidation is in flight past the read deadline. The
+        # picker snapshot might narrow the catalog on an un-revalidated answer,
+        # and the frontend caches any non-empty 200 with no refetch — so serve
+        # the degraded 503 contract instead: the frontend keeps its last-good
+        # list and polls again in 8s, and the next read (once the probe has
+        # landed, whether it corrected the list or failed open) returns 200.
+        logger.info("api_models: entitlement revalidation in flight; returning 503 to re-poll")
+        return web.json_response(
+            {"error": "model list revalidating", "code": "model_list_revalidating"},
+            status=503,
+        )
     except SandboxUnavailableError as exc:
         # Narrower than the generic clause below, and BEFORE it: this is the one
         # degraded cause that no amount of retrying fixes, so it must not be

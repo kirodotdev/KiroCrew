@@ -3452,6 +3452,11 @@
       "unexpected_response": "Unexpected response",
       "deploy_failed": "Deploy failed",
       "stale_preview_retry": "The app changed since it was checked — try again."
+    },
+    "mcpApp": {
+      "from_app": "Sent by the {{app}} app",
+      "delivery_failed": "Couldn't deliver your message — try again.",
+      "from_app_tooltip": "This app posted a message into the chat — Kiro treats it as the app's words, not yours"
     }
   },
   "hooks": {

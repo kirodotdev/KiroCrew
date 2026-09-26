@@ -27,6 +27,7 @@ from pathlib import Path
 
 from kiro_crew import platform_compat
 from kiro_crew.env import find_node_tool, node_augmented_path
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 #: How many trailing stderr lines of the step that FAILED provisioning are
 #: re-emitted as ``::steperr::`` markers. Four covers the shape pip and npm use
@@ -93,6 +94,37 @@ def _say(msg: str) -> None:
         print(msg, file=sys.stderr, flush=True)
 
 
+#: Bound on the ``py`` launcher probe. It only reads the registry and prints a
+#: path, so a launcher that has not answered by now is not going to.
+_PY_LAUNCHER_TIMEOUT_S = 10
+
+
+def _find_python_via_launcher(version: str) -> str | None:
+    """Ask the Windows ``py`` launcher where pythonX.Y lives, or None.
+
+    A python.org install on Windows ships ``python.exe`` and never a
+    ``pythonX.Y.exe``, so the name the POSIX lookup asks for does not exist
+    there however many interpreters are installed. The launcher is the
+    platform's own index of them (PEP 397 / PEP 514), and ``py -X.Y`` selects
+    exactly one. The candidate prints its own ``sys.executable``, so an answer
+    is a real interpreter of that version that actually ran, not a path guess.
+    """
+    launcher = shutil.which("py")
+    if not launcher:
+        return None
+    try:
+        out = subprocess.check_output(
+            [launcher, f"-{version}", "-I", "-X", "utf8", "-c", "import sys; print(sys.executable)"],
+            timeout=_PY_LAUNCHER_TIMEOUT_S,
+            stderr=subprocess.DEVNULL,
+            **UTF8_TEXT,
+        ).strip()
+    except (OSError, subprocess.SubprocessError):
+        # No such version registered, or the launcher could not run it.
+        return None
+    return out if out and Path(out).is_file() else None
+
+
 def _find_python(version: str = "3.12") -> str | None:
     """Locate a pythonX.Y interpreter for the venv."""
     candidates = [
@@ -103,7 +135,10 @@ def _find_python(version: str = "3.12") -> str | None:
     for c in candidates:
         if c.exists() and os.access(c, os.X_OK):
             return str(c)
-    return shutil.which(f"python{version}")
+    found = shutil.which(f"python{version}")
+    if found or not platform_compat.IS_WINDOWS:
+        return found
+    return _find_python_via_launcher(version)
 
 
 def venv_bin_dir(checkout: Path) -> Path:

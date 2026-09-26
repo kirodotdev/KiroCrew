@@ -9033,6 +9033,11 @@
       "unexpected_response": "Respuesta inesperada",
       "deploy_failed": "Error al desplegar",
       "stale_preview_retry": "La aplicación cambió desde la comprobación — inténtalo de nuevo."
+    },
+    "mcpApp": {
+      "from_app": "Enviado por la aplicación {{app}}",
+      "delivery_failed": "No se pudo entregar tu mensaje. Inténtalo de nuevo.",
+      "from_app_tooltip": "Esta app publicó un mensaje en el chat — Kiro lo trata como palabras de la app, no tuyas"
     }
   },
   "hooks": {
@@ -10907,6 +10912,7 @@
       "could_not_start_a_new_session": "No se pudo iniciar una sesión nueva",
       "could_not_start_session_message_restored": "No se pudo iniciar una sesión nueva: {{error}}. Se restauró tu mensaje — vuelve a enviarlo para reintentar.",
       "enter_split_view": "Entrar en vista dividida",
+      "effort_options_unavailable": "No se pudieron verificar las opciones de esfuerzo de razonamiento de esta sesión. El control de esfuerzo no estará disponible hasta que se restablezca la conexión.",
       "esc_to_dismiss": "Esc para descartar",
       "expand_knowledge_context": "Expandir el contexto de conocimiento",
       "failed_to_apply_plan": "No se pudo aplicar el plan",

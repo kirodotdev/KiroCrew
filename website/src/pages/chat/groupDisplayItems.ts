@@ -118,14 +118,16 @@ export const isTurnEnd = (msg: ChatMessage): boolean =>
  * same predicate every other note consumer uses, and the reason a `cls`-only
  * check would not survive a reload.
  *
- * None of the three is restated by the synthesis turn, so folding them behind
+ * None of these is restated by the synthesis turn, so folding them behind
  * the fan-out toggle would hide content on the promise that something below
- * repeats it, which nothing does.
+ * repeats it, which nothing does. An `mcp_app` row (an embedded MCP App's
+ * ui/message delivery) is here for the same reason: the user's own click
+ * landed it, and nothing in the fold repeats it.
  *
  * `recovery` is deliberately NOT here: a tool-stall recovery inside a fan-out is
  * a continuation of the very work being folded.
  */
-const FOREIGN_INJECT_KINDS = new Set(['cron', 'user_replay'])
+const FOREIGN_INJECT_KINDS = new Set(['cron', 'user_replay', 'mcp_app'])
 const isForeignInjection = (msg: ChatMessage): boolean => {
   if (msg.role !== 'inject') return false
   if (isNoteRow(msg)) return true
@@ -461,4 +463,16 @@ export function applyRunningState(grouped: GroupedTurns, slotRunning: boolean): 
   const t = out[trailingTurnIdx]
   if (t && t.kind === 'turn') out[trailingTurnIdx] = { ...t, complete: false }
   return out
+}
+
+/** Strip the machine provenance envelope from an MCP-App message's text.
+ *  The banner is written in ONE place (the backend producer) and parsed in
+ *  none — this is display-side removal only; classification is structural
+ *  (the row's `injectKind` / the queue entry's `kind`), never textual.
+ *  The single implementation: every render surface (transcript, app-sdk,
+ *  queue card) imports this rather than inlining the regex pair. */
+export function stripAppEnvelope(content: string): string {
+  return content
+    .replace(/^\[MCP app message from ".*"\]\n/, '')
+    .replace(/\n\[End of MCP app message\]$/, '')
 }

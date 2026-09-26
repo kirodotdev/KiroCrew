@@ -398,6 +398,79 @@ describe('McpAppFrame', () => {
     }
   })
 
+  it('declares the message capability in ui/initialize', () => {
+    const { container } = renderWithProviders(<McpAppFrame payload={payload()} />)
+    const iframe = container.querySelector('iframe')!
+    const win = stubContentWindow(iframe)
+
+    dispatchFromApp({ jsonrpc: '2.0', id: 1, method: 'ui/initialize' }, win)
+
+    const reply = win.postMessage.mock.calls[0][0]
+    // A spec-conformant app gates sendMessage on this declaration, so it must
+    // say exactly what the backend accepts: text content blocks only.
+    expect(reply.result.hostCapabilities.message).toEqual({ text: {} })
+  })
+
+  it('relays ui/message to POST /api/mcp-apps/message and posts back the result', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ result: { isError: false } }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      const { container } = renderWithProviders(<McpAppFrame payload={payload({ spool_id: 'b'.repeat(32), callback_secret: 'sekret-cap' })} />)
+      const iframe = container.querySelector('iframe')!
+      const win = stubContentWindow(iframe)
+
+      const content = [{ type: 'text', text: 'user clicked Acknowledge' }]
+      dispatchFromApp({ jsonrpc: '2.0', id: 11, method: 'ui/message', params: { role: 'user', content } }, win)
+      await vi.waitFor(() => expect(win.postMessage).toHaveBeenCalledTimes(1))
+
+      const relayCall = fetchMock.mock.calls.find((c) => c[0] === '/api/mcp-apps/message')!
+      const sent = JSON.parse((relayCall[1] as { body: string }).body)
+      // The callback capability is forwarded — the endpoint (not a gateway
+      // leg) authorizes on it, so the model-visible spool_id alone must
+      // never deliver.
+      expect(sent).toEqual({ spool_id: 'b'.repeat(32), callback_secret: 'sekret-cap', role: 'user', content })
+      const headers = (relayCall[1] as { headers: Record<string, string> }).headers
+      expect(headers['X-Session-Key']).toBe('slot-1')
+      const reply = win.postMessage.mock.calls[0][0]
+      expect(reply.id).toBe(11)
+      expect(reply.result).toEqual({ isError: false })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('maps a failed ui/message delivery to the in-band isError result, not a protocol error', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 409,
+      json: async () => ({ error: 'session is closed' }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      const { container } = renderWithProviders(<McpAppFrame payload={payload()} />)
+      const iframe = container.querySelector('iframe')!
+      const win = stubContentWindow(iframe)
+
+      dispatchFromApp({ jsonrpc: '2.0', id: 12, method: 'ui/message', params: { role: 'user', content: [{ type: 'text', text: 'hi' }] } }, win)
+      await vi.waitFor(() => expect(win.postMessage).toHaveBeenCalledTimes(1))
+
+      const reply = win.postMessage.mock.calls[0][0]
+      expect(reply.id).toBe(12)
+      // The spec's sendMessage contract reports delivery failure via
+      // { isError: true } — the app can surface it — not a JSON-RPC error.
+      // The backend's reason rides along as a text block so the app can show
+      // the user WHY ("session is closed"), not just that it failed.
+      expect(reply.result).toEqual({ isError: true, content: [{ type: 'text', text: 'session is closed' }] })
+      expect(reply.error).toBeUndefined()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('rejects a genuinely unsupported request with JSON-RPC -32601', () => {
     const { container } = renderWithProviders(<McpAppFrame payload={payload()} />)
     const iframe = container.querySelector('iframe')!

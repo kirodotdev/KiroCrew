@@ -8791,6 +8791,11 @@
       "unexpected_response": "意外的响应",
       "deploy_failed": "部署失败",
       "stale_preview_retry": "检查后应用已更改 — 请重试。"
+    },
+    "mcpApp": {
+      "from_app": "由 {{app}} 应用发送",
+      "delivery_failed": "无法送达你的消息，请重试。",
+      "from_app_tooltip": "该应用向聊天中发布了一条消息 — Kiro 将其视为应用的话，而不是你的话"
     }
   },
   "hooks": {
@@ -10607,6 +10612,7 @@
       "could_not_start_a_new_session": "无法启动新会话",
       "could_not_start_session_message_restored": "无法启动新会话：{{error}}。消息已恢复 — 再次发送即可重试。",
       "enter_split_view": "进入分屏视图",
+      "effort_options_unavailable": "无法验证此会话的推理强度选项。连接恢复之前，推理强度控件将不可用。",
       "esc_to_dismiss": "按 Esc 关闭",
       "expand_knowledge_context": "展开知识上下文",
       "failed_to_apply_plan": "应用计划失败",

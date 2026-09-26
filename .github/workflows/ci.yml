@@ -3047,6 +3047,17 @@ jobs:
         working-directory: website
         run: npx playwright install chromium
 
+      - name: MCP-App message rows render both delivery states (asserting harness)
+        # The same self-asserting harness that produced the PR's screenshot
+        # evidence: serves the built SPA over loopback with fixture-backed
+        # /api/** responses and fails on any scene assertion (envelope leak,
+        # missing attribution, missing text). Lives here to reuse the build
+        # and the Chromium install above; needs no gateway, token or backend.
+        timeout-minutes: 5
+        shell: bash
+        working-directory: website
+        run: node scripts/capture-mcp-app-message-rows.mjs "$RUNNER_TEMP/mcp-app-message-rows"
+
       - name: Resolve base for the parallel i18n render-time gate
         # Phase 5 of the i18n plan. Every other i18n gate reads SOURCE or CATALOG
         # JSON, so three defect classes are invisible to all of them: a string that

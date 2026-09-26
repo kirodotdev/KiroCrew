@@ -5692,6 +5692,10 @@ _PROBE_CHILD_GONE_ERRNOS = frozenset({errno.ESRCH, errno.ENOENT, errno.EPIPE})
 # background warm thread forever.
 _PROBE_HANDSHAKE_TIMEOUT_SECS = 5.0
 
+# Upper bound on the macOS sandbox-backend probe (`sandbox-exec` running
+# /usr/bin/true under an allow-default profile) that backend detection runs.
+_SANDBOX_BACKEND_PROBE_TIMEOUT_SECS: float = 5.0
+
 # Detail of the most recent failed userns probe: (transient, reason, remedy).
 # ``None`` means the last probe succeeded (or none has run yet). Consumed by
 # detect_backend() for cache policy and by wrap_argv() for error reporting.
@@ -6859,7 +6863,7 @@ def _probe_sandbox_exec() -> bool:
         r = subprocess.run(
             [sb, "-f", profile_path, target],
             capture_output=True,
-            timeout=5,
+            timeout=_SANDBOX_BACKEND_PROBE_TIMEOUT_SECS,
         )
         if r.returncode != 0:
             detail = r.stderr.decode(errors="replace").strip()

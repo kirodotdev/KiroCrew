@@ -110,6 +110,15 @@ export interface VirtualTranscriptProps {
   prefetchStartIndex?: number
   /** Rows to hide by `visibility` (a bubble the pinned banner stands in for). */
   isRowHidden?: (item: DisplayItem, index: number) => boolean
+  /** The hidden row's action strip is still uncovered — on screen below the
+   *  card standing in for the row's bubble. Written as the `folding` value of
+   *  the row's `data-pinned-standin` marker — what index.css keys the row's
+   *  re-shown action strip on. Not "the fold is in progress": the card reaches
+   *  its clamp while the strip, hanging under the bubble, is still sliding under
+   *  it, and the strip has to stay shown until it has. A sibling flag rather
+   *  than a richer `isRowHidden` answer: at most one row is hidden, so this is a
+   *  property of the pin, not of a row. */
+  hiddenRowStripUncovered?: boolean
 }
 
 /** Virtualizer tuning shared with the main chat page. */
@@ -171,6 +180,7 @@ const VirtualTranscript = forwardRef<VirtualTranscriptHandle, VirtualTranscriptP
     onTopReached,
     prefetchStartIndex,
     isRowHidden,
+    hiddenRowStripUncovered,
   }, ref) {
     const ownScrollerRef = useRef<HTMLDivElement | null>(null)
     const scrollerRef = externalScrollerRef ?? ownScrollerRef
@@ -281,12 +291,16 @@ const VirtualTranscript = forwardRef<VirtualTranscriptHandle, VirtualTranscriptP
           // A plain block wrapper: it takes the row's own box (padding
           // included), so its rect IS the row's rect for the geometry that
           // reads `data-display-index`, and it adds no class of its own so the
-          // theming contract on the inner row is untouched.
+          // theming contract on the inner row is untouched. `data-pinned-standin`
+          // marks the hidden row for index.css, which re-shows the message's
+          // action strip beneath the card standing in for its bubble — only
+          // while the value is `folding`, i.e. while that strip is still uncovered.
           return (
             <div
               key={vi.key}
               ref={virt.measureRef(vi.index)}
               data-display-index={vi.index}
+              data-pinned-standin={hidden ? (hiddenRowStripUncovered ? 'folding' : '') : undefined}
               style={hidden ? { visibility: 'hidden' } : undefined}
             >
               {renderRow(vi.data, vi.index)}

@@ -1,6 +1,6 @@
 import { Component, useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, useId, memo, lazy, Suspense } from 'react'
 import { markComposerResize } from '../utils/composerResize'
-import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, MicOff, Keyboard, Square, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText, PenLine, ChevronsDownUp, ChevronsUpDown, MoreHorizontal } from 'lucide-react'
+import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, BrainCircuit, Mic, MicOff, Keyboard, Square, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText, PenLine, ChevronsDownUp, ChevronsUpDown, MoreHorizontal } from 'lucide-react'
 import SketchDialog from './SketchDialog'
 import AppIcon from './AppIcon'
 import CopyBranchButton from './CopyBranchButton'
@@ -629,7 +629,8 @@ interface ChatInputProps {
   stopState?: 'idle' | 'soft_pending' | 'killing'
   approvalMode?: string
   reasoningEffort?: string
-  onReasoningEffortClick?: (rect: DOMRect) => void
+  onReasoningEffortClick?: (rect: DOMRect, trigger: HTMLElement) => void
+  separateEffort?: boolean
   providerId?: string
   /** Invoked when an @-mention picks a file or directory. `kind` defaults to
    *  'file'. `token` is the exact composer text the pick inserted (e.g.
@@ -1001,6 +1002,7 @@ function ChatInput({
   approvalMode,
   reasoningEffort,
   onReasoningEffortClick,
+  separateEffort,
   providerId: _providerId,
   onFileSelect,
   onFileOpen,
@@ -1510,6 +1512,10 @@ function ChatInput({
   // Below ~340px the labels no longer fit comfortably alongside the context bar
   // + model chip, so collapse the chips (agent/project) to icon-only.
   const shelfCompact = shelfWidth < 340
+  // A two-column split can leave under 200px per composer. Keep the value
+  // visible at ordinary compact widths, but let the title/aria label carry it
+  // when even the other shelf chips have no room for text.
+  const shelfTiny = shelfWidth < 220
   // Tooltip for the project chip. The chip itself shows the basename (plus the
   // branch when known); the tooltip carries the full path so nothing that was
   // previously discoverable is lost, and names the branch even when the label
@@ -5014,7 +5020,7 @@ function ChatInput({
           // this the chip is silently invisible whenever no other pill happens
           // to be present — the control is declared, mounted and unreachable.
           !!sessionControls?.length) && (
-        <div ref={shelfRef} className="pt-1 flex items-center gap-2 min-w-0">
+        <div ref={shelfRef} data-testid="composer-context-shelf" className="pt-1 flex items-center gap-2 min-w-0">
           {/* App-contributed session controls live in their OWN group, not
               beside the agent/project chips. `max-two-buttons-per-row`
               (AUTOSDE.yaml, blocking) caps a horizontal group at 2 action
@@ -5298,13 +5304,29 @@ function ChatInput({
                   <span className="opacity-60 shrink-0">{i18nT('components.agentSelector.default')}</span>
                 </>
               )}
-              {onReasoningEffortClick && !shelfCompact && (
+              {onReasoningEffortClick && !separateEffort && !shelfCompact && (
                 <>
                   <span className="opacity-30 select-none shrink-0" aria-hidden="true">·</span>
                   <span className="opacity-60 shrink-0">{effortLabel(reasoningEffort || '')}</span>
                 </>
               )}
             </button>
+          )}
+          {separateEffort && onReasoningEffortClick && (
+            <div className="ml-1 pl-1 border-l border-border flex items-center shrink-0">
+              <Btn
+                type="button"
+                className={`inline-flex items-center h-7 gap-1.5 text-[12px] text-muted hover:text-text rounded-md border-none bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors ${shelfCompact ? 'px-1' : 'px-2'}`}
+                aria-label={i18nT('components.reasoningEffortDropdown.reasoning_effort')}
+                title={`${i18nT('components.reasoningEffortDropdown.reasoning_effort')}: ${effortLabel(reasoningEffort || '')}`}
+                disabled={isRunning}
+                onClick={e => onReasoningEffortClick(e.currentTarget.getBoundingClientRect(), e.currentTarget)}
+                data-testid="composer-effort-chip"
+              >
+                <BrainCircuit size={13} className="shrink-0 opacity-70" aria-hidden="true" />
+                {!shelfTiny && <span className="whitespace-nowrap">{i18nT('components.reasoningEffortDropdown.effort')}: {effortLabel(reasoningEffort || '')}</span>}
+              </Btn>
+            </div>
           )}
           </div>
         </div>

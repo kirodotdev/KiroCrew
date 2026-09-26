@@ -1760,7 +1760,14 @@ class AcpRuntime:
         # newer pass's descendants are dropped from both the record and the file.
         # Sessions start concurrently on a shared runtime, so this is reachable.
         self._descendant_scan_lock = asyncio.Lock()
-        self._entitlement_probe_at = 0.0
+        # Two independent clocks so a failure never extends the life of an old
+        # success: ``_result_at`` is stamped ONLY when a non-empty result is
+        # stored (that result may be replayed until it expires), while
+        # ``_attempt_at`` is stamped on EVERY completed attempt incl.
+        # failure/empty (it suppresses re-opening a session within the TTL but
+        # never replays a stale result).
+        self._entitlement_probe_result_at = 0.0
+        self._entitlement_probe_attempt_at = 0.0
         self._entitlement_probe_result: list[dict[str, str]] = []
         self._dead = False
         self._death_summary: str | None = None
@@ -1888,6 +1895,23 @@ class AcpRuntime:
     @property
     def pid(self) -> int | None:
         return self._pid
+
+    @property
+    def spawn_monotonic(self) -> float | None:
+        """Monotonic time this process was spawned, or ``None`` before spawn."""
+        return self._spawn_monotonic
+
+    @property
+    def entitlement_probe_result_at(self) -> float:
+        """Monotonic time the stored probe answer arrived (0.0 before any).
+
+        :meth:`probe_advertised_models` serves either a fresh answer or a replay
+        of this stored one; in both cases the answer is dated by this clock, so a
+        caller that stores what it was served dates its snapshot from here rather
+        than from its own call time, which for a replay would be LATER than the
+        data and would raise its own freshness floor above it.
+        """
+        return self._entitlement_probe_result_at
 
     @property
     def work_scratch_dir(self) -> Path | None:
@@ -6659,7 +6683,9 @@ class AcpRuntime:
         logger.info("Created session %s on runtime PID %d", session_id, self._pid or 0)
         return handle
 
-    async def probe_advertised_models(self) -> list[dict[str, str]]:
+    async def probe_advertised_models(
+        self, *, force: bool = False, not_before: float = 0.0
+    ) -> list[dict[str, str]]:
         """Fetch a fresh advertised-model (entitlement) snapshot from this backend.
 
         A session's ``availableModels`` is captured once, from its own
@@ -6671,9 +6697,31 @@ class AcpRuntime:
         process with a throwaway minimal session (no MCP servers, no mode
         activation), terminated before returning.
 
-        Single-flight + short TTL: concurrent callers share one probe, and a
-        fresh non-empty answer is reused for :data:`_ENTITLEMENT_PROBE_TTL_SECS`
-        so a burst of rejections costs one round-trip.
+        Single-flight + short TTL, on TWO clocks. A non-empty SUCCESS is replayed
+        for :data:`_ENTITLEMENT_PROBE_TTL_SECS` (its result clock); an empty or
+        FAILED attempt replays as ``[]`` (no evidence) for the same window (its
+        attempt clock) without re-opening a session, so a burst of failures on
+        the picker read path costs one round-trip. A failure never revives an
+        expired success — the two clocks are independent.
+
+        ``force=True`` skips ONLY the attempt-clock replay: a USER ACTION (an
+        explicit ``set_model`` pick, the spawn-time pin withhold) must earn a
+        fresh probe rather than be refused on a recent no-evidence failure: an
+        explicit action always earns a real answer. It still honours the
+        result-clock replay of a recent non-empty success (fresh evidence —
+        nothing is gained by re-probing) and still serializes on the
+        single-flight lock. The picker read path leaves ``force=False`` so it
+        keeps the burst cap.
+
+        ``not_before`` is a freshness floor on the result-clock replay: a caller
+        passes the monotonic time of the snapshot it already holds, and a replay
+        never answers with a result older than that snapshot. The shared result
+        cache spans every session on this process, so without the floor a broad
+        answer cached before an entitlement downgrade would overwrite a newer
+        session's correctly narrower ``session/new`` snapshot. A cached result
+        older than the floor is not evidence for that caller: the attempt-clock
+        logic below decides between ``[]`` and a fresh probe, whose result is
+        always newer than the floor.
 
         Returns the normalized advertised list, or ``[]`` when the probe fails
         or advertises nothing. An empty return is NOT evidence about
@@ -6681,11 +6729,35 @@ class AcpRuntime:
         """
         async with self._entitlement_probe_lock:
             now = time.monotonic()
+            # Two-clock guard so a failure never extends the life of an old
+            # success. If the last SUCCESSFUL result is still within TTL, replay
+            # it (even under force: a fresh success is fresh evidence). Otherwise,
+            # if the last ATTEMPT of any outcome (incl. a failure that re-stamped
+            # only the attempt clock) is within TTL, return [] — no evidence, fail
+            # open — WITHOUT opening a fresh session/new, UNLESS force=True, which
+            # a user action passes to earn a fresh probe rather than be refused on
+            # a recent no-evidence failure. Only past both windows (or forced past
+            # the attempt window) do we probe again. Both clocks are 0.0 until the
+            # first completed attempt, so neither branch fires before one. Both
+            # replays also require their clock to be at least as new as the
+            # caller's own snapshot (``not_before``): a cached answer never
+            # replaces a newer one, and a failed attempt that predates the
+            # caller's snapshot never stands in for the probe that snapshot has
+            # yet to receive.
             if (
                 self._entitlement_probe_result
-                and now - self._entitlement_probe_at < _ENTITLEMENT_PROBE_TTL_SECS
+                and self._entitlement_probe_result_at > 0.0
+                and self._entitlement_probe_result_at >= not_before
+                and now - self._entitlement_probe_result_at < _ENTITLEMENT_PROBE_TTL_SECS
             ):
                 return list(self._entitlement_probe_result)
+            if (
+                not force
+                and self._entitlement_probe_attempt_at > 0.0
+                and self._entitlement_probe_attempt_at >= not_before
+                and now - self._entitlement_probe_attempt_at < _ENTITLEMENT_PROBE_TTL_SECS
+            ):
+                return []
             if not self._initialized or self._dead or self._process is None:
                 return []
             params = build_session_new_params(await self._session_work_dir(), mcp_servers=[])
@@ -6704,7 +6776,18 @@ class AcpRuntime:
                     self._finish_session_init(session_id)
             except Exception:
                 logger.debug("entitlement probe session/new failed", exc_info=True)
+                # Stamp the ATTEMPT clock only (never the result clock), so a
+                # burst of failing reads costs one session/new within the TTL
+                # while the last SUCCESSFUL result keeps expiring on its own
+                # clock — a failure can never revive a stale success.
+                self._entitlement_probe_attempt_at = time.monotonic()
                 return []
+            # The answer's freshness is the moment it ARRIVED, stamped before the
+            # teardown below. Stamping after the terminate round-trip would date
+            # the answer later than a real session/new that completed during
+            # that await, and the freshness floor would then let this older
+            # answer replay over that session's newer snapshot.
+            completed_at = time.monotonic()
             try:
                 # Reads BOTH shapes, through the same fold the session-init capture
                 # uses. Reading only ``models`` answers [] for a host whose list is a
@@ -6717,9 +6800,16 @@ class AcpRuntime:
                     # Evict the probe session from the shared process; never
                     # raises (best-effort by contract).
                     await self.terminate_session(session_id)
+            # A non-empty answer updates the stored result and its OWN clock, so
+            # it is replayed until that clock expires. An empty answer leaves the
+            # stored result (and its clock) untouched — no evidence, fail open.
             if fresh:
                 self._entitlement_probe_result = list(fresh)
-                self._entitlement_probe_at = time.monotonic()
+                self._entitlement_probe_result_at = completed_at
+            # The attempt clock is stamped on EVERY completed probe, empty
+            # included, so a burst of reads within the TTL costs one session/new
+            # whether or not the backend advertised anything.
+            self._entitlement_probe_attempt_at = completed_at
             return fresh
 
     async def load_session(

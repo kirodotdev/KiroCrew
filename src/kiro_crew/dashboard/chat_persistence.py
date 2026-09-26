@@ -12,7 +12,7 @@ import threading
 import time
 import uuid
 from collections import OrderedDict, deque
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from itertools import islice
 from pathlib import Path
 
@@ -79,6 +79,7 @@ from kiro_crew.history import (
 )
 from kiro_crew.memory_stores import UnknownMemoryStore, named_store_or_empty
 from kiro_crew.messaging.link import is_channel_session_key
+from kiro_crew.platform_compat import file_lock
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.session_agent_selection import session_agent_selection_name
@@ -280,6 +281,9 @@ _REASONING_EFFORT_FALLBACK = EFFORT_VALUES
 # the read path too, not just the API.
 _reasoning_effort_values: set[str] = set(_REASONING_EFFORT_FALLBACK)
 _reasoning_effort_ordered: list[str] = list(_REASONING_EFFORT_FALLBACK_ORDER)
+# Levels backed by gateway-owned markers. At the advertised-level cap, a
+# marked restore outranks a peer level that no owner has selected.
+_reasoning_effort_marked: set[str] = set()
 
 # Re-exported (back-compat) for any caller importing the static allowlist.
 _REASONING_EFFORT_VALUES = EFFORT_VALUES
@@ -299,17 +303,93 @@ def get_reasoning_effort_ordered() -> list[str]:
 # "low\n" is rejected — ``$`` would match before the newline and let it through
 # to the persistence/subprocess boundary.
 _SAFE_EFFORT_RE = re.compile(r"[a-z][a-z0-9_-]{0,20}\Z")
+MAX_EFFORT_LEVELS_PER_CAPABILITY = 32
+MAX_RETAINED_REASONING_EFFORT_VALUES = 256
+# Crew panels are gateway-owned, precreated, and masked under both ordinary and
+# relocated data homes. Their record reader uses flat *.json names, so this
+# separate subdirectory cannot be mistaken for a panel.
+_VALIDATED_EFFORT_DIR = "crew-panels/validated_effort_levels"
+
+
+def _effort_marker_path(directory: Path, level: str) -> Path:
+    """Use a portable basename, including for Windows device names like con."""
+    return directory / hashlib.sha256(level.encode("utf-8")).hexdigest()
+
+
+def cap_effort_capability_levels(levels: Iterable[object], *, source: str) -> list[str]:
+    """Validate before applying the per-response cap, preserving safe input order."""
+    accepted: list[str] = []
+    dropped = 0
+    for level in levels:
+        if not isinstance(level, str) or not _SAFE_EFFORT_RE.fullmatch(level):
+            continue
+        if len(accepted) < MAX_EFFORT_LEVELS_PER_CAPABILITY:
+            accepted.append(level)
+        else:
+            dropped += 1
+    if dropped:
+        logger.warning(
+            "Dropped %d %s effort capability level(s): per-response limit %d reached",
+            dropped,
+            source,
+            MAX_EFFORT_LEVELS_PER_CAPABILITY,
+        )
+    return accepted
+
+
+def _retain_reasoning_effort_values(acp_levels: list[str], *, source: str) -> list[str]:
+    """Keep safe levels up to the process-wide cap, preserving input order."""
+    global _reasoning_effort_values
+    retained = set(_reasoning_effort_values)
+    accepted: list[str] = []
+    accepted_set: set[str] = set()
+    dropped = 0
+    for level in acp_levels:
+        if (
+            not isinstance(level, str)
+            or not _SAFE_EFFORT_RE.fullmatch(level)
+            or level in accepted_set
+        ):
+            continue
+        if level not in retained:
+            if len(retained) >= MAX_RETAINED_REASONING_EFFORT_VALUES:
+                dropped += 1
+                continue
+            retained.add(level)
+        accepted.append(level)
+        accepted_set.add(level)
+    if dropped:
+        logger.warning(
+            "Dropped %d %s effort level(s): retained limit %d reached",
+            dropped,
+            source,
+            MAX_RETAINED_REASONING_EFFORT_VALUES,
+        )
+    if retained != _reasoning_effort_values:
+        _reasoning_effort_values = retained
+    return accepted
+
+
+def register_reasoning_effort_values(acp_levels: list[str]) -> list[str]:
+    """Allow peer-advertised levels without replacing the local display order.
+
+    A remote crew's options can reach the composer before its first turn. They
+    must pass the hub's POST allowlist, but their order belongs to that slot,
+    not the process-global fallback for unrelated local sessions. Return only
+    retained levels so an over-cap peer option is never offered by the picker.
+    """
+    return _retain_reasoning_effort_values(acp_levels, source="peer")
 
 
 def update_reasoning_effort_values(acp_levels: list[str]) -> None:
     """Update valid effort levels from ACP session config.
 
     Preserves ACP order for display. The validation set grows monotonically —
-    it UNIONS the new levels onto the existing set (and the fallback) and never
-    shrinks, so a level that a prior session reported (and that a slot may have
-    persisted) stays valid even after another session reports a narrower config.
+    it UNIONS new levels onto the existing set (and the fallback) up to a named
+    total cap, and never shrinks. A retained level that a slot persisted stays
+    valid after another session reports a narrower config.
 
-    Sanitizes input: only lowercase alphanumeric strings pass through
+    Sanitizes input: only safe lowercase effort names pass through
     (defense-in-depth for subprocess boundary).
 
     Note: ``_reasoning_effort_ordered`` is a process-global *fallback* display
@@ -317,28 +397,97 @@ def update_reasoning_effort_values(acp_levels: list[str]) -> None:
     provider (see ``api_effort_levels``); this global is served only when no
     live provider is available.
     """
-    global _reasoning_effort_values, _reasoning_effort_ordered
-    safe_levels = [
-        level for level in acp_levels if isinstance(level, str) and _SAFE_EFFORT_RE.match(level)
-    ]
-    level_set = set(safe_levels)
-    # Union-only: never drop a previously-valid level (persistence safety).
-    merged = _reasoning_effort_values | set(_REASONING_EFFORT_FALLBACK) | level_set | {""}
-    ordered = [level for level in safe_levels if level]
-    if merged != _reasoning_effort_values or ordered != _reasoning_effort_ordered:
+    global _reasoning_effort_ordered
+    ordered = _retain_reasoning_effort_values(acp_levels, source="ACP")
+    if acp_levels and not ordered:
+        # Every advertised level was rejected at the cap. Keep the prior
+        # fallback menu instead of replacing it with an empty one.
+        return
+    if ordered != _reasoning_effort_ordered:
         logger.info("Effort levels updated from ACP: %s", ordered)
-        _reasoning_effort_values = merged
         _reasoning_effort_ordered = ordered
 
 
-def _validate_reasoning_effort(raw: object) -> str:
+def _remember_reasoning_effort_for_restore(level: str) -> None:
+    """Durably retain a selected ACP level before writing it to a transcript.
+
+    The transcript is agent-writable, so its value alone cannot expand the
+    restore allowlist. Each non-fallback level gets a separate owner-only marker
+    after ACP or a peer has validated it. Separate files avoid a lost update
+    when two slot-save workers select different levels concurrently.
+    """
+    if level in _REASONING_EFFORT_FALLBACK or level not in _reasoning_effort_values:
+        return
+    if not _SAFE_EFFORT_RE.fullmatch(level):
+        return
+    directory = config_dir() / _VALIDATED_EFFORT_DIR
+    if directory.parent.is_symlink():
+        raise OSError("validated effort parent is a symlink")
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if directory.is_symlink():
+        raise OSError("validated effort directory is a symlink")
+    path = _effort_marker_path(directory, level)
+    # Old raw-name markers remain readable after upgrade. Avoid creating a
+    # duplicate that would count twice against the durable bound.
+    lock_fd = os.open(directory / ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+    with os.fdopen(lock_fd, "r+b") as lock_file, file_lock(lock_file.fileno(), required=True):
+        if path.is_symlink():
+            raise OSError("validated effort marker is a symlink")
+        if not _has_validated_effort_marker(level):
+            max_markers = max(
+                0, MAX_RETAINED_REASONING_EFFORT_VALUES - len(_REASONING_EFFORT_FALLBACK)
+            )
+            markers = sum(
+                1
+                for entry in directory.iterdir()
+                if entry.name != ".lock" and not entry.is_symlink() and entry.is_file()
+            )
+            if markers >= max_markers:
+                raise ValueError("validated effort marker limit reached")
+            atomic_write(path, "", fsync=True, restrict_to_owner=True)
+    _reasoning_effort_marked.add(level)
+
+
+def _has_validated_effort_marker(raw: object) -> bool:
+    """Read a gateway-owned marker during the off-loop restore prefetch."""
+    if not isinstance(raw, str) or not _SAFE_EFFORT_RE.fullmatch(raw):
+        return False
+    directory = config_dir() / _VALIDATED_EFFORT_DIR
+    if directory.parent.is_symlink() or directory.is_symlink():
+        return False
+    for marker in (_effort_marker_path(directory, raw), directory / raw):
+        try:
+            if not marker.is_symlink() and marker.is_file():
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _validate_reasoning_effort(raw: object, *, persisted_marker: bool = False) -> str:
     """Return *raw* if it's a valid reasoning_effort string, else "".
 
     Used by the persistence restore paths so a tampered/corrupted
     metadata file cannot smuggle an arbitrary string into the CC
     ``--effort`` subprocess argument.
     """
+    global _reasoning_effort_values
     if isinstance(raw, str) and raw in _reasoning_effort_values:
+        if persisted_marker:
+            _reasoning_effort_marked.add(raw)
+        return raw
+    if persisted_marker and isinstance(raw, str) and _SAFE_EFFORT_RE.fullmatch(raw):
+        retained = set(_reasoning_effort_values)
+        if len(retained) >= MAX_RETAINED_REASONING_EFFORT_VALUES:
+            unselected = retained - _REASONING_EFFORT_FALLBACK - _reasoning_effort_marked
+            if unselected:
+                retained.remove(min(unselected))
+            else:
+                logger.warning("Discarding persisted reasoning_effort at retained limit: %r", raw)
+                return ""
+        retained.add(raw)
+        _reasoning_effort_values = retained
+        _reasoning_effort_marked.add(raw)
         return raw
     if raw:
         logger.warning("Discarding invalid persisted reasoning_effort: %r", raw)
@@ -535,7 +684,7 @@ def _prefetch_rehydrate_inputs(
     kiro_model_map: dict[str, str] | None = None,
     with_status: bool = False,
 ) -> tuple[
-    dict, bool, list[dict] | None, dict[str, str] | None, tuple[str, str] | None, str | None
+    dict, bool, list[dict] | None, dict[str, str] | None, tuple[str, str] | None, str | None, bool
 ]:
     """Read everything :func:`_rehydrate_slot_from_history` needs, off the loop.
 
@@ -553,7 +702,9 @@ def _prefetch_rehydrate_inputs(
     retries", and treating the second as the first is what silently discards a
     live tab.
 
-    Returns ``(meta, readable, messages, model_map, member_identity, agent)``.
+    Returns ``(meta, readable, messages, model_map, member_identity, agent,
+    effort_marker)``. The marker check is filesystem work too, so it belongs
+    in this prefetch rather than the loop-affine apply phase.
     *messages* and *model_map* are ``None`` when there is nothing to build — no
     metadata, an unreadable read, or a session closed with ✕ that the caller did
     not opt to adopt — so a caller can decide without a second disk round trip.
@@ -566,7 +717,7 @@ def _prefetch_rehydrate_inputs(
     else:
         meta, readable = conv_log.get_metadata(history_key), True
     if not readable or not meta or (meta.get("closed") and not adopt_closed):
-        return meta or {}, readable, None, None, None, None
+        return meta or {}, readable, None, None, None, None, False
     return (
         meta,
         readable,
@@ -576,6 +727,7 @@ def _prefetch_rehydrate_inputs(
         # property of the slot name.
         _member_restore_identity(history_key.removeprefix("dashboard:")),
         _restored_agent_name(str(meta.get("linked_session_key") or history_key), meta),
+        _has_validated_effort_marker(meta.get("reasoning_effort")),
     )
 
 
@@ -615,7 +767,7 @@ def _restore_open_slots_steps(state: DashboardState) -> "Iterator[int]":
             # These reads MUST stay inside the per-tab guard. The async driver
             # has no except at its call site either, so anything escaping here
             # aborts dashboard startup and costs every LATER tab too.
-            meta, readable, messages, model_map, member_identity, agent = (
+            meta, readable, messages, model_map, member_identity, agent, effort_marker = (
                 _prefetch_rehydrate_inputs(
                     state.conversation_log,
                     slot_transcript_key(key),
@@ -632,6 +784,7 @@ def _restore_open_slots_steps(state: DashboardState) -> "Iterator[int]":
                 model_map=model_map,
                 member_identity=member_identity,
                 agent=agent,
+                effort_marker=effort_marker,
                 unrestored=unrestored,
             )
         except Exception:
@@ -736,6 +889,7 @@ def _apply_restored_open_slot(
     unrestored: set[str],
     member_identity: tuple[str, str] | None = _IDENTITY_UNRESOLVED,
     agent: str | None = None,
+    effort_marker: bool = False,
     conv_log: ConversationLog | None = None,
     started: float | None = None,
 ) -> int:
@@ -801,6 +955,7 @@ def _apply_restored_open_slot(
         _prefetched_messages=messages,
         _prefetched_member_identity=member_identity,
         _prefetched_agent=agent,
+        _prefetched_effort_marker=effort_marker,
     )
     return 1 if slot is not None else 0
 
@@ -886,7 +1041,7 @@ async def restore_open_slots_async(state: DashboardState) -> int:
                 continue
             try:
                 started = time.time()
-                meta, readable, messages, model_map, member_identity, agent = (
+                meta, readable, messages, model_map, member_identity, agent, effort_marker = (
                     await asyncio.to_thread(
                         _prefetch_rehydrate_inputs,
                         conv_log,
@@ -904,6 +1059,7 @@ async def restore_open_slots_async(state: DashboardState) -> int:
                     model_map=model_map,
                     member_identity=member_identity,
                     agent=agent,
+                    effort_marker=effort_marker,
                     unrestored=unrestored,
                     # Opts into the post-hop re-checks (close tombstone +
                     # deletion): this driver's read ran in a worker thread, so
@@ -1339,6 +1495,7 @@ def _rehydrate_slot_from_history(
     _prefetched_messages: list[dict] | None = None,
     _prefetched_member_identity: tuple[str, str] | None = _IDENTITY_UNRESOLVED,
     _prefetched_agent: str | None = None,
+    _prefetched_effort_marker: bool = False,
 ) -> _ChatSlot | None:
     """Rehydrate a single dashboard slot from persisted history.
 
@@ -1514,7 +1671,9 @@ def _rehydrate_slot_from_history(
         # the slot on its persisted model -- the documented refusal -- and the owner
         # re-picks "Auto (Jev)" to route again.
         if meta.get("reasoning_effort"):
-            slot.reasoning_effort = _validate_reasoning_effort(meta["reasoning_effort"])
+            slot.reasoning_effort = _validate_reasoning_effort(
+                meta["reasoning_effort"], persisted_marker=_prefetched_effort_marker
+            )
         if meta.get("autocompact_pct") is not None:
             slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
         if meta.get("workspace"):
@@ -1892,12 +2051,14 @@ async def rehydrate_slot_from_history_async(
     conv_log = state.conversation_log
 
     started = time.time()
-    _meta, _readable, messages, model_map, _member_id, agent = await asyncio.to_thread(
-        _prefetch_rehydrate_inputs,
-        conv_log,
-        history_key,
-        adopt_closed=adopt_closed,
-        kiro_model_map=kiro_model_map,
+    _meta, _readable, messages, model_map, _member_id, agent, effort_marker = (
+        await asyncio.to_thread(
+            _prefetch_rehydrate_inputs,
+            conv_log,
+            history_key,
+            adopt_closed=adopt_closed,
+            kiro_model_map=kiro_model_map,
+        )
     )
     # ``messages is None`` covers both "never persisted" and "closed with ✕"
     # — the prefetch already applied the same guards the synchronous form does.
@@ -1971,6 +2132,7 @@ async def rehydrate_slot_from_history_async(
         _prefetched_messages=messages,
         _prefetched_member_identity=_member_id,
         _prefetched_agent=agent,
+        _prefetched_effort_marker=effort_marker,
     )
     if _restored is not None:
         # Claim recovery belongs HERE, not in each caller: this function is how
@@ -2016,14 +2178,14 @@ def _prefetch_recent_session(
     *,
     folders_only: bool,
     cutoff: float | None,
-) -> tuple[dict | None, list[dict] | None, tuple[str, str] | None, str | None]:
+) -> tuple[dict | None, list[dict] | None, tuple[str, str] | None, str | None, bool]:
     """Read one candidate session's metadata + transcript, off the loop.
 
     Applies the selection filters BETWEEN the two reads so a session that is
     going to be skipped never pays for its transcript walk — the metadata read is
     what the filters need, and it is the cheap one.
 
-    Returns ``(None, None, None, None)`` for a session this pass must skip (not
+    Returns ``(None, None, None, None, False)`` for a session this pass must skip (not
     folder'd / pinned under ``folders_only``, closed with ✕, or outside the
     mtime window). The third element is the prefetched
     ``_member_restore_identity`` answer — dm.json is file IO too, and the apply
@@ -2044,16 +2206,16 @@ def _prefetch_recent_session(
         # deleted. ``_rehydrate_slot_from_history`` already refuses on empty
         # metadata for exactly this reason ("don't create a phantom slot"); this
         # makes the recent-sessions path agree with it.
-        return None, None, None, None
+        return None, None, None, None, False
     has_folder = bool(meta.get("folder_id"))
     has_pin = bool(meta.get("pinned"))
     if folders_only and not has_folder and not has_pin:
-        return None, None, None, None
+        return None, None, None, None, False
     if meta.get("closed"):
-        return None, None, None, None
+        return None, None, None, None, False
     if not has_folder and not has_pin:
         if cutoff is not None and session.get("modified", 0) < cutoff:
-            return None, None, None, None
+            return None, None, None, None, False
     return (
         meta,
         conv_log.read_messages_chained(key),
@@ -2065,6 +2227,7 @@ def _prefetch_recent_session(
             ),
             meta,
         ),
+        _has_validated_effort_marker(meta.get("reasoning_effort")),
     )
 
 
@@ -2081,6 +2244,7 @@ def _apply_recent_session(
     restore_cfg: "KiroCrewConfig | None",
     member_identity: tuple[str, str] | None = _IDENTITY_UNRESOLVED,
     agent: str | None = None,
+    effort_marker: bool = False,
 ) -> None:
     """Build the slot for one prefetched recent session.
 
@@ -2168,7 +2332,9 @@ def _apply_recent_session(
     # `jev_route` is neither written nor read here, for the reason the rehydrate
     # path above states: it is an owner pick, and this file is agent-writable.
     if meta.get("reasoning_effort"):
-        slot.reasoning_effort = _validate_reasoning_effort(meta["reasoning_effort"])
+        slot.reasoning_effort = _validate_reasoning_effort(
+            meta["reasoning_effort"], persisted_marker=effort_marker
+        )
     if meta.get("autocompact_pct") is not None:
         slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
     if meta.get("workspace"):
@@ -2350,7 +2516,7 @@ def _restore_recent_sessions_steps(
         slot_name = _recent_session_slot_name(key)
         if slot_name is None or slot_name in state._slots:
             continue
-        meta, messages, _member_id, agent = _prefetch_recent_session(
+        meta, messages, _member_id, agent, effort_marker = _prefetch_recent_session(
             conv_log, key, s, folders_only=folders_only, cutoff=cutoff
         )
         if meta is None or messages is None:
@@ -2367,6 +2533,7 @@ def _restore_recent_sessions_steps(
             restore_cfg=_restore_cfg,
             member_identity=_member_id,
             agent=agent,
+            effort_marker=effort_marker,
         )
         restored += 1
         # Recover an app flag whose claim outlived its row, as the open-slots
@@ -2430,7 +2597,7 @@ async def restore_recent_sessions_async(
             if slot_name is None or slot_name in state._slots:
                 continue
             started = time.time()
-            meta, messages, _member_id, agent = await asyncio.to_thread(
+            meta, messages, _member_id, agent, effort_marker = await asyncio.to_thread(
                 _prefetch_recent_session,
                 conv_log,
                 key,
@@ -2500,6 +2667,7 @@ async def restore_recent_sessions_async(
                 restore_cfg=_restore_cfg,
                 member_identity=_member_id,
                 agent=agent,
+                effort_marker=effort_marker,
             )
             restored += 1
             # Same recovery, with the spool read awaited: this driver is
@@ -3668,6 +3836,8 @@ def _save_slot_to_history(
                 #   truthy, exactly like the full save (origin's fail-closed
                 #   sentinel and the once-flags must never be erased by a
                 #   writer that has not learned them).
+                if slot.reasoning_effort:
+                    _remember_reasoning_effort_for_restore(slot.reasoning_effort)
                 fields: dict = {
                     "folder_id": slot.folder_id or "",
                     "tags": list(slot.tags),
@@ -4110,6 +4280,7 @@ def _save_slot_to_history(
                 meta_line["agent"] = slot.agent
             meta_line["model"] = slot.model
             if slot.reasoning_effort:
+                _remember_reasoning_effort_for_restore(slot.reasoning_effort)
                 meta_line["reasoning_effort"] = slot.reasoning_effort
             # Unconditional, matching the empty-window merge mirror: None is
             # the cleared "follow the global" value, not an absent field.

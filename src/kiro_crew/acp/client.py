@@ -4125,6 +4125,33 @@ def resolve_pin_spelling(model_id: str, advertised: Sequence[str] | None) -> str
     return model_registry.preferred_advertised_spelling(folded)
 
 
+def catalog_row_would_drop(model_id: str, advertised: Sequence[str] | None) -> bool:
+    """True when the picker filter drops catalog row *model_id* against *advertised*.
+
+    The one keep/drop verdict the dashboard model picker applies to a
+    ``--list-models`` row, shared with the read-path revalidation that decides
+    whether a snapshot is worth probing, so the two cannot disagree about which
+    rows a snapshot hides. A row is KEPT when it is the ``auto`` sentinel
+    (``auto`` or ``default``), when *advertised* lists it
+    (:func:`model_is_unusable` is False — which includes an unknown/empty
+    advertised set), or when :func:`resolve_pin_spelling` folds it onto an
+    advertised spelling (a ``<namespace>::<bare-id>`` row the picker rewrites
+    to the bare id). Every other row — an empty id included — drops.
+
+    This is the per-row verdict only. The picker additionally de-duplicates
+    rows that resolve to one advertised spelling, and shows the whole catalog
+    when no non-``auto`` row survives against a set that does not advertise
+    ``auto`` (a namespace mismatch); those are decisions about the list, made
+    by the caller.
+    """
+    wanted = (model_id or "").strip().lower()
+    if wanted in ("auto", "default"):
+        return False
+    if not model_is_unusable(model_id or "", advertised):
+        return False
+    return not resolve_pin_spelling(model_id or "", advertised)
+
+
 def resolve_usable_model(preferred: str, advertised: Sequence[str] | None) -> str:
     """Resolve a SUBSTITUTE (non-explicit) model choice to what the account can
     run, mirroring the interactive path's reset-to-default (``_wire_model_id``).

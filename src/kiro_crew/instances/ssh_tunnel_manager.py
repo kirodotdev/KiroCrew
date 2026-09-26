@@ -211,6 +211,37 @@ _RECLAIM_POLL_INTERVAL_SECS = 0.05
 _RECLAIM_SIG_DOMAIN = b"kirocrew-forwarder-identity-v1"
 
 
+async def _read_capability_body(resp: Any) -> tuple[bool, Any]:
+    """Read and decode a peer capability reply body under the size cap.
+
+    Returns ``(True, payload)`` when the body is a JSON dict or list, else
+    ``(False, {"error", "code"})`` with ``capability_malformed_reply``.
+    """
+    chunks: list[bytes] = []
+    received = 0
+    async for chunk in resp.content.iter_chunked(65536):
+        received += len(chunk)
+        if received > _CAPABILITY_REPLY_MAX_BYTES:
+            return False, {
+                "error": "peer capability reply exceeds the size cap",
+                "code": "capability_malformed_reply",
+            }
+        chunks.append(chunk)
+    try:
+        payload = json.loads(b"".join(chunks))
+    except Exception:
+        return False, {
+            "error": "peer returned a malformed capability reply",
+            "code": "capability_malformed_reply",
+        }
+    if not isinstance(payload, (dict, list)):
+        return False, {
+            "error": "peer returned a malformed capability reply",
+            "code": "capability_malformed_reply",
+        }
+    return True, payload
+
+
 def _reclaim_identity_key() -> bytes | None:
     """Derive the forwarder-identity signing subkey, or ``None`` when absent.
 
@@ -3180,9 +3211,11 @@ class SshTunnelManager:
                     else "capability_no_credential"
                 ),
             }
-        # /api/models is the one read whose cold path runs bounded subprocess
-        # work on the peer (~15s worst case), so it gets its own budget; the
-        # four cheap reads keep the short one. See both constants for sizing.
+        # /api/models is the one read whose cold path runs bounded work on the
+        # peer (up to 5s sandbox-backend detection + up to 10s `kiro-cli chat
+        # --list-models` + up to 3s entitlement revalidation, ~18s worst case),
+        # so it gets its own budget; the four cheap reads keep the short one.
+        # See both constants for sizing.
         total = (
             _MODELS_CAPABILITY_PROXY_TIMEOUT if path == "/api/models" else _CAPABILITY_PROXY_TIMEOUT
         )
@@ -3219,38 +3252,29 @@ class SshTunnelManager:
                                 "error": f"peer does not serve {path}",
                                 "code": "capability_peer_too_old",
                             }
+                        if resp.status == 503 and path == "/api/models":
+                            # A healthy peer answers its models read with a
+                            # deliberate 503 while it revalidates the list. The
+                            # models read is the only path that answers this
+                            # deliberate 503, so only it gets the transient code
+                            # the caller re-polls through; any other 503 is a
+                            # refusal.
+                            body_ok, body = await _read_capability_body(resp)
+                            if (
+                                body_ok
+                                and isinstance(body, dict)
+                                and body.get("code") == "model_list_revalidating"
+                            ):
+                                return False, {
+                                    "error": "peer is revalidating its model list",
+                                    "code": "capability_peer_revalidating",
+                                }
                         if not 200 <= resp.status < 300:
                             return False, {
                                 "error": f"peer refused the read (HTTP {resp.status})",
                                 "code": "capability_peer_refused",
                             }
-                        chunks: list[bytes] = []
-                        received = 0
-                        oversized = False
-                        async for chunk in resp.content.iter_chunked(65536):
-                            received += len(chunk)
-                            if received > _CAPABILITY_REPLY_MAX_BYTES:
-                                oversized = True
-                                break
-                            chunks.append(chunk)
-                        if oversized:
-                            return False, {
-                                "error": "peer capability reply exceeds the size cap",
-                                "code": "capability_malformed_reply",
-                            }
-                        try:
-                            payload = json.loads(b"".join(chunks))
-                        except Exception:
-                            return False, {
-                                "error": "peer returned a malformed capability reply",
-                                "code": "capability_malformed_reply",
-                            }
-                        if not isinstance(payload, (dict, list)):
-                            return False, {
-                                "error": "peer returned a malformed capability reply",
-                                "code": "capability_malformed_reply",
-                            }
-                        return True, payload
+                        return await _read_capability_body(resp)
             except Exception as e:
                 logger.info(
                     "Peer capability read %s from %s failed (%s)",

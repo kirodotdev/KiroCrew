@@ -14,12 +14,6 @@ import type { KiroCrewAgent } from '../components/AgentSelector'
 import chatReducer from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
-import { api } from '../api/client'
-
-// The nested ReasoningEffortDropdown persists slider picks over the wire
-// (#5120); these tests never touch the slider, but the stub keeps an
-// accidental future interaction from hitting a real fetch.
-vi.spyOn(api, 'chatSlotReasoningEffort').mockResolvedValue({ ok: true } as never)
 
 /**
  * A dropdown's filter box is CHROME. Its placeholder ("Type to filter…") is
@@ -50,9 +44,6 @@ const baseProps = {
   filter: '',
   setFilter: vi.fn(),
   onClose: vi.fn(),
-  hasEffort: false,
-  slot: 'dashboard:1',
-  currentEffort: '',
   onListKeyDown: vi.fn(),
 }
 
@@ -62,9 +53,7 @@ const agents: KiroCrewAgent[] = [
 
 function wrap(ui: React.ReactElement) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  // The nested ReasoningEffortDropdown persists picks into the slot store
-  // (#5120), so the tree needs the redux context. A per-render store (not
-  // the app singleton) keeps one test's persist from leaking into the next.
+  // A per-render store keeps picker state from leaking between cases.
   const store = configureStore({
     reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer },
   })

@@ -1538,6 +1538,15 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # verb set plus a label built from a validate_name-checked pod name —
         # not agent-influenced. Same disposition as the systemctl wrapper.
         "pod/launchd.py::launchctl",
+        # Windows interpreter discovery for the worktree venv, the same class as
+        # platform_compat.py::find_python_interpreter above. Fixed argv: the `py`
+        # launcher plus `-<version>` and a literal `-I -X utf8 -c` probe that
+        # prints sys.executable. The only variable is the version string, which is
+        # this module's own "3.12" default or a caller-supplied literal -- never
+        # agent input -- and it is a later argv element, never the command. No
+        # shell, no cwd, bounded timeout, stderr discarded, and the result is used
+        # only after it is confirmed to name a real file.
+        "pod/provision.py::_find_python_via_launcher",
         "pod/provision.py::_run",
         "pod/runtime.py::_git_worktrees",
         "pod/runtime.py::_run",

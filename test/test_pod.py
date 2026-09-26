@@ -1967,6 +1967,71 @@ class TestProvisionBuildPaths:
         monkeypatch.setattr(prov.shutil, "which", lambda exe: "/opt/python3.12")
         assert prov._find_python() == "/opt/python3.12"
 
+    def _windows_without_versioned_exe(self, monkeypatch: pytest.MonkeyPatch, launcher: str | None):
+        """A Windows host as python.org leaves it: ``python.exe`` only, never a
+        ``python3.12.exe``, so the versioned name resolves to nothing."""
+        monkeypatch.setattr(prov.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(prov.Path, "exists", lambda self: False)
+        monkeypatch.setattr(prov.shutil, "which", lambda exe: launcher if exe == "py" else None)
+
+    def test_find_python_asks_the_py_launcher_on_windows(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        real = tmp_path / "Python312" / "python.exe"
+        real.parent.mkdir()
+        real.write_bytes(b"")
+        self._windows_without_versioned_exe(monkeypatch, r"C:\Windows\py.exe")
+        calls: list[list[str]] = []
+
+        def fake_check_output(cmd, **kwargs):
+            calls.append(cmd)
+            return f"{real}\n"
+
+        monkeypatch.setattr(prov.subprocess, "check_output", fake_check_output)
+        assert prov._find_python() == str(real)
+        # The launcher is asked for EXACTLY the wanted version: a host with
+        # several interpreters must not hand back whichever is the default.
+        assert calls[0][:2] == [r"C:\Windows\py.exe", "-3.12"]
+
+    def test_find_python_is_none_when_the_launcher_has_no_such_version(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._windows_without_versioned_exe(monkeypatch, r"C:\Windows\py.exe")
+
+        def no_such_version(cmd, **kwargs):
+            raise prov.subprocess.CalledProcessError(103, cmd)
+
+        monkeypatch.setattr(prov.subprocess, "check_output", no_such_version)
+        assert prov._find_python() is None
+
+    def test_find_python_is_none_when_the_launcher_names_a_missing_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._windows_without_versioned_exe(monkeypatch, r"C:\Windows\py.exe")
+        gone = tmp_path / "uninstalled" / "python.exe"
+        monkeypatch.setattr(prov.subprocess, "check_output", lambda cmd, **kw: f"{gone}\n")
+        assert prov._find_python() is None
+
+    def test_find_python_is_none_on_windows_without_a_launcher(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._windows_without_versioned_exe(monkeypatch, None)
+        monkeypatch.setattr(
+            prov.subprocess, "check_output", lambda *a, **k: pytest.fail("no launcher to run")
+        )
+        assert prov._find_python() is None
+
+    def test_find_python_never_runs_the_launcher_off_windows(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(prov.platform_compat, "IS_WINDOWS", False)
+        monkeypatch.setattr(prov.Path, "exists", lambda self: False)
+        monkeypatch.setattr(prov.shutil, "which", lambda exe: None)
+        monkeypatch.setattr(
+            prov.subprocess, "check_output", lambda *a, **k: pytest.fail("POSIX must not probe py")
+        )
+        assert prov._find_python() is None
+
 
 class TestProvisionDependencyInstall:
     """npm deps install before the dist build, and dev extras install in

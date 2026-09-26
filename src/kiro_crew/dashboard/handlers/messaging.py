@@ -2965,7 +2965,9 @@ async def api_send_message(request: web.Request) -> web.Response:
                     # clobbers the plan. _in_stage_execution closes it — same predicate
                     # the user-typed path uses (chat_handlers._api_chat).
                     if slot.running or slot._in_stage_execution:
-                        if len(slot._queue) >= 50:
+                        from kiro_crew.dashboard.slot_queue_repository import MAX_LIVE_QUEUE_ENTRIES
+
+                        if len(slot._queue) >= MAX_LIVE_QUEUE_ENTRIES:
                             evicted = slot.queue_pop(0)
                             logger.warning(
                                 "Queue full for slot %s — evicting oldest message", slot_key

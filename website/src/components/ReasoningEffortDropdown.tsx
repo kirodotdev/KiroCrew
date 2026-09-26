@@ -101,14 +101,20 @@ export default function ReasoningEffortDropdown({ slot, currentEffort, defaultEf
   // pre-pick value. performSlotSwitch serializes per slot+field and writes
   // exactly the adjudicated survivor of a burst of picks.
   const dispatch = useAppDispatch()
-  const persistEffort = useCallback((level: string) =>
-    performSlotSwitch('reasoning_effort', slot, level,
+  const persistEffort = useCallback((level: string) => {
+    let normalizedModel: string | undefined
+    return performSlotSwitch('reasoning_effort', slot, level,
       async () => {
         const r = await api.chatSlotReasoningEffort(slot, level)
+        normalizedModel = r?.model
         return r?.reasoning_effort ?? level
       },
-      (value) => dispatch(updateSlot({ key: slot, reasoning_effort: value }))),
-  [slot, dispatch])
+      (value) => dispatch(updateSlot({
+        key: slot,
+        reasoning_effort: value,
+        ...(normalizedModel ? { model: normalizedModel } : {}),
+      })))
+  }, [slot, dispatch])
 
   const announcePersistFailure = useCallback((error: unknown, failedLevel: string) => {
     // A superseded request may still reject after a newer pick was staged or
@@ -188,7 +194,7 @@ export default function ReasoningEffortDropdown({ slot, currentEffort, defaultEf
     : i18nT('components.reasoningEffortDropdown.use_model_default')
 
   return (
-    <div className={embedded ? 'px-3 py-2.5' : 'rounded-lg bg-bg-elevated border border-border px-4 py-3.5 w-[240px]'}>
+    <div className={embedded ? 'px-3 py-2.5' : 'rounded-lg bg-bg-elevated border border-border px-4 py-3.5 w-[240px] max-w-[calc(100vw-16px)]'}>
       <div className={`flex items-center gap-1.5 ${defaultIdx >= 0 ? 'mb-5' : 'mb-3'}`}>
         <span className="text-[14px] font-medium text-muted uppercase tracking-[.04em] leading-none">{i18nT('components.reasoningEffortDropdown.effort')}</span>
         <span className="relative inline-flex items-center overflow-hidden leading-none" style={{ height: '1.5em' }}>

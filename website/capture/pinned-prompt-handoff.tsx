@@ -183,11 +183,18 @@ function PinnedHost() {
               key={idx}
               data-display-index={idx}
               className="px-4 mx-auto w-full py-1"
+              // The literal host rule: mark and hide the row the banner is standing
+              // in for, by message IDENTITY (ts), so the bubble appears to stop
+              // travelling and stick rather than being replaced. The marker lets
+              // index.css re-show the row's action strip under the card — its
+              // value is `folding` while the hook reports that strip still
+              // uncovered (some of it below the card's resting bottom, on screen)
+              // and empty once it has slid under the card.
+              data-pinned-standin={pinned && pinned.ts != null && msg.ts === pinned.ts
+                ? (pinned.stripUncovered ? 'folding' : '')
+                : undefined}
               style={{
                 maxWidth: 'var(--mc-content-width, 900px)',
-                // The literal host rule: hide the row the banner is standing in
-                // for, by message IDENTITY (ts), so the bubble appears to stop
-                // travelling and stick rather than being replaced.
                 visibility: pinned && pinned.ts != null && msg.ts === pinned.ts ? 'hidden' : undefined,
               }}
             >

@@ -1954,10 +1954,21 @@ def serialize_wire_content(content: Any) -> str:
 
 
 def _remove_queued_by_id(messages: list[dict], queue_id: str) -> bool:
-    """Remove a 'queued' placeholder by queue_id stored in cls JSON."""
+    """Remove a 'queued' placeholder by its queue id.
+
+    Two spellings, matching the two twin shapes: the cron twin stores
+    ``queue_id`` in a JSON ``cls``, while the app twin wears a plain CSS
+    ``cls`` and carries ``queueId`` in ``meta`` (the hydration spelling) —
+    a cls-only match leaves an unreapable ghost row for every app message
+    queued behind a live turn.
+    """
     for i, m in enumerate(messages):
         if m.get("role") != "queued":
             continue
+        meta = m.get("meta")
+        if isinstance(meta, dict) and meta.get("queueId") == queue_id:
+            del messages[i]
+            return True
         try:
             cls = json.loads(m.get("cls", "{}"))
             if cls.get("queue_id") == queue_id:
@@ -3306,6 +3317,19 @@ SESSION_START_FAILED_KIND = "session_start_failed"
 #: text will not have the kind tag and will correctly classify as plain input.
 SUBAGENT_COMPLETION_KIND = "subagent_completion"
 CRON_NOTIFICATION_KIND = "cron_notification"
+#: An embedded MCP App's ui/message delivery (SEP-1865 return channel) — see
+#: ``dashboard.handlers.mcp_apps.api_mcp_apps_message``. System injection like
+#: the two above: app-authored, never user speech, must break user-message
+#: merges (folding it into a merged user turn would flip server-authored text
+#: into user-authored, persisted, channel-mirrored history).
+MCP_APP_MESSAGE_KIND = "mcp_app_message"
+
+#: Provenance banner wrapped around every app-originated message. Structural
+#: classification is by the queue entry's ``kind`` tag (unforgeable, set at
+#: enqueue time); the banner exists for the MODEL and the transcript reader,
+#: so the turn's text says who authored it. Mirrors ``CRON_NOTIFY_PREFIX``.
+APP_MESSAGE_PREFIX = "[MCP app message from "
+APP_MESSAGE_END = "[End of MCP app message]"
 
 #: Queue-entry kinds whose turns must settle before an Autopilot stage advances.
 STAGE_DELIVERY_KINDS = frozenset((SUBAGENT_COMPLETION_KIND, SYNTHETIC_RECOVERY_KIND))
@@ -3325,8 +3349,22 @@ def owned_stage_delivery_entry(boundary: Any, entries: list[dict]) -> dict | Non
 
 #: All system-injection kinds (for set-membership checks).
 _SYSTEM_INJECTION_KINDS = STAGE_DELIVERY_KINDS | frozenset(
-    (CRON_NOTIFICATION_KIND, FALSE_TOOL_BLOCKER_REPLAY_KIND)
+    (CRON_NOTIFICATION_KIND, MCP_APP_MESSAGE_KIND, FALSE_TOOL_BLOCKER_REPLAY_KIND)
 )
+
+
+def app_inject_row(label: str) -> tuple[str, str, dict]:
+    """The ONE builder for an app-delivery transcript row.
+
+    Both delivery paths (direct dispatch in ``handlers/mcp_apps.py`` and the
+    queue drain in ``chat_runner.py``) call this, so the row cannot diverge
+    between them. ``cls`` is a plain CSS class — NEVER a JSON payload: a JSON
+    ``cls`` makes ``_prepare_messages`` replace the stored meta with the
+    cls-derived dict on the HTTP rebuild path, silently dropping
+    ``injectKind`` and with it the row's collapse/fold exemptions. The label
+    travels in ``meta`` only, and is never re-derived from the banner text.
+    """
+    return "inject", "msg msg-inject", {"injectKind": "mcp_app", "appLabel": label}
 
 
 def is_synthetic_recovery_item(item: dict) -> bool:
@@ -3377,10 +3415,17 @@ def is_synthetic_payload_item(item: dict) -> bool:
     errors are not symmetric: mirroring runner text as if the user typed it
     misattributes machine orchestration, while suppressing a mirror only loses an
     echo of something the user can already see.
+
+    An MCP-App message entry (``MCP_APP_MESSAGE_KIND``) is synthetic by the same
+    asymmetry: its text is app-authored (server-authored), so mirroring it to a
+    linked channel as the human's own words would attribute machine speech to a
+    person.
     """
     payload = item.get("payload")
     if payload:
         return payload == RecoveryPayload.CONTINUATION
+    if item.get("kind") == MCP_APP_MESSAGE_KIND:
+        return True
     return is_synthetic_recovery_item(item)
 
 

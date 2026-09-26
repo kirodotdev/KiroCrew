@@ -729,6 +729,39 @@ Step 4 (`set_model`) is **conditional**: only sent when `model` is explicitly
 set (i.e., for the default kirocrew agent).  Custom agents skip this so
 kiro-cli uses the model from their own agent config file.
 
+**Advertised models and read-path revalidation.** Each `AcpSessionHandle` keeps
+the `availableModels` its own `session/new` answered as `available_models()`.
+That answer is captured once, and a lookup racing a token refresh can return the
+free tier. Two paths heal it through the runtime's `probe_advertised_models`,
+which opens a throwaway minimal session (no MCP servers, no mode) on the same
+process and ends it before returning: `refresh_available_models` before an
+explicit `set_model` pick is refused, and `maybe_refresh_available_models(catalog_ids)`
+on the model-picker read path. The read-path call probes only when the snapshot
+would drop a catalog row by `catalog_row_would_drop` (the dashboard filter's own
+per-row verdict, skipping the case where that filter fails open to the full
+catalog) and the snapshot is suspect -- never probe-confirmed, captured within
+`_READ_PATH_SPAWN_RACE_SECS` of spawn, or `auto`-only -- and a confirmed snapshot
+probed within `_READ_PATH_REPROBE_MIN_INTERVAL_SECS` is trusted. The probe is one
+shielded task per handle under `_READ_PATH_PROBE_DEADLINE_SECS`; a deadline miss
+raises `EntitlementRevalidating` (the endpoint answers `503
+model_list_revalidating`) while the task keeps running, a later read awaits the
+same task, and a probe failure returns the current snapshot unchanged.
+
+`probe_advertised_models` is single-flight with two independent clocks, both
+`_ENTITLEMENT_PROBE_TTL_SECS`: a non-empty success replays on its result clock,
+and an empty or failed attempt replays as `[]` (no evidence) on its attempt
+clock, so a failure never revives an expired success and a burst of reads costs
+one round-trip. `force=True` -- passed by an explicit `set_model` pick and the
+spawn-time pin check -- skips only the attempt-clock replay, so a user action
+always earns a fresh probe; the read path leaves it `False`. Either replay is
+served only if its clock is at least as new as the snapshot the caller holds
+(`not_before`): a cached broader answer can never replace a session's newer
+narrower one, and a failed attempt that predates the snapshot never stands in
+for the probe it has yet to receive. The handle dates the snapshot it stores by
+the answer's own clock (`entitlement_probe_result_at`), not by its call time, so
+its floor never rises above the data it holds and a replayed answer is never
+re-dated out of the spawn-race window it was captured in.
+
 Step 5 drains MCP server init notifications (both after `session/load` and
 `session/new` — loading a session triggers MCP re-initialization).
 

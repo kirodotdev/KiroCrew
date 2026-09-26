@@ -2893,7 +2893,8 @@ const cleanUrl = (url: string) => url.replace(/[\x00-\x1f\x7f]/g, '').trim().toL
  * Matching is case-insensitive because hast camelCases some property names
  * (`viewBox`, `colSpan`, `ariaHidden`, `data-*` → `dataSourcepos`); we always
  * compare on the lowercased key. `aria*`/`data*` prefixes are allowed wholesale
- * (inert, a11y/metadata only).
+ * (inert, a11y/metadata only) — except the transcript's own `data-message-*`
+ * hooks, which are reserved (see isAllowedAttr).
  */
 const GLOBAL_ATTRS = new Set([
   'classname', 'class', 'id', 'title', 'dir', 'lang', 'role', 'align',
@@ -2932,6 +2933,20 @@ const SVG_ATTRS = new Set([
 /** True when `key` is a permitted attribute for element `tag` (both lowercased). */
 function isAllowedAttr(tag: string, key: string): boolean {
   const k = key.toLowerCase()
+  // `data-message-*` is reserved for the transcript's own UI hooks — the
+  // `data-message-actions` strip, `data-message-edit` pencil and
+  // `data-message-editing` root that UserMessage renders AROUND a message, never
+  // inside one. usePinnedPrompt measures the strip's rect and reads the editing
+  // marker off the row it is about to hide, and index.css re-shows
+  // `[data-message-actions]` inside that hidden row; a body that could mint one
+  // of them (a prompt typed, or relayed from a connected channel) would be
+  // measured as the strip, drop the banner for its whole scroll region, or paint
+  // itself visible inside the hidden row. Same reservation rehypeMarkFencedCode
+  // makes for `data-fenced`, and for the same reason by NORMALIZED key: the HTML
+  // parser lowercases attribute names and hast camelCases `data-*`, so
+  // `data-message-edit`, `data-Message-Edit` and `dataMessageEdit` all reach
+  // here as some casing of `datamessageedit`. Every other `data-*` stays admitted.
+  if (k.replace(/-/g, '').startsWith('datamessage')) return false
   if (k.startsWith('aria') || k.startsWith('data')) return true
   if (GLOBAL_ATTRS.has(k)) return true
   if (TAG_ATTRS[tag]?.has(k)) return true

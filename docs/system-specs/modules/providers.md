@@ -353,6 +353,7 @@ harness can get wrong:
 | `context_usage_pct`, `context_usage_unknown`, `context_window_tokens`, `context_used_tokens` | The context meter. `context_usage_unknown` is what distinguishes "0%" from "not measured". |
 | `session_id`, `cleanup_session`, `cwd` | Session identity and cleanup routing; a wrong `cwd` persists the wrong workspace on resume. |
 | `served_model`, `available_models` | The model actually served, which can differ from the id Crew stored. |
+| `maybe_refresh_available_models(catalog_ids)` | Revalidate the advertised snapshot before the model picker narrows the catalog with it. The default returns the current snapshot unchanged; ACP kiro sessions re-probe a suspect snapshot that would hide a row and raise `EntitlementRevalidating` on a deadline miss; `AcpProvider` forwards to its inner provider. See [model-selection](../common/model-selection.md). |
 | `steer` / `supports_steer` / `last_steer_monotonic` | The steer extension. Non-implementers answer `-32601`, so `supports_steer` must be honest. |
 | `has_active_turn`, `has_unfinished_turn`, `wait_turn_done` | Turn-state probes the session layer reads before reusing a process. |
 | `is_session_sharing_eligible` | Whether one process may host multiplexed sessions. |

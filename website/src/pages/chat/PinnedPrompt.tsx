@@ -117,11 +117,14 @@ const THUMB_FRAME = 'bg-muted forced-colors:border'
  * cap (so both follow Settings → Chat → Content Width, #8398), `px-4 py-2
  * rounded-xl bg-card text-sm` with an inner `my-1 leading-6` paragraph —
  * because the transcript row it represents is hidden while it is pinned (see
- * ChatPage's row `visibility`). For a one-line prompt the two are the same size
- * at the same place at the moment of hand-off, so the bubble appears to stop
- * travelling and stick rather than being replaced. A taller prompt hands over
- * once its bottom edge reaches the band's bottom (`pinHandoffY`), i.e. once it is
- * completely covered by the band, so the swap still happens out of sight. The
+ * ChatPage's row `visibility`; the row's action strip beneath the bubble is
+ * re-shown in place by index.css's `[data-pinned-standin]` rule, since this card
+ * copies the bubble and nothing below it). For a one-line prompt the two are the
+ * same size at the same place at the moment of hand-off, so the bubble appears to
+ * stop travelling and stick rather than being replaced. A taller prompt hands
+ * over at the same line — its row top on the fold (`pinHandoffY`) — and the card
+ * then folds down the bubble's remaining height (`liveH`), so the swap is still a
+ * box replaced by an identical box. The
  * box also carries the bubble's `user-bubble` theme hook, so a theme that tints
  * the bubble (kiro-light) tints the card identically and the swap stays
  * invisible there too. Keep

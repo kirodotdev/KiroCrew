@@ -6,7 +6,7 @@ import { api } from '../api/client'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-import { filterInteractiveModels, normalizeHiddenModels, useModelPickerConfigured, useModelPickerHiddenModelsQuery } from '../hooks/useInteractiveModels'
+import { filterInteractiveModels, legacyCodexEffort, normalizeHiddenModels, shouldSeparateModelEffort, switchGroupedModel, useModelPickerConfigured, useModelPickerHiddenModelsQuery } from '../hooks/useInteractiveModels'
 
 const MODELS = [
   { name: 'auto', description: '' },
@@ -64,6 +64,67 @@ describe('interactive model visibility', () => {
   it('filters hidden models but always keeps auto and the active model', () => {
     expect(filterInteractiveModels(MODELS, ['auto', 'model-a', 'model-b'], ['model-b']).map(model => model.name))
       .toEqual(['auto', 'model-b'])
+  })
+
+  it('offers one Codex model row per base model when effort variants are advertised', () => {
+    const codexModels = [
+      { name: 'gpt-6-sol[low]', description: 'Fast' },
+      { name: 'gpt-6-sol[medium]', description: 'Balanced' },
+      { name: 'gpt-6-sol[high]', description: 'Deep' },
+      { name: 'gpt-6-astra[max]', description: 'Flagship' },
+      { name: 'claude-opus-4.8[1m]', description: 'Long context' },
+    ]
+    expect(filterInteractiveModels(codexModels, [], [], true).map(model => model.name))
+      .toEqual(['gpt-6-sol', 'gpt-6-astra', 'claude-opus-4.8[1m]'])
+  })
+
+  it('uses an advertised base model for its own description and price', () => {
+    const models = [
+      { name: 'gpt-6-sol[low]', description: 'Low effort', rateMultiplier: 0.5 },
+      { name: 'gpt-6-sol', description: 'Workhorse model', rateMultiplier: 1 },
+    ]
+    expect(filterInteractiveModels(models, [], [], true)).toEqual([
+      { name: 'gpt-6-sol', description: 'Workhorse model', rateMultiplier: 1 },
+    ])
+  })
+
+  it('keeps a description shared by all effort variants without a base row', () => {
+    const models = [
+      { name: 'gpt-6-astra[medium]', description: 'Frontier reasoning', rateMultiplier: 1.5 },
+      { name: 'gpt-6-astra[high]', description: 'Frontier reasoning', rateMultiplier: 2 },
+      { name: 'gpt-6-sol[low]', description: 'Fast responses' },
+      { name: 'gpt-6-sol[high]', description: 'Deep reasoning' },
+    ]
+    expect(filterInteractiveModels(models, [], [], true)).toEqual([
+      { name: 'gpt-6-astra', description: 'Frontier reasoning', rateMultiplier: undefined },
+      { name: 'gpt-6-sol', description: '', rateMultiplier: undefined },
+    ])
+  })
+
+  it('separates effort only when the capability response says IDs encode effort', () => {
+    const pairModels = [{ name: 'gpt-6-sol[medium]' }]
+    expect(shouldSeparateModelEffort(true, pairModels)).toBe(true)
+    expect(shouldSeparateModelEffort(false, pairModels)).toBe(false)
+    expect(shouldSeparateModelEffort(undefined, pairModels)).toBe(false)
+    expect(shouldSeparateModelEffort(true, [{ name: 'auto' }])).toBe(false)
+  })
+
+  it('preserves a legacy Codex pair level only until separate effort is set', () => {
+    expect(legacyCodexEffort('gpt-6-sol[max]', '', true)).toBe('max')
+    expect(legacyCodexEffort('gpt-6-sol[max]', 'high', true)).toBe('')
+    expect(legacyCodexEffort('gpt-6-sol[max]', '', false)).toBe('')
+    expect(legacyCodexEffort('claude-opus-4.8[1m]', '', true)).toBe('')
+  })
+
+  it('commits a legacy effort before switching the grouped model', async () => {
+    const calls: string[] = []
+    await switchGroupedModel('max', async level => { calls.push(`effort:${level}`) }, async () => { calls.push('model') })
+    expect(calls).toEqual(['effort:max', 'model'])
+
+    const failingModel = vi.fn()
+    await expect(switchGroupedModel('max', async () => { throw new Error('effort refused') }, failingModel))
+      .rejects.toThrow('effort refused')
+    expect(failingModel).not.toHaveBeenCalled()
   })
 
   it('trims, deduplicates, and ignores invalid config entries', () => {

@@ -44,6 +44,8 @@ if TYPE_CHECKING:
     from kiro_crew.agent_sdk.context import ContextPromptProvider
 
 __all__ = [
+    "EntitlementRevalidating",
+    "catalog_row_would_drop",
     "context_provider_of",
     "projected_session_mcp_servers",
     "agent_spec_mcp_refs",
@@ -61,6 +63,25 @@ __all__ = [
     "skill_view_alias_census",
     "skill_view_sidecar_dirs",
 ]
+
+
+class EntitlementRevalidating(Exception):
+    """Signal: a read-path entitlement revalidation is in flight, not yet landed.
+
+    Raised by the ACP session handle's ``maybe_refresh_available_models`` when
+    its single-flight probe does not finish within the read deadline. The
+    model-list endpoint turns this into its degraded (503) response so the
+    frontend keeps its last-good list and polls again, rather than caching the
+    un-revalidated snapshot as a live answer that no later poll would ever
+    correct. Not an error condition: the probe is still running and the next
+    read serves its result. A probe that FAILS is caught and fails open (current
+    snapshot), never surfaced as this.
+
+    Defined on the SDK surface, not in the ACP layer, because the endpoint that
+    catches it is application code: an ``except`` clause needs the class bound at
+    module level, and the agent-sdk-boundary gate refuses application code a new
+    ACP-layer import. The ACP driver raises it from here.
+    """
 
 
 def finish_suspended_spawn(process: object, pid: int, *, label: str) -> bool:
@@ -104,6 +125,22 @@ def resolve_pin_spelling(model_id: str, advertised: object) -> str:
     reason as every other runtime-machinery import in this module.
     """
     from kiro_crew.acp.client import resolve_pin_spelling as _impl
+
+    return _impl(model_id, advertised)  # type: ignore[arg-type]
+
+
+def catalog_row_would_drop(model_id: str, advertised: object) -> bool:
+    """Whether the entitlement filter drops catalog row *model_id* against
+    *advertised*.
+
+    Thin delegation to :func:`kiro_crew.acp.client.catalog_row_would_drop`, the
+    single keep/drop verdict shared by the model-list endpoint and the ACP
+    read-path revalidation trigger, so the endpoint reaches it through the SDK
+    surface instead of importing the ACP layer (the agent-sdk-boundary gate
+    refuses a new edge). Plain data in, a bool out. Function-local import for
+    the same reason as :func:`resolve_pin_spelling`.
+    """
+    from kiro_crew.acp.client import catalog_row_would_drop as _impl
 
     return _impl(model_id, advertised)  # type: ignore[arg-type]
 

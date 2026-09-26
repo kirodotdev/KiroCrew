@@ -11,16 +11,25 @@ export type { RemoteCrewCapabilities }
  *  still warming, and one request every 8s is cheap next to the open tunnel. */
 export const CAPABILITY_REPOLL_MS = 8_000
 
+/** Per-field codes a re-read can improve on; see `capabilityDocIsRetriablePartial`. */
+const RETRIABLE_CAPABILITY_CODES: ReadonlySet<string> = new Set([
+  'capability_unreachable',
+  'capability_peer_revalidating',
+])
+
 /**
  * True when *caps* is a partial document worth re-reading: a version-compatible
- * peer answered, but at least one field timed out in transit
- * (`capability_unreachable`) — the transient shape a cold peer produces while
- * its model list is still being discovered.
+ * peer answered, but at least one field is transient — it timed out in transit
+ * (`capability_unreachable`), the shape a cold peer produces while its model
+ * list is still being discovered, or the peer's models read is momentarily
+ * revalidating its entitlement snapshot (`capability_peer_revalidating`), a
+ * deliberate 503 that clears on the next read.
  *
  * Deliberately narrow. A version-skewed peer is not polled (the session cannot
  * dispatch to it anyway, so a fresher roster changes nothing), and neither is a
  * peer that answered with a terminal per-field code: `capability_peer_too_old`
- * needs an upgrade, not a retry, and `capability_peer_not_connected` /
+ * needs an upgrade, not a retry, `capability_peer_refused` is a refusal a
+ * re-read will not change, and `capability_peer_not_connected` /
  * `capability_no_credential` mean the tunnel itself is down — hammering it
  * would just delay the honest "crew unreachable" state.
  */
@@ -28,7 +37,7 @@ export function capabilityDocIsRetriablePartial(
   caps: RemoteCrewCapabilities | undefined,
 ): boolean {
   if (!caps || !caps.version_match) return false
-  return Object.values(caps.unavailable ?? {}).includes('capability_unreachable')
+  return Object.values(caps.unavailable ?? {}).some(code => RETRIABLE_CAPABILITY_CODES.has(code))
 }
 
 /**

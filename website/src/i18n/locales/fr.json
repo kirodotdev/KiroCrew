@@ -9033,6 +9033,11 @@
       "unexpected_response": "Réponse inattendue",
       "deploy_failed": "Échec du déploiement",
       "stale_preview_retry": "L’application a changé depuis la vérification — réessaie."
+    },
+    "mcpApp": {
+      "from_app": "Envoyé par l'application {{app}}",
+      "delivery_failed": "Impossible de transmettre ton message — réessaie.",
+      "from_app_tooltip": "Cette app a publié un message dans la discussion — Kiro le traite comme les mots de l'app, pas les tiens"
     }
   },
   "hooks": {
@@ -10907,6 +10912,7 @@
       "could_not_start_a_new_session": "Impossible de démarrer une nouvelle session",
       "could_not_start_session_message_restored": "Impossible de démarrer une nouvelle session : {{error}}. Ton message a été restauré — envoie-le à nouveau pour réessayer.",
       "enter_split_view": "Passer en vue divisée",
+      "effort_options_unavailable": "Impossible de vérifier les options d’effort de raisonnement de cette session. Le réglage de l’effort restera indisponible jusqu’au rétablissement de la connexion.",
       "esc_to_dismiss": "Esc pour ignorer",
       "expand_knowledge_context": "Développer le contexte de connaissances",
       "failed_to_apply_plan": "Échec de l'application du plan",

@@ -1416,6 +1416,90 @@ class TestRemotePickApplication:
         assert state.conversation_log.get_metadata("dashboard:chat-1").get(control) == value
 
     @pytest.mark.asyncio
+    async def test_remote_dynamic_effort_pick_survives_cold_restore(
+        self, tmp_path, monkeypatch, forward
+    ):
+        from kiro_crew.dashboard import chat_persistence
+        from kiro_crew.dashboard.chat_handlers import _apply_remote_pick
+
+        monkeypatch.setattr(chat_persistence, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            chat_persistence,
+            "_reasoning_effort_values",
+            set(chat_persistence._REASONING_EFFORT_FALLBACK),
+        )
+        monkeypatch.setattr(chat_persistence, "_reasoning_effort_marked", set())
+        chat_persistence.register_reasoning_effort_values(["minimal"])
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("chat-1")
+        slot.executor = "remote"
+        slot.instance_id = "nobita"
+        slot.remote_slot = "peer-chat-9"
+
+        response = await _apply_remote_pick(
+            _owner_request(state), state, slot, "reasoning_effort", {"reasoning_effort": "minimal"}
+        )
+
+        assert response.status == 200
+        assert (
+            state.conversation_log.get_metadata("dashboard:chat-1")["reasoning_effort"] == "minimal"
+        )
+        assert chat_persistence._has_validated_effort_marker("minimal")
+        chat_persistence._reasoning_effort_values = set(chat_persistence._REASONING_EFFORT_FALLBACK)
+        assert (
+            chat_persistence._validate_reasoning_effort("minimal", persisted_marker=True)
+            == "minimal"
+        )
+
+    @pytest.mark.asyncio
+    async def test_marker_failure_refuses_remote_pick_before_forward(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard import chat_handlers
+
+        forward = AsyncMock(return_value={"ok": True, "reasoning_effort": "minimal"})
+        monkeypatch.setattr(chat_handlers, "forward_peer_selection", forward)
+        monkeypatch.setattr(
+            chat_handlers,
+            "_remember_reasoning_effort_for_restore",
+            MagicMock(side_effect=ValueError("validated effort marker limit reached")),
+        )
+        state = _make_state(tmp_path)
+        slot = _remote_slot()
+
+        response = await chat_handlers._apply_remote_pick(
+            _owner_request(state), state, slot, "reasoning_effort", {"reasoning_effort": "minimal"}
+        )
+
+        assert response.status == 503
+        assert json.loads(response.body.decode())["code"] == "effort_marker_unavailable"
+        forward.assert_not_awaited()
+        assert slot.reasoning_effort == ""
+
+    @pytest.mark.asyncio
+    async def test_remote_effort_pick_mirrors_normalized_codex_model(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.chat_handlers import _apply_remote_pick
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.forward_peer_selection",
+            AsyncMock(return_value={"ok": True, "reasoning_effort": "", "model": "gpt-6-sol"}),
+        )
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("chat-1")
+        slot.executor = "remote"
+        slot.instance_id = "nobita"
+        slot.remote_slot = "peer-chat-9"
+        slot.model = "gpt-6-sol[max]"
+
+        response = await _apply_remote_pick(
+            _owner_request(state), state, slot, "reasoning_effort", {"reasoning_effort": ""}
+        )
+
+        assert response.status == 200
+        assert slot.model == "gpt-6-sol"
+        metadata = state.conversation_log.get_metadata("dashboard:chat-1")
+        assert metadata["reasoning_effort"] == ""
+        assert metadata["model"] == "gpt-6-sol"
+
+    @pytest.mark.asyncio
     async def test_a_refused_pick_persists_nothing(self, tmp_path, monkeypatch):
         """The write is downstream of the peer's acceptance, like the mirror."""
         from kiro_crew.dashboard.chat_handlers import _apply_remote_pick

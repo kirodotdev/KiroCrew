@@ -166,11 +166,27 @@ class TestPayloadShapes:
 
     async def test_effort_levels_keep_only_strings(self, monkeypatch):
         _enable_instances(monkeypatch)
-        state = _state(_all_ok(**{"/api/effort-levels": (True, ["low", 7, None, "high"])}))
+        register_levels = MagicMock(side_effect=lambda values: values)
+        monkeypatch.setattr(hi, "register_reasoning_effort_values", register_levels)
+        state = _state(_all_ok(**{"/api/effort-levels": (True, ["low", 7, None, "high", "HIGH"])}))
 
         data = await _body(await hi.api_instances_capabilities(_request(state)))
 
         assert data["effort_levels"] == ["low", "high"]
+        register_levels.assert_called_once_with(["low", "high"])
+
+    async def test_presession_effort_levels_use_the_live_cap(self, monkeypatch, caplog):
+        _enable_instances(monkeypatch)
+        levels = [f"level{i:02d}" for i in range(33)]
+        register_levels = MagicMock(side_effect=lambda values: values)
+        monkeypatch.setattr(hi, "register_reasoning_effort_values", register_levels)
+        state = _state(_all_ok(**{"/api/effort-levels": (True, [None] * 32 + levels)}))
+
+        data = await _body(await hi.api_instances_capabilities(_request(state)))
+
+        assert data["effort_levels"] == levels[:32]
+        register_levels.assert_called_once_with(levels[:32])
+        assert "Dropped 1 peer pre-session effort capability level" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -184,6 +200,26 @@ class TestVersionGate:
         assert data["version"] == kiro_crew.__version__
         assert data["local_version"] == kiro_crew.__version__
         assert data["version_match"] is True
+
+    async def test_patch_compatible_peer_registers_advertised_effort(self, monkeypatch):
+        _enable_instances(monkeypatch)
+        monkeypatch.setattr(kiro_crew, "__version__", "0.8.0")
+        register_levels = MagicMock(side_effect=lambda values: values)
+        monkeypatch.setattr(hi, "register_reasoning_effort_values", register_levels)
+        state = _state(
+            _all_ok(
+                **{
+                    "/api/version": (True, {"version": "0.8.7"}),
+                    "/api/effort-levels": (True, ["minimal"]),
+                }
+            )
+        )
+
+        data = await _body(await hi.api_instances_capabilities(_request(state)))
+
+        assert data["version_match"] is True
+        assert data["effort_levels"] == ["minimal"]
+        register_levels.assert_called_once_with(["minimal"])
 
     async def test_a_skewed_peer_reports_no_match(self, monkeypatch):
         """Surfaced BEFORE the first send, which is the point of shipping it.
@@ -469,21 +505,33 @@ class TestPeerCapabilityCarrier:
     async def test_the_models_read_gets_the_long_cold_path_budget(self, monkeypatch):
         """`/api/models` runs under the 20s budget, not the shared 8s one.
 
-        The peer's cold model discovery is itself bounded at ~15s (sandbox
-        detection + `kiro-cli chat --list-models`); an 8s client budget kills
-        every cold read and reports a healthy peer as unreachable, which reads
-        as an empty remote model picker.
+        The peer's cold model discovery is itself bounded at ~18s (sandbox
+        detection + `kiro-cli chat --list-models` + entitlement revalidation);
+        an 8s client budget kills every cold read and reports a healthy peer as
+        unreachable, which reads as an empty remote model picker.
         """
+        from kiro_crew.acp.session_handle import _READ_PATH_PROBE_DEADLINE_SECS
+        from kiro_crew.dashboard.handlers.agents import _LIST_MODELS_SUBPROCESS_TIMEOUT_SECS
         from kiro_crew.instances.constants import (
             DEFAULT_CAPABILITY_PROXY_TIMEOUT_SECS,
             DEFAULT_MODELS_CAPABILITY_PROXY_TIMEOUT_SECS,
+        )
+        from kiro_crew.sandbox import _SANDBOX_BACKEND_PROBE_TIMEOUT_SECS
+
+        # Each term is the named production bound of one cold-path step:
+        # sandbox-backend detection, `kiro-cli chat --list-models`, and the
+        # entitlement revalidation read-path deadline.
+        cold_chain_secs = (
+            _SANDBOX_BACKEND_PROBE_TIMEOUT_SECS
+            + _LIST_MODELS_SUBPROCESS_TIMEOUT_SECS
+            + _READ_PATH_PROBE_DEADLINE_SECS
         )
 
         total = await self._timeout_used_for("/api/models", monkeypatch)
         assert total == DEFAULT_MODELS_CAPABILITY_PROXY_TIMEOUT_SECS
         # The split only means something while the models budget clears the
-        # peer's ~15s worst case and the shared budget stays the short one.
-        assert DEFAULT_MODELS_CAPABILITY_PROXY_TIMEOUT_SECS >= 15.0
+        # peer's cold worst case and the shared budget stays the short one.
+        assert DEFAULT_MODELS_CAPABILITY_PROXY_TIMEOUT_SECS >= cold_chain_secs
         assert DEFAULT_CAPABILITY_PROXY_TIMEOUT_SECS < DEFAULT_MODELS_CAPABILITY_PROXY_TIMEOUT_SECS
 
     @pytest.mark.asyncio
@@ -494,3 +542,119 @@ class TestPeerCapabilityCarrier:
         for path in ("/api/version", "/api/agents", "/api/effort-levels", "/api/workspaces"):
             total = await self._timeout_used_for(path, monkeypatch)
             assert total == DEFAULT_CAPABILITY_PROXY_TIMEOUT_SECS, path
+
+
+class _FakeContent:
+    def __init__(self, body: bytes):
+        self._body = body
+
+    async def iter_chunked(self, _size):
+        yield self._body
+
+
+class _FakeResp:
+    def __init__(self, status: int, body: bytes):
+        self.status = status
+        self.content = _FakeContent(body)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+def _manager_answering(monkeypatch, replies: dict[str, tuple[int, object]]):
+    """A real ``SshTunnelManager`` whose HTTP session answers from *replies*.
+
+    *replies* maps a capability path to ``(status, json_body)``; the carrier's
+    own status mapping and body parsing run unmodified against it.
+    """
+    from kiro_crew.instances import ssh_tunnel_manager as stm
+
+    mgr = stm.SshTunnelManager.__new__(stm.SshTunnelManager)
+    mgr._peer_target = MagicMock(side_effect=lambda _iid, path: ("http://peer" + path, "cookie"))
+    mgr._peer_cookie_header = MagicMock(return_value={"Cookie": "c=1"})
+
+    class _FakeSession:
+        def __init__(self, *, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        def get(self, url, **_kwargs):
+            status, body = replies[url.removeprefix("http://peer")]
+            return _FakeResp(status, json.dumps(body).encode())
+
+    monkeypatch.setattr(stm.aiohttp, "ClientSession", _FakeSession)
+    return mgr
+
+
+_REVALIDATING_BODY = {"error": "model list revalidating", "code": "model_list_revalidating"}
+
+
+@pytest.mark.asyncio
+class TestPeerRevalidatingModels:
+    """A peer's deliberate revalidating 503 is transient, not a refusal.
+
+    The peer's ``/api/models`` answers 503 ``model_list_revalidating`` while an
+    entitlement revalidation is in flight and serves the corrected list on the
+    next read. Reported as ``capability_peer_refused`` it would latch the
+    remote model picker for the frontend's whole stale window, since the poll
+    gate re-reads only transient codes.
+    """
+
+    async def test_a_revalidating_503_maps_to_its_own_code(self, monkeypatch):
+        mgr = _manager_answering(monkeypatch, {"/api/models": (503, _REVALIDATING_BODY)})
+
+        ok, payload = await mgr.peer_capability("nobita", "/api/models")
+
+        assert ok is False
+        assert payload["code"] == "capability_peer_revalidating"
+
+    async def test_any_other_503_is_still_a_refusal(self, monkeypatch):
+        mgr = _manager_answering(
+            monkeypatch,
+            {"/api/models": (503, {"error": "overloaded", "code": "busy"})},
+        )
+
+        ok, payload = await mgr.peer_capability("nobita", "/api/models")
+
+        assert ok is False
+        assert payload["code"] == "capability_peer_refused"
+
+    async def test_a_revalidating_503_on_another_path_is_a_refusal(self, monkeypatch):
+        """Only the models read answers the deliberate revalidating 503."""
+        mgr = _manager_answering(monkeypatch, {"/api/agents": (503, _REVALIDATING_BODY)})
+
+        ok, payload = await mgr.peer_capability("nobita", "/api/agents")
+
+        assert ok is False
+        assert payload["code"] == "capability_peer_refused"
+
+    async def test_a_503_with_a_non_object_body_is_a_refusal(self, monkeypatch):
+        mgr = _manager_answering(monkeypatch, {"/api/models": (503, None)})
+
+        ok, payload = await mgr.peer_capability("nobita", "/api/models")
+
+        assert ok is False
+        assert payload["code"] == "capability_peer_refused"
+
+    async def test_the_capabilities_document_names_the_revalidating_field(self, monkeypatch):
+        _enable_instances(monkeypatch)
+        replies: dict[str, tuple[int, object]] = {
+            path: (200, body) for path, (_ok, body) in _all_ok().items()
+        }
+        replies["/api/models"] = (503, _REVALIDATING_BODY)
+        mgr = _manager_answering(monkeypatch, replies)
+        state = SimpleNamespace(instances_manager=mgr)
+
+        data = await _body(await hi.api_instances_capabilities(_request(state)))
+
+        assert data["models"] == []
+        assert data["unavailable"] == {"models": "capability_peer_revalidating"}
+        assert [row["name"] for row in data["agents"]] == ["coder"]

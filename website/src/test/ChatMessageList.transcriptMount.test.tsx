@@ -82,6 +82,27 @@ describe('ChatMessageList transcript mount', () => {
     const hidden = rows.filter((r) => r.style.visibility === 'hidden')
     expect(hidden).toHaveLength(1)
     expect(hidden[0].textContent).toContain('q1')
+    // No strip flag: the stand-in marker is bare, so index.css leaves the row's
+    // action strip hidden with the row (it has slid under the card).
+    expect(hidden[0].getAttribute('data-pinned-standin')).toBe('')
+    expect(rows.filter((r) => r.hasAttribute('data-pinned-standin'))).toHaveLength(1)
+  })
+
+  it('marks the hidden row `folding` while the host reports its strip still uncovered', () => {
+    const { container } = render(
+      <ChatMessageList
+        messages={MESSAGES}
+        running={false}
+        hiddenRow={{ ts: '2026-01-01T00:00:01Z', index: 0, stripUncovered: true }}
+        transcript={{ sessionId: 'test:folding' }}
+      />,
+    )
+    const rows = [...container.querySelectorAll<HTMLDivElement>('[data-display-index]')]
+    const hidden = rows.filter((r) => r.style.visibility === 'hidden')
+    expect(hidden).toHaveLength(1)
+    // The value index.css keys the re-shown strip on: written while any of the
+    // strip is still on screen below the card standing in for the bubble.
+    expect(hidden[0].getAttribute('data-pinned-standin')).toBe('folding')
   })
 
   it('reports the grouped display items to the host in both modes', () => {

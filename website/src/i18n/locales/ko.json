@@ -8791,6 +8791,11 @@
       "unexpected_response": "예기치 않은 응답",
       "deploy_failed": "배포에 실패했습니다",
       "stale_preview_retry": "확인 후 앱이 변경되었습니다 — 다시 시도하세요."
+    },
+    "mcpApp": {
+      "from_app": "{{app}} 앱에서 보냄",
+      "delivery_failed": "메시지를 전달하지 못했습니다. 다시 시도해 주세요.",
+      "from_app_tooltip": "이 앱이 채팅에 메시지를 게시했습니다 — Kiro는 이를 사용자의 말이 아닌 앱의 말로 취급합니다"
     }
   },
   "hooks": {
@@ -10607,6 +10612,7 @@
       "could_not_start_a_new_session": "새 세션을 시작할 수 없습니다",
       "could_not_start_session_message_restored": "새 세션을 시작할 수 없습니다: {{error}}. 메시지는 복원되었습니다 — 다시 보내서 재시도하세요.",
       "enter_split_view": "분할 보기로 전환",
+      "effort_options_unavailable": "이 세션의 추론 노력 옵션을 확인할 수 없습니다. 연결이 복구될 때까지 노력 설정을 사용할 수 없습니다.",
       "esc_to_dismiss": "Esc로 닫기",
       "expand_knowledge_context": "지식 컨텍스트 펼치기",
       "failed_to_apply_plan": "계획을 적용하지 못했습니다",

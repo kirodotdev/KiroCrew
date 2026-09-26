@@ -11,7 +11,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { ReactNode } from 'react'
-import { render, waitFor } from '@testing-library/react'
+import { render, waitFor, screen, fireEvent } from '@testing-library/react'
 import type { RootState } from '../store'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -32,7 +32,15 @@ vi.mock('../api/client', () => ({
     chatSlots: vi.fn().mockResolvedValue([]),
     chatSlotDetail: vi.fn().mockResolvedValue({ messages: [], running: false, has_more: false, total: 0 }),
     chatHistory: vi.fn().mockResolvedValue({ sessions: [] }),
-    models: vi.fn().mockResolvedValue([{ model_name: 'auto', description: 'Models chosen by task' }]),
+    models: vi.fn().mockResolvedValue([
+      { model_name: 'auto', description: 'Models chosen by task' },
+      { model_name: 'gpt-6-sol[low]', description: 'GPT low' },
+      { model_name: 'gpt-6-sol[medium]', description: 'GPT medium' },
+    ]),
+    chatSlotSelectionCapabilities: vi.fn().mockResolvedValue({ known: false }),
+    chatSlotReasoningEffort: vi.fn().mockImplementation(async (_slot: string, effort: string) => ({ reasoning_effort: effort, model: 'gpt-6-sol' })),
+    chatSlotModel: vi.fn().mockImplementation(async (_slot: string, model: string) => ({ model })),
+    effortLevels: vi.fn().mockResolvedValue(['low', 'medium', 'high']),
     agents: vi.fn().mockResolvedValue([]),
     agentDetail: vi.fn().mockResolvedValue({}),
     workspaces: vi.fn().mockResolvedValue({ workspaces: [] }),
@@ -57,6 +65,7 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatPane from '../components/ChatPane'
+import { api } from '../api/client'
 
 function makeStore(slotKey: string, slot: Record<string, unknown>) {
   return configureStore({
@@ -128,5 +137,70 @@ describe('ChatPane — inherited-default label resolves the peer default on a re
     renderPane('pane-remote-loading', { agent: '', executor: 'remote', instance_id: 'inst-2' })
     await waitFor(() => expect(document.querySelector('button svg.lucide-bot')).not.toBeNull())
     expect(agentChipText()).not.toContain('localboss')
+  })
+})
+
+describe('ChatPane — ACP model and effort controls', () => {
+  it('groups Codex pair IDs and exposes effort separately in a split pane', async () => {
+    vi.mocked(api.chatSlotSelectionCapabilities).mockResolvedValueOnce({
+      known: true, backend: 'codex', effort_supported: true,
+      effort_levels: ['low', 'medium', 'high'], model_effort_pair_ids: true,
+    })
+    renderPane('pane-codex', { model: 'gpt-6-sol[medium]', reasoning_effort: '' })
+    const chip = await screen.findByTestId('composer-effort-chip')
+    expect(chip.textContent).toContain('Effort: Medium')
+    const modelChip = screen.getByTitle('Model: gpt-6-sol')
+    fireEvent.click(modelChip)
+    const modelList = await screen.findByRole('listbox', { name: 'Model list' })
+    expect(modelList.textContent).toContain('gpt-6-sol')
+    expect(modelList.textContent).not.toContain('gpt-6-sol[low]')
+    expect(modelList.textContent).not.toContain('gpt-6-sol[medium]')
+    fireEvent.click(chip)
+    expect(await screen.findByText('Use model default')).toBeTruthy()
+  })
+
+  it('keeps advertised model IDs when the ACP backend does not use pairs', async () => {
+    vi.mocked(api.chatSlotSelectionCapabilities).mockResolvedValueOnce({
+      known: true, backend: 'claude', effort_supported: false,
+      effort_levels: [], model_effort_pair_ids: false,
+    })
+    renderPane('pane-claude', { model: 'gpt-6-sol[medium]' })
+    await waitFor(() => expect(api.chatSlotSelectionCapabilities).toHaveBeenCalledWith('pane-claude'))
+    expect(screen.queryByTestId('composer-effort-chip')).toBeNull()
+    expect(await screen.findByTitle('Model: gpt-6-sol[medium]')).toBeTruthy()
+  })
+
+  it('moves a legacy pair level into the slot before changing its model', async () => {
+    vi.mocked(api.chatSlotSelectionCapabilities).mockResolvedValueOnce({
+      known: true, backend: 'codex', effort_supported: true,
+      effort_levels: ['low', 'medium', 'high'], model_effort_pair_ids: true,
+    })
+    renderPane('pane-migration', { model: 'gpt-6-sol[medium]', reasoning_effort: '' })
+    await screen.findByTestId('composer-effort-chip')
+    const modelChip = await screen.findByTitle('Model: gpt-6-sol')
+    fireEvent.click(modelChip)
+    fireEvent.click(await screen.findByRole('option', { name: /gpt-6-sol/ }))
+    await waitFor(() => expect(api.chatSlotModel).toHaveBeenCalledWith('pane-migration', 'gpt-6-sol'))
+    expect(api.chatSlotReasoningEffort).toHaveBeenCalledWith('pane-migration', 'medium')
+    expect(vi.mocked(api.chatSlotReasoningEffort).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(api.chatSlotModel).mock.invocationCallOrder[0])
+  })
+
+  it('keeps the 240px effort menu inside a 320px viewport', async () => {
+    vi.mocked(api.chatSlotSelectionCapabilities).mockResolvedValueOnce({
+      known: true, backend: 'codex', effort_supported: true,
+      effort_levels: ['low', 'medium', 'high'], model_effort_pair_ids: true,
+    })
+    renderPane('pane-narrow', { model: 'gpt-6-sol[medium]' })
+    const chip = await screen.findByTestId('composer-effort-chip')
+    chip.getBoundingClientRect = () => new DOMRect(280, 500, 24, 28)
+    vi.stubGlobal('innerWidth', 320)
+    try {
+      fireEvent.click(chip)
+      const menu = await screen.findByText('Use model default')
+      expect(menu.closest('div.fixed')).toHaveStyle({ left: '72px' })
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })

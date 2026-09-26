@@ -377,18 +377,21 @@ describe('computeLiveCardH', () => {
   const RESTING = 48, BUBBLE = 856, PAD = ROW_PAD_Y
 
   it('is the bubble height at the hand-off, so the card is a pixel-exact stand-in', () => {
-    // At hand-off the row top is ON the fold, so its bottom is PAD + bubble below.
+    // At hand-off the row top is ON the fold, so the bubble's bottom is PAD + bubble below.
     expect(computeLiveCardH(PAD + BUBBLE, RESTING, BUBBLE)).toBe(BUBBLE)
   })
 
-  it('tracks the row bottom, so no gap can open between the card and the reply', () => {
-    // The gap this removes: with a fixed 48px card and this 856px row, the reply sat
-    // 794px below the card in a 700px viewport until the reader scrolled it closed.
+  it('tracks the bubble bottom, so no gap can open between the card and what follows it', () => {
+    // The gap this removes: with a fixed 48px card and this 856px bubble, the reply sat
+    // 794px below the card in a 700px viewport until the reader scrolled it closed. The
+    // edge tracked is the BUBBLE's, not the row's: the row's action strip sits below the
+    // bubble and is re-shown under the hidden row, so a card reaching the row's bottom
+    // would cover it.
     for (const scrolled of [0, 100, 400, 700]) {
-      const rowBottom = PAD + BUBBLE - scrolled
-      const h = computeLiveCardH(rowBottom, RESTING, BUBBLE)
-      // card bottom === row bottom === where the reply begins
-      expect(PAD + h).toBe(rowBottom)
+      const bubbleBottom = PAD + BUBBLE - scrolled
+      const h = computeLiveCardH(bubbleBottom, RESTING, BUBBLE)
+      // card bottom === bubble bottom === where the action strip, then the reply, begin
+      expect(PAD + h).toBe(bubbleBottom)
     }
   })
 
@@ -409,10 +412,10 @@ describe('computeLiveCardH', () => {
     expect(computeLiveCardH(PAD + 30, RESTING, 30)).toBeLessThanOrEqual(RESTING)
   })
 
-  it('is monotone in the row bottom, so a fold never reverses mid-scroll', () => {
+  it('is monotone in the bubble bottom, so a fold never reverses mid-scroll', () => {
     let prev = -Infinity
-    for (let rowBottom = 0; rowBottom <= PAD + BUBBLE; rowBottom += 17) {
-      const h = computeLiveCardH(rowBottom, RESTING, BUBBLE)
+    for (let bubbleBottom = 0; bubbleBottom <= PAD + BUBBLE; bubbleBottom += 17) {
+      const h = computeLiveCardH(bubbleBottom, RESTING, BUBBLE)
       expect(h).toBeGreaterThanOrEqual(prev)
       prev = h
     }

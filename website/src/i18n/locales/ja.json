@@ -8791,6 +8791,11 @@
       "unexpected_response": "予期しないレスポンス",
       "deploy_failed": "デプロイに失敗",
       "stale_preview_retry": "チェック後にアプリが変更されました — もう一度お試しください。"
+    },
+    "mcpApp": {
+      "from_app": "{{app}} アプリから送信",
+      "delivery_failed": "メッセージを送信できませんでした。もう一度お試しください。",
+      "from_app_tooltip": "このアプリがチャットにメッセージを投稿しました — Kiro はこれをあなたの発言ではなくアプリの発言として扱います"
     }
   },
   "hooks": {
@@ -10607,6 +10612,7 @@
       "could_not_start_a_new_session": "新しいセッションを開始できませんでした",
       "could_not_start_session_message_restored": "新しいセッションを開始できませんでした：{{error}}。メッセージは復元されました — もう一度送信して再試行してください。",
       "enter_split_view": "分割表示にする",
+      "effort_options_unavailable": "このセッションの推論エフォートの選択肢を確認できませんでした。接続が回復するまでエフォート設定は利用できません。",
       "esc_to_dismiss": "Esc で閉じる",
       "expand_knowledge_context": "ナレッジコンテキストを展開",
       "failed_to_apply_plan": "計画を適用できませんでした",

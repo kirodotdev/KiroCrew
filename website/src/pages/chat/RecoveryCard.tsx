@@ -379,7 +379,7 @@ export function parseRecoveryMessage(content: string): ParsedRecovery | null {
  * emit time — vanishes after a flush + rehydrate. Anything keyed on its absence
  * therefore mis-renders every restored row.
  */
-export type InjectKind = 'cron' | 'recovery' | 'synthesis' | 'user_replay'
+export type InjectKind = 'cron' | 'mcp_app' | 'recovery' | 'synthesis' | 'user_replay'
 
 /**
  * Whether each gateway-stamped inject kind OPENS a turn of its own, or
@@ -405,6 +405,11 @@ export const INJECT_KIND_OPENS_TURN: Readonly<Record<InjectKind, boolean>> = {
   synthesis: true,
   recovery: false,
   user_replay: false,
+  // An app message's delivery dispatches a whole new turn (both the direct
+  // dispatch and the drain), so its inject row opens that turn — without
+  // this, isFeatureRequestRefusal walks past it to an earlier user row and
+  // mis-attributes an app turn's error to that older message.
+  mcp_app: true,
 }
 
 /**

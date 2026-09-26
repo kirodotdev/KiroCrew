@@ -1367,13 +1367,24 @@ class TestStartKiroRuntimeModelEntitlement:
         provider._client._resume_session_id = ""  # straight to create_session
         return provider
 
-    async def _run(self, model, advertised):
+    async def _run(self, model, advertised, *, probe=None, probe_raises=False):
         provider = self._kiro_provider(model)
         handle = MagicMock()
         handle.session_id = "kiro-sess-1"
         handle.store_session_config = MagicMock()
         handle.set_model = AsyncMock()
         handle.available_models = [{"modelId": m, "name": m} for m in advertised]
+        # The spawn-time withhold revalidates once via refresh_available_models
+        # before dropping a pin. Default: the probe agrees with the startup
+        # snapshot (returns it unchanged), so existing behaviour is preserved.
+        if probe_raises:
+            handle.refresh_available_models = AsyncMock(side_effect=RuntimeError("boom"))
+        elif probe is not None:
+            handle.refresh_available_models = AsyncMock(
+                return_value=[{"modelId": m, "name": m} for m in probe]
+            )
+        else:
+            handle.refresh_available_models = AsyncMock(return_value=list(handle.available_models))
         runtime = MagicMock()
         runtime.pid = 4321
         runtime.spawn = AsyncMock()
@@ -1410,6 +1421,55 @@ class TestStartKiroRuntimeModelEntitlement:
     async def test_auto_sentinel_never_reaches_the_check(self):
         handle = await self._run("auto", ["claude-sonnet-4.6"])
         handle.set_model.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_pin_absent_from_startup_snapshot_is_applied_when_the_probe_reveals_it(self):
+        # FP1: the startup snapshot was captured inside the race window and
+        # omits an entitled pin. Revalidating once before withholding reveals it,
+        # so the pin IS applied rather than silently dropped for the session.
+        handle = await self._run(
+            "claude-opus-4.8",
+            ["claude-sonnet-4.6"],
+            probe=["claude-sonnet-4.6", "claude-opus-4.8"],
+        )
+        handle.refresh_available_models.assert_awaited_once()
+        handle.set_model.assert_awaited_once_with("claude-opus-4.8")
+
+    @pytest.mark.asyncio
+    async def test_spawn_withhold_revalidation_forces_a_fresh_probe(self):
+        # D1: dropping a configured pin is a one-shot decision, not a burst, so
+        # its revalidation passes force=True — it must not honour a no-evidence
+        # failure the picker read path cached in the shared attempt-clock window.
+        handle = await self._run(
+            "claude-opus-4.8",
+            ["claude-sonnet-4.6"],
+            probe=["claude-sonnet-4.6", "claude-opus-4.8"],
+        )
+        handle.refresh_available_models.assert_awaited_once()
+        assert handle.refresh_available_models.await_args.kwargs.get("force") is True
+        # The probe agrees the pin is genuinely not entitled -> withhold as today.
+        handle = await self._run(
+            "claude-opus-4.8", ["claude-sonnet-4.6"], probe=["claude-sonnet-4.6"]
+        )
+        handle.refresh_available_models.assert_awaited_once()
+        handle.set_model.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_probe_failure_leaves_the_withhold_in_place(self):
+        # A failed probe is no evidence: keep the snapshot verdict (withhold),
+        # fail open exactly as today.
+        handle = await self._run("claude-opus-4.8", ["claude-sonnet-4.6"], probe_raises=True)
+        handle.set_model.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_qualifier_only_miss_resolves_via_the_fold_without_probing(self):
+        # O2: a `<namespace>::bare-id` pin the session advertises BARE resolves
+        # through resolve_pin_spelling with zero wire traffic. The fold runs
+        # FIRST, so no throwaway session/new (refresh_available_models) is opened
+        # on this common cold-start path; the bare id is what reaches set_model.
+        handle = await self._run("openrouter::z-ai/glm-5.3-flash", ["auto", "z-ai/glm-5.3-flash"])
+        handle.refresh_available_models.assert_not_awaited()
+        handle.set_model.assert_awaited_once_with("z-ai/glm-5.3-flash")
 
 
 def test_child_fidelity_aware_survives_client_replacement():

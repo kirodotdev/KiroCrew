@@ -182,7 +182,12 @@ export function useQueuedMessageActions({
   const onCancel = useCallback((queueId: string) => {
     if (!slot) return
     const msg = allQueuedRef.current.find(m => queueIdOf(m) === queueId)
-    if (msg?.content) {
+    // An app-authored entry is cancellable (that is the user's undo for an
+    // unwanted app message) but never draft-restored: merging the app
+    // envelope into the human composer would corrupt the draft AND launder
+    // app text into user authorship on the next send.
+    const isAppEntry = (msg?.meta?.kind as string) === 'mcp_app_message'
+    if (msg?.content && !isAppEntry) {
       // Restore by QUEUE IDENTITY: the record was stored under the queue id
       // the send receipt returned, which is the id this cancel carries — so a
       // hit is this card's own pre-send state by construction, whatever its

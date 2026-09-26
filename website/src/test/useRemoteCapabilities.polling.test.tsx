@@ -66,6 +66,24 @@ describe('capabilityDocIsRetriablePartial — the poll gate', () => {
     expect(capabilityDocIsRetriablePartial(partialDoc())).toBe(true)
   })
 
+  it('a peer whose models read is revalidating is retriable', () => {
+    // The peer answers a deliberate 503 while its entitlement snapshot is
+    // revalidated and serves the corrected list on the next read.
+    expect(
+      capabilityDocIsRetriablePartial(
+        doc({ models: [], unavailable: { models: 'capability_peer_revalidating' } }),
+      ),
+    ).toBe(true)
+  })
+
+  it('a refused read stays terminal beside the revalidating case', () => {
+    expect(
+      capabilityDocIsRetriablePartial(
+        doc({ models: [], unavailable: { models: 'capability_peer_refused' } }),
+      ),
+    ).toBe(false)
+  })
+
   it('a complete document is not', () => {
     expect(capabilityDocIsRetriablePartial(doc())).toBe(false)
   })
@@ -83,6 +101,7 @@ describe('capabilityDocIsRetriablePartial — the poll gate', () => {
       'capability_no_credential',
       'capability_peer_too_old',
       'capability_unauthorized',
+      'capability_peer_refused',
     ]) {
       expect(
         capabilityDocIsRetriablePartial(doc({ models: [], unavailable: { models: code } })),

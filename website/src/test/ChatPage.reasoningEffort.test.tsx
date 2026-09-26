@@ -119,6 +119,16 @@ function renderDropdown(props: Partial<Parameters<typeof ReasoningEffortDropdown
 describe('ReasoningEffortDropdown', () => {
   beforeEach(() => { mockApi.effortLevels.mockClear(); mockApi.chatSlotReasoningEffort.mockClear() })
 
+  it('uses ACP-advertised Pi levels in their reported order', async () => {
+    renderDropdown({ currentEffort: 'minimal', levelsOverride: ['off', 'minimal', 'high'] })
+    const slider = await screen.findByRole('slider', { name: 'Reasoning effort' })
+    expect(slider).toHaveAttribute('aria-valuemax', '2')
+    expect(slider).toHaveAttribute('aria-valuenow', '1')
+    fireEvent.keyDown(slider, { key: 'ArrowRight' })
+    await vi.waitFor(() => expect(mockApi.chatSlotReasoningEffort).toHaveBeenCalledWith('s1', 'high'))
+    expect(mockApi.effortLevels).not.toHaveBeenCalled()
+  })
+
   it('renders a slider over the concrete levels with the current value', async () => {
     renderDropdown()
     const slider = await screen.findByRole('slider', { name: 'Reasoning effort' })
@@ -151,6 +161,18 @@ describe('ReasoningEffortDropdown', () => {
     fireEvent.keyDown(slider, { key: 'ArrowRight' })
     await vi.waitFor(() => expect(mockApi.chatSlotReasoningEffort).toHaveBeenCalledWith('s1', 'xhigh'))
     await vi.waitFor(() => expect(store.getState().dashboard.slots.find(s => s.key === 's1')?.reasoning_effort).toBe('xhigh'))
+  })
+
+  it('updates the model row when an effort pick normalizes a legacy Codex pair', async () => {
+    mockApi.chatSlotReasoningEffort.mockResolvedValueOnce({ ok: true, reasoning_effort: '', model: 'gpt-6-sol' })
+    const { store } = renderDropdown({ currentEffort: 'high' })
+    const slider = await screen.findByRole('slider', { name: 'Reasoning effort' })
+    await vi.waitFor(() => expect(slider.getAttribute('aria-valuemax')).toBe('4'))
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Use model default' }))
+
+    await vi.waitFor(() => expect(mockApi.chatSlotReasoningEffort).toHaveBeenCalledWith('s1', ''))
+    await vi.waitFor(() => expect(store.getState().dashboard.slots.find(s => s.key === 's1')?.model).toBe('gpt-6-sol'))
   })
 
   it('stages the pick synchronously so a cycle press inside the debounce window sees it (#5120)', async () => {
