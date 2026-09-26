@@ -1260,8 +1260,12 @@ PR-time proof only, no publishing.
   before any pip-install lane fails.
 - **`build-desktop`** builds the Electron app unsigned through `make desktop` on
   `ubuntu-22.04` and `ubuntu-22.04-arm` for every PR; `macos-15` joins the matrix
-  only when a packaging-sensitive path changed. Non-PR runs include all three,
-  and every instantiated leg uploads its artifacts.
+  only when a packaging-sensitive path changed. The `desktop-matrix` resolver
+  checks out full history only on pull requests and passes an empty token to
+  `dorny/paths-filter`, so that decision comes from local git diff without a
+  pull-request-files API read or `pull-requests: read`. Non-PR runs skip that
+  checkout and include all three platforms. Every instantiated leg uploads its
+  artifacts.
 - **`build-windows-installer`** assembles the real python-build-standalone backend
   payload, builds and silently installs the NSIS artifact, then runs the installed
   gateway and bytecode-floor checks. See [e2e-gate.md](e2e-gate.md#buildymls-installer-job-boots-the-gateway-it-installed-on-every-pr).
