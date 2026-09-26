@@ -40,6 +40,7 @@ from pathlib import Path
 from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.pptx_maker.backend import engine_source, paths
 from kiro_crew.sandbox import cgroup_scope_argv, run_limited, sandboxed_spawn_argv
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 logger = logging.getLogger("kirocrew.app.pptx-maker")
 
@@ -237,7 +238,7 @@ def _spawn(argv: list[str], *, cwd: str, timeout: int) -> EngineResult:
             cwd=cwd,
             env=env,
             capture_output=True,
-            text=True,
+            **UTF8_TEXT,
             timeout=timeout,
             check=False,
         )
