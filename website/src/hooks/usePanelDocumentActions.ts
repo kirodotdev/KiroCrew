@@ -2,6 +2,7 @@ import { useCallback } from 'react'
 import type { QueryClient } from '@tanstack/react-query'
 
 import { api } from '../api/client'
+import { noteStaleOwnerResponse } from '../api/staleOwnerSignal'
 import { clearInlineDraft, getInlineDraft, type usePanelTabs } from './usePanelTabs'
 import { i18nT } from '../i18n/t'
 import type { Artifact } from '../types'
@@ -138,7 +139,14 @@ export function usePanelDocumentActions({ tabsCtl, slotRef, queryClient, showAct
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path: filePath, content }),
     })
-    if (!res.ok) throw new Error(`Save failed: ${res.status}`)
+    if (!res.ok) {
+      // An owner-gated direct fetch: a session minted before the owner was
+      // configured is denied `401 stale_session_reauth`, which `j` would turn
+      // into the re-auth prompt. Raise it here too, then fail the save as usual
+      // so the editor keeps its unsaved buffer.
+      if (res.status === 401) noteStaleOwnerResponse(res.status, await res.text().catch(() => ''))
+      throw new Error(`Save failed: ${res.status}`)
+    }
     // The saved bytes become the tab's dirty baseline, so a later re-open of
     // the same path refreshes the buffer instead of (needlessly) preserving it
     // as if it still held unsaved work. Best-effort: a tab that is not open
