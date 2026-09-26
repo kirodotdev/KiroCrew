@@ -57,6 +57,9 @@ EXPECTED_LAUNCH_REGISTRY = {
     "prisma",
     "webflow",
     "zapier",
+    # Listed by both connector directories (ChatGPT's app directory and Claude's
+    # connector directory); launch-gated until the manual gate, like batch 2.
+    "todoist",
 }
 # Tier 3: the vendor admits OAuth clients from an allowlist or waitlist, so no
 # amount of local verification can pass the gate until Kiro is admitted. They
@@ -85,6 +88,7 @@ LAUNCH_GATED = {
     "prisma",
     "webflow",
     "zapier",
+    "todoist",
 } | VENDOR_APPROVAL_PENDING
 
 
@@ -164,6 +168,18 @@ def test_gitlab_card_copy_admits_its_only_scope_can_write():
     (gitlab,) = [p for p in get_all_providers() if p["slug"] == "gitlab"]
     assert gitlab["recommended_scopes"] == ["mcp"]
     assert "can write" in gitlab["gotcha_copy"]
+
+
+def test_todoist_requests_deletes_but_never_whole_project_deletes():
+    """The grant can delete tasks, labels and filters (data:delete) but not whole
+    projects: project:delete also deletes every task inside the project, so it
+    stays out and the copy points at archiving instead. The server's own metadata
+    lists only data:read_write, so the delete scope is a deliberate addition."""
+    (todoist,) = [p for p in get_all_providers() if p["slug"] == "todoist"]
+    assert todoist["mcp_url"] == "https://ai.todoist.net/mcp"
+    assert todoist["recommended_scopes"] == ["data:read_write", "data:delete"]
+    assert "project:delete" not in todoist["recommended_scopes"]
+    assert "archive the project instead" in todoist["gotcha_copy"]
 
 
 def test_client_id_is_optional_and_unset_for_every_launch_provider():

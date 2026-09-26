@@ -55,6 +55,9 @@ URLS = {
     "linear": "https://mcp.linear.app/mcp/readonly",
     "vercel": "https://mcp.vercel.com",
     "gitlab": "https://gitlab.com/api/v4/mcp",
+    "atlassian": "https://mcp.atlassian.com/v1/mcp/authv2",
+    "neon": "https://mcp.neon.tech/mcp?readonly=true",
+    "todoist": "https://ai.todoist.net/mcp",
 }
 
 
@@ -83,6 +86,44 @@ def test_issue_tools_are_declared_across_every_issue_tracker():
         assert {"list_issues", "get_issue"} <= set(declared[slug]), slug
 
 
+def test_every_server_with_a_bare_search_or_fetch_declares_the_rename():
+    """``search`` and ``fetch`` are the tool pair ChatGPT's connector spec asks a
+    server to ship, so several vendors use the bare names. A server that ships one
+    must declare it, or whichever of them mounts second shadows the others."""
+    declared = declared_tool_aliases()
+    bare = {
+        "atlassian": {"search", "fetch"},
+        "gitlab": {"search"},
+        "neon": {"search", "fetch"},
+        "todoist": {"search", "fetch"},
+    }
+    for slug, tools in bare.items():
+        assert tools <= set(declared[slug]), slug
+
+
+def test_todoist_and_atlassian_mounted_together_rename_both_sides():
+    assert _aliases(_servers("todoist", "atlassian"), ["@todoist", "@atlassian"]) == {
+        "@atlassian/fetch": "atlassian_fetch",
+        "@atlassian/search": "atlassian_search",
+        "@todoist/fetch": "todoist_fetch",
+        "@todoist/search": "todoist_search",
+    }
+
+
+def test_gitlab_and_todoist_share_only_search():
+    """GitLab ships ``search`` but no ``fetch``, so Todoist's ``fetch`` keeps its
+    name: a rename fires per colliding tool, not per pair of providers."""
+    assert _aliases(_servers("todoist", "gitlab"), ["@todoist", "@gitlab"]) == {
+        "@gitlab/search": "gitlab_search",
+        "@todoist/search": "todoist_search",
+    }
+
+
+def test_todoist_alone_keeps_its_natural_tool_names():
+    """Invariant 3: a declaration renames nothing without a real collision."""
+    assert _aliases(_servers("todoist"), ["@todoist"]) == {}
+
+
 def test_every_declared_alias_is_globally_unique():
     aliases = [alias for tools in declared_tool_aliases().values() for alias in tools.values()]
     assert len(aliases) == len(set(aliases))
@@ -104,7 +145,7 @@ def test_every_declared_alias_equals_its_derivation():
 
 
 def test_providers_without_collisions_declare_nothing():
-    assert not {"notion", "stripe", "atlassian"} & set(declared_tool_aliases())
+    assert not {"notion", "stripe"} & set(declared_tool_aliases())
 
 
 # ── table rows 1-3: whole-server exposure, identity matched ──
