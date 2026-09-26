@@ -363,10 +363,42 @@ describe('selectTurnInterrupted', () => {
     }
   })
 
-  it('reads past an injected recovery row to the real floor beneath it', () => {
+  it('reads an injected recovery row as a turn opener', () => {
     expect(selectTurnInterrupted(state({
-      messages: [msg('user'), msg('inject', '[Continue — requested by the user]\nresume')],
+      messages: [msg('user'), msg('inject', '[Continue — requested by the user]\nresume', { injectKind: 'recovery' })],
     }))).toBe(true)
+  })
+
+  it('does not let an older Stop mask a newer interrupted inject turn', () => {
+    for (const injectKind of ['cron', 'recovery', 'user_replay', 'synthesis']) {
+      expect(selectTurnInterrupted(state({
+        messages: [
+          msg('user', 'first'),
+          msg('system', 'Stopped', { kind: 'stop_event' }),
+          msg('inject', 'continue queued work', { injectKind }),
+          msg('tool', 'read complete'),
+        ],
+      }))).toBe(true)
+    }
+  })
+
+  it('treats an answered dispatching inject as finished', () => {
+    expect(selectTurnInterrupted(state({
+      messages: [msg('user'), msg('inject', 'go on', { injectKind: 'user_replay' }), msg('assistant', 'done')],
+    }))).toBe(false)
+  })
+
+  it('looks through an untagged inject (note, hook halt, refusal notice) to the real floor', () => {
+    // These rows dispatch nothing, so a trailing one is not an unanswered turn
+    // and a deliberately halted run must not offer Resume.
+    for (const meta of [undefined, { noteSession: 'dashboard:front' }, { injectKind: 'unknown' }, { injectKind: 7 }]) {
+      expect(selectTurnInterrupted(state({
+        messages: [msg('user', 'first'), msg('assistant', 'answered'), msg('inject', 'halted', meta)],
+      }))).toBe(false)
+      expect(selectTurnInterrupted(state({
+        messages: [msg('user', 'first'), msg('inject', 'halted', meta)],
+      }))).toBe(true)
+    }
   })
 })
 

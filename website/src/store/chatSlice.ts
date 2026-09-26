@@ -22,6 +22,7 @@ import { safeSetItem } from '../utils/safeStorage'
 import { errMessage, isMissingSlotError, type StatusRejection } from '../utils/thunkError'
 import { jsonEqual } from '../utils/structuralEqual'
 import type { McpAppRenderPayload } from '../lib/mcpAppSrcdoc'
+import type { InjectKind } from '../pages/chat/RecoveryCard'
 import { i18nT } from '../i18n/t'
 import { secureRandomId } from '../utils/secureId'
 import { mergeIntoDraft } from '../utils/chatDrafts'
@@ -4181,6 +4182,10 @@ export const selectComposerBusy = (state: RootState, slot: string | null): boole
  *  `user` / `assistant` / `error` rows. Keep them in sync — these predicates
  *  decide whether to OFFER Continue and what to call it, those decide whether to
  *  authorize it and what to tell the model. */
+/** `meta.injectKind` values the gateway stamps on an `inject` row that dispatched a
+ *  turn (see `InjectKind` in `pages/chat/RecoveryCard.tsx`). Every other inject
+ *  row opens nothing. Mirrors `_TURN_INJECT_KINDS` in `dashboard/state.py`. */
+const TURN_INJECT_KINDS: ReadonlySet<unknown> = new Set<InjectKind>(['cron', 'recovery', 'user_replay', 'synthesis'])
 const CONTINUE_SCAN_SKIP = new Set(['queued', 'tool_call', 'tool_result', 'inject', 'subagent', 'permission', 'nudge'])
 
 /**
@@ -4307,10 +4312,21 @@ export const selectTurnInterrupted = (state: RootState): boolean => {
     // segment had flushed first, i.e. on invisible timing the user cannot
     // predict. The user chose to stop; the floor is theirs, so the composer
     // shows Send. Reached only for the NEWEST turn's terminator — an older stop
-    // card deeper in history is never scanned, because a later user/assistant
-    // row returns first.
+    // card deeper in history is never scanned, because a later user/inject/
+    // assistant row returns first.
     if (isStopEvent(m)) return false
     if (m.role === 'error') { sawTrailingError = true; continue }
+    // An inject row that DISPATCHED a turn (a queued continuation, a recovery,
+    // a synthesis, a cron prompt) opens it exactly as a user row does, so one
+    // with no reply after it is an interruption -- and an OLDER Stop card
+    // behind it must not be reached and mask it. Only the structurally tagged
+    // kinds qualify: a `/note` breadcrumb, a Stop-hook halt card or a refusal
+    // notice is appended as `inject` too but ran nothing, and offering Resume
+    // on a deliberately halted run would be wrong. Decided before
+    // CONTINUE_SCAN_SKIP, where `inject` stays for the selectors that look
+    // through continuations to the prior user floor. Mirrors
+    // `is_turn_interrupted` in `dashboard/state.py`.
+    if (m.role === 'inject' && m.content && TURN_INJECT_KINDS.has((m.meta as { injectKind?: unknown } | undefined)?.injectKind)) return true
     if (CONTINUE_SCAN_SKIP.has(m.role)) continue
     if ((m.role === 'user' || m.role === 'assistant') && m.content) {
       const meta = m.meta as { kind?: string; notice?: string } | undefined

@@ -965,6 +965,14 @@ describe('chatSlice selectors', () => {
     expect(selectTurnInterrupted(root(store))).toBe(false)
   })
 
+  it('treats a trailing dispatching inject as a new, unanswered turn floor', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('front'))
+    store.dispatch(appendMessage({ role: 'assistant', content: 'answered' } as ChatMessage))
+    store.dispatch(appendMessage({ role: 'inject', content: 'cron prompt', meta: { injectKind: 'cron' } } as ChatMessage))
+    expect(selectTurnInterrupted(root(store))).toBe(true)
+  })
+
   it('reads an interruption from a trailing user row or an error after the answer', () => {
     const store = makeStore()
     store.dispatch(setActiveSlot('front'))

@@ -398,6 +398,30 @@ class TestSurfaceChannelSession:
             impostor.linked_session_key == ""
         ), "a slot with no channel provenance was bound to a channel conversation"
 
+    def test_reconciles_an_interrupted_local_turn_marker(self, dashboard_state: Any) -> None:
+        """A dashboard turn on a channel-surfaced slot leaves its in-flight marker
+        on the channel transcript's metadata line; surfacing is that slot's only
+        restore path, so it converts a leftover marker like the dashboard ones."""
+        slot = channel_slots.surface_channel_session(
+            dashboard_state,
+            _session("slack:1.1", title="Interrupted channel turn"),
+            {"turn_in_flight_generation": 17},
+            [
+                {"role": "user", "content": "inspect it"},
+                {"role": "assistant", "content": "partial result"},
+                {"role": "tool", "content": "read complete", "meta": {"done": True}},
+            ],
+            session_key="slack:1.1",
+        )
+
+        assert slot is not None
+        assert slot.to_dict()["interrupted"] is True
+        assert slot.messages[-1]["meta"]["kind"] == "gateway_restart_interruption"
+        assert slot._turn_in_flight_generation == 0
+        assert slot._dirty is True
+        # Past the window boundary, so the next save writes the row.
+        assert slot._disk_window_len == len(slot.messages) - 1
+
     def test_an_unresolvable_session_key_surfaces_the_slot_unbound(
         self, dashboard_state: Any
     ) -> None:

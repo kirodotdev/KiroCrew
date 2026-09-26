@@ -62,6 +62,8 @@ from kiro_crew.dashboard.state import (
     _normalize_slot_key,
     _note_authorized_elsewhere,
     durable_row_count,
+    is_stop_event_row,
+    is_turn_interrupted,
     row_mid,
 )
 from kiro_crew.effort import EFFORT_LEVELS, EFFORT_VALUES
@@ -110,6 +112,166 @@ _IDENTITY_UNRESOLVED: tuple[str, str] = ("", "__unresolved__")
 # here rather than imported to avoid dragging the chat_title import graph into
 # the persistence module's load path).
 _TITLE_ORIGINS = ("auto", "user")
+
+_RESTART_INTERRUPTION_KIND = "gateway_restart_interruption"
+# "app", not "gateway": the sibling relay-interruption row in
+# ``_rehydrate_slot_from_history`` names the same event the same way, and the
+# process name means nothing to the person reading the transcript.
+_RESTART_INTERRUPTION_MSG = (
+    "This turn was interrupted when the app restarted. "
+    "Review the partial output above, then resume to continue."
+)
+
+
+def _local_turn_generation(meta: Mapping[str, object]) -> int:
+    """The persisted local-turn generation, or zero when none is recorded.
+
+    ``bool`` is an ``int`` subclass, so it is refused explicitly: the metadata
+    line is an ordinary writable file, and a malformed or hand-edited value
+    must never manufacture an interruption row.
+    """
+    stored = meta.get("turn_in_flight_generation")
+    return stored if type(stored) is int and stored > 0 else 0
+
+
+_LOCAL_TURN_PROMPT_ROLES = frozenset({"user", "inject"})
+_LOCAL_TURN_PROMPT_META_KEYS = ("mid", "files", "dirs", "injectKind")
+
+
+def _local_turn_prompt(meta: Mapping[str, object]) -> dict | None:
+    """The persisted copy of the in-flight turn's opening row, validated.
+
+    Same trust boundary as :func:`_local_turn_generation`: the line is an
+    ordinary writable file, so every field is re-checked rather than trusted.
+    A copy that is not a dict, names a role that never opens a turn, or has
+    no content is dropped. ``meta`` is reduced to the row's identity, its
+    attachment lists and the inject kind; a restored row must not arrive
+    wearing a flag that changes what a later reader does with it.
+    """
+    stored = meta.get("turn_in_flight_prompt")
+    if not isinstance(stored, dict):
+        return None
+    role = stored.get("role")
+    content = stored.get("content")
+    if role not in _LOCAL_TURN_PROMPT_ROLES or not isinstance(content, str) or not content:
+        return None
+    raw_meta = stored.get("meta")
+    kept_meta: dict = {}
+    if isinstance(raw_meta, dict):
+        mid = raw_meta.get("mid")
+        if isinstance(mid, str) and mid:
+            kept_meta["mid"] = mid
+        for key in ("files", "dirs"):
+            value = raw_meta.get(key)
+            if isinstance(value, list) and all(isinstance(item, str) for item in value):
+                kept_meta[key] = list(value)
+        kind = raw_meta.get("injectKind")
+        if isinstance(kind, str) and kind:
+            kept_meta["injectKind"] = kind
+    cls = stored.get("cls")
+    ts = stored.get("ts")
+    return {
+        "role": role,
+        "content": content,
+        "cls": cls if isinstance(cls, str) else "",
+        "ts": ts if isinstance(ts, str) else "",
+        "meta": kept_meta,
+    }
+
+
+def _window_holds_row(messages: list[dict], prompt: Mapping[str, object]) -> bool:
+    """Whether the loaded window already contains the marker's opening row.
+
+    Matched by ``mid`` when the copy has one, which is the identity every
+    other dual-writer uses; a copy without an id falls back to the row's
+    ordering ``ts`` plus role, the pair ``_ChatSlot.append`` makes unique
+    within one transcript.
+    """
+    meta = prompt.get("meta")
+    mid = meta.get("mid") if isinstance(meta, dict) else None
+    ts = prompt.get("ts")
+    for row in messages:
+        row_meta = row.get("meta")
+        if mid and isinstance(row_meta, dict) and row_meta.get("mid") == mid:
+            return True
+        if not mid and ts and row.get("ts") == ts and row.get("role") == prompt.get("role"):
+            return True
+    return False
+
+
+def _latest_turn_was_deliberately_stopped(messages: list[dict]) -> bool:
+    """Whether the newest turn ends in the user's own Stop card.
+
+    Same tail walk as :func:`state.is_turn_interrupted`: tool, notice and
+    status rows are looked through, and the newest stop or conversational row
+    decides. Read only when a local-turn marker outlived its process. The stop
+    handler cancels the runner, and a shutdown landing in that same instant can
+    leave the marker on disk, so the Stop card -- the user's recorded intent --
+    must win over a restart-interruption row.
+    """
+    for message in reversed(messages):
+        if is_stop_event_row(message):
+            return True
+        if message.get("role") in ("user", "assistant") and message.get("content"):
+            return False
+    return False
+
+
+def _reconcile_local_turn_marker(
+    slot: _ChatSlot, generation: int, prompt: Mapping[str, object] | None = None
+) -> bool:
+    """Turn a local-turn marker that outlived its process into the interruption row.
+
+    Returns whether a marker was present, so the startup restore can avoid
+    layering the remote-relay notice on top of metadata that claims both kinds
+    of execution. Call it only after the whole window is loaded and
+    ``_disk_window_len`` is set: rows are appended past that boundary so the
+    next save writes them rather than counting them as already on disk.
+
+    The marker says a turn was admitted and never reached teardown, which the
+    transcript alone cannot show -- partial assistant prose followed by
+    finished tool rows is shape-identical to a clean answer. Rows ride the
+    periodic flush, so the opening row itself may be missing: when the marker
+    carries a copy (*prompt*) and no row with its identity is in the window,
+    the copy is appended first. Only then is the tail judged: when the
+    transcript already proves the interruption (an unanswered user row, a
+    trailing error) no second row is needed; when the newest turn ends in the
+    user's own Stop card, that intent wins. Otherwise one ``error`` row lands
+    at the tail so the classifier, composer and sidebar agree.
+
+    Every window save rewrites the window from its first row, so a lost
+    opener implies every row after it is lost too and the tail is where it
+    belongs. The runtime marker starts clear and the slot is marked dirty even
+    when no row was appended, so the next save omits the slot-owned keys. A
+    second restart before that save re-runs this decision from the same bytes
+    and cannot accumulate rows.
+    """
+    if generation <= 0:
+        return False
+    if prompt is not None and not _window_holds_row(slot.messages, prompt):
+        prompt_meta = prompt.get("meta")
+        slot.append(
+            str(prompt["role"]),
+            str(prompt["content"]),
+            str(prompt.get("cls") or ""),
+            str(prompt.get("ts") or ""),
+            broadcast=False,
+            meta=dict(prompt_meta) if isinstance(prompt_meta, dict) and prompt_meta else None,
+        )
+    if not is_turn_interrupted(slot.messages) and not _latest_turn_was_deliberately_stopped(
+        slot.messages
+    ):
+        slot.append(
+            "error",
+            _RESTART_INTERRUPTION_MSG,
+            "msg msg-err",
+            broadcast=False,
+            meta={"kind": _RESTART_INTERRUPTION_KIND},
+        )
+    slot._turn_in_flight_generation = 0
+    slot._turn_in_flight_prompt = None
+    slot._dirty = True
+    return True
 
 
 def _rehydrate_title_origin(titled: bool, stored: object) -> str:
@@ -1699,6 +1861,8 @@ def _rehydrate_slot_from_history(
         # not slot.is_remote`` -> 409 ``remote_binding_incomplete``) plus the
         # ``_run_chat`` chokepoint (keyed on ``executor``, not ``is_remote``) refuse
         # the send with a message the user can act on, rather than run local.
+        _local_turn_was_in_flight = _local_turn_generation(meta)
+        _local_turn_prompt_copy = _local_turn_prompt(meta)
         _relay_was_in_flight = False
         _executor_meta = meta.get("executor")
         _instance_meta = meta.get("instance_id")
@@ -1957,7 +2121,14 @@ def _rehydrate_slot_from_history(
         # turns counted above) is never rewritten.
         slot._disk_window_len = len(slot.messages)
         slot._dirty = False
-        if _relay_was_in_flight:
+        # A local turn admitted by the previous process and never torn down.
+        # Placed with the relay notice below for the same window-boundary
+        # reasons; when both markers are present the metadata is inconsistent
+        # (a slot runs locally OR on a peer), and one row is enough.
+        _had_local_turn_marker = _reconcile_local_turn_marker(
+            slot, _local_turn_was_in_flight, _local_turn_prompt_copy
+        )
+        if _relay_was_in_flight and not _had_local_turn_marker:
             # The gateway crashed while this slot's turn was executing on the peer
             # (flagged in the binding block above). The relay reader died with it
             # and the turn's tail was never mirrored here, so the loaded window
@@ -2487,6 +2658,7 @@ def _apply_recent_session(
     # _disk_older_count above) are the frozen prefix saves never rewrite.
     slot._disk_window_len = len(slot.messages)
     slot._dirty = False
+    _reconcile_local_turn_marker(slot, _local_turn_generation(meta), _local_turn_prompt(meta))
     logger.info("Restored session %s (%s)", slot_name, slot.title)
 
 
@@ -3922,6 +4094,14 @@ def _save_slot_to_history(
                     fields["channel_origin"] = True
                 if slot.forked_from is not None:
                     fields["forked_from"] = slot.forked_from
+                # CLEARABLE: the merge cannot delete a key and rehydrate reads
+                # zero as "no local turn outstanding", so the current value is
+                # written either way -- a forced save after a turn's teardown
+                # must not leave the admitted generation on disk.
+                fields["turn_in_flight_generation"] = slot._turn_in_flight_generation
+                # Same rule for the opening-row copy: None is the cleared value
+                # (rehydrate reads anything but a dict as "no copy").
+                fields["turn_in_flight_prompt"] = slot._turn_in_flight_prompt
                 if slot.executor == "remote" and slot.instance_id and slot.remote_slot:
                     # All three or none, exactly like the full save: a newborn
                     # bound to a peer has an EMPTY window until the first relayed
@@ -4309,6 +4489,13 @@ def _save_slot_to_history(
                     # in-flight, so a True read back on reload is the crash signal
                     # that triggers the interrupted-turn row.
                     meta_line["relay_in_flight"] = True
+            if slot._turn_in_flight_generation > 0:
+                # Written while a local turn is between admission and teardown
+                # and omitted otherwise; ``SLOT_OWNED_META_KEYS`` makes that
+                # omission the durable clear.
+                meta_line["turn_in_flight_generation"] = slot._turn_in_flight_generation
+                if slot._turn_in_flight_prompt is not None:
+                    meta_line["turn_in_flight_prompt"] = slot._turn_in_flight_prompt
             if slot.folder_id:
                 meta_line["folder_id"] = slot.folder_id
             if slot._channel_folder_filed or existing_meta.get("channel_folder_filed"):

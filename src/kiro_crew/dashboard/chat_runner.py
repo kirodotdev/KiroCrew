@@ -21,6 +21,7 @@ from kiro_crew import (
     model_registry,
     resource_status,
     session_directive,
+    shutdown_event,
 )
 from kiro_crew.acp.client import (
     AcpAuthRequired,
@@ -153,7 +154,9 @@ from kiro_crew.dashboard.chat_utils import (
     owned_stage_delivery_entry,
     parse_workflow_command,
     remember_slack_options,
+    run_to_completion,
     slack_mirror_is_paused,
+    slot_history_key,
     user_text_span,
 )
 from kiro_crew.dashboard.handlers import (
@@ -203,6 +206,7 @@ from kiro_crew.dashboard.state import (
     CrewLogPrevious,
     DashboardState,
     _ChatSlot,
+    _is_turn_inject,
     _mark_permission_resolved,
     append_and_surface,
     build_infra_retry_prompt,
@@ -9169,6 +9173,193 @@ class _AppAgentNotLoaded(Exception):
     """
 
 
+def _local_turn_generation_for(slot: _ChatSlot) -> int:
+    """The generation the marker for this dispatch is written under.
+
+    ``slot.task`` is installed before ``_run_chat`` gets its first loop step, so
+    ``_turn_generation`` already names this exact dispatch. Read into a local
+    BEFORE the marker save is awaited: a cancellation landing inside that await
+    (a tab close) must still leave the finally a generation it can retire, or
+    the save commits after the cancel and nothing ever clears it.
+    """
+    return max(1, slot._turn_generation)
+
+
+# Keys of the opening row copied into the marker: the row's identity, its
+# attachment lists and, for an inject, the kind that makes the classifier
+# count it as a turn opener. Everything else about the row is recomputed by
+# ``_ChatSlot.append`` or belongs to the process that wrote it.
+_LOCAL_TURN_PROMPT_META_KEYS = ("mid", "files", "dirs", "injectKind")
+
+
+def _local_turn_opening_row(slot: _ChatSlot) -> "dict[str, Any] | None":
+    """A durable copy of the row that opened the turn being admitted.
+
+    Walks back from the window tail to the newest row that opens a turn: a
+    ``user`` row or a dispatching ``inject`` (``_is_turn_inject``). Stops at
+    the first conversational assistant row, since a turn whose opener already
+    has an answer is not the one being admitted. Returns ``None`` when the
+    window holds no such row (a slot whose opener was consumed by an earlier
+    save-and-trim, or a test stub with an empty window).
+
+    The copy carries what ``_ChatSlot.append`` needs to re-create the row
+    byte-for-byte on a restore: role, content, cls, the ordering ``ts`` and
+    the identity ``mid`` plus the attachment lists. It does NOT carry the
+    generation, the turn actor or any directive flag -- the restored row is a
+    transcript row again, not an admission.
+    """
+    for row in reversed(slot.messages):
+        role = row.get("role")
+        if role == "assistant" and row.get("content"):
+            return None
+        meta = row.get("meta")
+        if role == "user" or (role == "inject" and _is_turn_inject(meta)):
+            kept_meta = {
+                key: meta[key]
+                for key in _LOCAL_TURN_PROMPT_META_KEYS
+                if isinstance(meta, dict) and key in meta
+            }
+            return {
+                "role": role,
+                "content": str(row.get("content") or ""),
+                "cls": str(row.get("cls") or ""),
+                "ts": str(row.get("ts") or ""),
+                "meta": kept_meta,
+            }
+    return None
+
+
+async def _begin_local_turn_marker(state: DashboardState, slot: _ChatSlot, generation: int) -> None:
+    """Persist this turn's generation on the slot's metadata line before dispatch.
+
+    The transcript cannot record a process death: a turn cut by a force exit
+    leaves partial assistant prose and finished tool rows, the same shape as a
+    clean answer, and the restore heuristic reads it as finished. Writing the
+    generation BEFORE any provider work begins means no output can outrun it,
+    and every restore path turns a leftover value into the interruption row.
+
+    A metadata-only merge, not a window save: the rows stay with the periodic
+    flush, so admitting a turn changes nothing about what the prompt builder
+    reads off disk. Only a transcript that does not exist yet (a newborn slot's
+    first turn) takes the full forced save, which is the one writer that can
+    create it. Both writes are awaited to completion under cancellation, however
+    many times it is delivered (``run_to_completion``: a graceful shutdown
+    escalating after its timeout cancels the runner more than once), so the
+    teardown clear that follows a cancelled turn is always ordered after them.
+    Best-effort like the queue's own durable copy: a
+    failure leaves the value in memory for the next save and never refuses the
+    turn -- the marker is a recovery hint, not the user's words.
+
+    Both writes are fenced to THIS slot incarnation. A tab closed mid-turn and
+    reopened under the same key (``close_slot`` pops the slot, then waits up to
+    2 s for the cancelled runner) resumes the same transcript, so the routing
+    pin alone cannot tell the two apart; the merge's guard and the forced
+    save's ``expected_slot_name`` recheck ``state._slots`` under the owner lock
+    and refuse once the map holds a different object, so a cancelled runner
+    that outlives its replacement never writes over the replacement's line or
+    rebuilds the window over its rows.
+    Nothing is written for a restricted session (``memory_mode`` other than
+    ``persistent``): the transcript save honours that retention mode, so the
+    teardown clear could never land and the copy of the prompt would sit on
+    the metadata line for good. Skipped in memory as well, so a restart
+    restores such a session exactly as it does today.
+    """
+    if slot.is_restricted:
+        return
+    slot._turn_in_flight_generation = generation
+    # The opening row travels with the generation. The row itself waits for the
+    # periodic flush (an immediate window save would put it on disk before the
+    # prompt build, where the builder's recent-context projection would read
+    # the current prompt as history), so a death inside that window loses it
+    # and the restore would judge the previous turn's tail instead. With the
+    # copy on the metadata line the restore puts the row back first.
+    slot._turn_in_flight_prompt = _local_turn_opening_row(slot)
+    log = state.conversation_log
+    if log is None:
+        return
+    history_key = slot_history_key(slot)
+    slot_name = slot.key
+    marker_fields: dict[str, Any] = {"turn_in_flight_generation": generation}
+    if slot._turn_in_flight_prompt is not None:
+        marker_fields["turn_in_flight_prompt"] = slot._turn_in_flight_prompt
+
+    def _still_this_incarnation(_meta: dict) -> bool:
+        return state._slots.get(slot_name) is slot
+
+    try:
+        merged = await run_to_completion(
+            asyncio.to_thread(
+                log.update_metadata_if,
+                history_key,
+                marker_fields,
+                _still_this_incarnation,
+                require_existing=True,
+            )
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.warning("Could not persist the turn marker for slot %s", slot.key, exc_info=True)
+        slot._dirty = True
+        return
+    if not merged and state._slots.get(slot_name) is slot:
+        await run_to_completion(
+            save_slot_off_loop(
+                state,
+                slot,
+                force=True,
+                expected_history_key=history_key,
+                expected_slot_name=slot_name,
+            )
+        )
+
+
+def _retire_local_turn_marker(slot: _ChatSlot, generation: int) -> bool:
+    """Clear the in-memory marker for one turn without touching a successor's.
+
+    Returns whether this call cleared it. A successor can be admitted in the
+    same slot before this turn's teardown finishes (the queue drain installs a
+    new task with its own generation), so only the generation that wrote the
+    marker may retire it.
+    """
+    if generation <= 0 or slot._turn_in_flight_generation != generation:
+        return False
+    slot._turn_in_flight_generation = 0
+    slot._turn_in_flight_prompt = None
+    return True
+
+
+async def _clear_local_turn_marker(state: DashboardState, slot: _ChatSlot, generation: int) -> None:
+    """Durably clear one turn's marker on an exit that wrote no other save.
+
+    The landed path retires the marker in memory right before its own transcript
+    save, so the omission rides that write. Every other exit -- an error card,
+    a Stop, a recovery re-queue -- reaches here and pays one forced save, since
+    a restart before the periodic flush would otherwise read the stale value
+    and flag a turn that ended in plain sight as interrupted.
+    """
+    if not _retire_local_turn_marker(slot, generation):
+        return
+    # ``best_effort`` re-arms ``_dirty`` on failure so the flush retries the
+    # omission; until then a stale on-disk value fails safe to one extra
+    # recovery prompt rather than a missed interruption. The identity pins
+    # refuse the write when a same-key replacement now owns the transcript
+    # (see ``_begin_local_turn_marker``): the replacement's own saves carry
+    # its marker state, and the live window is the replacement's, not this one.
+    await save_slot_off_loop(
+        state,
+        slot,
+        force=True,
+        expected_history_key=slot_history_key(slot),
+        expected_slot_name=slot.key,
+    )
+
+
+def _gateway_shutdown_requested() -> bool:
+    """Whether the process is shutting down, read without retaining the event."""
+    return shutdown_event.is_set()
+
+
 async def _run_chat(
     state: DashboardState,
     slot: _ChatSlot,
@@ -10630,6 +10821,9 @@ async def _run_chat(
     _mirror_thread: str | None = ""
     _mirror_task_counter = 0
     _memory_preparation_admitted = False
+    # Zero until the marker below is written, so a cancellation that lands during
+    # startup admission has nothing to clear.
+    _local_turn_marker_generation = 0
     # Bound before the try because cancellation may land while this turn waits
     # for shared memory preparation, before any provider is allocated.
     client: Any = None
@@ -10667,6 +10861,15 @@ async def _run_chat(
         # commands returned above, so they do not consume a still-valid control.
         if _prompt_depth == 0:
             await expire_slack_options(state, session_key)
+
+        # Durable "turn in flight" marker, written at the same boundary as the
+        # active-turn identity: every local command has returned, no provider
+        # work has begun. Not gated on ``_prompt_depth``: the expanded re-entry
+        # is the only call that reaches here for a /prompts mention. The
+        # generation is bound before the save is awaited so a cancellation
+        # inside it still reaches the finally with something to retire.
+        _local_turn_marker_generation = _local_turn_generation_for(slot)
+        await _begin_local_turn_marker(state, slot, _local_turn_marker_generation)
 
         # Resolve agent bindings early so we pass the correct kiro-cli
         # agent name (e.g. "kirocrew") instead of the KiroCrew slot name
@@ -17333,6 +17536,14 @@ async def _run_chat(
             )
             # Attach accumulated file changes to last assistant message before persist
             _flush_file_changes(slot)
+            # The reply is in the window, so this save is the durable clear of
+            # the in-flight marker: retire it first and the omission rides the
+            # same write instead of costing a second one in the finally. Not
+            # for a provider-side cancel: a shutdown cancels the provider the
+            # same way, persists the partial reply as an ordinary row, and the
+            # finally's shutdown check must still see the marker to preserve it.
+            if _stop_reason != STOP_REASON_CANCELLED:
+                _retire_local_turn_marker(slot, _local_turn_marker_generation)
             # Save to history and trigger memory consolidation
             await save_slot_off_loop(state, slot)
         # Reset ALL retry budgets once the cycle completes (success OR the
@@ -19359,6 +19570,20 @@ async def _run_chat(
                     _unclaimed_markers,
                     _identity_markers,
                 )
+        # Retire the in-flight marker once every transcript mutation is complete
+        # and the session permit above is released (an await here cannot skip
+        # that release), and only while the process is going to live on: during
+        # a shutdown the cancellation that ended this turn came from the process
+        # dying, which is exactly the interruption the marker exists to record --
+        # the graceful save writes it and the next start converts it. A turn
+        # that landed inside the shutdown grace keeps its clear. Before the queue
+        # drain below, so the successor's own marker is never overtaken by this
+        # omission. Guarded so a failing save cannot skip the steer requeue.
+        if not (_gateway_shutdown_requested() and not _turn_landed):
+            try:
+                await _clear_local_turn_marker(state, slot, _local_turn_marker_generation)
+            except Exception:
+                logger.debug("_clear_local_turn_marker failed", exc_info=True)
         # End-of-turn fallback: catches set_project and reset_conversation calls
         # that fired mid-turn, after the start-of-turn consume already ran. This
         # is the ONLY caller that may consume a queued conversation discard —

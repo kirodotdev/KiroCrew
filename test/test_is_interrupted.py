@@ -264,3 +264,62 @@ class TestCompletedCompaction:
                 "meta": {"kind": "compaction", "notice": notice_kind},
             }
             assert _is_interrupted(slot(user("/compact"), row)) is True
+
+
+class TestInjectRowsOpenTurns:
+    """An ``inject`` row stamped with a dispatching ``meta.injectKind`` (the queue
+    drain's cron/recovery/user_replay, the synthesis kick-off) is a turn like a
+    user row. An untagged inject -- a ``/note`` breadcrumb, a Stop-hook halt card,
+    a policy refusal notice -- dispatched nothing and is looked through.
+
+    Mirrors ``selectTurnInterrupted`` in ``chatSlice.ts``, which decides inject
+    rows before its CONTINUE_SCAN_SKIP set.
+    """
+
+    @staticmethod
+    def inject(kind: str | None = "user_replay", content: str = "go on", **meta) -> dict:
+        row = {"role": "inject", "content": content}
+        if kind is not None or meta:
+            row["meta"] = ({"injectKind": kind} if kind is not None else {}) | meta
+        return row
+
+    def test_every_dispatching_kind_is_an_opener(self):
+        for kind in ("cron", "recovery", "user_replay", "synthesis"):
+            assert _is_interrupted(slot(user(), assistant(), self.inject(kind))) is True
+
+    def test_inject_followed_by_tool_rows_is_interrupted(self):
+        rows = (
+            user(),
+            self.inject("recovery", "continue queued work"),
+            {"role": "tool", "content": "read complete", "meta": {"done": True}},
+        )
+        assert _is_interrupted(slot(*rows)) is True
+
+    def test_answered_inject_is_finished(self):
+        assert _is_interrupted(slot(user(), self.inject(), assistant())) is False
+
+    def test_older_stop_does_not_mask_a_newer_inject_turn(self):
+        rows = (
+            user("first"),
+            stop_event(),
+            self.inject("synthesis", "continue queued work"),
+            {"role": "tool", "content": "read complete"},
+        )
+        assert _is_interrupted(slot(*rows)) is True
+
+    def test_untagged_injects_are_looked_through(self):
+        # A halt card, a note (rehydrated and live shapes), an unknown or
+        # non-string kind: none dispatched a turn, so none is unanswered.
+        for row in (
+            self.inject(None, "Stop hook halted #3"),
+            self.inject(None, "noted", noteSession="dashboard:s"),
+            {"role": "inject", "content": "noted", "cls": "reconcile-note"},
+            self.inject("unknown"),
+            {"role": "inject", "content": "x", "meta": {"injectKind": 7}},
+            {"role": "inject", "content": "x", "meta": "cron"},
+        ):
+            assert _is_interrupted(slot(user(), assistant(), row)) is False
+            assert _is_interrupted(slot(user(), row)) is True
+
+    def test_empty_inject_is_not_an_opener(self):
+        assert _is_interrupted(slot(user(), assistant(), self.inject("cron", ""))) is False

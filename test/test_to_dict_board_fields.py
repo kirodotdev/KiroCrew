@@ -280,6 +280,29 @@ def test_not_interrupted_while_running():
     assert d["interrupted"] is False
 
 
+def test_interrupted_inject_successor_outranks_older_stop():
+    s = _slot(
+        {"role": "user", "content": "first", "ts": "t1"},
+        {"role": "system", "content": "stopped", "cls": json.dumps({"kind": "stop_event"}), "ts": "t2"},
+        {"role": "inject", "content": "continue queued work", "ts": "t3", "meta": {"injectKind": "recovery"}},
+        {"role": "tool", "content": "read complete", "ts": "t4"},
+    )
+
+    assert s.to_dict()["interrupted"] is True
+
+
+def test_halted_hook_inject_is_not_interrupted():
+    # A Stop-hook halt card is appended as ``inject`` but dispatched nothing, so
+    # the deliberately halted run must not read as interrupted.
+    s = _slot(
+        {"role": "user", "content": "first", "ts": "t1"},
+        {"role": "assistant", "content": "done", "ts": "t2"},
+        {"role": "inject", "content": "Stop hook halted #3", "ts": "t3"},
+    )
+
+    assert s.to_dict()["interrupted"] is False
+
+
 def test_interrupted_scan_tolerates_non_string_cls():
     # A row whose persisted `cls` is object-valued (foreign writer / corrupted
     # transcript) must not crash the summary scan — `to_dict()` runs on every

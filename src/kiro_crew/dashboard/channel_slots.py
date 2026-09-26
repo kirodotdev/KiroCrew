@@ -670,6 +670,16 @@ def surface_channel_session(
     # the frozen prefix a save never rewrites, and redact assistant content at
     # the read boundary.
     _rebuild_window(slot, messages)
+    # Channel transcripts bypass both dashboard restore drivers, so the local-turn
+    # marker a dashboard turn on this slot left behind is reconciled here, once
+    # the whole window exists. Local import: chat_persistence imports this module.
+    from kiro_crew.dashboard.chat_persistence import (
+        _local_turn_generation,
+        _local_turn_prompt,
+        _reconcile_local_turn_marker,
+    )
+
+    _reconcile_local_turn_marker(slot, _local_turn_generation(meta), _local_turn_prompt(meta))
     # The window corresponds to the file as of this listing, so the refresh pass
     # has nothing to do until the channel writes again.
     slot._channel_window_mtime = float(session_info.get("modified", 0) or 0)
