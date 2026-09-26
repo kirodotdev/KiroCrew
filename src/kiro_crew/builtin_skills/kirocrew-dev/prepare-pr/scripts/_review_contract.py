@@ -527,11 +527,14 @@ def parse_disposition_record(comment):
     return record
 
 
-def fetch_disposition_comments(repo, number, run_command):
-    """Return disposition-marked comments from any author, or None on error.
+def fetch_issue_comments(repo, number, run_command, keep=None):
+    """The PR's issue comments that ``keep`` accepts, across pages; None on error.
 
-    Collection cannot filter to workflow bots because dispositions come from
-    agents or humans; writer authority is checked separately before use.
+    One paginated read that several selectors can share: a caller needing
+    both the disposition records and the marker comments reads the pages once
+    instead of walking them twice. ``keep`` filters page by page, so comments
+    no selector wants are never retained. None when a page fails, does not
+    parse, or the page cap is hit with more pages left.
     """
     if not repo:
         return None
@@ -552,14 +555,41 @@ def fetch_disposition_comments(repo, number, run_command):
             return None
         if not isinstance(batch, list):
             return None
-        for comment in batch:
-            if isinstance(comment, dict) and (comment.get("body") or "").startswith(
-                DISPOSITION_PREFIX
-            ):
-                comments.append(comment)
+        comments.extend(c for c in batch if keep is None or keep(c))
         if len(batch) < 100:
             return comments
     return None
+
+
+def is_trusted_bot_comment(c, trusted_authors):
+    """A trusted marker-source comment: its author is a Bot AND its login is
+    in ``trusted_authors``. The Bot-type check alone is spoofable -- any
+    third-party app that echoes PR-controlled text would post an
+    attacker-chosen marker and forge freshness. One definition for every
+    script that reads reviewer markers."""
+    if not isinstance(c, dict):
+        return False
+    user = c.get("user") or {}
+    return user.get("type") == "Bot" and (user.get("login") or "").lower() in trusted_authors
+
+
+def is_disposition_comment(comment):
+    return isinstance(comment, dict) and (comment.get("body") or "").startswith(DISPOSITION_PREFIX)
+
+
+def select_disposition_comments(comments):
+    """The disposition-marked comments of ``comments``, from any author.
+
+    Collection cannot filter to workflow bots because dispositions come from
+    agents or humans; writer authority is checked separately before use.
+    """
+    return [comment for comment in comments if is_disposition_comment(comment)]
+
+
+def fetch_disposition_comments(repo, number, run_command):
+    """Return disposition-marked comments from any author, or None on error."""
+    comments = fetch_issue_comments(repo, number, run_command, keep=is_disposition_comment)
+    return None if comments is None else select_disposition_comments(comments)
 
 
 def author_write_verdict(repo, login, run_command):

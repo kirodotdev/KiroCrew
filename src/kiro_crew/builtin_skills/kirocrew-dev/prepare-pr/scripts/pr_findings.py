@@ -187,7 +187,6 @@ parse_disposition_record = _review_contract.parse_disposition_record
 FAIL_RE = re.compile(r"FAILURE|TIMED_OUT|CANCELLED|ACTION_REQUIRED|STARTUP_FAILURE|STALE|ERROR")
 RUN_ID_RE = re.compile(r"/actions/runs/([0-9]+)")
 _MAX_THREAD_PAGES = 50
-_MAX_COMMENT_PAGES = 50
 
 # Terminal-injection guard for untrusted printed text. The parity-pinned copy
 # in pr_status.py keeps terminal safety local to both command output paths. The
@@ -331,37 +330,12 @@ def fetch_bot_comments(repo, number, trusted_authors):
     ``trusted_authors`` -- the Bot-type check alone is spoofable by any
     third-party app that echoes PR-controlled text.
     """
-    if not repo:
-        return None
-    comments: list = []
-    for page in range(1, _MAX_COMMENT_PAGES + 1):
-        rc, out, _ = run(
-            [
-                "gh",
-                "api",
-                "repos/{}/issues/{}/comments?per_page=100&page={}".format(repo, number, page),
-            ]
-        )
-        if rc != 0 or not out.strip():
-            return None
-        try:
-            batch = json.loads(out)
-        except ValueError:
-            return None
-        if not isinstance(batch, list):
-            return None
-        for c in batch:
-            if not isinstance(c, dict):
-                continue
-            user = c.get("user") or {}
-            if user.get("type") != "Bot":
-                continue
-            if (user.get("login") or "").lower() not in trusted_authors:
-                continue
-            comments.append(c)
-        if len(batch) < 100:
-            return comments
-    return None
+    return _review_contract.fetch_issue_comments(
+        repo,
+        number,
+        run,
+        keep=lambda c: _review_contract.is_trusted_bot_comment(c, trusted_authors),
+    )
 
 
 def fetch_disposition_comments(repo, number):

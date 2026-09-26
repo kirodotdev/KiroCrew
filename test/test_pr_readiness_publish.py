@@ -114,6 +114,11 @@ if [ "$1" = "api" ]; then
         ;;
     esac
   fi
+  case "$*" in
+    *"/actions/runs?event=pull_request"*)
+      [ -f "$FIXTURES/fail_runs" ] && { echo 'gh: Server Error (HTTP 500)' >&2; exit 1; }
+      cat "$FIXTURES/runs.json"; exit 0 ;;
+  esac
   case "${2:-}" in
     *"/issues/"*"/labels") cat "$FIXTURES/pr_labels.txt"; exit 0 ;;
   esac
@@ -409,3 +414,72 @@ def test_the_cleanup_step_tolerates_a_concurrent_removal(
     runner = Runner(tmp_path, cleanup_script)
     result = runner.run(fail_label_delete=True)
     assert result.ok, result.proc.stderr
+
+
+# ── A success is re-checked against a lane that started since ────────────────
+
+
+def _recheck_runner(runner: Runner, lane_status: str, *, fail: bool = False) -> Runner:
+    spec = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    runner.env.update(
+        {
+            "FORK": "false",
+            "HEAD_REPO": "kirodotdev/KiroCrew",
+            "HEAD_REF": "feat/x",
+            "MONITORED_LANES": spec["jobs"]["readiness"]["env"]["MONITORED_LANES"],
+        }
+    )
+    (runner.fixtures / "runs.json").write_text(
+        json.dumps(
+            {
+                "workflow_runs": [
+                    {
+                        "id": 5,
+                        "name": "CI",
+                        "path": ".github/workflows/ci.yml",
+                        "status": lane_status,
+                        "head_repository": {"full_name": "kirodotdev/KiroCrew"},
+                        "head_branch": "feat/x",
+                    }
+                ]
+            }
+        )
+    )
+    flag = runner.fixtures / "fail_runs"
+    flag.unlink(missing_ok=True)
+    if fail:
+        flag.touch()
+    return runner
+
+
+def test_a_success_over_a_lane_that_restarted_publishes_pending(runner: Runner) -> None:
+    """The evaluation read the runs page before the checkout and the
+    disposition gate; a lane re-run that started since must not be published
+    over as success. That success is what lets armed auto-merge land."""
+    result = _recheck_runner(runner, "in_progress").run()
+    assert result.published is not None
+    assert result.published["state"] == "pending"
+    assert "CI" in result.published["description"]
+    assert len(result.published["description"]) <= 140
+
+
+def test_a_success_with_every_lane_done_still_publishes_success(runner: Runner) -> None:
+    result = _recheck_runner(runner, "completed").run()
+    assert result.published is not None
+    assert result.published["state"] == "success"
+
+
+def test_an_unreadable_re_check_publishes_a_stamped_pending(runner: Runner) -> None:
+    result = _recheck_runner(runner, "completed", fail=True).run()
+    assert result.published is not None
+    assert result.published["state"] == "pending"
+    assert result.published["description"].startswith("[read-failed]")
+
+
+def test_a_non_success_verdict_is_not_re_checked(runner: Runner) -> None:
+    result = _recheck_runner(runner, "in_progress").run(
+        status_state="failure", target_label="readiness: action required"
+    )
+    assert result.published is not None
+    assert result.published["state"] == "failure"
+    assert not any("actions/runs" in c for c in result.calls)

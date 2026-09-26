@@ -2334,6 +2334,44 @@ Two subtleties:
   types put the ceiling at 38. The `pr+sha` concurrency group collapses the burst for
   execution, but a collapsed run has already consumed its dispatch slot, so the group does
   not bound that cost.
+- **Most `workflow_run` events are settled before the evaluation.** On 2026-09-26
+  05:00-05:10 UTC about 14 head updates drew ~490 readiness runs, ~180 of them full
+  evaluations (~13 per head at ~15-20 requests each, ~18k requests an hour): the largest
+  draw on the shared pool. The *Screen the triggering event* step now settles two shapes
+  that cannot change the verdict:
+  - `in_progress`: the step reads the published status. Already red is left alone (one
+    request). Already `pending`, with no lane on the runs page red, is re-published as
+    `pending` with one POST and no evaluation (three requests): that POST overwrites a
+    stale success a concurrent `pull_request_target` run may land meanwhile, which is
+    the write the full evaluation's pending used to provide. Only
+    `success`, no status, or an unreadable one goes to the full evaluation, which is what
+    re-pends a re-run of a green lane and moves the label with it. An `in_progress` run
+    still cancels a running evaluation (whose reads predate the re-run), and the red
+    check on the runs page is what keeps a red that evaluation was about to publish from
+    being dropped.
+  - a clean `completed` (`success` / `neutral` / `skipped`) of a same-repo
+    `pull_request` run while another monitored lane is still running, none is red, and
+    the status is `pending`: one runs-page read plus one status read. The completion
+    that lands the last lane, any red completion, any red on the page, and any
+    non-pending status run the full evaluation.
+    Fork PRs and CodeQL are never screened on completion: their verdicts live in
+    check-runs that a clean workflow conclusion says nothing about.
+
+  A same-repo `success` is re-checked before it is published: the publish step reads the
+  runs page once more and downgrades to `pending` if a monitored lane has started since
+  the evaluation read it (a re-run in flight), so a run in an isolated
+  `pull_request_target` group cannot land a stale success over a re-run. `in_progress`
+  is screened on same-repo PRs only.
+
+  What remains: a red that only a check-run shows (a CodeQL security result, a fork AI
+  lane) whose own evaluation was superseded mid-flight, and a disposition violation
+  posted while lanes still run, wait for the next full evaluation (at the latest, the
+  last lane's completion) instead of publishing at once. And when two lanes complete
+  seconds apart, the later one's run cancels the earlier one's evaluation; if the runs
+  page still lags on the earlier lane, the later run reads it as open and settles, and
+  the self-heal sweep re-fires the recompute. The status is `pending` in each case, so
+  the merge is held. Each run ends with a `pr-readiness: core rate limit -- N/M remaining` log
+  line (`GET /rate_limit` is free) so the draw can be measured.
 - **A `pull_request_target` run gets its own isolated concurrency group.** Those are
   the only readiness runs that surface as a CheckRun in the PR's rollup, and GitHub
   marks any superseded run "cancelled" whichever way `cancel-in-progress` is set, so
@@ -2366,7 +2404,10 @@ Two subtleties:
   The PR lookup for a `workflow_run` event is scoped the same way: the event
   carries the head repository and branch, so `pulls?state=open&head=<owner>:<branch>`
   answers in one request; the walk over every open PR (seven pages at 600 open PRs)
-  remains only for an event that carries neither field.
+  remains only for an event that carries neither field. The default branch comes from
+  the event payload, and `pr_status.py --disposition-gate` reads the PR's comment pages
+  once for both the disposition records and the reviewer markers (it walked them twice),
+  and `pr_findings.py` uses the same shared read.
 - **A transport error during evaluation is non-terminal.** Every read-only `gh`
   call goes through a bounded retry helper (3 attempts with backoff, 120s cap per
   attempt); a non-429 HTTP 4xx is treated as permanent misconfiguration and fails
