@@ -4143,3 +4143,114 @@ class TestDoctorSkillViewCensus:
         line = self._line(self._run(tmp_path, monkeypatch, capsys))
         assert f"{skill_projection._PROJECTION_METADATA_DIR_NAME}/ directory" in line
         assert f"in {skill_projection._PROJECTION_LEASE_DIR_NAME}/ cannot be read" in line
+
+
+class TestRunDirCensus:
+    """The run-directory census is read-only, down to the workspace root itself.
+
+    ``workspace_root()`` creates the tree it resolves, which is right for a
+    gateway about to spawn into it and wrong for a doctor on a host where no
+    gateway ever ran: the report would leave a workspace behind as its only
+    trace. The doctor resolves without creating and says there is nothing yet.
+    Its two figures come from the sweep's own rule over this home's pid ledger;
+    no pid's liveness is probed.
+    """
+
+    @staticmethod
+    def _run(monkeypatch, capsys, root: Path, retained=frozenset()) -> str:
+        from kiro_crew import session_pid
+
+        monkeypatch.setenv("KIROCREW_WORKSPACE", str(root))
+        monkeypatch.setattr(session_pid, "retained_gateway_pids", lambda: frozenset(retained))
+        cli_doctor._doctor_run_dirs()
+        return capsys.readouterr().out
+
+    @staticmethod
+    def _marked(root: Path, name: str, marker: str) -> Path:
+        from kiro_crew.session_work_dir import RUN_DIR_MARKER
+
+        work_dir = root / name
+        (work_dir / ".kiro" / "settings").mkdir(parents=True)
+        (work_dir / ".kiro" / "settings" / "cli.json").write_text("{}", encoding="utf-8")
+        (work_dir / RUN_DIR_MARKER).write_text(marker, encoding="ascii")
+        return work_dir
+
+    def test_a_workspace_root_that_does_not_exist_is_not_created(
+        self, tmp_path: Path, monkeypatch, capsys
+    ) -> None:
+        root = tmp_path / "never-ran" / "kirocrew-workspace"
+        out = self._run(monkeypatch, capsys, root)
+        assert not root.exists(), "the doctor created the workspace tree"
+        assert not root.parent.exists()
+        assert "run dirs:" in out and "no workspace root yet" in out
+
+    def test_both_figures_print_on_one_line_and_nothing_is_removed(
+        self, tmp_path: Path, monkeypatch, capsys
+    ) -> None:
+        from kiro_crew.session_work_dir import RUN_DIR_MARKER, data_home_id
+
+        root = tmp_path / "ws"
+        legacy = root / "subagent_deadbeef" / ".kiro" / "settings"
+        legacy.mkdir(parents=True)
+        (legacy / "cli.json").write_text("{}", encoding="utf-8")
+        self._marked(root, "subagent_00000001", "f" * 24 + "\n12345")
+        self._marked(root, "subagent_00000002", "garbled")
+        self._marked(root, "subagent_00000003", f"{data_home_id()}\n12345")
+        self._marked(root, "subagent_00000004", f"{data_home_id()}\n23456")
+        before = sorted(p.name for p in root.rglob("*"))
+        out = self._run(monkeypatch, capsys, root, retained={12345})
+        shown = os.path.realpath(root)
+        (line,) = [ln for ln in out.splitlines() if "run dirs:" in ln]
+        assert line.startswith("  run dirs:    ⚠️ ")
+        assert f"under {shown}: 1 run director(ies) carry no {RUN_DIR_MARKER} marker" in line
+        assert "3 marked director(ies) this data home cannot reclaim" in line
+        assert "no workspace root yet" not in out
+        assert sorted(p.name for p in root.rglob("*")) == before
+
+    def test_an_unmarked_backlog_names_the_remedy_and_the_cap_makes_a_floor(
+        self, tmp_path: Path, monkeypatch, capsys
+    ) -> None:
+        from kiro_crew import session_work_dir
+
+        root = tmp_path / "ws"
+        for n in range(1, 4):
+            (root / f"subagent_{n:08x}" / ".kiro" / "settings").mkdir(parents=True)
+        out = self._run(monkeypatch, capsys, root)
+        assert "✅ under" in out and "3 run director(ies) carry no" in out
+        assert "With the gateway stopped" not in out
+        monkeypatch.setattr(cli_doctor, "_RUN_DIR_BACKLOG_WARN", 2)
+        out = self._run(monkeypatch, capsys, root)
+        assert "⚠️ " in out and "With the gateway stopped, move directories matching" in out
+        original = session_work_dir.count_run_dirs
+        monkeypatch.setattr(
+            session_work_dir,
+            "count_run_dirs",
+            lambda path, **kw: original(path, max_entries=2, **kw),
+        )
+        out = self._run(monkeypatch, capsys, root)
+        assert "2+ run director(ies) carry no" in out and "0+ marked" in out
+
+    def test_a_root_with_nothing_the_sweep_cannot_reclaim_is_clean(
+        self, tmp_path: Path, monkeypatch, capsys
+    ) -> None:
+        from kiro_crew.session_work_dir import data_home_id
+
+        root = tmp_path / "ws"
+        self._marked(root, "subagent_00000001", f"{data_home_id()}\n12345")
+        out = self._run(monkeypatch, capsys, root)
+        assert "✅ no run directories left behind that the sweep cannot reclaim" in out
+
+    def test_an_unreadable_ledger_skips_the_census(self, tmp_path: Path, monkeypatch, capsys):
+        from kiro_crew import session_pid
+
+        root = tmp_path / "ws"
+        self._marked(root, "subagent_00000001", "garbled")
+        monkeypatch.setenv("KIROCREW_WORKSPACE", str(root))
+        monkeypatch.setattr(
+            session_pid,
+            "retained_gateway_pids",
+            lambda: (_ for _ in ()).throw(OSError("io")),
+        )
+        cli_doctor._doctor_run_dirs()
+        out = capsys.readouterr().out
+        assert "⚠️  the session pid ledger cannot be read; census skipped" in out

@@ -1770,6 +1770,10 @@ class AcpRuntime:
         self._entitlement_probe_attempt_at = 0.0
         self._entitlement_probe_result: list[dict[str, str]] = []
         self._dead = False
+        # Set only after kill confirms the root exited and no tracked
+        # descendant survived. Consumers use it to decide whether a work
+        # directory is safe to reclaim.
+        self._process_tree_confirmed_dead = False
         self._death_summary: str | None = None
         # The composed summary's parts, so the post-reap amendment rebuilds the
         # line instead of editing its text -- a tail carrying this format's own
@@ -2005,6 +2009,11 @@ class AcpRuntime:
     def is_alive(self) -> bool:
         """True if the underlying process exists and has not exited."""
         return self._process is not None and self._process.returncode is None and not self._dead
+
+    @property
+    def process_tree_confirmed_dead(self) -> bool:
+        """Whether teardown confirmed the root and every tracked child exited."""
+        return self._process_tree_confirmed_dead is True
 
     def death_summary(self) -> str | None:
         """One-line death attribution, or None while alive.
@@ -2361,6 +2370,7 @@ class AcpRuntime:
         """Start the ACP runtime behind the gateway-wide cold-start admission gate."""
         if self._process is not None:
             raise AcpRuntimeError("Runtime already spawned")
+        self._process_tree_confirmed_dead = False
 
         admission = _cold_start_admission()
         wait_ms = await admission.acquire()
@@ -3321,6 +3331,7 @@ class AcpRuntime:
         as a bare "process died during prompt", and a log line that says
         "killed" without saying WHO killed leaves nothing to correlate.
         """
+        self._process_tree_confirmed_dead = False
         try:
             await self._kill_inner(expected=expected, reason=reason)
         finally:
@@ -3394,6 +3405,7 @@ class AcpRuntime:
             # exactly this point. The drain's failure path raises instead, keeping
             # the placeholder true for a tree it could not confirm.
             self._note_reaped_after_kill(process.returncode)
+            self._process_tree_confirmed_dead = process.returncode is not None
             self._process = None
             self._process_instance = ""
             # Tracking was retired by the shared drain under the original pin.
@@ -3460,6 +3472,7 @@ class AcpRuntime:
                 await escalate()
             # Before the handle is dropped: the death line above was
             # written pre-signal and says returncode=<not reaped>.
+            root_confirmed_dead = self._process.returncode is not None
             self._note_reaped_after_kill(self._process.returncode)
             self._process = None
             # The id names the process that just ended; the next spawn mints its
@@ -3495,6 +3508,7 @@ class AcpRuntime:
             # entry of one still running is what the sweep needs to reap it.
             saved_children = dict(self._child_pids)
             self._child_pids = {}
+            survivors: list[int] = []
             if saved_children:
                 survivors = await asyncio.to_thread(_prune_dead_descendants, saved_children)
                 if survivors:
@@ -3504,6 +3518,7 @@ class AcpRuntime:
                         len(survivors),
                         survivors,
                     )
+            self._process_tree_confirmed_dead = root_confirmed_dead and not survivors
 
     # ── Reader Task (single owner of stdout) ──
 

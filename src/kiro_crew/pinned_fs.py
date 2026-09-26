@@ -1983,7 +1983,13 @@ def remove_dir_verified(
     return StagedRemoval(removed=True)
 
 
-def unlink_verified(holder_fd: int, name: str, expect: tuple[int, int]) -> bool:
+def unlink_verified(
+    holder_fd: int,
+    name: str,
+    expect: tuple[int, int],
+    *,
+    on_error: Callable[[OSError], None] | None = None,
+) -> bool:
     """Unlink *name* under *holder_fd*, only if it is still ``(st_dev, st_ino)`` *expect*.
 
     The residual is irreducible and better stated than implied: POSIX has no
@@ -1992,6 +1998,11 @@ def unlink_verified(holder_fd: int, name: str, expect: tuple[int, int]) -> bool:
     what turns "delete whatever answers to this name" into "delete this object, or nothing".
     The remaining window needs a swap landing between two adjacent syscalls, and the
     directory holding the name was itself reached only through verified descriptors.
+
+    *on_error* receives the exception when the UNLINK itself is refused -- a permission or
+    read-only mount, never an identity mismatch, which is a deliberate "no" and stays
+    silent. Both still answer ``False``; the callback is how a caller that must report
+    the first kind tells it from the second.
     """
     try:
         info = os.stat(name, dir_fd=holder_fd, follow_symlinks=False)
@@ -2001,7 +2012,9 @@ def unlink_verified(holder_fd: int, name: str, expect: tuple[int, int]) -> bool:
         return False
     try:
         os.unlink(name, dir_fd=holder_fd)
-    except OSError:
+    except OSError as exc:
+        if on_error is not None:
+            on_error(exc)
         return False
     return True
 

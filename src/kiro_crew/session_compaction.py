@@ -676,6 +676,13 @@ class CompactionCoordinator:
                     await record_session_ended(key, end_reason=END_REASON_RECYCLED)
 
             await asyncio.to_thread(self._deps.unlink_session_queue, session)
+            if owner._sessions.get(key) is not None:
+                # A successor already holds this key -- the "entry already
+                # replaced" arm, or one that registered under the recycling
+                # marker during the unlink above -- and it runs in the same
+                # derived work directory. This provider's shutdown must leave
+                # that directory to the successor (session_work_dir).
+                session.provider.disown_work_dir()
             if popped is None:
                 await session.provider.shutdown()
                 self._deps.logger.info(
