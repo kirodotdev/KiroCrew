@@ -350,6 +350,9 @@ class TestWhatThisSetGrants:
         "chat_tag_update",
         "chat_tag_assign",
     }
+    #: Pinning. Same posture as tag assignment: one metadata flag on a live
+    #: session the caller may already file and tag, nothing deleted.
+    PIN_TOOLS = {"chat_session_pin"}
     #: The session-control half. Granted by the SAME assignment as the folder
     #: half — see ``test_session_driving_tools_ship_with_the_folder_tools`` for
     #: why the two classes ride together rather than in two servers.
@@ -363,7 +366,7 @@ class TestWhatThisSetGrants:
         "session_release",
         "session_read_message",
     }
-    GRANTED_TOOLS = FOLDER_TOOLS | TAG_TOOLS | SESSION_TOOLS
+    GRANTED_TOOLS = FOLDER_TOOLS | TAG_TOOLS | PIN_TOOLS | SESSION_TOOLS
 
     def test_the_set_is_exactly_the_folder_tools(self) -> None:
         from kiro_crew import mcp_dashboard
@@ -396,13 +399,15 @@ class TestWhatThisSetGrants:
         names = {t["name"] for t in mcp_dashboard._tool_definitions()}
         folder = {n for n in names if n.startswith("chat_folder_")}
         tags = {n for n in names if n.startswith("chat_tag_")}
+        pins = {n for n in names if n.startswith("chat_session_")}
         session = {n for n in names if n.startswith("session_")}
         assert folder, "the folder-organization tools left this set"
         assert tags, "the tag-organization tools left this set"
+        assert pins, "the pin tool left this set"
         assert session, "the session-control tools left this set"
         # Nothing else rides along unannounced.
-        assert names == folder | tags | session, (
-            f"{sorted(names - folder - tags - session)} is neither folder organization, "
-            "tag organization nor session control — name the class it belongs to "
-            "before adding it here"
+        assert names == folder | tags | pins | session, (
+            f"{sorted(names - folder - tags - pins - session)} is neither folder "
+            "organization, tag organization, pinning nor session control — name the "
+            "class it belongs to before adding it here"
         )

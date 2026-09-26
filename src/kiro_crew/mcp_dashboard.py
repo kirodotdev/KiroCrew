@@ -26,7 +26,8 @@ update a tag (rename, recolor, status flag), and add or remove tags on a live
 session — no tag delete, so nothing here can strip a label from every session
 at once, and the assignment is a DELTA the endpoint applies compare-and-set
 against the revision this server read, so an agent never clobbers a tag the
-person clicked on meanwhile. Every tool is a thin proxy over the dashboard's
+person clicked on meanwhile. It can pin or unpin a live session with the same
+ownership rules as tagging one. Every tool is a thin proxy over the dashboard's
 existing endpoints (loopback +
 ``X-Internal-Secret``); the endpoints keep owning every tree invariant, and the
 gateway audits each write with the caller's declared component name — this
@@ -97,6 +98,7 @@ from kiro_crew.validation import (
     CHAT_FOLDER_MOVE_SCHEMA,
     CHAT_FOLDER_MOVE_SESSION_SCHEMA,
     CHAT_FOLDER_TREE_SCHEMA,
+    CHAT_SESSION_PIN_SCHEMA,
     CHAT_TAG_ASSIGN_SCHEMA,
     CHAT_TAG_CREATE_SCHEMA,
     CHAT_TAG_LIST_SCHEMA,
@@ -414,6 +416,34 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     },
                 },
                 "required": ["session"],
+            },
+        },
+        {
+            "name": "chat_session_pin",
+            "description": (
+                "Pin or unpin a LIVE chat session in the sidebar. ``session`` is a slot "
+                "key or 'dashboard:<slot>' session key from chat_folder_tree, or a "
+                "session's exact title when that title is unique. ``pinned`` is true to "
+                "pin, false to unpin; asking for the state the session already has "
+                "writes nothing and reports it. chat_folder_tree marks pinned sessions "
+                "``[pinned]``. Metadata only: the transcript, model and any running "
+                "turn are untouched. ARCHIVED (history) sessions cannot be pinned — "
+                "revive one into the sidebar first. An app agent may pin only its own "
+                "sessions; a crew member may pin only a session it owns or created."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "session": {
+                        "type": "string",
+                        "description": "Slot key, 'dashboard:<slot>' session key, or exact unique session title.",
+                    },
+                    "pinned": {
+                        "type": "boolean",
+                        "description": "true to pin, false to unpin.",
+                    },
+                },
+                "required": ["session", "pinned"],
             },
         },
         {
@@ -2513,6 +2543,57 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         if removed:
             parts.append(f"removed {removed}")
         return redact(f"Session `{slot_key}`: {'; '.join(parts)}. Tags now: {shown}.")
+    if name == "chat_session_pin":
+        args = validate_tool_args(args, CHAT_SESSION_PIN_SCHEMA)
+        want = args["pinned"]
+        chat_slots, slots_err = _visible_chat_slots()
+        if slots_err:
+            return f"Error: {slots_err}"
+        slot_key, slot_err = _resolve_chat_slot_key(args["session"], chat_slots)
+        if slot_err:
+            return redact(f"Error: {slot_err}")
+        # Like chat_folder_move_session, this writes to a session OTHER than the
+        # caller's, so identity is resolved STRICTLY and the verified key rides
+        # on the write unchanged — see that tool for why the lenient walk is
+        # unsafe here.
+        caller_key, strict_err = require_strict_session_key(
+            "Error: cannot verify which session is calling, so this pin change is "
+            "refused — pinning another session requires a caller identity the "
+            "gateway can vouch for.",
+            server=SERVER_NAME,
+        )
+        if not caller_key:
+            return strict_err
+        verb = "Pinned" if want else "Unpinned"
+        slot_row = next((s for s in chat_slots if str(s.get("key") or "") == slot_key), {})
+        # No client-side "already in that state" shortcut: the list read above
+        # can be stale, so the route decides under its lock, after the
+        # generation and ownership re-checks, and reports ``changed``.
+        # ``expected_created`` pins the write to the slot generation resolved
+        # above, the same token chat_folder_file_self sends; the endpoint
+        # checks it under its lock, so a slot key recreated for a different
+        # conversation in between is refused instead of pinned.
+        pin_body: dict[str, Any] = {"pinned": want}
+        slot_created = str(slot_row.get("created") or "")
+        if slot_created:
+            pin_body["expected_created"] = slot_created
+        d = _patch(
+            f"/api/chat/slots/{quote(slot_key, safe='')}/pin",
+            pin_body,
+            session_key=caller_key,
+        )
+        if d.get("error"):
+            if d.get("code") == "session_gone":
+                return redact(
+                    f"Error: session `{slot_key}` closed or was replaced after it was "
+                    "resolved. Nothing was written — call chat_folder_tree to see "
+                    "the current sessions."
+                )
+            return redact(f"Error: {d['error']}")
+        if d.get("changed") is False:
+            state_word = "pinned" if want else "not pinned"
+            return redact(f"No change: session `{slot_key}` is already {state_word}.")
+        return redact(f"{verb} session `{slot_key}`.")
     return f"Error: unknown tool '{name}'"
 
 

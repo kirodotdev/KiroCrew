@@ -8166,6 +8166,10 @@ handle immediately.
 #:   goes to ``/api/chat/slots/<target>/tags`` where the target is the session
 #:   named in the ARGUMENTS — the same shape as ``chat_folder_move_session``.
 #:   Ingested content could re-label any persistent same-workspace session.
+#: * ``chat_session_pin`` — WITHHELD. Writes another session's ``pinned`` flag:
+#:   the PATCH goes to ``/api/chat/slots/<target>/pin`` where the target is the
+#:   session named in the ARGUMENTS, the same shape as ``chat_tag_assign``, and
+#:   no conductor step needs it.
 #: * ``session_send`` — WITHHELD. Runs text as another session's user-role turn
 #:   under that target's own grants. The server-side gates bound WHICH target is
 #:   reachable; nothing bounds WHAT is sent.

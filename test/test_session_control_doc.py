@@ -62,7 +62,9 @@ def test_the_page_names_every_advertised_tool(doc_text: str, advertised_tools: l
     tool_half = doc_text.split("## What you cannot reach", 1)[0]
     claimed = {
         match.group(1)
-        for match in re.finditer(r"`((?:session|chat_folder|chat_tag)_[a-z_]+)`", tool_half)
+        for match in re.finditer(
+            r"`((?:session|chat_folder|chat_tag|chat_session)_[a-z_]+)`", tool_half
+        )
     }
     assert claimed, "found no backticked tool names at all — the scan anchor moved"
     assert claimed <= advertised, (

@@ -56,6 +56,7 @@ class TestAdmittedChatRouteMethods:
             ("/api/chat/tags", "GET"),  # READ the shared vocabulary
             ("/api/chat/slots/chat-1-2/folder", "PATCH"),
             ("/api/chat/slots/chat-1-2/tags", "PUT"),
+            ("/api/chat/slots/chat-1-2/pin", "PATCH"),  # pin own or created session
             ("/api/chat/slots", "GET"),  # read-only session list for folder tools
         ],
     )
@@ -90,7 +91,7 @@ class TestAdmittedChatRouteMethods:
             "/api/chat/tag-columns",  # different prefix, not /tags/{id}
             "/api/chat/tag-columns/c1",
             "/api/chat/slots/chat-1-2",  # slot detail
-            "/api/chat/slots/chat-1-2/pin",  # a different slot sub-resource
+            "/api/chat/slots/chat-1-2/mode",  # a different slot sub-resource
             "/api/chat/pins",
             "/api/chat/folders/abc/deeper",  # deeper than one segment
         ],
@@ -228,13 +229,22 @@ class TestChatRouteGate:
         assert json.loads(refusal.text)["code"] == "member_scope_denied"
 
     @pytest.mark.asyncio
+    async def test_member_admitted_to_slot_pin(self, monkeypatch):
+        # ``api_chat_slot_pin`` carries the member_owns_slot fence, so the gate
+        # forwards the PATCH and the handler decides which session it may pin.
+        _stub_scope(monkeypatch, scope=MEMBER_STORE)
+        monkeypatch.setattr(sc, "member_admitted_to_scoped_surface", lambda k, s: True)
+        req = _internal_request("PATCH", "/api/chat/slots/chat-1-2/pin")
+        assert await _shared.private_chat_route_refusal(req) is None
+
+    @pytest.mark.asyncio
     async def test_member_still_refused_on_a_non_admitted_chat_route(self, monkeypatch):
-        # A slot SUB-resource (pin) is NOT one of the admitted routes -- the
+        # A slot SUB-resource (mode) is NOT one of the admitted routes -- the
         # owner-only refusal stands even for a caller the shared predicate would
         # otherwise admit.
         _stub_scope(monkeypatch, scope=MEMBER_STORE)
         monkeypatch.setattr(sc, "member_admitted_to_scoped_surface", lambda k, s: True)
-        req = _internal_request("PATCH", "/api/chat/slots/chat-1-2/pin")
+        req = _internal_request("PATCH", "/api/chat/slots/chat-1-2/mode")
         refusal = await _shared.private_chat_route_refusal(req)
         assert refusal is not None and refusal.status == 403
         assert json.loads(refusal.text)["code"] == "member_scope_denied"

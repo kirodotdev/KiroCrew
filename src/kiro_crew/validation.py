@@ -2361,6 +2361,17 @@ CHAT_TAG_ASSIGN_SCHEMA = ToolSchema(
     ],
 )
 
+CHAT_SESSION_PIN_SCHEMA = ToolSchema(
+    tool_name="chat_session_pin",
+    fields=[
+        # Same session-reference shape as ``chat_folder_move_session.session``.
+        FieldSpec("session", str, required=True, max_len=512),
+        # A real JSON boolean: the string "false" is truthy, so a coerced value
+        # would pin a session the caller asked to unpin.
+        FieldSpec("pinned", bool, required=True),
+    ],
+)
+
 ARTIFACT_MOVE_SCHEMA = ToolSchema(
     tool_name="artifact_move",
     fields=[
@@ -3648,6 +3659,7 @@ MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
     "chat_tag_create": CHAT_TAG_CREATE_SCHEMA,
     "chat_tag_update": CHAT_TAG_UPDATE_SCHEMA,
     "chat_tag_assign": CHAT_TAG_ASSIGN_SCHEMA,
+    "chat_session_pin": CHAT_SESSION_PIN_SCHEMA,
 }
 
 # ── Tool Schemas (MCP crew log — server ``kirocrew-crew-log``) ──

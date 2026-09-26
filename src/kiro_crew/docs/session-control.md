@@ -4,7 +4,7 @@ One chat session can open, fork, seed, watch, stop and close another one, and ta
 another one under itself in the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 17 of its tools, written for the agent that is about to use them.
+for all 18 of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
 
@@ -13,8 +13,8 @@ The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
   `session_release`. These reach another session.
 - **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
   `chat_folder_move`, `chat_folder_move_session`, `chat_folder_file_self`,
-  `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`.
-  These organize what the person sees in the sidebar.
+  `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`,
+  `chat_session_pin`. These organize what the person sees in the sidebar.
 
 Everything a created session does is visible: it appears in the user's sidebar
 like any other tab, they can read it, take it over, and close it. This is how
@@ -284,6 +284,19 @@ never delete a tag**, so nothing here can lose a label the person put on a
 session. `chat_tag_update` is metadata only: every session carrying the tag keeps
 it, and a column filtering on it keeps filtering.
 
+## Pins
+
+| Tool | Arguments | What it does |
+|---|---|---|
+| `chat_session_pin` | `session` (required), `pinned` (required boolean) | Pin (`true`) or unpin (`false`) a live session |
+
+`session` takes the same slot key, `dashboard:<slot>` key or unique exact title
+as `chat_folder_move_session`. Asking for the state the session already has
+writes nothing and says so. `chat_folder_tree` marks pinned sessions
+`[pinned]`. An app agent pins only its own sessions and a crew member only a
+session it owns or created; the `PATCH /api/chat/slots/<slot>/pin` endpoint
+enforces both. Archived sessions cannot be pinned.
+
 ## What you cannot reach
 
 Session control authorizes on the **calling session's identity**, and only a
@@ -320,6 +333,8 @@ A **channel agent** (Slack, Telegram, and the rest) is blocked from all eight
 session tools by `CHANNEL_AGENT_BLOCKED_TOOLS` in `src/kiro_crew/channel.py`.
 Reading a dashboard transcript would pull a private conversation into a channel
 other humans can see, and sending would run channel text as a turn inside it.
+`chat_session_pin` is blocked there too, because it rearranges the person's
+sidebar the same way `session_adopt` and `session_release` do.
 
 ### Switches and ceilings
 

@@ -73,10 +73,7 @@ async def test_blocked_tool_rejected_even_on_trusted_channel(monkeypatch, tool):
     await _stream_task(_make_agent(), _make_channel(), client, "hi")
     client.reject_tool.assert_awaited_once_with(7)
     client.approve_tool.assert_not_awaited()
-    outcomes = [
-        kw.get("outcome")
-        for _, kw in sel_mock.log_tool_invocation.call_args_list
-    ]
+    outcomes = [kw.get("outcome") for _, kw in sel_mock.log_tool_invocation.call_args_list]
     assert "rejected_blocked_tool" in outcomes
 
 
@@ -138,3 +135,11 @@ def test_every_session_control_tool_is_contained():
 
     missing = sorted(set(SESSION_CONTROL_TOOLS) - set(CHANNEL_AGENT_BLOCKED_TOOLS))
     assert not missing, f"session-control tools reachable from a channel agent: {missing}"
+
+
+def test_session_pin_is_contained():
+    """Pinning rearranges the person's sidebar, the reason the tree verbs are blocked."""
+    from kiro_crew.channel import _blocked_tool_named
+
+    assert "chat_session_pin" in CHANNEL_AGENT_BLOCKED_TOOLS
+    assert _blocked_tool_named("kirocrew-dashboard___chat_session_pin") is True

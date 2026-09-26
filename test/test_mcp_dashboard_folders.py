@@ -1827,6 +1827,7 @@ class TestAdvertisedSet:
             "chat_tag_create",
             "chat_tag_update",
             "chat_tag_assign",
+            "chat_session_pin",
             "session_create",
             "session_fork",
             "session_stop",

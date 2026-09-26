@@ -1030,9 +1030,9 @@ async def private_chat_route_refusal(request: web.Request) -> web.Response | Non
             return None
     # A crew member is admitted to the chat FOLDER and TAG routes it needs to
     # organise its own worker sessions (session_create with folder=,
-    # chat_folder_file_self, chat_tag_assign), and to the read-only session LIST
-    # its folder tools use to resolve its own slot -- the surface session-control
-    # already opens to the same members. This is COARSE admission only: it lets
+    # chat_folder_file_self, chat_tag_assign, chat_session_pin), and to the
+    # read-only session LIST its folder tools use to resolve its own slot -- the
+    # surface session-control already opens to the same members. This is COARSE admission only: it lets
     # the caller reach the handler, whose own per-resource fence
     # (``chat_folders``/``chat_tags``' ``owner_app``/``folder_principal`` for the
     # tree, ``member_owns_slot`` for filing/tagging and the session-list filter,
@@ -1071,6 +1071,9 @@ _MEMBER_CHAT_FOLDER_REORDER_METHODS = frozenset({"POST"})
 _MEMBER_CHAT_TAGS_METHODS = frozenset({"GET"})
 _MEMBER_CHAT_SLOT_FOLDER_METHODS = frozenset({"PATCH"})
 _MEMBER_CHAT_SLOT_TAGS_METHODS = frozenset({"PUT"})
+#: Pinning a session (``chat_session_pin``); ``api_chat_slot_pin`` applies the
+#: same ``member_owns_slot`` fence as filing and tagging.
+_MEMBER_CHAT_SLOT_PIN_METHODS = frozenset({"PATCH"})
 #: The session LIST is admitted read-only: the folder/tag MCP tools
 #: (chat_folder_file_self / chat_folder_move_session / chat_folder_tree) read it
 #: to resolve the caller's own slot. ``api_chat_slots`` filters the response for
@@ -1090,7 +1093,7 @@ def _admitted_chat_route_methods(path: str) -> frozenset[str] | None:
     neither renames nor deletes shared tags -- so its DELETE (which has no
     vocabulary fence) is refused at the gate. ``/api/chat/slots`` is the session
     LIST only; a deeper ``/api/chat/slots/<slot>/...`` sub-resource other than
-    the fenced ``/folder`` and ``/tags`` writes is NOT matched here.
+    the fenced ``/folder``, ``/tags`` and ``/pin`` writes is NOT matched here.
     """
     if path in ("/api/chat/folders", "/api/chat/folders/"):
         return _MEMBER_CHAT_FOLDERS_METHODS
@@ -1115,6 +1118,9 @@ def _admitted_chat_route_methods(path: str) -> frozenset[str] | None:
     slot = _single_id_segment(path, "/api/chat/slots/", suffix="/tags")
     if slot is not None:
         return _MEMBER_CHAT_SLOT_TAGS_METHODS
+    slot = _single_id_segment(path, "/api/chat/slots/", suffix="/pin")
+    if slot is not None:
+        return _MEMBER_CHAT_SLOT_PIN_METHODS
     return None
 
 
