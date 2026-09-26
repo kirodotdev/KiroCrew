@@ -1671,7 +1671,7 @@ class DiscordDispatcher:
                         origin.channel_id,
                         [text or ATTACHMENT_PLACEHOLDER for text in texts],
                         own_deferred,
-                        _entry_owner(origin),
+                        owner=_entry_owner(origin),
                     )
             if not texts or origin is None:
                 return
@@ -1750,7 +1750,8 @@ class DiscordDispatcher:
         channel_id: str,
         answered: list[str],
         deferred: int = 0,
-        owner: str = "",
+        *,
+        owner: str,
     ) -> None:
         """Flip the receipt to a durable "▶️ Now answering" record. Caller MUST
         hold ``self._queue.lock``.
@@ -1759,6 +1760,12 @@ class DiscordDispatcher:
         bubble can list several principals': a thread shares a channel address between
         everyone posting in it, so a drain that answered one of them must leave the
         others' lines, and the entry that is their only handle, alone.
+
+        REQUIRED and keyword-only, unlike the registry transition it forwards to, which
+        keeps a default for a caller that genuinely cannot name a principal. This wrapper
+        has exactly one caller and that caller always can, so an omission here is a
+        mistake rather than a degradation -- and being required makes it a type error at
+        the call site instead of a silent return to retiring the whole bubble.
         """
         assert self.client is not None
         await self._queue.flip_answering_locked(

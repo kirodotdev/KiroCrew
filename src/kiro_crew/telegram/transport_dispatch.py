@@ -1904,7 +1904,11 @@ class TelegramDispatcher:
                     )
                 if texts and origin is not None:
                     await self._receipt_flip_locked(
-                        session_key, int(origin.chat_id), texts, own_deferred, _entry_owner(origin)
+                        session_key,
+                        int(origin.chat_id),
+                        texts,
+                        own_deferred,
+                        owner=_entry_owner(origin),
                     )
             if not texts or origin is None:
                 return
@@ -2040,7 +2044,8 @@ class TelegramDispatcher:
         chat_id: int,
         answered: list[str],
         deferred: int = 0,
-        owner: str = "",
+        *,
+        owner: str,
     ) -> None:
         """Flip the receipt to a durable "▶️ Now answering" record and drop the
         live entry so the next mid-turn burst opens a fresh receipt. Caller MUST
@@ -2054,7 +2059,11 @@ class TelegramDispatcher:
         ``owner`` is WHOSE messages those are, which the flip needs because one bubble
         can list several principals': a GROUP chat gives every member one chat address
         and one session key, so a drain answering one member must leave the others'
-        lines -- and the entry that is their only handle -- alone.
+        lines -- and the entry that is their only handle -- alone. REQUIRED and
+        keyword-only, unlike the registry transition it forwards to, which keeps a
+        default for a caller that genuinely cannot name a principal: this wrapper has
+        exactly one caller and that caller always can, so an omission is a type error
+        rather than a silent return to retiring the whole bubble.
 
         ``chat_id`` is the chat the receipt BUBBLE lives in, which the drain takes
         from the queued entry's own origin rather than from the turn that opened the

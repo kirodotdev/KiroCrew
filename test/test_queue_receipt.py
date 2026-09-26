@@ -387,6 +387,17 @@ def _dispatchers() -> list[Path]:
     return found
 
 
+#: The two names a drain reaches the flip through: the registry transition itself, and a
+#: channel's own thin wrapper around it. Both are checked, because a wrapper that forwards
+#: an owner says nothing about whether its own caller supplied one.
+_FLIP_CALLEES = frozenset({"flip_answering_locked", "_receipt_flip_locked"})
+
+#: Where the owner token sits positionally in both of them, after (session key, address,
+#: answered, deferred). Read as a position rather than as a substring anywhere in the call,
+#: so an argument that merely contains the word cannot stand in for it.
+_FLIP_OWNER_ARG = 4
+
+
 class TestRatchet:
     def test_no_channel_keeps_its_own_receipt_registry_or_lock(self) -> None:
         """A third copy of this subsystem must fail here, not in production."""
@@ -1078,28 +1089,36 @@ class TestAPartialDrainKeepsWhatIsStillQueuedHere:
         out, and no behavioural test can be written in advance for a drain that does not
         exist yet. Each dispatcher either passes an owner token at the flip or hands one
         to its own ``_receipt_flip_locked`` wrapper.
+
+        Judged PER CALL, and in the owner's own ARGUMENT POSITION. Asking whether the
+        file mentions an owner somewhere lets a wrapper that forwards one to the registry
+        answer for the whole channel, while the drain call one layer above it -- the call
+        that decides what the wrapper has to forward -- goes unread. And a substring test
+        over every argument passes on any expression that merely contains the word.
         """
-        missing = []
+        seen = 0
+        offenders: list[str] = []
         for path in _dispatchers():
-            src = path.read_text(encoding="utf-8")
-            if "flip_answering_locked" not in src:
-                continue
-            tree = ast.parse(src)
-            named = False
+            tree = ast.parse(path.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):
                     continue
                 func = node.func
                 name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-                if name not in {"flip_answering_locked", "_receipt_flip_locked"}:
+                if name not in _FLIP_CALLEES:
                     continue
-                args = [ast.unparse(a) for a in node.args] + [
-                    ast.unparse(k.value) for k in node.keywords
-                ]
-                if any("_entry_owner" in a or "owner" in a for a in args):
-                    named = True
-            if not named:
-                missing.append(path.parent.name)
-        assert (
-            not missing
-        ), f"{missing} flip the receipt without naming whose messages they answered"
+                seen += 1
+                keywords = {kw.arg: kw.value for kw in node.keywords if kw.arg}
+                owner = keywords.get("owner")
+                if owner is None and len(node.args) > _FLIP_OWNER_ARG:
+                    owner = node.args[_FLIP_OWNER_ARG]
+                spelled = "" if owner is None else ast.unparse(owner)
+                if spelled in {"", '""', "''"}:
+                    offenders.append(f"{path.parent.name}:{node.lineno} {name}")
+        # A control on the scan itself: an empty offender list must mean the calls were
+        # read and named their principal, not that the pattern matched nothing at all.
+        assert seen >= len(_FLIP_CALLEES) * 2, f"the flip-call scan found only {seen} call(s)"
+        assert not offenders, (
+            "these flip calls do not name whose messages they answered, so the bubble is "
+            f"retired over another principal's still-queued lines: {offenders}"
+        )
