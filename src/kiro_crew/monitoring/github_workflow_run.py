@@ -34,7 +34,13 @@ from pathlib import PurePosixPath
 from typing import Any
 from urllib.parse import urlparse
 
-from kiro_crew.github_runner import SetupError, resolve_gh, run_gh
+from kiro_crew.github_runner import (
+    GITHUB_OWNER_SEGMENT_RE,
+    GITHUB_REPO_SEGMENT_RE,
+    SetupError,
+    resolve_gh,
+    run_gh,
+)
 from kiro_crew.monitoring.github_provider_errors import (
     PROVIDER_REASON_BY_KIND,
     REASON_SHARED_COOLDOWN,
@@ -50,7 +56,6 @@ from kiro_crew.monitoring.models import (
 )
 
 _GITHUB_HOST = "github.com"
-_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _RAW_URL_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
 _HTTP_STATUS_RE = re.compile(r"\bhttp\s+(\d{3})\b", re.IGNORECASE)
 _HEAD_REVISION_RE = re.compile(r"^[0-9a-fA-F]{1,128}$")
@@ -88,9 +93,11 @@ class GitHubWorkflowRunTarget:
     def __post_init__(self) -> None:
         if self.host != _GITHUB_HOST:
             raise ValueError("target must be a public GitHub workflow run")
-        if any(
-            segment in {".", ".."} or _SEGMENT_RE.fullmatch(segment) is None
-            for segment in (self.owner, self.repo)
+        if (
+            self.owner in {".", ".."}
+            or self.repo in {".", ".."}
+            or GITHUB_OWNER_SEGMENT_RE.fullmatch(self.owner) is None
+            or GITHUB_REPO_SEGMENT_RE.fullmatch(self.repo) is None
         ):
             raise ValueError("target must be a public GitHub workflow run")
         if isinstance(self.run_id, bool) or not isinstance(self.run_id, int) or self.run_id <= 0:

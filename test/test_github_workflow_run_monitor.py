@@ -14,8 +14,13 @@ import subprocess
 
 import pytest
 
+from kiro_crew.github_runner import (
+    GITHUB_MAX_OWNER_CHARS,
+    GITHUB_MAX_REPO_CHARS,
+)
 from kiro_crew.monitoring.github_workflow_run import (
     GitHubWorkflowRunProvider,
+    GitHubWorkflowRunTarget,
     parse_github_workflow_run_target,
 )
 from kiro_crew.monitoring.models import (
@@ -88,6 +93,41 @@ class TestTheRunUrlIsTypedIdentity:
     def test_non_canonical_or_foreign_urls_are_refused(self, bad: str) -> None:
         with pytest.raises(ValueError):
             parse_github_workflow_run_target(bad)
+
+    def test_segments_at_githubs_own_limits_are_accepted(self) -> None:
+        owner = "o" * GITHUB_MAX_OWNER_CHARS
+        repo = "r" * GITHUB_MAX_REPO_CHARS
+
+        target = parse_github_workflow_run_target(
+            f"https://github.com/{owner}/{repo}/actions/runs/9"
+        )
+
+        assert len(target.owner) == GITHUB_MAX_OWNER_CHARS
+        assert len(target.repo) == GITHUB_MAX_REPO_CHARS
+        assert len(target.repo_slug) == GITHUB_MAX_OWNER_CHARS + 1 + GITHUB_MAX_REPO_CHARS
+
+    @pytest.mark.parametrize("over", [1, 5000])
+    def test_an_owner_wider_than_githubs_login_limit_is_refused(self, over: int) -> None:
+        """A charset with no quantifier admits a run URL of any size, and the
+        segments it admits are what this kind joins into the ``owner/repo`` slug it
+        hands the provider."""
+        owner = "o" * (GITHUB_MAX_OWNER_CHARS + over)
+
+        with pytest.raises(ValueError, match="GitHub workflow run"):
+            parse_github_workflow_run_target(f"https://github.com/{owner}/repo/actions/runs/9")
+
+    @pytest.mark.parametrize("over", [1, 5000])
+    def test_a_repository_wider_than_githubs_name_limit_is_refused(self, over: int) -> None:
+        repo = "r" * (GITHUB_MAX_REPO_CHARS + over)
+
+        with pytest.raises(ValueError, match="GitHub workflow run"):
+            parse_github_workflow_run_target(f"https://github.com/owner/{repo}/actions/runs/9")
+
+    def test_the_typed_identity_refuses_an_oversized_segment_constructed_directly(
+        self,
+    ) -> None:
+        with pytest.raises(ValueError, match="GitHub workflow run"):
+            GitHubWorkflowRunTarget("github.com", "owner", "r" * (GITHUB_MAX_REPO_CHARS + 1), 9)
 
 
 class TestTheTerminalStateMapping:

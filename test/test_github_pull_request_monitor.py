@@ -11,7 +11,11 @@ from unittest import mock
 
 import pytest
 
-from kiro_crew.github_runner import SetupError
+from kiro_crew.github_runner import (
+    GITHUB_MAX_OWNER_CHARS,
+    GITHUB_MAX_REPO_CHARS,
+    SetupError,
+)
 from kiro_crew.monitoring import github_pull_request
 from kiro_crew.monitoring.decision import decide_monitor
 from kiro_crew.monitoring.github_pull_request import (
@@ -452,6 +456,46 @@ def test_pull_request_target_rejects_noncanonical_or_untrusted_input(raw: str) -
     """Weakening target validation would let input select a host or command shape."""
     with pytest.raises(ValueError, match="GitHub pull request"):
         parse_github_pull_request_target(raw)
+
+
+class TestTargetSegmentsAreBoundedInWidth:
+    """``GitHubPullRequestTarget`` bounds the width of its two path segments as well
+    as their charset. A charset with no quantifier admits a segment of any size, and
+    the segments it admits are what this adapter joins into the ``owner/repo`` slug it
+    hands the provider. Widths below are derived from the published limits, never
+    restated here.
+    """
+
+    def test_segments_at_githubs_own_limits_are_accepted(self) -> None:
+        owner = "o" * GITHUB_MAX_OWNER_CHARS
+        repo = "r" * GITHUB_MAX_REPO_CHARS
+
+        target = parse_github_pull_request_target(f"https://github.com/{owner}/{repo}/pull/1")
+
+        assert len(target.owner) == GITHUB_MAX_OWNER_CHARS
+        assert len(target.repo) == GITHUB_MAX_REPO_CHARS
+
+    @pytest.mark.parametrize("over", [1, 5000])
+    def test_an_owner_wider_than_githubs_login_limit_is_refused(self, over: int) -> None:
+        owner = "o" * (GITHUB_MAX_OWNER_CHARS + over)
+
+        with pytest.raises(ValueError, match="GitHub pull request"):
+            parse_github_pull_request_target(f"https://github.com/{owner}/repo/pull/1")
+
+    @pytest.mark.parametrize("over", [1, 5000])
+    def test_a_repository_wider_than_githubs_name_limit_is_refused(self, over: int) -> None:
+        repo = "r" * (GITHUB_MAX_REPO_CHARS + over)
+
+        with pytest.raises(ValueError, match="GitHub pull request"):
+            parse_github_pull_request_target(f"https://github.com/owner/{repo}/pull/1")
+
+    def test_the_typed_identity_refuses_an_oversized_segment_constructed_directly(
+        self,
+    ) -> None:
+        """The dataclass is the guard, not the URL parser: an in-process caller that
+        builds one straight from two strings meets the same bound."""
+        with pytest.raises(ValueError, match="GitHub pull request"):
+            GitHubPullRequestTarget("github.com", "o" * (GITHUB_MAX_OWNER_CHARS + 1), "repo", 1)
 
 
 def test_clean_pull_request_has_allowlisted_canonical_observation_and_fingerprint() -> None:
@@ -4042,8 +4086,9 @@ class TestRestFallbackOnRateLimit:
     def test_the_fallback_path_carries_only_validated_segments(self) -> None:
         """No provider-controlled text reaches a request path.
 
-        ``GitHubPullRequestTarget`` admits an owner and repository matching
-        ``_SEGMENT_RE`` and a positive integer number, and the revision has already
+        ``GitHubPullRequestTarget`` admits an owner matching
+        ``GITHUB_OWNER_SEGMENT_RE``, a repository matching ``GITHUB_REPO_SEGMENT_RE``
+        and a positive integer number, and the revision has already
         passed ``_HEAD_REVISION_RE`` on the primary read, so both paths are built
         from validated segments alone.
         """
