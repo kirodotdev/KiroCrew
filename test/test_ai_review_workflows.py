@@ -10823,6 +10823,24 @@ class TestFirstPrinciplesProblemsFirstContract:
         assert "DO NOT REASON FROM AN ASSUMED USER COUNT, in either direction" in contract
         assert "the AGENT is untrusted with respect to its own governance" in contract
 
+    def test_over_engineering_is_judged_against_the_frozen_goal(self) -> None:
+        # The body below `## What changed` is regenerated each round to match
+        # the diff, so it cannot be the Goal a mechanism is measured against.
+        # An out-of-goal mechanism must surface as a removable Subtraction, and
+        # an older PR without the frozen headings still has a Goal to read.
+        flat = " ".join(_fp_contract().split())
+        assert "THE GOAL: when the description has a `**Goal:**` line" in flat
+        assert "never from `## What changed` or anything below it" in flat
+        assert "When there is no `**Goal:**` line (an older PR)" in flat
+        # Today's template already has `## Problem / Motivation`, so that
+        # heading alone must not switch a PR into frozen-goal mode.
+        assert "a `## Problem / Motivation` section or" not in flat
+        assert "does any mechanism go beyond the Goal's scope" in flat
+        assert "If so, is that justified?" in flat
+        assert "MINIMALITY PRINCIPLE: the change fits the original Goal" in flat
+        assert "tagged `oversized`" in flat
+        assert "`Clears when: the mechanism is removed, or a human amends the Goal.`" in flat
+
 
 class TestFirstPrinciplesOneStatementPerProblem:
     """A review that says the same three items three times -- under

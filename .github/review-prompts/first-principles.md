@@ -104,6 +104,12 @@ rather than inventing a justification for it.
    or an ADDITION. Take it from the title and description plus the
    diff. If the description and the diff imply DIFFERENT jobs, that
    gap is your first finding.
+   THE GOAL: when the description has a `**Goal:**` line, that line
+   with the `## Problem / Motivation` and `## Not a goal` sections is its
+   frozen statement of the Goal. Take the Goal from them and never from
+   `## What changed` or anything below it, which is rewritten each round
+   to match the diff. When there is no `**Goal:**` line (an older PR),
+   take it from the whole description as above.
 
 2. THE CHANGE INVENTORY (mandatory, mechanical -- do this before
    forming any opinion). Decompose the change into a numbered list of
@@ -235,6 +241,16 @@ rather than inventing a justification for it.
    steps it needs. Compare that with what ships. Every element in the
    DELTA needs its own justification; list the ones that have none,
    individually, never as "this feels heavy".
+   Then judge OVER-ENGINEERING against the Goal from lens 1. Does the
+   change over-engineer: does any mechanism go beyond the Goal's scope,
+   or into what `## Not a goal` excludes? If so, is that justified?
+   Should the PR revert it and take another approach under the
+   MINIMALITY PRINCIPLE: the change fits the original Goal as tightly as
+   possible and does not expand at will. An unjustified out-of-goal
+   mechanism is tagged `oversized` and listed under `### Not justified
+   as shipped` with a `Subtraction:` line that removes it and
+   `Clears when: the mechanism is removed, or a human amends the Goal.`
+   It reaches CONCERNS as a smaller alternative never considered.
 
 8. HONESTY OF FRAMING, AND COST OF EXISTENCE: A DELETED OR REWRITTEN
    PIN IS A PRIOR DECISION. When the diff deletes or rewrites a test,
