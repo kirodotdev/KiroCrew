@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, AcpEvent
+from kiro_crew.discord.client import EDIT_FAILED, EDIT_OK
 from kiro_crew.discord.renderer import DiscordRenderer, _transform_buries_refs
 from kiro_crew.discord.transport import DISCORD_CAPABILITIES
 from kiro_crew.messaging.driver import APPROVAL_AUTO, TurnDriver
@@ -152,6 +153,13 @@ class FakeDiscordClient:
     ) -> bool:
         self.uploads.append(list(files or []))
         return await self.edit_message(channel_id, message_id, text, **kw)
+
+    async def edit_message_with_files_outcome(
+        self, channel_id: str, message_id: str, text: str, files: Any, **kw: Any
+    ) -> str:
+        # Mirror the production client: delegate to the bool edit and classify.
+        ok = await self.edit_message_with_files(channel_id, message_id, text, files, **kw)
+        return EDIT_OK if ok else EDIT_FAILED
 
     def uploaded(self) -> list[Any]:
         """Every attachment Discord was actually handed, across sends and edits."""

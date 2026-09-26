@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from kiro_crew.messaging.driver import sanitize_channel_replay_text
 from kiro_crew.messaging.link import ChannelLink
+from kiro_crew.messaging.renderer import _default_redactor
 from kiro_crew.messaging.session_resume import ResumeReleaseError  # noqa: F401  (re-export)
 from kiro_crew.messaging.session_resume import (
     PICKER_LIMIT,
@@ -103,7 +104,9 @@ async def _replay_preview(text: str, limit: int, *, reserve: int) -> str:
     redacted = _redact_discord_text(text)
     probe = redacted[: max(1, limit) * 2]
     probe_left_content = len(probe) < len(redacted)
-    chunks = await asyncio.to_thread(split_markdown_safe, probe, limit, reserve=reserve)
+    chunks = await asyncio.to_thread(
+        split_markdown_safe, probe, limit, reserve=reserve, redactor=_default_redactor
+    )
     if not chunks:
         return ""
 

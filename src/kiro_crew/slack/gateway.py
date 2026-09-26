@@ -3985,7 +3985,17 @@ class GatewayOrchestrator:
             # sub-agent's diff or log dump is exactly that shape. The shared
             # splitter seals each chunk with a synthetic closer and reopens the
             # next with the original opener line.
-            parts = chunk_for_transport(safe_text, transport.capabilities)
+            # ``redactor=redact_via_context``: the seam check must grade with the
+            # SAME context-aware pair the display pass above uses, not the shared
+            # sink's default -- a companion-contributed credential split across a
+            # transport seam is invisible to the narrower default pair and would
+            # ship whole across two adjacent messages.
+            parts = await asyncio.to_thread(
+                chunk_for_transport,
+                safe_text,
+                transport.capabilities,
+                redactor=redact_via_context,
+            )
             for part in parts:
                 # Stop on the first UNCONFIRMED part rather than pressing on: the
                 # remaining chunks of a message whose head never landed would arrive

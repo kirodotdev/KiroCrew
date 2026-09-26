@@ -29,7 +29,8 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 from kiro_crew import extras
-from kiro_crew.messaging.split import split_markdown_safe
+from kiro_crew.messaging.renderer import _default_redactor, chunk_text
+from kiro_crew.messaging.split import bounded_for_delivery, split_markdown_safe
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,19 @@ logger = logging.getLogger(__name__)
 # generous for mixed CJK + ASCII content). A longer answer is SPLIT across
 # replies, never truncated — see send_reply.
 FEISHU_MAX_TEXT = 4000
+
+
+def _graded_chunks(text: str) -> list[str]:
+    """Split *text* to the Feishu cap and grade every seam, off the event loop.
+
+    Both steps scan the whole text for a credential the model wrote across a
+    boundary, which is O(len) work an oversized reply turns into seconds. The
+    caller runs it under ``asyncio.to_thread`` so a large payload cannot stall
+    the gateway's single loop past its watchdog.
+    """
+    chunks = split_markdown_safe(text, FEISHU_MAX_TEXT, redactor=_default_redactor)
+    return bounded_for_delivery(chunks, FEISHU_MAX_TEXT, _default_redactor, chunk_text) or chunks
+
 
 # Client construction is local and performs no network I/O. A bounded wait
 # prevents a broken SDK import or constructor from leaving gateway startup
@@ -209,8 +223,16 @@ class LarkClient:
         inbound anchor, in order, and the first failure stops the rest — a
         partial send reported as success is what makes a dropped answer
         invisible.
+
+        The cut is credential-aware because each chunk is its own message: a
+        boundary here is a seam between two replies the reader reads in order, and
+        a key the model wrote across a line break is invisible to a per-message
+        scan yet whole on screen once the break is gone. That cut is fail-closed --
+        it can decline to cut and answer with the text whole -- and this ceiling
+        drops a larger payload, so the answer is bounded and graded again before
+        anything is sent.
         """
-        chunks = split_markdown_safe(text, FEISHU_MAX_TEXT)
+        chunks = await asyncio.to_thread(_graded_chunks, text)
         if not chunks:
             return True
         loop = asyncio.get_running_loop()

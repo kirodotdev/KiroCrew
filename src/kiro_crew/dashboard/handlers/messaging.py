@@ -2478,8 +2478,15 @@ async def _deliver_channel_dm(
     # that a future caller of this helper cannot reach a channel without it. The
     # neutral sink rather than a bare redactor pair, because the leg is
     # channel-NEUTRAL and Slack/Discord both parse broadcast-mention grammars.
-    units = chunk_for_transport(
-        display_safe_for(text, live_transport.capabilities), live_transport.capabilities
+    # Offloaded: the display sink threads the credential-aware splitter's whole-text
+    # budget search (up to 128 dense probes plus span-repair passes) onto the call,
+    # and this leg runs on the gateway's single loop thread with model-authored,
+    # length-unchecked text -- a large body would stall the loop past the watchdog's
+    # 25s dump-then-exit alarm. Offloaded like the renderer's own send legs.
+    units = await asyncio.to_thread(
+        chunk_for_transport,
+        display_safe_for(text, live_transport.capabilities),
+        live_transport.capabilities,
     )
     try:
         for unit in units:
@@ -2770,8 +2777,14 @@ async def _send_to_channel_target(
     # displayed form before scanning, and defangs broadcast-mention grammars —
     # correct here because this leg is channel-NEUTRAL and Slack/Discord do have
     # them.
-    parts = chunk_for_transport(
-        display_safe_for(text, transport.capabilities), transport.capabilities
+    # Offloaded for the same reason as the live-transport leg above: the display
+    # sink runs the credential-aware splitter's whole-text budget search on the
+    # gateway's single loop thread with model-authored, length-unchecked text, and
+    # a large body would stall the loop past the watchdog's 25s dump-then-exit alarm.
+    parts = await asyncio.to_thread(
+        chunk_for_transport,
+        display_safe_for(text, transport.capabilities),
+        transport.capabilities,
     )
     try:
         for index, part in enumerate(parts):

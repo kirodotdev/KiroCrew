@@ -66,6 +66,8 @@ from kiro_crew.discord.client import (
     DISCORD_MAX_FILES_PER_MESSAGE,
     DISCORD_MAX_TEXT,
     DISCORD_MAX_TOTAL_UPLOAD_BYTES,
+    EDIT_GONE,
+    EDIT_OK,
 )
 from kiro_crew.messaging.approval import APPROVAL_TIMEOUT_S
 from kiro_crew.messaging.display_safety import (
@@ -89,10 +91,12 @@ from kiro_crew.messaging.renderer import (
     count_redaction_tags,
     new_approval_nonce,
     redaction_notice,
+    repaired_after_a_sent_tail,
     session_provenance_tag,
     split_options_trailer,
 )
 from kiro_crew.messaging.split import (
+    bounded_for_delivery,
     split_markdown_safe,
     split_markdown_safe_with_tier,
 )
@@ -381,7 +385,7 @@ def build_model_components(choices: Sequence[tuple[str, str]], current: str) -> 
     return rows
 
 
-def _fit_platform_cap(text: str) -> list[str]:
+def _fit_platform_cap(text: str, limit: int = DISCORD_MAX_TEXT) -> list[str]:
     """Slice *text* into payloads Discord's message API will accept whole.
 
     ``split_markdown_safe`` budgets every chunk against :meth:`_limit`, with one
@@ -401,7 +405,7 @@ def _fit_platform_cap(text: str) -> list[str]:
     render badly, where truncation keeps neither. Nothing here re-derives fence
     grammar — the splitter owns that, and this only bounds what reaches the API.
     """
-    return chunk_text(text, DISCORD_MAX_TEXT) or [text]
+    return chunk_text(text, limit) or [text]
 
 
 class DiscordApprovalDecider:
@@ -689,6 +693,33 @@ class DiscordRenderer(Renderer):
         # text pushed (skip no-op edits), and the edit throttle timestamp.
         self._stream_mid: str | None = None
         self._shown = ""
+        # The message the reader last saw, whole, so the next thing shown can be
+        # graded against it. A rotation seals a bubble whose tail is a credential
+        # PREFIX -- matching nothing, so every scan passes it -- and the characters
+        # completing the key arrive in the next bubble, where the reader scrolling
+        # the two reads it whole while neither message holds it. Written only once
+        # a delivery confirms, in ``_record_sent``.
+        self._sent_tail = ""
+        # The message that sat ABOVE the currently-open live bubble at the moment
+        # that bubble was first sent -- the bubble's own predecessor on screen.
+        # ``_sent_tail`` cannot serve this: the fresh send records the bubble's OWN
+        # frame into ``_sent_tail`` (so the NEXT fresh message grades against what
+        # the reader last saw), which erases the message above. But an EDIT or a
+        # SEAL of that same open bubble still lands where the reader already sees
+        # it, directly below this predecessor, so its seam must be graded against
+        # THIS field -- unchanged by ``_record_sent`` -- not against the bubble's
+        # own frame (which would read the bubble as adjacent to itself). Captured
+        # when a fresh live send opens the bubble; cleared when the bubble seals or
+        # a new one opens.
+        self._bubble_above = ""
+        # A reasoning note posted BELOW a still-live answer bubble. It is not the
+        # predecessor of an edit to that bubble (the bubble is above it), so it is
+        # NOT written to ``_sent_tail`` there. But if that edit fails and falls
+        # through to a fresh send, that send lands BELOW the note and the note IS
+        # its predecessor -- so ``_land_sealed`` grades the fallback send against
+        # this before it goes out. Cleared once consumed or once a normal seal
+        # records a real predecessor.
+        self._pending_note_tail = ""
         # Delivery accounting for `delivery_failed`: how many seals were tried
         # and how many actually reached Discord.
         self._seals_attempted = 0
@@ -960,7 +991,9 @@ class DiscordRenderer(Renderer):
             if self._uploads_enabled() and self._segment_uploads_safe:
                 if await asyncio.to_thread(protected_ref_spans, candidate):
                     return
-            chunks = await asyncio.to_thread(split_markdown_safe, candidate, limit)
+            chunks = await asyncio.to_thread(
+                split_markdown_safe, candidate, limit, redactor=_redact_all
+            )
             # Card text is model text, and this branch cuts it on the same length
             # budget, so its boundaries carry the same hazard as the source path's.
             # A presentation snapshot reaches the reader without protocol handling,
@@ -1023,7 +1056,9 @@ class DiscordRenderer(Renderer):
                 self._delivery_text = None
                 return
             split_source, tail = raw[:hold_at], raw[hold_at:]
-            chunks = await asyncio.to_thread(split_markdown_safe, split_source, limit)
+            chunks = await asyncio.to_thread(
+                split_markdown_safe, split_source, limit, redactor=_redact_all
+            )
             sealed = chunks
         else:
             split_source = raw
@@ -1140,6 +1175,10 @@ class DiscordRenderer(Renderer):
         """Next render creates a fresh message instead of editing the old one."""
         self._stream_mid = None
         self._shown = ""
+        # The next fresh send opens a new bubble whose predecessor is whatever the
+        # reader last saw (``_sent_tail``); capture it there, not here, so this
+        # stays empty until the bubble actually exists.
+        self._bubble_above = ""
 
     def _segment_text(self) -> str:
         """Current outbound text, with protocol removed only from canonical source.
@@ -1197,13 +1236,54 @@ class DiscordRenderer(Renderer):
         if not text or text == self._shown:
             return
         self._last_edit = now
-        self._shown = text
         if self._stream_mid is None:
-            mid = await self._client.send_message(self._channel_id, text)
+            # A fresh live bubble is a second sink, not the same message: after a
+            # rotation seals a bubble ending in a credential prefix, this frame is
+            # where the completing characters first reach the reader, so grade it
+            # against the predecessor. The predecessor here is what the reader last
+            # saw (``_seam_safe`` reads ``_sent_tail``/note); capture it into
+            # ``_bubble_above`` BEFORE ``_record_sent`` overwrites ``_sent_tail``
+            # with this frame, so every later EDIT and the SEAL of this same bubble
+            # can grade against the message actually above it rather than against
+            # the bubble's own frame.
+            predecessor = self._seam_predecessor()
+            graded = self._seam_safe(text)
+            self._shown = graded
+            mid = await self._client.send_message(self._channel_id, graded)
             if mid is not None:
                 self._stream_mid = mid
+                # The delivered frame is the predecessor the NEXT fresh message
+                # grades against, so record ``graded`` -- not the note -- and then
+                # clear the hold. Recording the note would leave ``_sent_tail``
+                # naming a bubble two above the frame, so a fallback repost reached
+                # by a transient edit failure would grade against the wrong
+                # predecessor and could seat a credential's halves in adjacent
+                # bubbles. ``_bubble_above`` keeps the message ABOVE this bubble so
+                # edits/seals of it grade correctly (see ``_bubble_above``).
+                self._bubble_above = predecessor
+                self._record_sent(graded)
+                self._pending_note_tail = ""
         else:
-            await self._client.edit_message(self._channel_id, self._stream_mid, text)
+            # An EDIT rewrites the open bubble in place, below the SAME predecessor
+            # it opened under. Grade against ``_bubble_above`` -- NOT ``_sent_tail``
+            # (now this bubble's own frame, which would read it as adjacent to
+            # itself). Without this the edit ships ungraded text, restoring the
+            # credential span the fresh-send grade repaired and delivering the key
+            # across the predecessor + this bubble.
+            graded = self._seam_against(self._bubble_above, text)
+            edited = await self._client.edit_message(self._channel_id, self._stream_mid, graded)
+            # Record the edited frame as ``_sent_tail`` -- the message now ON SCREEN,
+            # which a later delivery BELOW this bubble grades against -- ONLY when the
+            # edit CONFIRMS. ``edit_message`` returns False for any failure (a
+            # transient 429/5xx included), and ``_record_sent``'s contract is "called
+            # only after a send or edit reports success": recording an unsent frame
+            # would make ``_sent_tail`` a message no reader ever saw, so a failed
+            # final seal-edit's fallback POST would grade against that phantom
+            # predecessor and could seat a credential across two bubbles. On failure
+            # leave ``_shown``/``_sent_tail`` on the frame still on screen.
+            if edited:
+                self._shown = graded
+                self._record_sent(graded)
 
     def authorize_upload_root(self, root: str) -> None:
         """Authorize the provider's resolved cwd; invalid roots disable uploads."""
@@ -1289,6 +1369,68 @@ class DiscordRenderer(Renderer):
                 exc_info=True,
             )
 
+    def _seam_predecessor(self) -> str:
+        """The message a FRESH send would land directly below.
+
+        Normally ``_sent_tail`` (the last message delivered). The one exception: a
+        reasoning note held at ``_pending_note_tail`` sits BELOW a still-open live
+        bubble, so while ``_stream_mid`` is set the note is not the predecessor of
+        an EDIT to that bubble -- but the moment the text will be a FRESH message
+        (``_stream_mid is None``), it lands below the note and the note is its
+        predecessor.
+        """
+        if self._pending_note_tail and self._stream_mid is None:
+            return self._pending_note_tail
+        return self._sent_tail
+
+    @staticmethod
+    def _seam_against(predecessor: str, text: str) -> str:
+        """*text* with its seam to an EXPLICIT *predecessor* repaired.
+
+        The primitive under every grade. An edit, a seal of an open bubble, and a
+        fallback repost each know the exact message they land under and pass it in;
+        the fresh-send/seal path passes ``_seam_predecessor()``. Grading against the
+        wrong predecessor (a bubble's own frame, the message two above it) either
+        misses a real cross-message credential seam or eats a leading span of valid
+        text -- so the predecessor is always named by the caller, never assumed.
+        """
+        repaired = repaired_after_a_sent_tail(predecessor, text, _redact_all)
+        return repaired if repaired is not None else text
+
+    def _seam_safe(self, text: str) -> str:
+        """*text* with its seam to the message above repaired, for a FRESH send.
+
+        The one grader for text that will be SENT as a new message. Callers only
+        show text; none of them carries a seam rule of its own, which is what keeps
+        a new sealing or streaming path from shipping an open seam. The predecessor
+        is ``_seam_predecessor()`` (the last message delivered, or a note held below
+        a live bubble once this text will land fresh below it). An EDIT or a SEAL of
+        an already-open bubble does NOT use this -- it lands under the message the
+        bubble opened beneath (``_bubble_above``), not under the reader's latest
+        frame -- so those paths call ``_seam_against(self._bubble_above, ...)``.
+
+        The note is not consumed here (this text is not sent yet and the send can
+        fail); ``_land_sealed`` consumes it once a fresh send lands.
+
+        It does NOT record the predecessor. What the next thing shown must be graded
+        against is the message the reader can SEE, and text this returns has not been
+        sent yet: every send and edit path below can fail, and recording here would
+        make unsent text the predecessor, after which the next delivered message
+        gives up a leading span for a key nobody ever read. ``_record_sent`` is
+        called once a delivery path confirms.
+        """
+        return self._seam_against(self._seam_predecessor(), text)
+
+    def _record_sent(self, text: str) -> None:
+        """Remember *text* as the message the next seam is graded against.
+
+        Called only after a send or edit reports success, and with the text that
+        actually went out -- which is not always the text ``_seam_safe`` returned: a
+        payload over the platform cap is cut again after that point, so the last
+        piece shown is what the reader is looking at.
+        """
+        self._sent_tail = text
+
     async def _land_sealed(
         self,
         text: str,
@@ -1298,15 +1440,49 @@ class DiscordRenderer(Renderer):
         """Edit first, then send; fail softly so recovery can restore markup."""
         self._seals_attempted += 1
         try:
+            edit_outcome = EDIT_OK
             if self._stream_mid is not None:
-                if await self._client.edit_message_with_files(
-                    self._channel_id, self._stream_mid, text, files, components=components
-                ):
+                # An EDIT rewrites the open bubble in place, below the SAME message
+                # it opened beneath (``_bubble_above``). Grade against that -- not
+                # ``_sent_tail`` (this bubble's own frame). ``_seal_current`` no
+                # longer grades the edit path (it cannot, ``_sent_tail`` names the
+                # wrong predecessor there), so this is the one grade the sealed edit
+                # gets; without it the seal ships ungraded text and restores the
+                # credential span the fresh-send grade repaired.
+                edited = self._seam_against(self._bubble_above, text)
+                edit_outcome = await self._client.edit_message_with_files_outcome(
+                    self._channel_id, self._stream_mid, edited, files, components=components
+                )
+                if edit_outcome == EDIT_OK:
                     self._seals_landed += 1
-                    self._tally_redactions(text)
+                    self._tally_redactions(edited)
+                    self._record_sent(edited)
                     return True
-                # A missing live message falls through to a fresh send.
+                # The edit did not land: fall through to a fresh send.
                 self._stream_mid = None
+            # Any fresh send lands BELOW the message the reader currently sees --
+            # the first chunk of a finalized answer with a trailing note above it, a
+            # chunk whose sibling edited that bubble, or an edit that FAILED. The
+            # predecessor depends on WHY the edit failed. A note held above the
+            # bubble wins whenever it is the last visible message. Otherwise:
+            #   * EDIT_GONE -- the bubble was DELETED (a moderator/automod 404), so
+            #     the message now on screen is the one that was ABOVE it,
+            #     ``_bubble_above``; grading against the deleted frame (``_sent_tail``)
+            #     would leave the seam to the visible neighbour ungraded and could
+            #     reconstruct a credential across two visible messages.
+            #   * EDIT_FAILED / no edit attempted -- a transient failure leaves the
+            #     bubble ON SCREEN, so this POST lands below that frame, ``_sent_tail``.
+            # ``_seal_current`` grades only the FIRST fresh chunk (via ``_seam_safe``),
+            # and an edit that fell through was never graded there, so this is where
+            # the fallback send is repaired. The note is NOT cleared until the send
+            # LANDS: a failed send discards nothing.
+            visible_predecessor = (
+                self._bubble_above if edit_outcome == EDIT_GONE else self._sent_tail
+            )
+            fallback_predecessor = self._pending_note_tail or visible_predecessor
+            if fallback_predecessor:
+                regraded = self._seam_against(fallback_predecessor, text)
+                text = regraded
             landed = (
                 await self._client.send_message_with_files(
                     self._channel_id, text, files, components=components
@@ -1316,6 +1492,11 @@ class DiscordRenderer(Renderer):
             if landed:
                 self._seals_landed += 1
                 self._tally_redactions(text)
+                self._record_sent(text)
+                # Consumed only now: only the first fresh send that ACTUALLY landed
+                # below the note owns that seam; later ones grade against the chunk
+                # before them via ``_record_sent``.
+                self._pending_note_tail = ""
             return landed
         except Exception:
             logger.warning("discord: sealing the segment failed", exc_info=True)
@@ -1343,8 +1524,13 @@ class DiscordRenderer(Renderer):
         *,
         components: list[dict] | None = None,
         extract_uploads: bool = True,
-    ) -> None:
+    ) -> bool:
         """Land one segment; only semantic seals may extract local images.
+
+        Returns True when the segment (or its markup-recovery) reached the
+        channel, False when there was nothing to land or every send failed. A
+        caller that discards ``_buf`` after sealing must gate that on this, so a
+        segment that never reached the reader is retried rather than dropped.
 
         Length rotations pass ``extract_uploads=False`` and seal shared-splitter
         chunks verbatim. Semantic steer/final seals extract once from complete
@@ -1367,32 +1553,51 @@ class DiscordRenderer(Renderer):
             text = _redact_transformed(source)
         if not text.strip() and not files:
             if components is None:
-                return
+                return False
             text = "…"
 
+        # Graded against the message above, but ONLY when this seal will SEND the
+        # text as a new message (``_stream_mid is None``). When the live bubble is
+        # still open, ``_land_sealed`` EDITS it in place, and grading against
+        # ``_sent_tail`` -- that same bubble's own earlier frame -- would read the
+        # bubble as adjacent to itself and replace valid leading text with a
+        # redaction marker. An edit replaces the bubble whole, so its seam with the
+        # message above was already graded on the fresh send that opened it. This
+        # sink is still the one place a shown SEND's text is decided, so the fresh
+        # path grades here; the edit path carries no new seam to grade.
+        if self._stream_mid is None:
+            text = await asyncio.to_thread(self._seam_safe, text)
         chunks = [text]
         if len(text) > DISCORD_MAX_TEXT:
-            # WITH the redactor. This is the last cut before the wire and there is
-            # no rotation behind it, so a boundary chosen on length alone here is
-            # the one cut nothing grades -- which is exactly where a buffer the
-            # rotation WITHHELD as unsafe ends up: it is parked whole, arrives here
-            # over the cap, and gets sliced at the budget. Telegram's own splitter
-            # call has carried a redactor all along; Discord's had not.
             chunks = await asyncio.to_thread(
                 split_markdown_safe, text, DISCORD_MAX_TEXT, redactor=_redact_all
             )
-        chunks = [part for chunk in chunks for part in _fit_platform_cap(chunk)]
+        # Bounded and graded rather than flattened blind: the credential-aware cut
+        # above can DECLINE to cut and answer with the text whole, and this cap
+        # truncates a larger payload after every scan has run. ``_fit_platform_cap``
+        # is handed in as the cutter because it is the last resort for exactly the
+        # chunk the fence-aware splitter cannot get under the cap, and the grade
+        # then covers the boundaries that blind cut creates.
+        chunks = await asyncio.to_thread(
+            bounded_for_delivery, chunks, DISCORD_MAX_TEXT, _redact_all, _fit_platform_cap
+        )
+        all_landed = True
         for index, chunk in enumerate(chunks):
             part_files = files if index == 0 else []
             final = index == len(chunks) - 1
             if not await self._land_sealed(chunk, part_files, components if final else None):
                 if part_files:
                     break
+                # A non-file chunk failed to land: skip it, but the segment is NOT
+                # fully delivered, so the seal must report False. A caller that
+                # discards ``_buf`` on a True would otherwise drop this chunk from
+                # any later delivery with no retry and no ``delivery_failed``.
+                all_landed = False
                 continue
             if not final:
                 self._open_new_message()
         else:
-            return
+            return all_landed
 
         # Multipart is all-or-nothing. Restore the source markup, but redact its
         # DISPLAY form before any fallback split/send so formatting cannot hide
@@ -1403,15 +1608,35 @@ class DiscordRenderer(Renderer):
         )
         try:
             source = _redact_transformed(source)
+            # Graded like every other shown text, and for the reason this branch
+            # exists: it is reached when the files-bearing chunk fails to land, an
+            # ordinary transient, and what it posts sits under a message already
+            # sealed. Without this the recovery ships the un-repaired suffix of a
+            # credential whose prefix is in that sealed message, and the record
+            # below then makes the recovery chunk the next seam's predecessor as
+            # though it had been graded.
+            source = await asyncio.to_thread(self._seam_safe, source)
             recovery = [source]
             if len(source) > DISCORD_MAX_TEXT:
-                # Same cut, same reason as the seal's own split above.
                 recovery = await asyncio.to_thread(
                     split_markdown_safe, source, DISCORD_MAX_TEXT, redactor=_redact_all
                 )
-            recovery = [part for chunk in recovery for part in _fit_platform_cap(chunk)]
+            recovery = await asyncio.to_thread(
+                bounded_for_delivery, recovery, DISCORD_MAX_TEXT, _redact_all, _fit_platform_cap
+            )
             landed_any = False
             for index, chunk in enumerate(recovery):
+                # The recovery lands below a note still held above the bubble whose
+                # upload failed, so the note is the predecessor of the FIRST
+                # recovery chunk. Grade it against the note, and consume the note
+                # once a recovery send lands so a later segment grades against the
+                # recovery tail, not the stale note.
+                if self._pending_note_tail:
+                    regraded = repaired_after_a_sent_tail(
+                        self._pending_note_tail, chunk, _redact_all
+                    )
+                    if regraded is not None:
+                        chunk = regraded
                 if await self._client.send_message(
                     self._channel_id,
                     chunk,
@@ -1419,6 +1644,8 @@ class DiscordRenderer(Renderer):
                 ):
                     landed_any = True
                     self._tally_redactions(chunk)
+                    self._record_sent(chunk)
+                    self._pending_note_tail = ""
             if landed_any:
                 # This recovery IS a delivery, so it has to answer to
                 # `delivery_failed`. Only the LANDED count moves: the seal that
@@ -1429,8 +1656,10 @@ class DiscordRenderer(Renderer):
                 # refuses to advance its dedup hash -- a duplicate for a message
                 # that arrived.
                 self._seals_landed += 1
+            return landed_any
         except Exception:
             logger.warning("discord: markup fallback after a failed upload failed", exc_info=True)
+            return False
 
     async def on_thinking(self, text: str) -> None:
         # The ladder moves on reasoning regardless: the reaction reports what the
@@ -1443,13 +1672,21 @@ class DiscordRenderer(Renderer):
         self._thinking += text or ""
         return None
 
-    async def _flush_thinking(self) -> None:
+    async def _flush_thinking(self, *, from_on_done: bool = False) -> None:
         """Post the accumulated reasoning once, as its own subtext message.
 
         Its own message rather than the answer bubble: the answer is edited in
         place for the whole turn, so reasoning parked there would be overwritten
         by the next frame. ``show_thinking`` is not re-checked here: ``on_thinking``
         is the single gate, and it accumulates nothing while the toggle is off.
+
+        ``from_on_done`` is set by the finalize call: there the answer segment must
+        NOT be sealed here, because ``on_done`` still has to run its own
+        finalization over it (canonical ``[OPTIONS:]`` -> button rows, final table
+        conversion, the turn footer). Sealing it early would ship the answer
+        un-finalized and leave ``on_done`` an empty segment that posts a spurious
+        placeholder. The note is still posted -- a reasoning-only turn wants it --
+        but the buffer is left for ``on_done`` to finalize and land.
         """
         if self._thinking_posted:
             return
@@ -1462,11 +1699,75 @@ class DiscordRenderer(Renderer):
         body = _redact_transformed(reasoning)
         if len(body) > _THINKING_PREVIEW_CHARS:
             body = body[:_THINKING_PREVIEW_CHARS].rstrip() + "…"
+        # Seal any answer already streamed into the live bubble BEFORE the note is
+        # posted, so the reasoning reads below a finished answer segment. Sealing
+        # consumes ``_buf`` and clears ``_stream_mid``, which is what keeps the next
+        # send from RE-POSTING the text the live bubble already shows (``_buf`` still
+        # holds that segment here, since ``on_text_chunk`` flushes reasoning before
+        # appending the new chunk) and keeps the seam record correct (a fresh
+        # message below the note is what the next delivery grades against, not the
+        # bubble above it).
+        #
+        # Guarded to the ONE state this seal is sound for -- a live bubble mid-turn
+        # with an ordinary text segment:
+        #   * NOT from ``on_done`` -- finalize seals with its own markers/footer;
+        #   * NOT while a table is mid-stream (``_table_pending``) -- that would
+        #     sever the table and strand header-less continuation rows, the same
+        #     state ``_stream_live``/``_rotate`` refuse;
+        #   * NOT when the segment carries a protected local-image ref -- the seal
+        #     with ``extract_uploads=False`` would ship the raw absolute path and
+        #     lose the upload, the hold every other landing path applies.
+        # And ``_buf`` is discarded ONLY when the seal actually LANDED: ``_seal_current``
+        # swallows a failed send, so an unconditional clear would drop a segment the
+        # reader never saw with no retry and no ``delivery_failed``.
+        if (
+            not from_on_done
+            and self._stream_mid is not None
+            and not self._table_pending
+            and not await asyncio.to_thread(protected_ref_spans, self._segment_text())
+        ):
+            if await self._seal_current(extract_uploads=False):
+                self._buf = []
+                self._delivery_text = None
+                self._open_new_message()
+        note = _as_subtext(f"💭 {body}")
         try:
-            await self._client.send_message(self._channel_id, _as_subtext(f"💭 {body}"))
+            posted = await self._client.send_message(self._channel_id, note)
             self._tally_redactions(body)
         except Exception:
             logger.debug("discord: thinking note send failed", exc_info=True)
+            return
+        if posted is None:
+            return
+        # Record the note as the seam predecessor ONLY when the next thing shown
+        # will land BELOW it -- i.e. no live bubble is still open above it
+        # (``_stream_mid is None``). Then the note is genuinely the last message on
+        # screen, and grading the next delivery against it is correct: a preview
+        # tail ending in a credential prefix, completed by that delivery's leading
+        # characters across two messages, is the leak this record guards.
+        #
+        # But when ``_stream_mid`` is STILL set -- the ``from_on_done`` path skips
+        # the seal, and a mid-turn seal that declined to fire leaves it too -- the
+        # next thing shown is an EDIT of the bubble ABOVE the note, not a message
+        # below it. Recording the note as that edit's predecessor would grade the
+        # older bubble's own text against the note and, when the two join into a
+        # key, replace a leading span of VALID answer text with a redaction tag.
+        # So leave ``_sent_tail`` alone here; the finalize path records the bubble
+        # it actually lands.
+        #
+        # Not graded on the way in, deliberately: ``💭 `` is unconditional and
+        # survives rendering, so it separates this text from the message above in
+        # the only form the reader sees; grading ``body`` would model an adjacency
+        # that does not exist and give up a leading span for a key the emoji broke.
+        if self._stream_mid is None:
+            self._record_sent(note)
+        else:
+            # A live bubble is still open ABOVE the note, so the note is not the
+            # predecessor of that bubble's next EDIT. But should that edit fail and
+            # fall through to a fresh send, that send lands BELOW the note -- hold
+            # the note so ``_land_sealed`` can grade the fallback against it. See
+            # ``_pending_note_tail``.
+            self._pending_note_tail = note
 
     async def on_tool_call(
         self, tool_call_id: str, title: str, tool_kind: str = "", tool_purpose: str = ""
@@ -1584,8 +1885,10 @@ class DiscordRenderer(Renderer):
         if self._ladder is not None:
             self._ladder.finalize(error=not ok)
         # Reasoning that arrived without any answer text still belongs to the
-        # user (no-op when show_thinking is off or it already landed).
-        await self._flush_thinking()
+        # user (no-op when show_thinking is off or it already landed). from_on_done
+        # posts the note but does NOT seal the answer segment -- on_done finalizes
+        # it below (options -> buttons, final tables, footer) and lands it itself.
+        await self._flush_thinking(from_on_done=True)
         # Flush any trailing rotation, then finalize the current segment with
         # the [OPTIONS:] button rows attached to the last chunk.
         await self._rotate_at_markers()

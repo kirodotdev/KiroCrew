@@ -4707,7 +4707,14 @@ async def _deliver_cross_surface_reply(state: Any, session_key: str, assistant_t
     # the `**`, `#` and `- ` INSIDE the code. Cron log and diff dumps are exactly
     # that shape. The shared splitter seals each chunk with a synthetic closer and
     # reopens the next with the original opener line, so each part stands alone.
-    parts = chunk_for_transport(text, transport.capabilities)
+    # ``redactor=redact_via_context``: the seam check must grade with the SAME
+    # context-aware pair the display redaction above uses, not the shared sink's
+    # default -- a companion-contributed credential split across a transport seam
+    # is invisible to the narrower default pair and would ship whole across two
+    # adjacent messages.
+    parts = await asyncio.to_thread(
+        chunk_for_transport, text, transport.capabilities, redactor=redact_via_context
+    )
     try:
         for part in parts:
             await transport.send_message(link.channel_id, part, thread_id=link.thread_id)

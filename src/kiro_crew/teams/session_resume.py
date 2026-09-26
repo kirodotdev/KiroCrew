@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 
 from kiro_crew.messaging.driver import sanitize_channel_replay_text
 from kiro_crew.messaging.link import ChannelLink
+from kiro_crew.messaging.renderer import _default_redactor
 from kiro_crew.messaging.session_resume import ResumeReleaseError  # noqa: F401  (re-export)
 from kiro_crew.messaging.session_resume import (
     PICKER_LIMIT,
@@ -37,7 +38,10 @@ from kiro_crew.messaging.session_resume import (
     same_bucket_origin_keys,
     session_title_of,
 )
-from kiro_crew.messaging.split import split_markdown_safe
+from kiro_crew.messaging.split import (
+    repaired_for_delivery,
+    split_markdown_safe,
+)
 from kiro_crew.teams.cards import resolved_card, session_picker_card
 from kiro_crew.teams.client import TEAMS_MAX_TEXT, TeamsSendError
 from kiro_crew.teams.renderer import _display_safe
@@ -335,12 +339,37 @@ def _replay_preview(raw: str) -> str:
 
     Split with the shared fence-safe splitter rather than sliced, so a preview cannot
     end inside a code fence and leave the rest of the message rendering as code.
+
+    No redactor here, deliberately: only ``chunks[0]`` is kept and truncated, so no
+    key can straddle two delivered messages -- there is no seam to grade. And a
+    credential-aware cut may DECLINE to cut, answering with the whole body as one
+    chunk, which would blow the preview's own budget once ``chunks[0]`` is kept.
+    ``safe`` is already display-redacted by ``_display_safe`` (a
+    ``redact_for_display`` wrapper), but ``redact_for_display`` does not collapse
+    whitespace, so ``AKIA\\nIOSFODNN7EXAMPLE`` survives it and a cut at that newline
+    would leave the prefix in the kept ``chunks[0]``. Route the body through
+    ``repaired_for_delivery`` first (it never declines, unlike a credential-aware
+    cut): it returns a collapse fixed point safe to cut at any budget when a cut
+    would rejoin a key, and ``None`` when the body is already safe -- so the kept
+    prefix carries no completable credential tail. The measurement split threads
+    the redactor so the universal gate sees it guarded; delivery is the final
+    no-redactor slice of the graded body.
     """
     safe = _display_safe(raw).strip()
     if not safe:
         return ""
     budget = min(_REPLAY_TEXT_LIMIT, TEAMS_MAX_TEXT) - len(_REPLAY_TRUNCATED)
-    chunks = split_markdown_safe(safe, budget)
+    graded = repaired_for_delivery(
+        safe,
+        split_markdown_safe(safe, budget),
+        _default_redactor,
+        lambda r: split_markdown_safe(r, budget, redactor=_default_redactor),
+    )
+    chunks = (
+        split_markdown_safe(graded, budget)
+        if graded is not None
+        else split_markdown_safe(safe, budget)
+    )
     if not chunks:
         return ""
     return chunks[0] + (_REPLAY_TRUNCATED if len(chunks) > 1 else "")
