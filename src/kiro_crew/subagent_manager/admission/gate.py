@@ -502,6 +502,75 @@ class _GateMixin(ManagerComponent):
                 )
             )
 
+        # --- Context-window guard: catch a small-window model before boot ---
+        # The parent's startup context (memory + lessons + project + roster) is
+        # injected into the subagent BEFORE its task, so the boot payload is that
+        # context PLUS the task/review prompt, not the context alone. On that
+        # combined payload 164k/196k/200k-window models were observed to overflow
+        # at boot -- failing with no result before emitting a useful token --
+        # while 1M-window models completed. This does not estimate the live
+        # payload size (a deliberate non-goal here); it flags a model whose whole
+        # window sits under the floor. 'off' (default) disables it; 'warn' logs and
+        # proceeds; 'error' refuses. Only acts when an explicit model override
+        # is set AND that model's window is KNOWN, below the floor, and resolved
+        # from the authoritative live model list (window_source == "kiro-list").
+        # A stale static-registry / heuristic / unknown window is never flagged,
+        # matching the model_registry rule to never silently shrink a budget --
+        # so the guard fails OPEN on anything but a confidently-known small window.
+        if _gate and model:
+            try:
+                window_cfg = KiroCrewConfig.load().agent
+                _guard = getattr(window_cfg, "spawn_window_guard", "off")
+                _floor = int(getattr(window_cfg, "spawn_window_floor_tokens", 256000))
+            except Exception:
+                _guard, _floor = "off", 256000
+            if _guard in ("warn", "error") and _floor > 0:
+                try:
+                    from kiro_crew import model_registry
+
+                    _win = model_registry.model_window(model)
+                    _src = model_registry.window_source(model)
+                except Exception:
+                    _win, _src = None, "unknown"
+                if (
+                    isinstance(_win, int)
+                    and not isinstance(_win, bool)
+                    and _win < _floor
+                    and _src == "kiro-list"
+                ):
+                    _msg = (
+                        f"model {model!r} has a {_win}-token window, below the "
+                        f"{_floor}-token floor. The parent startup context plus "
+                        f"this spawn's task are injected first and can overflow it "
+                        f"at boot. Pin a larger-window model."
+                    )
+                    logger.warning("Subagent spawn window guard (%s): %s", _guard, _msg)
+                    sel().log_tool_invocation(
+                        session_key=parent_session_key or "",
+                        source="subagent",
+                        tool_name="spawn_run",
+                        outcome=f"window_guard_{_guard}",
+                        metadata={
+                            "model": model,
+                            "window_tokens": _win,
+                            "floor_tokens": _floor,
+                            **_task_audit,
+                        },
+                    )
+                    if _guard == "error":
+                        info = SubagentInfo(
+                            id=agent_id,
+                            task=_redacted_task,
+                            memory_mode=_memory_mode,
+                            agent=agent,
+                            parent_session_key=parent_session_key,
+                            done=True,
+                            error=f"spawn refused: {_msg}",
+                            batch_id=batch_id,
+                            batch_total=max(0, int(batch_total)),
+                        )
+                        return _refuse_row(info)
+
         # --- Persist BEFORE any resource check: write-before-ack. Policy refusals
         # above (empty task, memory identity, cwd, governance) never reach the
         # store, so a refused spawn leaves no row; from here on the row exists

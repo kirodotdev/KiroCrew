@@ -1105,3 +1105,144 @@ class TestCronExprPassthrough:
         # The refresh lock was released, not leaked:
         assert rs._cache_refresh_inflight.acquire(blocking=False)
         rs._cache_refresh_inflight.release()
+
+
+# ── context-window guard ─────────────────────────────────────────────────────
+
+
+class TestSpawnWindowGuard:
+    """The spawn context-window guard (subagent_manager/admission/gate.py).
+
+    Fires only for an explicit model override whose window is KNOWN, below the
+    floor, AND resolved from the authoritative live list (window_source ==
+    "kiro-list"). A stale / heuristic / unknown window fails OPEN. 'warn' logs
+    and proceeds; 'error' refuses via the same _refuse_row path the memory gate
+    uses; 'off' is a no-op.
+    """
+
+    def _mgr(self):
+        from kiro_crew.subagent import SubagentManager
+
+        sessions = MagicMock()
+        sessions.get_agent_selection.return_value = ("template", "")
+        return SubagentManager(
+            sessions=sessions,
+            ctx_builder=MagicMock(),
+            on_done=MagicMock(),
+            max_concurrent=3,
+        )
+
+    def _spawn(self, *, guard, model, window, source, posture=None):
+        """Drive one spawn through the window guard; return (info, outcomes).
+
+        The window guard runs with the policy gates, before the persist step
+        and before the memory and posture gates, so a non-refusing guard
+        (off/warn/fail-open) falls through to cached_admission_check -- mocked
+        to a critical refusal here so the spawn terminates at the posture gate
+        instead of launching a real subprocess.
+        """
+        posture = posture if posture is not None else _refused()
+        mgr = self._mgr()
+        with patch(
+            "kiro_crew.subagent.check_memory_available", return_value=(True, 8.0)
+        ), patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg, patch(
+            "kiro_crew.subagent.cached_admission_check", return_value=posture
+        ), patch(
+            "kiro_crew.model_registry.model_window", return_value=window
+        ), patch(
+            "kiro_crew.model_registry.window_source", return_value=source
+        ), patch(
+            "kiro_crew.subagent.sel"
+        ) as mock_sel:
+            agent_cfg = mock_cfg.load.return_value.agent
+            agent_cfg.spawn_min_memory_gb = 4.0
+            agent_cfg.subagent_cost_gb = 0.5
+            agent_cfg.spawn_window_guard = guard
+            agent_cfg.spawn_window_floor_tokens = 256000
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+
+            info = mgr.spawn(
+                task="review task", parent_session_key="sess-1", model=model
+            )
+
+        outcomes = [
+            c[1]["outcome"]
+            for c in mock_sel.return_value.log_tool_invocation.call_args_list
+        ]
+        return info, outcomes
+
+    def test_error_refuses_a_known_small_kiro_list_window(self) -> None:
+        info, outcomes = self._spawn(
+            guard="error",
+            model="deepseek-3.2",
+            window=164000,
+            source="kiro-list",
+        )
+        assert info is not None and info.done is True
+        assert "window" in info.error and "164000" in info.error
+        assert "window_guard_error" in outcomes
+        # Refused AT the guard, before the posture gate could run.
+        assert "deferred_memory_critical" not in outcomes
+        assert "refused_memory_critical" not in outcomes
+
+    def test_warn_logs_but_proceeds_past_the_guard(self) -> None:
+        info, outcomes = self._spawn(
+            guard="warn",
+            model="glm-5",
+            window=200000,
+            source="kiro-list",
+        )
+        assert "window_guard_warn" in outcomes
+        # warn never refuses: execution reached the posture gate after it.
+        assert outcomes[-1] in (
+            "deferred_memory_critical",
+            "refused_memory_critical",
+        )
+        assert "window" not in (info.error or "")
+
+    def test_off_is_a_no_op(self) -> None:
+        _info, outcomes = self._spawn(
+            guard="off",
+            model="deepseek-3.2",
+            window=164000,
+            source="kiro-list",
+        )
+        assert not any(o.startswith("window_guard") for o in outcomes)
+
+    def test_fails_open_on_non_kiro_list_source(self) -> None:
+        # A stale static-registry window must NEVER be flagged, even in error
+        # mode: the guard fails open on anything but a confidently-known window,
+        # so a 1M model mis-reported as small by a cold cache is not refused.
+        info, outcomes = self._spawn(
+            guard="error",
+            model="claude-opus-5",
+            window=200000,
+            source="registry",
+        )
+        assert not any(o.startswith("window_guard") for o in outcomes)
+        assert "window" not in (info.error or "")
+
+    def test_equal_floor_window_passes(self) -> None:
+        # The guard fires strictly BELOW the floor (_win < _floor), so a model
+        # whose window equals the 256000 floor is not flagged -- proving the
+        # "passes 256k models" claim in the config help text.
+        info, outcomes = self._spawn(
+            guard="error",
+            model="qwen3-coder-next",
+            window=256000,
+            source="kiro-list",
+        )
+        assert not any(o.startswith("window_guard") for o in outcomes)
+        assert "window" not in (info.error or "")
+
+    def test_large_window_passes(self) -> None:
+        # A 1M-window model is far above the floor and must never be flagged,
+        # even in error mode -- proving the "passes 1M models" claim.
+        info, outcomes = self._spawn(
+            guard="error",
+            model="claude-opus-5",
+            window=1000000,
+            source="kiro-list",
+        )
+        assert not any(o.startswith("window_guard") for o in outcomes)
+        assert "window" not in (info.error or "")
