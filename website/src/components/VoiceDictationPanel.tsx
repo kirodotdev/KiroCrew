@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
 import Strands, { strandsSupported } from './Strands'
 import { useReducedMotion } from '../hooks/useReducedMotion'
@@ -189,6 +189,15 @@ export default function VoiceDictationPanel({ sampleRef, value, partial, deviceL
   const committed = hasPartial ? value.slice(0, value.length - partial.length) : value
   const tokens = useWordRevisions(committed, hasPartial ? partial : '')
 
+  // The transcript is height-capped (see max-h-20 below), so pin it to the
+  // bottom as text grows — the newest words are what a dictating user is
+  // confirming, and they sit at the growing edge.
+  const transcriptRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = transcriptRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [committed, partial])
+
   return (
     <div
       className="relative h-[168px] overflow-hidden border-b border-border bg-bg"
@@ -247,6 +256,7 @@ export default function VoiceDictationPanel({ sampleRef, value, partial, deviceL
           {/* Text sits over a live shader, so it carries its own shadow floor
               rather than relying on the background staying dark. */}
           <div
+            ref={transcriptRef}
             className="text-[17px] leading-[1.45] text-text-strong max-h-20 overflow-hidden [text-shadow:0_1px_12px_var(--bg),0_0_3px_var(--bg)]"
             data-testid="voice-dictation-transcript"
           >

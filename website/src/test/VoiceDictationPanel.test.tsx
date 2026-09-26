@@ -233,3 +233,47 @@ describe('word revision tracking', () => {
     expect(t.querySelector('.text-muted')?.textContent).toBe('  and   tell me')
   })
 })
+
+describe('transcript auto-scroll', () => {
+  // jsdom does no layout, so scrollHeight stays 0. Stub it tall and capture
+  // scrollTop to assert the effect pins the transcript to its bottom.
+  function tallScroll() {
+    let scrollTop = 0
+    Object.defineProperty(HTMLDivElement.prototype, 'scrollHeight', {
+      configurable: true,
+      get() { return 999 },
+    })
+    Object.defineProperty(HTMLDivElement.prototype, 'scrollTop', {
+      configurable: true,
+      get() { return scrollTop },
+      set(v: number) { scrollTop = v },
+    })
+    return () => {
+      delete (HTMLDivElement.prototype as unknown as Record<string, unknown>).scrollHeight
+      delete (HTMLDivElement.prototype as unknown as Record<string, unknown>).scrollTop
+    }
+  }
+
+  it('pins the transcript to its bottom so the newest dictated text stays visible', () => {
+    const restore = tallScroll()
+    try {
+      const { rerender } = render(
+        <VoiceDictationPanel sampleRef={sampleRef} value="line one" partial="line one" streaming />,
+      )
+      const t = screen.getByTestId('voice-dictation-transcript')
+      expect(t.scrollTop).toBe(999)
+      // More text arrives (past the 3-line clip); it must scroll to the new bottom.
+      rerender(
+        <VoiceDictationPanel
+          sampleRef={sampleRef}
+          value="line one two three four five six"
+          partial="line one two three four five six"
+          streaming
+        />,
+      )
+      expect(t.scrollTop).toBe(999)
+    } finally {
+      restore()
+    }
+  })
+})
