@@ -2300,6 +2300,31 @@ class TestACreationFailureRefusesTheSpawn:
         assert sandbox._materialize_sealable_ceilings() == []
 
 
+class TestAMissingParentRefusesTheSpawn:
+    """A ceiling whose parent is not a directory refuses instead of scaffolding.
+
+    Building the parents would create a writable ancestor the agent could
+    rename through, so the materialiser names the path and raises rather than
+    running the spawn unprotected.
+    """
+
+    def test_missing_dir_parent_refuses(self, crew_home, monkeypatch, tmp_path):
+        ghost = str(tmp_path / "no-such-dir" / "profiles")
+        monkeypatch.setattr(sandbox, "_sealable_absent_ceilings", lambda: ([ghost], []))
+
+        with pytest.raises(sandbox.SandboxCeilingUnsealable):
+            sandbox._materialize_sealable_ceilings()
+        assert not (tmp_path / "no-such-dir").exists()
+
+    def test_missing_file_parent_refuses(self, crew_home, monkeypatch, tmp_path):
+        ghost = str(tmp_path / "no-such-dir" / "computer_use.json")
+        monkeypatch.setattr(sandbox, "_sealable_absent_ceilings", lambda: ([], [ghost]))
+
+        with pytest.raises(sandbox.SandboxCeilingUnsealable):
+            sandbox._materialize_sealable_ceilings()
+        assert not (tmp_path / "no-such-dir").exists()
+
+
 @_POSIX_ONLY
 class TestADanglingSymlinkRefusesTheSpawn:
     """The one state that defeats every ``os.path.exists`` guard on this path at once.
