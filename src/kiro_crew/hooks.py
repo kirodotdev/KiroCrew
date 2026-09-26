@@ -4570,7 +4570,10 @@ class ScriptHook:
             command=data.get("command", ""),
             skills=[str(s) for s in skills if isinstance(s, str)],
             timeout=timeout,
-            enabled=data.get("enabled", True),
+            # hooks.json is hand-editable: coerce like UserDeniedPattern so the
+            # string "false" cannot keep a hook firing (bool("false") is True)
+            # and junk falls back to enabled rather than flipping a deny off.
+            enabled=_coerce_bool(data.get("enabled", True), default=True),
             last_run=data.get("last_run", 0.0),
             last_status=data.get("last_status", ""),
             last_error=last_error,
@@ -5216,9 +5219,13 @@ class ScriptHookStore:
             if not hook:
                 return None
             was_dormant = hook.event in HOOK_EVENTS_KAS_ONLY
-            for k in ("name", "event", "matcher", "matcher_mode", "command", "timeout", "enabled"):
+            for k in ("name", "event", "matcher", "matcher_mode", "command", "timeout"):
                 if k in data:
                     setattr(hook, k, data[k])
+            if "enabled" in data:
+                # Fail safe: junk keeps the current value instead of flipping a
+                # deny rule off (or a disabled hook on) via ""/None/list.
+                hook.enabled = _coerce_bool(data["enabled"], default=bool(hook.enabled))
             # The activation contract has to hold on BOTH write paths. `create`
             # stores a hook on one of the six switched off; without this, an edit
             # moving an ALREADY-ENABLED hook from a live event onto one of the six
