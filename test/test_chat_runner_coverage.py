@@ -2158,6 +2158,55 @@ class TestConsumePendingDiscardBoundary:
         assert torn_down is True
 
     @pytest.mark.asyncio
+    async def test_a_clear_landing_during_registration_rejects_the_allocation(self, tmp_path):
+        """A clear racing the allocation must not leave THIS turn in the old directory.
+
+        The turn resolves its cwd from the slot's claim, then awaits
+        ``get_or_create``. A clear landing inside that await arms a teardown the
+        NEXT turn consumes -- so without a post-registration re-read, the session
+        just registered keeps serving this turn from the directory the user
+        removed. The re-read rejects that allocation: the armed teardown is
+        consumed here and the claim is resolved and registered again.
+        """
+        from kiro_crew.config.loader import session_default_cwd
+
+        state, client = _runner_state(tmp_path)
+        _set_stream(client, [_complete()])
+        slot = _slot()
+        # A slot that never had a project: the claim reads None, so the first
+        # allocation states no cwd -- exactly the case a stored-cwd resume can
+        # rebind to a directory the user has since removed.
+        slot.project = ""
+        slot.project_cleared = False
+        session_key = "dashboard:chat-cov-1"
+        seen_cwd: list[str | None] = []
+
+        async def _clear_lands_during_registration(key, **kwargs):
+            seen_cwd.append(kwargs.get("cwd"))
+            if len(seen_cwd) == 1:
+                # The production clear's own effects, landing mid-await.
+                slot.project = ""
+                slot.project_cleared = True
+                slot._pending_reset_history_key = session_key
+            return client, True, False
+
+        state.sessions.get_or_create = AsyncMock(side_effect=_clear_lands_during_registration)
+
+        await _drive(state, slot)
+
+        assert len(seen_cwd) == 2, (
+            "the allocation that registered before the clear was kept, so this turn "
+            f"still runs in the directory the user removed: {seen_cwd}"
+        )
+        # First attempt states nothing, because the slot had no project yet.
+        assert seen_cwd[0] is None
+        # Second attempt: the cleared claim resolves to the session's own default,
+        # which a stored-cwd resume cannot override.
+        assert seen_cwd[1] == str(session_default_cwd(session_key))
+        # The rejected allocation was torn down rather than left registered.
+        state.sessions.reset.assert_awaited_with(session_key, skip_if_busy=True)
+
+    @pytest.mark.asyncio
     async def test_the_discard_goes_through_the_atomic_skip_if_busy_path(self, tmp_path):
         """The busy-check and the teardown must be ONE step under the session
         lock. Probing here and tearing down afterwards leaves a window in which a

@@ -25,6 +25,7 @@ from kiro_crew.config.loader import (
     KiroCrewConfig,
     refresh_materialized_agents,
     resolve_agent_bindings,
+    resolved_claim_cwd,
 )
 from kiro_crew.dashboard.side_context import build_side_message
 from kiro_crew.dashboard.side_readonly_spec import ReadOnlySpecError, publish_readonly_spec
@@ -386,8 +387,15 @@ async def _run_side_turn(
         # project and the spawn happen in the new one, loading a file the check
         # never saw. A change is picked up by the NEXT turn, whose binding then
         # differs and cold-starts under its own derivation.
-        project: str | None = slot.project or None
+
+        # Resolved rather than carried: an empty ``cwd`` reaches the provider factory
+        # on the same branch as the ``None`` that states no requirement at all. The
+        # shared resolver owns that rule for every spawn site, and it hops off the loop
+        # itself. Both slot reads are taken above so the hop cannot land between them
+        # and split the single reading this block depends on.
+        claim: str | None = slot.claim_cwd
         slot_agent: str | None = slot.agent or None
+        project: str | None = await resolved_claim_cwd(claim, side_key)
         # The READ_ONLY policy's classifier is the gateway's ONE live hook gate,
         # the same object the main chat consults (``chat_runner`` reads
         # ``state.context_builder.hooks``). Settings > Security hot-reloads that

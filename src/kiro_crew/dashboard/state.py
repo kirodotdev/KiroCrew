@@ -32,6 +32,7 @@ from kiro_crew.config.loader import (
     config_dir,
     resolve_effective_agent,
 )
+from kiro_crew.config.paths import CWD_CLEARED
 from kiro_crew.constants import (  # noqa: F401 -- DENY_CAUSE_* / STEER_NOTICE_BOUND_SECS re-exported
     DENY_CAUSE_APPROVAL_NO_BUDGET,
     DENY_CAUSE_APPROVAL_TIMEOUT,
@@ -2452,7 +2453,8 @@ class _ChatSlot:
         "workspace",
         "memory_store",
         "_memory_assignment_from_history",
-        "project",
+        "_project",
+        "project_cleared",
         "created_at",
         "messages",
         "total_messages",
@@ -2761,7 +2763,10 @@ class _ChatSlot:
         # assignment. Only a protected binding or an explicit owner pick clears
         # that admission boundary; this marker is not persisted in the transcript.
         self._memory_assignment_from_history = False
-        self.project: str = ""
+        self._project: str = ""
+        # A CLEARED project and one never set both leave ``project`` empty, but only a clear
+        # invalidates a warm pooled child's binding.
+        self.project_cleared: bool = False
         # Remote-execution binding. ``executor`` is "local" for every ordinary
         # slot; "remote" means the turn is dispatched over an instance tunnel to
         # ``instance_id`` and run by the peer's slot ``remote_slot``. The local
@@ -3760,6 +3765,47 @@ class _ChatSlot:
         leave a later ``begin_close`` reading as not-closing.
         """
         self._closing = max(0, self._closing - 1)
+
+    @property
+    def project(self) -> str:
+        """The directory this slot claims, or empty when it claims none."""
+        return self._project
+
+    @project.setter
+    def project(self, value: str) -> None:
+        """Bind a directory, retracting the cleared marker so the two cannot disagree.
+
+        The marker states the user REMOVED a project, so a slot that HAS one cannot also be
+        cleared -- and ``claim_cwd`` reads the marker first, so one left standing keeps
+        answering ``CWD_CLEARED`` for a directory that was chosen, sending the turn
+        elsewhere with nothing to signal it. Retracting here rather than at each writer is
+        what makes a missed pairing impossible instead of silent. Emptying this leaves the
+        marker alone: a clear states it explicitly afterwards, and the identity-gated
+        rollbacks restore the prior pair the same way.
+        """
+        self._project = value
+        if value:
+            self.project_cleared = False
+
+    @property
+    def claim_cwd(self) -> str | None:
+        """The cwd a claim must state for this slot, or ``None`` to state none.
+
+        ``CWD_CLEARED`` is reserved for a project that was actually cleared, because that is
+        when a warm pooled child's binding has been invalidated. A slot that never had a
+        project states nothing, keeping the warm pool and its stored-cwd resume override.
+
+        The cleared MARKER is read before the project, so a value that outlived its clear
+        cannot win. A persisted record is merged by an upsert that cannot delete a key, so a
+        slot cleared after `/old` was written still carries `/old` on disk; honoring that
+        resumes relative writes into the former directory with nothing to signal it.
+
+        INVARIANT the ``project`` setter enforces: the marker is true only while the slot
+        has NO chosen directory, so a write that SETS a project retracts it there.
+        """
+        if getattr(self, "project_cleared", False):
+            return CWD_CLEARED
+        return self.project or None
 
     @property
     def _dirty(self) -> bool:

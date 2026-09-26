@@ -1221,6 +1221,109 @@ async def test_a_project_change_during_derivation_does_not_split_check_and_spawn
 
 
 @pytest.mark.asyncio
+async def test_a_cleared_project_is_not_the_directory_the_side_turn_spawns_in(
+    tmp_path, monkeypatch
+):
+    """A cleared project spawns the side turn in a CONCRETE default directory, never the
+    cleared path and never an empty ``cwd``.
+
+    Both properties are load-bearing and neither implies the other. Reading the raw field would
+    spawn in a directory the user cleared; re-reading ``claim_cwd`` at the spawn instead of
+    reusing the snapshot would let a project change between the shadow check and the spawn.
+
+    NON-FALSY matters because an empty ``cwd`` reaches the provider factory on the same branch
+    as the ``None`` that states no requirement, where an expired side session's stored cwd can
+    be restored over it -- putting the turn back in the directory the user cleared.
+
+    The clear goes through the ``/project`` directive rather than setting the marker by hand:
+    the marker is only worth anything if a production path writes it.
+
+    The resolution is also pinned OFF the loop thread. ``session_default_cwd`` creates the
+    workspace root and realpaths it, and a filesystem wait on the one event loop stalls every
+    other session's turn; the assertion is the calling THREAD because a synchronous call
+    returns the identical value and is invisible in the result.
+    """
+    import threading
+
+    from kiro_crew.config.loader import session_default_cwd
+    from kiro_crew.dashboard.handlers.side import _side_session_key
+    from kiro_crew.dashboard.session_directive_apply import _set_project
+
+    state = _make_state(tmp_path)
+    _capture_broadcasts(state)
+    parent = state.get_or_create_slot("parent")
+    stale = str(tmp_path / "proj-cleared")
+    parent.project = stale
+    # The production clear. Nothing below sets ``project_cleared``.
+    await _set_project(state, parent, {"clear": True})
+    assert parent.project_cleared is True, (
+        "the /project clear did not record the clear, so every assertion below would pass "
+        "against a slot that merely has no project"
+    )
+    parent._side = SideState(open=True, created_at="2026-01-01T00:00:00Z")
+    parent._side.append_user(_SIDE_QUESTION)
+    parent._side.last_run_id = "run-cleared"
+    parent._side.is_complete = False
+    derived_for: list[str | None] = []
+
+    def _publish(base_name: str, project_dir: str | None = None):
+        from kiro_crew.dashboard.side_readonly_spec import PublishedSpec
+
+        derived_for.append(project_dir)
+        return PublishedSpec(name=f"{base_name}--readonly", digest="e" * 64)
+
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side.publish_readonly_spec", _publish)
+    resolved_on: list[str] = []
+
+    def _recording_default_cwd(key: str):
+        resolved_on.append(threading.current_thread().name)
+        return session_default_cwd(key)
+
+    # Patched where the shared resolver reads it, not where the handler imports
+    # it: every spawn site now goes through that one resolver, so this records
+    # the real call the side turn makes rather than a handler-local alias.
+    monkeypatch.setattr("kiro_crew.config.loader.session_default_cwd", _recording_default_cwd)
+    created: list[dict] = []
+
+    async def _fake_get_or_create(key, **kwargs):
+        created.append(kwargs)
+        return MagicMock(), True, False
+
+    state.sessions.get_provider = MagicMock(return_value=None)
+    state.sessions.get_or_create = _fake_get_or_create
+    state.sessions.release = MagicMock()
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.side.stream_and_collect",
+        AsyncMock(return_value=_SIDE_ANSWER),
+    )
+
+    await _run_side_turn(state, parent, "run-cleared", _SIDE_QUESTION, is_first_turn=True)
+
+    assert created, "no session was created, so the spawn cwd was never stated"
+    spawned = created[0]["cwd"]
+    assert spawned, (
+        "the side turn stated a FALSY cwd; an empty claim shares the provider factory's "
+        "'unspecified' branch, where the expired session's stored cwd can be restored over it"
+    )
+    assert (
+        spawned != stale
+    ), f"the side turn spawned in {spawned!r}, the very directory the user cleared"
+    side_key = _side_session_key(parent.key, parent._side.gen)
+    assert spawned == str(session_default_cwd(side_key)), (
+        f"the side turn spawned in {spawned!r}, which is not the directory the provider "
+        f"factory itself would bind for this session -- so the claim and the binding disagree"
+    )
+    assert derived_for == [
+        spawned
+    ], "the shadow check must run against the same reading the spawn uses"
+    assert resolved_on, "the workspace default was never resolved, so the cleared branch is unrun"
+    assert threading.main_thread().name not in resolved_on, (
+        f"the workspace default was resolved on {resolved_on!r}, the loop's own thread, so its "
+        "mkdir and realpath wait stalls every other session's turn"
+    )
+
+
+@pytest.mark.asyncio
 async def test_a_close_during_acquisition_destroys_the_acquired_session(
     tmp_path, monkeypatch, _published_readonly_spec
 ):
