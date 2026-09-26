@@ -1,4 +1,6 @@
-import { safeSetItem, safeSetSessionItem } from '../utils/safeStorage'
+import { safeSetItem } from '../utils/safeStorage'
+import { composerDraftStoreFor } from '../utils/composerDraftStore'
+import { clearAnnotationHighlight, paintAnnotationHighlight } from '../utils/annotationHighlight'
 import { hasCommandModifier } from '../utils/commandModifier'
 import { memo, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useImperativeHandle, forwardRef } from 'react'
 import { createPortal } from 'react-dom'
@@ -56,20 +58,9 @@ const FIND_HL_SUPPORTED = !!FindHighlightCtor && !!cssHighlights
 // search at once they would overlap visually, never crash.
 const FIND_HL_ALL = 'mc-find'
 const FIND_HL_CURRENT = 'mc-find-current'
-// File tabs stay mounted while hidden, and each can retain an open comment
-// composer. Aggregate every panel's ranges under the one styled registry name
-// so opening or closing a composer in one tab cannot erase another tab's paint.
-const ANNOTATE_HL = 'mc-annotate'
-const annotationRangesByOwner = new Map<object, Range[]>()
-
-function setAnnotationHighlightRanges(owner: object, ranges: Range[]) {
-  if (!FIND_HL_SUPPORTED || !FindHighlightCtor || !cssHighlights) return
-  if (ranges.length > 0) annotationRangesByOwner.set(owner, ranges)
-  else annotationRangesByOwner.delete(owner)
-  const allRanges = Array.from(annotationRangesByOwner.values()).flat()
-  if (allRanges.length > 0) cssHighlights.set(ANNOTATE_HL, new FindHighlightCtor(...allRanges))
-  else cssHighlights.delete(ANNOTATE_HL)
-}
+// The annotation (open-composer) highlight lives in utils/annotationHighlight:
+// the artifact hosts paint through the same registry name, and ranges are
+// aggregated per owner so one host's open/close cannot erase another's paint.
 
 /**
  * Locate the first char of `selected` in the raw source `content` and return
@@ -988,10 +979,6 @@ function DiffViewBlock({ diffMode, fileName, originalContent, content, lineNums,
   )
 }
 
-/** In-memory twin of the per-file comment-draft store (see `composerDraftStore`):
- *  the copy that survives a slot switch when sessionStorage refuses the write. */
-const composerDraftMemory = new Map<string, string>()
-
 /** Shared comment overlay — the pending-comment list. (The input itself lives
  *  in `SelectionToolbar`'s composer, which opens on selection.) */
 const CommentOverlayBlock = memo(function CommentOverlayBlock({ onSubmitComments, comments, editComment, removeComment, submitAllComments, connected = true }: {
@@ -1130,31 +1117,11 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   // the API is absent both callbacks are no-ops, matching how find degrades.
   const annotationHighlightOwnerRef = useRef<object>({})
   const clearHighlightMarks = useCallback(() => {
-    setAnnotationHighlightRanges(annotationHighlightOwnerRef.current, [])
+    clearAnnotationHighlight(annotationHighlightOwnerRef.current)
   }, [])
 
   const applyHighlightMarks = useCallback((range: Range) => {
-    if (!FIND_HL_SUPPORTED || !FindHighlightCtor || !cssHighlights) return
-    const treeWalker = document.createTreeWalker(range.commonAncestorContainer, NodeFilter.SHOW_TEXT)
-    const textNodes: Text[] = []
-    let node: Node | null
-    while ((node = treeWalker.nextNode())) {
-      if (range.intersectsNode(node)) textNodes.push(node as Text)
-    }
-    if (textNodes.length === 0 && range.startContainer.nodeType === Node.TEXT_NODE) {
-      textNodes.push(range.startContainer as Text)
-    }
-    const ranges: Range[] = []
-    for (const textNode of textNodes) {
-      const start = textNode === range.startContainer ? range.startOffset : 0
-      const end = textNode === range.endContainer ? range.endOffset : textNode.length
-      if (start === end) continue
-      const highlightRange = document.createRange()
-      highlightRange.setStart(textNode, start)
-      highlightRange.setEnd(textNode, end)
-      ranges.push(highlightRange)
-    }
-    setAnnotationHighlightRanges(annotationHighlightOwnerRef.current, ranges)
+    paintAnnotationHighlight(annotationHighlightOwnerRef.current, range)
   }, [])
   useEffect(() => () => clearHighlightMarks(), [clearHighlightMarks])
   const [refreshing, setRefreshing] = useState(false)
@@ -1641,59 +1608,10 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     return undefined
   }, [content, displayContent, isMarkdown])
 
-  // Composer opened over a selection (SelectionToolbar calls this BEFORE it
-  // focuses the input, while the DOM selection is live): resolve the anchor
-  // and paint the <mark> highlight that stands in for the selection once focus
-  // has taken it. Re-fires on every re-selection, replacing the previous anchor.
-  // Every operation swallows storage errors: a full quota or a refusing
-  // storage (legacy private modes) must never throw out of a keystroke
-  // handler. When sessionStorage refuses, the draft falls back to the
-  // module-level map, which still outlives the panel (a slot switch unmounts
-  // the panel, not the page) — so the common teardown is covered either way.
-  const composerDraftStore = useMemo(() => {
-    const key = `mc-comment-composer-draft:${filePath}`
-    // One record per file, holding a draft per PASSAGE (offset + text), so two
-    // half-written comments on different passages coexist.
-    type Slots = Record<string, string>
-    const slotKey = (anchor: string, start: number) => `${start}|${anchor}`
-    const parse = (raw: string | null): Slots => {
-      if (!raw) return {}
-      try {
-        const parsed = JSON.parse(raw) as unknown
-        if (!parsed || typeof parsed !== 'object') return {}
-        const out: Slots = {}
-        for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) if (typeof v === 'string') out[k] = v
-        return out
-      } catch { return {} }
-    }
-    // Both copies, merged per passage with memory winning: `save` always writes
-    // memory and writes sessionStorage only when that succeeds, so after a quota
-    // rejection the memory copy is the newer one for the slots it holds, while
-    // sessionStorage still carries slots from before this page load.
-    const load = (): Slots => {
-      let fromSession: Slots = {}
-      try { fromSession = parse(window.sessionStorage.getItem(key)) } catch { /* unavailable */ }
-      return { ...fromSession, ...parse(composerDraftMemory.get(key) ?? null) }
-    }
-    const save = (slots: Slots) => {
-      if (Object.keys(slots).length === 0) {
-        composerDraftMemory.delete(key)
-        try { window.sessionStorage.removeItem(key) } catch { /* unavailable */ }
-        return
-      }
-      const raw = JSON.stringify(slots)
-      composerDraftMemory.set(key, raw)
-      // The write goes through the helper so a full or denied store can never
-      // raise on the render path; the in-memory copy above is what actually
-      // serves this tab, so a dropped mirror degrades exactly as before.
-      safeSetSessionItem(key, raw)
-    }
-    return {
-      read: (anchor: string, start: number): string | null => load()[slotKey(anchor, start)] ?? null,
-      write: (text: string, anchor: string, start: number) => { const slots = load(); slots[slotKey(anchor, start)] = text; save(slots) },
-      clear: (anchor: string, start: number) => { const slots = load(); delete slots[slotKey(anchor, start)]; save(slots) },
-    }
-  }, [filePath])
+  // Where an in-progress comment lives between teardowns the toolbar cannot
+  // guard (a chat-slot switch replaces the side panel wholesale). Per file,
+  // per passage; see `composerDraftStoreFor`.
+  const composerDraftStore = useMemo(() => composerDraftStoreFor(`mc-comment-composer-draft:${filePath}`), [filePath])
 
   // An unsaved comment draft makes this tab NOT clean for the navigate/close
   // guards below: a rail click must open the next file beside it rather than

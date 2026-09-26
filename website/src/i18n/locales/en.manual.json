@@ -2782,6 +2782,7 @@
     },
     "selectionToolbar": {
       "comment_input": "Comment on the selected text",
+      "comment_post_failed": "Couldn’t save your comment. Your text is still here — try again, or close to keep it as a draft.",
       "copy_failed": "Copy failed — your browser blocked clipboard access. Select the text and copy it yourself.",
       "copy_selection_hint": "Copies the selected text — not your comment — to the clipboard",
       "more_actions": "More actions for the selection",

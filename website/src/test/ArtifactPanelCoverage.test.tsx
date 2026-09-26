@@ -58,8 +58,16 @@ interface LayerArgs {
   sidebarStyle?: CSSProperties
 }
 const layerArgs: LayerArgs[] = []
-const anchorRequests: string[] = []
+/** Which layer's composer received each submit (`stacked` / `full`), with the text. */
+const composerSubmits: Array<{ which: string; comment: string; text: string }> = []
 let stubComments: ArtifactComment[] = []
+/** The in-iframe selection the stub layers hand the toolbar, when a test sets one. */
+let stubIframeSelection: { text: string; x: number; y: number } | null = null
+/** Whether the stub layers report an open comment draft. */
+let stubHasDraft = false
+/** Whether the stub layers report the comment box open at all. */
+let stubComposerOpen = false
+const draftSlotClears: string[] = []
 
 // A stateful stand-in: real `sidebarOpen` state (so the toggle is exercised for
 // real) over a comment list the test controls. The two instances are told apart
@@ -75,7 +83,11 @@ vi.mock('../components/FileArtifactComments', async () => {
       overlay: null,
       popovers: <div data-testid={`popovers-${which}`} />,
       sidebar: <div data-testid={`sidebar-${which}`} />,
-      requestAnchoredComment: () => { anchorRequests.push(which) },
+      selectionComposer: { onSubmit: (comment: string, text: string) => { composerSubmits.push({ which, comment, text }) } },
+      isComposerOpen: () => stubComposerOpen,
+      hasComposerDraft: () => stubHasDraft,
+      clearComposerDraftSlot: () => { draftSlotClears.push(which) },
+      iframeSelection: stubIframeSelection,
       toggleSidebar: () => setSidebarOpen((v: boolean) => !v),
       sidebarOpen,
       commentCount: stubComments.length,
@@ -99,9 +111,18 @@ interface StubAction {
   label: string
   onClick: (text: string, rect: DOMRect) => void
 }
+interface StubComposer {
+  onSubmit: (comment: string, text: string) => void
+}
+// The stub exposes what the panel wires into the toolbar: the host actions,
+// the layer's composer (a submit button drives it), and the bridge selection
+// it is handed as `externalSelection`.
 vi.mock('../components/SelectionToolbar', () => ({
-  default: ({ actions }: { actions: StubAction[] }) => (
-    <div data-testid="selection-toolbar">
+  default: ({ actions, composer, externalSelection }: { actions: StubAction[]; composer?: StubComposer; externalSelection?: { text: string } | null }) => (
+    <div data-testid="selection-toolbar" data-external-selection={externalSelection?.text ?? ''}>
+      {composer && (
+        <button type="button" aria-label="composer submit" onClick={() => composer.onSubmit('a note', SELECTED_TEXT)}>submit</button>
+      )}
       {actions.map((a) => (
         <span key={a.id}>
           <button type="button" aria-label={`selection ${a.id}`} onClick={() => a.onClick(SELECTED_TEXT, makeRect())}>
@@ -214,8 +235,12 @@ describe('ArtifactPanel', () => {
     // reuses SLUG, so a submit in one test must not mark comments sent for the next.
     localStorage.clear()
     layerArgs.length = 0
-    anchorRequests.length = 0
+    composerSubmits.length = 0
     stubComments = []
+    stubIframeSelection = null
+    stubHasDraft = false
+    stubComposerOpen = false
+    draftSlotClears.length = 0
     vi.mocked(api.artifact).mockResolvedValue(mkArtifact())
     // The provider tree's own boot query rides along on the automocked client;
     // resolving it keeps React Query's "data cannot be undefined" out of stderr.
@@ -279,13 +304,16 @@ describe('ArtifactPanel', () => {
       expect(body.getAttribute('data-kind')).toBe('image')
     })
 
-    it('renders the iframe body for a widget and drops the selection toolbar', async () => {
+    it('renders the iframe body for a widget and keeps the toolbar for bridge selections', async () => {
       vi.mocked(api.artifact).mockResolvedValue(mkArtifact({ kind: 'widget' }))
+      stubIframeSelection = { text: 'from the frame', x: 20, y: 40 }
       renderPanel({ kind: 'widget' })
       const body = await screen.findByTestId('body-iframe')
       expect(body.getAttribute('data-slug')).toBe(SLUG)
-      // Text selection is an in-iframe concern, so the DOM toolbar is not mounted.
-      expect(screen.queryByTestId('selection-toolbar')).toBeNull()
+      // Text selection happens inside the frame and reaches the layer through
+      // the bridge; the toolbar stays mounted and is handed that selection so
+      // it can open the same composer the native body gets.
+      expect(screen.getByTestId('selection-toolbar').getAttribute('data-external-selection')).toBe('from the frame')
       // Both comment layers are told the body is an iframe.
       expect(layerArgs.every((a) => a.usesIframe === true)).toBe(true)
     })
@@ -329,22 +357,44 @@ describe('ArtifactPanel', () => {
       expect(screen.getByRole('button', { name: 'Show comments' }).textContent).toBe('')
     })
 
-    it('routes the selection comment action to the active layer', async () => {
+    it('wires the active layer\'s composer into the toolbar, with no Comment action', async () => {
       renderPanel()
       await screen.findByText(NAME)
-      fireEvent.click(screen.getByRole('button', { name: 'selection comment' }))
-      expect(anchorRequests).toEqual(['stacked'])
+      // Selecting text opens the composer directly; there is no button to find first.
+      expect(screen.queryByRole('button', { name: 'selection comment' })).toBeNull()
+      fireEvent.click(screen.getByRole('button', { name: 'composer submit' }))
+      expect(composerSubmits).toEqual([{ which: 'stacked', comment: 'a note', text: SELECTED_TEXT }])
     })
 
-    it('copies selected text, and ignores a blank selection', async () => {
+    it('going full screen over a typed comment draft asks first; cancelling stays put', async () => {
+      // Full screen unmounts the docked toolbar, and the draft with it.
+      stubHasDraft = true
       renderPanel()
       await screen.findByText(NAME)
-      fireEvent.click(screen.getByRole('button', { name: 'selection copy' }))
-      expect(copyToClipboard).toHaveBeenCalledWith(SELECTED_TEXT)
+      fireEvent.click(screen.getByRole('button', { name: /full screen/i }))
+      const dialog = await screen.findByRole('dialog')
+      expect(within(dialog).getByText('Discard your unsaved comment?')).toBeInTheDocument()
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+      expect(screen.queryByRole('dialog', { name: /full screen artifact preview/i })).toBeNull()
 
-      vi.mocked(copyToClipboard).mockClear()
-      fireEvent.click(screen.getByRole('button', { name: 'selection copy blank' }))
-      expect(copyToClipboard).not.toHaveBeenCalled()
+      expect(draftSlotClears).toEqual([])
+
+      fireEvent.click(screen.getByRole('button', { name: /full screen/i }))
+      const again = await screen.findByRole('dialog')
+      fireEvent.click(within(again).getByRole('button', { name: 'Discard comment' }))
+      await screen.findByRole('dialog', { name: /full screen artifact preview/i })
+      // A confirmed discard drops the persisted copy of that passage's draft.
+      expect(draftSlotClears).toEqual(['stacked'])
+    })
+
+    it('passes the toolbar no row actions — the composer alone (Add comment, Close) is the row', async () => {
+      // A third control beside the box would break the two-per-row cap; copying
+      // the selection is the composer's own Cmd/Ctrl+C.
+      renderPanel()
+      await screen.findByText(NAME)
+      expect(screen.queryByRole('button', { name: 'selection copy' })).toBeNull()
+      expect(screen.queryByRole('button', { name: /^selection / })).toBeNull()
     })
   })
 
@@ -374,6 +424,20 @@ describe('ArtifactPanel', () => {
     it('closes the panel on Escape', async () => {
       const { onClose } = renderPanel()
       await screen.findByText(NAME)
+      fireEvent.keyDown(document.body, { key: 'Escape' })
+      expect(onClose).toHaveBeenCalledTimes(1)
+    })
+
+    it('leaves Escape to an open comment box even when the box does not hold focus', async () => {
+      // A touch or Shift+Arrow open leaves the caret elsewhere; the toolbar
+      // closes its own box on Escape, and the panel must not close underneath.
+      stubComposerOpen = true
+      const { onClose } = renderPanel()
+      await screen.findByText(NAME)
+      fireEvent.keyDown(document.body, { key: 'Escape' })
+      expect(onClose).not.toHaveBeenCalled()
+      expect(screen.queryByRole('dialog')).toBeNull()
+      stubComposerOpen = false
       fireEvent.keyDown(document.body, { key: 'Escape' })
       expect(onClose).toHaveBeenCalledTimes(1)
     })

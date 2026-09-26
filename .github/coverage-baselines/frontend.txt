@@ -61,7 +61,6 @@ src/components/AppIcon.tsx 51.1   # 24/47
 src/components/BottomTerminalPanel.tsx 55.1   # 49/89
 src/components/CommentThreadPopover.tsx 59.0   # 46/78
 src/components/ExecutionsView.tsx 48.8   # 20/41
-src/components/FileArtifactComments.tsx 52.0   # 52/100
 src/components/GitPanel.tsx 0.0   # 0/44
 src/components/InlineCommentOverlay.tsx 31.9   # 23/72
 src/components/LogEntry.tsx 0.0   # 0/16

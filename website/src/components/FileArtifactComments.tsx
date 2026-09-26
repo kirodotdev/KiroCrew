@@ -6,10 +6,22 @@ import type { ArtifactComment, CommentAnchor } from '../types'
 import { CommentsSidebar } from './CommentsSidebar'
 import { InlineCommentOverlay } from './InlineCommentOverlay'
 import { CommentThreadPopover } from './CommentThreadPopover'
-import { CommentPopover } from './CommentOverlay'
+import type { SelectionComposer } from './SelectionToolbar'
+import { containedSelectionRange } from '../utils/selectionContainment'
+import { paintAnnotationHighlight } from '../utils/annotationHighlight'
+import { useSelectionComposerAnchor } from '../hooks/useSelectionComposerAnchor'
 import ErrorNotice from './ErrorNotice'
 import { errMessage } from '../utils/thunkError'
 import { i18nT } from '../i18n/t'
+
+/** The selection an open composer annotates, resolved while it was still live. */
+interface PendingAnchor {
+  quote: string
+  prefix?: string
+  suffix?: string
+  startOffset?: number
+  endOffset?: number
+}
 
 /**
  * Durable artifact-comment layer for a NON-iframe (markdown / text) body,
@@ -18,23 +30,27 @@ import { i18nT } from '../i18n/t'
  *   - `overlay`  -> mount INSIDE the positioned scroll container (it positions
  *                   highlight rects + gutter bubbles in content coords);
  *   - `sidebar`  -> mount beside the content (chronological feed);
- *   - `popovers` -> mount anywhere (fixed-positioned create + thread popovers).
+ *   - `popovers` -> mount anywhere (the fixed-positioned thread popover and the
+ *                   error notices the sidebar shows when it is closed).
  *
  * This is the SAME experience as the artifact detail page (overlay highlights,
  * gutter bubbles, floating thread popover, chronological sidebar) — the file
  * viewer uses it for file-backed artifacts. Comments persist in the artifact
  * store and are never dumped to chat.
  *
- * `requestAnchoredComment()` opens the create popover for the current text
- * selection — call it from the viewer's existing "Comment" selection action so
- * there's no competing auto-popover.
+ * `selectionComposer` is the type-first annotation input for the viewer's
+ * `SelectionToolbar`: selecting text opens the comment box at once, `onOpen`
+ * resolves the anchor while the DOM selection is still live, and `onSubmit`
+ * posts the anchored comment. For an iframe body the bridge's selection arrives
+ * through `onIframeSelect`, which stores its anchor and hands the toolbar an
+ * `iframeSelection` to open the same box from.
  *
  * Pass `slug=null` to make the hook inert (no query, empty nodes) so callers
  * can invoke it unconditionally for non-artifact files.
  */
 export function useFileArtifactComments({
   slug, previewRef, scrollRef, usesIframe = false, sidebarClassName, sidebarStyle,
-  sidebarDefaultOpen = true,
+  sidebarDefaultOpen = true, confirmDiscardDraft,
 }: {
   slug: string | null
   previewRef: React.RefObject<HTMLDivElement | null>
@@ -49,11 +65,29 @@ export function useFileArtifactComments({
   /** Override the `sidebar` `<aside>` sizing. Omitted → the full-page default. */
   sidebarClassName?: string
   sidebarStyle?: React.CSSProperties
+  /** Asked before Escape / ✕ discards a typed comment draft; resolve `true` to
+   *  discard. The host owns the dialog so the wording matches its other
+   *  discard prompts. Omit to discard without asking. */
+  confirmDiscardDraft?: () => Promise<boolean>
 }): {
   overlay: ReactNode
   popovers: ReactNode
   sidebar: ReactNode
-  requestAnchoredComment: () => void
+  /** Pass to the viewer's `SelectionToolbar` as `composer`. */
+  selectionComposer: SelectionComposer
+  /** Whether the composer is open at all — the host's own Escape handler
+   *  stands down while it is (the toolbar closes the box on Escape itself, and
+   *  the box need not hold focus). */
+  isComposerOpen: () => boolean
+  /** Whether the open composer holds unsaved text — the host asks before an
+   *  action of its own (full screen, close) would unmount the toolbar. */
+  hasComposerDraft: () => boolean
+  /** After the host's own guard confirmed a discard: drop the persisted copy
+   *  of THAT passage's draft, so it does not resurface on the next open. */
+  clearComposerDraftSlot: () => void
+  /** Pass to the same toolbar as `externalSelection`: the latest in-iframe
+   *  selection, for a body the DOM toolbar cannot see into. Null otherwise. */
+  iframeSelection: { text: string; x: number; y: number; start?: number } | null
   toggleSidebar: () => void
   sidebarOpen: boolean
   commentCount: number
@@ -66,8 +100,8 @@ export function useFileArtifactComments({
   unreadRootIds: Set<string>
   /** Activate a thread (= open its popover + mark read). Pass to the body. */
   activateComment: (id: string) => void
-  /** In-iframe text selection → open the create popover at the given rect. */
-  onIframeSelect: (sel: { x: number; y: number; quote: string; prefix?: string; suffix?: string }) => void
+  /** In-iframe text selection → open the composer at the given rect. */
+  onIframeSelect: (sel: { x: number; y: number; quote: string; prefix?: string; suffix?: string; startOffset?: number }) => void
   /** In-iframe highlight click → open the thread popover. */
   onIframeOpenThread: (id: string, rect?: { x: number; y: number; w: number; h: number }) => void
   /** Drives the iframe bridge to scroll a comment's anchor into view. */
@@ -144,16 +178,25 @@ export function useFileArtifactComments({
   const [sidebarOpen, setSidebarOpen] = useState(sidebarDefaultOpen)
   const toggleSidebar = useCallback(() => setSidebarOpen(v => !v), [])
 
-  // ── anchored-create popover (driven by the viewer's "Comment" action) ──
-  const [popover, setPopover] = useState<{ x: number; y: number; quote: string; copyText?: string; prefix?: string; suffix?: string; startOffset?: number; endOffset?: number } | null>(null)
-  const requestAnchoredComment = useCallback(() => {
+  // ── anchored create (the toolbar's type-first composer) ──
+  // The pending/staged anchors, the external selection, the highlight token and
+  // the draft guard live in the shared wiring below; this host contributes how
+  // the live DOM selection inside `previewRef` becomes a durable anchor.
+  const resolveSelectionAnchor = useCallback((highlightOwner: object): PendingAnchor | null => {
     const sel = window.getSelection()
-    const raw = sel?.toString() ?? ''
-    if (!sel || sel.isCollapsed || !raw.trim()) return
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return null
     const root = previewRef.current
-    if (!root || !sel.anchorNode || !root.contains(sel.anchorNode)) return
-    const range = sel.getRangeAt(0)
-    if (!root.contains(range.startContainer) || !root.contains(range.endContainer)) return
+    if (!root) return null
+    // The SAME containment predicate the toolbar opened the composer with, so
+    // a selection it accepted is never rejected here: a triple-click on the
+    // preview's last block ends at a boundary point OUTSIDE the preview, and
+    // judging the raw endpoints would leave the comment with a quote-only
+    // anchor. The returned range is clamped to the preview, so every offset
+    // below is measured inside it.
+    const range = containedSelectionRange(sel.getRangeAt(0), root)
+    if (!range) return null
+    const raw = range.toString()
+    if (!raw.trim()) return null
     const quote = raw.trim()
     // Derive the selection's real offset from the Range, NOT full.indexOf(quote):
     // indexOf finds the FIRST occurrence, so selecting a later repeat of the same
@@ -171,17 +214,13 @@ export function useFileArtifactComments({
     const idx = preRange.toString().length + (raw.length - raw.trimStart().length)
     const prefix = full.slice(Math.max(0, idx - 32), idx)
     const suffix = full.slice(idx + quote.length, idx + quote.length + 32)
-    const rect = range.getBoundingClientRect()
+    // The box is about to take focus and collapse the selection: paint the
+    // passage so the reader can still see what the open box is attached to.
+    paintAnnotationHighlight(highlightOwner, range)
     // Persist the rendered-text offset (`idx`) so the highlighter can re-anchor
     // to THIS occurrence rather than the first match of the quote.
-    setPopover({ x: rect.left, y: rect.bottom, quote, copyText: raw, prefix, suffix, startOffset: idx, endOffset: idx + quote.length })
+    return { quote, prefix, suffix, startOffset: idx, endOffset: idx + quote.length }
   }, [previewRef])
-
-  // In-iframe text selection (widget/html via the bridge) → open the create
-  // popover at the supplied viewport rect with the iframe-derived anchor.
-  const onIframeSelect = useCallback((sel: { x: number; y: number; quote: string; prefix?: string; suffix?: string }) => {
-    setPopover({ x: sel.x, y: sel.y, quote: sel.quote, prefix: sel.prefix, suffix: sel.suffix })
-  }, [])
 
   // ── mutations (all hit the durable artifact comment store) ──
   // Writes go through useMutation so errors aren't silently swallowed and cache
@@ -224,18 +263,40 @@ export function useFileArtifactComments({
   const removeMut = useMutation({ mutationFn: (id: string) => api.deleteArtifactComment(slug as string, id), onSuccess: invalidate, onError: onMutErr })
   const editMut = useMutation({ mutationFn: (v: { id: string; text: string }) => api.editArtifactComment(slug as string, v.id, { text: v.text }), onSuccess: invalidate, onError: onMutErr })
 
-  const addAnchored = useCallback((text: string) => {
-    if (!popover || !slug) return
-    const anchor: CommentAnchor = { quote: popover.quote, prefix: popover.prefix, suffix: popover.suffix }
+  const submitAnchored = useCallback((text: string, pending: PendingAnchor): Promise<boolean> => {
+    if (!slug) return Promise.resolve(false)
+    const anchor: CommentAnchor = { quote: pending.quote, prefix: pending.prefix, suffix: pending.suffix }
     // Only the native text-selection path computes an offset; iframe selections
     // (no startOffset) omit it and keep the prefix/suffix anchor.
-    if (popover.startOffset != null) {
-      anchor.start_offset = popover.startOffset
-      anchor.end_offset = popover.endOffset ?? popover.startOffset + popover.quote.length
+    if (pending.startOffset != null) {
+      anchor.start_offset = pending.startOffset
+      anchor.end_offset = pending.endOffset ?? pending.startOffset + pending.quote.length
     }
-    postMut.mutate({ text, scope: 'private', anchor })
-    setPopover(null); window.getSelection()?.removeAllRanges()
-  }, [popover, slug, postMut])
+    // Resolve, never throw: the toolbar keeps the typed text (and its persisted
+    // draft) on `false`, and `onMutErr` has already put the failure beside the
+    // sidebar's composer.
+    return postMut.mutateAsync({ text, scope: 'private', anchor }).then(() => true, () => false)
+  }, [slug, postMut])
+  const quoteOf = useCallback((a: PendingAnchor) => a.quote, [])
+  const quoteOnly = useCallback((quote: string): PendingAnchor => ({ quote }), [])
+  // Where the draft lives between teardowns the toolbar cannot guard — a
+  // chat-slot switch replaces the whole side panel. Per artifact, per passage.
+  const {
+    selectionComposer, iframeSelection, stageIframeSelection, isComposerOpen, hasComposerDraft, clearComposerDraftSlot,
+  } = useSelectionComposerAnchor<PendingAnchor>({
+    resolveDomAnchor: resolveSelectionAnchor, quoteOf, quoteOnly, submit: submitAnchored,
+    draftKey: `mc-artifact-composer-draft:${slug ?? ''}`, confirmDiscard: confirmDiscardDraft,
+  })
+  // In-iframe text selection (widget/html via the bridge): stage the
+  // iframe-derived anchor, then ask the toolbar to open the composer at the
+  // supplied viewport rect. Offsets are deliberately dropped — they are in the
+  // iframe body's text space, not the one the parent highlighter reads — so the
+  // comment re-anchors by quote + prefix/suffix inside the frame.
+  const onIframeSelect = useCallback((sel: { x: number; y: number; quote: string; prefix?: string; suffix?: string; startOffset?: number }) => {
+    // The frame's offset is not stored on the anchor (wrong text space for the
+    // parent highlighter) but it IS a stable passage key for the draft slot.
+    stageIframeSelection({ quote: sel.quote, prefix: sel.prefix, suffix: sel.suffix }, { text: sel.quote, x: sel.x, y: sel.y, start: sel.startOffset })
+  }, [stageIframeSelection])
   const addDoc = useCallback((text: string) => { if (slug) postMut.mutate({ text, scope: 'private' }) }, [slug, postMut])
   const reply = useCallback((parentId: string, text: string) => { if (slug) replyMut.mutate({ parentId, text }) }, [slug, replyMut])
   const resolve = useCallback((id: string) => { if (slug) resolveMut.mutate(id) }, [slug, resolveMut])
@@ -258,13 +319,14 @@ export function useFileArtifactComments({
 
   const popovers: ReactNode = slug ? (
     <>
-      {/* Writes also originate from the popovers (anchored add, thread reply /
-          resolve), which stay reachable while the sidebar is CLOSED — so a
+      {/* Writes also originate from the toolbar composer (anchored add) and the
+          thread popover (reply / resolve), which stay reachable while the
+          sidebar is CLOSED — so a
           rejected write, and equally a rejected comments READ (the overlay then
           shows zero comments), must not wait for a sidebar that is not mounted.
           When the sidebar is open it owns both notices (beside the composer);
           when it is closed they land here, in the node the host always mounts.
-          No hand-off: the popover reply / comment textarea draft is unsaved. */}
+          No hand-off: the thread reply / comment draft is unsaved. */}
       {!sidebarOpen && (loadError || mutationError) && (
         <div className="fixed bottom-safe-offset-4 right-safe-offset-4 z-[60] max-w-[420px] flex flex-col gap-2">
           <ErrorNotice
@@ -277,15 +339,6 @@ export function useFileArtifactComments({
             onDismiss={clearMutationError}
           />
         </div>
-      )}
-      {popover && (
-        <CommentPopover
-          x={popover.x}
-          y={popover.y}
-          onSubmit={addAnchored}
-          onCancel={() => { setPopover(null); window.getSelection()?.removeAllRanges() }}
-          copyText={popover.copyText ?? popover.quote}
-        />
       )}
       {openThread && (
         <CommentThreadPopover
@@ -329,7 +382,7 @@ export function useFileArtifactComments({
   ) : null
 
   return {
-    overlay, popovers, sidebar, requestAnchoredComment, toggleSidebar, sidebarOpen,
+    overlay, popovers, sidebar, selectionComposer, isComposerOpen, hasComposerDraft, clearComposerDraftSlot, iframeSelection, toggleSidebar, sidebarOpen,
     commentCount: durableComments.length,
     comments: durableComments,
     activeCommentId,

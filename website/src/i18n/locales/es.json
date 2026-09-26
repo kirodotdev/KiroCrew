@@ -6312,7 +6312,6 @@
       "settings_subtitle": "{{tab}} · {{detail}}"
     },
     "commentOverlay": {
-      "add_a_comment": "Añadir un comentario",
       "add_comment": "Añadir comentario",
       "add_instruction": "Añadir instrucción",
       "additional_prompt": "Prompt adicional",
@@ -7922,6 +7921,7 @@
       "ask": "Preguntar sobre esto",
       "ask_hint": "Abre el Chat lateral con la selección citada: no se envía nada hasta que lo envíes, y el chat principal no se toca",
       "comment_input": "Comentar el texto seleccionado",
+      "comment_post_failed": "No se pudo guardar el comentario. El texto sigue aquí: vuelve a intentarlo o cierra para conservarlo como borrador.",
       "copy": "Copiar",
       "copy_failed": "Error al copiar: el navegador bloqueó el acceso al portapapeles. Selecciona el texto y cópialo manualmente.",
       "copy_selection_hint": "Copia el texto seleccionado (no tu comentario) al portapapeles",

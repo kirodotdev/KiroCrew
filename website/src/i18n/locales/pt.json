@@ -6312,7 +6312,6 @@
       "settings_subtitle": "{{tab}} · {{detail}}"
     },
     "commentOverlay": {
-      "add_a_comment": "Adicionar um comentário",
       "add_comment": "Adicionar comentário",
       "add_instruction": "Adicionar instrução",
       "additional_prompt": "Prompt adicional",
@@ -7922,6 +7921,7 @@
       "ask": "Perguntar sobre isto",
       "ask_hint": "Abre o Chat lateral com a seleção citada: nada é enviado até você enviar, e o chat principal fica intacto",
       "comment_input": "Comentar o texto selecionado",
+      "comment_post_failed": "Não foi possível salvar o comentário. O texto continua aqui — tente de novo ou feche para mantê-lo como rascunho.",
       "copy": "Copiar",
       "copy_failed": "Falha ao copiar — o navegador bloqueou o acesso à área de transferência. Selecione o texto e copie manualmente.",
       "copy_selection_hint": "Copia o texto selecionado (não o seu comentário) para a área de transferência",

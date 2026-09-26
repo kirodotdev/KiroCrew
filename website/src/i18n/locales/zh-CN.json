@@ -6120,7 +6120,6 @@
       "settings_subtitle": "{{tab}} · {{detail}}"
     },
     "commentOverlay": {
-      "add_a_comment": "添加评论",
       "add_comment": "添加评论",
       "add_instruction": "添加指令",
       "additional_prompt": "附加提示词",
@@ -7690,6 +7689,7 @@
       "ask": "随手问",
       "ask_hint": "打开随手问并引用选中内容——在你点击发送前不会发出任何内容，主聊天不受影响",
       "comment_input": "对选中文字添加评论",
+      "comment_post_failed": "评论保存失败。你输入的文字还在——请重试，或关闭以保留为草稿。",
       "copy": "复制",
       "copy_failed": "复制失败——浏览器阻止了访问剪贴板。请选中文字后手动复制。",
       "copy_selection_hint": "复制选中的文字（而不是你的评论）到剪贴板",

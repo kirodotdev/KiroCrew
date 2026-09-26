@@ -25,13 +25,16 @@ import { useReadingWidth } from '../hooks/useReadingWidth'
 import { useArtifactFolders, useMoveArtifactToFolder } from '../hooks/useArtifactFolders'
 import { FolderPickerItems } from '../components/FolderMoveSubmenu'
 import { folderBreadcrumb } from '../utils/artifactFolderTree'
-import { CommentPopover } from '../components/CommentOverlay'
+import SelectionToolbar, { type SelectionAction } from '../components/SelectionToolbar'
 import { CommentsSidebar } from '../components/CommentsSidebar'
 import { SubmitBar } from '../components/ArtifactPanel'
 import { formatArtifactCommentsMessage } from '../components/CommentOverlay'
 import { ArtifactChatPanel } from '../components/ArtifactChatPanel'
 import { CommentThreadPopover } from '../components/CommentThreadPopover'
 import { findCoords, resolveSourcePos } from '../components/MarkdownPanel'
+import { containedSelectionRange } from '../utils/selectionContainment'
+import { paintAnnotationHighlight } from '../utils/annotationHighlight'
+import { useSelectionComposerAnchor } from '../hooks/useSelectionComposerAnchor'
 // Artifact body renderers, extracted here so the chat side panel shares them.
 import { ArtifactBodyNative, ArtifactBodyIframe, ArtifactBodyImage, artifactAssetUrl, isEditableKind } from '../components/ArtifactBody'
 import { filterCommentsForForward } from '../lib/commentFilter'
@@ -52,6 +55,19 @@ import { errMessage } from '../utils/thunkError'
 import { fmtDateFields } from '../i18n/format'
 import ErrorNotice from '../components/ErrorNotice'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
+
+/** The selection an open comment composer annotates, resolved while it was
+ *  still live. `anchor` is the trimmed quote; line/column point at the source
+ *  for the agent prompt; the offsets pin the highlight to this occurrence. */
+interface PendingAnchor {
+  anchor: string
+  line?: number
+  column?: number
+  prefix?: string
+  suffix?: string
+  startOffset?: number
+  endOffset?: number
+}
 
 /** Human text for a rejected query/mutation, so every ErrorNotice on this page reads the same shape. */
 /**
@@ -440,15 +456,13 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
       return displayCommentCount > 0 && !isMobile ? 'comments' : 'none'
     })
   }, [slug, displayCommentCount, isMobile])
-  // Anchors are trimmed for matching; clipboard text stays exactly as selected.
-  const [popover, setPopover] = useState<{ x: number; y: number; anchor: string; copyText?: string; line?: number; column?: number; prefix?: string; suffix?: string; startOffset?: number; endOffset?: number } | null>(null)
   // Bidirectional anchor↔comment linking: flash a sidebar row when
   // its in-iframe highlight is clicked; scroll the iframe highlight when a
   // sidebar comment is clicked. Nonce forces a re-trigger on repeat clicks.
   const [iframeScrollTarget, setIframeScrollTarget] = useState<{ id: string; nonce: number } | null>(null)
   const previewRef = useRef<HTMLDivElement>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
-  const selectingRef = useRef(false)
+  const iframeBodyRef = useRef<HTMLDivElement>(null)
 
   // Reset version selection AND any in-progress edit when navigating between
   // artifacts. React Router v6 reuses the component instance for parameterized
@@ -464,7 +478,6 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     // into a rendered preview.
     setPreviewDuringEdit(false)
     setSaveError(null)
-    setPopover(null)
     setAddingTag(false)
     setNewTag('')
     setRenaming(false)
@@ -953,25 +966,30 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   // markdown AND text: both now render behind a `previewRef` (ContentRenderer
   // attaches it to the markdown DOM and to the <pre> used for text), so a
   // selection has a root to map back to source in either. Do not add a kind here
-  // without confirming its renderer attaches the ref, or the popover silently
-  // never opens.
+  // without confirming its renderer attaches the ref, or the composer opens
+  // with an anchor that is only the quote.
   const commentable = !!artifact && !editing && isCurrent && (
     artifact.kind === 'markdown' || artifact.kind === 'text'
   )
   const isMarkdown = artifact?.kind === 'markdown'
   const sourceContent = artifact?.content ?? ''
 
-  const handleMouseUp = useCallback(() => {
-    if (!commentable) return
+  /** The live DOM selection inside the rendered body as a durable anchor, or
+   *  null when there is none (collapsed, blank, or outside the preview). */
+  const resolveSelectionAnchor = useCallback((highlightOwner: object): PendingAnchor | null => {
     const sel = window.getSelection()
-    const raw = sel?.toString() ?? ''
-    if (!sel || sel.isCollapsed || !raw.trim()) return
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return null
     const root = previewRef.current
-    if (!root || !sel.anchorNode || !root.contains(sel.anchorNode)) return
-    const range = sel.getRangeAt(0)
-    if (!root.contains(range.startContainer) || !root.contains(range.endContainer)) return
+    if (!root) return null
+    // The SAME containment predicate the toolbar opened the composer with, so
+    // a selection it accepted is never rejected here (a triple-click on the
+    // last block ends at a boundary point OUTSIDE the preview); the returned
+    // range is clamped to the preview, so the offsets below are measured in it.
+    const range = containedSelectionRange(sel.getRangeAt(0), root)
+    if (!range) return null
+    const raw = range.toString()
+    if (!raw.trim()) return null
     const anchor = raw.trim()
-    const rect = range.getBoundingClientRect()
     // For markdown, walk the rendered DOM to map (anchorNode, offset) back to
     // (line, col) in the source via data-sourcepos. For text artifacts the
     // rendered text equals the source so findCoords is exact.
@@ -986,8 +1004,11 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     preRange.setStart(root, 0)
     preRange.setEnd(range.startContainer, range.startOffset)
     const startOffset = preRange.toString().length + (raw.length - raw.trimStart().length)
-    setPopover({ x: rect.left, y: rect.bottom, anchor, copyText: raw, line: coords?.line, column: coords?.column, startOffset, endOffset: startOffset + anchor.length })
-  }, [commentable, isMarkdown, sourceContent])
+    // The box is about to take focus and collapse the selection: paint the
+    // passage so the reader can still see what the open box is attached to.
+    paintAnnotationHighlight(highlightOwner, range)
+    return { anchor, line: coords?.line, column: coords?.column, startOffset, endOffset: startOffset + anchor.length }
+  }, [isMarkdown, sourceContent])
 
   const invalidateComments = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ['artifact-comments', slug] })
@@ -1047,42 +1068,83 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   const removeCommentMut = useMutation({ mutationFn: (id: string) => api.deleteArtifactComment(slug, id), onSuccess: invalidateAndAnnounce, onError: onMutErr })
   const editCommentMut = useMutation({ mutationFn: (vars: { id: string; text: string }) => api.editArtifactComment(slug, vars.id, { text: vars.text }), onSuccess: invalidateAndAnnounce, onError: onMutErr })
 
-  // Anchored add (from the inline selection popover, markdown/text only).
-  const addComment = useCallback((text: string) => {
-    if (!popover) return
+  // Anchored add (from the selection toolbar's composer).
+  const submitAnchored = useCallback((text: string, pending: PendingAnchor): Promise<boolean> => {
     let anchor: CommentAnchor | undefined
-    if (popover.anchor) {
-      anchor = { quote: popover.anchor, prefix: popover.prefix, suffix: popover.suffix }
+    if (pending.anchor) {
+      anchor = { quote: pending.anchor, prefix: pending.prefix, suffix: pending.suffix }
       // Native text selections carry an offset; iframe selections omit it.
-      if (popover.startOffset != null) {
-        anchor.start_offset = popover.startOffset
-        anchor.end_offset = popover.endOffset ?? popover.startOffset + popover.anchor.length
+      if (pending.startOffset != null) {
+        anchor.start_offset = pending.startOffset
+        anchor.end_offset = pending.endOffset ?? pending.startOffset + pending.anchor.length
       }
     }
-    postCommentMut.mutate({
+    // Resolve, never throw: on `false` the toolbar keeps the typed text and its
+    // persisted draft for a retry (`onMutErr` renders the failure); the panel
+    // reveal below is a reaction to a STORED comment, so it waits for success.
+    return postCommentMut.mutateAsync({
       text,
       scope: 'private',
       anchor,
-    })
-    // Adding a comment hands control back to the comment-driven default: reveal
-    // the panel now, and clear the manual override so the auto effect can
-    // collapse it again if every comment is later removed.
-    //
-    // EXCEPT when the chat panel is open. An anchored add is reachable while
-    // chatting (the body stays visible in the left column), and switching panels
-    // would yank the conversation out from under the user. The toolbar's comment
-    // badge already increments, so the add is still visibly acknowledged. Same
-    // rationale as the auto-reveal guard in the panel effect above.
-    // Narrow: keep the override SET. Clearing it hands control back to the
-    // auto-reveal effect, which is gated off while narrow -- so the panel the
-    // user just posted into would be closed again the moment
-    // `displayCommentCount` changes. Revealing it here is a user-initiated open,
-    // which is exactly what the override means.
-    sidebarUserToggledRef.current = isMobile
-    setPanel(p => (p === 'chat' ? p : 'comments'))
-    setPopover(null)
-    window.getSelection()?.removeAllRanges()
-  }, [popover, postCommentMut, isMobile])
+    }).then(() => {
+      // Adding a comment hands control back to the comment-driven default: reveal
+      // the panel now, and clear the manual override so the auto effect can
+      // collapse it again if every comment is later removed.
+      //
+      // EXCEPT when the chat panel is open. An anchored add is reachable while
+      // chatting (the body stays visible in the left column), and switching panels
+      // would yank the conversation out from under the user. The toolbar's comment
+      // badge already increments, so the add is still visibly acknowledged. Same
+      // rationale as the auto-reveal guard in the panel effect above.
+      // Narrow: keep the override SET. Clearing it hands control back to the
+      // auto-reveal effect, which is gated off while narrow -- so the panel the
+      // user just posted into would be closed again the moment
+      // `displayCommentCount` changes. Revealing it here is a user-initiated open,
+      // which is exactly what the override means.
+      sidebarUserToggledRef.current = isMobile
+      setPanel(p => (p === 'chat' ? p : 'comments'))
+      return true
+    }, () => false)
+  }, [postCommentMut, isMobile])
+
+  const confirmDiscardDraft = useCallback(() => confirm({
+    title: i18nT('components.markdownPanel.discard_unsaved_comment'),
+    confirmLabel: i18nT('components.markdownPanel.discard_comment_button'),
+  }), [confirm])
+  const quoteOf = useCallback((a: PendingAnchor) => a.anchor, [])
+  const quoteOnly = useCallback((anchor: string): PendingAnchor => ({ anchor }), [])
+  // The shared composer wiring (pending/staged anchors, external selection,
+  // highlight, draft mirror + guard). The draft store is per artifact, per
+  // passage — the same record the side panel uses for this artifact, so a draft
+  // started in one surface comes back in the other. Edit mode and a version
+  // switch unmount the toolbar (and the box with it), so both run
+  // `guardCommentDraft` first — in the draft's own words, since "unsaved
+  // changes" would read as file edits at risk.
+  const {
+    selectionComposer, iframeSelection, stageIframeSelection, clearSelectionState, guardCommentDraft,
+  } = useSelectionComposerAnchor<PendingAnchor>({
+    resolveDomAnchor: resolveSelectionAnchor, quoteOf, quoteOnly, submit: submitAnchored,
+    draftKey: `mc-artifact-composer-draft:${slug}`, confirmDiscard: confirmDiscardDraft,
+  })
+  // Navigating between artifacts drops any anchor of the departing document.
+  useEffect(() => { clearSelectionState() }, [slug, clearSelectionState])
+  // No row action beside the composer: the box already carries Add comment and
+  // Close, and a third control would break the two-per-row cap. Copying the
+  // selection is the composer's own Cmd/Ctrl+C while its input is empty.
+  const selectionActions: SelectionAction[] = useMemo(() => [], [])
+  // In-iframe text selection (widget/html via the bridge): stage the
+  // iframe-derived anchor, then ask the toolbar to open the composer at the
+  // supplied viewport rect. Offsets are dropped on purpose — they are in the
+  // iframe body's text space, not the parent highlighter's — so the comment
+  // re-anchors by quote + prefix/suffix inside the frame.
+  const handleIframeSelect = useCallback((sel: IframeSelection) => {
+    // The bridge relays selections on a historical snapshot too; a comment is
+    // stored against the CURRENT artifact, so those are not annotatable.
+    if (editing || !isCurrent) return
+    // The frame's offset keys the draft slot (a stable passage id), though the
+    // anchor itself omits it (wrong text space for the parent highlighter).
+    stageIframeSelection({ anchor: sel.quote, prefix: sel.prefix, suffix: sel.suffix }, { text: sel.quote, x: sel.x, y: sel.y, start: sel.startOffset })
+  }, [editing, isCurrent, stageIframeSelection])
 
   // Doc-level add (from the sidebar) — works for ALL kinds, including
   // HTML/widget where in-iframe text selection isn't reachable.
@@ -1432,9 +1494,10 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     return () => window.removeEventListener('kirocrew:artifact-deleted', onDeleted)
   }, [slug, popout, navigate, dirty])
 
-  // Drop popover when the user switches to edit mode or pages between
-  // versions — those interactions kill the underlying selection anyway.
-  useEffect(() => { if (editing || !isCurrent) { setPopover(null) } }, [editing, isCurrent])
+  // Drop a pending in-iframe selection when the user switches to edit mode or
+  // pages between versions — those interactions kill the underlying selection
+  // anyway (the DOM toolbar unmounts with `commentable` and closes itself).
+  useEffect(() => { if (editing || !isCurrent) clearSelectionState() }, [editing, isCurrent, clearSelectionState])
 
   // ── Export helpers (Open-in-new-tab + Download) ───────────────────────────
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1801,13 +1864,16 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                   title: i18nT('pages.artifactDetailPage.discard_unsaved_changes'),
                   confirmLabel: i18nT('pages.artifactDetailPage.discard_changes_button'),
                 }))) return
-                setEditing(false)
-                setEditedContent('')
-                if (raw === 'live') {
-                  setSelectedVersion(null)
-                } else {
-                  setSelectedVersion(parseInt(raw, 10))
-                }
+                // A typed comment draft is lost with the toolbar the switch unmounts.
+                await guardCommentDraft(() => {
+                  setEditing(false)
+                  setEditedContent('')
+                  if (raw === 'live') {
+                    setSelectedVersion(null)
+                  } else {
+                    setSelectedVersion(parseInt(raw, 10))
+                  }
+                })
               }}
             />
             {/* No hand-off: editor buffer editedContent may be dirty */}
@@ -1891,7 +1957,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                 {editable && (
                   <button
                     type="button"
-                    onClick={startEditing}
+                    onClick={() => { void guardCommentDraft(startEditing) }}
                     className="px-2 py-1 rounded-md text-[12px] font-medium border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-all"
                     title={i18nT('pages.artifactDetailPage.edit_content')}
                     aria-label={i18nT('pages.artifactDetailPage.edit_content')}
@@ -2031,7 +2097,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
           message={commentsQuery.error ? (errMessage(commentsQuery.error) || i18nT('components.errorBoundary.something_went_wrong')) : null}
           className="mb-3"
         />
-        {/* No hand-off: comment draft (sidebar / popover composer text) */}
+        {/* No hand-off: comment draft (sidebar / selection composer text) */}
         <ErrorNotice
           title={i18nT('pages.artifactDetailPage.comment_action_failed')}
           message={commentActionError}
@@ -2130,35 +2196,30 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
             ) : artifact.kind === 'image' ? (
               <ArtifactBodyImage artifact={artifact} slug={slug} />
             ) : usesIframe ? (
-              <>
+              <div ref={iframeBodyRef}>
                 <ArtifactBodyIframe
                   artifact={artifact}
                   slug={slug}
                   comments={durableComments}
-                  onSelect={(sel: IframeSelection) => setPopover({ x: sel.x, y: sel.y, anchor: sel.quote, prefix: sel.prefix, suffix: sel.suffix })}
+                  onSelect={handleIframeSelect}
                   onOpenThread={(id: string, rect) => openThreadHandler(id, rect)}
                   scrollToCommentId={iframeScrollTarget}
                   activeId={activeCommentId}
                   unreadRootIds={unreadRootIds}
                 />
-                {popover && (
-                  <CommentPopover
-                    x={popover.x}
-                    y={popover.y}
-                    onSubmit={addComment}
-                    onCancel={() => { setPopover(null); window.getSelection()?.removeAllRanges() }}
-                    copyText={popover.copyText ?? popover.anchor}
-                  />
-                )}
-              </>
+                {/* The frame's selections arrive through the bridge as
+                    `iframeSelection`; the toolbar opens the same composer from
+                    it, and from nothing else — the wrapper's own text (a
+                    render-failure notice) is not part of the artifact. Gated
+                    like the native body: a comment is stored against the
+                    CURRENT artifact, so a historical snapshot takes none. */}
+                {isCurrent && !editing && <SelectionToolbar containerRef={iframeBodyRef} actions={selectionActions} composer={selectionComposer} externalSelection={iframeSelection} externalOnly />}
+              </div>
             ) : (
-              // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- a passive drag-select probe over the rendered prose, not a control: the pair only brackets a selection so `handleMouseUp` can offer to comment on the quote, and there is no action to activate. Giving the wrapper a role and tabIndex would announce a phantom button around the whole artifact body and put a focus stop in front of the text.
               <div
                 ref={bodyRef}
                 className="relative"
                 style={contentWidthStyle}
-                onMouseDown={() => { selectingRef.current = true }}
-                onMouseUp={() => { selectingRef.current = false; handleMouseUp() }}
               >
                 <ArtifactBodyNative
                   kind={artifact.kind}
@@ -2176,16 +2237,13 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                   onActivateComment={openThreadHandler}
                   unreadRootIds={unreadRootIds}
                 />
-                {popover && (
-                  <CommentPopover
-                    x={popover.x}
-                    y={popover.y}
-                    onSubmit={addComment}
-                    onCancel={() => { setPopover(null); window.getSelection()?.removeAllRanges() }}
-                    containerRef={bodyRef}
-                    copyText={popover.copyText ?? popover.anchor}
-                  />
-                )}
+                {/* Selecting text opens the type-first comment box; mounted only
+                    while an anchored comment can be made (current version, not
+                    editing, a kind whose renderer attaches `previewRef`). It
+                    listens on the preview itself, not the wrapper: the wrapper
+                    also holds the inline-comment overlay's own text (gutter
+                    counts), which no anchor can point at. */}
+                {commentable && <SelectionToolbar containerRef={previewRef} actions={selectionActions} composer={selectionComposer} />}
               </div>
             )}
           </div>
@@ -2194,7 +2252,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
               panel are mutually exclusive flex siblings of the artifact body —
               icon-toggled, never overlays. The comment stack is durable,
               threaded, and works for ALL kinds (doc-level add for HTML/widget;
-              anchored add for markdown/text via the inline popover above). */}
+              anchored add for markdown/text via the selection composer above). */}
           {panel === 'comments' && (
             <CommentsSidebar
               comments={durableComments}
