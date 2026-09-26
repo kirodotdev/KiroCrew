@@ -114,6 +114,77 @@ def test_send_flag_off_schedules_nothing(monkeypatch: pytest.MonkeyPatch) -> Non
     assert scheduled == []
 
 
+def test_cadence_schedules_a_task_without_reading_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    # note_coding_cadence runs on the ACP dispatch hot path, so it does NO
+    # on-thread config read: it always schedules the send, and the send task
+    # re-checks the opt-in off the loop. A load on this thread is a failure.
+    class _FakeLoop:
+        def __init__(self) -> None:
+            self.tasks: list[Any] = []
+
+        def create_task(self, coro: Any) -> Any:
+            self.tasks.append(coro)
+            coro.close()  # never awaited in this test; avoid a pending-coro warning
+            return coro
+
+    loop = _FakeLoop()
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
+
+    def _fail_load() -> Any:
+        raise AssertionError("cadence must not read config on the calling thread")
+
+    monkeypatch.setattr(heartbeats.KiroCrewConfig, "load", staticmethod(_fail_load))
+    heartbeats.note_coding_cadence("/tmp/repo")
+    assert len(loop.tasks) == 1
+
+
+@pytest.mark.asyncio
+async def test_cadence_send_drops_when_opt_in_is_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The opt-in gate lives in the send task now, not the producer: a scheduled
+    # cadence beat is dropped when send_heartbeats is off, so a disabled install
+    # POSTs nothing even though the producer always schedules.
+    stub = _StubClient()
+    _install_client(monkeypatch, stub)
+    monkeypatch.setattr(
+        heartbeats.KiroCrewConfig,
+        "load",
+        staticmethod(lambda: _Cfg(wakatime=_WakaCfg(enabled=True, send_heartbeats=False))),
+    )
+    heartbeats.note_coding_cadence("/tmp/repo")
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if stub.batches:
+            break
+    assert stub.batches == []
+
+
+@pytest.mark.asyncio
+async def test_cadence_heartbeat_carries_no_attribution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A cadence beat exists only to give WakaTime a timestamp mid-turn; it must
+    # never carry token or line-change fields, so it cannot double-count
+    # attribution against the end-of-turn beat however often it fires.
+    stub = _StubClient()
+    _install_client(monkeypatch, stub)
+    monkeypatch.setattr(heartbeats.KiroCrewConfig, "load", staticmethod(lambda: _Cfg()))
+
+    heartbeats.note_coding_cadence("/tmp/my-repo")
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if stub.batches:
+            break
+
+    assert len(stub.batches) == 1
+    hb = stub.batches[0][0]
+    assert hb["entity"] == "my-repo"
+    assert hb["category"] == "ai coding"
+    assert hb["type"] == "app"
+    assert "ai_input_tokens" not in hb
+    assert "ai_output_tokens" not in hb
+    assert "ai_line_changes" not in hb
+
+
 def test_classifying_a_coding_tool_does_not_send_by_itself() -> None:
     # Classification and sending are separate. This keeps denied tools safe:
     # recognizing a write request does not produce a heartbeat unless the turn

@@ -366,9 +366,11 @@ from kiro_crew.trust_patterns import (  # noqa: F401 -- compatibility re-export
 )
 from kiro_crew.validation import ValidationError, validate_ask_user_question
 from kiro_crew.wakatime.heartbeats import (
+    CADENCE_MIN_INTERVAL_SECS,
     is_coding_event,
     line_changes_from_file_changes,
     note_coding_activity,
+    note_coding_cadence,
 )
 from kiro_crew.widget_artifacts import register_widgets_off_loop
 
@@ -10230,12 +10232,34 @@ async def _run_chat(
     _wt_coded_this_turn = False
     _wt_deciding_coding = False
     _wt_pending_dropped = 0
+    # Monotonic timestamp of the last cadence heartbeat emitted this turn, so
+    # confirmation-time emission is throttled to CADENCE_MIN_INTERVAL_SECS and
+    # does not flood WakaTime's ~2-minute buckets. 0.0 means none emitted yet.
+    _wt_last_cadence = 0.0
+
+    def _wt_maybe_cadence() -> None:
+        """Emit a throttled cadence heartbeat for CONFIRMED coding activity.
+
+        Fires only after a coding call is confirmed (an approved permission
+        decision or a confirmed unguarded dispatch), never at pre-decision
+        announcement, so a denied tool never produces a row. Same scope as the
+        end-of-turn beat: interactive user turns only, never a restricted or app
+        slot. Throttled per turn so a burst of coding calls yields one beat.
+        """
+        nonlocal _wt_last_cadence
+        if _crew_log_actor != "user" or slot.is_restricted or slot._app:
+            return
+        _wt_now = time.monotonic()
+        if _wt_last_cadence == 0.0 or _wt_now - _wt_last_cadence >= CADENCE_MIN_INTERVAL_SECS:
+            _wt_last_cadence = _wt_now
+            note_coding_cadence(_wt_turn_project)
 
     def _wt_note_approved(event) -> None:  # noqa: ANN001 -- ACP event union
         """Count one approved coding call without retaining its id."""
         nonlocal _wt_coded_this_turn, _wt_deciding_coding
         if _wt_deciding_coding:
             _wt_coded_this_turn = True
+            _wt_maybe_cadence()
         _wt_deciding_coding = False
 
     # Positive backend provenance for builtin identity. It starts fail-closed and
@@ -15586,6 +15610,11 @@ async def _run_chat(
                     # cap shed this turn, instead of a line per drop.
                     if _wt_pending_coding:
                         _wt_coded_this_turn = True
+                        # A turn whose coding was entirely auto-approved fired no
+                        # per-approval cadence beat, so give WakaTime at least one
+                        # confirmed-activity timestamp (throttled: a no-op if an
+                        # approval already emitted this turn).
+                        _wt_maybe_cadence()
                     if _wt_pending_dropped:
                         logger.warning(
                             "wakatime pending-coding cap (%d) shed %d tool key(s) this turn",
