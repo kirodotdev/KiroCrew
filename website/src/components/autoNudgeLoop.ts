@@ -28,6 +28,10 @@ export interface AutoNudgeLoop {
    *  the REST list carries it; the websocket frame for a plain loop does not,
    *  so a consumer merging frames over a fetched record must keep it. */
   stopped_reason?: string
+  /** The stopping party's own words for a directive stop (`autonudge_stop`),
+   *  redacted and length-capped by the server; '' or absent = none. Withheld
+   *  on the reduced structured-monitor row like `banner`. */
+  stopped_detail?: string
   /** Short stand-in for `message` in the visible transcript row; '' = none. */
   banner?: string
   /** The kill-switch file the server substitutes for `{{STOP_FILE}}` at fire

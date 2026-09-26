@@ -11,7 +11,7 @@ from aiohttp import web
 
 from kiro_crew.autonudge import binding_key_for
 from kiro_crew.autonudge import get_instance as _autonudge_get
-from kiro_crew.autonudge import is_structured_monitor_loop
+from kiro_crew.autonudge import is_structured_monitor_loop, normalize_stopped_detail
 
 # The security chokepoint lives in the transport-agnostic module (see its
 # docstring); re-exported here so existing importers keep working. This file
@@ -127,6 +127,10 @@ def _serialize(loop: Any) -> dict[str, Any]:
     # structured-monitor filter, which a plain loop never reaches.
     payload.pop("judge_cursors", None)
     payload.pop("judge_recent_verdicts", None)
+    # Output boundary for the one free-text field a stop can carry: the
+    # store is agent-writable, so the value is re-normalised here.
+    if "stopped_detail" in payload:
+        payload["stopped_detail"] = normalize_stopped_detail(payload["stopped_detail"])
     if loop.monitor is None:
         # Legacy clients predate structured monitors and require their exact shape.
         payload.pop("monitor", None)

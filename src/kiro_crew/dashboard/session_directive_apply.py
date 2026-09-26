@@ -43,6 +43,7 @@ binding and silently bypass it.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import time
@@ -642,172 +643,231 @@ async def _monitor_update(
             "monitor_update cannot apply structured fields to a legacy loop: "
             + ", ".join(structured_only)
         )
-    cycle_count = int(getattr(loop, "cycle_count", 0) or 0)
-    current_cap = int(getattr(loop, "max_cycles", 0) or 0)
-    new_cap = patch.get("max_cycles", current_cap)
-    # Capped-loop guard: a cap at/below the delivered count deactivates the loop
-    # without another fire — refuse rather than promise a wake that never comes.
-    if not (new_cap == 0 or new_cap > cycle_count):
-        raise _DirectiveDenied(
-            f"monitor_update: max_cycles={new_cap} is at or below this loop's "
-            f"delivered cycle count ({cycle_count}), so it would deactivate "
-            "without firing again. Pass a larger cap, or 0 for unlimited."
-        )
-    # Spent-budget guard, same shape as the cycle-cap one: a wall-clock budget
-    # at/below the loop's elapsed age deactivates it on the next timer without
-    # another fire — refuse rather than promise a wake that never comes.
-    if "max_runtime_secs" in patch:
-        new_budget = int(patch["max_runtime_secs"] or 0)
-        created_ts = float(getattr(loop, "created_ts", 0.0) or 0.0)
-        elapsed = int(time.time() - created_ts) if created_ts else 0
-        if new_budget and created_ts and elapsed >= new_budget:
+    # MEMBER-SLOT FENCE: from here to the write, a member slot's legacy loop is
+    # handled under the slot's perpetual lock (``autonudge_selfarm.
+    # perpetual_slot_lock``), the lock the owner's switch takes for its
+    # takeover (entry write, then resume uncapped). The party check below, the
+    # loop it judges and the cap write must be ONE step: read outside the lock,
+    # "self-armed" could be true, the owner could take over in the gap, and the
+    # member's finite cap would then land on the owner's Perpetual mode and stop
+    # it later. Under the lock the loop is re-read from the service, so what is
+    # judged is what is written to. Non-member slots take no lock and keep the
+    # one read above: there is no owner party to race.
+    slot_lock = _member_slot_lock(state, binding)
+    async with slot_lock if slot_lock is not None else contextlib.nullcontext():
+        if slot_lock is not None:
+            refreshed = svc.get_by_slot(binding)
+            if refreshed is None:
+                raise _DirectiveDenied("No active monitor loop on this session to update.")
+            loop = refreshed
+        # PERPETUAL MODE (owner-armed member loop): the owner chose "no cycle or
+        # time cap" on the Crew Members page, and that choice is the owner's. The
+        # member may retune its own cadence from inside a wake (``interval_secs``
+        # -> ``idle_secs``, ``message``, ``banner``), but a cap it sets on itself
+        # is a scheduled stop the owner never asked for, so the two bound fields
+        # are refused here. The owner's switch is the only thing that ends it.
+        if "max_cycles" in patch or "max_runtime_secs" in patch:
+            owner_armed = await _is_owner_armed_member_loop(state, loop)
+            if owner_armed is None:
+                # FAIL CLOSED: the record that says whose loop this is could not be
+                # read, and the two fields are the ones an owner-armed loop
+                # withholds from the member.
+                raise _DirectiveDenied(
+                    "monitor_update: could not read who armed this loop (the trust record is "
+                    "unreadable), so max_cycles and max_runtime_secs are refused on this member "
+                    "session until it can be. Adjust interval_secs, message or banner only."
+                )
+            if owner_armed:
+                raise _DirectiveDenied(
+                    "monitor_update: this loop is the owner's Perpetual mode for this member; "
+                    "max_cycles and max_runtime_secs are the owner's to set (the Crew Members "
+                    "page switch turns it off). Adjust interval_secs, message or banner only."
+                )
+        cycle_count = int(getattr(loop, "cycle_count", 0) or 0)
+        current_cap = int(getattr(loop, "max_cycles", 0) or 0)
+        new_cap = patch.get("max_cycles", current_cap)
+        # Capped-loop guard: a cap at/below the delivered count deactivates the loop
+        # without another fire — refuse rather than promise a wake that never comes.
+        if not (new_cap == 0 or new_cap > cycle_count):
             raise _DirectiveDenied(
-                f"monitor_update: max_runtime_secs={new_budget} is at or below "
-                f"this loop's elapsed runtime ({elapsed}s since it was armed), "
-                "so it would deactivate without firing again. Pass a larger "
-                "budget, or 0 for unlimited."
+                f"monitor_update: max_cycles={new_cap} is at or below this loop's "
+                f"delivered cycle count ({cycle_count}), so it would deactivate "
+                "without firing again. Pass a larger cap, or 0 for unlimited."
             )
-    revived = False
-    # Paused-loop protection: never silently resume unattended execution as a
-    # side effect of a metadata edit — revive ONLY a loop stopped by one of its
-    # own terminal bounds whose stopping bound is actually being raised. Keyed
-    # on the PERSISTED ``stopped_reason`` recorded at deactivation time: the
-    # cycle-count heuristic stays only as a legacy fallback for stores written
-    # before the field existed, and the budget side has NO heuristic at all —
-    # elapsed time keeps growing after a manual pause, so "budget looks spent"
-    # cannot distinguish a pause from an expiry: a budget raise must never
-    # resume a loop the user paused.
-    if not getattr(loop, "active", True):
-        reason = str(getattr(loop, "stopped_reason", "") or "")
-        stopped_at_cap = reason == "cycle_cap" or (
-            not reason and current_cap > 0 and cycle_count >= current_cap
-        )
-        raising_cap = "max_cycles" in patch and (new_cap == 0 or new_cap > current_cap)
-        stopped_at_budget = reason == "runtime_budget"
-        # A budget-raise passed the spent-budget guard above, so any budget in
-        # the patch here is beyond the loop's elapsed age (or 0 = unlimited).
-        raising_budget = "max_runtime_secs" in patch
-        # A TERMINAL subject outranks every bound, and an OWED terminal turn counts
-        # as one -- the same precedence the expiry notice states, read from the same
-        # two fields, so the agent-facing and user-facing endings cannot disagree.
-        #
-        # A channel-bound loop does not settle on observation: the probe records the
-        # owed final turn in ``monitor.terminal_pending`` and leaves the loop active
-        # with no ``outcome``. If that turn is refused (a busy thread, the ordinary
-        # case) and the retry finds a bound spent, the loop deactivates tagged with
-        # that bound before the settlement that would promote the debt ever runs.
-        # Reading ``stopped_reason`` alone then contradicts a fact already durably on
-        # disk, and here it does more than mis-word a notice: a patch that also
-        # raises the bound REVIVES the loop, re-arming a watch on a subject that has
-        # already merged -- the wasted fresh loop this branch exists to prevent.
-        #
-        # Expressed ONCE, as a term in the revival decision itself, rather than as a
-        # guard per branch: a per-branch guard loses this precedence as soon as a
-        # new bound is added ahead of it.
-        monitor = getattr(loop, "monitor", None)
-        owed = str(getattr(monitor, "terminal_pending", "") or "") if monitor else ""
-        terminal = reason == MONITOR_TERMINAL_REASON or bool(owed)
-        # A settled outcome wins; the debt is the fallback that keeps the
-        # merged-vs-closed distinction available before the settlement lands. Both
-        # speak the same vocabulary (``success``/``blocked``, matching
-        # ``MonitorOutcome``), so one reading covers either source.
-        settled = getattr(monitor, "outcome", None) if monitor else None
-        decided = str(getattr(settled, "value", settled) or owed or "")
-        revivable = not terminal and (
-            (stopped_at_cap and raising_cap) or (stopped_at_budget and raising_budget)
-        )
-        if revivable:
-            patch["active"] = True
-            revived = True
-        else:
-            # Name the bound that actually stopped the loop, so the remedy in
-            # the message is the one that will work.
-            if terminal:
-                if decided == "success":
+        # Spent-budget guard, same shape as the cycle-cap one: a wall-clock budget
+        # at/below the loop's elapsed age deactivates it on the next timer without
+        # another fire — refuse rather than promise a wake that never comes.
+        if "max_runtime_secs" in patch:
+            new_budget = int(patch["max_runtime_secs"] or 0)
+            created_ts = float(getattr(loop, "created_ts", 0.0) or 0.0)
+            elapsed = int(time.time() - created_ts) if created_ts else 0
+            if new_budget and created_ts and elapsed >= new_budget:
+                raise _DirectiveDenied(
+                    f"monitor_update: max_runtime_secs={new_budget} is at or below "
+                    f"this loop's elapsed runtime ({elapsed}s since it was armed), "
+                    "so it would deactivate without firing again. Pass a larger "
+                    "budget, or 0 for unlimited."
+                )
+        revived = False
+        # Paused-loop protection: never silently resume unattended execution as a
+        # side effect of a metadata edit — revive ONLY a loop stopped by one of its
+        # own terminal bounds whose stopping bound is actually being raised. Keyed
+        # on the PERSISTED ``stopped_reason`` recorded at deactivation time: the
+        # cycle-count heuristic stays only as a legacy fallback for stores written
+        # before the field existed, and the budget side has NO heuristic at all —
+        # elapsed time keeps growing after a manual pause, so "budget looks spent"
+        # cannot distinguish a pause from an expiry: a budget raise must never
+        # resume a loop the user paused.
+        if not getattr(loop, "active", True):
+            reason = str(getattr(loop, "stopped_reason", "") or "")
+            stopped_at_cap = reason == "cycle_cap" or (
+                not reason and current_cap > 0 and cycle_count >= current_cap
+            )
+            raising_cap = "max_cycles" in patch and (new_cap == 0 or new_cap > current_cap)
+            stopped_at_budget = reason == "runtime_budget"
+            # A budget-raise passed the spent-budget guard above, so any budget in
+            # the patch here is beyond the loop's elapsed age (or 0 = unlimited).
+            raising_budget = "max_runtime_secs" in patch
+            # A TERMINAL subject outranks every bound, and an OWED terminal turn counts
+            # as one -- the same precedence the expiry notice states, read from the same
+            # two fields, so the agent-facing and user-facing endings cannot disagree.
+            #
+            # A channel-bound loop does not settle on observation: the probe records the
+            # owed final turn in ``monitor.terminal_pending`` and leaves the loop active
+            # with no ``outcome``. If that turn is refused (a busy thread, the ordinary
+            # case) and the retry finds a bound spent, the loop deactivates tagged with
+            # that bound before the settlement that would promote the debt ever runs.
+            # Reading ``stopped_reason`` alone then contradicts a fact already durably on
+            # disk, and here it does more than mis-word a notice: a patch that also
+            # raises the bound REVIVES the loop, re-arming a watch on a subject that has
+            # already merged -- the wasted fresh loop this branch exists to prevent.
+            #
+            # Expressed ONCE, as a term in the revival decision itself, rather than as a
+            # guard per branch: a per-branch guard loses this precedence as soon as a
+            # new bound is added ahead of it.
+            monitor = getattr(loop, "monitor", None)
+            owed = str(getattr(monitor, "terminal_pending", "") or "") if monitor else ""
+            terminal = reason == MONITOR_TERMINAL_REASON or bool(owed)
+            # A settled outcome wins; the debt is the fallback that keeps the
+            # merged-vs-closed distinction available before the settlement lands. Both
+            # speak the same vocabulary (``success``/``blocked``, matching
+            # ``MonitorOutcome``), so one reading covers either source.
+            settled = getattr(monitor, "outcome", None) if monitor else None
+            decided = str(getattr(settled, "value", settled) or owed or "")
+            revivable = not terminal and (
+                (stopped_at_cap and raising_cap) or (stopped_at_budget and raising_budget)
+            )
+            if revivable:
+                patch["active"] = True
+                revived = True
+            else:
+                # Name the bound that actually stopped the loop, so the remedy in
+                # the message is the one that will work.
+                if terminal:
+                    if decided == "success":
+                        bound = (
+                            "its subject already merged, so the watch is over and there is "
+                            "nothing left to observe; raising a bound buys cycles with no "
+                            "work in them, so arm monitor_start again only for a NEW subject"
+                        )
+                    else:
+                        bound = (
+                            "its subject was closed without merging, so re-arming would only "
+                            "re-observe that; the open question is whether to reopen the "
+                            "subject or abandon the goal, and neither is a bound you can raise"
+                        )
+                elif stopped_at_budget:
                     bound = (
-                        "its subject already merged, so the watch is over and there is "
-                        "nothing left to observe; raising a bound buys cycles with no "
-                        "work in them, so arm monitor_start again only for a NEW subject"
+                        f"its {int(getattr(loop, 'max_runtime_secs', 0) or 0)}s wall-clock "
+                        "budget ran out; raise max_runtime_secs above the loop's age "
+                        "(or pass 0)"
+                    )
+                elif stopped_at_cap:
+                    bound = "it hit its cycle cap; raise max_cycles above the cap (or pass 0)"
+                elif reason == APPROVAL_STALL_REASON:
+                    # No revival affordance on purpose: raising a bound does not
+                    # restore an authorization, so this stays in the deny path — but
+                    # with the remedy that actually works, since the generic
+                    # "paused manually" wording would send the user to ask a human
+                    # who already answered by letting the grant lapse.
+                    bound = (
+                        "a tool it needed went unanswered at the approval prompt; "
+                        "re-enable auto-approve, then re-arm it with monitor_start"
                     )
                 else:
-                    bound = (
-                        "its subject was closed without merging, so re-arming would only "
-                        "re-observe that; the open question is whether to reopen the "
-                        "subject or abandon the goal, and neither is a bound you can raise"
-                    )
-            elif stopped_at_budget:
-                bound = (
-                    f"its {int(getattr(loop, 'max_runtime_secs', 0) or 0)}s wall-clock "
-                    "budget ran out; raise max_runtime_secs above the loop's age "
-                    "(or pass 0)"
+                    bound = "it was paused manually; ask the user, or use monitor_start"
+                raise _DirectiveDenied(
+                    f"Monitor loop {loop.id} is PAUSED (cycle {cycle_count}"
+                    + (f" of {current_cap}" if current_cap else ", no cap")
+                    + f"). monitor_update will not resume it as a side effect: {bound}."
                 )
-            elif stopped_at_cap:
-                bound = "it hit its cycle cap; raise max_cycles above the cap (or pass 0)"
-            elif reason == APPROVAL_STALL_REASON:
-                # No revival affordance on purpose: raising a bound does not
-                # restore an authorization, so this stays in the deny path — but
-                # with the remedy that actually works, since the generic
-                # "paused manually" wording would send the user to ask a human
-                # who already answered by letting the grant lapse.
-                bound = (
-                    "a tool it needed went unanswered at the approval prompt; "
-                    "re-enable auto-approve, then re-arm it with monitor_start"
+        # CREW/MEMBER GATE for the legacy loop, the twin of the one
+        # ``authorize_and_update_monitor`` applies to a structured monitor. The
+        # legacy chokepoint ``authorize_and_update_nudge`` holds an opaque loop id
+        # and no session identity (its REST caller is user-token gated), so the mode
+        # rule has to be applied HERE, where the provenance lives: ``message`` is
+        # the instruction every future wake executes, and before this PR a
+        # crew/member slot could hold no loop at all, so a revision of one is a
+        # NEW surface. Only the session's own turn (``self_arm_ok``) may revise it;
+        # a cron injection, an app-driven turn or a sub-agent sharing the slot is
+        # refused with the same reason the arm path gives. Same predicate as the
+        # arm path (``is_self_arm``) so the two never drift apart. The mode is read
+        # off the live slot; a binding with no live slot has no mode to refuse on
+        # and keeps the pre-existing behaviour (the store's own miss handling).
+        if not is_channel_key(binding):
+            current = (getattr(state, "_slots", None) or {}).get(binding)
+            mode = str(getattr(current, "mode", ""))
+            if mode in _EXTERNAL_ARM_REFUSED_MODES and not is_self_arm(
+                binding, binding if self_arm_ok else ""
+            ):
+                raise _DirectiveDenied(
+                    f"Failed to update monitor loop: {external_arm_refusal(mode)}"
                 )
-            else:
-                bound = "it was paused manually; ask the user, or use monitor_start"
-            raise _DirectiveDenied(
-                f"Monitor loop {loop.id} is PAUSED (cycle {cycle_count}"
-                + (f" of {current_cap}" if current_cap else ", no cap")
-                + f"). monitor_update will not resume it as a side effect: {bound}."
-            )
-    # CREW/MEMBER GATE for the legacy loop, the twin of the one
-    # ``authorize_and_update_monitor`` applies to a structured monitor. The
-    # legacy chokepoint ``authorize_and_update_nudge`` holds an opaque loop id
-    # and no session identity (its REST caller is user-token gated), so the mode
-    # rule has to be applied HERE, where the provenance lives: ``message`` is
-    # the instruction every future wake executes, and before this PR a
-    # crew/member slot could hold no loop at all, so a revision of one is a
-    # NEW surface. Only the session's own turn (``self_arm_ok``) may revise it;
-    # a cron injection, an app-driven turn or a sub-agent sharing the slot is
-    # refused with the same reason the arm path gives. Same predicate as the
-    # arm path (``is_self_arm``) so the two never drift apart. The mode is read
-    # off the live slot; a binding with no live slot has no mode to refuse on
-    # and keeps the pre-existing behaviour (the store's own miss handling).
-    if not is_channel_key(binding):
-        current = (getattr(state, "_slots", None) or {}).get(binding)
-        mode = str(getattr(current, "mode", ""))
-        if mode in _EXTERNAL_ARM_REFUSED_MODES and not is_self_arm(
-            binding, binding if self_arm_ok else ""
-        ):
-            raise _DirectiveDenied(f"Failed to update monitor loop: {external_arm_refusal(mode)}")
-    _new_loop, error, _status = await authorize_and_update_nudge(
-        svc=svc,
-        loop_id=loop.id,
-        message=patch.get("message"),
-        idle_secs=patch.get("idle_secs"),
-        max_cycles=patch.get("max_cycles"),
-        active=patch.get("active"),
-        max_runtime_secs=patch.get("max_runtime_secs"),
-        # ``.get`` returns None when the key is absent, which the authorizer reads
-        # as "leave unchanged", while an explicit "" reaches it as a clear -- the
-        # distinction the handler preserved by keeping a blank banner in the patch.
-        banner=patch.get("banner"),
-        # Absent leaves the brief alone; ``{}`` clears it. Same absent-vs-explicit
-        # distinction as ``banner`` above, preserved by the tool surface.
-        judge=patch.get("judge"),
-        # A message write with NO baseline SKIPS the stale check rather than failing it, so
-        # hand it the token read above -- scoped to the message case, as the handler's 409 is.
-        expect_fingerprint=(baseline_token if patch.get("message") is not None else None),
-        source="mcp-directive",
-        caller="session-directive",
-    )
-    if error is not None:
-        # The authorizer already audited its own refusal; agree with it.
-        raise _DirectiveDenied(f"Failed to update monitor loop: {error}")
-    fields = ", ".join(sorted(k for k in patch if k != "active"))
-    return f"Monitor loop {loop.id} updated on this session ({fields})." + (
-        " The stopped loop has been re-armed." if revived else ""
-    )
+        _new_loop, error, _status = await authorize_and_update_nudge(
+            svc=svc,
+            loop_id=loop.id,
+            message=patch.get("message"),
+            idle_secs=patch.get("idle_secs"),
+            max_cycles=patch.get("max_cycles"),
+            active=patch.get("active"),
+            max_runtime_secs=patch.get("max_runtime_secs"),
+            # ``.get`` returns None when the key is absent, which the authorizer reads
+            # as "leave unchanged", while an explicit "" reaches it as a clear -- the
+            # distinction the handler preserved by keeping a blank banner in the patch.
+            banner=patch.get("banner"),
+            # Absent leaves the brief alone; ``{}`` clears it. Same absent-vs-explicit
+            # distinction as ``banner`` above, preserved by the tool surface.
+            judge=patch.get("judge"),
+            # A message write with NO baseline SKIPS the stale check rather than failing it, so
+            # hand it the token read above -- scoped to the message case, as the handler's 409 is.
+            expect_fingerprint=(baseline_token if patch.get("message") is not None else None),
+            source="mcp-directive",
+            caller="session-directive",
+        )
+        if error is not None:
+            # The authorizer already audited its own refusal; agree with it.
+            raise _DirectiveDenied(f"Failed to update monitor loop: {error}")
+        fields = ", ".join(sorted(k for k in patch if k != "active"))
+        return f"Monitor loop {loop.id} updated on this session ({fields})." + (
+            " The stopped loop has been re-armed." if revived else ""
+        )
+
+
+def _member_slot_lock(
+    state: Any, binding: str
+) -> contextlib.AbstractAsyncContextManager[None] | None:
+    """The perpetual per-slot lock when *binding* is a live MEMBER slot; ``None`` otherwise.
+
+    The mode is read off the live slot, as the crew/member gate below does; a
+    binding with no live slot has no owner party to race and takes nothing --
+    and, taking nothing, has no reason to re-read the loop under it.
+    """
+    current = (getattr(state, "_slots", None) or {}).get(binding)
+    if str(getattr(current, "mode", "")) == "member":
+        from kiro_crew.autonudge_selfarm import perpetual_slot_lock
+
+        return perpetual_slot_lock(binding)
+    return None
 
 
 def _no_loop_message(svc: Any, binding: str) -> str:
@@ -948,6 +1008,149 @@ def _structured_stop_reason(args: dict[str, Any]) -> str:
     )
 
 
+async def _is_owner_armed_member_loop(state: Any, loop: Any, *, slot: Any = None) -> bool | None:
+    """Whether *loop* is the owner's Perpetual mode loop on a MEMBER slot.
+
+    Three answers, because the callers act on the difference. ``False`` is a
+    CONFIRMED "not the owner's": a non-member slot, or a member slot whose
+    trust entry names another party or nobody. ``True`` is the owner's
+    ``armed_by`` entry naming this loop on its own slot -- the same evidence
+    the fire-time guard admits the wake on. ``None`` is "cannot determine":
+    the slot is member-mode but the keystone-gated record exists and could
+    not be read. On a member slot the callers treat ``None`` as ``True``
+    (refuse the cap, keep the record): an unreadable record must never widen
+    what the member may do to a loop the owner may have armed. A non-member
+    slot never reaches the read, so it is unaffected. The slot is resolved
+    from *slot* when the caller holds it, from *state* otherwise. File IO is
+    offloaded.
+    """
+    from kiro_crew.autonudge_selfarm import ARMED_BY_OWNER, read_arm_party_strict
+
+    slot_key = str(getattr(loop, "slot_key", "") or "")
+    if not slot_key:
+        return False
+    if slot is None and state is not None:
+        slot = (getattr(state, "_slots", None) or {}).get(slot_key)
+    if slot is None or str(getattr(slot, "mode", "")) != "member":
+        return False
+    try:
+        party = await asyncio.to_thread(read_arm_party_strict, loop.id, slot_key)
+    except Exception:  # noqa: BLE001 - the callers fail closed on an unknown party
+        logger.warning("owner-arm record unreadable for loop %s", loop.id, exc_info=True)
+        return None
+    return party == ARMED_BY_OWNER
+
+
+async def _stop_owner_armed_member_loop(svc: Any, loop_id: str, reason: str) -> str:
+    """Stop an owner-armed member loop only when its admission is revoked.
+
+    The retained row records the member's reason for the owner. The owner-arm
+    entry is the whole fire-time admission, though, so a paused row with that
+    entry still standing is not a completed stop. Strict revocation failure
+    rolls the pause back to active and returns an error; the outer directive
+    wrapper therefore cannot emit a successful stop audit while authorization
+    remains. Pause, revoke, and rollback all settle across cancellation.
+    """
+    from kiro_crew.autonudge_authz import _settle_after_cancel
+    from kiro_crew.autonudge_selfarm import await_thread_to_completion, revoke_arm
+
+    def _is_active(restored: Any = None) -> bool:
+        current = svc.get_by_id(loop_id) if callable(getattr(svc, "get_by_id", None)) else restored
+        return current is not None and bool(getattr(current, "active", False))
+
+    async def _restore_after_revoke_failure() -> bool:
+        resume = asyncio.ensure_future(svc.update(loop_id, active=True))
+        try:
+            restored = await asyncio.shield(resume)
+        except asyncio.CancelledError:
+            await _settle_after_cancel(resume)
+            if not _is_active():
+                logger.error(
+                    "owner-armed loop %s remained inactive after cancelled rollback",
+                    loop_id,
+                )
+            raise
+        except Exception:  # noqa: BLE001 - report a failed rollback to the caller
+            logger.error(
+                "owner-armed loop %s could not be restored after revoke failure",
+                loop_id,
+                exc_info=True,
+            )
+            return False
+        if not _is_active(restored):
+            logger.error(
+                "owner-armed loop %s remained inactive after revoke failure rollback",
+                loop_id,
+            )
+            return False
+        return True
+
+    async def _revoke_or_restore() -> tuple[bool, bool]:
+        revocation = asyncio.ensure_future(await_thread_to_completion(revoke_arm, loop_id))
+        try:
+            await asyncio.shield(revocation)
+        except asyncio.CancelledError:
+            await _settle_after_cancel(revocation)
+            revoke_failed = revocation.cancelled() or revocation.exception() is not None
+            if revoke_failed:
+                logger.error(
+                    "owner-arm record could not be revoked during a cancelled member stop "
+                    "of loop %s; restoring the loop",
+                    loop_id,
+                )
+                if not await _restore_after_revoke_failure():
+                    logger.error(
+                        "cancelled member stop left owner-armed loop %s inactive",
+                        loop_id,
+                    )
+            raise
+        except Exception:  # noqa: BLE001 - every failed revoke requires rollback
+            logger.error(
+                "owner-arm record could not be revoked on the member's own stop of loop %s; "
+                "restoring the loop",
+                loop_id,
+                exc_info=True,
+            )
+            return False, await _restore_after_revoke_failure()
+        return True, False
+
+    # The pause is its own task, awaited through a shield: the service shields
+    # its persist, so a cancel of this turn (slot close, shutdown) can land
+    # while the pause still commits. Settle it before deciding whether the
+    # authorization must be revoked or the pause rolled back.
+    pause = asyncio.ensure_future(
+        svc.update(
+            loop_id,
+            active=False,
+            stopped_reason=AUTONUDGE_STOP_REASON,
+            stopped_detail=reason,
+        )
+    )
+    try:
+        await asyncio.shield(pause)
+    except asyncio.CancelledError:
+        await _settle_after_cancel(pause)
+        row = svc.get_by_id(loop_id) if callable(getattr(svc, "get_by_id", None)) else None
+        if row is not None and not bool(getattr(row, "active", True)):
+            await _revoke_or_restore()
+        raise
+    revoked, restored = await _revoke_or_restore()
+    if not revoked:
+        if restored:
+            return (
+                f"Error: auto-nudge loop {loop_id} was not stopped because its Perpetual "
+                "mode authorization could not be revoked. The loop was restored to active."
+            )
+        return (
+            f"Error: auto-nudge loop {loop_id} authorization could not be revoked, and the "
+            "loop could not be restored to active. Owner recovery is required."
+        )
+    stopped = f"Auto-nudge loop {loop_id} stopped on this session" + (
+        f" (reason: {reason})" if reason else ""
+    )
+    return stopped + ". No further nudges will fire."
+
+
 async def _stop_resolved_loop(
     slot: Any, svc: Any, binding: str, loop: Any, args: dict[str, Any]
 ) -> str:
@@ -967,7 +1170,7 @@ async def _stop_resolved_loop(
     read, and ``monitor_inspect`` reports it as not armed. Callers that need a
     retained terminal record must be watching a structured monitor.
     """
-    from kiro_crew.autonudge import is_structured_monitor_loop
+    from kiro_crew.autonudge import _stopped_row_is_replaceable, is_structured_monitor_loop
 
     loop_id = loop.id
     reason = _structured_stop_reason(args)
@@ -1001,6 +1204,61 @@ async def _stop_resolved_loop(
     # reads.
     if is_owned_research_slot(binding, str(getattr(slot, "_app", "") or "")):
         await svc.update(loop_id, active=False, stopped_reason=AUTONUDGE_STOP_REASON)
+    elif str(getattr(slot, "mode", "")) == "member":
+        # A MEMBER slot's stop is serialized with the owner's switch on the same
+        # per-slot lock (``autonudge_selfarm.perpetual_slot_lock``): the owner's
+        # takeover writes its entry and then resumes the loop, and a stop
+        # landing between those two steps would revoke the entry under a loop
+        # the takeover then reports as ON -- every wake refused, nothing to
+        # say why. Under the lock the two run whole, in either order, and the
+        # party is read INSIDE it so a takeover that just finished is seen.
+        from kiro_crew.autonudge_selfarm import (
+            await_thread_to_completion,
+            perpetual_slot_lock,
+            revoke_arm,
+        )
+
+        async with perpetual_slot_lock(str(getattr(loop, "slot_key", "") or "")):
+            current = svc.get_by_id(loop_id) if callable(getattr(svc, "get_by_id", None)) else loop
+            if current is None:
+                return _no_loop_message(svc, binding)
+            if not bool(getattr(current, "active", False)) and not _stopped_row_is_replaceable(
+                current
+            ):
+                # A retained stop the OWNER made (``manual``: Perpetual OFF, its
+                # entry already revoked) or the member's own earlier
+                # ``autonudge_stop``. Removing it would let the same turn's
+                # ``monitor_start`` re-arm over the owner's pause; only the
+                # owner's switch clears the owner's OFF, so a stop here is a
+                # no-op on the row (already inactive) rather than a delete.
+                # Tested BEFORE ownership: the row's reason names who paused
+                # it, and the owner path below REWRITES that reason, so an
+                # unreadable trust record (ownership ``None``, routed to the
+                # owner path as the safe side) would turn the owner's
+                # ``manual`` into the member's stop. The row is never written
+                # here. The one thing done is a revoke of a CONFIRMED owner
+                # entry still standing on the paused row (an OFF whose revoke
+                # was refused reports exactly that state): that entry plus a
+                # forged ``active: true`` in the agent-writable store is a live
+                # wake, and the owner's ON re-records before it resumes.
+                if await _is_owner_armed_member_loop(None, current, slot=slot) is True:
+                    try:
+                        await await_thread_to_completion(revoke_arm, loop_id)
+                    except OSError:
+                        logger.error(
+                            "owner-arm record still standing on paused loop %s could not be "
+                            "revoked on the member's stop",
+                            loop_id,
+                            exc_info=True,
+                        )
+                return (
+                    f"Auto-nudge loop {loop_id} is already stopped on this session"
+                    + (f" (reason: {reason})" if reason else "")
+                    + ". The record stays; the owner's Perpetual mode switch is what clears it."
+                )
+            if await _is_owner_armed_member_loop(None, current, slot=slot) is not False:
+                return await _stop_owner_armed_member_loop(svc, loop_id, reason)
+            await svc.remove(loop_id)
     else:
         await svc.remove(loop_id)
     return (

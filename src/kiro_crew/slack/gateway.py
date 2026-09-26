@@ -477,6 +477,20 @@ def _injection_slot_busy(slot: Any) -> bool:
     return bool(slot.running) or (task is not None and not task.done())
 
 
+def _slot_busy(slot: Any) -> bool:
+    """True when a dashboard nudge must NOT publish a turn on *slot* right now.
+
+    A turn is still active (``running``), OR a multi-stage plan is mid-flight
+    (``_in_stage_execution``: ``slot.task`` is None between stages, so
+    ``running`` alone misses that window and a wake would start a concurrent
+    turn that clobbers the plan). Synchronous and side-effect free on purpose:
+    ``_fire_dashboard_nudge`` asks it before the perpetual-lock wait and again
+    at publication time, and the answer is only trustworthy while no await
+    separates the read from the ``slot.task`` write it guards.
+    """
+    return bool(slot.running or slot._in_stage_execution)
+
+
 async def _subagent_work_pending(manager: Any, parent_session_key: str) -> bool:
     """Whether *parent_session_key* still has sub-agents running or QUEUED.
 
@@ -7575,14 +7589,11 @@ class GatewayOrchestrator:
             _run_chat,  # circular import: gateway -> dashboard.chat -> gateway (chat dispatch references GatewayOrchestrator)
         )
 
-        if slot.running or slot._in_stage_execution:
-            # Turn still active, OR a multi-stage plan is mid-flight (slot.task is
-            # None between stages, so slot.running alone misses that window and the
-            # nudge would start a concurrent turn that clobbers the plan) — drop this
-            # nudge. Next idle-timer tick will schedule again once the turn/plan ends.
-            # Queueing would stack identical 3KB+ nudges and blow up the context
-            # window. Returning False keeps cycle_count accurate (only delivered
-            # nudges count toward max_cycles).
+        def _busy_result() -> bool | MonitorDispatchResult:
+            # Drop this nudge. Next idle-timer tick will schedule again once the
+            # turn/plan ends. Queueing would stack identical 3KB+ nudges and blow
+            # up the context window. Returning False keeps cycle_count accurate
+            # (only delivered nudges count toward max_cycles).
             logger.info(
                 "AutoNudge skip: slot %s is running (loop %s cycle %d)",
                 slot.key,
@@ -7590,184 +7601,241 @@ class GatewayOrchestrator:
                 loop.cycle_count,
             )
             return _delivery_result(wake_message, MonitorDispatchResult.BUSY)
-        # Crew/member slot boundary, for EVERY dashboard loop -- prompt loops
-        # included, not only the structured/gated ones the completion hook
-        # covers below. Such a slot accepts a wake only from a loop its own
-        # turn armed, proven by the persisted bit AND the keystone-gated trust
-        # record together (see ``_dashboard_mode_admits``). The hook path
-        # re-checks right before provider entry for the TOCTOU window; this is
-        # the gate that applies when there is no hook at all.
-        if not await self._dashboard_mode_admits(loop, slot):
-            await self._audit_fire_refused(loop, slot)
-            return _delivery_result(wake_message, MonitorDispatchResult.UNAVAILABLE)
-        # Show nudge as a distinct "nudge" role message in the slot history.
-        # The structured meta lets the dashboard render a compact cycle chip
-        # instead of echoing the whole instruction payload as a chat bubble.
-        # The tag stays in ``content`` because that is what the model reads,
-        # and the body is deliberately NOT duplicated into meta — the client
-        # derives it from content, so a multi-KB payload is stored and
-        # broadcast once rather than twice. ``visible`` rather than ``tagged``
-        # in the appended row: identical unless the loop opted into a ``banner``,
-        # in which case this transcript row is the only thing shortened while the
-        # full ``tagged`` prompt still reaches ``_run_chat``.
-        nudge_meta: dict[str, Any] = {
-            "nudge": {
-                "cycle": loop.cycle_count + 1,
-                "loop_id": loop.id,
+
+        # Fast check, BEFORE the perpetual-lock wait: a slot that is already busy
+        # never queues for the lock. It is not the publication decision -- that
+        # is the recheck under the lock below -- because the wait between here
+        # and the lock is an await a user turn can start inside.
+        if _slot_busy(slot):
+            return _busy_result()
+        # PERPETUAL MODE FENCE, MEMBER slots only: admission, the loop's live
+        # state and turn publication run as ONE step under the slot's perpetual
+        # lock (``autonudge_selfarm.perpetual_slot_lock``), the lock the owner's
+        # OFF takes to pause the loop and revoke its entry. Without it the timer
+        # could read the owner entry, lose the CPU to an OFF, and then publish a
+        # wake on a loop whose authorization is gone -- one unattended turn
+        # after the owner said stop. The lock is released BEFORE the background
+        # admission wait below, so a queued wake never holds the switch hostage;
+        # a wake already published runs, which is the switch's documented
+        # "finishes its current turn" and not this race. Other modes take no
+        # lock (``nullcontext``): there is no owner entry to race.
+        #
+        # OCCUPANCY IS RE-READ UNDER THE LOCK. The fast check above ran before
+        # the lock wait, and the lock wait is an await: the owner's ON/OFF
+        # transaction can hold the lock long enough for the user to send a turn
+        # on this slot, which publishes ``slot.task`` without taking any lock.
+        # A wake that trusted the pre-lock answer would then overwrite that
+        # task and run two turns on one session. So ``_slot_busy`` is asked
+        # again right after acquisition and once more at publication time, with
+        # NO await between that final read and the ``slot.task`` /
+        # ``_session_tasks`` writes -- any await added between them needs its
+        # own recheck after it. A BUSY answer under the lock returns the same
+        # result as the fast check and leaves nothing behind: no transcript
+        # row, no task, no ``_session_tasks`` entry.
+        async with self._member_admission_lock(loop, slot):
+            if _slot_busy(slot):
+                return _busy_result()
+            # Crew/member slot boundary, for EVERY dashboard loop -- prompt loops
+            # included, not only the structured/gated ones the completion hook
+            # covers below. Such a slot accepts a wake only from a loop its own
+            # turn armed, proven by the persisted bit AND the keystone-gated trust
+            # record together (see ``_dashboard_mode_admits``). The hook path
+            # re-checks right before provider entry for the TOCTOU window; this is
+            # the gate that applies when there is no hook at all.
+            if not await self._dashboard_mode_admits(loop, slot):
+                await self._audit_fire_refused(loop, slot)
+                return _delivery_result(wake_message, MonitorDispatchResult.UNAVAILABLE)
+            # Under the lock the loop is re-read from the service: the object the
+            # timer holds was read before the lock, and an OFF that won the race
+            # has already paused it (or the drain removed it). Member slots only.
+            if not self._member_loop_still_live(loop, slot):
+                logger.info(
+                    "AutoNudge: loop %s on member slot %s not dispatched -- paused or "
+                    "removed under the perpetual lock before its wake was published",
+                    loop.id,
+                    loop.slot_key,
+                )
+                return _delivery_result(wake_message, MonitorDispatchResult.UNAVAILABLE)
+            # Show nudge as a distinct "nudge" role message in the slot history.
+            # The structured meta lets the dashboard render a compact cycle chip
+            # instead of echoing the whole instruction payload as a chat bubble.
+            # The tag stays in ``content`` because that is what the model reads,
+            # and the body is deliberately NOT duplicated into meta — the client
+            # derives it from content, so a multi-KB payload is stored and
+            # broadcast once rather than twice. ``visible`` rather than ``tagged``
+            # in the appended row: identical unless the loop opted into a ``banner``,
+            # in which case this transcript row is the only thing shortened while the
+            # full ``tagged`` prompt still reaches ``_run_chat``.
+            nudge_meta: dict[str, Any] = {
+                "nudge": {
+                    "cycle": loop.cycle_count + 1,
+                    "loop_id": loop.id,
+                }
             }
-        }
-        if wake_message is not None and loop.monitor is not None:
-            nudge_meta["monitor"] = {
-                "id": loop.id,
-                "fingerprint": loop.monitor.last_wake_fingerprint,
-                "classification": (
-                    loop.monitor.last_decision.value
-                    if loop.monitor.last_decision is not None
-                    else "actionable"
-                ),
-            }
-        completion_hook = self._monitor_completion_hook(loop)
-        if wake_message is not None and completion_hook is None:
-            return MonitorDispatchResult.UNAVAILABLE
-        dashboard_state = self.dashboard_state
-        turn_slot = slot
-        assert dashboard_state is not None and turn_slot is not None
+            if wake_message is not None and loop.monitor is not None:
+                nudge_meta["monitor"] = {
+                    "id": loop.id,
+                    "fingerprint": loop.monitor.last_wake_fingerprint,
+                    "classification": (
+                        loop.monitor.last_decision.value
+                        if loop.monitor.last_decision is not None
+                        else "actionable"
+                    ),
+                }
+            completion_hook = self._monitor_completion_hook(loop)
+            if wake_message is not None and completion_hook is None:
+                return MonitorDispatchResult.UNAVAILABLE
+            dashboard_state = self.dashboard_state
+            turn_slot = slot
+            assert dashboard_state is not None and turn_slot is not None
 
-        def _append_nudge() -> None:
-            turn_slot.append(
-                "nudge",
-                visible,
-                "msg msg-nudge",
-                meta=nudge_meta,
-            )
+            def _append_nudge() -> None:
+                turn_slot.append(
+                    "nudge",
+                    visible,
+                    "msg msg-nudge",
+                    meta=nudge_meta,
+                )
 
-        if completion_hook is None:
-            _append_nudge()
-        # FIX 2: an unattended app-owned nudge turn runs under the background
-        # concurrency cap. This is the fleet's hot path — N armed loops fire
-        # independently and would otherwise put N turns on the runtime at once.
-        # An attended slot (any user session with a monitor loop) is passed
-        # straight through, so babysit loops on human sessions are unaffected.
-        admission: asyncio.Future[MonitorDispatchResult] | None = None
-        if completion_hook is not None:
-            admission = asyncio.get_running_loop().create_future()
+            # FIX 2: an unattended app-owned nudge turn runs under the background
+            # concurrency cap. This is the fleet's hot path — N armed loops fire
+            # independently and would otherwise put N turns on the runtime at once.
+            # An attended slot (any user session with a monitor loop) is passed
+            # straight through, so babysit loops on human sessions are unaffected.
+            admission: asyncio.Future[MonitorDispatchResult] | None = None
+            if completion_hook is not None:
+                admission = asyncio.get_running_loop().create_future()
 
-        def _settle_admission(result: MonitorDispatchResult) -> None:
-            if admission is not None and not admission.done():
-                admission.set_result(result)
+            def _settle_admission(result: MonitorDispatchResult) -> None:
+                if admission is not None and not admission.done():
+                    admission.set_result(result)
 
-        if completion_hook is not None:
-            base_hook = completion_hook
+            if completion_hook is not None:
+                base_hook = completion_hook
 
-            async def _authorize_dashboard_turn(monitor_id: str, fingerprint: str) -> bool:
-                current_slot = dashboard_state.get_slot(loop.slot_key)
-                # A crew/member slot refuses a wake armed from OUTSIDE the
-                # session; a loop the slot's OWN turn armed is the member keeping
-                # itself awake and must fire. Same rule as ``autonudge_authz``.
-                # TWO sources must agree, because the loop store is agent-
-                # writable and this is the one bit that relaxes a session
-                # boundary: the persisted ``self_armed`` must be the boolean True
-                # (``is True`` -- a forged string is truthy; ``_load`` normalises
-                # too) AND the keystone-gated trust record the authorizer wrote
-                # at arm time (``autonudge_selfarm``, which agent file tools
-                # cannot reach) must name this loop on this slot. A forged
-                # boolean in the store has no trust entry and refuses.
-                mode_refused = not await self._dashboard_mode_admits(loop, turn_slot)
-                if mode_refused:
-                    await self._audit_fire_refused(loop, turn_slot)
-                if (
-                    current_slot is not turn_slot
-                    or bool(getattr(turn_slot, "is_closing", False))
-                    or mode_refused
-                    or str(getattr(turn_slot, "memory_mode", "persistent")) != "persistent"
-                ):
+                async def _authorize_dashboard_turn(monitor_id: str, fingerprint: str) -> bool:
+                    current_slot = dashboard_state.get_slot(loop.slot_key)
+                    # A crew/member slot refuses a wake armed from OUTSIDE the
+                    # session; a loop the slot's OWN turn armed is the member keeping
+                    # itself awake and must fire. Same rule as ``autonudge_authz``.
+                    # TWO sources must agree, because the loop store is agent-
+                    # writable and this is the one bit that relaxes a session
+                    # boundary: the persisted ``self_armed`` must be the boolean True
+                    # (``is True`` -- a forged string is truthy; ``_load`` normalises
+                    # too) AND the keystone-gated trust record the authorizer wrote
+                    # at arm time (``autonudge_selfarm``, which agent file tools
+                    # cannot reach) must name this loop on this slot. A forged
+                    # boolean in the store has no trust entry and refuses.
+                    mode_refused = not await self._dashboard_mode_admits(loop, turn_slot)
+                    if mode_refused:
+                        await self._audit_fire_refused(loop, turn_slot)
+                    if (
+                        current_slot is not turn_slot
+                        or bool(getattr(turn_slot, "is_closing", False))
+                        or mode_refused
+                        or str(getattr(turn_slot, "memory_mode", "persistent")) != "persistent"
+                    ):
+                        _settle_admission(MonitorDispatchResult.UNAVAILABLE)
+                        return False
+                    callback = base_hook.authorization_callback
+                    authorized = (
+                        True if callback is None else await callback(monitor_id, fingerprint)
+                    )
+                    if not authorized:
+                        _settle_admission(MonitorDispatchResult.UNAVAILABLE)
+                    return authorized
+
+                def _accept_dashboard_turn() -> None:
+                    callback = base_hook.acceptance_callback
+                    if callback is not None:
+                        callback()
+                    _append_nudge()
+                    _settle_admission(MonitorDispatchResult.DISPATCHED)
+
+                completion_hook = MonitorCompletionHook(
+                    base_hook.monitor_id,
+                    base_hook.fingerprint,
+                    base_hook.callback,
+                    authorization_callback=_authorize_dashboard_turn,
+                    acceptance_callback=_accept_dashboard_turn,
+                )
+
+            run_kwargs: dict[str, Any] = {}
+            # This turn IS the loop's delivered wake on its own slot. The directive
+            # consumer treats that as self-arm provenance alongside a human-started
+            # turn, so a member re-arming or revising its loop from inside a cycle
+            # is admitted; a cron, app or sub-agent turn on the same slot never
+            # carries this mark. On a crew/member slot the wake only exists because
+            # ``_dashboard_mode_admits`` already proved the loop self-armed.
+            run_kwargs["_directive_self_wake"] = True
+            # Scope the structural-terminal verdict this turn may record to THIS loop
+            # and the CONFIG GENERATION it fires under (the snapshot captured with the
+            # message above, before compose_nudge_body's await), so the stop is
+            # applied via an atomic (id, generation) fence and a stale completion
+            # cannot deactivate a loop whose config advanced under the turn.
+            run_kwargs["_directive_loop_id"] = loop.id
+            run_kwargs["_directive_loop_gen"] = _fired_generation if wake_message is None else 0
+            if completion_hook is not None:
+                run_kwargs["monitor_completion"] = completion_hook
+                # Structured monitor turns own a single durable budgeted turn.
+                # Nested depth disables dashboard recovery paths that would enqueue
+                # an additional provider turn outside that accounting boundary.
+                run_kwargs["_prompt_depth"] = 1
+
+            async def _run_dashboard_turn() -> None:
+                # Unattended slots can wait behind the background-turn semaphore.
+                # Reject a revoked structured claim before entering ``_run_chat``:
+                # prompt-submit hooks run during its setup and must not observe a
+                # monitor the user stopped while this turn waited for admission.
+                # The runner retains its own final recheck immediately before
+                # provider entry to cover revocation during that setup.
+                if completion_hook is not None and not await completion_hook.authorize():
+                    return
+                await _run_chat(
+                    dashboard_state,
+                    turn_slot,
+                    tagged,
+                    _directive_user_origin=False,
+                    **run_kwargs,
+                )
+
+            async def _run_background_turn() -> None:
+                try:
+                    await dashboard_state.run_background_turn(turn_slot, _run_dashboard_turn())
+                except TimeoutError:
+                    _settle_admission(MonitorDispatchResult.BUSY)
+                except asyncio.CancelledError:
+                    _settle_admission(MonitorDispatchResult.BUSY)
+                    raise
+                except Exception:
                     _settle_admission(MonitorDispatchResult.UNAVAILABLE)
-                    return False
-                callback = base_hook.authorization_callback
-                authorized = True if callback is None else await callback(monitor_id, fingerprint)
-                if not authorized:
-                    _settle_admission(MonitorDispatchResult.UNAVAILABLE)
-                return authorized
+                    raise
 
-            def _accept_dashboard_turn() -> None:
-                callback = base_hook.acceptance_callback
-                if callback is not None:
-                    callback()
+            # PUBLICATION-TIME RECHECK (see the fence comment above). The last
+            # await inside the lock was ``_dashboard_mode_admits``; everything
+            # from here to the ``slot.task`` write is synchronous, so this read
+            # is the one the publication rests on. The no-hook transcript row
+            # is appended only past it, so a BUSY leaves no row; the hook path
+            # appends from its acceptance callback, which never runs when no
+            # turn is spawned.
+            if _slot_busy(slot):
+                _settle_admission(MonitorDispatchResult.BUSY)
+                return _busy_result()
+            if completion_hook is None:
                 _append_nudge()
-                _settle_admission(MonitorDispatchResult.DISPATCHED)
-
-            completion_hook = MonitorCompletionHook(
-                base_hook.monitor_id,
-                base_hook.fingerprint,
-                base_hook.callback,
-                authorization_callback=_authorize_dashboard_turn,
-                acceptance_callback=_accept_dashboard_turn,
-            )
-
-        run_kwargs: dict[str, Any] = {}
-        # This turn IS the loop's delivered wake on its own slot. The directive
-        # consumer treats that as self-arm provenance alongside a human-started
-        # turn, so a member re-arming or revising its loop from inside a cycle
-        # is admitted; a cron, app or sub-agent turn on the same slot never
-        # carries this mark. On a crew/member slot the wake only exists because
-        # ``_dashboard_mode_admits`` already proved the loop self-armed.
-        run_kwargs["_directive_self_wake"] = True
-        # Scope the structural-terminal verdict this turn may record to THIS loop
-        # and the CONFIG GENERATION it fires under (the snapshot captured with the
-        # message above, before compose_nudge_body's await), so the stop is
-        # applied via an atomic (id, generation) fence and a stale completion
-        # cannot deactivate a loop whose config advanced under the turn.
-        run_kwargs["_directive_loop_id"] = loop.id
-        run_kwargs["_directive_loop_gen"] = _fired_generation if wake_message is None else 0
-        if completion_hook is not None:
-            run_kwargs["monitor_completion"] = completion_hook
-            # Structured monitor turns own a single durable budgeted turn.
-            # Nested depth disables dashboard recovery paths that would enqueue
-            # an additional provider turn outside that accounting boundary.
-            run_kwargs["_prompt_depth"] = 1
-
-        async def _run_dashboard_turn() -> None:
-            # Unattended slots can wait behind the background-turn semaphore.
-            # Reject a revoked structured claim before entering ``_run_chat``:
-            # prompt-submit hooks run during its setup and must not observe a
-            # monitor the user stopped while this turn waited for admission.
-            # The runner retains its own final recheck immediately before
-            # provider entry to cover revocation during that setup.
-            if completion_hook is not None and not await completion_hook.authorize():
-                return
-            await _run_chat(
-                dashboard_state,
-                turn_slot,
-                tagged,
-                _directive_user_origin=False,
-                **run_kwargs,
-            )
-
-        async def _run_background_turn() -> None:
-            try:
-                await dashboard_state.run_background_turn(turn_slot, _run_dashboard_turn())
-            except TimeoutError:
-                _settle_admission(MonitorDispatchResult.BUSY)
-            except asyncio.CancelledError:
-                _settle_admission(MonitorDispatchResult.BUSY)
-                raise
-            except Exception:
-                _settle_admission(MonitorDispatchResult.UNAVAILABLE)
-                raise
-
-        if admission is not None:
-            turn_coro = _run_background_turn()
-        else:
-            turn_coro = dashboard_state.run_background_turn(
-                turn_slot,
-                _run_dashboard_turn(),
-            )
-        task = spawn_guarded_turn(dashboard_state, turn_slot, turn_coro)
-        # Mirror dashboard /api/chat/send path so slot.running == True and sidebar
-        # shows the "turn active" three-dots indicator immediately.
-        slot.task = task
-        self._session_tasks[slot.key] = task
-        self.dashboard_state.push_slots_update()
+            if admission is not None:
+                turn_coro = _run_background_turn()
+            else:
+                turn_coro = dashboard_state.run_background_turn(
+                    turn_slot,
+                    _run_dashboard_turn(),
+                )
+            task = spawn_guarded_turn(dashboard_state, turn_slot, turn_coro)
+            # Mirror dashboard /api/chat/send path so slot.running == True and sidebar
+            # shows the "turn active" three-dots indicator immediately.
+            slot.task = task
+            self._session_tasks[slot.key] = task
+            self.dashboard_state.push_slots_update()
         if admission is not None:
 
             def _settle_unstarted_admission(_task: asyncio.Task[Any]) -> None:
@@ -7789,17 +7857,68 @@ class GatewayOrchestrator:
         the persisted ``self_armed`` must be the boolean True (``is True`` -- a
         forged string is truthy; ``_load`` normalises too) AND the
         keystone-gated trust record the authorizer wrote at arm time
-        (``autonudge_selfarm``, unreachable by agent file tools) must name this
-        loop on this slot. A forged boolean in the store has no trust entry and
-        refuses. The record read is file IO, so it is offloaded.
+        (``autonudge_selfarm``: its own ``tag-grants/autonudge-trust/``
+        directory inside the grant store's whole-directory stand-in mask,
+        fenced from agent file tools by prefix AND held by that mask for the
+        namespace lifetime -- not the sandbox-writable ``trust/``) must name
+        this loop on this slot. A forged
+        boolean in the store has no trust entry and refuses. The record read is
+        file IO, so it is offloaded.
         """
-        if str(getattr(slot, "mode", "")) not in {"crew", "member"}:
+        mode = str(getattr(slot, "mode", ""))
+        if mode not in {"crew", "member"}:
             return True
-        if getattr(loop, "self_armed", False) is not True:
-            return False
-        return bool(
+        if getattr(loop, "self_armed", False) is True and bool(
             await asyncio.to_thread(autonudge_selfarm.is_recorded_self_arm, loop.id, loop.slot_key)
-        )
+        ):
+            return True
+        # The second admitted party, MEMBER slots only: the dashboard owner's
+        # Perpetual mode switch. It has no store bit to agree with -- the
+        # record, which only the owner-gated member route writes and which
+        # no sandboxed process can reach (the leaf is masked, and the mask
+        # covers a path composed at runtime as much as a literal one), is the
+        # whole authorization -- and a self-arm entry never
+        # satisfies it (``armed_by`` is disjoint), so a forged ``self_armed``
+        # bit cannot ride an owner entry and vice versa.
+        if mode == "member":
+            return bool(
+                await asyncio.to_thread(
+                    autonudge_selfarm.is_recorded_owner_arm, loop.id, loop.slot_key
+                )
+            )
+        return False
+
+    @staticmethod
+    def _member_admission_lock(
+        loop: NudgeLoop, slot: Any
+    ) -> contextlib.AbstractAsyncContextManager[None]:
+        """The perpetual per-slot lock for a MEMBER slot's wake; a no-op otherwise.
+
+        Same lock the owner's switch (``handlers.members``) and the member's own
+        stop / cap check (``session_directive_apply``) take, so admission +
+        publication cannot interleave with an OFF's pause + revoke. Any other
+        mode has no owner entry to race and takes nothing.
+        """
+        if str(getattr(slot, "mode", "")) == "member":
+            return autonudge_selfarm.perpetual_slot_lock(loop.slot_key)
+        return contextlib.nullcontext()
+
+    def _member_loop_still_live(self, loop: NudgeLoop, slot: Any) -> bool:
+        """Under the perpetual lock: is *loop* still the service's ACTIVE loop?
+
+        Member slots only; other modes answer True without a read. The service
+        row is re-read by id (``get_by_id`` hands back the live object, and
+        ``update`` mutates in place, so a stale ``loop.active`` on the timer's
+        copy is not trusted): an OFF that won the race has paused it, a drain
+        may have removed it. A service without ``get_by_id`` (a test stub) falls
+        back to the object the timer holds.
+        """
+        if str(getattr(slot, "mode", "")) != "member":
+            return True
+        svc = self.autonudge_svc
+        reader = getattr(svc, "get_by_id", None)
+        current = reader(loop.id) if callable(reader) else loop
+        return current is not None and bool(getattr(current, "active", False))
 
     @staticmethod
     async def _audit_fire_refused(loop: NudgeLoop, slot: Any) -> None:

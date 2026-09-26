@@ -469,6 +469,32 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # appends above. Written and read only by the GATEWAY (dashboard tag CRUD
     # + the chat_tag applier); no in-sandbox code opens it.
     "tag-grants",
+    # The auto-nudge ARM record's directory (``autonudge_selfarm.py``): which
+    # loops a crew/member session armed itself, and which the owner's Perpetual
+    # mode switch armed -- an entry here is the whole of an owner arm's fire-time
+    # admission, and the loop store it agrees with is agent-writable by design.
+    # Deliberately a CHILD of ``tag-grants`` rather than a leaf of its own at the
+    # data-home root: a root-level leaf is held only by its own name, so a
+    # host-side atomic replace of that name puts a fresh writable object at the
+    # protected path for the rest of a running namespace's life, while a name
+    # INSIDE a whole-directory stand-in is held for the namespace lifetime,
+    # present and future (``test_sandbox_protected_name_holds`` measures exactly
+    # this split). ``tag-grants`` is the host because it already holds owner
+    # authorization state of the same class, is gateway-only, pre-created 0o700
+    # before every spawn, and never swept. The entry is listed so the launcher
+    # payload names the path and the hold ratchet can pin its ancestor; the
+    # mount it would place is redundant either way round (listed after its host,
+    # the child's ``isdir`` resolves inside the empty stand-in and is skipped;
+    # bound first, it would sit under the host's mask). It needs neither a
+    # pre-create -- an absent child inside a masked host is invisible either
+    # way, and the materialiser refuses intermediate directories on purpose --
+    # nor a ``_CREW_NO_ALIAS_LEAVES`` entry: a link at the host refuses the
+    # spawn as every masked leaf does, and the alias pass walks this leaf's
+    # components too. Written and read only by the GATEWAY (the authorizer, the
+    # fire-time guard, the member route, the store's remove); no in-sandbox code
+    # opens it. Not under ``trust/``, which stays sandbox read-write for the SEL
+    # appends.
+    "tag-grants/autonudge-trust",
     "agentcore-inbound",
     "routing",
     "webhooks",
@@ -1638,7 +1664,10 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # The chat_tag grants store writes by atomic rename of a sibling temp, so
     # the whole directory must exist before the isdir-guarded mask loop runs —
     # otherwise the first sandbox spawned before the first grant write sees an
-    # unmasked leaf appear later.
+    # unmasked leaf appear later. This one pre-create also covers the auto-nudge
+    # arm record's directory (``tag-grants/autonudge-trust``), which is created
+    # lazily INSIDE this mask and so needs no entry of its own: an absent child
+    # of a masked host is as invisible as a present one.
     "tag-grants",
     # The crewmate-teams store is created on the first team the owner makes, so a
     # sandbox spawned before that finds the name absent and the mask is vacuous

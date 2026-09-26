@@ -3,16 +3,16 @@
   "raw_record_count": 387,
   "counts": {
     "smoke": 42,
-    "nightly": 167,
+    "nightly": 168,
     "native-only": 12,
     "needs-secret": 27,
     "excluded": 22,
-    "total": 270
+    "total": 271
   },
   "priorities": {
     "P0": 10,
     "P1": 35,
-    "P2": 162,
+    "P2": 163,
     "P3": 61
   },
   "per_feature": {
@@ -67,7 +67,7 @@
     },
     "members": {
       "smoke": 0,
-      "nightly": 3,
+      "nightly": 5,
       "native-only": 0,
       "needs-secret": 0,
       "excluded": 0
@@ -2042,6 +2042,38 @@
         "members-private-memory-keeps-thread"
       ],
       "component": "website/src/pages/members/MembersPage.tsx"
+    },
+    {
+      "id": "crewmate-perpetual-off",
+      "feature": "members",
+      "title": "Perpetual mode: the owner turns a crewmate's standing wake on and off from its detail page",
+      "user_story": "As a crew owner with a standing crewmate, I want one switch that decides whether it keeps waking on its own, so that turning it off is my decision and I can see why it is off afterwards.",
+      "start_url": "/settings",
+      "entry_path": "Settings > Developer > Feature Previews > enable Crew Members; Rail > Crew Members > Nova Sky (opens its chat once); Rail > Agent Capabilities / Customize > Agents tab > nova-sky editor > Schedules > Perpetual mode switch ON then OFF; back to Crew Members > Nova Sky > side panel block reads Off / Turned off by you",
+      "preconditions": {
+        "seed": "rich",
+        "members": [
+          "nova-sky"
+        ],
+        "feature_flags": [
+          "mc-preview-crew"
+        ],
+        "notes": "The switch addresses the crewmate's own chat thread, which must have been opened once (POST /api/members/{slug}/perpetual answers 409 member_thread_not_open otherwise). The rich seed ships no loop, so ON is pressed first (arms max_cycles=0 / max_runtime_secs=0) and OFF second (pauses with reason manual). Auto-nudge is on by default in the target gateway; the roster carries no badge for a paused crewmate by design."
+      },
+      "runnable": "nightly",
+      "estimated_steps": 10,
+      "rationale": "Two real writes through the owner-arm admission and a read on two surfaces (detail page card, Crew Members side panel); the readouts and the refusal copy are pixel-level facts a unit test cannot see.",
+      "source": [
+        "website/src/components/crew/CrewPerpetualSection.tsx",
+        "website/src/pages/KiroCrewAgentsPage.tsx",
+        "website/src/pages/members/MembersPage.tsx",
+        "src/kiro_crew/dashboard/handlers/members.py"
+      ],
+      "priority": "P2",
+      "merged_from": [
+        "crewmate-perpetual-off"
+      ],
+      "component": "website/src/components/crew/CrewPerpetualSection.tsx"
     },
     {
       "id": "sidebar-crew-members-create-menu-entry",

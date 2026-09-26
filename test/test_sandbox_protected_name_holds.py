@@ -39,13 +39,24 @@ pytestmark = pytest.mark.skipif(
 TIERS = ("standard", "cc", "strict")
 
 #: Protected names held by an ENCLOSING stand-in mask today. Measured, not aspired
-#: to: it is EMPTY, because nothing in the launcher holds a protected
-#: name for the namespace lifetime. Every mask is placed once, at spawn.
+#: to. Every mask is placed once, at spawn; a name is durably held only when a
+#: STRICT ancestor of it is itself a stand-in mask, so the lookup terminates in a
+#: directory the launcher created and a host-side republish of the name never
+#: reaches the namespace.
+#:
+#: * ``autonudge-trust`` -- the auto-nudge arm record's directory
+#:   (``autonudge_selfarm.ARM_RECORD_LEAF``), listed as the nested leaf
+#:   ``tag-grants/autonudge-trust`` and held by the ``tag-grants`` stand-in that
+#:   encloses it. The record is the fire-time guard's one unforgeable factor for a
+#:   crew/member loop, which is why it was placed inside an existing
+#:   whole-directory mask rather than given a leaf of its own at the data-home
+#:   root, where a host-side atomic replace would leave a writable object at the
+#:   name for the rest of a running namespace's life.
 #:
 #: A fix that gives a name a durable hold adds it here, and the equality
 #: assertion below then locks it: the name can never fall back to leaf-name
 #: holding without this constant being edited in the same diff.
-HELD_BY_ENCLOSING_MASK: frozenset[str] = frozenset()
+HELD_BY_ENCLOSING_MASK: frozenset[str] = frozenset({"autonudge-trust"})
 
 
 def _launcher_sets(tier: str) -> tuple[list[str], list[str]]:
@@ -272,8 +283,8 @@ class TestLeafOnlyPopulationIsRecorded:
     mask holds has to be a deliberate, visible edit to this number.
     """
 
-    #: Measured per tier. Not a target -- a debt. Today it is the WHOLE
-    #: population: nothing is durably held.
+    #: Measured per tier. Not a target -- a debt. Today it is the whole
+    #: population less the names in ``HELD_BY_ENCLOSING_MASK``.
     #:
     #: The launcher spells every data-home leaf once per spelling of the crew
     #: home it protects (the two ``$HOME``-joined ``_CREW_HOME_PREFIXES`` plus
@@ -288,6 +299,12 @@ class TestLeafOnlyPopulationIsRecorded:
     #: * ``auth-store-staging`` -- the masked directory the two gateway auth
     #:   stores publish through, so the temp holding a full signing key or
     #:   refresh-chain state is never listable from inside the namespace.
+    #:
+    #: The auto-nudge arm record (``tag-grants/autonudge-trust``) is deliberately
+    #: NOT among them: it is a nested leaf inside an existing whole-directory
+    #: stand-in, so it lands in ``HELD_BY_ENCLOSING_MASK`` and costs this count
+    #: nothing. A root-level ``autonudge-trust`` leaf would have been three more
+    #: entries per tier, each one a name a host-side republish can leave writable.
     EXPECTED: dict[str, int] = {"standard": 241, "cc": 248, "strict": 249}
 
     @pytest.mark.parametrize("tier", TIERS)

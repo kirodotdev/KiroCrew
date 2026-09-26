@@ -868,6 +868,7 @@ async def test_structured_legacy_row_carries_exactly_the_entitled_keys(
         "max_runtime_secs",
         "gate",
         "stopped_reason",
+        "stopped_detail",
         "approval_stalled",
         # Same class as ``approval_stalled``: the automation's own reading of
         # whether it can act, not a fact about what it watches. A structured
