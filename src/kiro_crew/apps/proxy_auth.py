@@ -68,7 +68,8 @@ def verify_proxy_request(
     """Return ``True`` iff *header_value* is a valid, fresh gateway signature.
 
     Fails closed: a missing secret, absent/malformed header, non-numeric or
-    stale (±60s) timestamp, or signature mismatch all return ``False``.
+    stale (±60s) timestamp, non-ASCII signature, or signature mismatch all
+    return ``False``.
     """
     key = proxy_secret() if secret is None else secret
     if not key or not header_value or ":" not in header_value:
@@ -82,4 +83,16 @@ def verify_proxy_request(
     body_hash = hashlib.sha256(body or b"").hexdigest()
     msg = f"{ts_str}:{method}:{target}:{body_hash}"
     expected = hmac.new(key.encode(), msg.encode(), hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, sig)
+    # Compared as BYTES, never as ``str``. ``hmac.compare_digest`` rejects a str
+    # holding a non-ASCII character by raising ``TypeError``, and ``sig`` is the
+    # attacker-chosen header: any local process can open the loopback socket this
+    # verifier guards, and aiohttp decodes a header byte that is not valid UTF-8
+    # into a lone surrogate. Encoding first gives every possible header value a
+    # verdict instead of an unhandled ``TypeError`` that drops the connection and
+    # skips the caller's SEL ``proxy_auth_failed`` record. ``surrogatepass``
+    # because a lone surrogate must still compare rather than raise on the way
+    # in, and it keeps two distinct strings distinct. ``expected`` is a hexdigest
+    # by construction, so a signature that matched before still matches.
+    return hmac.compare_digest(
+        expected.encode("utf-8", "surrogatepass"), sig.encode("utf-8", "surrogatepass")
+    )

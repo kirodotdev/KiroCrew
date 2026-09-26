@@ -81,6 +81,68 @@ def test_stale_timestamp_fails():
     assert not verify_proxy_request(hdr, method="GET", target="/api/read", body=b"", secret=SECRET)
 
 
+@pytest.mark.parametrize("codepoint", [0x00E9, 0x63D0, 0x1F600, 0xDCFF])
+def test_a_non_ascii_signature_is_a_clean_refusal_not_a_crash(codepoint: int):
+    """A non-ASCII signature must be refused like any other wrong one.
+
+    ``hmac.compare_digest`` rejects a ``str`` holding a non-ASCII character by
+    raising ``TypeError``. The header is attacker-chosen: any local process can
+    open the loopback socket this verifier guards, and aiohttp decodes a header
+    byte that is not valid UTF-8 into a lone surrogate, so both shapes arrive
+    here. Raising would turn the denial into an unhandled 500, drop the
+    connection, and skip the caller's SEL ``proxy_auth_failed`` record -- the
+    ASCII-wrong case returns a plain ``False`` and keeps all three. The code
+    points are built rather than written as literals because ``0xDCFF`` is a lone
+    surrogate, which cannot appear in source.
+    """
+    ts = int(time.time())
+    assert not verify_proxy_request(
+        f"{ts}:{chr(codepoint)}",
+        method="GET",
+        target="/api/read",
+        body=b"",
+        secret=SECRET,
+    )
+
+
+def test_a_non_ascii_signature_does_not_accept_a_valid_one():
+    """Encoding must not collapse distinct credentials to the same bytes."""
+    hdr = _sign("GET", "/api/read", b"")
+    assert verify_proxy_request(hdr, method="GET", target="/api/read", body=b"", secret=SECRET)
+    assert not verify_proxy_request(
+        f"{int(time.time())}:{hdr.split(':', 1)[1]}{chr(0x00E9)}",
+        method="GET",
+        target="/api/read",
+        body=b"",
+        secret=SECRET,
+    )
+
+
+def test_a_valid_signature_suffixed_with_a_lone_surrogate_is_refused():
+    """A surrogate must keep a signature distinct, not be dropped from it.
+
+    This is the case that separates ``surrogatepass`` from ``ignore``. A
+    lone surrogate cannot be encoded as UTF-8 at all, so ``ignore`` silently
+    DROPS it: a valid signature with one appended encodes to the same bytes as
+    the valid signature alone and is accepted. ``surrogatepass`` encodes it,
+    so the appended character changes the bytes and the request is refused.
+
+    A non-ASCII character that IS encodable, like the ones the other tests
+    use, does not exercise this: ``ignore`` keeps those, so the two encodings
+    agree and neither test notices the difference.
+    """
+    hdr = _sign("GET", "/api/read", b"")
+    ts, sig = hdr.split(":", 1)
+    assert verify_proxy_request(hdr, method="GET", target="/api/read", body=b"", secret=SECRET)
+    assert not verify_proxy_request(
+        f"{ts}:{sig}{chr(0xDCFF)}",
+        method="GET",
+        target="/api/read",
+        body=b"",
+        secret=SECRET,
+    )
+
+
 def test_wrong_secret_fails():
     hdr = _sign("GET", "/api/read", b"")
     assert not verify_proxy_request(hdr, method="GET", target="/api/read", body=b"", secret="different")

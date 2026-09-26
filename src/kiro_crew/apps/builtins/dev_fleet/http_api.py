@@ -571,7 +571,17 @@ async def hmac_proxy_middleware(request: web.Request, handler) -> web.Response:
     msg = f"{ts_str}:{request.method}:{raw_request_target(request)}:{body_hash}"
 
     expected_sig = _hmac_mod.new(secret.encode(), msg.encode(), hashlib.sha256).hexdigest()
-    if not _hmac_mod.compare_digest(sig_received, expected_sig):
+    # Compared as BYTES, never as ``str``: ``hmac.compare_digest`` raises
+    # ``TypeError`` for a non-ASCII argument, and ``sig_received`` is the
+    # attacker-chosen header (aiohttp turns a non-UTF-8 header byte into a lone
+    # surrogate). Raising would drop the connection instead of writing the SEL
+    # denial above. ``surrogatepass`` so every value compares; ``expected_sig`` is
+    # a hexdigest, so a signature that matched before still matches. Same reason
+    # as ``apps/proxy_auth.verify_proxy_request``.
+    if not _hmac_mod.compare_digest(
+        sig_received.encode("utf-8", "surrogatepass"),
+        expected_sig.encode("utf-8", "surrogatepass"),
+    ):
         return _deny("invalid proxy signature")
 
     try:

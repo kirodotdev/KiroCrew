@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import hashlib
+import hmac
 import json
 import os
 import sys
@@ -2374,6 +2376,81 @@ async def test_hmac_denials(monkeypatch, headers, secret, reason):
     assert reason in json.loads(resp.text)["error"]
     assert sink.events[0]["outcome"] == "denied"
     assert sink.events[0]["tool_name"] == "dev-fleet:proxy-hmac"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("codepoint", [0x00E9, 0x63D0, 0x1F600])
+async def test_hmac_non_ascii_signature_is_a_clean_denial(monkeypatch, codepoint):
+    """A non-ASCII signature is refused like any other wrong one, not raised.
+
+    ``hmac.compare_digest`` rejects a ``str`` holding a non-ASCII character by
+    raising ``TypeError``. The header is attacker-chosen (any local process can
+    reach this loopback port) and aiohttp decodes a non-UTF-8 header byte into a
+    lone surrogate, so an unhandled raise would drop the connection and skip the
+    ``dev-fleet:proxy-hmac`` SEL denial record this middleware exists to write.
+    Same class as the shared verifier in ``apps/proxy_auth.py``, which this
+    backend reimplements inline. Code points are built rather than written
+    literally so a lone surrogate stays expressible.
+    """
+    sink = _sel_capture(monkeypatch)
+    monkeypatch.setattr(http_api, "_load_app_secret", lambda: "s3cr3t")
+
+    async def handler(request):  # pragma: no cover - must never run
+        raise AssertionError("handler must not be reached")
+
+    headers = {"X-KiroCrew-Proxy": f"{int(time.time())}:{chr(codepoint)}"}
+    request = make_mocked_request("GET", "/api/fleet", headers=headers)
+    resp = await http_api.hmac_proxy_middleware(request, handler)
+    assert resp.status == 401
+    assert "invalid proxy signature" in json.loads(resp.text)["error"]
+    assert sink.events[0]["outcome"] == "denied"
+    assert sink.events[0]["tool_name"] == "dev-fleet:proxy-hmac"
+
+
+@pytest.mark.asyncio
+async def test_hmac_a_valid_signature_suffixed_with_a_lone_surrogate_is_refused(monkeypatch):
+    """A surrogate must keep a signature distinct, not be dropped from it.
+
+    This is the case that separates ``surrogatepass`` from ``ignore`` at this
+    verifier. A lone surrogate cannot be encoded as UTF-8 at all, so ``ignore``
+    silently DROPS it: a valid signature with one appended encodes to the same
+    bytes as the valid signature alone and the request is ACCEPTED.
+    ``surrogatepass`` encodes it, so the bytes differ and the request earns the
+    usual denial. No encodable character exercises this, because ``ignore``
+    keeps those and the two encodings agree.
+
+    The request is a mock rather than ``make_mocked_request`` because aiohttp's
+    own header builder refuses to encode a lone surrogate. A real request does
+    reach the middleware with one: the parser decodes an invalid UTF-8 header
+    byte into exactly this shape.
+    """
+    sink = _sel_capture(monkeypatch)
+    monkeypatch.setattr(http_api, "_load_app_secret", lambda: "s3cr3t")
+
+    async def handler(request):
+        return web.json_response({"ok": True})
+
+    ts = int(time.time())
+    msg = f"{ts}:GET:/api/fleet:{hashlib.sha256(b'').hexdigest()}"
+    sig = hmac.new(b"s3cr3t", msg.encode(), hashlib.sha256).hexdigest()
+
+    request = MagicMock()
+    request.path = "/api/fleet"
+    request.raw_path = "/api/fleet"
+    request.method = "GET"
+    request.can_read_body = False
+
+    # A signature that verifies must be accepted first, so the refusal below is
+    # about the appended surrogate and not about a signature that never matched.
+    request.headers = {"X-KiroCrew-Proxy": f"{ts}:{sig}"}
+    accepted = await http_api.hmac_proxy_middleware(request, handler)
+    assert accepted.status == 200
+
+    request.headers = {"X-KiroCrew-Proxy": f"{ts}:{sig}{chr(0xDCFF)}"}
+    resp = await http_api.hmac_proxy_middleware(request, handler)
+    assert resp.status == 401
+    assert "invalid proxy signature" in json.loads(resp.text)["error"]
+    assert sink.events[0]["outcome"] == "denied"
 
 
 @pytest.mark.asyncio
