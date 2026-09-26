@@ -41,7 +41,11 @@ import logging
 import os
 from typing import TYPE_CHECKING, Any, Callable
 
-from kiro_crew.constants import OPTIONS_RE_TRAILER, split_trailing_protocol_suffix
+from kiro_crew.constants import (
+    OPTIONS_RE_TRAILER,
+    relocate_glued_tail_marker,
+    split_trailing_protocol_suffix,
+)
 from kiro_crew.messaging.approval import (
     TIMEOUT_NOTICE,
     abandon_approval,
@@ -97,7 +101,7 @@ _ERROR_TEXT = "Something went wrong on my side. Please try again."
 
 def _strip_options(text: str) -> str:
     """Drop the dashboard-only [OPTIONS: ...] trailer (no buttons here)."""
-    return OPTIONS_RE_TRAILER.sub("", text).strip()
+    return OPTIONS_RE_TRAILER.sub("", relocate_glued_tail_marker(text)).strip()
 
 
 class WhatsAppRenderer(Renderer):

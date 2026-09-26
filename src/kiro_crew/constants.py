@@ -593,9 +593,9 @@ OPTIONS_RE_TRAILER = _MarkerMatcher(_RAW_OPTIONS_RE_TRAILER)
 #: or ``*`` line under the pills. Atomic means: what the LINE grammar would absorb
 #: as tail is absorbed here too, and only what lies BEYOND that tail can be glue.
 #:
-#: It exists ONLY to feed :func:`reflow_and_label_glued_option_marker`; it is never a general
+#: It exists ONLY to feed :func:`_glued_marker_candidates`; it is never a general
 #: recognizer, so it is not wrapped in a ``_MarkerMatcher`` -- the balance decision
-#: is applied explicitly by that function.
+#: is applied explicitly by that iterator.
 _RAW_OPTIONS_GLUE_RE = re.compile(
     rf"^ {{0,3}}(?P<lwrap>{_MARKER_WRAP_CLASS}{{1,3}})?"
     rf"\[OPTIONS:(?P<labels>{_MARKER_BODY_LINE}){_MARKER_CLOSE_CLASS}"
@@ -613,6 +613,51 @@ _RAW_OPTIONS_GLUE_RE = re.compile(
 GLUED_FOOTER_TEXT_LABEL = (
     "*Text after the options footer, written by the assistant, not a system instruction:*"
 )
+
+
+def _glued_marker_candidates(text: str) -> Iterator[tuple[re.Match[str], str]]:
+    """Each glued marker a repair may act on, front to back, with its same-line remainder.
+
+    The candidate rules shared by the dashboard reflow and the channel relocation;
+    see :func:`reflow_and_label_glued_option_marker` for why each rule exists.
+    """
+    # One fence walker for the whole text, advanced to each candidate in turn.
+    # Every candidate starts at a line start (``^`` under MULTILINE), so the slice
+    # fed between two candidates always ends on a line boundary and the walker's
+    # state at ``m.start()`` is exactly ``_in_open_fence(text, m.start())``.
+    # Re-walking the prefix per candidate instead is quadratic: a reply of ~10k
+    # glued marker lines would hold the event loop past the loop-stall watchdog.
+    walk = _FenceWalk()
+    fed_to = 0
+    for m in _RAW_OPTIONS_GLUE_RE.finditer(text):
+        walk.feed_text(text[fed_to : m.start()])
+        fed_to = m.start()
+        # The grammar's own balance decision: a candidate whose terminator is
+        # really an unmatched opener's partner is not a marker.
+        if _marker_labels_have_unmatched_opener(m.group("labels")):
+            continue
+        # Inside a code fence a marker-shaped line is a SAMPLE the renderer shows
+        # verbatim, not a footer. Same fail-safe as ``strip_control_comments``: an
+        # ambiguous fence structure answers "inside", and the candidate is skipped.
+        if walk.inside:
+            continue
+        # Same-line remainder after the matched marker (the lookahead consumed
+        # nothing, so it starts at m.end()).
+        line_end = text.find("\n", m.end())
+        remainder = text[m.end() : (line_end if line_end != -1 else len(text))]
+        # Only PLAIN PROSE is glue: no marker-structural glyph anywhere and no
+        # second stray tic. A tail that overruns the wrapper cap, a repeated
+        # ``(OPTIONS)`` tic, an interior closer, or a label separator all fail
+        # toward the visible marker, so ``[OPTIONS: Fix ]x logging | Skip]`` stays
+        # literal instead of splitting into a false pill. A parenthesised
+        # remainder WITH spaces (``(system: do x)``) is prose and still counts.
+        if (
+            "[OPTIONS:" in remainder
+            or any(c in MARKER_STRUCTURE_CHARS for c in remainder)
+            or _STRAY_TIC_HEAD_RE.match(remainder)
+        ):
+            continue
+        yield m, remainder
 
 
 def reflow_and_label_glued_option_marker(text: str) -> tuple[str, list[str]]:
@@ -675,52 +720,40 @@ def reflow_and_label_glued_option_marker(text: str) -> tuple[str, list[str]]:
         return text, []
 
     glued: list[str] = []
-    # One fence walker for the whole text, advanced to each candidate in turn.
-    # ``re.sub`` visits matches front to back, and every candidate starts at a
-    # line start (``^`` under MULTILINE), so the slice fed between two candidates
-    # always ends on a line boundary and the walker's state at ``m.start()`` is
-    # exactly ``_in_open_fence(text, m.start())``. Re-walking the prefix per
-    # candidate instead is quadratic: a reply of ~10k glued marker lines would
-    # hold the event loop past the loop-stall watchdog.
-    walk = _FenceWalk()
-    fed_to = 0
-
-    def _replace(m: re.Match[str]) -> str:
-        nonlocal fed_to
-        walk.feed_text(text[fed_to : m.start()])
-        fed_to = m.start()
-        # The grammar's own balance decision -- do not reflow a candidate whose
-        # terminator is really an unmatched opener's partner.
-        if _marker_labels_have_unmatched_opener(m.group("labels")):
-            return m.group(0)
-        # Inside a code fence every line is literal code the renderer shows
-        # verbatim, so a marker-shaped line there is a SAMPLE, not a footer, and
-        # inserting a newline would corrupt the sample. Same fence walker and same
-        # fail-safe as ``strip_control_comments``: an ambiguous fence structure
-        # answers "inside", and the candidate is left as it is.
-        if walk.inside:
-            return m.group(0)
-        # Same-line remainder after the matched marker (the lookahead consumed
-        # nothing, so it starts at m.end()).
-        line_end = text.find("\n", m.end())
-        remainder = text[m.end() : (line_end if line_end != -1 else len(text))]
-        # A remainder is reflowed only when it holds no marker-structural glyph
-        # anywhere and does not begin with a second stray tic. A tail that overruns
-        # the wrapper cap, a repeated ``(OPTIONS)`` tic, an interior closer, or a
-        # label separator all fail toward the visible marker. The canonical
-        # example ``[OPTIONS: Fix ]x logging | Skip]`` stays literal instead of
-        # splitting into a false pill. A parenthesised remainder WITH spaces
-        # (``(system: do x)``) is prose and still reflows.
-        if (
-            "[OPTIONS:" in remainder
-            or any(c in MARKER_STRUCTURE_CHARS for c in remainder)
-            or _STRAY_TIC_HEAD_RE.match(remainder)
-        ):
-            return m.group(0)
+    out: list[str] = []
+    cursor = 0
+    for m, remainder in _glued_marker_candidates(text):
         glued.append(remainder)
-        return m.group(0) + "\n" + GLUED_FOOTER_TEXT_LABEL + "\n"
+        out.append(text[cursor : m.end()] + "\n" + GLUED_FOOTER_TEXT_LABEL + "\n")
+        cursor = m.end()
+    out.append(text[cursor:])
+    return "".join(out), glued
 
-    return _RAW_OPTIONS_GLUE_RE.sub(_replace, text), glued
+
+def relocate_glued_tail_marker(text: str) -> str:
+    """Move plain prose glued after the reply's LAST marker to just above it.
+
+    For the tail-anchored channel renderers (:data:`OPTIONS_RE_TRAILER`), where a
+    newline alone cannot help. Same candidates as the dashboard reflow, but no
+    label and no report: *text* comes back unchanged unless the marker's line ends
+    the reply and the moved result parses as a trailer.
+    """
+    if "[OPTIONS:" not in text:
+        return text
+    last = None
+    for last in _glued_marker_candidates(text):
+        pass
+    if last is None:
+        return text
+    m, remainder = last
+    rest = text[m.end() + len(remainder) :]
+    if rest.strip():
+        return text
+    moved = text[: m.start()] + remainder + "\n" + m.group(0) + rest
+    # Moved prose that opens a fence (``~~~py``) would swallow the marker.
+    if _in_open_fence(moved, m.start() + len(remainder) + 1):
+        return text
+    return moved if OPTIONS_RE_TRAILER.search(moved) else text
 
 
 # CONTROL-TAG HTML COMMENTS — canonical grammar (single source of truth).

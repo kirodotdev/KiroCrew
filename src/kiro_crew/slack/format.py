@@ -6,7 +6,7 @@ import logging
 import re
 from typing import Callable, NamedTuple
 
-from kiro_crew.constants import OPTIONS_RE_LINE
+from kiro_crew.constants import OPTIONS_RE_LINE, relocate_glued_tail_marker
 from kiro_crew.messaging.display_safety import redact_for_display, strip_ansi
 from kiro_crew.messaging.renderer import cap_choices, format_overflow
 from kiro_crew.platform.context import redact_via_context
@@ -62,6 +62,7 @@ def extract_options(text: str) -> tuple[str, list[str]]:
     ``OPTIONS_RE_LINE``. Returns (cleaned_text, choices). If no OPTIONS is found,
     choices is empty.
     """
+    text = relocate_glued_tail_marker(text)
     m = _OPTIONS_RE.search(text)
     if not m:
         return text, []

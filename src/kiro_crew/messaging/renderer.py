@@ -46,6 +46,7 @@ from kiro_crew.constants import (
     MARKER_CLOSERS,
     OPTIONS_RE_TRAILER,
     _leading_wrapper_start,
+    relocate_glued_tail_marker,
     strip_control_comments,
 )
 from kiro_crew.messaging.display_safety import redact_for_display
@@ -592,6 +593,7 @@ def split_options_trailer(text: str, *, hide_partial: bool = False) -> tuple[str
     Stripping a genuine steering frame is ``TurnDriver``'s job and happens before
     a renderer sees the text.
     """
+    text = relocate_glued_tail_marker(text)
     match = OPTIONS_RE_TRAILER.search(text)
     if match:
         choices = [c.strip() for c in match.group("labels").split("|") if c.strip()]
