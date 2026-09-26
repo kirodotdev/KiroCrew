@@ -1435,12 +1435,64 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   }, [qc, filePath, onDiskContent, onContentChange])
 
 
+  /** The catch-up latch: where this tab stands against its file since it last
+   *  became visible. `due` -- a read has to run at the next clean moment: the
+   *  tab is hidden, the user has edited a clean buffer (handleChange), or the
+   *  read it started was overtaken by the user's typing and dropped. `reading`
+   *  -- one is in flight, and a re-render starts no second one. `done` --
+   *  nothing to do until the tab is hidden or edited again: a read applied, or
+   *  failed and was reported. A tab visible from the start is `done`; its
+   *  buffer came from the read that opened it. */
+  const catchUpRef = useRef<'due' | 'reading' | 'done'>(active ? 'done' : 'due')
+
+  /** Adopt the disk truth: the step the watch and the activation catch-up share.
+   *
+   * A change on disk IS the truth, so it goes through onDiskContent when the
+   * host can restamp its saved baseline; falling back to onContentChange keeps
+   * non-tab hosts unchanged. Three results are dropped rather than applied:
+   * superseded by a later read, or the user started typing while it was in
+   * flight -- two ways this result has nothing to say -- and an unreadable file,
+   * which is NOT quiet: the panel is then showing a revision it knows is
+   * superseded and cannot describe the current one, which the user has to be
+   * told rather than left to infer from a document that stopped changing.
+   *
+   * The catch-up latch moves on the read's OUTCOME, here, never on its start.
+   * Only an applied read makes the tab current, so `reading` becomes `done`
+   * once the bytes are on screen. A read the typing overtook puts the tab
+   * back to `due`: the buffer it would have replaced is dirty now, and once
+   * those edits are undone it is a clean buffer at the pre-change revision,
+   * which a later save would write over the newer file -- so the next clean
+   * moment re-reads instead of trusting it. A superseded read says nothing;
+   * the newer read that overtook it decides. A failed read is reported, and
+   * counts as this return's attempt (`done`) rather than staying `due`: the
+   * host hands the panel fresh callbacks on every render, so a tab left `due`
+   * would re-read and re-report as fast as the host renders. The next return
+   * tries again. */
+  const adoptDisk = useCallback(async () => {
+    const disk = await readFromDisk()
+    if (disk.kind === 'superseded') return
+    if (dirtyRef.current) { catchUpRef.current = 'due'; return }
+    if (disk.kind === 'failed') {
+      if (catchUpRef.current === 'reading') catchUpRef.current = 'done'
+      reportActionError(i18nT('components.markdownPanel.cannot_read_file'))
+      return
+    }
+    applyDiskRead(disk)
+    // Not unconditionally `done`: a landing after the tab was hidden again
+    // finds the latch back at `due`, and the next return must read afresh.
+    if (catchUpRef.current === 'reading') catchUpRef.current = 'done'
+  }, [applyDiskRead, readFromDisk, reportActionError])
+
+  // The watch tracks the disk for a clean, non-editing tab -- and ONLY the tab
+  // the user can see. Every open tab used to arm its own watch, and each watch
+  // is one EventSource: one HTTP/1.1 connection held open for as long as the
+  // tab exists. Chromium allows six connections per host, so six idle tabs
+  // starved every other request the dashboard makes -- uploads, chat sends,
+  // polls -- for as long as the streams stayed open (#14236). A hidden tab holds
+  // no stream; it catches up in the effect below when it comes back.
+  const watchArmable = !!liveWatch && !editing && !dirty
   useFileWatch(
-    liveWatch && !editing && !dirty ? filePath : null,
-    // A watch-fired change IS the disk truth, so route it through
-    // onDiskContent when the host can restamp its saved baseline; falling
-    // back to onContentChange keeps non-tab hosts unchanged.
-    //
+    watchArmable && active ? filePath : null,
     // The event's own `content` is deliberately NOT used, in either direction.
     // `/api/file-watch` decodes with `errors="replace"` and carries no binary
     // verdict, so a file replaced on disk by binary bytes would push U+FFFD into
@@ -1450,22 +1502,38 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     // buffer stays at the last revision whose verdict is known, which is stale
     // but honest, where the event body would be new content under an old
     // verdict. One extra GET per actual change of the one file on screen, on a
-    // subscription only armed while the panel is clean and not editing.
-    useCallback(() => {
-      void (async () => {
-        const disk = await readFromDisk()
-        // Superseded by a later read, or the user started typing while it was
-        // in flight — two ways this result must be dropped with nothing to say.
-        if (disk.kind === 'superseded' || dirtyRef.current) return
-        // An unreadable re-read is the third, and it is NOT quiet: the panel is
-        // now showing a revision it knows is superseded and cannot describe the
-        // current one, which the user has to be told rather than left to infer
-        // from a document that stopped changing.
-        if (disk.kind === 'failed') { reportActionError(i18nT('components.markdownPanel.cannot_read_file')); return }
-        applyDiskRead(disk)
-      })()
-    }, [applyDiskRead, readFromDisk, reportActionError]),
+    // subscription only armed while the panel is visible, clean and not editing.
+    useCallback(() => { void adoptDisk() }, [adoptDisk]),
   )
+
+  // The catch-up for a parked watch: a tab that was hidden re-reads its file
+  // when it becomes the visible one, so a change made while it held no stream
+  // lands the moment the user can see the tab, not never -- silently stale
+  // would be the failure, because the saved baseline still looks current. The
+  // same guards as the watch apply through adoptDisk: a dirty tab keeps its
+  // edits and does not re-read (the edits are the user's work), and a read
+  // that typing or a newer read has overtaken is dropped. `editing` gates the
+  // stream, not this read: a live push would land under the user's cursor, but
+  // a tab that was hidden has no cursor in it, and a clean editor buffer left
+  // stale is exactly what a later save would write over the newer file. The
+  // tab counts as caught up only once a read has APPLIED -- adoptDisk settles
+  // the latch, this effect only starts the read: one that comes back with
+  // unsaved edits reads nothing, and reads the moment those edits are undone,
+  // saved or discarded while it is visible -- undone in particular, since that
+  // leaves a clean buffer showing the pre-change revision -- and so does one
+  // whose read the user's typing overtook. Being visible from the start is not
+  // a reactivation (the buffer came from the read that opened the tab), and
+  // leaving edit mode while visible already re-arms the watch. The re-read
+  // does not wait for the re-armed stream to say anything: a saturated
+  // connection budget is exactly what delays that stream, and the tab must be
+  // current whether or not its stream connects.
+  const catchUpArmable = !!liveWatch && !dirty
+  useEffect(() => {
+    if (!active) { catchUpRef.current = 'due'; return }
+    if (catchUpRef.current !== 'due' || !catchUpArmable) return
+    catchUpRef.current = 'reading'
+    void adoptDisk()
+  }, [active, catchUpArmable, adoptDisk])
 
 
   // Detect if file has uncommitted changes and pre-fetch HEAD content
@@ -2032,9 +2100,21 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     }
   }, [comments, displayContent, editing, fullscreen, removeCommentTooltip, flashCommentRow])
 
+  /** Bumped by every local edit (handleChange). A save clears `dirty` only if
+   *  no edit landed while its write was in flight: the file holds `content` as
+   *  of the keypress, and a keystroke typed before the write round-trips is not
+   *  in it. Marking that buffer clean misfiles the keystroke -- and, with the
+   *  catch-up latch left `due` by the first edit, the clean flip would start a
+   *  read that puts the just-written text back over it. */
+  const editGenRef = useRef(0)
   const handleSave = useCallback(async () => {
     setSaving(true); setSaveError(null)
-    try { await onSave(filePath, content); setDirty(false); qc.invalidateQueries({ queryKey: ['file-diff', filePath] }) }
+    const editGen = editGenRef.current
+    try {
+      await onSave(filePath, content)
+      if (editGenRef.current === editGen) setDirty(false)
+      qc.invalidateQueries({ queryKey: ['file-diff', filePath] })
+    }
     catch (err) { setSaveError(err instanceof Error ? err.message : i18nT('components.markdownPanel.save_failed')) }
     finally { setSaving(false) }
   }, [filePath, content, onSave, qc])
@@ -2128,7 +2208,22 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     return () => document.removeEventListener('keydown', h)
   }, [active, guardedClose, editing, dirty, fullscreen, confirmOpen])
 
-  const handleChange = useCallback((v: string) => { onContentChange(v); setDirty(true) }, [onContentChange])
+  // The first edit of a clean buffer fences the disk. A read still in flight
+  // describes a buffer the user has now typed into: if the user saves before it
+  // lands, `dirty` is clear again when it does and it would restamp the
+  // just-saved text with the older revision -- and a read that Refresh had
+  // already overtaken would otherwise leave the catch-up latch at `reading`
+  // with no landing left to move it. Withdrawing the read makes it
+  // `superseded`, which applies nothing and says nothing; `due` makes the next
+  // clean moment -- save, undo or discard -- start a post-edit read. Only the
+  // first edit: while the buffer is dirty the one read that can be in flight
+  // is Cancel's, and Cancel means match the disk. Synchronous with the edit,
+  // before the buffer moves, so no landing can slip between the two.
+  const handleChange = useCallback((v: string) => {
+    editGenRef.current++
+    if (!dirtyRef.current) { diskReadAbortRef.current?.abort(); catchUpRef.current = 'due' }
+    onContentChange(v); setDirty(true)
+  }, [onContentChange])
 
   // Lock body scroll when fullscreen overlay is open
   useEffect(() => {
