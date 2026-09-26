@@ -419,6 +419,7 @@ def _run(
     driver: str,
     run_id: str = "5001",
     run_attempt: str = "1",
+    harness: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     bash = _bash()
     if bash is None:
@@ -437,7 +438,11 @@ def _run(
     env["GITHUB_OUTPUT"] = "step-output.txt"
     (tmp_path / "step-output.txt").write_text("", encoding="utf-8", newline="\n")
     path = tmp_path / "driver.sh"
-    path.write_text(_harness(lane) + driver, encoding="utf-8", newline="\n")
+    path.write_text(
+        (_harness(lane) if harness is None else harness) + driver,
+        encoding="utf-8",
+        newline="\n",
+    )
     return subprocess.run(
         [bash, path.name],
         capture_output=True,
@@ -837,3 +842,307 @@ class TestASecondRunDoesNotReplaceTheFirstRecord:
         # change between them: the revision they judged.
         for name in names:
             assert name.startswith(f"{ARTIFACT_PREFIX}{HEAD}"), name
+
+
+# --------------------------------------------------------------------------- #
+# The withhold-BEFORE-write arms.
+#
+# `retry_comment_write` retains on every arm that means "this run's verdict is
+# not in the slot", and the tests above pin that. But its CALLER can withhold
+# without ever reaching it: the upsert checks the head before it writes, and two
+# of its arms return without attempting a write at all. A verdict that never got
+# as far as a write is exactly as lost as one whose write failed, so those arms
+# retain too -- and, because they are reached with bodies that are not verdicts,
+# they must retain nothing when the run reached no verdict and nothing when the
+# revision the verdict judged has been superseded by the one under review.
+# --------------------------------------------------------------------------- #
+UPSERT = "guarded_comment_upsert"
+
+
+def _upsert_lanes() -> list[str]:
+    """Lanes routing their publish through the guarded upsert, from source.
+
+    Two lanes reach the write primitive directly and have no
+    withhold-before-write arm at all, so they are absent here by being absent
+    from the mechanism rather than by being excluded from a list.
+    """
+    return [
+        lane
+        for lane in LANES
+        if f"{UPSERT}() {{" in DISCOVERED[lane][1]["run"]
+    ]
+
+
+UPSERT_LANES = _upsert_lanes()
+UPSERT_PARAMS = [pytest.param(lane, id=lane) for lane in UPSERT_LANES]
+
+
+def _upsert_harness(lane: str) -> str:
+    """The lane's real read-error helper, retention, write primitive and upsert."""
+    script = DISCOVERED[lane][1]["run"]
+    return "\n".join(
+        (
+            _slice(script, 'READ_ERR_FILE="', "}"),
+            _shell_function(script, RETAIN),
+            _shell_function(script, "retry_comment_write"),
+            _shell_function(script, UPSERT),
+            "",
+        )
+    )
+
+
+UPSERT_CALL = (
+    'guarded_comment_upsert "<!-- some-review -->" "[SOME-REVIEWED]" '
+    '"Some Review" out.md\n'
+    'echo "RC=$?"\n'
+)
+
+
+def _upsert_driver(body: str = "") -> str:
+    return "cat > out.md <<'BODY_EOF'\n" + (body or VERDICT_BODY) + "BODY_EOF\n" + UPSERT_CALL
+
+
+# The live shape this covers: one installation quota window, so the comment
+# lookup AND the head read both exhaust their six attempts. The lookup failed, so
+# the create path is refused, and the head is unconfirmed, so the write is
+# refused -- the upsert returns having attempted no write.
+GH_LOOKUP_AND_HEAD_UNREADABLE = """
+case "$*" in
+  *) echo "gh: API rate limit exceeded for installation" >&2; exit 1 ;;
+esac
+"""
+
+# The other arm: the lookup SUCCEEDS and finds this lane's comment, and the head
+# read fails. The existing comment is left untouched, again with no write.
+GH_OCCUPANT_AND_HEAD_UNREADABLE = """
+case "$*" in
+  *"issues/13659/comments"*) echo "5821447217" ;;
+  *"pulls/13659"*) echo "gh: API rate limit exceeded for installation" >&2; exit 1 ;;
+  *) exit 0 ;;
+esac
+"""
+
+# Both arms again, with the head read SUCCEEDING and naming a different revision.
+GH_OCCUPANT_AND_HEAD_MOVED = f"""
+case "$*" in
+  *"issues/13659/comments"*) echo "5821447217" ;;
+  *"pulls/13659"*) echo "{OTHER_HEAD}" ;;
+  *) exit 0 ;;
+esac
+"""
+
+GH_LOOKUP_FAILED_AND_HEAD_MOVED = f"""
+case "$*" in
+  *"issues/13659/comments"*) echo "rate limited" >&2; exit 1 ;;
+  *"pulls/13659"*) echo "{OTHER_HEAD}" ;;
+  *) exit 0 ;;
+esac
+"""
+
+
+class TestAVerdictWithheldBeforeAnyWriteIsRetained:
+    def test_the_upsert_lanes_are_the_ones_carrying_the_mechanism(self) -> None:
+        """The control on the selection, so nothing below measures an empty set."""
+        assert UPSERT_LANES, "no lane routes its publish through the guarded upsert"
+        for lane in UPSERT_LANES:
+            assert f"{UPSERT}() {{" in DISCOVERED[lane][1]["run"], lane
+
+    @pytest.mark.parametrize("lane", UPSERT_PARAMS)
+    def test_both_arms_that_return_without_writing_retain_first(self, lane: str) -> None:
+        """Enumerated from the upsert's own arms rather than from a list of them.
+
+        The two arms are the ones inside the withhold branch that return before
+        the create: the branch is entered when this run may not claim the slot,
+        and these two leave without attempting a write. An arm added there later
+        fails here without anyone remembering to extend a list.
+        """
+        body = _shell_function(DISCOVERED[lane][1]["run"], UPSERT).split("\n")
+        starts = [i for i, line in enumerate(body) if line.strip() == 'if [ -n "$withhold" ]; then']
+        assert len(starts) == 1, starts
+        # The branch ends where the create path begins, which is the first write
+        # attempted inside it.
+        writes = [i for i, line in enumerate(body) if line.strip().startswith("retry_comment_write ")]
+        assert writes, "the write primitive call moved"
+        first_write = min(w for w in writes if w > starts[0])
+        arms = [
+            i
+            for i in range(starts[0], first_write)
+            if body[i].strip() == "return 0"
+        ]
+        assert len(arms) == 2, arms
+        for i in arms:
+            window = "\n".join(body[i - 4 : i])
+            assert f"{RETAIN} " in window, (
+                f"{lane}: the withhold-before-write arm at line {i} returns without "
+                f"retaining, so a verdict it computed is dropped:\n{window}"
+            )
+
+    @pytest.mark.parametrize("lane", UPSERT_PARAMS)
+    def test_each_retention_claims_withheld_with_no_write_status(self, lane: str) -> None:
+        """No write was attempted, so both halves of the claim are established.
+
+        ``withheld`` is the strongest form of known non-publication -- not a
+        write whose result was never read back -- and the write status may not be
+        a number, because every number there names a write that returned it.
+        """
+        body = _shell_function(DISCOVERED[lane][1]["run"], UPSERT).split("\n")
+        calls = [line.strip() for line in body if line.strip().startswith(f"{RETAIN} ")]
+        assert len(calls) == 2, calls
+        for call in calls:
+            assert call == f'{RETAIN} withheld none "$stamp $HEAD" "$out_file"', call
+
+    @pytest.mark.parametrize("lane", UPSERT_PARAMS)
+    def test_a_superseded_revision_is_excluded_by_its_own_flag(self, lane: str) -> None:
+        """The one case the stamp proof cannot decide.
+
+        A body withheld because the run reached no verdict carries no stamp, so
+        the retention's own gate declines it. A body withheld because this PR has
+        moved past the revision it judged DOES carry the stamp, and retaining it
+        would point a reader at a revision nobody is reviewing -- which is why
+        the primitive's status 4 retains nothing either. So the move is recorded
+        where it is established, and both arms read it.
+        """
+        body = _shell_function(DISCOVERED[lane][1]["run"], UPSERT).split("\n")
+        moved = [
+            i
+            for i, line in enumerate(body)
+            if line.strip() == 'elif [ "$pr_head" != "$HEAD" ]; then'
+        ]
+        assert len(moved) == 1, moved
+        sets = [i for i, line in enumerate(body) if line.strip() == "superseded=1"]
+        assert len(sets) == 1, sets
+        assert sets[0] > moved[0], (moved, sets)
+        # And it is declared, so a rename leaves no silently-empty variable
+        # behind that would read as "not superseded" on every run.
+        declared = [i for i, line in enumerate(body) if 'superseded=""' in line]
+        assert len(declared) == 1, declared
+        assert body[declared[0]].strip().startswith("local "), body[declared[0]]
+        # Both retentions are gated on it.
+        gates = [i for i, line in enumerate(body) if line.strip() == 'if [ -z "$superseded" ]; then']
+        assert len(gates) == 2, gates
+        for i in gates:
+            assert body[i + 1].strip().startswith(f"{RETAIN} "), body[i + 1]
+
+    @pytest.mark.parametrize("lane", UPSERT_PARAMS)
+    def test_an_unconfirmable_head_retains_the_verdict_it_could_not_publish(
+        self, lane: str, tmp_path: Path
+    ) -> None:
+        """The measured instance: one quota window fails both reads.
+
+        The verdict exists for this head, no write was attempted, and without
+        retention the only record of it is a run log that ages out.
+        """
+        result = _run(
+            lane,
+            tmp_path,
+            GH_LOOKUP_AND_HEAD_UNREADABLE,
+            _upsert_driver(),
+            harness=_upsert_harness(lane),
+        )
+        assert "RC=0" in result.stdout, (result.stdout, result.stderr)
+        assert "the comment lookup also failed, so nothing was posted" in result.stdout
+
+        receipt = _receipt(tmp_path)
+        assert receipt["outcome"] == "withheld", receipt
+        assert receipt["head"] == HEAD, receipt
+        assert receipt["write_rc"] == "none", receipt
+        # The verdict text, in full: a reader recovering it needs what it said,
+        # not that it existed.
+        assert (tmp_path / RETAIN_DIR / "verdict.md").read_text(encoding="utf-8") == VERDICT_BODY
+        # And the artifact the upload reads is named, so the record leaves the runner.
+        output = (tmp_path / "step-output.txt").read_text(encoding="utf-8")
+        assert f"{ARTIFACT_OUTPUT}={ARTIFACT_PREFIX}{HEAD}" in output, output
+
+    @pytest.mark.parametrize("lane", UPSERT_PARAMS)
+    def test_an_occupied_slot_and_an_unconfirmable_head_retains_it_too(
+        self, lane: str, tmp_path: Path
+    ) -> None:
+        """The second arm, which leaves an existing comment untouched."""
+        result = _run(
+            lane,
+            tmp_path,
+            GH_OCCUPANT_AND_HEAD_UNREADABLE,
+            _upsert_driver(),
+            harness=_upsert_harness(lane),
+        )
+        assert "RC=0" in result.stdout, (result.stdout, result.stderr)
+        assert "left existing comment #5821447217 untouched" in result.stdout
+
+        receipt = _receipt(tmp_path)
+        assert receipt["outcome"] == "withheld", receipt
+        assert receipt["write_rc"] == "none", receipt
+        assert (tmp_path / RETAIN_DIR / "verdict.md").read_text(encoding="utf-8") == VERDICT_BODY
+        notice = next(line for line in result.stdout.splitlines() if line.startswith("::notice::"))
+        assert "did NOT publish it" in notice, notice
+
+    @pytest.mark.parametrize("lane", UPSERT_PARAMS)
+    def test_a_published_verdict_retains_nothing(self, lane: str, tmp_path: Path) -> None:
+        """The normal path, which must be untouched by any of this.
+
+        Slot confirmed empty, head confirmed current, write lands. A record here
+        would make the artifact's presence mean nothing at all.
+        """
+        result = _run(
+            lane,
+            tmp_path,
+            GH_SLOT_EMPTY_WRITE_OK,
+            _upsert_driver(),
+            harness=_upsert_harness(lane),
+        )
+        assert "RC=0" in result.stdout, (result.stdout, result.stderr)
+        assert "Published Some Review comment" in result.stdout, result.stdout
+        assert not (tmp_path / RETAIN_DIR).exists(), sorted(tmp_path.iterdir())
+        assert ARTIFACT_OUTPUT not in (tmp_path / "step-output.txt").read_text(encoding="utf-8")
+
+    @pytest.mark.parametrize("lane", UPSERT_PARAMS)
+    def test_a_run_that_reached_no_verdict_retains_nothing(
+        self, lane: str, tmp_path: Path
+    ) -> None:
+        """Same arm, same reads, a body that is a failure notice.
+
+        This is the arm the stamp proof exists for: recording it would assert a
+        verdict that was never reached, and the record is unique per run and
+        attempt so nothing later contradicts it.
+        """
+        result = _run(
+            lane,
+            tmp_path,
+            GH_LOOKUP_AND_HEAD_UNREADABLE,
+            _upsert_driver(UNSTAMPED_BODY),
+            harness=_upsert_harness(lane),
+        )
+        assert "RC=0" in result.stdout, (result.stdout, result.stderr)
+        assert "produced no completed verdict" in result.stdout, result.stdout
+        assert "Nothing is retained" in result.stdout, result.stdout
+        assert not (tmp_path / RETAIN_DIR).exists(), sorted(tmp_path.iterdir())
+        assert ARTIFACT_OUTPUT not in (tmp_path / "step-output.txt").read_text(encoding="utf-8")
+
+    @pytest.mark.parametrize("lane", UPSERT_PARAMS)
+    @pytest.mark.parametrize(
+        "gh_body",
+        [
+            pytest.param(GH_OCCUPANT_AND_HEAD_MOVED, id="lookup-found-an-occupant"),
+            pytest.param(GH_LOOKUP_FAILED_AND_HEAD_MOVED, id="lookup-failed"),
+        ],
+    )
+    def test_a_superseded_verdict_retains_nothing_on_either_arm(
+        self, lane: str, gh_body: str, tmp_path: Path
+    ) -> None:
+        """A stamped body whose revision is not the one under review.
+
+        The head read SUCCEEDED and named another revision, so the run for that
+        revision publishes the verdict that counts. Retaining here would produce
+        a record for a revision nobody is reviewing, which is why the write
+        primitive's own status 4 retains nothing.
+        """
+        result = _run(
+            lane,
+            tmp_path,
+            gh_body,
+            _upsert_driver(),
+            harness=_upsert_harness(lane),
+        )
+        assert "RC=0" in result.stdout, (result.stdout, result.stderr)
+        assert f"is no longer this PR's head ({OTHER_HEAD})" in result.stdout, result.stdout
+        assert not (tmp_path / RETAIN_DIR).exists(), sorted(tmp_path.iterdir())
+        assert ARTIFACT_OUTPUT not in (tmp_path / "step-output.txt").read_text(encoding="utf-8")

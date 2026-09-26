@@ -1187,7 +1187,7 @@ jobs:
           guarded_comment_upsert() {
             local marker="$1" stamp="$2" lane="$3" out_file="$4"
             local matches existing lookup_ok pr_head="" attempt withhold="" write_rc
-            local verdict_read_rc
+            local verdict_read_rc superseded=""
             # Find the bot's existing marker comment (first match wins) and
             # capture its id. Author filter: only a github-actions[bot]
             # comment can match, so a PR commenter cannot plant the marker and
@@ -1267,19 +1267,52 @@ jobs:
               if [ -z "$pr_head" ]; then
                 withhold="this PR's head was unreadable after 6 attempts, so $HEAD cannot be confirmed current"
               elif [ "$pr_head" != "$HEAD" ]; then
+                # A verdict for a head this PR has MOVED PAST is not worth
+                # retaining, and the write primitive already says so by not
+                # retaining on its own status 4: the run for the current head
+                # publishes the verdict that counts, so a record here would
+                # point a reader at a revision nobody is reviewing.
+                superseded=1
                 withhold="$HEAD is no longer this PR's head ($pr_head)"
               fi
             fi
             if [ -n "$withhold" ]; then
+              # BOTH arms below withhold BEFORE any write is attempted, so
+              # neither reaches the retention the write primitive performs on
+              # its own withheld arms -- and a verdict that never got as far as
+              # a write is exactly as lost as one whose write failed. So they
+              # retain here, on the primitive's own terms: `withheld`, because
+              # no write was attempted at all and that is the strongest form of
+              # KNOWN non-publication, and the caller's `$stamp $HEAD` as the
+              # proof the body is a verdict for THIS head.
+              #
+              # That proof is also what keeps the no-verdict arm out without a
+              # second condition here: a run that reached no verdict withholds
+              # a failure notice carrying no stamp, so retention declines it
+              # and no record claims a verdict nobody reached. The one case the
+              # proof cannot decide is a head this PR has moved past, whose
+              # body does carry a stamp -- `superseded` is that case, and it is
+              # excluded for the same reason status 4 retains nothing.
+              #
+              # The write status is `none`, not a number: no write was
+              # attempted, and every numeric value would name one that returned
+              # it.
+              #
               # A lookup that ERRORED is not "no comment exists": taking the
               # create path there plants a second marker comment over a
               # possibly-live verdict, which no later run undoes.
               if [ "$lookup_ok" -eq 0 ]; then
                 echo "::warning::Withholding $lane comment for $HEAD ($withhold); the comment lookup also failed, so nothing was posted${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
+                if [ -z "$superseded" ]; then
+                  retain_unpublished_verdict withheld none "$stamp $HEAD" "$out_file"
+                fi
                 return 0
               fi
               if [ -n "$existing" ] && [ "$existing" != "null" ]; then
                 echo "::warning::Withholding $lane comment for $HEAD ($withhold); left existing comment #$existing untouched"
+                if [ -z "$superseded" ]; then
+                  retain_unpublished_verdict withheld none "$stamp $HEAD" "$out_file"
+                fi
                 return 0
               fi
               # The lookup SUCCEEDED and found nothing, so there is no verdict
