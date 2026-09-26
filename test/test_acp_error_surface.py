@@ -80,6 +80,20 @@ _MALFORMED_REQUEST = {
     "data": "Improperly formed request. (request_id: 863ae6fe-de1d-4149-b3ff-6ee02d8d58a2)",
 }
 
+# Exact user-facing shape captured from kiro-cli after a read_file image result
+# poisoned the retained native history. Later text-only turns returned the same
+# frame because the old image block was replayed on every request.
+_IMAGE_FORMAT_UNSUPPORTED = {
+    "code": -32603,
+    "message": "Internal error",
+    "data": (
+        "Could not process image (Request ID: "
+        "acec2dfe-d396-4597-9621-16631c3474a9): "
+        "{'errorType': 'ImageValidationError', "
+        "'retryErrorType': 'CLIENT_ERROR'}"
+    ),
+}
+
 
 def _handle() -> AcpSessionHandle:
     rt = MagicMock()
@@ -271,7 +285,10 @@ class TestNamelessCapacityWording:
         """Providers flip between straight and curly quotes; both must match."""
         from kiro_crew.acp.client import _is_transient_raw_error
 
-        curly = dict(_MODEL_TEMP_UNAVAILABLE, data="The model you\u2019ve selected is temporarily unavailable.")
+        curly = dict(
+            _MODEL_TEMP_UNAVAILABLE,
+            data="The model you\u2019ve selected is temporarily unavailable.",
+        )
         assert _is_transient_raw_error(curly) is True
 
     def test_pre_rewrite_passthrough_still_classifies_via_marker(self):
@@ -283,6 +300,58 @@ class TestNamelessCapacityWording:
         from kiro_crew.llm_helpers import is_transient_backend_error
 
         assert is_transient_backend_error(str(_MODEL_TEMP_UNAVAILABLE["data"]))
+
+
+class TestImageFormatUnsupportedReachesTheHandlePath:
+    """Unsupported image data is structural, typed, and actionable."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("driver", [_raise_via_wait, _raise_via_dispatch])
+    async def test_image_rejection_is_actionable_and_preserves_request_id(self, driver):
+        exc = await driver(_IMAGE_FORMAT_UNSUPPORTED)
+        msg = str(exc)
+
+        assert "could not process an image" in msg.lower()
+        assert "PNG or JPEG" in msg
+        assert "new conversation" in msg.lower()
+        assert "acec2dfe-d396-4597-9621-16631c3474a9" in msg
+        assert "'errorType'" not in msg
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("driver", [_raise_via_wait, _raise_via_dispatch])
+    async def test_image_rejection_carries_terminal_structural_subtype(self, driver):
+        exc = await driver(_IMAGE_FORMAT_UNSUPPORTED)
+
+        assert exc.transient is False
+        assert exc.structural_terminal is True
+        assert exc.image_format_unsupported is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("driver", [_raise_via_wait, _raise_via_dispatch])
+    async def test_image_rejection_outranks_cooccurring_transient_wrapper(self, driver):
+        error = dict(
+            _IMAGE_FORMAT_UNSUPPORTED,
+            data=_IMAGE_FORMAT_UNSUPPORTED["data"] + " InternalServerError; please try again",
+        )
+        exc = await driver(error)
+
+        assert exc.transient is False
+        assert exc.image_format_unsupported is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("driver", [_raise_via_wait, _raise_via_dispatch])
+    async def test_message_only_echo_does_not_tag_image_rejection(self, driver):
+        exc = await driver(
+            {
+                "code": -32603,
+                "message": "ImageValidationError",
+                "data": "InternalServerError: temporary backend fault",
+            }
+        )
+
+        assert exc.transient is True
+        assert exc.structural_terminal is False
+        assert exc.image_format_unsupported is False
 
 
 class TestRunnerPromptBusyIsStructural:
@@ -415,7 +484,11 @@ class TestTransientMarkerCoupling:
         from kiro_crew.acp.client import _format_acp_error, _is_transient_raw_error
 
         served = ["gpt-5.6-sol", "glm-5"]
-        error = {"code": -32603, "message": "Internal error", "data": "ValidationException: Invalid model ID: auto"}
+        error = {
+            "code": -32603,
+            "message": "Internal error",
+            "data": "ValidationException: Invalid model ID: auto",
+        }
         formatted = _format_acp_error(error, served)
         assert "does not have access to model 'auto'" in formatted
         assert "not available on your account" in formatted
@@ -444,7 +517,9 @@ class TestTransientMarkerCoupling:
         # Unknown served list keeps the historical three-step advice.
         assert "set agent.model to 'auto'" in _format_acp_error(_MODEL_UNAVAILABLE, None)
 
-        unnamed = dict(_MODEL_UNAVAILABLE, data="The model you've selected is temporarily unavailable.")
+        unnamed = dict(
+            _MODEL_UNAVAILABLE, data="The model you've selected is temporarily unavailable."
+        )
         assert "set agent.model to 'auto'" not in _format_acp_error(unnamed, no_auto)
         assert "set agent.model to 'auto'" in _format_acp_error(unnamed, with_auto)
 
@@ -470,7 +545,9 @@ class TestTransientMarkerCoupling:
             # wording iff served ('claude-opus-4.8' is absent from both lists).
             formatted = _format_acp_error(_MODEL_UNAVAILABLE, advertised)
             assert "does not have access to model 'claude-opus-4.8'" in formatted
-            assert ("agent.model to 'auto' in ~/.kiro/crew/config.json to let" in formatted) is served
+            assert (
+                "agent.model to 'auto' in ~/.kiro/crew/config.json to let" in formatted
+            ) is served
 
 
 class TestConnectionErrorClassification:
