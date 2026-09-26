@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import web
+from dashboard_owner_helpers import NoConfiguredOwner
 
 import kiro_crew.dashboard.handlers.core as core
 from kiro_crew.config.loader import config_path
@@ -17,6 +18,13 @@ def _put(body: dict) -> MagicMock:
     request = MagicMock(spec=web.Request)
     request.method = "PUT"
     request.json = AsyncMock(return_value=body)
+    # api_theme_config is owner-gated: model the token-auth middleware's signed
+    # local-owner claims so the field contract under test is what answers.
+    request.app = {"state": NoConfiguredOwner()}
+    claims = {"user": "local-app", "app": ""}
+    request.get = lambda key, default=None: claims.get(key, default)
+    request.__contains__.side_effect = lambda key: key in claims
+    request.__getitem__.side_effect = lambda key: claims[key]
     return request
 
 

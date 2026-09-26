@@ -632,6 +632,9 @@ async def api_theme_config(request: web.Request) -> web.Response:
         return web.json_response(_theme_payload(cfg))
 
     # PUT
+    denied = await require_owner_dashboard_request(request, "config.theme.write")
+    if denied is not None:
+        return denied
     body = await request.json()
     if not isinstance(body, dict):
         raise web.HTTPBadRequest(text="request body must be an object")
@@ -2066,6 +2069,10 @@ async def api_kirocrew_config(request: web.Request) -> web.Response:
     from kiro_crew.config.loader import config_path  # noqa: F811
 
     if request.method == "PUT":
+        denied = await require_owner_dashboard_request(request, "config.update")
+        if denied is not None:
+            return denied
+
         caller = request.get("user", "dashboard")
 
         def _deny(error: str, status: int = 400, *, code: str | None = None) -> web.Response:
@@ -2785,10 +2792,42 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
+        body = None
+
+    path_key: str = ""
+    value: Any = None
+    if isinstance(body, dict):
+        path_key = body.get("path", "")
+        value = body.get("value")
+
+    # ── Owner gate: every write but the one that STOPS billed spend ──
+    # The route is owner-only because a dashboard token is not ownership: an
+    # allow-listed messaging user holds one, and these fields are machine-global.
+    #
+    # `dashboard.usage_text_scrape_enabled` is asymmetric. Enabling it makes the
+    # credit pill fall back to a REAL billed `kiro-cli /usage` turn and repeat it
+    # every refresh interval, and nothing self-corrects an enabled state, so the
+    # ENABLE needs the owner like every other write here. The DISABLE does not:
+    # refusing it would leave someone able to see spend they cannot stop, and the
+    # narrower choice always composes.
+    # `test_a_non_owner_may_still_switch_the_billing_off` pins that direction.
+    #
+    # This gate is the ONE place that distinction is enforced. A second per-field
+    # gate for the same field, sitting with the telemetry ones below, would be
+    # unreachable behind this one -- an authorization record that cannot fire and
+    # is free to drift from the one that does.
+    #
+    # Reading the requested direction first is what makes the carve-out possible;
+    # an unparseable or bodyless request names no direction, so it is not the
+    # carve-out and is refused here, before any field is validated.
+    if not (path_key == "dashboard.usage_text_scrape_enabled" and value is False):
+        denied = await require_owner_dashboard_request(request, "config.patch")
+        if denied is not None:
+            return denied
+
+    if not isinstance(body, dict):
         return _deny("invalid JSON", "invalid JSON body")
 
-    path_key = body.get("path", "")
-    value = body.get("value")
     spec = _EDITABLE_CONFIG.get(path_key)
     if not spec:
         # `agent.apps_allow_third_party` was deliberately REMOVED from the editable
