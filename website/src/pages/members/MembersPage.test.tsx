@@ -5,8 +5,9 @@ import { renderWithProviders } from '../../test/helpers'
 import { NavigationLeaveGuardProvider } from '../../components/NavigationLeaveGuard'
 import { ApiError } from '../../api/apiError'
 import { memberProjectionStore } from '../../state/memberProjectionStore'
-import { markSlotUnread, sseConnected, sseSlots } from '../../store/dashboardSlice'
+import { markSlotUnread, sseConnected, sseDisconnected, sseSlots } from '../../store/dashboardSlice'
 import { memberBriefingQueryKey, memberThreadQueryKey } from '../../api/membersQuery'
+import { __resetPaneDraftsForTests, readPaneDraft, writePaneDraft } from '../../utils/chatPaneDrafts'
 import { getViewedThreadSlot, _resetViewedThreadForTests } from '../../lib/viewedThread'
 import { bindSlotReadSender, emitSlotRead, _resetSlotReadRelayForTest } from '../../lib/slotReadRelay'
 import {
@@ -24,6 +25,9 @@ import {
 vi.mock('../../api/client', () => ({
   api: {
     members: vi.fn(),
+    // The roster's team grouping reads the team list; "no teams" keeps the
+    // list flat, which is the shape every case here was written against.
+    teams: { list: vi.fn(() => Promise.resolve({ teams: [] })), create: vi.fn(), update: vi.fn(), remove: vi.fn() },
     memberThread: vi.fn(),
     memberActivity: vi.fn(() => Promise.resolve({ slug: '', member: '', capped: false, entries: [] })),
     // The open member's folded views. The roster list carries the `roster` view
@@ -38,6 +42,8 @@ vi.mock('../../api/client', () => ({
     // The Work log's session record (CrewLogTab) reads the thread's crew-log
     // folds; an empty, resolved read renders its own quiet empty state.
     sessionCrewLogProjections: vi.fn(() => Promise.resolve({ folds: {}, resolved: true, writesDrained: true })),
+    // The team view's "Needs you" reads each bound crewmate's chat tail.
+    chatSlotDetail: vi.fn(() => Promise.resolve({ messages: [] })),
     // The auto-patrol block and roster badge read the whole loop registry;
     // the default is "feature on, nothing armed" so every other case renders
     // the page without a loop in the way.
@@ -273,6 +279,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   __resetErrorJournalForTests()
   __resetNavSeamForTests()
+  __resetPaneDraftsForTests()
   // clearAllMocks keeps implementations, so a case that made the drawer's
   // fetches reject would leak its error alerts into the next one. Reinstall
   // the quiet defaults.
@@ -293,6 +300,8 @@ beforeEach(() => {
   // outlives clearAllMocks); a leaked rejection renders the roster's patrol
   // error alert into every later case.
   vi.mocked(api.autonudgeList).mockImplementation(() => Promise.resolve({ enabled: true, loops: [] }))
+  // A case that grouped the roster by team must not leave its team list behind.
+  vi.mocked(api.teams.list).mockImplementation(() => Promise.resolve({ teams: [] }))
   // The remembered member must not leak between cases.
   localStorage.clear()
   // The projection store is a module-level singleton fed by the roster seed;
@@ -1199,14 +1208,533 @@ describe('MembersPage side panel (Notes / Work log / Dashboard) and edit jump', 
     // explicit ?tab=crews, same as the edit affordance). It opens the create
     // form directly — `new=1` — not the crew list a second click would be
     // needed on (#9513), and names its origin so the create can return here.
-    fireEvent.click(screen.getByTestId('member-add'))
+    // The "+" opens a menu (a team can be added here too); its first row is
+    // the crewmate entry and carries the navigation.
+    // Radix opens the dropdown on pointerdown (mouse), not click.
+    fireEvent.pointerDown(screen.getByTestId('member-add'), { button: 0, ctrlKey: false, pointerType: 'mouse' })
+    fireEvent.click(await screen.findByTestId('member-add-crewmate'))
     expect(navigateSpy).toHaveBeenCalledWith('/capabilities?tab=crews&new=1&from=members')
+  })
+
+  it('the "+" menu offers New team, which opens the team dialog with every crewmate listed', async () => {
+    await renderPage([row({ name: 'oncall', slug: 'oncall' }), row({ name: 'docs', slug: 'docs' })])
+    await rosterRow('oncall')
+    // Radix opens the dropdown on pointerdown (mouse), not click.
+    fireEvent.pointerDown(screen.getByTestId('member-add'), { button: 0, ctrlKey: false, pointerType: 'mouse' })
+    fireEvent.click(await screen.findByTestId('member-add-team'))
+    const body = await screen.findByTestId('team-dialog-body')
+    expect(within(body).getAllByTestId('team-dialog-row')).toHaveLength(2)
+    // Nothing on a team yet: every row says so, and the hint names the rule.
+    expect(within(body).getAllByText('No team')).toHaveLength(2)
+    expect(within(body).getByText(/on one team at a time/i)).toBeInTheDocument()
+    // Create is gated on a name.
+    expect(screen.getByTestId('team-dialog-save')).toBeDisabled()
+    fireEvent.change(screen.getByTestId('team-dialog-name'), { target: { value: 'Triage' } })
+    expect(screen.getByTestId('team-dialog-save')).toBeEnabled()
+  })
+
+  it('creates a team from the dialog form and writes the returned team into the roster', async () => {
+    const created = { id: 'abc123abc123', name: 'Triage', members: ['oncall'] }
+    vi.mocked(api.teams.create).mockResolvedValue({ team: created })
+    vi.mocked(api.teams.list).mockResolvedValueOnce({ teams: [] }).mockResolvedValue({ teams: [created] })
+    await renderPage([row({ name: 'oncall', slug: 'oncall' })])
+    await rosterRow('oncall')
+    fireEvent.pointerDown(screen.getByTestId('member-add'), { button: 0, ctrlKey: false, pointerType: 'mouse' })
+    fireEvent.click(await screen.findByTestId('member-add-team'))
+    const body = await screen.findByTestId('team-dialog-body')
+    fireEvent.change(screen.getByTestId('team-dialog-name'), { target: { value: 'Triage' } })
+    fireEvent.click(screen.getByLabelText('oncall'))
+    fireEvent.submit(body)
+    await waitFor(() => expect(api.teams.create).toHaveBeenCalledWith({ name: 'Triage', members: ['oncall'] }))
+    await waitFor(() => expect(screen.queryByTestId('team-dialog-body')).toBeNull())
+    expect((await screen.findAllByTestId('team-group-header'))[0]).toHaveTextContent('Triage')
+  })
+
+  it('deletes a team only after confirmation and removes it from the roster cache', async () => {
+    const triage = { id: 'abc123abc123', name: 'Triage', members: ['oncall'] }
+    vi.mocked(api.teams.list).mockResolvedValueOnce({ teams: [triage] }).mockResolvedValue({ teams: [] })
+    vi.mocked(api.teams.remove).mockResolvedValue({ ok: true })
+    await renderPage([row({ name: 'oncall', slug: 'oncall' })])
+    await rosterRow('oncall')
+    fireEvent.click((await screen.findAllByTestId('team-group-header'))[0])
+    fireEvent.click(within(await screen.findByTestId('team-view')).getByTestId('team-edit'))
+    await screen.findByTestId('team-dialog-body')
+    fireEvent.click(screen.getByTestId('team-dialog-delete'))
+    fireEvent.click(screen.getByTestId('team-dialog-delete-confirm'))
+    await waitFor(() => expect(api.teams.remove).toHaveBeenCalledWith('abc123abc123'))
+    await waitFor(() => expect(screen.queryByTestId('team-dialog-body')).toBeNull())
+  })
+
+  it('titles a failed delete as delete, never as save', async () => {
+    const triage = { id: 'abc123abc123', name: 'Triage', members: ['oncall'] }
+    vi.mocked(api.teams.list).mockResolvedValue({ teams: [triage] })
+    vi.mocked(api.teams.remove).mockRejectedValue(new Error('disk full'))
+    await renderPage([row({ name: 'oncall', slug: 'oncall' })])
+    await rosterRow('oncall')
+    fireEvent.click((await screen.findAllByTestId('team-group-header'))[0])
+    fireEvent.click(within(await screen.findByTestId('team-view')).getByTestId('team-edit'))
+    await screen.findByTestId('team-dialog-body')
+    fireEvent.click(screen.getByTestId('team-dialog-delete'))
+    fireEvent.click(screen.getByTestId('team-dialog-delete-confirm'))
+    const notice = await screen.findByTestId('team-dialog-error')
+    expect(notice).toHaveTextContent('Could not delete the team')
+    expect(notice).not.toHaveTextContent('Could not save the team')
+  })
+
+  it('groups the roster by team with a trailing "No team" group, and a team header opens the team view', async () => {
+    vi.mocked(api.teams.list).mockResolvedValue({ teams: [{ id: 'abc123abc123', name: 'Triage', members: ['oncall'] }] })
+    await renderPage([row({ name: 'oncall', slug: 'oncall' }), row({ name: 'docs', slug: 'docs' })])
+    await rosterRow('oncall')
+    const headers = await screen.findAllByTestId('team-group-header')
+    // Teams in their stored order, the unlisted rows last under "No team".
+    expect(headers.map((h) => h.dataset.team)).toEqual(['abc123abc123', 'no-team'])
+    expect(headers[0]).toHaveTextContent('Triage')
+    expect(headers[1]).toHaveTextContent('No team')
+    // Selecting the header opens the team view where a chat would be: the URL
+    // names the team, no member is open, and the empty-pane sentence is gone.
+    fireEvent.click(headers[0])
+    const view = await screen.findByTestId('team-view')
+    expect(view.dataset.team).toBe('abc123abc123')
+    expect(currentUrl()).toBe('/members?team=abc123abc123')
+    expect(within(view).getAllByTestId('team-status-row')).toHaveLength(1)
+    expect(within(view).getByTestId('team-status-row')).toHaveTextContent('oncall')
+    expect(screen.queryByText(/Pick a member/i)).toBeNull()
+    expect(screen.queryByTestId('member-thread-header')).toBeNull()
+    // Never talked to: nothing can be waiting, and the week is empty.
+    expect(await within(view).findByTestId('team-inbox-empty')).toBeInTheDocument()
+    expect(await within(view).findByTestId('team-week-empty')).toBeInTheDocument()
+  })
+
+  it('the team view lists an unanswered question with at most two answer controls and says a chip only drafts', async () => {
+    vi.mocked(api.teams.list).mockResolvedValue({ teams: [{ id: 'abc123abc123', name: 'Triage', members: ['oncall'] }] })
+    vi.mocked(api.chatSlotDetail).mockResolvedValue({
+      messages: [
+        { role: 'user', content: 'Fix the flake.', ts: '2026-09-22T10:00:00Z' },
+        { role: 'assistant', content: 'Merge as is, keep digging, or park it?\n\n[OPTIONS: Merge as is | Find the race | Park it]', ts: '2026-09-22T10:05:00Z' },
+      ],
+    } as never)
+    await renderPage([row({ name: 'oncall', slug: 'oncall', bound: true, slot_key: 'member-oncall' })])
+    await rosterRow('oncall')
+    fireEvent.click((await screen.findAllByTestId('team-group-header'))[0])
+    const view = await screen.findByTestId('team-view')
+    const card = await within(view).findByTestId('team-inbox-card')
+    // Three options: one chip plus ONE overflow menu holding the rest -- never
+    // three peer buttons in a row.
+    expect(within(card).getAllByTestId('team-inbox-option')).toHaveLength(1)
+    expect(within(card).getByTestId('team-inbox-option')).toHaveTextContent('Merge as is')
+    expect(within(card).getByTestId('team-inbox-option-more')).toBeInTheDocument()
+    // The chip's effect is written where the reader looks, not only in a tooltip.
+    expect(within(card).getByTestId('team-inbox-option-lead')).toHaveTextContent(/drafts a reply in oncall's chat; nothing is sent until you do/i)
+    writePaneDraft('member-oncall', { text: 'Find the race', files: ['/workspace/note.txt'], pastes: [] })
+    fireEvent.click(within(card).getByTestId('team-inbox-option'))
+    expect(readPaneDraft('member-oncall')).toEqual({
+      text: 'Find the race\n\nMerge as is',
+      files: ['/workspace/note.txt'],
+      pastes: [],
+    })
+  })
+
+  it('two answers render as two chips with no overflow menu', async () => {
+    vi.mocked(api.teams.list).mockResolvedValue({ teams: [{ id: 'abc123abc123', name: 'Triage', members: ['oncall'] }] })
+    vi.mocked(api.chatSlotDetail).mockResolvedValue({
+      messages: [{ role: 'assistant', content: 'Ship it?\n\n[OPTIONS: Yes | No]', ts: '2026-09-22T10:05:00Z' }],
+    } as never)
+    await renderPage([row({ name: 'oncall', slug: 'oncall', bound: true, slot_key: 'member-oncall' })])
+    await rosterRow('oncall')
+    fireEvent.click((await screen.findAllByTestId('team-group-header'))[0])
+    const card = await within(await screen.findByTestId('team-view')).findByTestId('team-inbox-card')
+    expect(within(card).getAllByTestId('team-inbox-option').map((b) => b.textContent)).toEqual(['Draft “Yes”', 'Draft “No”'])
+    expect(within(card).queryByTestId('team-inbox-option-more')).toBeNull()
+  })
+
+  it('reopening the same team waits for this opening to confirm its slot instead of using the prior opening cache', async () => {
+    vi.mocked(api.teams.list).mockResolvedValue({ teams: [{ id: 'abc123abc123', name: 'Triage', members: ['oncall'] }] })
+    const tails: Record<string, string> = {
+      'member-oncall': 'Old opening: merge?\n\n[OPTIONS: Yes | No]',
+      'slot-reopened': 'New opening: ship?\n\n[OPTIONS: Ship | Hold]',
+    }
+    vi.mocked(api.chatSlotDetail).mockImplementation((key) =>
+      Promise.resolve({ messages: [{ role: 'assistant', content: tails[key] ?? '', ts: '2026-09-22T10:05:00Z' }] } as never),
+    )
+    await renderPage([row({ name: 'oncall', slug: 'oncall', bound: true, slot_key: 'member-oncall' })])
+    await rosterRow('oncall')
+    fireEvent.click((await screen.findAllByTestId('team-group-header'))[0])
+    const firstView = await screen.findByTestId('team-view')
+    expect(await within(firstView).findByTestId('team-inbox-card')).toHaveTextContent('Old opening: merge?')
+    const oldReads = () => vi.mocked(api.chatSlotDetail).mock.calls.filter(([key]) => key === 'member-oncall').length
+    const readsBefore = oldReads()
+
+    let confirm!: (value: Awaited<ReturnType<typeof api.memberThread>>) => void
+    vi.mocked(api.memberThread).mockReturnValueOnce(new Promise((resolve) => { confirm = resolve }))
+    fireEvent.click(within(firstView).getByTestId('team-back'))
+    await waitFor(() => expect(screen.queryByTestId('team-view')).toBeNull())
+    fireEvent.click((await screen.findAllByTestId('team-group-header'))[0])
+    const reopened = await screen.findByTestId('team-view')
+    await waitFor(() => expect(api.memberThread).toHaveBeenCalledTimes(2))
+    expect(within(reopened).queryByTestId('team-inbox-card')).toBeNull()
+    expect(oldReads()).toBe(readsBefore)
+
+    await act(async () => {
+      confirm({ slot_key: 'slot-reopened', slug: 'oncall', member: 'oncall', created: false })
+    })
+    expect(await within(reopened).findByTestId('team-inbox-card')).toHaveTextContent('New opening: ship?')
+    expect(oldReads()).toBe(readsBefore)
+  })
+
+  it('a thread key confirmed before a gateway reconnect feeds nothing until the reconnected gateway confirms again: a reassigned slot never shows the old chat', async () => {
+    vi.mocked(api.teams.list).mockResolvedValue({ teams: [{ id: 'abc123abc123', name: 'Triage', members: ['oncall'] }] })
+    const tails: Record<string, string> = {
+      'member-oncall': 'Old slot: merge?\n\n[OPTIONS: Yes | No]',
+      'slot-reassigned': 'New slot: ship?\n\n[OPTIONS: Ship | Hold]',
+    }
+    vi.mocked(api.chatSlotDetail).mockImplementation((key) =>
+      Promise.resolve({ messages: [{ role: 'assistant', content: tails[key] ?? '', ts: '2026-09-22T10:05:00Z' }] } as never),
+    )
+    const { store } = await renderPage([row({ name: 'oncall', slug: 'oncall', bound: true, slot_key: 'member-oncall' })])
+    await rosterRow('oncall')
+    // The first connect after a load is not a reconnect: nothing is asked twice.
+    act(() => { store.dispatch(sseConnected()) })
+    fireEvent.click((await screen.findAllByTestId('team-group-header'))[0])
+    const view = await screen.findByTestId('team-view')
+    expect(await within(view).findByTestId('team-inbox-card')).toHaveTextContent('Old slot: merge?')
+    expect(api.memberThread).toHaveBeenCalledTimes(1)
+    const oldKeyReads = () => vi.mocked(api.chatSlotDetail).mock.calls.filter(([k]) => k === 'member-oncall').length
+    const readsBefore = oldKeyReads()
+
+    // The gateway restarts under the view and hands oncall a different slot.
+    // Its answer is held back, so the window between the drop and the new
+    // confirmation -- where the old key used to keep feeding the tail -- is
+    // what this asserts on.
+    let confirm!: (value: Awaited<ReturnType<typeof api.memberThread>>) => void
+    vi.mocked(api.memberThread).mockReturnValueOnce(new Promise((resolve) => { confirm = resolve }))
+    act(() => { store.dispatch(sseDisconnected()) })
+    // The drop alone retires the key: while the gateway is unreachable the
+    // card is gone -- nothing to answer into a slot that may already be
+    // someone else's -- and the old slot is not read once more.
+    const disconnectedView = await screen.findByTestId('team-view')
+    expect(within(disconnectedView).queryByTestId('team-inbox-card')).toBeNull()
+    expect(within(disconnectedView).queryByTestId('team-inbox-waiting')).toBeNull()
+    expect(within(disconnectedView).queryByTestId('team-inbox-empty')).toBeNull()
+    expect(oldKeyReads()).toBe(readsBefore)
+    expect(api.memberThread).toHaveBeenCalledTimes(1)
+    act(() => { store.dispatch(sseConnected()) })
+    await waitFor(() => expect(api.memberThread).toHaveBeenCalledTimes(2))
+    // Unconfirmed by the gateway that is serving now: no card from the old
+    // slot, and not one more read of it.
+    const reconnected = await screen.findByTestId('team-view')
+    expect(within(reconnected).queryByTestId('team-inbox-card')).toBeNull()
+    expect(oldKeyReads()).toBe(readsBefore)
+
+    await act(async () => {
+      confirm({ slot_key: 'slot-reassigned', slug: 'oncall', member: 'oncall', created: false })
+    })
+    expect(await within(reconnected).findByTestId('team-inbox-card')).toHaveTextContent('New slot: ship?')
+    await waitFor(() => expect(api.chatSlotDetail).toHaveBeenCalledWith('slot-reassigned', expect.anything()))
+    // The old slot was never read again -- not while waiting, not after.
+    expect(oldKeyReads()).toBe(readsBefore)
+  })
+
+  it('the status strip counts calendar today from recent entries, not the rolling projection count', async () => {
+    const midnight = new Date()
+    midnight.setHours(0, 0, 0, 0)
+    memberProjectionStore.apply('oncall', 'activity', {
+      recent: [
+        { ts: midnight.getTime() / 1000 - 60, via: 'chat', project: '' },
+        { ts: midnight.getTime() / 1000 + 60, via: 'chat', project: '' },
+      ],
+      today: 2,
+      week: 2,
+    }, 1)
+    vi.mocked(api.teams.list).mockResolvedValue({ teams: [{ id: 'abc123abc123', name: 'Triage', members: ['oncall'] }] })
+    await renderPage([row({ name: 'oncall', slug: 'oncall' })])
+    await rosterRow('oncall')
+    fireEvent.click((await screen.findAllByTestId('team-group-header'))[0])
+    const counts = await within(await screen.findByTestId('team-view')).findByTestId('team-status-counts')
+    expect(counts).toHaveTextContent('Runs: 1 today · 2 this week')
+    expect(counts.className.split(/\s+/)).toEqual(expect.arrayContaining(['hidden', 'sm:inline']))
+  })
+
+  it('a team with no crewmates keeps its header and opens an empty team view', async () => {
+    vi.mocked(api.teams.list).mockResolvedValue({ teams: [{ id: 'abc123abc123', name: 'Release', members: [] }] })
+    await renderPage([row({ name: 'oncall', slug: 'oncall' })])
+    await rosterRow('oncall')
+    const headers = await screen.findAllByTestId('team-group-header')
+    // The empty team is still the user's team: its header is the way back to
+    // Edit team, so it stays -- at "0 crewmates" -- above the No-team group.
+    expect(headers.map((h) => h.dataset.team)).toEqual(['abc123abc123', 'no-team'])
+    expect(headers[0]).toHaveTextContent('Release')
+    expect(headers[0]).toHaveTextContent('0 crewmates')
+    fireEvent.click(headers[0])
+    const view = await screen.findByTestId('team-view')
+    expect(within(view).getByTestId('team-empty')).toBeInTheDocument()
+    expect(within(view).getByTestId('team-edit')).toBeInTheDocument()
+  })
+
+  it('a crewmate waiting on the user with no question in its tail gets a plain waiting card', async () => {
+    vi.mocked(api.teams.list).mockResolvedValue({ teams: [{ id: 'abc123abc123', name: 'Triage', members: ['oncall'] }] })
+    vi.mocked(api.chatSlotDetail).mockResolvedValue({
+      messages: [{ role: 'assistant', content: 'Running the approval now.', ts: '2026-09-22T10:05:00Z' }],
+    } as never)
+    const { store } = await renderPage([row({ name: 'oncall', slug: 'oncall', bound: true, slot_key: 'member-oncall' })])
+    await rosterRow('oncall')
+    act(() => {
+      store.dispatch(sseConnected())
+      store.dispatch(sseSlots([{ key: 'member-oncall', mode: 'member', running: false, needs_input: true, messages: 3 }] as never))
+    })
+    fireEvent.click((await screen.findAllByTestId('team-group-header'))[0])
+    const view = await screen.findByTestId('team-view')
+    // The strip says waiting, so the inbox must not say "nothing waiting":
+    // a card without a bubble names the state and offers the chat.
+    const card = await within(view).findByTestId('team-inbox-card')
+    expect(within(card).getByTestId('team-inbox-waiting')).toHaveTextContent(/waiting on your reply/i)
+    // No question to quote: the strip says it waits, and does not count a
+    // question nobody can find.
+    const statusRow = within(view).getByTestId('team-status-row')
+    expect(statusRow).toHaveTextContent(/Waiting on you/)
+    expect(statusRow).not.toHaveTextContent(/question/)
+    expect(within(card).queryByTestId('team-inbox-bubble')).toBeNull()
+    expect(within(card).getByTestId('team-inbox-open')).toBeInTheDocument()
+    expect(within(view).queryByTestId('team-inbox-empty')).toBeNull()
+  })
+
+  it('the inbox reads a chat only through the thread endpoint, never the roster binding', async () => {
+    vi.mocked(api.teams.list).mockResolvedValue({ teams: [{ id: 'abc123abc123', name: 'Triage', members: ['oncall'] }] })
+    // The roster binding names one slot; the thread endpoint confirms another.
+    vi.mocked(api.chatSlotDetail).mockResolvedValue({ messages: [{ role: 'assistant', content: 'Ship it?', ts: '2026-09-22T10:05:00Z' }] } as never)
+    await renderPage([row({ name: 'oncall', slug: 'oncall', bound: true, slot_key: 'member-oncall-stale' })], 'kirocrew', {
+      thread: { slot_key: 'member-oncall-confirmed', slug: 'oncall', member: 'oncall' },
+    })
+    await rosterRow('oncall')
+    fireEvent.click((await screen.findAllByTestId('team-group-header'))[0])
+    const view = await screen.findByTestId('team-view')
+    await within(view).findByTestId('team-inbox-card')
+    expect(api.memberThread).toHaveBeenCalledWith('oncall')
+    const tailKeys = vi.mocked(api.chatSlotDetail).mock.calls.map((c) => c[0])
+    expect(tailKeys).toContain('member-oncall-confirmed')
+    expect(tailKeys).not.toContain('member-oncall-stale')
+  })
+
+  it('the Edit team dialog sends only the field it changed, so a stale dialog cannot clobber the other', async () => {
+    vi.mocked(api.teams.list).mockResolvedValue({ teams: [{ id: 'abc123abc123', name: 'Triage', members: ['oncall'] }] })
+    const update = vi.mocked(api.teams.update)
+    update.mockResolvedValue({ team: { id: 'abc123abc123', name: 'Release', members: ['oncall'] } })
+    await renderPage([row({ name: 'oncall', slug: 'oncall' }), row({ name: 'scribe', slug: 'scribe' })])
+    await rosterRow('oncall')
+    fireEvent.click((await screen.findAllByTestId('team-group-header'))[0])
+    const view = await screen.findByTestId('team-view')
+    fireEvent.click(within(view).getByTestId('team-edit'))
+    await screen.findByTestId('team-dialog-body')
+    // Nothing changed yet: an edit with nothing to send stays disabled.
+    expect(screen.getByTestId('team-dialog-save')).toBeDisabled()
+    fireEvent.change(screen.getByTestId('team-dialog-name'), { target: { value: 'Release' } })
+    expect(screen.getByTestId('team-dialog-save')).toBeEnabled()
+    fireEvent.click(screen.getByTestId('team-dialog-save'))
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(1))
+    // The rename alone travels; membership is omitted so the route keeps whatever is current.
+    expect(update).toHaveBeenCalledWith('abc123abc123', { name: 'Release' })
+  })
+
+  it('a refetch that fails after a save is said on the roster, which already shows the saved team', async () => {
+    // First read answers; every later one (the refetch the save starts) fails.
+    vi.mocked(api.teams.list)
+      .mockResolvedValueOnce({ teams: [{ id: 'abc123abc123', name: 'Triage', members: ['oncall'] }] })
+      .mockRejectedValue(new Error('boom'))
+    vi.mocked(api.teams.update).mockResolvedValue({
+      team: { id: 'abc123abc123', name: 'Release', members: ['oncall'] },
+    })
+    await renderPage([row({ name: 'oncall', slug: 'oncall' }), row({ name: 'scribe', slug: 'scribe' })])
+    await rosterRow('oncall')
+    expect(screen.queryByTestId('member-roster-teams-error')).toBeNull()
+    fireEvent.click((await screen.findAllByTestId('team-group-header'))[0])
+    const view = await screen.findByTestId('team-view')
+    fireEvent.click(within(view).getByTestId('team-edit'))
+    await screen.findByTestId('team-dialog-body')
+    fireEvent.change(screen.getByTestId('team-dialog-name'), { target: { value: 'Release' } })
+    fireEvent.click(screen.getByTestId('team-dialog-save'))
+    // The failed refetch is a notice, not silence -- the cached list is on
+    // screen and must be said to be possibly stale ...
+    await screen.findByTestId('member-roster-teams-error')
+    // ... and that list is the route's answer to the save, not the mount-time one.
+    expect(screen.getAllByTestId('team-group-header')[0]).toHaveTextContent('Release')
+  })
+
+  it('a crewmate moved between teams leaves its old team in the cache too, so a failed refetch cannot show it twice', async () => {
+    const triage = { id: 'aaaaaaaaaaaa', name: 'Triage', members: ['oncall', 'scribe'] }
+    const release = { id: 'bbbbbbbbbbbb', name: 'Release', members: ['fixer'] }
+    // First read answers; the refetch the save starts fails, so what the
+    // roster shows afterwards is exactly what the dialog wrote into the cache.
+    vi.mocked(api.teams.list)
+      .mockResolvedValueOnce({ teams: [triage, release] })
+      .mockRejectedValue(new Error('boom'))
+    // The store moved scribe: it is on Release now, and NOT on Triage.
+    vi.mocked(api.teams.update).mockResolvedValue({ team: { ...release, members: ['fixer', 'scribe'] } })
+    await renderPage([
+      row({ name: 'oncall', slug: 'oncall' }),
+      row({ name: 'scribe', slug: 'scribe' }),
+      row({ name: 'fixer', slug: 'fixer' }),
+    ])
+    await rosterRow('oncall')
+    fireEvent.click((await screen.findAllByTestId('team-group-header'))[1])
+    const view = await screen.findByTestId('team-view')
+    fireEvent.click(within(view).getByTestId('team-edit'))
+    await screen.findByTestId('team-dialog-body')
+    fireEvent.click(screen.getByLabelText('scribe'))
+    fireEvent.click(screen.getByTestId('team-dialog-save'))
+    await screen.findByTestId('member-roster-teams-error')
+    // One scribe row, and it sits under the Release header -- the Triage
+    // group lost it in the same cache write that gave it to Release.
+    const roster = screen.getByTestId('member-roster')
+    const rows = within(roster).getAllByText('scribe')
+    expect(rows).toHaveLength(1)
+    let li: Element | null = rows[0].closest('li')
+    while (li && li.getAttribute('data-testid') !== 'team-group') li = li.previousElementSibling
+    expect(li?.getAttribute('data-team')).toBe('bbbbbbbbbbbb')
+  })
+
+  it('an initial roster failure is said in an open team pane instead of calling the team empty', async () => {
+    vi.mocked(api.members).mockRejectedValue(new Error('boom'))
+    vi.mocked(api.teams.list).mockResolvedValue({ teams: [{ id: 'abc123abc123', name: 'Triage', members: ['oncall'] }] })
+    renderWithProviders(
+      <NavigationLeaveGuardProvider><MembersPage /></NavigationLeaveGuardProvider>,
+      { route: '/members?team=abc123abc123' },
+    )
+    const notice = await screen.findByTestId('team-view-roster-error')
+    expect(notice).toHaveTextContent(/Could not load the member roster/i)
+    expect(notice.closest('.md\\:hidden')).not.toBeNull()
+    expect(screen.queryByTestId('team-empty')).toBeNull()
+  })
+
+  it('a failed team read is said in the open team pane too, where the roster that carries the notice is hidden below md', async () => {
+    const triage = { id: 'aaaaaaaaaaaa', name: 'Triage', members: ['oncall'] }
+    // First read answers; the refetch the rename starts fails. Below md the
+    // roster (and its notice) is display:none while a team is open, so the
+    // only visible surface is the team pane -- it must say the team may be stale.
+    vi.mocked(api.teams.list)
+      .mockResolvedValueOnce({ teams: [triage] })
+      .mockRejectedValue(new Error('boom'))
+    vi.mocked(api.teams.update).mockResolvedValue({ team: { ...triage, name: 'Release' } })
+    await renderPage([row({ name: 'oncall', slug: 'oncall' })])
+    await rosterRow('oncall')
+    expect(screen.queryByTestId('team-view-teams-error')).toBeNull()
+    fireEvent.click((await screen.findAllByTestId('team-group-header'))[0])
+    const view = await screen.findByTestId('team-view')
+    fireEvent.click(within(view).getByTestId('team-edit'))
+    await screen.findByTestId('team-dialog-body')
+    fireEvent.change(screen.getByTestId('team-dialog-name'), { target: { value: 'Release' } })
+    fireEvent.click(screen.getByTestId('team-dialog-save'))
+    // Both surfaces carry the notice; the pane's copy is the one a narrow
+    // viewport can see (the roster's is inside the `hidden md:flex` aside),
+    // and it steps aside at md where the roster's own notice is beside it.
+    const paneNotice = await screen.findByTestId('team-view-teams-error')
+    expect(screen.getByTestId('team-view')).toBeTruthy()
+    expect(screen.getByTestId('member-roster-teams-error')).toBeTruthy()
+    expect(screen.getByTestId('member-roster').className).toContain('hidden md:flex')
+    expect(paneNotice.closest('.md\\:hidden')).not.toBeNull()
+    expect(screen.getByTestId('member-roster').contains(paneNotice)).toBe(false)
+  })
+
+  it('a membership edit travels as add / remove deltas, never as the dialog\'s whole snapshot', async () => {
+    vi.mocked(api.teams.list).mockResolvedValue({ teams: [{ id: 'abc123abc123', name: 'Triage', members: ['oncall'] }] })
+    const update = vi.mocked(api.teams.update)
+    update.mockResolvedValue({ team: { id: 'abc123abc123', name: 'Triage', members: ['scribe'] } })
+    await renderPage([row({ name: 'oncall', slug: 'oncall' }), row({ name: 'scribe', slug: 'scribe' })])
+    await rosterRow('oncall')
+    fireEvent.click((await screen.findAllByTestId('team-group-header'))[0])
+    const view = await screen.findByTestId('team-view')
+    fireEvent.click(within(view).getByTestId('team-edit'))
+    await screen.findByTestId('team-dialog-body')
+    fireEvent.click(screen.getByLabelText('scribe'))
+    fireEvent.click(screen.getByLabelText('oncall'))
+    fireEvent.click(screen.getByTestId('team-dialog-save'))
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(1))
+    // Two toggles, two deltas; no `members` list, so another tab's move of a
+    // third crewmate is left exactly where that tab put it.
+    expect(update).toHaveBeenCalledWith('abc123abc123', { add: ['scribe'], remove: ['oncall'] })
+  })
+
+  it('the team view confirms a bound crewmate\'s thread once per open and never again on a window focus', async () => {
+    vi.mocked(api.teams.list).mockResolvedValue({ teams: [{ id: 'abc123abc123', name: 'Triage', members: ['oncall'] }] })
+    vi.mocked(api.chatSlotDetail).mockResolvedValue({ messages: [] } as never)
+    await renderPage([row({ name: 'oncall', slug: 'oncall', bound: true, slot_key: 'member-oncall' })])
+    await rosterRow('oncall')
+    fireEvent.click((await screen.findAllByTestId('team-group-header'))[0])
+    await screen.findByTestId('team-view')
+    // The open confirms the thread (one POST) and reads its tail once.
+    await waitFor(() => expect(api.chatSlotDetail).toHaveBeenCalledTimes(1))
+    expect(api.memberThread).toHaveBeenCalledTimes(1)
+    // Long past every stale window the window regains focus. The tail is a
+    // READ and refetches -- proof the focus was seen -- while the thread
+    // confirm is a WRITE (the slot creator / repairer) and is not re-issued.
+    const later = Date.now() + 10 * 60_000
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(later)
+      act(() => {
+        window.dispatchEvent(new Event('visibilitychange'))
+      })
+      await waitFor(() => expect(api.chatSlotDetail).toHaveBeenCalledTimes(2))
+      expect(api.memberThread).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a team header says it opens the team, and the New team dialog guards an unsaved draft against Escape', async () => {
+    vi.mocked(api.teams.list).mockResolvedValue({ teams: [{ id: 'abc123abc123', name: 'Triage', members: ['oncall'] }] })
+    await renderPage([row({ name: 'oncall', slug: 'oncall' }), row({ name: 'docs', slug: 'docs' })])
+    await rosterRow('oncall')
+    const header = (await screen.findAllByTestId('team-group-header'))[0]
+    // The header's click opens rather than folds, so it says so.
+    expect(within(header).getByTestId('team-group-open')).toHaveTextContent('Open team')
+    expect(header).toHaveAttribute('aria-label', 'Open team Triage')
+    // The "Open team ›" chevron sits in the row's right padding, so the header
+    // must WIN the padding merge against ROW_BOX_CLS's `pr-3`: with `pr-3` kept
+    // the absolute chevron lands on the label's tail and reads "Open te ›".
+    expect(header.className.split(/\s+/)).toContain('pr-8')
+    expect(header.className.split(/\s+/)).not.toContain('pr-3')
+    expect(header.className.split(/\s+/)).toContain('py-1.5')
+    expect(header.className.split(/\s+/)).not.toContain('py-2')
+    const noTeamHeader = (await screen.findAllByTestId('team-group-header'))[1]
+    expect(noTeamHeader.className.split(/\s+/)).toContain('py-1.5')
+    expect(noTeamHeader.className.split(/\s+/)).not.toContain('py-2')
+    // The New team dialog: nothing typed -> Escape closes; a typed name -> Escape is ignored.
+    // Radix opens the dropdown on pointerdown (mouse), not click.
+    fireEvent.pointerDown(screen.getByTestId('member-add'), { button: 0, ctrlKey: false, pointerType: 'mouse' })
+    fireEvent.click(await screen.findByTestId('member-add-team'))
+    await screen.findByTestId('team-dialog-body')
+    // A crewmate already on a team reads "On Triage", not a bare team name.
+    expect(screen.getAllByTestId('team-dialog-row').map((r) => r.textContent)).toEqual(
+      expect.arrayContaining([expect.stringContaining('On Triage')]),
+    )
+    fireEvent.keyDown(window, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByTestId('team-dialog-body')).toBeNull())
+    // Radix opens the dropdown on pointerdown (mouse), not click.
+    fireEvent.pointerDown(screen.getByTestId('member-add'), { button: 0, ctrlKey: false, pointerType: 'mouse' })
+    fireEvent.click(await screen.findByTestId('member-add-team'))
+    await screen.findByTestId('team-dialog-body')
+    fireEvent.change(screen.getByTestId('team-dialog-name'), { target: { value: 'Release' } })
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.getByTestId('team-dialog-body')).toBeInTheDocument()
+    // Cancel is the deliberate exit and still works.
+    fireEvent.click(screen.getByTestId('team-dialog-cancel'))
+    await waitFor(() => expect(screen.queryByTestId('team-dialog-body')).toBeNull())
+  })
+
+  it('a collapsed team hides its rows and the fold persists per team', async () => {
+    vi.mocked(api.teams.list).mockResolvedValue({ teams: [{ id: 'abc123abc123', name: 'Triage', members: ['oncall'] }] })
+    await renderPage([row({ name: 'oncall', slug: 'oncall' }), row({ name: 'docs', slug: 'docs' })])
+    await rosterRow('oncall')
+    fireEvent.click(screen.getByTestId('team-group-toggle'))
+    await waitFor(() => expect(within(screen.getByTestId('member-roster')).queryByText('oncall')).toBeNull())
+    // The other group is untouched, and the fold is remembered by team id.
+    expect(await rosterRow('docs')).toBeInTheDocument()
+    expect(JSON.parse(localStorage.getItem('mc-members-teams-collapsed') ?? '[]')).toEqual(['abc123abc123'])
   })
 
   it('the empty roster\'s call to action lands on the same create form as the header "+"', async () => {
     await renderPage([])
     const cta = await screen.findByTestId('member-empty-cta')
-    expect(cta).toHaveTextContent('Add member')
+    expect(cta).toHaveTextContent('Add crewmate')
     fireEvent.click(cta)
     expect(navigateSpy).toHaveBeenCalledWith('/capabilities?tab=crews&new=1&from=members')
   })
@@ -2846,6 +3374,64 @@ describe('MembersPage default member, memory and URL', () => {
       expect(screen.queryByTestId('chat-pane-stub')).toBeNull()
       expect(api.memberThread).not.toHaveBeenCalled()
       expect(currentUrl()).toBe('/members')
+    })
+
+    it('a save from the team view keeps the pushed entry, so Back still leaves the page in one press', async () => {
+      // Driven history: a page before /members, a real push into it, the team
+      // header's PUSH (fromRoster), the Edit team dialog's Save -- which
+      // re-opens the saved team with a REPLACE -- then the view's own Back and
+      // one more. The replace must keep `fromRoster`: without it the view's
+      // Back writes a second roster entry instead of popping, and leaving the
+      // page takes two presses.
+      vi.mocked(api.teams.list).mockResolvedValue({ teams: [{ id: 'abc123abc123', name: 'Triage', members: ['oncall'] }] })
+      vi.mocked(api.teams.update).mockResolvedValue({ team: { id: 'abc123abc123', name: 'Release', members: ['oncall'] } })
+      ;(api.members as ReturnType<typeof vi.fn>).mockResolvedValue({ members: [row({ name: 'oncall', slug: 'oncall' })], default_agent: 'kirocrew' })
+      function Elsewhere() {
+        const nav = useNavigate()
+        return (
+          <button data-testid="go-members" onClick={() => nav('/members')}>
+            go
+          </button>
+        )
+      }
+      function BackProbe() {
+        const nav = useNavigate()
+        return (
+          <button data-testid="history-back" onClick={() => nav(-1)}>
+            back
+          </button>
+        )
+      }
+      renderWithProviders(
+        <NavigationLeaveGuardProvider>
+          <Routes>
+            <Route path="/elsewhere" element={<Elsewhere />} />
+            <Route path="/members" element={<MembersPage />} />
+          </Routes>
+          <BackProbe />
+          <LocationProbe />
+        </NavigationLeaveGuardProvider>,
+        { route: '/elsewhere' },
+      )
+      fireEvent.click(screen.getByTestId('go-members'))
+      await rosterRow('oncall')
+      fireEvent.click((await screen.findAllByTestId('team-group-header'))[0])
+      const view = await screen.findByTestId('team-view')
+      expect(currentUrl()).toBe('/members?team=abc123abc123')
+      fireEvent.click(within(view).getByTestId('team-edit'))
+      await screen.findByTestId('team-dialog-body')
+      fireEvent.change(screen.getByTestId('team-dialog-name'), { target: { value: 'Release' } })
+      fireEvent.click(screen.getByTestId('team-dialog-save'))
+      await waitFor(() => expect(api.teams.update).toHaveBeenCalledTimes(1))
+      await waitFor(() => expect(screen.queryByTestId('team-dialog-body')).toBeNull())
+      expect(currentUrl()).toBe('/members?team=abc123abc123')
+      // The view's Back pops the pushed entry: the bare roster, still on the page.
+      fireEvent.click(screen.getByTestId('team-back'))
+      await waitFor(() => expect(currentUrl()).toBe('/members'))
+      expect(screen.queryByTestId('team-view')).toBeNull()
+      // One more Back: off the page -- the save did not stack a second roster entry.
+      fireEvent.click(screen.getByTestId('history-back'))
+      await waitFor(() => expect(currentUrl()).toBe('/elsewhere'))
     })
 
     it('a stale ?member= returns to the roster and says where the member went', async () => {

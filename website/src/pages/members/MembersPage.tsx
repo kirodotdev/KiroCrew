@@ -41,15 +41,15 @@
  * the user picks rather than being primed on whichever row the sort floated
  * to the top (#11763).
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
-import { ArrowLeft, Check, ChevronRight, Circle, Cloud, Goal, LayoutDashboard, ListChecks, MessageCircleQuestionMark, NotebookPen, Pencil, Plus, RotateCw, Route, Sparkles, Square, Star, Zap } from 'lucide-react'
+import { ArrowLeft, Check, ChevronRight, Circle, Cloud, Goal, LayoutDashboard, ListChecks, MessageCircleQuestionMark, NotebookPen, Pencil, Plus, RotateCw, Route, Sparkles, Square, Star, Users, Zap } from 'lucide-react'
 import { PanelRightSolid } from '../../components/icons/panels'
 import { Btn } from '../../components/ui'
 import { CrewMemberMark } from '../../components/CrewMemberMark'
 import DeployMyCrewDialog from './DeployMyCrew'
 import { useTranslation } from 'react-i18next'
-import { api, type MemberActivityEntry, type MemberRosterRow } from '../../api/client'
+import { api, type CrewTeam, type MemberActivityEntry, type MemberRosterRow } from '../../api/client'
 import { crewDisplayName } from '../../components/AgentSelector'
 import {
   MEMBERS_ROSTER_QUERY_KEY,
@@ -59,6 +59,7 @@ import {
   membersRosterQuery,
   type MemberThreadOutcome,
 } from '../../api/membersQuery'
+import { teamsQuery } from '../../api/teamsQuery'
 import {
   AUTONUDGE_LOOPS_QUERY_KEY,
   type AutoNudgeLoop,
@@ -93,7 +94,7 @@ import { CrewLogTab } from '../chat/CrewLogPanel'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { useConnected } from '../../hooks/useConnected'
 import { SearchFilterBar, FilterMenuButton, FilterChip, FILTER_CHIP_ROW_CLS, FilterMenuLabel, FilterMenuContent } from '../../components/SearchFilterBar'
-import { DropdownMenu, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '../../components/ui/dropdown-menu'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '../../components/ui/dropdown-menu'
 import {
   countByFilter, narrowRoster, parseSort, parseSourceFilter, parseStatusFilters, queryNarrows, sortRoster,
   SORT_OPTIONS, SOURCE_FILTERS, STATUS_FILTERS,
@@ -113,6 +114,10 @@ import { loadColumnWidth } from '../../lib/columnWidth'
 import { tabStatus, type TabStatus } from '../../lib/sessionTabs'
 import { lastActivityEpoch } from '../chat/sessionOrder'
 import { activityDayLabel, floorCountText, groupActivityDays, projectLabel } from './activityDays'
+import TeamGroupHeader from './TeamGroupHeader'
+import TeamView, { type TeamMemberInput } from './TeamView'
+import TeamDialog from './TeamDialog'
+import { TEAM_COLLAPSED_KEY, TEAM_PARAM, groupRosterByTeam, parseCollapsedTeams, serializeCollapsedTeams } from './teamGroups'
 import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
 import { useMemberProjection, useMemberRosterViews } from '../../state/useMemberProjection'
 import type { RosterView, ActivityView, WakeView } from '../../state/memberProjectionTypes'
@@ -371,6 +376,7 @@ const PATROL_TICK_MS = 15_000
 /** Stable empty roster for the not-yet-answered read, so the memos keyed on
  *  `members` do not recompute on every render while the first fetch is out. */
 const EMPTY_ROSTER: readonly MemberRosterRow[] = []
+const EMPTY_TEAMS: readonly CrewTeam[] = []
 
 /** i18n translate function, taken from the hook so the row need not re-derive
  *  its type. */
@@ -397,6 +403,7 @@ function MemberRow({
   reduceMotion,
   scrollActiveRowIntoView,
   slugCollides,
+  indented,
 }: {
   m: MemberRosterRow
   t: TFn
@@ -411,6 +418,8 @@ function MemberRow({
   reduceMotion: boolean | null
   scrollActiveRowIntoView: (el: HTMLButtonElement | null) => void
   slugCollides: boolean
+  /** The row sits under a team header: stepped in so the header reads as its group. */
+  indented: boolean
 }) {
   // Withheld for a colliding slug, exactly as the page's merged list and drawer
   // do: this row shares its slug with another member, so a slug-keyed frame
@@ -467,6 +476,7 @@ function MemberRow({
           className={cn(
             'w-full flex items-center gap-2.5 text-sm text-left transition-all select-none',
             ROW_BOX_CLS, 'pr-8',
+            indented && 'pl-7',
             view.name === activeName ? ROW_ACTIVE_CLS : ROW_IDLE_CLS,
           )}
           aria-current={view.name === activeName ? 'true' : undefined}
@@ -730,6 +740,36 @@ export default function MembersPage() {
   // path as a click.
   const [searchParams, setSearchParams] = useSearchParams()
   const urlMember = searchParams.get(MEMBER_PARAM) ?? ''
+  // Teams: the roster's grouping and the main pane's OTHER occupant. The open
+  // team rides the URL like the open member (`?team=<id>`); the two parameters
+  // are exclusive -- opening one writes the URL without the other. The list is
+  // small and this page's own dialog is its only writer, so a failed read is
+  // the only state worth a notice. EVERY failed read, not only the first: a
+  // refetch that fails after a save or a return to the page leaves the cached
+  // list on screen, and that list is said to be stale rather than shown as
+  // current. With no answer at all the roster renders flat.
+  const teamsQ = useQuery(teamsQuery)
+  const teams = teamsQ.data ?? EMPTY_TEAMS
+  const teamsFailed = teamsQ.isError
+  const urlTeam = searchParams.get(TEAM_PARAM) ?? ''
+  const activeTeam = useMemo(() => teams.find((tm) => tm.id === urlTeam), [teams, urlTeam])
+  // Collapsed groups persist per browser, keyed by team id (the "No team" group
+  // by its fixed id), the same localStorage idiom as the roster filters.
+  const [rawCollapsedTeams, setRawCollapsedTeams] = usePersistedString(TEAM_COLLAPSED_KEY, '[]')
+  const collapsedTeams = useMemo(() => parseCollapsedTeams(rawCollapsedTeams), [rawCollapsedTeams])
+  const toggleTeamCollapsed = useCallback(
+    (id: string) =>
+      setRawCollapsedTeams((prev) => {
+        const next = parseCollapsedTeams(prev)
+        if (next.has(id)) next.delete(id)
+        else next.add(id)
+        return serializeCollapsedTeams(next)
+      }),
+    [setRawCollapsedTeams],
+  )
+  // The New team / Edit team dialog. `team` set = edit. Mounted only while
+  // open, so its fields start from the team it was opened for.
+  const [teamDialog, setTeamDialog] = useState<{ team?: CrewTeam } | null>(null)
   // Set when a URL NAMED a member that is gone: the user asked for someone
   // specific, so the outcome is said out loud — above the fallback thread on
   // md+ (`shown` = who opened instead), above the roster below md (`shown` is
@@ -1877,6 +1917,21 @@ export default function MembersPage() {
       // a member the fresh roster still lacks takes the fallback then.
       if (rosterQuery.isFetching) return
     }
+    if (urlTeam) {
+      // A team is open in the main pane: no thread stands beside it, and the
+      // remembered-member fallback below must not overrule an explicit team
+      // link. A link naming a team that is gone (deleted elsewhere) returns to
+      // the bare roster once the team list has answered.
+      if (teamsQ.data !== undefined && !teamsQ.data.some((tm) => tm.id === urlTeam)) {
+        setSearchParams({}, { replace: true })
+        return
+      }
+      if (activeName) {
+        activeNameRef.current = ''
+        setActiveName('')
+      }
+      return
+    }
     if (isMobile) {
       if (urlMember) {
         // No thread to fall back to below md — the roster is the answer, so
@@ -1933,7 +1988,53 @@ export default function MembersPage() {
       goneStandInRef.current = target.name
     }
     setSearchParams({ [MEMBER_PARAM]: target.name }, { replace: true })
-  }, [loaded, loadError, urlMember, members, orderedMembers, activeName, isMobile, activate, setSearchParams, rosterQuery.isFetching])
+  }, [loaded, loadError, urlMember, urlTeam, teamsQ.data, members, orderedMembers, activeName, isMobile, activate, setSearchParams, rosterQuery.isFetching])
+
+  // Team open: the header row's click. Same history rule as openMember -- one
+  // entry above md or while something is already open, a PUSHED step from the
+  // bare roster below md so the back button pops.
+  const openTeam = useCallback(
+    (id: string) => {
+      if (urlMember || urlTeam || !isMobile) {
+        // The replace keeps the entry's own state: below md this branch is
+        // reached from the team view itself (Edit team -> Save re-opens the
+        // saved id over `?team=`), and dropping `fromRoster` there would send
+        // the next Back to a second copy of the roster instead of off the
+        // page -- closeTeamView reads that flag to choose between the two.
+        setSearchParams({ [TEAM_PARAM]: id }, { replace: true, state: location.state })
+        return
+      }
+      setSearchParams({ [TEAM_PARAM]: id }, { state: { fromRoster: true } })
+    },
+    [urlMember, urlTeam, isMobile, setSearchParams, location.state],
+  )
+  const closeTeamView = useCallback(() => {
+    if ((location.state as { fromRoster?: boolean } | null)?.fromRoster) navigate(-1)
+    else setSearchParams({}, { replace: true })
+  }, [location.state, navigate, setSearchParams])
+  // The roster, grouped: the DISPLAYED rows (after search / filter / sort) under
+  // their team headers, in the teams' stored order, unlisted rows last.
+  const rosterGroups = useMemo(() => groupRosterByTeam(teams, sortedMembers, members), [teams, sortedMembers, members])
+  const grouped = teams.length > 0
+  // The open team's crewmates for the team view -- the WHOLE team in roster
+  // order, not the filtered rows: a search typed into the roster narrows the
+  // list, not the team. Each carries the live readings the roster rows resolve.
+  const teamMembers = useMemo<TeamMemberInput[]>(() => {
+    if (!activeTeam) return []
+    const onTeam = new Set(activeTeam.members)
+    return orderedMembers
+      .filter((m) => onTeam.has(m.name))
+      .map((m) => {
+        const slotKey = slotKeyOf(m)
+        return {
+          row: m,
+          slotKey,
+          running: !!isRunning(m),
+          needsInput: !!(slotKey && liveNeedsYou[slotKey]),
+          slugCollides: collidingSlugs.has(m.slug),
+        }
+      })
+  }, [activeTeam, orderedMembers, slotKeyOf, isRunning, liveNeedsYou, collidingSlugs])
 
   return (
     // No bottom inset on the root: the card columns carry their own pb-2 and
@@ -1955,7 +2056,7 @@ export default function MembersPage() {
           card back from the white canvas. */}
       <aside
         className={`${
-          activeName ? 'hidden md:flex' : 'flex'
+          activeName || activeTeam ? 'hidden md:flex' : 'flex'
         } ${LIST_SHELL_CLS} relative w-full md:w-[var(--roster-w)] shrink-0 flex-col min-h-0`}
         // CSS owns the breakpoint: the var is set unconditionally and only the
         // md: class consumes it, so resizing the window across 768px reacts
@@ -2003,15 +2104,31 @@ export default function MembersPage() {
             <Cloud size={15} />
             {t('pages.membersPage.deploy_trigger')}
           </button>
-          <button
-            onClick={() => navigate(CREW_CREATE_PATH)}
-            className="flex items-center justify-center w-7 h-7 rounded-md transition-colors bg-transparent border-none shrink-0 text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
-            aria-label={t('pages.membersPage.add_member')}
-            title={t('pages.membersPage.add_member')}
-            data-testid="member-add"
-          >
-            <Plus size={15} />
-          </button>
+          {/* Two things can be added here, so the "+" opens a menu: a crewmate
+              (the crew manager's create form, as before) or a team (the dialog
+              below). The trigger keeps the bare Plus and its label. */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                className="flex items-center justify-center w-7 h-7 rounded-md transition-colors bg-transparent border-none shrink-0 text-muted hover:text-text hover:bg-bg-hover cursor-pointer data-[state=open]:bg-bg-hover data-[state=open]:text-text"
+                aria-label={t('pages.membersPage.add_menu')}
+                title={t('pages.membersPage.add_menu')}
+                data-testid="member-add"
+              >
+                <Plus size={15} />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" data-testid="member-add-menu">
+              <DropdownMenuItem onSelect={() => navigate(CREW_CREATE_PATH)} data-testid="member-add-crewmate">
+                <Plus size={13} className="lucide-inline text-muted" aria-hidden="true" />
+                <span className="flex-1">{t('pages.membersPage.add_member')}</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setTeamDialog({})} data-testid="member-add-team">
+                <Users size={13} className="lucide-inline text-muted" aria-hidden="true" />
+                <span className="flex-1">{t('pages.membersPage.team_new')}</span>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
         <div className={`px-4 pb-2 ${ROW_STATUS_CLS} text-muted`} data-testid="member-count">
           {/* "N of M" while any filter (not the search) narrows the list, so
@@ -2041,6 +2158,19 @@ export default function MembersPage() {
               variant="inline"
               askAgent
               testId="member-roster-patrol-error"
+            />
+          </div>
+        )}
+        {/* A failed team read renders the roster FLAT, which is not "no teams"
+            -- it is unknown, and said here on the roster the grouping lives
+            on. No draft on this page, so the hand-off is safe. */}
+        {teamsFailed && (
+          <div className="px-4 pb-2">
+            <ErrorNotice
+              message={t('pages.membersPage.teams_load_failed')}
+              variant="inline"
+              askAgent
+              testId="member-roster-teams-error"
             />
           </div>
         )}
@@ -2258,24 +2388,47 @@ export default function MembersPage() {
               </button>
             </li>
           )}
-          {sortedMembers.map((m) => (
-            <MemberRow
-              key={m.name}
-              m={m}
-              t={t}
-              activeName={activeName}
-              openMember={openMember}
-              toggleStar={toggleStar}
-              starPending={starPending}
-              slotKeyOf={slotKeyOf}
-              isRunning={isRunning}
-              isUnread={isUnread}
-              activePatrolOf={activePatrolOf}
-              reduceMotion={reduceMotion}
-              scrollActiveRowIntoView={scrollActiveRowIntoView}
-              slugCollides={collidingSlugs.has(m.slug)}
-            />
-          ))}
+          {/* Grouped by team once any team exists: a header row per team, its
+              crewmates indented under it, the rows no team lists in a trailing
+              muted "No team" group. With no teams the list is flat, as it was
+              before teams -- one anonymous group and no header. A collapsed
+              group hides its rows; the fold persists per team. */}
+          {rosterGroups.map((group) => {
+            const collapsed = grouped && collapsedTeams.has(group.id)
+            return (
+              <Fragment key={group.id}>
+                {grouped && (
+                  <TeamGroupHeader
+                    group={group}
+                    selected={!!activeTeam && group.id === activeTeam.id}
+                    collapsed={collapsed}
+                    onOpen={() => group.team && openTeam(group.team.id)}
+                    onToggle={() => toggleTeamCollapsed(group.id)}
+                  />
+                )}
+                {!collapsed &&
+                  group.members.map((m) => (
+                    <MemberRow
+                      key={m.name}
+                      m={m}
+                      t={t}
+                      activeName={activeName}
+                      openMember={openMember}
+                      toggleStar={toggleStar}
+                      starPending={starPending}
+                      slotKeyOf={slotKeyOf}
+                      isRunning={isRunning}
+                      isUnread={isUnread}
+                      activePatrolOf={activePatrolOf}
+                      reduceMotion={reduceMotion}
+                      scrollActiveRowIntoView={scrollActiveRowIntoView}
+                      slugCollides={collidingSlugs.has(m.slug)}
+                      indented={grouped}
+                    />
+                  ))}
+              </Fragment>
+            )
+          })}
         </ul>
         {/* Window-splitter between roster and thread: the same component as the
             Sessions sidebar's grip, sitting on the card's right border the same
@@ -2298,12 +2451,51 @@ export default function MembersPage() {
 
       {/* DM thread */}
       <section
-        className={`${activeName ? 'flex' : 'hidden md:flex'} flex-1 min-w-0 flex-col min-h-0`}
+        className={`${activeName || activeTeam ? 'flex' : 'hidden md:flex'} flex-1 min-w-0 flex-col min-h-0`}
       >
-        {!active && (
+        {!active && !activeTeam && (
           <div className="flex-1 flex items-center justify-center text-sm text-muted px-6 text-center">
             {t('pages.membersPage.pick_a_member')}
           </div>
+        )}
+        {/* The team view takes the pane a chat would: the manager's desk for
+            the open team. Keyed by team so switching teams remounts its reads. */}
+        {!active && activeTeam && (
+          <>
+            {/* Below md the roster -- and the notice it carries -- is hidden
+                while a team is open, so a failed team read is said HERE too:
+                the team on screen may be stale. md and up shows the roster's
+                own notice beside the pane, so this one steps out of the way. */}
+            {loadError && (
+              <div className="px-4 pt-3 md:hidden">
+                <ErrorNotice
+                  message={t('pages.membersPage.roster_load_failed')}
+                  variant="inline"
+                  askAgent
+                  testId="team-view-roster-error"
+                />
+              </div>
+            )}
+            {teamsFailed && (
+              <div className="px-4 pt-3 md:hidden">
+                <ErrorNotice
+                  message={t('pages.membersPage.teams_load_failed')}
+                  variant="inline"
+                  askAgent
+                  testId="team-view-teams-error"
+                />
+              </div>
+            )}
+            <TeamView
+              key={activeTeam.id}
+              team={activeTeam}
+              members={teamMembers}
+              rosterFailed={loadError}
+              onOpenMember={openMember}
+              onEdit={() => setTeamDialog({ team: activeTeam })}
+              onBack={closeTeamView}
+            />
+          </>
         )}
         {active && (
           <>
@@ -3224,6 +3416,25 @@ export default function MembersPage() {
       {/* Crew-wide and read-only. It owns its own Dialog, and its launch read is
           gated on `open`, so a visit that never opens it costs no request. */}
       <DeployMyCrewDialog open={deployOpen} onClose={() => setDeployOpen(false)} members={members} />
+      {/* New team / Edit team. A saved team opens its team view; a deleted one
+          that was open returns the pane to the roster's empty state. */}
+      {teamDialog && (
+        <TeamDialog
+          open
+          team={teamDialog.team}
+          teams={teams}
+          members={orderedMembers}
+          onClose={() => setTeamDialog(null)}
+          onSaved={(saved) => {
+            setTeamDialog(null)
+            openTeam(saved.id)
+          }}
+          onDeleted={(removed) => {
+            setTeamDialog(null)
+            if (urlTeam === removed.id) setSearchParams({}, { replace: true })
+          }}
+        />
+      )}
     </div>
   )
 }

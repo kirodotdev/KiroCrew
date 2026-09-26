@@ -2926,6 +2926,15 @@ export interface MemberActivityEntry {
   project?: string
 }
 
+/** One team of crewmates (GET /api/teams). `members` are exact crew NAMES in
+ *  the user's order; a crewmate is on at most one team, which the store
+ *  enforces on every write. */
+export interface CrewTeam {
+  id: string
+  name: string
+  members: string[]
+}
+
 /** Free-form fields a crew publishes into its webview. The crew owns the shape,
  *  so every value is unknown until the renderer narrows it. */
 export type CrewPanelData = Record<string, unknown>
@@ -3930,6 +3939,18 @@ export const api = {
        *  notes. */
       truncated: boolean
     }>,
+  // Crewmate teams: a name plus an ordered member list, stored by the gateway
+  // in the data home's crew-teams directory. Dashboard-only like the members routes; the three
+  // writes are owner actions. `remove` rather than `delete`: a reserved word
+  // reads badly as a method name at every call site.
+  teams: {
+    list: () => fetch('/api/teams').then(j) as Promise<{ teams: CrewTeam[] }>,
+    create: (body: { name: string; members: string[] }) =>
+      post('/api/teams', body).then(j) as Promise<{ team: CrewTeam }>,
+    update: (id: string, body: { name?: string; add?: string[]; remove?: string[] }) =>
+      put('/api/teams/' + encodeURIComponent(id), body).then(j) as Promise<{ team: CrewTeam }>,
+    remove: (id: string) => del('/api/teams/' + encodeURIComponent(id)).then(j) as Promise<{ ok: boolean }>,
+  },
   updateKirocrewAgent: (name: string, body: object) =>
     put('/api/agents/' + encodeURIComponent(name), body).then(j),
   deleteKirocrewAgent: (name: string) =>

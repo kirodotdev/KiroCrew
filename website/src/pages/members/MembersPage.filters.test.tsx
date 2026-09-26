@@ -7,6 +7,9 @@ import { renderWithProviders } from '../../test/helpers'
 vi.mock('../../api/client', () => ({
   api: {
     members: vi.fn(),
+    // The roster's team grouping reads the team list; "no teams" keeps the
+    // list flat, which is the shape every case here was written against.
+    teams: { list: vi.fn(() => Promise.resolve({ teams: [] })) },
     // The page opens a member on arrival, so the thread endpoint must answer
     // from the first render; echo the slug back as the member (happy path).
     memberThread: vi.fn((slug: string) =>
@@ -165,14 +168,14 @@ describe('MembersPage filters', () => {
 
   it('header reads "N of M" while a filter narrows the list, plain count otherwise', async () => {
     await renderPage()
-    expect(screen.getByTestId('member-count')).toHaveTextContent('5 members')
+    expect(screen.getByTestId('member-count')).toHaveTextContent('5 crewmates')
     await openFilters()
     fireEvent.click(screen.getByTestId('member-filter-starred'))
-    expect(screen.getByTestId('member-count')).toHaveTextContent('1 of 5 members')
+    expect(screen.getByTestId('member-count')).toHaveTextContent('1 of 5 crewmates')
     fireEvent.click(screen.getByTestId('member-filter-starred'))
     // The search box is not a "filter" for this purpose: it is transient.
     fireEvent.change(screen.getByTestId('member-search'), { target: { value: 'pkg' } })
-    expect(screen.getByTestId('member-count')).toHaveTextContent('5 members')
+    expect(screen.getByTestId('member-count')).toHaveTextContent('5 crewmates')
   })
 
   it('starred-only keeps just the starred rows and persists the toggle', async () => {
@@ -272,7 +275,7 @@ describe('MembersPage filters', () => {
     // A second status widens the set (OR), so a member in either state shows.
     fireEvent.click(screen.getByTestId('member-filter-status-unread'))
     expect(names()).toEqual(['conductor', 'pkg-a'])
-    expect(screen.getByTestId('member-count')).toHaveTextContent('2 of 4 members')
+    expect(screen.getByTestId('member-count')).toHaveTextContent('2 of 4 crewmates')
     fireEvent.click(screen.getByTestId('member-filter-status-working'))
     // Only "unread" left and nothing is unread: the filters, not the roster, emptied the list.
     expect(names()).toEqual([])

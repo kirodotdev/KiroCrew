@@ -1,0 +1,41 @@
+# Nightly: the Teams half of the CrewMates launch (RFC
+# docs/request-for-change/rfc-crewmates-launch.md, § 09). A first-time user
+# groups two crewmates into a team from the roster's "+" menu and opens the team
+# view by clicking the team's header row.
+#
+# The page still sits behind the Feature Previews switch on this build, so the
+# tester turns it on first, exactly as members-dm-hello does; the preview card
+# and rail label are described the same way for the same two-title reason. The
+# seeded roster holds two crewmates -- the default crew, shown as "default", and
+# "nova-sky" (no display name, so its card reads the id) -- and the New team
+# dialog lists both, so "tick every crewmate listed" is exactly two.
+name: crewmate-team-view
+tier: nightly
+feature: members
+user_story: >-
+  As a user with several crewmates, I want to group some of them into a named
+  team and open that team's view, so that I can see the whole team's state at a
+  glance instead of opening each crewmate's chat.
+docs_url: docs/system-specs/modules/learn-cron-dashboard.md
+summary: Create a team of two crewmates from the "+" menu, then open its team view from the roster header
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /settings
+steps:
+  - You are on the Settings page. Open the Developer section and find the Feature Previews list.
+  - Turn on the preview whose title starts with "Crew Members" (it may read "Crew Members" or "Crew Members and Crew Mode"; either is the right one). Ignore the Webhooks preview.
+  - Open the Crew Members page. After the preview is on, a "Crew Members" item appears in the left rail, directly under Sessions; click it.
+  - In the roster's header row, click the "+" button (its tooltip reads "Add…"). A small menu opens with two rows, "Add crewmate" and "New team"; click "New team".
+  - A "New team" dialog opens. In its "Name" field type exactly "Triage".
+  - Under "Crewmates", tick every crewmate listed (there are two -- one may read "default" and the other "nova-sky"; both are crewmates).
+  - Click "Create team". The dialog closes.
+  - In the roster, find the header row that reads "Triage" (it shows a small people icon, the name and "2 crewmates") and click the name itself, not the chevron at its right edge.
+  - Wait about two seconds.
+expectations:
+  - The roster shows a header row reading "Triage" with "2 crewmates", and the two crewmate rows sit under it.
+  - The main pane shows a team view headed "Triage" with an "Edit team" button and a "Needs you" section.
+  - The team view's status list has exactly two rows, one per crewmate.
+  - No chat conversation is open in the main pane.
+max_steps: 18
+max_seconds: 480
