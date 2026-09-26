@@ -1,0 +1,1274 @@
+<!--
+  Bespoke panel template for the issue-fix pipeline conductor crew.
+
+  Reached by NAME: `template_for_crew` slugifies the crew name, so a crew called
+  `kirocrew-pipeline-conductor` gets this file and nothing has to be wired up.
+  Everything else keeps the generic `default.html`.
+
+  WHAT IT DRAWS, AND WHY THAT IS A CHART RATHER THAN DECORATION
+
+  Four independent readings of one night -- pull requests opened, greens proven,
+  work waiting on a person, merges -- on ONE shared scale, divided by a wall at
+  the point where an agent's authority ends. The relationship is a bottleneck at
+  an authority boundary: everything tall stands on the side an agent may finish
+  alone, and past the wall there is one short column and an empty slot. That is
+  a fact about the night's shape which the four numbers do not carry in a list,
+  and it is also what stops `0 merged` reading as a bad night.
+
+  It SUBTRACTS nothing and tapers nothing. A taper would claim the columns are
+  nested and a subtraction would claim it twice; they are not nested, because
+  work held tonight may have been opened on an earlier night. The caption says
+  so in plain words rather than leaving the reader to assume a funnel.
+
+  The accent means one thing here: waiting on you. Exactly one column carries
+  it, so the loudest fill on the card is the one that asks for a person.
+
+  WHAT IT COSTS. The wall's position is AUTHORED -- this file knows that a green
+  an agent proved is finishable and an approve is not -- so it can never be the
+  generic fallback: a renderer that does not know the crew cannot know where
+  that crew's authority ends. It is the right trade for one crew and the wrong
+  one for all of them.
+
+  CONTAINMENT. Every published value reaches the DOM as a text node, assigned
+  through `textContent` by the single `el()` factory below, or as a text node
+  from `createTextNode`. There is deliberately no markup-parsing path for a
+  published value, which a source-level test asserts by name. Geometry takes
+  only numbers: a reading is passed through `Number()` and clamped before it is
+  written with `style.setProperty`, so an unparsable value loses its bar instead
+  of producing a broken coordinate. Nothing here is drawn in the vector-graphics
+  namespace at all; the chart is boxes on percentage geometry, which removes the
+  usual place this gets broken -- a vector text node built as a string.
+
+  VARIABLES ARE LIMITED TO WHAT THE HOST FORWARDS. The drawer injects a fixed
+  list of theme custom properties into the sandboxed document, and a name off
+  that list resolves to nothing: a fill written with one paints as transparent
+  and a border written with one is dropped entirely. An earlier draft drew the
+  wall and the empty slot with `--border-hover`, which the host does not
+  forward, so the two marks that carry the whole finding were invisible in the
+  product while looking correct in a local harness that defined it. Only these
+  are used here, and each is on the forwarded list: --bg, --card, --text,
+  --text-strong, --muted, --border, --border-strong, --accent.
+
+  A FILL IS MIXED AGAINST THE GROUND, never a theme grey used raw. --muted-strong
+  is the same value in both themes, so used raw it inverts: measured 2.38 : 1 on
+  the dark ground, where it looks correctly subdued, and 7.41 : 1 on the light
+  one, where it out-shouted the accent's 5.45 and made the tallest column the
+  loudest thing on the card. Mixed against `--kp-ground` it follows the theme.
+
+  WHAT THE FLEET BLOCK ADDS, AND WHAT IT IS NOT ALLOWED TO COST
+
+  WHICH SURFACE THIS IS MEASURED FOR. The docked view of a crew is a native React
+  summary that renders no iframe and no document at all; this file is minted only
+  once the drawer's own expand control has been used, and the expanded view is
+  the full window. So the narrow branch below is NOT a docked card, a rail or a
+  glance surface -- it is a narrow VIEWPORT inside the already-expanded dialog,
+  which is what a phone gives it. The budget is enforced at 298px because the
+  expanded dialog is full-window with 16px of padding on each side, so a 330px
+  window leaves the document 298px. The numbers are unchanged; what they are
+  measured for is.
+
+  The narrow layout carries two fleet figures in the header's own row: how many of
+  the dispatched sessions are running, and the night's token total. They are
+  --muted, they are withheld independently, and they cost NO height -- the row
+  stays one line at both a 330px window and the 298px that leaves. Two things pay
+  for that. The header shows the ratio `4/7` rather than `4 of 7 running`, because
+  the worded form measures 73.0 CSS px against 70.6 available; and the published
+  stamp is cut to its clock at that width -- `as of 13:14 UTC` becomes
+  `13:14 UTC` -- which returns about 27px and is the difference between one line
+  and two.
+
+  The ratio is also the only figure here whose halves are BOTH published, which
+  is why it and not the token total is the figure the eye lands on first. A token
+  total has no single published form to read off: the crew log records `tokens`
+  as `{input, output, cache_read, cache_write}`, so WHICH dimensions a total sums
+  is the publisher's choice, and `cache_read` is usually both the largest and the
+  cheapest -- including it inflates a cost reading badly. That is why the
+  provenance sentence lives in the published `tokens note` instead of being
+  hardcoded here: on a host whose log does carry the field, a built-in caveat
+  would be the false sentence. This file never invents a total: `tokens tonight`
+  and every count under `issues` are read by name or not drawn, and summing
+  `sessions` to reach one is exactly the judgment that disqualified an earlier
+  direction.
+
+  The expanded page adds the fleet's own rows, a tonight sentence and the pull
+  requests. One chart lives there -- the sessions' token bars on ONE shared scale,
+  which says where the night's cost went in a way a column of numbers does not.
+  A row that published no figure draws NO bar and says so, because a zero-length
+  bar reads as a cheap session, which is a measurement nobody made.
+
+  A SESSION'S STATE IS A VALUE RAMP, NEVER A HUE. The one hue this file owns
+  means "waiting on you", and a session's state never does -- so the mark reads
+  how alive a row is and the state's own word is printed beside it. The ramp is
+  capped well under the accent: an earlier draft put the working mark at 78% of
+  --text, which measured 8.23 : 1 on the dark ground and 5.79 : 1 on the light
+  one, past the accent's own 5.69 there. A value off the closed set of five is
+  drawn as `working` -- the safe reading for a row that might still be running --
+  its published word is printed unchanged, and a note names it.
+-->
+
+<style>
+  /* The ground the fragment is PAINTED on, which is the drawer's card colour,
+     not the page background. Every mixed fill is referenced to this so it
+     follows whichever of the dashboard's themes is active. */
+  .kp { --kp-ground: var(--card, var(--bg));
+        container-type: inline-size; padding:18px 20px 22px;
+        font:13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", sans-serif;
+        color:var(--text); }
+
+  .d-head { display:flex; flex-wrap:wrap; align-items:baseline;
+            justify-content:space-between; gap:4px 14px; }
+  .d-title { font-size:15px; font-weight:600; color:var(--text-strong); }
+  .d-asof  { font-size:12px; color:var(--muted); }
+  .d-asof-long { display:inline; }
+  .d-asof-short { display:none; }
+
+  .d-lede { margin:14px 0 0; font-size:14px; line-height:1.4; color:var(--text);
+            max-width:88ch; }
+  .d-lede b { color:var(--text-strong); font-weight:600;
+              font-variant-numeric:tabular-nums; }
+
+  /* The narrow layout is allowed one chart and one sentence, and this is the
+     sentence. It is not a shortened lede: the chart has no time in it, so this
+     carries the ordering the picture cannot draw. Hidden until the container is
+     narrow. */
+  .d-lede-narrow { display:none; margin:8px 0 0; font-size:14px; line-height:1.4;
+                 color:var(--text); }
+  .d-lede-narrow b { color:var(--text-strong); font-weight:600;
+                   font-variant-numeric:tabular-nums; }
+
+  /* Plot on the left, the blocked items named on the right, so the page's width
+     carries the names of the work instead of stretching one chart. With nothing
+     in the right column the grid collapses to one, so a payload with no held
+     list does not set its text in a narrow column beside 430px of nothing. */
+  .d-grid { margin:20px 0 0; display:grid;
+            grid-template-columns:minmax(0,1fr) minmax(0,430px);
+            gap:0 44px; align-items:start; }
+  .d-grid[data-cols="1"] { grid-template-columns:minmax(0,1fr); }
+  /* Note the unit first: `container-type: inline-size` on `.kp` measures its
+     CONTENT box, so every width in these queries is the card's own 40px of
+     horizontal padding SHORT of the container the drawer gives it. 421px of
+     content is a 461px card.
+
+     The held column is 430px and the gap is 44px, so a two-column row hands the
+     chart whatever is left of `content - 474`. That is not a fit test, it is a
+     subtraction: measured at 474px of content the tracks resolved to `0px 430px`
+     and at 520px to `46px 430px` -- a chart of nothing and a chart of 46px, while
+     the page layout had been turning on at 421px. Widening the second track to a
+     minmax does NOT fix it (at 473px it took all 389px available and left zero),
+     which is why the threshold and not the track is what moved.
+
+     So two columns wait until the chart can have 290px, the width the narrow
+     layout already proves this plot is readable at: 290 + 44 + 430 = 764. Below
+     that the page STACKS -- chart first, held list under it -- which is the same
+     single-column shape a payload with no held list already gets. At the 1400px
+     the drawer actually gives the expanded page, content is 1360 and the chart
+     takes 886px, so nothing measured on the page moves. */
+  @container (max-width: 763px) {
+    .d-grid { grid-template-columns:minmax(0,1fr); }
+  }
+
+  /* ---- the plot ---------------------------------------------------- */
+  .d-plot { position:relative; }
+  /* The field is everything the wall divides: the two side labels, the columns
+     and their keys. */
+  .d-field { position:relative; }
+  .d-sides { position:relative; height:17px; }
+  .d-side { position:absolute; top:0; transform:translateX(-50%);
+            font-size:11.5px; color:var(--muted); white-space:nowrap; }
+  .d-side[data-side="person"] { color:var(--text); }
+  .d-side-short { display:none; }
+
+  .d-cols { position:relative; display:flex; align-items:flex-end;
+            height:240px; border-bottom:1px solid var(--border);
+            margin-top:6px; }
+  .d-col { flex:1 1 0; min-width:0; display:flex; flex-direction:column;
+           justify-content:flex-end; align-items:center; height:100%; }
+  .d-num { font-size:17px; font-weight:600; color:var(--text-strong);
+           font-variant-numeric:tabular-nums; line-height:1.2; margin-bottom:5px; }
+  .d-bar { width:62%; max-width:132px;
+           background:color-mix(in oklab, var(--text) 36%, var(--kp-ground));
+           border-radius:2px 2px 0 0; }
+  .d-bar[data-needs="1"] { background:var(--accent); }
+  /* A reading of zero is drawn as an empty slot, not left out: the emptiness on
+     the far side of the wall is the whole finding. The mark is a step stronger
+     than a bar so it reads as the column rather than as the axis. */
+  .d-bar[data-zero="1"] { height:0; border-radius:0;
+                          border-top:2px dashed
+                            color-mix(in oklab, var(--text) 40%, var(--kp-ground)); }
+  .d-keys { display:flex; margin-top:9px; }
+  .d-key { flex:1 1 0; min-width:0; padding:0 6px; text-align:center;
+           font-size:11.5px; line-height:1.35; color:var(--muted); }
+  .d-key b { display:block; color:var(--text); font-weight:500; }
+  /* Two authored keys per column: the full one names the unit, the one-word one
+     is all a 290px card can hold. Exactly one renders at either width. */
+  .d-key-short { display:none; }
+
+  /* The wall. It spans the whole field and is a step stronger than a bar, so it
+     reads as the boundary the night is divided by rather than as one more
+     gridline -- and it stays quieter than the accent, which is the one thing on
+     this card allowed to ask for a person. */
+  .d-wall { position:absolute; top:0; bottom:0; width:3px;
+            background:color-mix(in oklab, var(--text) 40%, var(--kp-ground)); }
+
+  .d-caption { margin:16px 0 0; padding-top:12px;
+               border-top:1px solid var(--border);
+               max-width:80ch; font-size:12px; line-height:1.6; color:var(--muted); }
+
+  /* ---- nothing this view can draw --------------------------------- */
+  /* Reached when the payload carries no reading this template knows by name.
+     A bespoke template that answers an unexpected payload with a blank card is
+     worse than the generic one, so it states what it needs and what arrived
+     instead -- which is also the fastest way for whoever publishes to fix it. */
+  .d-nodata { margin:18px 0 0; padding-top:14px;
+              border-top:1px solid var(--border); max-width:80ch; }
+  /* When there is no chart this block IS the card, so the rule that would
+     separate it from the plot above divides nothing and reads as a mark of its
+     own -- the same defect as a full-width dashed rule standing in for absent
+     data. */
+  .d-plot > .d-nodata:first-child { margin-top:0; padding-top:0; border-top:0; }
+  .d-nodata-h { margin:0; font-size:14px; font-weight:600; color:var(--text-strong); }
+  .d-nodata-narrow { display:none; margin:6px 0 0; font-size:13px; line-height:1.5;
+                   color:var(--text); }
+  .d-nodata-p { margin:8px 0 0; font-size:12.5px; line-height:1.6; color:var(--muted); }
+  .d-k { font-family:ui-monospace, "SF Mono", "Source Code Pro", monospace;
+         font-size:11.5px; color:var(--text); }
+
+  /* ---- the items the wall stopped -------------------------------- */
+  .d-held { border-left:3px solid var(--accent); padding-left:14px; }
+  .d-held-h { margin:0 0 2px; font-size:13px; font-weight:600;
+              color:var(--text-strong); }
+  .d-item { padding:10px 0; border-top:1px solid var(--border); }
+  .d-item:first-of-type { border-top:0; }
+  .d-what { font-size:14px; font-weight:600; line-height:1.3;
+            color:var(--text-strong); }
+  .d-why  { margin-top:2px; font-size:12px; color:var(--text); }
+  .d-detail { margin:4px 0 0; font-size:12px; line-height:1.5; color:var(--muted); }
+
+  /* ---- supporting ------------------------------------------------- */
+  .d-secs { margin:24px 0 0; display:grid; grid-template-columns:1fr 1fr;
+            gap:0 56px; align-items:start; }
+  .d-sec { min-width:0; }
+  .d-sech { margin:0 0 9px; font-size:13px; font-weight:600;
+            color:var(--text-strong); }
+  .d-steps { margin:0; padding:0; list-style:none; counter-reset:s; }
+  .d-steps li { counter-increment:s; display:flex; gap:11px; padding:6px 0;
+                max-width:74ch; font-size:12.5px; line-height:1.55; }
+  .d-steps li::before { content:counter(s); flex:0 0 14px; text-align:right;
+                        color:var(--muted); font-variant-numeric:tabular-nums; }
+  .d-lies { margin:0; padding:0; list-style:none; }
+  .d-lies li { padding:8px 0; border-top:1px solid var(--border);
+               max-width:74ch; font-size:12.5px; line-height:1.55; }
+  .d-lies li:first-child { border-top:0; padding-top:0; }
+
+  .d-figrow { display:flex; gap:10px 18px; flex-wrap:wrap; align-items:baseline;
+              padding:9px 0; border-top:1px solid var(--border); }
+  .d-figkey { flex:0 0 52px; font-size:12px; color:var(--muted); }
+  .d-fig { font-size:13px; color:var(--text); white-space:nowrap; }
+  .d-fig b { font-weight:600; color:var(--text-strong);
+             font-variant-numeric:tabular-nums; }
+  .d-rest { margin:22px 0 0; }
+
+  .d-report { margin:22px 0 0; padding-top:12px; border-top:1px solid var(--border);
+              max-width:80ch; font-size:12px; line-height:1.6; color:var(--muted); }
+  .d-path { font-family:ui-monospace, "SF Mono", "Source Code Pro", monospace;
+            font-size:11.5px; color:var(--text); }
+
+  /* ---- FLEET NUMBERS ON THE CARD -------------------------------- */
+  /* The card's budget is spent, so these go in the header's own line rather
+     than in a band of their own: `margin-left:auto` puts them on the right of
+     the row the title and the stamp already occupy, and `flex-wrap` on
+     `.d-head` decides whether they share that line or take a second one. That
+     is a MEASUREMENT, not a hope -- the measured card height is reported either
+     way, and the two forms below exist so the narrower one can be measured too.
+
+     They are --muted, which is the stamp's own ink and the quietest text on the
+     card. The accent means one thing in this file and it is not a counter: a
+     fleet figure asks nothing of the reader, so it may not carry the colour
+     that means something does. */
+  .d-fleet { margin-left:auto; display:flex; gap:9px; align-items:baseline;
+             font-size:11.5px; color:var(--muted); }
+  .d-fleetn b { font-weight:600; color:var(--text); }
+  .d-fleet-long { display:inline; }
+  .d-fleet-short { display:none; }
+
+  /* ---- FLEET, EXPANDED ------------------------------------------ */
+  .d-fleetblk { margin:24px 0 0; padding-top:14px;
+                border-top:1px solid var(--border); }
+  .d-srow { display:grid; grid-template-columns:78px minmax(0,1.25fr) minmax(0,1fr) 62px 128px;
+            gap:0 14px; align-items:baseline;
+            padding:9px 0; border-top:1px solid var(--border); }
+  .d-srow:first-of-type { border-top:0; }
+  .d-sstate { display:flex; gap:6px; align-items:baseline;
+              font-size:11.5px; color:var(--muted); }
+  /* A value ramp, not a palette. Five states cannot get five hues here: the one
+     hue this file owns means "waiting on you", and a session's state never does.
+     So the mark reads how ALIVE a row is -- brightest still working, quietest
+     finished -- and the state's own word is printed beside it, which is what
+     actually distinguishes `blocked` from `waiting`.
+
+     The ramp is CAPPED well under the accent. An earlier draft put the working
+     mark at 78% of --text, which measured 8.23 : 1 on the dark ground and
+     5.79 : 1 on the light one -- past the accent's own 5.69 there, so the mark
+     for "this is fine, it is running" was the loudest fill on the page. Same
+     defect class as the raw grey that inverted last round, and the reason the
+     gate now scores every fill it can see rather than only the chart's.
+     `blocked` and `waiting` share a value and differ in SHAPE, because they are
+     equally quiet claims and neither is an instruction to the reader. */
+  .d-dot { flex:0 0 7px; width:7px; height:7px; border-radius:2px;
+           background:color-mix(in oklab, var(--text) 20%, var(--kp-ground)); }
+  .d-dot[data-state="working"] { background:color-mix(in oklab, var(--text) 52%, var(--kp-ground)); }
+  .d-dot[data-state="waiting"]  { background:color-mix(in oklab, var(--text) 32%, var(--kp-ground)); }
+  .d-dot[data-state="blocked"]  { background:color-mix(in oklab, var(--text) 32%, var(--kp-ground));
+                                  border-radius:50%; }
+  .d-dot[data-state="done"]     { background:color-mix(in oklab, var(--text) 18%, var(--kp-ground)); }
+  .d-dot[data-state="dead"]     { background:none;
+                                  box-shadow:inset 0 0 0 1px color-mix(in oklab, var(--text) 30%, var(--kp-ground)); }
+  .d-sname { font-size:13px; font-weight:600; color:var(--text-strong);
+             overflow-wrap:anywhere; }
+  .d-sphase { margin-top:2px; font-size:11.5px; color:var(--muted); }
+  .d-snext { font-size:12px; line-height:1.45; color:var(--text); }
+  .d-sage { font-size:12px; color:var(--muted); text-align:right;
+            white-space:nowrap; }
+  /* The only chart in this block, and it earns its place by showing where the
+     night's cost actually went -- one shared scale across every row, which a
+     column of numbers does not give. It is quieter than the accent by
+     construction: a cost reading is not a thing anybody is being asked to do. */
+  .d-tokwrap { display:flex; flex-direction:column; gap:3px; }
+  .d-tokbar { height:7px; border-radius:2px;
+              background:color-mix(in oklab, var(--text) 34%, var(--kp-ground)); }
+  .d-toknum { font-size:11px; color:var(--muted); white-space:nowrap; }
+  /* A session that published no tokens says so. A zero-length bar would read as
+     "cheap", which is a measurement nobody made. */
+  .d-toknone { font-size:11px; color:var(--muted); font-style:normal; }
+  .d-note { margin:10px 0 0; font-size:11.5px; line-height:1.5; color:var(--muted); }
+
+  /* ---- TONIGHT, EXPANDED ---------------------------------------- */
+  /* A sentence, never tiles. A counter grid has been rejected twice here for
+     taking visual weight off the work, and three numbers in a row of boxes is
+     that grid under another name. */
+  .d-tonight { margin:20px 0 0; font-size:13px; line-height:1.55;
+               color:var(--text); }
+  .d-tonight b { font-weight:600; color:var(--text-strong); }
+
+  /* ---- PULL REQUESTS, EXPANDED ---------------------------------- */
+  .d-prsblk { margin:22px 0 0; padding-top:14px;
+              border-top:1px solid var(--border); }
+  .d-prgrp { margin:12px 0 0; }
+  .d-prgrp:first-of-type { margin-top:0; }
+  .d-prgrph { margin:0 0 4px; font-size:11.5px; color:var(--muted); }
+  .d-prrow { display:grid; grid-template-columns:74px minmax(0,1fr) minmax(0,1fr);
+             gap:0 14px; align-items:baseline;
+             padding:7px 0; border-top:1px solid var(--border); }
+  .d-prrow:first-of-type { border-top:0; }
+  .d-prnum { font-size:13px; font-weight:600; color:var(--text-strong);
+             font-variant-numeric:tabular-nums; }
+  .d-prchk { font-size:12px; color:var(--text); }
+  .d-prwait { font-size:12px; color:var(--muted); }
+
+  /* THIS DOCUMENT CONTAINS NO CONTROL, and must not grow one. The host's click
+     bridge dispatches on `[data-action]` only, and this file carries zero of
+     them and zero event handlers -- so anything here shaped like a button would
+     be inert, whatever it was labelled. An earlier draft shipped a full-width
+     `Expand dashboard` box at narrow widths; it did nothing, and the capability
+     it named already belongs to the drawer's own native expand control. It is
+     deleted rather than wired, because a working copy would still be the second
+     control for one capability. Every mark below is a data mark or a caption.
+     The only interactive affordance in the file is the native `title` tooltip,
+     which needs no handler to work. */
+
+  /* ---- NARROW VIEWPORT ------------------------------------------- */
+  /* Two things render here and nothing else: the chart, and one sentence. The
+     held list, the per-item reasons, the figures, the procedure, the
+     non-containment caption and the report are all still in this DOM and all
+     still on the expanded page -- hidden at this width, not dropped from the
+     product. */
+  @container (max-width: 420px) {
+    /* No `.kp` rule here. `.kp` CARRIES `container-type`, and a container query
+       styles only DESCENDANTS of its query container -- so a `.kp { padding }`
+       written in this block matched nothing and silently did nothing. The card
+       keeps its 18px/20px/22px padding at every width, which is the padding
+       every measurement in this file was taken against. */
+    .d-title { font-size:13.5px; }
+    .d-asof  { font-size:11px; }
+    .d-lede { display:none; }
+    .d-lede-narrow { display:block; }
+
+    .d-grid { display:block; margin:10px 0 0; }
+    /* The long side labels cannot share 290px; two words can. */
+    .d-side-long { display:none; }
+    .d-side-short { display:inline; }
+    .d-sides { height:13px; }
+    .d-side { font-size:11px; }
+    .d-cols { height:68px; margin-top:5px; }
+    .d-num { font-size:13px; line-height:1.15; margin-bottom:3px; }
+    .d-bar { width:70%; }
+    .d-keys { margin-top:5px; }
+    .d-key { font-size:10.5px; line-height:1.2; padding:0 3px; }
+    .d-key-long { display:none; }
+    .d-key-short { display:inline; }
+    .d-nodata-narrow { display:block; }
+    /* The fleet numbers are the ONE addition the card takes, and they take the
+       header's own row. The compact form drops the word "tokens" and keeps the
+       figure, because the header's right side is what is left of 290px after a
+       title and a stamp. */
+    .d-fleet { gap:7px; font-size:11px; }
+    .d-fleet-long { display:none; }
+    .d-fleet-short { display:inline; }
+    /* The stamp keeps its clock and loses its lead-in words, which is what frees
+       the room the pair of figures needs on this row. */
+    .d-asof-long { display:none; }
+    .d-asof-short { display:inline; }
+    /* Everything the budget forbids on this card. Each one is on the expanded
+       page unchanged. */
+    .d-held, .d-what, .d-why, .d-detail, .d-caption, .d-secs, .d-rest,
+    .d-report, .d-nodata-p,
+    .d-fleetblk, .d-tonight, .d-prsblk { display:none; }
+  }
+  @container (min-width: 421px) {
+    .d-lede { font-size:16px; }
+    /* The header's fleet numbers exist for the CARD, where the whole object
+       cannot fit. On the page the `Fleet` row prints every key it carries, so
+       keeping the pair in the header too would be the same two figures twice,
+       once abbreviated. */
+    .d-fleet { display:none; }
+  }
+</style>
+
+<div class="kp" data-kp-root></div>
+
+<!--kirocrew:panel-data-->
+
+<script>
+/* ===================================================================
+   Renderer for the issue-fix pipeline conductor's panel.
+
+   NOTHING UNPUBLISHED IS DRAWN AS A ZERO. A reading the payload does not
+   carry is dropped, because a missing field and a measured zero are
+   different answers and a bar of length zero states the second. The rule
+   applies to the held list as well: `waiting_on_you` absent means the
+   count is unknown, where `waiting_on_you: []` means the crew published
+   that nothing is held. The first draws no column and makes no claim;
+   the second draws an empty slot, which is a finding.
+=================================================================== */
+(function () {
+  var node = document.getElementById('kirocrew-panel-data');
+  if (!node) return;
+
+  var data;
+  try { data = JSON.parse(node.textContent || '{}'); } catch (e) { data = {}; }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) data = {};
+
+  /* Payload text, and it CANNOT throw. `String(v)` looks total and is not: an
+     object whose `toString` AND `valueOf` are both non-callable refuses primitive
+     conversion outright, so `String({"toString": 1, "valueOf": 2})` raises
+     `TypeError: Cannot convert object to primitive value` where `String({a: 1})`
+     quietly gives `[object Object]`. Publish-side validation bounds depth, NaN and
+     byte size and places no constraint on a value's SHAPE, so such an object does
+     reach this file -- and one throw inside the render callback costs the WHOLE
+     panel, because that callback is unguarded and the grid is appended only after
+     the figure rows are built. The reader would get a blank card, not a bad cell.
+
+     A value that refuses conversion is SERIALIZED, never reported as absent. A
+     dash here would say the crew published nothing, which is a different and false
+     answer -- the same lie as printing a clock nobody published. The last branch
+     converts nothing at all, so a value that also defeats `JSON.stringify` (a
+     circular structure, a throwing `toJSON`) still cannot escape as an exception.
+     This is the file's ONLY conversion of a published value to text. */
+  function asText(v) {
+    if (typeof v === 'string') return v;
+    if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+    try {
+      var j = JSON.stringify(v);
+      if (typeof j === 'string') return j;
+    } catch (e) { /* fall through: the branch below converts nothing */ }
+    return Array.isArray(v) ? '[unreadable array]' : '[unreadable value]';
+  }
+
+  /* The only element factory in this file. Text is ASSIGNED, never parsed. */
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined && text !== null) n.textContent = asText(text);
+    return n;
+  }
+  function line(parent, parts) {
+    parts.forEach(function (p) {
+      if (typeof p === 'string') parent.appendChild(document.createTextNode(p));
+      else parent.appendChild(el('b', null, p.b));
+    });
+    return parent;
+  }
+  function str(v) { return typeof v === 'string' && v.trim() !== '' ? v : ''; }
+
+  /* Clocks. The panel's own now is the stamp in its subtitle; a held item's
+     readiness is the first HH:MMZ in the prose the crew published about it, and a
+     session's start is the clock inside its `since`. Anything that does not parse
+     gets NO clock -- never a guessed one. This is the only arithmetic the
+     narrow layout's sentence rests on.
+
+     The lead-in is `(?:^|[^0-9])`, NOT `\b`. A word boundary cannot exist between
+     the `T` and the `1` of `2026-09-26T12:41Z`, because both are word characters
+     -- so the earlier `\b` form silently failed on every ISO stamp and the fleet
+     block showed an em dash instead of an age on all seven rows. What the lead-in
+     has to exclude is a DIGIT before the hour, so that is what it excludes. */
+  function minutes(text, needZ) {
+    if (typeof text !== 'string') return null;
+    var m = needZ ? text.match(/(?:^|[^0-9])(\d{1,2}):(\d{2})Z/)
+                  : text.match(/(?:^|[^0-9])(\d{1,2}):(\d{2})/);
+    if (!m) return null;
+    var h = Number(m[1]), mi = Number(m[2]);
+    if (!isFinite(h) || !isFinite(mi) || h > 23 || mi > 59) return null;
+    return h * 60 + mi;
+  }
+  function human(mins) {
+    var h = Math.floor(mins / 60), m = mins % 60;
+    if (h === 0) return m + 'm';
+    return h + 'h' + (m < 10 ? '0' : '') + m + 'm';
+  }
+  /* One short label for the sentence: the item's own identifier, the first run
+     of digits in what the crew wrote. Extraction, not interpretation -- nothing
+     is classified and no meaning is read out of the sentence.
+
+     `asText`, not `String`: `what` is a published value of any shape, and this is
+     the file's second place one reaches a conversion. */
+  function tagFor(what) {
+    var s = (what === undefined || what === null) ? '' : asText(what);
+    var m = s.match(/\d{3,}/);
+    return m ? m[0] : '';
+  }
+
+  /* A count, or null. The gate for every figure this file draws: a value that is
+     not a finite non-negative NUMBER is ABSENT, never coerced.
+
+     `Number()` alone is not that gate, and the difference is not academic --
+     `Number(true)` is 1, `Number([])` and `Number(' ')` are both 0, `Number([7])`
+     is 7. Each of those is a figure nobody published, and a panel whose whole
+     claim is that it draws only published values cannot reach one. So the TYPE is
+     checked before any conversion: a number is read, a numeric string is read
+     (a publisher may quote a figure), and a boolean, array or object is absent.
+     A blank or whitespace-only string is absent too -- it is not the number 0. */
+  function count(v) {
+    if (typeof v === 'number') return (isFinite(v) && v >= 0) ? v : null;
+    if (typeof v !== 'string') return null;
+    var s = v.trim();
+    if (s === '') return null;
+    var n = Number(s);
+    return (isFinite(n) && n >= 0) ? n : null;
+  }
+  /* Two renderings of one published number, and the difference matters. The
+     card has room for a shortened figure and nothing else, so it gets one --
+     with the exact value on the element's own title, so the rounding is never
+     the only thing available. The expanded page prints the number whole. */
+  function abbrev(n) {
+    if (n >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, '') + 'B';
+    if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+    if (n >= 1e4) return Math.round(n / 1e3) + 'k';
+    if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'k';
+    return String(n);
+  }
+  function grouped(n) {
+    var s = String(Math.round(n)), out = '', i;
+    for (i = 0; i < s.length; i++) {
+      if (i > 0 && (s.length - i) % 3 === 0) out += ',';
+      out += s.charAt(i);
+    }
+    return out;
+  }
+
+  /* The five states a session may be in. The set is CLOSED because each value
+     is a look-up into a stylesheet rule, and free text cannot be one: a value
+     off this list is drawn as `working` -- the safest reading, since a row that
+     might still be running must not look finished -- its own published word is
+     printed unchanged, and the block carries a note naming it. Inventing a
+     sixth mark for text nobody defined would be this template deciding what a
+     state means. */
+  var STATES = ['working', 'waiting', 'blocked', 'done', 'dead'];
+
+  var totals = (data['night totals'] && typeof data['night totals'] === 'object'
+                && !Array.isArray(data['night totals'])) ? data['night totals'] : null;
+  /* PRESENCE, not length. `null` here means the crew published no held list at
+     all, which this template must not render as a count of zero. */
+  /* The held list, filtered ONCE to the entries this file can actually render,
+     because every count of it and the accent column are taken from the result.
+     Both render loops already skipped a non-object entry while the counts used
+     the raw length, so `waiting_on_you: ["#123 needs an approve"]` drew the
+     accent column as 1, said "1 item is waiting for you", headed the list "The 1
+     it stopped at" -- and then drew no rows. The card's loudest mark named work
+     it went on to refuse to name. One filtered list is the fix: the figure and
+     the rows come from the same array, so they cannot disagree.
+
+     A published-but-unreadable entry is not the same as an absent field and not
+     the same as an empty list, so the count of what was dropped is kept and the
+     page names it rather than quietly showing a smaller number. */
+  var heldRaw = Array.isArray(data.waiting_on_you) ? data.waiting_on_you : null;
+  var held = heldRaw ? heldRaw.filter(function (x) {
+    return !!x && typeof x === 'object' && !Array.isArray(x);
+  }) : null;
+  var heldDropped = heldRaw ? heldRaw.length - held.length : 0;
+  var heldList = held || [];
+
+  /* The round-4 fields, each read by name and each OPTIONAL. A conductor that
+     publishes none of them gets exactly the card it had before this block
+     existed, which is why every one of these is a presence test rather than a
+     default. */
+  var fleet = (data.fleet && typeof data.fleet === 'object' && !Array.isArray(data.fleet))
+    ? data.fleet : null;
+  var sessions = Array.isArray(data.sessions)
+    ? data.sessions.filter(function (s) { return s && typeof s === 'object'; }) : null;
+  var issues = (data.issues && typeof data.issues === 'object' && !Array.isArray(data.issues))
+    ? data.issues : null;
+  var prs = Array.isArray(data.prs)
+    ? data.prs.filter(function (p) { return p && typeof p === 'object'; }) : null;
+  /* PUBLISHED, never summed from `sessions`. Adding the rows up here would make
+     this template the author of the figure it then renders as a total, and one
+     more kind of row would silently make it wrong -- the exact judgment that
+     killed the ratio direction. Absent means absent. */
+  var tokensTonight = count(data['tokens tonight']);
+  var running = fleet ? count(fleet.running) : null;
+
+  /* One shared scale for the token bars, taken across the rows that actually
+     published a figure. A row without one is off the scale rather than at the
+     bottom of it. */
+  var tokMax = 0, tokRows = 0;
+  (sessions || []).forEach(function (s) {
+    var t = count(s.tokens);
+    if (t === null) return;
+    tokRows += 1;
+    if (t > tokMax) tokMax = t;
+  });
+
+  /* The oldest held item, by the clocks the crew published. A stamp later than
+     the panel's own now would be yesterday's, which this payload cannot
+     distinguish, so it is treated as unstamped rather than aged. */
+  var now = minutes(data.subtitle, false);
+  var oldest = null;
+  heldList.forEach(function (item) {
+    var start = minutes(item.detail, true);
+    if (now === null || start === null || start > now) return;
+    var wait = now - start;
+    if (oldest === null || wait > oldest.wait) oldest = { item: item, wait: wait };
+  });
+
+  /* The four readings, each with the side of the wall it belongs to. Each
+     carries two authored keys: the full one for the page, and a one-word one
+     for the narrow layout, where four multi-word keys cannot share 290px. The
+     short key loses the unit -- all four columns count pull requests -- which
+     the page states in full under the plot.
+
+     The value goes through `count()`, the SAME gate the figures row and every
+     other figure uses. It had its own `Number()` once, which was laxer: a
+     published `' '` or `[]` became a column of 0 while the figures row withheld
+     the very same value, so one panel gave two answers about one field and the
+     chart's answer was the invented one. One gate is the fix -- they cannot
+     disagree again. */
+  function reading(value, key, short, side, needs) {
+    var v = count(value);
+    if (v === null) return null;
+    return { value: v, key: key, short: short, side: side, needs: !!needs };
+  }
+  var cols = [
+    totals ? reading(totals['prs opened'], 'pull requests opened', 'opened', 'agent') : null,
+    totals ? reading(totals['verified greens'], 'proven green', 'green', 'agent') : null,
+    held ? reading(held.length, 'waiting on a person', 'waiting', 'person', true) : null,
+    totals ? reading(totals['merged'], 'merged', 'merged', 'person') : null
+  ].filter(function (c) { return c !== null; });
+
+  var max = cols.reduce(function (m, c) { return Math.max(m, c.value); }, 0) || 1;
+  var agentCount = cols.filter(function (c) { return c.side === 'agent'; }).length;
+  var split = agentCount > 0 && agentCount < cols.length;
+  var wallAt = cols.length ? (agentCount / cols.length) * 100 : 50;
+  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, isFinite(v) ? v : lo)); }
+
+  document.querySelectorAll('[data-kp-root]').forEach(function (root) {
+    while (root.firstChild) root.removeChild(root.firstChild);
+
+    var head = el('div', 'd-head');
+    /* No placeholder title. A crew that published none gets none: the drawer's
+       own bar already names the crew above this document, so a literal invented
+       here would be one more thing on the card that nobody published. */
+    if (str(data.title)) head.appendChild(el('div', 'd-title', data.title));
+    /* The stamp, in two forms. A narrow viewport needs to know the panel is not
+       stale, which is the TIME; the lead-in words are the part the eye skips.
+       So the short form is the published string from its first clock to its end
+       -- `as of 12:56 UTC` becomes `12:56 UTC`, keeping the zone -- and the page
+       prints it whole. Nothing is invented and nothing after the clock is
+       dropped: a subtitle with no parsable clock keeps every character, because
+       there is then no safe place to cut it.
+
+       This is what pays for the fleet ratio at the narrow width. The full stamp
+       measures 79.5 CSS px and leaves 38.6 for the fleet slot at a 298px
+       container, where the pair needs 49.6 and the row wrapped for 530 device
+       px. Cutting the two lead-in words returns about 27 px, which is the
+       difference between wrapping and not. */
+    if (str(data.subtitle)) {
+      var asof = el('div', 'd-asof');
+      var full = String(data.subtitle);
+      var cut = full.search(/\d{1,2}:\d{2}/);
+      asof.appendChild(el('span', 'd-asof-long', full));
+      asof.appendChild(el('span', 'd-asof-short', cut > 0 ? full.slice(cut) : full));
+      asof.setAttribute('title', full);
+      head.appendChild(asof);
+    }
+
+    /* ---- the two fleet numbers, on the card ---------------------- */
+    /* The only figures this card carries besides the chart's own. They sit on
+       the header's row, in the stamp's ink, and each is withheld independently:
+       a crew publishing `running` but no token total gets one number, not a
+       placeholder for the other. Neither is ever the loudest thing here -- the
+       chart's accent column and the sentence keep that, because a fleet count
+       asks nothing of the reader.
+
+       THE WORDING IS A MEASUREMENT. The header's right side has 70.6 CSS px left
+       at a 330px container once the title (111.9) and the published stamp (79.5)
+       have taken theirs. `5 running` plus `3.5M` measures 83.4 and wraps the row,
+       which costs 41 device px and breaks the budget; the ratio form measures
+       49.8 and fits with 20.8 px to spare. So the card shows `5/7`, which is
+       also the pair the brief asked for -- how many of the dispatched sessions
+       are running -- and both halves are published under their own names, so
+       nothing here is a total this template invented. The full reading rides on
+       `title`, and the expanded page prints the whole object in its own row. */
+    if (running !== null || tokensTonight !== null) {
+      var fl = el('div', 'd-fleet');
+      if (running !== null) {
+        var fr = el('div', 'd-fleetn');
+        var dispatched = fleet ? count(fleet.dispatched) : null;
+        var rshort = el('span', 'd-fleet-short');
+        var rlong = el('span', 'd-fleet-long');
+        if (dispatched !== null) {
+          /* The bare ratio, on the card, ALWAYS. An earlier draft gave the
+             figure its words back whenever it was the only one -- on a clone
+             measurement of 61.6px against the 70.6 available. The real element
+             measures 73.0 and wrapped the row, because the clone did not carry
+             the two `<b>` runs the real markup has. So the card takes the same
+             trade D's one-word column keys already take: the short form loses
+             the word, and the reading is on the element's own `title` and in
+             full on the expanded page. */
+          line(rshort, [{ b: running }, '/', { b: dispatched }]);
+          line(rlong, [{ b: running }, ' of ', { b: dispatched }, ' running']);
+          fr.setAttribute('title', running + ' of ' + dispatched
+                          + ' dispatched sessions are running');
+        } else {
+          /* No denominator published, so none is drawn. A bare count keeps its
+             word, because `5` alone names nothing -- and one short figure with
+             its word measures inside the row. */
+          line(rshort, [{ b: running }, ' running']);
+          line(rlong, [{ b: running }, ' running']);
+          fr.setAttribute('title', running + ' sessions running');
+        }
+        fr.appendChild(rshort);
+        fr.appendChild(rlong);
+        fl.appendChild(fr);
+      }
+      if (tokensTonight !== null) {
+        var ft = el('div', 'd-fleetn');
+        /* Two renderings of one number: the page prints it whole, the card
+           prints it short. The exact figure rides on `title` so the rounding is
+           never the only value available. */
+        var short = el('span', 'd-fleet-short');
+        line(short, [{ b: abbrev(tokensTonight) }]);
+        var long = el('span', 'd-fleet-long');
+        line(long, [{ b: abbrev(tokensTonight) }, ' tokens']);
+        ft.appendChild(short);
+        ft.appendChild(long);
+        ft.setAttribute('title', grouped(tokensTonight) + ' tokens');
+        fl.appendChild(ft);
+      }
+      head.appendChild(fl);
+    }
+    if (head.childElementCount) root.appendChild(head);
+
+    /* ---- the two ledes ----------------------------------------- */
+    /* Page lede: the count, then what the columns share. Each clause is
+       withheld when the payload does not support it, so the sentence can get
+       shorter but never states something nobody published. */
+    var lede = el('p', 'd-lede');
+    if (held) {
+      var need = el('span', 'd-lede-need');
+      line(need, [{ b: held.length },
+                  held.length === 1 ? ' item is waiting for you.'
+                                    : ' items are waiting for you.']);
+      lede.appendChild(need);
+    }
+    if (cols.length > 1) {
+      var expl = el('span', 'd-lede-expl');
+      expl.textContent = (held ? ' ' : '')
+        + 'Every column below counts pull requests on one scale'
+        + (split ? ', and the ones past the line cannot move until a person acts.' : '.');
+      lede.appendChild(expl);
+    }
+    if (lede.childElementCount) root.appendChild(lede);
+
+    /* Narrow sentence: the one sentence the narrow layout is allowed. The chart
+       has no time in it, so it carries which held item to touch first, ordered
+       by the oldest published clock -- the layout offers no priority of its own.
+       With no parsable clock there is no ordering to offer and it states the
+       count instead; with no held list published it says that, because a count
+       of zero would be a claim. */
+    if (cols.length) {
+      var narrowLede = el('p', 'd-lede-narrow');
+      var oldestTag = oldest ? tagFor(oldest.item.what) : '';
+      if (oldest && oldestTag) {
+        line(narrowLede, ['Start with ', { b: oldestTag }, ', waiting ',
+                        { b: human(oldest.wait) }, '.']);
+      } else if (held) {
+        line(narrowLede, [{ b: held.length },
+                        held.length === 1 ? ' item is waiting for you.'
+                                          : ' items are waiting for you.']);
+      } else {
+        narrowLede.textContent = 'No held list was published.';
+      }
+      root.appendChild(narrowLede);
+    }
+
+    var grid = el('div', 'd-grid');
+
+    /* ---- plot -------------------------------------------------- */
+    var plot = el('div', 'd-plot');
+
+    if (cols.length) {
+      var sides = el('div', 'd-sides');
+      function sideLabel(at, side, long, short) {
+        var s = el('div', 'd-side');
+        s.setAttribute('data-side', side);
+        s.appendChild(el('span', 'd-side-long', long));
+        s.appendChild(el('span', 'd-side-short', short));
+        s.style.setProperty('left', clamp(at, 4, 96) + '%');
+        sides.appendChild(s);
+      }
+      /* The side labels name the two halves of a division, so they are drawn
+         only when there IS one. One side alone would label the whole field as
+         if the other had been measured and found empty. */
+      if (split) {
+        sideLabel(wallAt / 2, 'agent', 'an agent finishes these alone', 'an agent');
+        sideLabel(wallAt + (100 - wallAt) / 2, 'person', 'these wait for a person', 'you');
+      }
+
+      var field = el('div', 'd-field');
+      field.appendChild(sides);
+
+      var colsBox = el('div', 'd-cols');
+      cols.forEach(function (c) {
+        var col = el('div', 'd-col');
+        col.appendChild(el('div', 'd-num', c.value));
+        var bar = el('div', 'd-bar');
+        if (c.needs) bar.setAttribute('data-needs', '1');
+        if (c.value === 0) bar.setAttribute('data-zero', '1');
+        bar.style.setProperty('height', clamp((c.value / max) * 100, 0, 100) + '%');
+        bar.setAttribute('title', c.key + ': ' + c.value);
+        col.appendChild(bar);
+        colsBox.appendChild(col);
+      });
+      field.appendChild(colsBox);
+
+      var keys = el('div', 'd-keys');
+      cols.forEach(function (c) {
+        var k = el('div', 'd-key');
+        var b = el('b', null);
+        b.appendChild(el('span', 'd-key-long', c.key));
+        b.appendChild(el('span', 'd-key-short', c.short));
+        k.appendChild(b);
+        keys.appendChild(k);
+      });
+      field.appendChild(keys);
+
+      /* Same rule as the side labels: a wall with nothing on one side of it
+         divides nothing, and would read as a measured emptiness. */
+      if (split) {
+        var wall = el('div', 'd-wall');
+        wall.style.setProperty('left', clamp(wallAt, 0, 100) + '%');
+        field.appendChild(wall);
+      }
+      plot.appendChild(field);
+    }
+
+    /* The caption's whole job is to refuse the funnel reading, which only
+       arises once there are several columns to mistake for stages. Its count
+       is derived from what was actually drawn, so it cannot describe four
+       readings when three were published. */
+    if (cols.length > 1) {
+      var cap = el('p', 'd-caption');
+      cap.textContent = 'These are ' + cols.length + ' separate readings of the same '
+        + 'night, not ' + cols.length + ' stages of one flow, and nothing here is '
+        + 'subtracted from anything else. Work waiting on a person tonight may have '
+        + 'been opened on an earlier night, so the columns are not subsets of each '
+        + 'other.'
+        + (split ? ' What the picture compares is how much stands on each side of the '
+                 + 'line: everything an agent is allowed to finish, against everything '
+                 + 'that needs a person and has not moved.' : '');
+      plot.appendChild(cap);
+    }
+
+    /* ---- nothing to draw --------------------------------------- */
+    /* Reached when the payload carried no reading this template knows. It names
+       the two fields it reads and the fields that arrived instead, so the
+       mismatch is visible on the panel rather than only in this file. */
+    if (!cols.length) {
+      /* Whether anything ELSE on this panel drew decides what this frame is
+         allowed to claim. With a fleet, a PR list or a tonight sentence on the
+         page, "nothing here can be drawn" is false -- the chart alone could not
+         be drawn -- and the difference is the whole reason this frame exists.
+
+         `totals` and `fleet` are in the test because `figrow` renders each of
+         them whenever it is a non-empty object, DIRECTLY BELOW this frame. They
+         were missing from it, so `night totals: {"merged": null}` -- an object
+         whose every value is unreadable -- printed its keys under the words
+         "Nothing here can be drawn." */
+      function hasKeys(o) { return !!o && Object.keys(o).length > 0; }
+      var drewElse = !!(sessions && sessions.length) || !!(prs && prs.length)
+        || !!issues || tokensTonight !== null
+        || hasKeys(totals) || hasKeys(fleet);
+      var nd = el('div', 'd-nodata');
+      nd.appendChild(el('p', 'd-nodata-h',
+        drewElse ? 'No chart can be drawn.' : 'Nothing here can be drawn.'));
+
+      /* Absent and unreadable are DIFFERENT answers, and this sentence used to
+         give the first one for both: it said the field was not published even
+         when it arrived carrying values no reading could be taken from. Each
+         half is now described by what actually happened to it, so a publisher
+         reading the panel is not sent to add a field that is already there.
+
+         ARRIVAL is the presence of the KEY, not a successful parse. Testing the
+         parsed value instead -- `heldRaw !== null` -- reports a
+         `waiting_on_you: "none"` as never published, which is the same lie in a
+         narrower place: the key is right there in the payload, it is just the
+         wrong type. */
+      function arrived(key) {
+        return Object.prototype.hasOwnProperty.call(data, key);
+      }
+      function fieldPhrase(name, came) {
+        return came ? ['no figure this panel can read in ', { b: name }]
+                    : ['no ', { b: name }];
+      }
+      var narrowMsg = el('p', 'd-nodata-narrow');
+      line(narrowMsg, ['This panel published ']
+        .concat(fieldPhrase('waiting_on_you', arrived('waiting_on_you')))
+        .concat([' and '])
+        .concat(fieldPhrase('night totals', arrived('night totals')))
+        .concat(['.']));
+      nd.appendChild(narrowMsg);
+
+      var p1 = el('p', 'd-nodata-p');
+      p1.appendChild(document.createTextNode('The chart draws two published fields: '));
+      p1.appendChild(el('span', 'd-k', 'waiting_on_you'));
+      p1.appendChild(document.createTextNode(', a list of what needs a person, and '));
+      p1.appendChild(el('span', 'd-k', 'night totals'));
+      /* Same rule as the narrow sentence above, and for the same reason: "Neither
+         arrived" is FALSE of a field that arrived carrying values no reading can
+         be taken from, and telling a publisher their field is missing sends them
+         to add one that is already there. The two halves are described
+         separately because they can fail in different ways at the same time. */
+      var arrivedCount = (arrived('waiting_on_you') ? 1 : 0)
+                       + (arrived('night totals') ? 1 : 0);
+      p1.appendChild(document.createTextNode(
+        ', an object of counts. '
+        + (arrivedCount === 0
+            ? 'Neither arrived'
+            : arrivedCount === 2
+              ? 'Both arrived, and neither carries a figure this panel can read'
+              : (arrived('waiting_on_you')
+                  ? 'waiting_on_you arrived and carries nothing readable; '
+                    + 'night totals did not arrive'
+                  : 'night totals arrived and carries nothing readable; '
+                    + 'waiting_on_you did not arrive'))
+        + ', so there is no reading to put on a scale. Nothing is shown as zero, '
+        + 'because a missing field and a measured zero are different answers.'));
+      nd.appendChild(p1);
+
+      /* Only the keys this template does NOT read. Listing one it just rendered
+         would tell the reader their field was ignored while it is on the page
+         above. */
+      var READS = ['title', 'subtitle', 'waiting_on_you', 'night totals', 'fleet',
+                   'sessions', 'issues', 'prs', 'tokens tonight', 'tokens note',
+                   'how a green is proven now', 'four ways a surface lied tonight',
+                   'report'];
+      var names = Object.keys(data).filter(function (k) {
+        return READS.indexOf(k) === -1;
+      });
+      var p2 = el('p', 'd-nodata-p');
+      if (names.length) {
+        p2.appendChild(document.createTextNode('Published, and not read by this view: '));
+        names.forEach(function (k, i) {
+          if (i) p2.appendChild(document.createTextNode(', '));
+          p2.appendChild(el('span', 'd-k', k));
+        });
+        p2.appendChild(document.createTextNode('.'));
+      } else if (!Object.keys(data).length) {
+        p2.textContent = 'The published object was empty.';
+      } else {
+        /* Every key published IS one this view reads -- so the gap is that the
+           two the chart needs were not among them, which the paragraph above
+           already named. Claiming an empty object here would be false. */
+        p2.textContent = 'Every other field published here is read elsewhere on this panel.';
+      }
+      nd.appendChild(p2);
+      plot.appendChild(nd);
+    }
+
+    /* The figures need no decision, so they fill the quiet space under the
+       caption rather than adding a band of their own. */
+    var rest = el('div', 'd-rest');
+    function figrow(key, obj) {
+      if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
+      var ks = Object.keys(obj);
+      if (!ks.length) return;
+      var r = el('div', 'd-figrow');
+      r.appendChild(el('div', 'd-figkey', key));
+      ks.forEach(function (k) {
+        var f = el('div', 'd-fig');
+        f.appendChild(el('b', null, obj[k] === null ? '\u2014' : obj[k]));
+        f.appendChild(document.createTextNode(' ' + k));
+        r.appendChild(f);
+      });
+      rest.appendChild(r);
+    }
+    figrow('Tonight', data['night totals']);
+    figrow('Fleet', data.fleet);
+    if (rest.childElementCount) plot.appendChild(rest);
+
+    grid.appendChild(plot);
+
+    /* ---- the items the wall stopped ---------------------------- */
+    /* `heldDropped` is in the condition, not just the body: a payload whose
+       every entry was unreadable leaves `heldList` empty, and without this the
+       block would not render and the note explaining the drop would be
+       suppressed by the very filtering it exists to report. */
+    if (heldList.length || heldDropped > 0) {
+      var heldBox = el('div', 'd-held');
+      var hh = el('p', 'd-held-h');
+      line(hh, ['The ', { b: heldList.length }, ' it stopped at']);
+      heldBox.appendChild(hh);
+      heldList.forEach(function (item) {
+        var it = el('div', 'd-item');
+        it.appendChild(el('div', 'd-what', item.what));
+        if (item['why you']) it.appendChild(el('div', 'd-why', item['why you']));
+        if (item.detail) it.appendChild(el('p', 'd-detail', item.detail));
+        heldBox.appendChild(it);
+      });
+      /* A dropped entry is named, never absorbed. The counts above now describe
+         the rows below, which is the point -- but a reader who published five
+         items and sees three has to be told why, or the panel has quietly
+         corrected its own publisher. */
+      if (heldDropped > 0) {
+        heldBox.appendChild(el('p', 'd-note',
+          heldDropped + (heldDropped === 1
+            ? ' more entry was published under waiting_on_you but is not an'
+              + ' object, so it has no fields to draw.'
+            : ' more entries were published under waiting_on_you but are not'
+              + ' objects, so they have no fields to draw.')));
+      }
+      grid.appendChild(heldBox);
+    }
+    if (grid.childElementCount < 2) grid.setAttribute('data-cols', '1');
+    root.appendChild(grid);
+
+    /* ---- 1. FLEET ---------------------------------------------- */
+    /* One row per published session. The token bar is the only chart in this
+       block and it is on ONE scale across every row, so the block answers where
+       the night's cost went rather than listing six numbers the reader would
+       have to compare by eye. */
+    if (sessions && sessions.length) {
+      var fb = el('div', 'd-fleetblk');
+      fb.appendChild(el('h2', 'd-sech', 'Fleet'));
+      var offSet = [];
+      sessions.forEach(function (s) {
+        var row = el('div', 'd-srow');
+
+        var raw = str(s.state);
+        var known = STATES.indexOf(raw) !== -1;
+        if (raw && !known && offSet.indexOf(raw) === -1) offSet.push(raw);
+        var st = el('div', 'd-sstate');
+        var dot = el('span', 'd-dot');
+        /* An unrecognised value is drawn as `working`: a row that might still be
+           running must not be given a finished mark. Its own word is still what
+           gets printed. */
+        dot.setAttribute('data-state', known ? raw : 'working');
+        st.appendChild(dot);
+        st.appendChild(el('span', null, raw || 'no state'));
+        row.appendChild(st);
+
+        var who = el('div', null);
+        who.appendChild(el('div', 'd-sname', s.name === undefined ? '' : s.name));
+        if (str(s.phase)) who.appendChild(el('div', 'd-sphase', s.phase));
+        row.appendChild(who);
+
+        /* The session's own words, unread and unclassified. */
+        row.appendChild(el('div', 'd-snext', str(s.next) ? s.next : ''));
+
+        /* Age against the panel's own now, the same clock every wait on this
+           card is measured against. A `since` that does not parse, or that reads
+           LATER than now, gets no age rather than a guessed one -- and says so in
+           words, because a bare dash does not distinguish "not measured" from
+           "zero". A stamp later than now is a session that started before
+           midnight: the panel's own now is an HH:MM with no date, so this
+           arithmetic cannot span a day boundary and must not pretend to. */
+        var startedAt = minutes(s.since, true);
+        if (startedAt === null) startedAt = minutes(s.since, false);
+        var age = '', why = 'no clock';
+        if (now !== null && startedAt !== null) {
+          if (startedAt <= now) age = human(now - startedAt);
+          /* The stamp parsed and reads LATER than the panel's own now, so it
+             belongs to an earlier day. That is a different fact from having no
+             stamp at all, and labelling both `no clock` would report a published
+             value as missing. The panel's now is an HH:MM with no date, which is
+             why this arithmetic stops at the day boundary. */
+          else why = 'before today';
+        }
+        row.appendChild(el('div', 'd-sage', age || why));
+
+        var tk = count(s.tokens);
+        var tw = el('div', 'd-tokwrap');
+        if (tk === null) {
+          /* No bar at all. A zero-length one would read as a cheap session,
+             which is a measurement nobody made. */
+          tw.appendChild(el('div', 'd-toknone', 'no tokens published'));
+        } else {
+          var bar = el('div', 'd-tokbar');
+          bar.style.setProperty('width', clamp(tokMax > 0 ? (tk / tokMax) * 100 : 0, 0, 100) + '%');
+          bar.setAttribute('title', grouped(tk) + ' tokens');
+          tw.appendChild(bar);
+          tw.appendChild(el('div', 'd-toknum', grouped(tk)));
+        }
+        row.appendChild(tw);
+
+        fb.appendChild(row);
+      });
+
+      /* The bar's own provenance, which the template cannot know and therefore
+         does not assert: the publisher says where the figures came from, the
+         same way the panel names the source of any figure a chart divides by.
+         Absent means no claim is made either way. */
+      if (str(data['tokens note'])) {
+        fb.appendChild(el('p', 'd-note', data['tokens note']));
+      }
+      if (tokRows) {
+        var sc = el('p', 'd-note');
+        line(sc, ['The bars share one scale across the ', { b: tokRows },
+                  tokRows === 1 ? ' row that published a token figure.'
+                                : ' rows that published a token figure.',
+                  tokRows < sessions.length
+                    ? ' A row without one is off the scale, not at the bottom of it.' : '']);
+        fb.appendChild(sc);
+      }
+      if (offSet.length) {
+        var un = el('p', 'd-note');
+        un.appendChild(document.createTextNode(
+          offSet.length === 1 ? 'One session published a state this panel has no mark for, '
+                              : offSet.length + ' sessions published a state this panel has no mark for, '));
+        offSet.forEach(function (k, i) {
+          if (i) un.appendChild(document.createTextNode(', '));
+          un.appendChild(el('span', 'd-k', k));
+        });
+        un.appendChild(document.createTextNode(
+          '. Each is drawn as still working, which is the safe reading, and its own word is printed.'));
+        fb.appendChild(un);
+      }
+      root.appendChild(fb);
+    }
+
+    /* ---- 2. TONIGHT -------------------------------------------- */
+    /* A sentence. The counts are named side by side and NOT set against each
+       other: nothing published says `resolved` is a subset of `claimed`, so
+       "3 of 16" would state a containment the payload does not carry. */
+    if (issues || tokensTonight !== null) {
+      var parts = [], any = false;
+      ['resolved', 'claimed', 'skipped'].forEach(function (k) {
+        var v = issues ? count(issues[k]) : null;
+        if (v === null) return;
+        if (any) parts.push(', ');
+        parts.push({ b: v });
+        parts.push(' ' + k);
+        any = true;
+      });
+      var tn = el('p', 'd-tonight');
+      if (any) {
+        line(tn, ['Issues tonight: '].concat(parts).concat(['.']));
+        tn.appendChild(document.createTextNode(
+          ' These are separate counts of the same night, not stages of one flow.'));
+      }
+      if (tokensTonight !== null) {
+        var ts = el('span', null);
+        line(ts, [(any ? ' ' : '') + 'The night drew ', { b: grouped(tokensTonight) },
+                  ' tokens.']);
+        tn.appendChild(ts);
+      }
+      if (tn.childNodes.length) root.appendChild(tn);
+    }
+
+    /* ---- 3. PULL REQUESTS -------------------------------------- */
+    /* Grouped by the state the crew published, with `waiting on you` first
+       because it is the only group that names an action for the reader. Every
+       other group keeps the order it was published in; no state is invented for
+       a row that carries none. */
+    if (prs && prs.length) {
+      var pb = el('div', 'd-prsblk');
+      pb.appendChild(el('h2', 'd-sech', 'Pull requests'));
+      /* `Object.create(null)`, not `{}`. The key here is a string the crew
+         published, so `{}` lets it reach the prototype chain: a state of
+         `__proto__` makes `groups[k]` the prototype OBJECT -- truthy, so no array
+         is assigned -- and `groups[k].push` then throws, which aborts this
+         forEach and costs EVERY pull-request row, not the one bad row.
+         `constructor`, `toString` and `valueOf` do the same. A prototype-less
+         object has no inherited key to collide with, so any published string is
+         just a group label. */
+      var order = [], groups = Object.create(null);
+      prs.forEach(function (p) {
+        var k = str(p.state) || 'no state published';
+        if (!groups[k]) { groups[k] = []; order.push(k); }
+        groups[k].push(p);
+      });
+      order.sort(function (a, b) {
+        if (a === 'waiting on you') return -1;
+        if (b === 'waiting on you') return 1;
+        return 0;
+      });
+      order.forEach(function (k) {
+        var g = el('div', 'd-prgrp');
+        g.appendChild(el('p', 'd-prgrph', k));
+        groups[k].forEach(function (p) {
+          var r = el('div', 'd-prrow');
+          var n = count(p.number);
+          r.appendChild(el('div', 'd-prnum', n === null ? str(p.number) : n));
+          r.appendChild(el('div', 'd-prchk', str(p.checks) ? p.checks : '\u2014'));
+          r.appendChild(el('div', 'd-prwait', str(p['blocked by']) ? p['blocked by'] : '\u2014'));
+          g.appendChild(r);
+        });
+        pb.appendChild(g);
+      });
+      root.appendChild(pb);
+    }
+
+    /* ---- supporting ------------------------------------------- */
+    var secs = el('div', 'd-secs');
+    var steps = data['how a green is proven now'];
+    if (Array.isArray(steps) && steps.length) {
+      var s = el('div', 'd-sec');
+      s.appendChild(el('h2', 'd-sech', 'How a green is proven now'));
+      var ol = el('ol', 'd-steps');
+      steps.forEach(function (x) { ol.appendChild(el('li', null, x)); });
+      s.appendChild(ol);
+      secs.appendChild(s);
+    }
+    var lies = data['four ways a surface lied tonight'];
+    if (Array.isArray(lies) && lies.length) {
+      var l = el('div', 'd-sec');
+      l.appendChild(el('h2', 'd-sech', 'Four ways a surface lied tonight'));
+      var ul = el('ul', 'd-lies');
+      lies.forEach(function (x) { ul.appendChild(el('li', null, x)); });
+      l.appendChild(ul);
+      secs.appendChild(l);
+    }
+    if (secs.childElementCount) root.appendChild(secs);
+
+    if (str(data.report)) {
+      var rep = el('p', 'd-report');
+      var txt = String(data.report);
+      var sp = txt.indexOf(' ');
+      if (sp > 0) {
+        rep.appendChild(el('span', 'd-path', txt.slice(0, sp)));
+        rep.appendChild(document.createTextNode(txt.slice(sp)));
+      } else { rep.textContent = txt; }
+      root.appendChild(rep);
+    }
+  });
+})();
+</script>
