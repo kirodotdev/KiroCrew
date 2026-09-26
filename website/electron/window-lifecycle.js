@@ -67,6 +67,14 @@ const TRAFFIC_LIGHT_NATIVE_H = 12;
 const TRAFFIC_LIGHT_Y_NUDGE = -4;
 const FULLSCREEN_SETTLE_MS = [250, 1500];
 const DASHBOARD_SETTLE_MS = 1500;
+// A display rearrange (monitor hot-plug, or dragging the window to a screen
+// with a different backing scale factor) changes the window's content bounds,
+// but macOS reports the new geometry slightly AFTER the display event fires. An
+// immediate recompute plus bounded deferred passes settle the WebContentsView
+// onto the new scale — the same rationale as FULLSCREEN_SETTLE_MS. Without it
+// the child view keeps its old-scale bounds until the next resize/move/paint,
+// which surfaces as the dashboard briefly ghosting across both displays.
+const DISPLAY_SETTLE_MS = [0, 250, 1500];
 const WINDOW_SAVE_DEBOUNCE_MS = 400;
 const WINDOWS_TITLEBAR_MENU_IDS = new Set([
   "file-menu",
@@ -452,6 +460,34 @@ function createWindowLifecycle(options) {
     win.on("show", updateViewBounds);
     win.on("restore", updateViewBounds);
     win.on("move", updateViewBounds);
+
+    // A display rearrange does not reliably fire a "resize"/"move" on the
+    // window, yet it changes the backing scale factor and content bounds. Bind
+    // the screen-level display events and re-run the reflow on a settle
+    // schedule so the child view tracks the new geometry instead of ghosting on
+    // the old display. Paired with an unbind in "closed" below — the bind/unbind
+    // discipline the pet-overlay leak (#4673) established: a screen listener
+    // that outlives its window keeps firing against a destroyed view.
+    let displaySettleTimers = [];
+    const onDisplayReflow = () => {
+      if (win.isDestroyed()) return;
+      for (const timer of displaySettleTimers) clearTimeout(timer);
+      displaySettleTimers = DISPLAY_SETTLE_MS.map((ms) =>
+        ms === 0 ? (updateViewBounds(), null) : setTimeout(updateViewBounds, ms),
+      ).filter(Boolean);
+    };
+    const DISPLAY_EVENTS = ["display-metrics-changed", "display-added", "display-removed"];
+    if (screen && typeof screen.on === "function") {
+      for (const event of DISPLAY_EVENTS) screen.on(event, onDisplayReflow);
+    }
+    win.on("closed", () => {
+      for (const timer of displaySettleTimers) clearTimeout(timer);
+      displaySettleTimers = [];
+      if (screen && typeof screen.removeListener === "function") {
+        for (const event of DISPLAY_EVENTS) screen.removeListener(event, onDisplayReflow);
+      }
+    });
+
     view.webContents.on("did-finish-load", () => {
       updateViewBounds();
       sendFullScreen();

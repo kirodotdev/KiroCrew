@@ -366,6 +366,50 @@ describe("window lifecycle source contracts", () => {
     );
   });
 
+  it("reflows the dashboard view on a display rearrange and unbinds the screen listeners at teardown", () => {
+    // A monitor hot-plug or a drag to a screen with a different backing scale
+    // factor changes the window's content bounds without a reliable
+    // "resize"/"move", so the child view keeps its old-scale geometry and the
+    // dashboard ghosts across both displays. The window must re-run the reflow
+    // on the display events, and — the pet-overlay leak (#4673) discipline — a
+    // screen listener that outlives its window keeps firing against a destroyed
+    // view, so bind and unbind must be paired.
+    const setupStart = SOURCE.indexOf("function setupWindowContents");
+    const setupEnd = SOURCE.indexOf("function applyDashboardChrome", setupStart);
+    assert.notEqual(setupStart, -1);
+    assert.notEqual(setupEnd, -1);
+    const setup = SOURCE.slice(setupStart, setupEnd);
+
+    assert.match(
+      SOURCE,
+      /const DISPLAY_SETTLE_MS = \[0, 250, 1500\]/,
+      "an immediate recompute plus bounded deferred passes are required for the delayed macOS scale-factor report",
+    );
+
+    const events = /const DISPLAY_EVENTS = \["display-metrics-changed", "display-added", "display-removed"\]/;
+    assert.match(setup, events, "all three display-rearrange events must drive the reflow");
+
+    assert.match(
+      setup,
+      /for \(const event of DISPLAY_EVENTS\) screen\.on\(event, onDisplayReflow\)/,
+      "the display listeners must be bound to the reflow handler",
+    );
+
+    // The unbind must live in the same "closed" handler that clears the timers,
+    // so a torn-down window leaves no screen listener behind.
+    const closedMatch = setup.match(
+      /win\.on\("closed", \(\) => \{([\s\S]*?)\n {4}\}\);/g,
+    );
+    assert.ok(closedMatch, "a closed handler is required");
+    const unbindHandler = closedMatch.find((block) => block.includes("displaySettleTimers"));
+    assert.ok(unbindHandler, "the display-timer cleanup must live in a closed handler");
+    assert.match(
+      unbindHandler,
+      /for \(const event of DISPLAY_EVENTS\) screen\.removeListener\(event, onDisplayReflow\)/,
+      "every bound display listener must be removed at teardown (bind/unbind pairing, #4673)",
+    );
+  });
+
   it("gives the dashboard's context menu the app origin and the browser panel none", () => {
     assert.match(
       SOURCE,
