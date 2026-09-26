@@ -380,6 +380,74 @@ class TestCronService:
 
         assert [j.name for j in CronService(base_dir=tmp_path).list_jobs()] == ["first"]
 
+    def test_save_fsyncs_the_cron_store_and_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A successful save is durable across an immediate host restart."""
+        import kiro_crew.atomic_write as atomic_write_module
+
+        real_atomic_write = atomic_write_module.atomic_write
+        real_durable_mkdir = atomic_write_module.durable_mkdir
+        real_fsync_dir = atomic_write_module.fsync_dir
+        observed: dict[str, object] = {}
+        calls: list[str] = []
+        fsync_calls: list[tuple[Path, bool]] = []
+
+        def recording_durable_mkdir(path: Path | str) -> None:
+            calls.append("durable_mkdir")
+            real_durable_mkdir(path)
+
+        def recording_atomic_write(path: Path, content: str, **kwargs: object) -> None:
+            calls.append("atomic_write")
+            observed.update(kwargs)
+            real_atomic_write(path, content, **kwargs)
+
+        def recording_fsync_dir(
+            path: Path | str, *, best_effort: bool = False
+        ) -> None:
+            calls.append("fsync_dir")
+            fsync_calls.append((Path(path), best_effort))
+            real_fsync_dir(path, best_effort=best_effort)
+
+        monkeypatch.setattr(
+            atomic_write_module, "durable_mkdir", recording_durable_mkdir
+        )
+        monkeypatch.setattr(atomic_write_module, "atomic_write", recording_atomic_write)
+        monkeypatch.setattr(atomic_write_module, "fsync_dir", recording_fsync_dir)
+
+        store_dir = tmp_path / "one" / "two" / "new-store"
+        assert not store_dir.exists()
+        svc = CronService(base_dir=store_dir)
+        svc.add_job(name="durable", message="m", every_secs=300)
+
+        assert observed["fsync"] is True
+        ancestor_syncs: list[tuple[Path, bool]] = []
+        level = store_dir.parent
+        while True:
+            ancestor_syncs.append((level, False))
+            parent = level.parent
+            if parent == level:
+                break
+            level = parent
+
+        assert fsync_calls == [
+            *ancestor_syncs,
+            (store_dir, True),
+        ]
+        assert calls == [
+            "durable_mkdir",
+            *["fsync_dir"] * len(ancestor_syncs),
+            "durable_mkdir",
+            "atomic_write",
+            "fsync_dir",
+        ]
+
+        calls.clear()
+        fsync_calls.clear()
+        svc._save()
+        assert fsync_calls == [(store_dir, True)]
+        assert calls == ["durable_mkdir", "atomic_write", "fsync_dir"]
+
     def test_a_repaired_store_becomes_writable_again(self, tmp_path: Path) -> None:
         """NC2, third half. The refusal must not latch.
 

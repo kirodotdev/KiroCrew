@@ -2,8 +2,8 @@
 
 This is a **leaf module**: it depends only on the standard library
 (``os``, ``sys``, ``pathlib``, ``logging``) and imports nothing from
-``kiro_crew`` at import time. The one exception is a lazy, in-function import
-of :mod:`kiro_crew.atomic_write` inside ``_write_recovery_breadcrumb`` (that
+``kiro_crew`` at import time. The one exception is lazy, in-function imports
+of :mod:`kiro_crew.atomic_write` inside ``config_dir`` and the breadcrumb writer (that
 helper itself imports this module lazily, so there is no cycle). Modules that
 only need to locate ``~/.kirocrew/`` should import
 from here directly::
@@ -339,9 +339,11 @@ def config_dir() -> Path:
     memo = _config_dir_memo
     if memo is not None and memo[0] == override_raw and memo[1] is _resolved_home:
         return memo[2]
+    from kiro_crew.atomic_write import durable_mkdir
+
     p = _valid_override_home()
     if p is not None:
-        p.mkdir(parents=True, exist_ok=True)
+        durable_mkdir(p)
         _config_dir_memo = (override_raw, _resolved_home, p)
         return p
     if os.environ.get("KIROCREW_HOME"):
@@ -350,7 +352,7 @@ def config_dir() -> Path:
             os.environ.get("KIROCREW_HOME"),
         )
     d = _resolve_default_home()
-    d.mkdir(parents=True, exist_ok=True)
+    durable_mkdir(d)
     # Drop the recovery-pointer breadcrumb outside ~/.kiro/ (default path only).
     # Best-effort + idempotent; guarded so a breadcrumb failure never blocks the
     # data-home resolution the whole app depends on.

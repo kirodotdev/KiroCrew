@@ -499,6 +499,50 @@ def fsync_dir(path: Path | str, *, best_effort: bool = False) -> None:
         )
 
 
+_DURABLE_DIR_CACHE_MAX = 1024
+_durable_dir_ids: dict[Path, tuple[int, int]] = {}
+_durable_dir_lock = threading.Lock()
+
+
+def durable_mkdir(path: Path | str) -> None:
+    """Create *path* and confirm its whole ancestry once per process.
+
+    A directory can exist after an earlier creator's strict sync failed. It is
+    indistinguishable from an old durable directory after a process restart, so
+    checking only which levels are missing forgets the failed work on retry.
+
+    The first call in each process therefore syncs every lexical parent up to the
+    filesystem root, deepest-first. Later calls for the same directory inode are
+    free. A failed sync is never cached, so an ordinary retry repeats the complete
+    repair. The bounded cache may evict confirmations; that only causes a safe,
+    redundant resync.
+
+    Syncs are strict for real I/O errors because creation has not published the
+    caller's file yet; callers can still abort honestly. Unsupported directory
+    syncing remains quiet under :func:`fsync_dir`'s platform contract. ``absolute``
+    normalizes the lexical key without resolving symlinks.
+    """
+    target = Path(path).absolute()
+    with _durable_dir_lock:
+        target.mkdir(parents=True, exist_ok=True)
+        stat = target.stat()
+        identity = (stat.st_dev, stat.st_ino)
+        if _durable_dir_ids.get(target) == identity:
+            return
+
+        level = target.parent
+        while True:
+            fsync_dir(level)
+            parent = level.parent
+            if parent == level:
+                break
+            level = parent
+
+        if len(_durable_dir_ids) >= _DURABLE_DIR_CACHE_MAX:
+            _durable_dir_ids.clear()
+        _durable_dir_ids[target] = identity
+
+
 def read_bytes_with_retry(path: Path | str, *, max_bytes: int | None = None) -> bytes:
     """``Path.read_bytes()``, retrying the Windows sharing-violation window.
 

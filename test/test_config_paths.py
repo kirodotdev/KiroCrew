@@ -51,6 +51,37 @@ class TestConfigDir:
         assert result == home.resolve()
         assert result.is_dir()
 
+    @pytest.mark.parametrize("override", [False, True])
+    def test_nested_home_creation_uses_durable_mkdir(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        override: bool,
+    ) -> None:
+        from kiro_crew import atomic_write as atomic_write_module
+
+        monkeypatch.setattr(paths, "_config_dir_memo", None)
+        if override:
+            target = tmp_path / "nested" / "override" / "crew"
+            monkeypatch.setenv("KIROCREW_HOME", str(target))
+        else:
+            home = tmp_path / "nested" / "user"
+            target = home / ".kiro" / "crew"
+            monkeypatch.delenv("KIROCREW_HOME", raising=False)
+            monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+
+        real_durable_mkdir = atomic_write_module.durable_mkdir
+        observed: list[Path] = []
+
+        def recording_durable_mkdir(path: Path | str) -> None:
+            observed.append(Path(path))
+            real_durable_mkdir(path)
+
+        monkeypatch.setattr(atomic_write_module, "durable_mkdir", recording_durable_mkdir)
+
+        assert paths.config_dir() == target.resolve()
+        assert observed == [target.resolve()]
+
     def test_kirocrew_home_system_dir_is_ignored(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import os
 import stat
+from pathlib import Path
 
 import pytest
 
@@ -44,6 +45,68 @@ def test_bytes_content_is_not_newline_translated(tmp_path):
     aw.atomic_write(target, b"\r\n\n\r")
 
     assert target.read_bytes() == b"\r\n\n\r"
+
+
+def _parents_to_root(path: Path) -> list[Path]:
+    parents: list[Path] = []
+    level = path.parent
+    while True:
+        parents.append(level)
+        parent = level.parent
+        if parent == level:
+            return parents
+        level = parent
+
+
+def test_durable_mkdir_syncs_ancestry_once_per_process(tmp_path, monkeypatch):
+    existing = tmp_path / "existing"
+    existing.mkdir()
+    target = existing / "one" / "two" / "store"
+    synced: list[Path] = []
+    monkeypatch.setattr(aw, "fsync_dir", lambda path: synced.append(Path(path)))
+
+    aw.durable_mkdir(target)
+
+    assert target.is_dir()
+    assert synced == _parents_to_root(target)
+
+    synced.clear()
+    aw.durable_mkdir(target)
+    assert synced == []
+
+
+def test_durable_mkdir_existing_tree_is_confirmed_once(tmp_path, monkeypatch):
+    target = tmp_path / "existing" / "store"
+    target.mkdir(parents=True)
+    synced: list[Path] = []
+    monkeypatch.setattr(aw, "fsync_dir", lambda path: synced.append(Path(path)))
+
+    aw.durable_mkdir(target)
+    assert synced == _parents_to_root(target)
+
+    synced.clear()
+    aw.durable_mkdir(target)
+    assert synced == []
+
+
+def test_durable_mkdir_retries_complete_ancestry_after_sync_failure(tmp_path, monkeypatch):
+    target = tmp_path / "new" / "store"
+    attempted: list[Path] = []
+
+    def fail_second_sync(path):
+        attempted.append(Path(path))
+        if len(attempted) == 2:
+            raise OSError("directory sync failed")
+
+    monkeypatch.setattr(aw, "fsync_dir", fail_second_sync)
+    with pytest.raises(OSError, match="directory sync failed"):
+        aw.durable_mkdir(target)
+    assert target.is_dir()
+
+    retried: list[Path] = []
+    monkeypatch.setattr(aw, "fsync_dir", lambda path: retried.append(Path(path)))
+    aw.durable_mkdir(target)
+    assert retried == _parents_to_root(target)
 
 
 @pytest.mark.skipif(not platform_compat.IS_POSIX, reason="descriptor-relative writes are POSIX")

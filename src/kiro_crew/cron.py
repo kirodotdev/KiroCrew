@@ -672,7 +672,9 @@ def cron_store_lock(
     slow holder. Non-truncating create-or-open (GH-9248): a contending opener on
     Windows must not crash at open() before the spin starts.
     """
-    store_dir.mkdir(parents=True, exist_ok=True)
+    from kiro_crew.atomic_write import durable_mkdir
+
+    durable_mkdir(store_dir)
     lock = store_dir / ".crons.lock"
     deadline = time.monotonic() + timeout
     with platform_compat.open_lock_file(lock) as lock_fd:
@@ -6841,7 +6843,10 @@ class CronService:
         """
         if self._load_failed:
             raise self._unreadable_error()
-        self._dir.mkdir(parents=True, exist_ok=True)
+        # Deferred import avoids the pre-existing config/atomic-write cycle.
+        from kiro_crew.atomic_write import atomic_write, durable_mkdir, fsync_dir
+
+        durable_mkdir(self._dir)
         data = {
             "version": _STORE_VERSION,
             "jobs": [
@@ -6908,11 +6913,9 @@ class CronService:
                 for j in self._jobs
             ],
         }
-        # Atomic write: unique tmp → rename
-        # Deferred import to avoid circular dependency (pre-existing)
-        from kiro_crew.atomic_write import atomic_write
-
-        atomic_write(self._path, json.dumps(data, indent=2))
+        # Atomic write: unique tmp → rename, then publish the directory entry.
+        atomic_write(self._path, json.dumps(data, indent=2), fsync=True)
+        fsync_dir(self._path.parent, best_effort=True)
         # Refresh the (mtime_ns, size) fingerprint so _sync recognizes this as
         # our own write and does not reload it back over the in-memory state.
         self._record_fingerprint()
