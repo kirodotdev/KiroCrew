@@ -548,4 +548,32 @@ describe('ErrorNotice', () => {
     render(<ErrorNotice message="oops" />)
     expect(screen.queryByRole('button', { name: /dismiss/i })).not.toBeInTheDocument()
   })
+
+  it('dismissLabel names what dismissing does, as visible text that is also the accessible name', async () => {
+    // Without it the control is the icon-only X with the generic name and no
+    // text of its own -- the shape every existing consumer renders.
+    const { unmount } = render(<ErrorNotice message="oops" onDismiss={() => {}} />)
+    const bare = screen.getByRole('button', { name: /dismiss/i })
+    expect(bare.textContent).toBe('')
+    unmount()
+
+    // With it, a caller whose dismissal is a step in the user's task (it
+    // re-enables a button) says so on the control itself, so the path back is
+    // discoverable without reading the paragraph that mentions it.
+    const onDismiss = vi.fn()
+    const first = render(
+      <ErrorNotice message="oops" onDismiss={onDismiss} dismissLabel="Dismiss to install again" />,
+    )
+    const labelled = screen.getByRole('button', { name: 'Dismiss to install again' })
+    expect(labelled).toHaveTextContent('Dismiss to install again')
+    expect(labelled).toHaveAttribute('aria-label', 'Dismiss to install again')
+    expect(screen.queryByRole('button', { name: /^dismiss$/i })).not.toBeInTheDocument()
+    await userEvent.click(labelled)
+    expect(onDismiss).toHaveBeenCalledOnce()
+    first.unmount()
+
+    // The inline variant carries the same label.
+    render(<ErrorNotice message="oops" variant="inline" onDismiss={() => {}} dismissLabel="Dismiss to retry" />)
+    expect(screen.getByRole('button', { name: 'Dismiss to retry' })).toHaveTextContent('Dismiss to retry')
+  })
 })

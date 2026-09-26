@@ -5939,7 +5939,9 @@
         "confirm_after_failure": "Réessayer",
         "working": "Confiance accordée et activation...",
         "failed": "« {{app}} » n'a pas pu être activée, mais la confiance est peut-être déjà enregistrée. Choisis Réessayer, ou ouvre Paramètres → Sécurité → Applications tierces de confiance pour vérifier et la retirer.",
-        "failed_generic": "« {{app}} » n'a pas pu être activée, et rien n'a été modifié. Choisis Réessayer, ou consulte les journaux de {{productName}}."
+        "failed_generic": "« {{app}} » n'a pas pu être activée, et rien n'a été modifié. Choisis Réessayer, ou consulte les journaux de {{productName}}.",
+        "failed_desktop_unsupported": "«{{app}}» ne peut pas être installée dans la version de bureau de {{productName}}, et rien n'a été modifié.",
+        "failed_desktop_unsupported_help": "Elle a besoin de paquets Python que la version de bureau ne peut pas ajouter ; demande à l’auteur de l’app de les livrer avec l’app, ou ouvre {{productName}} dans un navigateur web plutôt que dans la version de bureau."
       },
       "registryTier": {
         "curated": "Vérifié par l'équipe",
@@ -9304,6 +9306,11 @@
       "failed_to": "Échec de l’action « {{action}} »",
       "failed_to_load_app": "Échec du chargement de l’application",
       "failed_to_uninstall": "Échec de la désinstallation",
+      "install_desktop_unsupported": "Cette app ne peut pas être installée dans la version de bureau de {{productName}}.",
+      "install_desktop_unsupported_help": "{{help}} Une fois que l’auteur aura livré les paquets, ferme cet avis pour réinstaller.",
+      "install_log": "Journal d’installation",
+      "dismiss_to_install_again": "Ignorer pour installer à nouveau",
+      "dismiss_notice_to_install_again": "Ignore l’avis ci-dessus pour installer à nouveau",
       "features": "Fonctionnalités",
       "use_cases": "Cas d’usage",
       "configuration": "Configuration",

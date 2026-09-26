@@ -18,6 +18,7 @@ import re
 import shutil
 import stat
 import time
+import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, replace
@@ -461,6 +462,29 @@ def _is_generated_deps_artifact_name(n: str) -> bool:
     )
 
 
+#: Root entries the GATEWAY owns in the installed app directory, so a source
+#: entry of that name reaches it verbatim only when the gateway has nothing of
+#: its own to put there: ``data`` is the app's data directory --
+#: :func:`update_app` puts the PRESERVED previous one back over whatever the
+#: source shipped there, :func:`install_app` does the same with one a default
+#: uninstall left behind, a first install with nothing preserved carries the
+#: source's ``data/`` as itself, and a source FILE so named makes
+#: :func:`app_data_dir`'s ``mkdir`` fail before an install completes -- and
+#: ``.app_secret`` is the gateway's credential file: whatever the source shipped
+#: under that name is removed from the copy WITHOUT being followed
+#: (:func:`_remove_any_shape`) before the gateway writes its own regular file
+#: there (``write_app_secret``, which opens by path) or moves the preserved one
+#: back on update -- so a shipped ``.app_secret -> ui/leak.js`` never receives
+#: the secret in a file the unauthenticated UI route serves. The install-time
+#: metadata file is the third gateway-owned name and already in
+#: :data:`_COPY_IGNORE`. :func:`copy_app_tree_as_installed` applies the same
+#: removal to a preview copy so an install-time judgment sees the tree as it
+#: stands once the gateway has done its part -- ``data`` only when a preserved
+#: directory is there to be put back (:func:`preserved_data_awaits`): a first
+#: install carries the source's ``data/`` as itself.
+_GATEWAY_OWNED_ROOT_ENTRIES = ("data", ".app_secret")
+
+
 def _copy_app_tree(source: Path, dest: Path) -> None:
     """Copy an app source tree for install/update.
 
@@ -545,6 +569,93 @@ def _copy_app_tree(source: Path, dest: Path) -> None:
             os.symlink(
                 os.path.relpath(os.path.join(dest, rel_to_src), os.path.dirname(p)), p
             )
+
+
+def preserved_data_awaits(name: str) -> bool:
+    """Whether an install of *name* will restore a preserved ``data/`` over the copy.
+
+    :func:`install_app` and :func:`update_app` move an existing ``data/`` aside
+    before the copy and put it back afterwards, replacing whatever the source
+    shipped under that name: the installed app's own directory on an update, one
+    a default uninstall left behind, or the ``.{name}-data-tmp`` copy a crashed
+    sibling operation stranded (restored the same way). With none of those on
+    disk -- a first install -- the source's ``data/`` is what the runtime meets.
+    """
+    dest = app_dir(name)
+    return (dest / "data").is_dir() or (dest.parent / f".{name}-data-tmp").is_dir()
+
+
+def copy_app_tree_as_installed(source: Path, dest: Path, *, data_preserved: bool) -> None:
+    """Produce, at *dest*, the tree an install of *source* leaves for the runtime.
+
+    The copy is :func:`_copy_app_tree` itself -- the same call :func:`install_app`
+    and :func:`update_app` make, so whatever it drops, omits, preserves or rewrites
+    (ignored names at any depth, escaping links, in-tree links kept as links,
+    absolute in-tree links rewritten) is not predicted here but produced. Then the
+    gateway's own part is applied the way the runtime will meet it: ``.app_secret``
+    is removed on every install -- :func:`install_app` and :func:`update_app`
+    remove the copied entry, unfollowed, before writing the gateway's own file or
+    moving the preserved one back (:func:`_remove_any_shape`, the call made here
+    too) -- and ``data`` is removed when *data_preserved* says the install will
+    put a preserved directory back over the copied one
+    (:func:`preserved_data_awaits`), and kept otherwise -- a first install carries
+    the source's ``data/`` as itself, so an entry point under it is the source's
+    there and only stops being so on the first update, which this same gate then
+    refuses. Removed case-insensitively where the filesystem folds case (APFS,
+    NTFS: a source ``Data/`` IS that same directory there) and by exact name where
+    it does not (a Linux desktop keeps ``Data/`` as itself) -- probed on the copy,
+    so the judgment matches the host that runs it.
+
+    The install-time desktop gate judges this tree instead of the checkout, so a
+    layout the copy does not carry into the app directory is missing here exactly
+    as it will be missing there. Blocking filesystem work: callers on the event
+    loop run it off-loop, as they do the copy.
+    """
+    _copy_app_tree(source, dest)
+    entries = _GATEWAY_OWNED_ROOT_ENTRIES if data_preserved else (".app_secret",)
+    if _folds_case(dest):
+        owned = {name.casefold() for name in entries}
+        is_owned = lambda name: name.casefold() in owned  # noqa: E731
+    else:
+        is_owned = lambda name: name in entries  # noqa: E731
+    for name in os.listdir(dest):
+        if is_owned(name):
+            _remove_any_shape(dest / name)
+
+
+def _folds_case(directory: Path) -> bool:
+    """Whether names in *directory* fold case (APFS and NTFS by default; not ext4).
+
+    Probed, not inferred from the platform: the desktop app also ships on Linux,
+    where ``Data/`` and ``data/`` are two directories and a source ``Data/`` reaches
+    the app directory as itself. The probe is one empty file created and removed
+    in *directory* -- a preview copy about to be judged, never the checkout.
+
+    The preview is a copy of an app-controlled tree, so the probe must be a name
+    the tree cannot have chosen and a creation the tree cannot redirect: a fresh
+    random name per call, opened with ``O_CREAT | O_EXCL`` (a planted entry of
+    that name -- a regular file the probe would otherwise delete, a link it would
+    bump -- makes the open fail instead) and ``O_NOFOLLOW`` where the platform has
+    it (a dangling link at that name cannot have its target created by the
+    probe), checked with ``lexists`` so nothing is followed, and only the entry
+    this call created is removed. A probe that cannot be created answers
+    "does not fold": the exact-name removal is the narrower verdict.
+    """
+    name = f".kirocrew-case-probe-{uuid.uuid4().hex}"
+    probe = directory / name
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(probe, flags, 0o600)
+    except OSError:
+        return False
+    try:
+        os.close(fd)
+        return os.path.lexists(directory / name.upper())
+    finally:
+        try:
+            os.unlink(probe)
+        except OSError:
+            pass
 
 
 # Per-app lifecycle locks, shared by every async entry point (registry
@@ -775,12 +886,23 @@ def install_app(
             logger.warning("Removing orphaned partial install at %s", dest)
             shutil.rmtree(dest)
         _copy_app_tree(source, dest)
+        # The gateway's own root entries are never the source's (see
+        # _GATEWAY_OWNED_ROOT_ENTRIES). ``.app_secret`` goes first, and goes
+        # WITHOUT being followed: the copy keeps an in-tree link as a link, and
+        # write_app_secret below opens the path it is given, so a shipped
+        # ``.app_secret -> ui/leak.js`` would otherwise have the secret written
+        # into a file the unauthenticated UI route serves. This is the removal
+        # the install-time preview (copy_app_tree_as_installed) applies, so the
+        # gate's judgment and the install agree on what stands here.
+        _remove_any_shape(dest / ".app_secret")
 
-        # Restore preserved data/ (overwrite empty data/ from source package)
+        # Restore preserved data/ over whatever the source shipped under that
+        # name (an empty data/ from the package, a file, a link) -- the same
+        # link-safe removal update_app makes, so a shipped link is unlinked,
+        # never traversed, and never left for the move to fail on.
         if tmp_data.is_dir():
             restored = dest / "data"
-            if restored.exists():
-                shutil.rmtree(restored)
+            _remove_any_shape(restored)
             shutil.move(str(tmp_data), str(restored))
     except (OSError, shutil.Error, ValueError) as exc:
         # Clean up partial install first
@@ -990,16 +1112,17 @@ def update_app(
         # durable. Source-owned installed.json never reaches the live tree.
         os.replace(dest, retired)
         _copy_app_tree(source, dest)
+        # ``.app_secret`` is the gateway's whether or not one is preserved: the
+        # copied entry goes, unfollowed, before the preserved file moves back
+        # (see install_app; the same removal the preview copy applies).
+        _remove_any_shape(dest / ".app_secret")
 
         if tmp_data.is_dir():
             restored = dest / "data"
-            if restored.exists():
-                _remove_any_shape(restored)
+            _remove_any_shape(restored)
             shutil.move(str(tmp_data), str(restored))
         if tmp_secret.is_file():
-            restored_secret = dest / ".app_secret"
-            _remove_any_shape(restored_secret)
-            shutil.move(str(tmp_secret), str(restored_secret))
+            shutil.move(str(tmp_secret), str(dest / ".app_secret"))
         _write_installed(name, meta)
     except (OSError, shutil.Error, ValueError) as exc:
         rollback_error = ""

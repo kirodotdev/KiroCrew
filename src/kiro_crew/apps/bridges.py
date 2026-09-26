@@ -45,7 +45,11 @@ from kiro_crew.apps.manager import (
     get_app_manifest,
     list_apps,
 )
-from kiro_crew.apps.manifest import AppManifest
+from kiro_crew.apps.manifest import (
+    AppManifest,
+    has_stdio_mcp_server,
+    is_module_style_entry_point,
+)
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import (
     config_dir,
@@ -2791,14 +2795,10 @@ def _maybe_provision_backendless_deps(app_name: str, manifest: "AppManifest") ->
         # empty deps tree. The stamp gate and the per-app flock make the
         # overlap with a real spawn cheap and safe. A MODULE-style entry
         # (trusted package code, the backend spawn's own trust gate) still
-        # never provisions app-dir requirements.
-        is_module_entry = (
-            "/" not in entry_point
-            and not entry_point.endswith((".py", ".js", ".ts", ".mjs", ".cjs", ".sh"))
-            and "." in entry_point
-            and not (root / entry_point).exists()
-        )
-        if is_module_entry:
+        # never provisions app-dir requirements -- decided by the same
+        # shared predicate the backend spawn and the install-time desktop
+        # gate answer from.
+        if is_module_style_entry_point(entry_point, root):
             return
     if not os.path.lexists(root / "requirements.txt"):
         # True ABSENCE only: is_file() would also answer False for a
@@ -2807,10 +2807,7 @@ def _maybe_provision_backendless_deps(app_name: str, manifest: "AppManifest") ->
         # provision_app_deps, whose failure epilogue surfaces it (ERROR log
         # + SEL event) instead of this fast path eating it.
         return
-    has_stdio = any(
-        isinstance(cfg, dict) and not cfg.get("url") for cfg in manifest.mcpServers.values()
-    )
-    if not has_stdio:
+    if not has_stdio_mcp_server(manifest):
         return
     # Deferred import: bridges is imported during backend's boot path, so it
     # cannot import backend at module load (same pattern as the other

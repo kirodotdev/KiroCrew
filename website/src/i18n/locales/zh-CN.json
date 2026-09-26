@@ -5757,7 +5757,9 @@
         "confirm_after_failure": "重试",
         "working": "正在信任并启用…",
         "failed": "“{{app}}”未能启用，但信任可能已经保存。请选择“重试”，或打开“设置 → 安全 → 受信任的第三方应用”查看并移除。",
-        "failed_generic": "“{{app}}”未能启用，且没有做任何更改。请选择“重试”，或查看 {{productName}} 的日志。"
+        "failed_generic": "“{{app}}”未能启用，且没有做任何更改。请选择“重试”，或查看 {{productName}} 的日志。",
+        "failed_desktop_unsupported": "“{{app}}”无法安装到 {{productName}} 桌面版中，且没有做任何更改。",
+        "failed_desktop_unsupported_help": "它需要桌面版无法添加的 Python 软件包；请让应用作者将其随应用一同提供，或改为在网页浏览器中打开 {{productName}}，而不是使用桌面版。"
       },
       "registryTier": {
         "curated": "团队已审核",
@@ -9060,6 +9062,11 @@
       "failed_to": "{{action}} 失败",
       "failed_to_load_app": "加载应用失败",
       "failed_to_uninstall": "卸载失败",
+      "install_desktop_unsupported": "此应用无法安装到 {{productName}} 桌面版中。",
+      "install_desktop_unsupported_help": "{{help}}作者随应用提供这些包后，关闭此通知即可重新安装。",
+      "install_log": "安装日志",
+      "dismiss_to_install_again": "忽略以重新安装",
+      "dismiss_notice_to_install_again": "忽略上方的通知以重新安装",
       "features": "功能",
       "github_stars": "GitHub 星标数",
       "github_stars_2": "GitHub 星标数：{{value}}",

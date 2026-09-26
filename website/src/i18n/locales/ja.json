@@ -5730,7 +5730,9 @@
         "confirm_after_failure": "再試行",
         "working": "信頼して有効化しています…",
         "failed": "「{{app}}」をオンにできませんでしたが、信頼はすでに保存されている可能性があります。「再試行」を選ぶか、設定 → セキュリティ → 信頼済みサードパーティーアプリを開いて確認し、削除してください。",
-        "failed_generic": "「{{app}}」をオンにできず、何も変更されませんでした。「再試行」を選ぶか、{{productName}} のログを確認してください。"
+        "failed_generic": "「{{app}}」をオンにできず、何も変更されませんでした。「再試行」を選ぶか、{{productName}} のログを確認してください。",
+        "failed_desktop_unsupported": "「{{app}}」は {{productName}} のデスクトップ版にはインストールできず、何も変更されませんでした。",
+        "failed_desktop_unsupported_help": "デスクトップ版では追加できない Python パッケージが必要です。アプリの作者にアプリへ同梱してもらうか、デスクトップ版ではなくウェブブラウザーで {{productName}} を開いてください。"
       },
       "registryTier": {
         "curated": "チーム確認済み",
@@ -9060,6 +9062,11 @@
       "failed_to": "{{action}}に失敗しました",
       "failed_to_load_app": "アプリの読み込みに失敗",
       "failed_to_uninstall": "アンインストール失敗",
+      "install_desktop_unsupported": "このアプリは {{productName}} のデスクトップ版にはインストールできません。",
+      "install_desktop_unsupported_help": "{{help}}作者がパッケージを同梱したら、この通知を閉じて再度インストールしてください。",
+      "install_log": "インストールログ",
+      "dismiss_to_install_again": "閉じて再インストール",
+      "dismiss_notice_to_install_again": "上の通知を閉じて再インストール",
       "features": "機能",
       "github_stars": "GitHub スター数",
       "github_stars_2": "GitHub スター数: {{value}}",

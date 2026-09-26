@@ -54,6 +54,12 @@ from kiro_crew.apps.manager import (
     get_app_manifest,
     list_apps,
 )
+from kiro_crew.apps.manifest import (
+    REQUIREMENTS_TXT_MAX_BYTES,
+    file_entry_point_refusal,
+    is_module_style_entry_point,
+    requirements_in_tree,
+)
 from kiro_crew.apps.registry import minimal_env
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
@@ -589,8 +595,10 @@ _DEPS_STAGING_NAME = ".kirocrew-deps-staging"
 #: Read caps for app-controlled provisioning inputs: the gateway buffers
 #: these in ITS OWN memory, so an oversized requirements.txt or stamp file
 #: (or a build hook flooding stderr) must exhaust a bounded buffer, not the
-#: gateway. 1 MiB is orders of magnitude beyond any real requirements.txt.
-_DEPS_REQ_MAX_BYTES = 1024 * 1024
+#: gateway. The requirements cap is `manifest.REQUIREMENTS_TXT_MAX_BYTES`, the
+#: value the shared acceptance rule (`requirements_in_tree`) applies as its
+#: fast refusal; the bounded reads below enforce it on the opened descriptor.
+_DEPS_REQ_MAX_BYTES = REQUIREMENTS_TXT_MAX_BYTES
 _DEPS_STAMP_MAX_BYTES = 4096
 _DEPS_PIP_STDERR_TAIL = 16 * 1024
 _DEPS_PRIOR_NAME = ".kirocrew-deps-prior"
@@ -668,15 +676,16 @@ def _deps_tree_stamp_current(root: Path, req_file: Path) -> bool:
     provisioning error, instead of crashing on foreign wheels).
     """
     try:
-        # Same reader shape as provisioning: resolve, containment-check
-        # against the app root, then a component-pinned no-follow open. A
-        # SUPPORTED in-tree symlink (which provisioning accepts) must also
-        # activate - a direct O_NOFOLLOW open on the link name would refuse
-        # it and strand a successfully provisioned app without its deps.
-        root_resolved = root.resolve(strict=True)
-        open_target = req_file.resolve(strict=True)
-        if root_resolved != open_target and root_resolved not in open_target.parents:
+        # Same reader shape as provisioning: the shared containment rule
+        # (`requirements_in_tree`, the fast refusal), then a component-pinned
+        # no-follow open of the resolved target. A SUPPORTED in-tree symlink
+        # (which provisioning accepts) must also activate - a direct O_NOFOLLOW
+        # open on the link name would refuse it and strand a successfully
+        # provisioned app without its deps.
+        resolved = requirements_in_tree(root, req_file)
+        if resolved is None:
             return False
+        root_resolved, open_target = resolved
         rfd = _open_contained_nofollow(root_resolved, open_target)
         with os.fdopen(rfd, "rb") as rfh:
             if not stat.S_ISREG(os.fstat(rfh.fileno()).st_mode):
@@ -1578,14 +1587,15 @@ def _provision_app_deps_locked(app_name: str, root: Path, pin: _PinnedDir) -> st
         # or digested). On Windows os.O_NOFOLLOW is absent; the is_symlink
         # pre-check substitutes (symlink creation is privileged there).
         try:
-            root_resolved = root.resolve(strict=True)
-            open_target = req_file.resolve(strict=True)
-            if not open_target.is_relative_to(root_resolved):
-                raise OSError("requirements.txt resolves outside the app root")
+            resolved = requirements_in_tree(root, req_file)
+            if resolved is None:
+                raise OSError("requirements.txt resolves outside the app root or is not a file")
+            root_resolved, open_target = resolved
             # Descriptor-relative, every-component-no-follow open: the
-            # containment check above is only a fast refusal - an ancestor
-            # of the resolved path could be swapped for a link between the
-            # check and the open, so the traversal itself is pinned
+            # containment check above (`requirements_in_tree`, the rule the
+            # install-time gate predicts from) is only a fast refusal - an
+            # ancestor of the resolved path could be swapped for a link between
+            # the check and the open, so the traversal itself is pinned
             # component by component (see _open_contained_nofollow).
             fd = _open_contained_nofollow(root_resolved, open_target)
             with os.fdopen(fd, "rb") as fh:
@@ -1925,18 +1935,11 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
     entry_point = manifest.backend.entryPoint
     # Module-style entry point (e.g. "kiro_crew.apps.builtins.<name>"):
     # used by built-in apps that live inside the KiroCrew package itself.
-    # Heuristics:
-    #   - no path separator,
-    #   - no script-file extension (.py/.js/.ts/.mjs/.cjs/.sh) — those are
-    #     paths, not module dotted-names,
-    #   - has a dot (i.e. is a dotted module path),
-    #   - and no file with that literal name exists under the app root.
-    is_module_entry = (
-        "/" not in entry_point
-        and not entry_point.endswith((".py", ".js", ".ts", ".mjs", ".cjs", ".sh"))
-        and "." in entry_point
-        and not (root / entry_point).exists()
-    )
+    # The shape test is the shared `is_module_style_entry_point` -- the same
+    # predicate `bridges.py` and the install-time desktop gate answer from,
+    # so what this spawn provisions and what those sites assume it provisions
+    # cannot drift.
+    is_module_entry = is_module_style_entry_point(entry_point, root)
 
     # Bind the exemption to the code this spawn will actually execute.  A
     # module-style builtin is trusted only when its real package manifest names
@@ -1975,24 +1978,15 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
         entry = None  # sentinel; no file path for module-style entries
     else:
         entry = root / entry_point
-        if not entry.is_file():
-            logger.error("App %s backend entry point not found: %s", app_name, entry)
-            return None
-        # Path containment backstop (mirrors module_loader hook-path check): the
-        # persisted manifest is spawned at boot without re-running validate(), so
-        # reject an entryPoint that resolves outside the app root (absolute path
-        # or '..' traversal).
-        try:
-            if not entry.resolve().is_relative_to(root.resolve()):
-                logger.error(
-                    "App %s backend entry point escapes app root: %s (resolved %s)",
-                    app_name, entry, entry.resolve(),
-                )
-                return None
-        except (OSError, ValueError):
-            logger.error(
-                "App %s backend entry point path resolution failed: %s", app_name, entry,
-            )
+        # The spawn's precondition for a file-style entry -- a regular file whose
+        # resolution stays inside the app root -- is the shared predicate, so the
+        # install-time desktop gate predicts this exact refusal (mirrors the
+        # module_loader hook-path check: the persisted manifest is spawned at boot
+        # without re-running validate(), so an absolute path or '..' traversal is
+        # rejected here too).
+        refusal = file_entry_point_refusal(entry_point, root)
+        if refusal:
+            logger.error("App %s backend entry point %s: %s", app_name, refusal, entry)
             return None
 
     # Resolve port. An auto port is RESERVED under the lock, not merely probed:

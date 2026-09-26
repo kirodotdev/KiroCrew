@@ -2550,6 +2550,42 @@ class TestRegistryInstallStream:
         assert json.loads(payload)["error"] == "build failed"
 
     @pytest.mark.asyncio
+    async def test_the_build_gate_refusal_reaches_the_client_verbatim(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The reason a refused install failed must travel ON the payload.
+
+        The desktop build-step refusal is logged to ``security_events.jsonl``
+        either way, but the dashboard's consent modal can only show a cause the
+        ``done`` event carries. Pinned as the sentence, not a truthy ``error``
+        key, because the UI renders this string — a generic placeholder
+        substituted here would leave the user with a refusal and no stated
+        reason, the dead end this test exists to prevent.
+        """
+        _setup_env(tmp_path, monkeypatch)
+        refusal = (
+            "Python apps that require a build step are not supported in the "
+            "desktop app: its bundled interpreter is inside the signed "
+            "application bundle and cannot install packages"
+        )
+
+        async def _refused(name: str, log_lines: Any = None, **kw: Any) -> dict:
+            return {"ok": False, "name": name, "error": refusal}
+
+        monkeypatch.setattr(routes_mod, "install_from_registry", _refused)
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post(
+                "/api/apps/registry/install-stream", json={"name": "some-app"}
+            )
+            assert resp.status == 200
+            events = _sse_events(await resp.text())
+        name, payload = events[-1]
+        assert name == "done"
+        done = json.loads(payload)
+        assert done["ok"] is False
+        assert done["error"] == refusal
+
+    @pytest.mark.asyncio
     async def test_needs_client_install_short_circuits_done(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

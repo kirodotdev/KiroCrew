@@ -29,12 +29,21 @@ import ErrorNotice from '../ErrorNotice'
 import { Badge, Btn } from '../ui'
 import SessionApprovalModes from './SessionApprovalModes'
 import { i18nT } from '../../i18n/t'
+import { findReport } from '../../utils/errorReport'
 import { sourceLabel, type RegistryApp } from './types'
 
 /** Machine-readable code the enable and registry-install paths return when trust is missing. */
 export const APP_EXECUTION_DENIED = 'app_execution_denied'
 /** Machine-readable code returned when enable needs the detail disclosure. */
 export const SESSION_APPROVAL_CONSENT_REQUIRED = 'session_approval_consent_required'
+/**
+ * Machine-readable code the registry install returns when the gateway is the
+ * desktop app's bundled interpreter and the app's Python layout needs a build
+ * step it cannot run. A PERMANENT condition for this gateway: retrying cannot
+ * change it, which is why the consent modal keys its copy on this code rather
+ * than on the sentence beside it.
+ */
+export const DESKTOP_BUILD_STEP_UNSUPPORTED = 'desktop_build_step_unsupported'
 
 /**
  * The subset of an app row the consent modal needs: identity for the grant,
@@ -122,6 +131,44 @@ export function isSessionApprovalConsentRequiredError(e: unknown): boolean {
 }
 
 /**
+ * The server's own account of why the retried action failed, or `''`.
+ *
+ * A build refusal or a clone failure arrives on the failure the retry throws;
+ * this lifts that string so the modal renders the reason beside its own copy
+ * instead of leaving it readable only in `security_events.jsonl`.
+ *
+ * Deliberately the Error's OWN `message`, not a field re-parsed out of the
+ * response body: `ApiError.message` is already the unwrapped `{"error": …}`
+ * sentence AND the key the error journal recorded the request under, so
+ * handing it to `ErrorNotice` as the message keeps the structured report
+ * (endpoint, status, backend code) reachable for the ask-the-agent hand-off.
+ *
+ * A trust refusal returns `''`: `APP_EXECUTION_DENIED` is a machine code the
+ * retry throws as a sentinel, not user-facing text, and the modal's own copy
+ * already explains a grant that did not take effect.
+ */
+export function retryFailureDetail(e: unknown): string {
+  if (isTrustDeniedError(e)) return ''
+  const message = e instanceof Error ? e.message : typeof e === 'string' ? e : ''
+  const trimmed = message.trim()
+  if (!trimmed || trimmed === APP_EXECUTION_DENIED) return ''
+  return trimmed
+}
+
+/**
+ * The machine code the failure carried beside its reason, or `''`.
+ *
+ * Only a failure that also has a reason to show (`retryFailureDetail`) yields
+ * one: the code selects HOW that reason is presented (a permanent condition
+ * gets copy without a retry instruction), and a sentinel refusal with nothing
+ * to show has nothing for a code to select.
+ */
+export function retryFailureCode(e: unknown): string {
+  if (!retryFailureDetail(e)) return ''
+  return errorCode(e) ?? ''
+}
+
+/**
  * Owns the consent-modal state and the grant-then-retry sequence, so the page
  * that owns the refused mutation drives one modal instead of each button
  * duplicating the flow.
@@ -154,6 +201,14 @@ export function useTrustGate(retryEnable: (name: string) => Promise<void>) {
   } | null>(null)
   const [pending, setPending] = useState(false)
   const [failed, setFailed] = useState(false)
+  // The server's reason for the failure, shown under the generic headline. Reset
+  // wherever `failed` is, so a second attempt never displays the first one's
+  // cause beside a newer outcome.
+  const [detail, setDetail] = useState('')
+  // The machine code beside that reason (`retryFailureCode`), which selects how
+  // the reason is presented: a permanent condition gets copy without a retry
+  // instruction. Reset in step with `detail`, for the same reason.
+  const [detailCode, setDetailCode] = useState('')
   // Whether `trustApp` SUCCEEDED before a failure. The two failure cases need
   // different advice: a landed grant leaves state the user should know about and
   // may want to remove; a failed grant changed nothing, and sending them to
@@ -171,6 +226,8 @@ export function useTrustGate(retryEnable: (name: string) => Promise<void>) {
       setGate(null)
       setPending(false)
       setFailed(false)
+      setDetail('')
+      setDetailCode('')
       setGranted(false)
       return
     }
@@ -180,6 +237,8 @@ export function useTrustGate(retryEnable: (name: string) => Promise<void>) {
     })
     setPending(false)
     setFailed(false)
+    setDetail('')
+    setDetailCode('')
     setGranted(false)
   }, [retryEnable])
 
@@ -188,6 +247,8 @@ export function useTrustGate(retryEnable: (name: string) => Promise<void>) {
     setGate(null)
     setPending(false)
     setFailed(false)
+    setDetail('')
+    setDetailCode('')
     setGranted(false)
   }, [])
 
@@ -195,6 +256,8 @@ export function useTrustGate(retryEnable: (name: string) => Promise<void>) {
     if (!gate || pending) return
     setPending(true)
     setFailed(false)
+    setDetail('')
+    setDetailCode('')
     // Local, not the `granted` state: state updates are not readable in this same
     // closure, and the catch below has to know whether the grant actually landed.
     let grantLanded = false
@@ -205,7 +268,7 @@ export function useTrustGate(retryEnable: (name: string) => Promise<void>) {
       await gate.retry(gate.app.name)
       refreshTrustViews()
       setGate(null)
-    } catch {
+    } catch (failure) {
       // Keep the modal open and report inline: the grant may have landed while
       // the retried action failed for an unrelated reason, and closing here
       // would strand the user back on the raw-error path this modal replaces.
@@ -260,12 +323,29 @@ export function useTrustGate(retryEnable: (name: string) => Promise<void>) {
       // `failed_generic` copy says; `granted` is what selects between the two.
       setGranted(grantLanded && !rolledBack)
       setFailed(true)
+      // The reason the grant or the retry failed, straight from the failure it
+      // threw (the catch covers both, and a failed grant's message is worth
+      // showing too), and the code that says how to present it. Without the
+      // reason the user sees the generic copy alone while the cause lives only
+      // in the security event log — a dead end, since Try again fails identically.
+      setDetail(retryFailureDetail(failure))
+      setDetailCode(retryFailureCode(failure))
     } finally {
       setPending(false)
     }
   }, [gate, pending, refreshTrustViews])
 
-  return { target: gate?.app ?? null, pending, failed, granted, open, cancel, confirm }
+  return {
+    target: gate?.app ?? null,
+    pending,
+    failed,
+    detail,
+    detailCode,
+    granted,
+    open,
+    cancel,
+    confirm,
+  }
 }
 
 /**
@@ -305,17 +385,43 @@ function capabilities(): { label: string; Icon: typeof Code2 }[] {
   ]
 }
 
-export default function TrustAppModal({ app, pending, failed, granted, onCancel, onConfirm }: {
+export default function TrustAppModal({
+  app, pending, failed, detail = '', detailCode = '', granted, onCancel, onConfirm,
+}: {
   /** The app awaiting consent; `null` keeps the modal closed. */
   app: TrustAppTarget | null
   pending: boolean
   failed: boolean
+  /**
+   * The server's reason for the failure, from `useTrustGate().detail`. Empty
+   * when the failure carried none (or carried only a machine code), which keeps
+   * the generic copy as the whole message rather than showing an empty detail.
+   */
+  detail?: string
+  /**
+   * The machine code beside that reason, from `useTrustGate().detailCode`. Only
+   * `DESKTOP_BUILD_STEP_UNSUPPORTED` changes the rendering: it names a permanent
+   * condition, so the notice drops the retry instruction and explains the reason
+   * in plain words above the server's own sentence.
+   */
+  detailCode?: string
   /** True when the grant was written and only the retried action failed. */
   granted: boolean
   onCancel: () => void
   onConfirm: () => void
 }) {
   const name = app ? (app.displayName || app.name) : ''
+  // Both keys resolved here as LITERALS: `check-i18n-keys.mjs` verifies only a
+  // key it can read at the `i18nT()` call site, so selecting between two
+  // resolved strings keeps both references visible to the gate.
+  const headline = granted
+    ? i18nT('components.appstore.trustAppModal.failed', { app: name })
+    : i18nT('components.appstore.trustAppModal.failed_generic', { app: name })
+  // A permanent refusal only while the grant did NOT stay: a grant left behind is
+  // the more urgent fact (state the user may want to remove), and the `failed`
+  // copy is what names it, so that case keeps the generic rendering below.
+  const permanentRefusal =
+    failed && !!detail && !granted && detailCode === DESKTOP_BUILD_STEP_UNSUPPORTED
   return (
     <Modal
       open={!!app}
@@ -323,18 +429,28 @@ export default function TrustAppModal({ app, pending, failed, granted, onCancel,
       maxWidth={560}
       title={i18nT('components.appstore.trustAppModal.title', { app: name })}
       footer={
-        <>
-          <Btn onClick={onCancel} disabled={pending}>
-            {i18nT('components.appstore.trustAppModal.cancel')}
+        permanentRefusal ? (
+          // Retrying cannot change what the bundled interpreter can install, and
+          // the retry is a full clone/build that ends in the identical refusal and
+          // then leans on the rollback probe to revoke the grant it just re-wrote.
+          // So the one action left is to close; `app.close` is the shared label.
+          <Btn primary onClick={onCancel}>
+            {i18nT('app.close')}
           </Btn>
-          <Btn primary onClick={onConfirm} disabled={pending}>
-            {pending
-              ? <><Loader2 size={14} className="animate-spin" /> {i18nT('components.appstore.trustAppModal.working')}</>
-              : failed
-                ? <><ShieldAlert size={14} /> {i18nT('components.appstore.trustAppModal.confirm_after_failure')}</>
-                : <><ShieldAlert size={14} /> {i18nT('components.appstore.trustAppModal.confirm')}</>}
-          </Btn>
-        </>
+        ) : (
+          <>
+            <Btn onClick={onCancel} disabled={pending}>
+              {i18nT('components.appstore.trustAppModal.cancel')}
+            </Btn>
+            <Btn primary onClick={onConfirm} disabled={pending}>
+              {pending
+                ? <><Loader2 size={14} className="animate-spin" /> {i18nT('components.appstore.trustAppModal.working')}</>
+                : failed
+                  ? <><ShieldAlert size={14} /> {i18nT('components.appstore.trustAppModal.confirm_after_failure')}</>
+                  : <><ShieldAlert size={14} /> {i18nT('components.appstore.trustAppModal.confirm')}</>}
+            </Btn>
+          </>
+        )
       }
     >
       {app && (
@@ -428,14 +544,46 @@ export default function TrustAppModal({ app, pending, failed, granted, onCancel,
               the grant landed and only the enable failed, the user has state to
               clean up; if nothing was written, telling them to go check Settings
               sends them after something that isn't there. askAgent on: a trust
-              decision dialog holds no draft. */}
-          {failed && (
+              decision dialog holds no draft.
+
+              When the failure carried a server reason, that raw string is the
+              NOTICE'S MESSAGE and the copy above becomes its title: `message` is
+              the error journal's lookup key, so a localized paraphrase in its
+              place would cost the ask-the-agent hand-off the endpoint, status and
+              backend code in every non-English locale. With no reason to show,
+              the copy stays the message exactly as before.
+
+              A PERMANENT refusal (the desktop code) is the one shape where the
+              generic headline is wrong: "Choose Try again" cannot help, and the
+              server's sentence is developer vocabulary. So the title says what
+              is true in the words of the action the user pressed -- the app
+              could not be INSTALLED: the build step this code names runs at
+              install and nowhere else, so this dialog only ever shows it on the
+              way from the detail page's Install button, and that page's own
+              banner behind the dialog says "installed" too; one verb on the one
+              path, so a reader is never left wondering whether installing and
+              turning on are two steps -- and nothing was changed, the assurance
+              `failed_generic` gives for the same `!granted` state -- the message
+              is one plain sentence about what the app needs and where it can
+              install, and the server's sentence stays beneath in the same notice
+              (this dialog has no log panel to carry it). That sentence is still
+              the journal key, so the report is looked up from it explicitly and
+              handed to the notice -- the hand-off keeps the endpoint, the
+              install log and this code. */}
+          {permanentRefusal && (
             <ErrorNotice
-              message={
-                granted
-                  ? i18nT('components.appstore.trustAppModal.failed', { app: name })
-                  : i18nT('components.appstore.trustAppModal.failed_generic', { app: name })
-              }
+              title={i18nT('components.appstore.trustAppModal.failed_desktop_unsupported', { app: name })}
+              message={i18nT('components.appstore.trustAppModal.failed_desktop_unsupported_help')}
+              report={findReport(detail)}
+              footer={<span className="font-mono text-[12px]">{detail}</span>}
+              askAgent
+            />
+          )}
+          {failed && !permanentRefusal && (
+            <ErrorNotice
+              title={detail ? headline : undefined}
+              message={detail || headline}
+              messageClassName={detail ? 'font-mono text-[12px]' : undefined}
               askAgent
             />
           )}

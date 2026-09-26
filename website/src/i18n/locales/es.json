@@ -5939,7 +5939,9 @@
         "confirm_after_failure": "Reintentar",
         "working": "Concediendo confianza y activando...",
         "failed": "No se pudo activar “{{app}}”, pero la confianza quizá ya esté guardada. Elige Reintentar, o abre Ajustes → Seguridad → Aplicaciones de terceros de confianza para comprobarlo y quitarla.",
-        "failed_generic": "No se pudo activar “{{app}}” y no se cambió nada. Elige Reintentar, o revisa los registros de {{productName}}."
+        "failed_generic": "No se pudo activar “{{app}}” y no se cambió nada. Elige Reintentar, o revisa los registros de {{productName}}.",
+        "failed_desktop_unsupported": "No se puede instalar “{{app}}” en la versión de escritorio de {{productName}}, y no se cambió nada.",
+        "failed_desktop_unsupported_help": "Necesita paquetes de Python que la versión de escritorio no puede añadir; pide al autor de la app que los incluya con la app, o abre {{productName}} en un navegador web en lugar de la versión de escritorio."
       },
       "registryTier": {
         "curated": "Revisado por el equipo",
@@ -9304,6 +9306,11 @@
       "failed_to": "No se pudo {{action}}",
       "failed_to_load_app": "No se pudo cargar la app",
       "failed_to_uninstall": "No se pudo desinstalar",
+      "install_desktop_unsupported": "Esta app no se puede instalar en la versión de escritorio de {{productName}}.",
+      "install_desktop_unsupported_help": "{{help}} Cuando el autor incluya los paquetes, cierra este aviso para instalar de nuevo.",
+      "install_log": "Registro de instalación",
+      "dismiss_to_install_again": "Descartar para instalar de nuevo",
+      "dismiss_notice_to_install_again": "Descarta el aviso de arriba para instalar de nuevo",
       "features": "Funciones",
       "use_cases": "Casos de uso",
       "configuration": "Configuración",

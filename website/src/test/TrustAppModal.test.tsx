@@ -84,11 +84,15 @@ import AppDetailPage from '../pages/AppDetailPage'
 import {
   isTrustDeniedError,
   isSessionApprovalConsentRequiredError,
+  retryFailureDetail,
+  retryFailureCode,
+  DESKTOP_BUILD_STEP_UNSUPPORTED,
   APP_EXECUTION_DENIED,
   SESSION_APPROVAL_CONSENT_REQUIRED,
   credentialFreeRepository,
   safeHref,
 } from '../components/appstore/TrustAppModal'
+import { __resetErrorJournalForTests, findReport } from '../utils/errorReport'
 
 /** An ApiError-shaped rejection: message plus the raw structured body. */
 function apiError(status: number, body: object, message = 'boom') {
@@ -629,6 +633,275 @@ describe('registry install trust gate', () => {
     await waitFor(() => expect(modalTitle()).toBeNull())
     expect(trustApp).not.toHaveBeenCalled()
     expect(installFromRegistryStream).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows the server reason under the headline when the retried install fails', async () => {
+    // REGRESSION (#13446): the modal showed `failed_generic` alone and discarded
+    // the install stream's error, so a desktop user hit the same dead end on every
+    // Try again with the cause visible only in `security_events.jsonl`. The
+    // headline stays — it carries the "nothing was changed" advice — and the raw
+    // server sentence is the notice's own message, so the agent hand-off keeps it.
+    const refusal = 'Python apps that require a build step are not supported in the desktop app'
+    installFromRegistryStream
+      .mockResolvedValueOnce(INSTALL_DENIED())
+      .mockResolvedValue({ ok: false, name: THIRD_PARTY.name, error: refusal })
+    getApp.mockRejectedValue(apiError(404, { error: 'app not installed' }))
+    renderDetailFromGet()
+    await waitFor(() => expect(modalTitle()).toBeTruthy())
+
+    fireEvent.click(confirmBtn())
+
+    await waitFor(() => {
+      const alert = within(screen.getByRole('dialog')).getByRole('alert').textContent
+      expect(alert).toContain(refusal)
+      expect(alert).toContain(`${K}.failed_generic LaunchDarkly`)
+    })
+  })
+
+  it('never renders the trust-denied CODE as the reason', async () => {
+    // A second refusal rejects with `app_execution_denied` as a sentinel, not as
+    // user-facing text; the modal's own copy explains a grant that did not take
+    // effect. Showing the machine code would be a worse dead end than the generic
+    // message it replaced.
+    installFromRegistryStream.mockResolvedValue(INSTALL_DENIED())
+    renderDetailFromGet()
+    await waitFor(() => expect(modalTitle()).toBeTruthy())
+    getApp.mockRejectedValue(apiError(500, { error: 'gateway exploded' }, 'gateway exploded'))
+
+    fireEvent.click(confirmBtn())
+
+    await waitFor(() => expect(within(screen.getByRole('dialog')).getByRole('alert').textContent)
+      .toContain(`${K}.failed LaunchDarkly`))
+    expect(within(screen.getByRole('dialog')).getByRole('alert').textContent)
+      .not.toContain(APP_EXECUTION_DENIED)
+  })
+})
+
+describe('retryFailureDetail', () => {
+  it('lifts the failure message and drops what is not user-facing', () => {
+    expect(retryFailureDetail(new Error('  git clone exploded  '))).toBe('git clone exploded')
+    expect(retryFailureDetail('plain string failure')).toBe('plain string failure')
+    // A machine code is not a reason to show.
+    expect(retryFailureDetail(new Error(APP_EXECUTION_DENIED))).toBe('')
+    expect(retryFailureDetail(TRUST_DENIED())).toBe('')
+    expect(retryFailureDetail(INSTALL_DENIED())).toBe('')
+    // Nothing to show rather than an empty detail beside the headline.
+    expect(retryFailureDetail(new Error('   '))).toBe('')
+    expect(retryFailureDetail(undefined)).toBe('')
+    expect(retryFailureDetail({ ok: false })).toBe('')
+  })
+})
+
+describe('retryFailureCode', () => {
+  it('lifts the code only beside a reason worth showing', () => {
+    const permanent = Object.assign(new Error('build refused'), { code: DESKTOP_BUILD_STEP_UNSUPPORTED })
+    expect(retryFailureCode(permanent)).toBe(DESKTOP_BUILD_STEP_UNSUPPORTED)
+    // A reason with no code selects nothing special.
+    expect(retryFailureCode(new Error('git clone exploded'))).toBe('')
+    // A sentinel refusal has no reason, so its code has nothing to select.
+    expect(retryFailureCode(INSTALL_DENIED())).toBe('')
+    expect(retryFailureCode(TRUST_DENIED())).toBe('')
+    expect(retryFailureCode(undefined)).toBe('')
+  })
+})
+
+describe('registry install trust gate — permanent desktop refusal', () => {
+  const REFUSAL =
+    'Python apps that require a build step are not supported in the desktop app: ' +
+    'its bundled interpreter is inside the signed application bundle and cannot install packages'
+
+  beforeEach(() => {
+    listRegistry.mockResolvedValue({
+      apps: [{ ...THIRD_PARTY, installed: false, enabled: false }],
+      serverPlatform: { os: 'darwin', arch: 'arm64' },
+    })
+    __resetErrorJournalForTests()
+  })
+
+  it('drops the retry instruction and explains the refusal in plain words above the server sentence', async () => {
+    // The `done` payload names the condition by CODE. The generic headline tells
+    // the user to "Choose Try again", which cannot help with a permanent condition,
+    // and the server's sentence is developer vocabulary — so the notice becomes
+    // the desktop headline, one plain sentence, and the raw sentence beneath.
+    installFromRegistryStream
+      .mockResolvedValueOnce(INSTALL_DENIED())
+      .mockResolvedValue({ ok: false, name: THIRD_PARTY.name, error: REFUSAL, code: DESKTOP_BUILD_STEP_UNSUPPORTED })
+    getApp.mockRejectedValue(apiError(404, { error: 'app not installed' }))
+    renderDetailFromGet()
+    await waitFor(() => expect(modalTitle()).toBeTruthy())
+
+    fireEvent.click(confirmBtn())
+
+    await waitFor(() => {
+      const alert = within(screen.getByRole('dialog')).getByRole('alert')
+      // Named like `failed_generic` names it: the {{app}} threading is observable.
+      expect(alert.textContent).toContain(`${K}.failed_desktop_unsupported ${THIRD_PARTY.displayName}`)
+      expect(alert.textContent).toContain(`${K}.failed_desktop_unsupported_help`)
+      expect(alert.textContent).toContain(REFUSAL)
+      expect(alert.textContent).not.toContain(`${K}.failed_generic`)
+      // Reading order: headline, plain sentence, then the server's own words.
+      const text = alert.textContent ?? ''
+      expect(text.indexOf(`${K}.failed_desktop_unsupported_help`)).toBeLessThan(text.indexOf(REFUSAL))
+    })
+    // The raw sentence is still the journal key, with the code recorded beside it,
+    // so the ask-the-agent hand-off keeps the endpoint, the log and the code even
+    // though the notice's message is now the plain sentence.
+    const report = findReport(REFUSAL)
+    expect(report?.code).toBe(DESKTOP_BUILD_STEP_UNSUPPORTED)
+    expect(report?.endpoint).toBe('/api/apps/registry/install-stream')
+  })
+
+  it('keeps the generic headline for a reason the server did not mark permanent', async () => {
+    // A clone or build failure may well be transient, so "Try again" stays.
+    installFromRegistryStream
+      .mockResolvedValueOnce(INSTALL_DENIED())
+      .mockResolvedValue({ ok: false, name: THIRD_PARTY.name, error: 'build failed (exit 1): npm install' })
+    getApp.mockRejectedValue(apiError(404, { error: 'app not installed' }))
+    renderDetailFromGet()
+    await waitFor(() => expect(modalTitle()).toBeTruthy())
+
+    fireEvent.click(confirmBtn())
+
+    await waitFor(() => {
+      const alert = within(screen.getByRole('dialog')).getByRole('alert').textContent
+      expect(alert).toContain('build failed (exit 1): npm install')
+      expect(alert).toContain(`${K}.failed_generic`)
+      expect(alert).not.toContain(`${K}.failed_desktop_unsupported`)
+    })
+  })
+
+  it('keeps the landed-grant copy over the desktop headline when the rollback did not happen', async () => {
+    // A grant left behind is the more urgent fact: the `failed` copy is what
+    // sends the user to Settings to remove it, so it outranks the desktop copy.
+    installFromRegistryStream
+      .mockResolvedValueOnce(INSTALL_DENIED())
+      .mockResolvedValue({ ok: false, name: THIRD_PARTY.name, error: REFUSAL, code: DESKTOP_BUILD_STEP_UNSUPPORTED })
+    renderDetailFromGet()
+    await waitFor(() => expect(modalTitle()).toBeTruthy())
+    // The rollback probe cannot prove absence (500, not 404), so the grant stands.
+    getApp.mockRejectedValue(apiError(500, { error: 'gateway exploded' }, 'gateway exploded'))
+
+    fireEvent.click(confirmBtn())
+
+    await waitFor(() => {
+      const alert = within(screen.getByRole('dialog')).getByRole('alert').textContent
+      expect(alert).toContain(`${K}.failed LaunchDarkly`)
+      expect(alert).toContain(REFUSAL)
+      expect(alert).not.toContain(`${K}.failed_desktop_unsupported`)
+    })
+  })
+
+  it('offers Close instead of Try again once the refusal is permanent', async () => {
+    // "Try again" re-runs `api.trustApp` plus a full clone/build that ends in the
+    // identical refusal, then leans on the rollback probe to revoke the grant it
+    // just re-wrote. The copy already says retrying cannot help; the footer must
+    // not contradict it. The grant was rolled back (404), so closing loses nothing.
+    installFromRegistryStream
+      .mockResolvedValueOnce(INSTALL_DENIED())
+      .mockResolvedValue({ ok: false, name: THIRD_PARTY.name, error: REFUSAL, code: DESKTOP_BUILD_STEP_UNSUPPORTED })
+    getApp.mockRejectedValue(apiError(404, { error: 'app not installed' }))
+    renderDetailFromGet()
+    await waitFor(() => expect(modalTitle()).toBeTruthy())
+
+    fireEvent.click(confirmBtn())
+
+    await waitFor(() => expect(within(screen.getByRole('dialog')).getByRole('alert').textContent)
+      .toContain(`${K}.failed_desktop_unsupported`))
+    const dialog = within(screen.getByRole('dialog'))
+    expect(dialog.queryByRole('button', { name: `${K}.confirm_after_failure` })).toBeNull()
+    expect(dialog.queryByRole('button', { name: `${K}.cancel` })).toBeNull()
+    const streamCalls = installFromRegistryStream.mock.calls.length
+
+    fireEvent.click(dialog.getByRole('button', { name: 'app.close' }))
+
+    await waitFor(() => expect(modalTitle()).toBeNull())
+    // Closing is the whole action: nothing was re-run.
+    expect(installFromRegistryStream.mock.calls.length).toBe(streamCalls)
+  })
+
+  it('selects the same plain copy on the page when an already-trusted app is refused', async () => {
+    // An app that is already trusted never opens the consent modal: the install
+    // fails on the first attempt and the refusal lands in the page's error box.
+    // The `done` payload's code is journaled beside the message, and the box
+    // keys its copy on that record — headline and plain sentence — so the
+    // trusted path does not fall back to the developer vocabulary alone. The
+    // server streams its refusal line into the install log first, as the real
+    // gateway does.
+    installFromRegistryStream.mockImplementationOnce(async (_name: string, onLine: (line: string) => void) => {
+      onLine(`Refusing install: ${REFUSAL}`)
+      return { ok: false, name: THIRD_PARTY.name, error: REFUSAL, code: DESKTOP_BUILD_STEP_UNSUPPORTED }
+    })
+    renderDetailFromGet()
+
+    // The page has other alert regions; the error box is the one leading with
+    // the page's headline.
+    const box = () => screen.queryAllByRole('alert')
+      .find(el => el.textContent?.includes('pages.appDetailPage.install_desktop_unsupported'))
+    await waitFor(() => expect(box()).toBeTruthy())
+    const text = box()?.textContent ?? ''
+    // One verb on both surfaces (the refusal is the install's): the page's
+    // headline is its own sentence, not the modal's app-named one.
+    expect(text).toContain('pages.appDetailPage.install_desktop_unsupported')
+    expect(text).not.toContain(`${K}.failed_desktop_unsupported ${THIRD_PARTY.displayName}`)
+    // The shared plain sentence rides inside the page's own trailing one, which
+    // names the way back to a retry (the banner's dismiss).
+    expect(text).toContain(`pages.appDetailPage.install_desktop_unsupported_help ${K}.failed_desktop_unsupported_help`)
+    // The server's own sentence is not a third rendering inside the banner: the
+    // log panel beneath shows it verbatim as the streamed line, and the hand-off
+    // carries it through the report (still keyed by that sentence).
+    expect(text).not.toContain(REFUSAL)
+    expect(screen.getByText(`Refusing install: ${REFUSAL}`)).toBeTruthy()
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(findReport(REFUSAL)?.code).toBe(DESKTOP_BUILD_STEP_UNSUPPORTED)
+
+    // One failure surface. The install-log panel is up too, and for any other
+    // failure its header is a second red notice with its own hand-off and
+    // dismiss; under this banner it folds to a plain title naming the log (not
+    // the outcome, which the banner states) with the log still reachable beneath,
+    // and the panel's own close goes with it -- the banner's dismiss is the one
+    // control.
+    const alerts = () => screen.queryAllByRole('alert')
+    expect(alerts().filter(el => el.textContent?.includes('pages.appDetailPage.install_failed'))).toHaveLength(0)
+    expect(screen.queryByText('pages.appDetailPage.install_failed')).toBeNull()
+    expect(screen.getByText('pages.appDetailPage.install_log')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'components.errorNotice.dismiss' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'pages.appDetailPage.close' })).toBeNull()
+
+    // Install under a banner that says installing is impossible would run the
+    // same clone and build into the same refusal, so it is disabled while the
+    // banner is up; dismissing the banner is how a retry is reached once the
+    // author has shipped the packages -- so the dismiss control SAYS so, as
+    // visible text that is also its accessible name, instead of an icon-only X
+    // whose role the paragraph alone explains, and the disabled button says the
+    // same at the point of action (its title). Dismissing clears the log panel
+    // too, so no "Install log" (or, once the error is gone, "Install complete")
+    // is left standing beside a re-enabled Install, and the title goes with the
+    // disabled state.
+    const install = () => screen.getByRole('button', { name: 'pages.appDetailPage.install' })
+    expect(install()).toBeDisabled()
+    expect(install()).toHaveAttribute('title', 'pages.appDetailPage.dismiss_notice_to_install_again')
+    const dismissButtons = within(box()!).getAllByRole('button', { name: 'pages.appDetailPage.dismiss_to_install_again' })
+    expect(dismissButtons).toHaveLength(1)
+    const dismiss = dismissButtons[0]
+    expect(dismiss.textContent).toContain('pages.appDetailPage.dismiss_to_install_again')
+    expect(dismiss.getAttribute('aria-label')).toBe('pages.appDetailPage.dismiss_to_install_again')
+    fireEvent.click(dismiss)
+    await waitFor(() => expect(box()).toBeUndefined())
+    expect(install()).not.toBeDisabled()
+    expect(install()).not.toHaveAttribute('title')
+    expect(screen.queryByText('pages.appDetailPage.install_log')).toBeNull()
+    expect(screen.queryByText('pages.appDetailPage.install_complete')).toBeNull()
+  })
+
+  it('keeps the raw prose on the page for a refusal the server did not mark permanent', async () => {
+    installFromRegistryStream
+      .mockResolvedValue({ ok: false, name: THIRD_PARTY.name, error: 'build failed (exit 1): npm install' })
+    renderDetailFromGet()
+
+    const box = () => screen.getAllByRole('alert')
+      .find(el => el.textContent?.includes('build failed (exit 1): npm install'))
+    await waitFor(() => expect(box()).toBeTruthy())
+    expect(box()?.textContent).not.toContain(`${K}.failed_desktop_unsupported`)
   })
 })
 
