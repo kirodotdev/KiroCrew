@@ -4292,44 +4292,139 @@ class TestALostRunWriteDoesNotReUploadForever:
         # fabricated total ordering by random process identity or sequence.
         assert not backup._run_is_newer({**earlier, "at": later["at"]}, later)
 
-    def test_run_identity_concurrent_failure_then_recovery(self, monkeypatch):
-        from concurrent.futures import ThreadPoolExecutor
-        from threading import Event
-
-        entered, release, contender = Event(), Event(), Event()
+    @pytest.mark.parametrize("failure_stage", ["read", "write"])
+    def test_run_identity_failed_state_update_hand_off_runs_inside_the_state_lock(
+        self, monkeypatch, failure_stage
+    ):
+        # A run whose state update fails must hand its record to `_remember_unpersisted`
+        # BEFORE the sidecar lock is released -- i.e. before any second run-record
+        # writer can read and persist state. If the hand-off ran AFTER the lock
+        # released (as the original code did, from the outer except handler), a second
+        # writer taking the lock in that gap would `_merge_pending` in nothing (the
+        # first run is not held yet) and persist only its own record, stranding the
+        # first upload in memory alone -- forgotten on restart, reopening the
+        # unattended re-upload. The fix runs the hand-off inside `_locked_state_update`
+        # while the sidecar lock is STILL HELD, so no reader between a failed step and
+        # the hand-off can miss the first run.
+        #
+        # Parameterized by which step raises, because the gap is the SAME for every
+        # step taken after the lock is acquired -- not the write alone. The upload
+        # happens BEFORE `_record_run` is called, so a completed-upload record exists
+        # whichever step fails; the READ case is the sibling defect a write-only
+        # handoff left open. `_read_state_for_update` runs inside the lock, so its
+        # `_StateUnreadable` must fire the in-lock handoff exactly as a failed write
+        # does. This is the case the write-only callback missed: it wrapped only
+        # `write_state`, so a read failure fell through to the outer except and handed
+        # off with the lock already released.
+        #
+        # This proves the property DIRECTLY, on the calling thread, with no second
+        # thread, no sleep, and no elapsed-time assumption -- so it cannot pass
+        # vacuously on a contended runner where a worker was simply never scheduled.
+        # `_state_lock` is wrapped in a tracker that records whether its body is
+        # active, and the patched `_remember_unpersisted` reads that flag at the
+        # moment the hand-off fires:
+        #
+        #   * Fixed production calls the hand-off from inside `_locked_state_update`'s
+        #     `with _state_lock():` block, so the flag is True. The patched remember
+        #     records the run first, and only AFTER the first `_record_run` has
+        #     returned (lock released) does the test drive the second run in. The
+        #     second's `_merge_pending` reads the held first run, so both uploads land.
+        #
+        #   * Old production (write-only handoff, or no handoff at all) calls remember
+        #     from the outer except handler, after `_locked_state_update` has already
+        #     released the lock, so the flag is False. To reproduce the exact loss
+        #     deterministically, the patched remember then runs the second
+        #     `_record_run` to completion BEFORE handing the first run to real remember
+        #     -- exactly the interleaving the released lock permits. The second
+        #     persists a document the first run is absent from, and the final on-disk
+        #     assertion (both uploads present) fails at pytest call phase.
         now = dt.datetime(2026, 9, 19, tzinfo=dt.timezone.utc)
         clock = mock.Mock(wraps=dt.datetime)
         clock.now.return_value = now
         monkeypatch.setattr(backup, "dt", mock.Mock(datetime=clock, timezone=dt.timezone))
+        real_state_lock = backup._state_lock
         real_write = backup.write_state
+        real_read = backup._read_state_for_update
+        real_remember = backup._remember_unpersisted
+
+        state_lock_depth = 0
+
+        @contextlib.contextmanager
+        def tracking_state_lock():
+            nonlocal state_lock_depth
+            with real_state_lock():
+                state_lock_depth += 1
+                try:
+                    yield
+                finally:
+                    state_lock_depth -= 1
+
+        first_failed = False
+
+        def reader():
+            # The FIRST read fails (the losing run); every later read -- the second
+            # run's -- returns the real document. Only patched for failure_stage="read".
+            nonlocal first_failed
+            if not first_failed:
+                first_failed = True
+                raise backup._StateUnreadable(errno.EIO, "injected")
+            return real_read()
 
         def writer(state):
-            if not entered.is_set():
-                entered.set()
-                assert release.wait(10), "test did not release the failed writer"
+            # The FIRST write fails (the losing run); every later write -- the second
+            # run's -- goes to disk for real. Only patched for failure_stage="write".
+            nonlocal first_failed
+            if not first_failed:
+                first_failed = True
                 raise OSError(errno.EIO, "injected")
-            real_write(state)
+            return real_write(state)
 
-        def second_run():
-            contender.set()
-            return backup._record_run(ACCOUNT, backup.KIND_SNAPSHOT, "second.tar.gz", 2, "b")
+        second_done = False
+        handed_off_inside_lock = None
 
-        monkeypatch.setattr(backup, "write_state", writer)
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            first_future = pool.submit(
-                backup._record_run, ACCOUNT, backup.KIND_SNAPSHOT, "first.tar.gz", 1, "a"
-            )
-            try:
-                assert entered.wait(10)
-                second_future = pool.submit(second_run)
-                assert contender.wait(10)
-            finally:
-                release.set()
-            first = first_future.result(timeout=10)
-            second = second_future.result(timeout=10)
+        def remembering(account, kind, record):
+            # Fires once, for the first (failed) run's hand-off. Snapshot whether the
+            # sidecar lock body is active at this instant -- the property under test.
+            nonlocal second_done, handed_off_inside_lock
+            if handed_off_inside_lock is None:
+                handed_off_inside_lock = state_lock_depth > 0
+                if not handed_off_inside_lock:
+                    # OLD production interleaving: the lock is already released, so a
+                    # second writer can read and persist state before this run is held.
+                    # Drive it to completion FIRST, then hold the first run -- the loss.
+                    second_done = True
+                    backup._record_run(ACCOUNT, backup.KIND_SNAPSHOT, "second.tar.gz", 2, "b")
+            return real_remember(account, kind, record)
+
+        monkeypatch.setattr(backup, "_state_lock", tracking_state_lock)
+        if failure_stage == "read":
+            monkeypatch.setattr(backup, "_read_state_for_update", reader)
+        else:
+            monkeypatch.setattr(backup, "write_state", writer)
+        monkeypatch.setattr(backup, "_remember_unpersisted", remembering)
+
+        first = backup._record_run(ACCOUNT, backup.KIND_SNAPSHOT, "first.tar.gz", 1, "a")
+        # The hand-off fired, and it fired while the sidecar lock body was still
+        # active. This is the direct proof, independent of the on-disk outcome, and it
+        # holds for BOTH stages: `_read_state_for_update` runs inside the lock, so its
+        # failure must reach the in-lock handoff just as `write_state`'s does.
+        assert handed_off_inside_lock is True, (
+            "the failed state-update hand-off ran outside the state lock; a concurrent "
+            "writer could read and persist state in that window without the first run "
+            "held"
+        )
+        # FIXED production reached remember inside the lock, so it did NOT drive the
+        # second run from within; run it now, after the first has released the lock.
+        if not second_done:
+            second = backup._record_run(ACCOUNT, backup.KIND_SNAPSHOT, "second.tar.gz", 2, "b")
+        else:  # pragma: no cover - only the old-production interleaving reaches here
+            second = backup.last_runs(ACCOUNT)[backup.KIND_SNAPSHOT]
+
         assert first["at"] == second["at"]
         assert first["sequence"] < second["sequence"]
         assert backup.last_runs(ACCOUNT)[backup.KIND_SNAPSHOT] == second
+        # Both uploads persist: the first was held before the second could read state,
+        # so the second's `_merge_pending` carried it into the committed document.
         assert self._on_disk()["accounts"][ACCOUNT]["uploads"] == {
             "first.tar.gz": "a",
             "second.tar.gz": "b",

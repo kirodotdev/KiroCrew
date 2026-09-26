@@ -1120,6 +1120,35 @@ the file lock first, and `_record_run` and `_record_skip` no longer wrap it in
 callers' outer hold was the only thing serialising it, and `(process, sequence)`
 is the identity the compare-and-set inside `mutate` reads, so a shared sequence
 would let a stale baseline pass a check it must fail.
+
+The in-lock failure handoff runs INSIDE that lock rather than after it. When a
+run's state update fails at ANY step taken after the sidecar lock is acquired --
+the read, the pending merge, `mutate`, or `write_state` -- `_record_run_locked`
+holds the completed upload's record in process memory (see below) via
+`_remember_unpersisted`. The upload happens BEFORE `_record_run` is called, so that
+completed-upload record exists whichever step raises, a read failure included:
+publishing over an unread document strands the run just as a failed write does.
+`_locked_state_update` releases the sidecar lock the instant any of those steps
+raises, so if that handoff ran from the outer except -- after the block released --
+a second run-record writer could take the sidecar lock in the gap, `_merge_pending`
+in nothing (the first run is not held yet), and persist only its own record; the
+first upload would then live in memory alone and be forgotten on restart, reopening
+the unattended re-upload. `_locked_state_update` takes an `on_in_lock_failure`
+callback and invokes it while the sidecar lock is still held, then re-raises, so the
+record is held before any other writer can read the state it is missing from -- no
+second lock, no serialization of the happy path (two same-kind runs still contend on
+the file lock and resolve by `(process, sequence)` supersession, and the status read
+stays non-blocking). The callback takes only `_unpersisted_lock`, a leaf below the
+two locks the block holds, so the acquisition order stands. It fires on any such
+failure and never on success. A failure to ACQUIRE the sidecar lock itself cannot
+run an in-lock callback. The outer handler still holds that record in process
+memory, preventing another upload while this process lives, but it cannot promise
+immediate disk convergence: a peer may already hold the sidecar lock and commit
+state that does not include this run, and no callback can execute under a lock this
+caller never acquired. A restart may therefore re-upload that archive, which is
+the fallback for an unavailable state lock. Only the UNCONDITIONAL run
+write passes the callback: the conditional (`expected`) path re-uploads a full copy
+on failure and remembers nothing.
 The sidecar lock is taken with a ceiling derived from that hold rather than
 `file_lock`'s 300s default, which is sized for a sub-second read plus a rename.
 A shorter ceiling would refuse a contender that is only waiting, and that refusal
@@ -1149,8 +1178,13 @@ different risk decisions and enabling one must not enable the other.
 A run's `at` is the observed UTC wall time, not a unique identifier or a
 monotonic clock. `process` (a random process token plus PID) and `sequence`
 distinguish and order this process's completed run records even when wall time
-ties or moves backwards. Recording and state updates share an in-process lock;
-the existing sidecar lock still serializes disk writes across processes.
+ties or moves backwards. The in-lock failure handoff -- when a completed upload's
+state update fails at any step after the sidecar lock is acquired (read, merge,
+`mutate`, or `write_state`), `_record_run_locked` holds the run in process memory
+via `_remember_unpersisted` -- runs INSIDE the sidecar lock (`_locked_state_update`'s
+`on_in_lock_failure` callback), so a second same-process record writer cannot read
+state in the window after a failed update releases the lock and before the run is
+held; the sidecar lock still serializes disk writes across processes.
 A newly recorded run unconditionally replaces its kind's prior state under the
 sidecar lock, including prior-process or legacy records with equal or later wall
 times. Only best-effort overlay/recovery comparisons use local sequence or the
