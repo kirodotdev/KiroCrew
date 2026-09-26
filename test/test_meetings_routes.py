@@ -573,6 +573,151 @@ class TestMeetingLifecycleRoutes:
         assert _common.ACTIVE.get() is None
 
     @pytest.mark.asyncio
+    async def test_stop_timeout_keeps_retained_batch_recoverable(
+        self, app, root: Path, fake_sessions, monkeypatch: pytest.MonkeyPatch
+    ):
+        async with client_for(app) as client:
+            session = await _start_and_get_session(client)
+            note_queue = session.agents["note-taker"]
+            transcript = "The owner will send the revised agenda."
+            note_queue.enqueue(transcript)
+            note_taker_calls = 0
+            hanging_started = asyncio.Event()
+            delivered: list[tuple[str, str]] = []
+
+            async def hanging_note_taker(
+                sessions, key, text, agent="", *, hooks=None, timeout_secs=None
+            ):
+                nonlocal note_taker_calls
+                if "note-taker" in key and note_taker_calls == 0:
+                    note_taker_calls += 1
+                    hanging_started.set()
+                    await asyncio.Event().wait()
+                delivered.append((key, text))
+
+            monkeypatch.setattr(sess, "dispatch_to_agent", hanging_note_taker)
+            initial_drain = asyncio.create_task(note_queue.flush_now())
+            await asyncio.wait_for(hanging_started.wait(), timeout=5.0)
+            monkeypatch.setattr(sess, "_AGENT_DRAIN_TIMEOUT_SECS", 0.01)
+            response = await client.post(f"{BASE}/meetings/standup/stop")
+
+            assert response.status == 503
+            assert (await response.json())["code"] == "meeting_drain_incomplete"
+            assert _common.ACTIVE.get("standup") is session
+            assert note_queue.paused is True
+            assert note_queue.queue == [transcript, k.SYSTEM_MEETING_ENDED]
+            assert store.read_meeting_meta("standup", root)["status"] == k.STATUS_ACTIVE
+            assert _common.ACTIVE.accepting_dispatches is False
+            assert await initial_drain is False
+
+            retained = {name: list(queue.queue) for name, queue in session.agents.items()}
+            delivered_before_retry = list(delivered)
+            retry = await client.post(f"{BASE}/meetings/standup/stop")
+            assert retry.status == 503
+            assert (await retry.json())["code"] == "meeting_drain_incomplete"
+            assert _common.ACTIVE.get("standup") is session
+            assert session.agent_drain_incomplete is True
+            assert note_queue.paused is True
+            assert {name: queue.queue for name, queue in session.agents.items()} == retained
+            assert delivered == delivered_before_retry
+            assert store.read_meeting_meta("standup", root)["status"] == k.STATUS_ACTIVE
+
+            resumed = await client.post(
+                f"{BASE}/meetings/standup/status", json={"status": k.STATUS_ACTIVE}
+            )
+            assert resumed.status == 503
+            assert (await resumed.json())["code"] == "meeting_drain_incomplete"
+            assert _common.ACTIVE.accepting_dispatches is False
+            assert {name: queue.queue for name, queue in session.agents.items()} == retained
+            assert delivered == delivered_before_retry
+
+            replacement = await client.post(f"{BASE}/meetings/standup/start")
+            assert replacement.status == 503
+            assert (await replacement.json())["code"] == "meeting_drain_incomplete"
+            assert _common.ACTIVE.get("standup") is session
+            assert {name: queue.queue for name, queue in session.agents.items()} == retained
+            assert delivered == delivered_before_retry
+
+            reviewing = await client.post(
+                f"{BASE}/meetings/standup/status", json={"status": k.STATUS_REVIEWING}
+            )
+            assert reviewing.status == 200
+            ended = await client.post(
+                f"{BASE}/meetings/standup/status", json={"status": k.STATUS_ENDED}
+            )
+            assert ended.status == 503
+            assert (await ended.json())["code"] == "meeting_drain_incomplete"
+            assert _common.ACTIVE.get("standup") is session
+            assert store.read_meeting_meta("standup", root)["status"] == k.STATUS_REVIEWING
+
+            # The 10 ms budget above exists only to provoke the first timeout.
+            # Windows CI can spend longer than that scheduling an otherwise
+            # immediate recovery drain, so give the recovery assertion a real
+            # scheduling margin.
+            monkeypatch.setattr(sess, "_AGENT_DRAIN_TIMEOUT_SECS", 5.0)
+            reset = await client.post(f"{BASE}/meetings/standup/reset")
+            assert reset.status == 200
+            assert "note-taker" in (await reset.json())["resumed"]
+            assert session.agent_drain_incomplete is False
+            assert note_queue.queue == []
+            # Reviewing is intentionally closed to new transcript ingress.
+            assert _common.ACTIVE.accepting_dispatches is False
+            assert any("note-taker" in key and transcript in text for key, text in delivered)
+
+            stopped = await client.post(f"{BASE}/meetings/standup/stop")
+            assert stopped.status == 200
+            assert _common.ACTIVE.get("standup") is None
+            assert note_queue.queue == []
+            assert any("note-taker" in key and transcript in text for key, text in delivered)
+            assert store.read_meeting_meta("standup", root)["status"] == k.STATUS_ENDED
+
+    @pytest.mark.asyncio
+    async def test_stop_circuit_breaker_keeps_retained_batch_recoverable(
+        self, app, root: Path, fake_sessions
+    ):
+        """A provider failure must not let Stop clear a non-empty paused queue."""
+        async with client_for(app) as client:
+            session = await _start_and_get_session(client)
+            note_queue = session.agents["note-taker"]
+            transcript = "The owner will publish the migration checklist."
+            note_queue.enqueue(transcript)
+            fake_sessions.fail = True
+
+            response = await client.post(f"{BASE}/meetings/standup/stop")
+
+            assert response.status == 503
+            assert (await response.json())["code"] == "meeting_drain_incomplete"
+            assert _common.ACTIVE.get("standup") is session
+            assert session.agent_drain_incomplete is True
+            assert note_queue.paused is True
+            assert note_queue.queue == [transcript, k.SYSTEM_MEETING_ENDED]
+            assert store.read_meeting_meta("standup", root)["status"] == k.STATUS_ACTIVE
+
+            retained = list(note_queue.queue)
+            repeated = await client.post(f"{BASE}/meetings/standup/stop")
+            assert repeated.status == 503
+            assert note_queue.queue == retained
+
+            failed_reset = await client.post(f"{BASE}/meetings/standup/reset")
+            assert failed_reset.status == 503
+            assert session.agent_drain_incomplete is True
+            assert note_queue.queue == retained
+
+            fake_sessions.fail = False
+            reset = await client.post(f"{BASE}/meetings/standup/reset")
+            assert reset.status == 200
+            assert session.agent_drain_incomplete is False
+            assert note_queue.queue == []
+            # This Stop failed while metadata remained active, so Reset restores
+            # capture after delivering the retained batch.
+            assert _common.ACTIVE.accepting_dispatches is True
+
+            stopped = await client.post(f"{BASE}/meetings/standup/stop")
+            assert stopped.status == 200
+            assert _common.ACTIVE.get("standup") is None
+            assert store.read_meeting_meta("standup", root)["status"] == k.STATUS_ENDED
+
+    @pytest.mark.asyncio
     async def test_list_and_get(self, app):
         async with client_for(app) as client:
             await client.post(f"{BASE}/meetings/one/init", json={"title": "One"})
@@ -1353,9 +1498,11 @@ class TestAgentRoutes:
             flush_entered = asyncio.Event()
             release_flush = asyncio.Event()
 
-            async def slow_flush() -> None:
+            async def slow_flush(*, timeout_secs: float | None = None) -> bool:
+                assert timeout_secs == sess._AGENT_DRAIN_TIMEOUT_SECS
                 flush_entered.set()
                 await release_flush.wait()
+                return True
 
             monkeypatch.setattr(session, "flush_all", slow_flush)
             stop_request = asyncio.create_task(client.post(f"{BASE}/meetings/standup/stop"))
@@ -1489,7 +1636,9 @@ class TestAgentRoutes:
             assert resp.status == 200
             assert "sketch-artist" in (await resp.json())["agents_enabled"]
             assert store.agent_output_path("standup", "sketch-artist.html", root).is_file()
-            assert any("mid-meeting" in msg for _k, _a, msg in fake_sessions.calls)
+            kickoff = next(msg for _k, _a, msg in fake_sessions.calls if "mid-meeting" in msg)
+            assert "end this turn" in kickoff.lower()
+            assert "wait for transcription" not in kickoff.lower()
 
             resp = await client.post(
                 f"{BASE}/meetings/standup/agents",
@@ -2642,8 +2791,9 @@ class TestTeardownDrainsBeforeClearing:
         class _FakeSession:
             meeting_id = "m1"
 
-            async def flush_all(self) -> None:
+            async def flush_all(self) -> bool:
                 flushed.append("flushed")
+                return True
 
             def cancel_all(self) -> None:
                 flushed.append("cancelled")
@@ -2666,7 +2816,7 @@ class TestTeardownDrainsBeforeClearing:
         class _BrokenSession:
             meeting_id = "m2"
 
-            async def flush_all(self) -> None:
+            async def flush_all(self) -> bool:
                 raise RuntimeError("agent is wedged")
 
             def cancel_all(self) -> None:
@@ -2870,9 +3020,9 @@ class TestTeardownLeavesNoMeetingFalselyActive:
 
             original_flush = session.flush_all
 
-            async def _tracked_flush() -> None:
+            async def _tracked_flush() -> bool:
                 order.append("flush")
-                await original_flush()
+                return await original_flush()
 
             monkeypatch.setattr(session, "flush_all", _tracked_flush)
 
@@ -3153,7 +3303,7 @@ class TestStartAndStopAreSerialized:
 
     @pytest.mark.asyncio
     async def test_a_stop_during_a_start_runs_after_it(
-        self, app: web.Application, root: Path
+        self, app: web.Application, root: Path, fake_sessions
     ) -> None:
         """End to end: the stop is ordered after initialization, so the meeting ends
         up consistently ENDED with no live session — not `active` with nothing live."""
@@ -3383,9 +3533,10 @@ class TestATeardownNeverClearsAReplacement:
                 self.meeting_id = meeting_id
                 self.agents: dict[str, object] = {}
 
-            async def flush_all(self) -> None:
+            async def flush_all(self) -> bool:
                 # Park mid-teardown, which is the window the race needs.
                 await release.wait()
+                return True
 
             def cancel_all(self) -> None:
                 cancelled.append(self.meeting_id)
@@ -3417,8 +3568,8 @@ class TestATeardownNeverClearsAReplacement:
             meeting_id = "solo"
             agents: dict[str, object] = {}
 
-            async def flush_all(self) -> None:
-                pass
+            async def flush_all(self) -> bool:
+                return True
 
             def cancel_all(self) -> None:
                 pass
@@ -3477,6 +3628,12 @@ class TestSpeechDuringAgentInitIsHeldNotRefused:
         await asyncio.wait_for(entered.wait(), timeout=5)
         return start, release
 
+    @staticmethod
+    async def _wait_for_agent_flush(session, agent_id: str) -> None:
+        task = session.agents[agent_id]._flush_task
+        assert task is not None
+        await asyncio.wait_for(task, timeout=2)
+
     @pytest.mark.asyncio
     async def test_speech_mid_init_is_buffered_and_delivered_in_order(
         self, app, fake_sessions, monkeypatch: pytest.MonkeyPatch
@@ -3510,14 +3667,54 @@ class TestSpeechDuringAgentInitIsHeldNotRefused:
             release.set()
             assert (await start).status == 200
 
-            # Drained into every unmuted queue, in the order they were spoken.
+            # Drained and immediately flushed to every unmuted agent, in the order
+            # spoken. The opening does not wait through the normal batch interval.
             assert session.init_buffer == []
             for agent_id in ("note-taker", "sketch-artist", k.TASK_EXTRACTOR_ID):
-                assert session.agents[agent_id].queue == [
-                    "first the agenda",
-                    "then the blockers",
-                    "and the owners",
+                await self._wait_for_agent_flush(session, agent_id)
+                prompts = fake_sessions.prompts_for(agent_id)
+                assert prompts[-1] == ("first the agenda\n\nthen the blockers\n\nand the owners")
+                assert session.agents[agent_id].queue == []
+
+    @pytest.mark.asyncio
+    async def test_start_does_not_wait_for_the_opening_transcript_turn(
+        self, app, fake_sessions, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The lifecycle lock is released while the ordinary turn is still live."""
+        entered_turn = asyncio.Event()
+        release_turn = asyncio.Event()
+        real_dispatch = sess.dispatch_to_agent
+
+        async def blocking_dispatch(sessions, key, text, agent="", **kwargs):
+            if text == "opening while agents initialize":
+                entered_turn.set()
+                await release_turn.wait()
+                return
+            await real_dispatch(sessions, key, text, agent, **kwargs)
+
+        monkeypatch.setattr(sess, "dispatch_to_agent", blocking_dispatch)
+        async with client_for(app) as client:
+            start, release_init = await self._start_paused_in_init(client, monkeypatch)
+            await client.post(
+                f"{BASE}/meetings/standup/dispatch",
+                json={"text": "opening while agents initialize"},
+            )
+            session = _common.ACTIVE.get("standup")
+            assert session is not None
+
+            release_init.set()
+            try:
+                assert (await asyncio.wait_for(start, timeout=2)).status == 200
+                await asyncio.wait_for(entered_turn.wait(), timeout=2)
+                assert any(queue.busy for queue in session.agents.values())
+            finally:
+                release_turn.set()
+                tasks = [
+                    queue._flush_task
+                    for queue in session.agents.values()
+                    if queue._flush_task is not None
                 ]
+                await asyncio.gather(*tasks)
 
     @pytest.mark.asyncio
     async def test_the_transcript_holds_every_line_spoken_during_init(
@@ -3629,12 +3826,13 @@ class TestSpeechDuringAgentInitIsHeldNotRefused:
             assert (await start).status == 200
 
             expected_marker = k.SYSTEM_INIT_BUFFER_OVERFLOW.format(count=2, limit=2)
-            # The agents are told first, then given what survived.
-            assert session.agents["note-taker"].queue == [
-                expected_marker,
-                "line number 2",
-                "line number 3",
-            ]
+            # The agents are told first, then given what survived, in the immediate
+            # post-init dispatch.
+            await self._wait_for_agent_flush(session, "note-taker")
+            assert fake_sessions.prompts_for("note-taker")[-1] == (
+                f"{expected_marker}\n\nline number 2\n\nline number 3"
+            )
+            assert session.agents["note-taker"].queue == []
             assert session.init_dropped == 0  # the tally is consumed by the drain
 
             # And the human transcript states it too, under a source the reader
@@ -3775,7 +3973,9 @@ class TestSpeechDuringAgentInitIsHeldNotRefused:
 
             release.set()
             assert (await start).status == 200
-            assert session.agents["note-taker"].queue == ["the real agenda"]
+            await self._wait_for_agent_flush(session, "note-taker")
+            assert fake_sessions.prompts_for("note-taker")[-1] == "the real agenda"
+            assert session.agents["note-taker"].queue == []
 
     @pytest.mark.asyncio
     async def test_a_mute_during_init_does_not_rob_earlier_speech(
@@ -3810,12 +4010,13 @@ class TestSpeechDuringAgentInitIsHeldNotRefused:
             assert (await start).status == 200
 
             # The note-taker keeps what it was addressed, and gains nothing after.
-            assert session.agents["note-taker"].queue == ["said while listening"]
+            await self._wait_for_agent_flush(session, "note-taker")
+            await self._wait_for_agent_flush(session, "sketch-artist")
+            assert fake_sessions.prompts_for("note-taker")[-1] == "said while listening"
             # An agent unmuted throughout got both lines.
-            assert session.agents["sketch-artist"].queue == [
-                "said while listening",
-                "said after the mute",
-            ]
+            assert fake_sessions.prompts_for("sketch-artist")[-1] == (
+                "said while listening\n\nsaid after the mute"
+            )
 
 
 class TestMuteCannotLandInsideADispatch:

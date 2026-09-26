@@ -1900,7 +1900,7 @@
         "configuration_1": "Allow browser microphone access for live capture; optionally configure an iCalendar path or URL, the local task ledger, agent roles, and speech-correction terms in Settings."
       },
       "meeting": {
-        "agentsPaused": "The agents stopped after repeated failures.",
+        "agentsPaused": "Agents halted after an error.",
         "attachPrompt": "Paste a link to share with the agents",
         "back": "Back",
         "endAndReview": "End and review",

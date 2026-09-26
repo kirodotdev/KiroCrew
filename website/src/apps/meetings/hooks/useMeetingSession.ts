@@ -58,6 +58,44 @@ const STT_ERROR_KEY = {
   disconnected: 'apps.meetings.session.sttDisconnected',
 } as const
 
+/** Recovery copy with the translated labels of the controls it asks for. */
+function stopDrainIncompleteMessage(inReview: boolean): string {
+  return inReview
+    ? i18nT('apps.meetings.session.stopDrainIncomplete', {
+        retry: i18nT('apps.meetings.meeting.retryAgents'),
+        close: i18nT('apps.meetings.review.closeMeeting'),
+      })
+    : i18nT('apps.meetings.session.stopDrainIncompleteWorkspace', {
+        retry: i18nT('apps.meetings.meeting.retryAgents'),
+        moreActions: i18nT('apps.meetings.meeting.moreActions'),
+        review: i18nT('apps.meetings.meeting.endAndReview'),
+      })
+}
+
+/** Success copy that carries the remaining Stop-recovery controls after Retry. */
+function stopDrainRecoveredMessage(inReview: boolean): string {
+  return inReview
+    ? i18nT('apps.meetings.session.stopDrainRecovered', {
+        close: i18nT('apps.meetings.review.closeMeeting'),
+      })
+    : i18nT('apps.meetings.session.stopDrainRecoveredWorkspace', {
+        moreActions: i18nT('apps.meetings.meeting.moreActions'),
+        review: i18nT('apps.meetings.meeting.endAndReview'),
+      })
+}
+
+function stopFailedRetryMessage(inReview: boolean): string {
+  return inReview
+    ? i18nT('apps.meetings.session.stopFailedRetry', {
+        close: i18nT('apps.meetings.review.closeMeeting'),
+      })
+    : i18nT('apps.meetings.session.stopFailedRetryWorkspace', {
+        moreActions: i18nT('apps.meetings.meeting.moreActions'),
+        review: i18nT('apps.meetings.meeting.endAndReview'),
+        close: i18nT('apps.meetings.review.closeMeeting'),
+      })
+}
+
 /** True when *text* repeats, contains, or is contained by the previous segment. */
 export function isDuplicateSegment(
   text: string,
@@ -257,6 +295,7 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
   const [translationOpen, setTranslationOpen] = useState(false)
   const [chatViewAgents, setChatViewAgents] = useState<string[]>([])
   const [selectedPreset, setSelectedPreset] = useState(config?.default_preset ?? '')
+  const [stopRecoverySucceeded, setStopRecoverySucceeded] = useState(false)
   // `useState` captures its initial value ONCE, and `config` arrives from a query —
   // so a meeting opened before that resolves kept `''` forever and started with the
   // roster defaults instead of the configured preset, silently omitting whatever
@@ -622,6 +661,30 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
     [notify],
   )
 
+  const stopFailureNotice = useCallback(
+    (error: unknown) => {
+      const message =
+        error instanceof MeetingsApiError && error.code === 'meeting_drain_incomplete'
+          ? i18nT('apps.meetings.session.stopDrainIncompleteToast')
+          : i18nT('apps.meetings.session.stopFailed')
+      notify(message, { type: 'error' })
+    },
+    [notify],
+  )
+
+  const statusFailureNotice = useCallback(
+    (error: unknown) => {
+      const message =
+        error instanceof MeetingsApiError && error.code === 'meeting_drain_incomplete'
+          ? i18nT('apps.meetings.session.statusDrainIncomplete', {
+              retry: i18nT('apps.meetings.meeting.retryAgents'),
+            })
+          : i18nT('apps.meetings.session.statusFailed')
+      failureNotice(error, message)
+    },
+    [failureNotice],
+  )
+
   const startMutation = useMutation({
     mutationFn: (opts: { restart?: boolean }) =>
       meetingsApi.start(meetingId, {
@@ -673,7 +736,7 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
         statusInFlightRef.current = false
       }
     },
-    onError: error => failureNotice(error, i18nT('apps.meetings.session.statusFailed')),
+    onError: statusFailureNotice,
   })
 
   // Every status control routes through this gate, so a click that lands while
@@ -688,12 +751,21 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
 
   const stopMutation = useMutation({
     mutationFn: () => meetingsApi.stop(meetingId),
+    onMutate: () => setStopRecoverySucceeded(false),
     onSuccess: () => {
       notify(i18nT('apps.meetings.session.ended'), { type: 'info' })
       invalidate()
       void queryClient.invalidateQueries({ queryKey: ['meetings', 'list'] })
     },
-    onError: error => failureNotice(error, i18nT('apps.meetings.session.stopFailed')),
+    onError: error => {
+      stopFailureNotice(error)
+      if (error instanceof MeetingsApiError && error.code === 'meeting_drain_incomplete') {
+        // Stop paused the affected queue on the server. Refresh that live state
+        // without changing the persisted meeting status, so action-item review
+        // stays open and its recovery notice gains the Retry action.
+        invalidate()
+      }
+    },
   })
 
   const muteMutation = useMutation({
@@ -738,10 +810,37 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
   const resetAgentsMutation = useMutation({
     mutationFn: () => meetingsApi.resetAgents(meetingId),
     onSuccess: () => {
-      notify(i18nT('apps.meetings.session.agentsResumed'), { type: 'info' })
+      // Reset completed the retained Stop recovery, so the persistent Stop error
+      // no longer describes the current state. Carry its remaining End/Close
+      // path into the success toast before clearing it, so step one does not
+      // erase the instructions for steps two and three.
+      const recoveredStop =
+        stopMutation.error instanceof MeetingsApiError
+        && stopMutation.error.code === 'meeting_drain_incomplete'
+      stopMutation.reset()
+      if (recoveredStop) {
+        setStopRecoverySucceeded(true)
+      } else {
+        setStopRecoverySucceeded(false)
+        notify(i18nT('apps.meetings.session.agentsResumed'), { type: 'info' })
+      }
       invalidate()
     },
+    onError: error => failureNotice(error, i18nT('apps.meetings.session.resetAgentsFailed')),
   })
+
+  const recoveryError = resetAgentsMutation.error
+    ? i18nT('apps.meetings.session.resetAgentsFailed')
+    : stopMutation.error
+      ? stopMutation.error instanceof MeetingsApiError
+          && stopMutation.error.code === 'meeting_drain_incomplete'
+        ? stopDrainIncompleteMessage(status === 'reviewing')
+        : stopFailedRetryMessage(status === 'reviewing')
+      : null
+
+  const recoverySuccess = stopRecoverySucceeded
+    ? stopDrainRecoveredMessage(status === 'reviewing')
+    : ''
 
   const attachmentMutation = useMutation({
     mutationFn: (vars: Parameters<typeof meetingsApi.attachments>[1]) =>
@@ -835,6 +934,15 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
     loading: initQuery.isLoading || metaQuery.isLoading,
     error: (initQuery.error ?? metaQuery.error) as Error | null,
     agentsPaused: Boolean(live?.agents_paused),
+    /** Persistent Stop/Reset failure shown through the shared ErrorNotice. */
+    recoveryError,
+    /** Persistent next step after a retained Stop batch is recovered. */
+    recoverySuccess,
+    dismissRecoveryError: () => {
+      stopMutation.reset()
+      resetAgentsMutation.reset()
+    },
+    dismissRecoverySuccess: () => setStopRecoverySucceeded(false),
     syncing: metaQuery.isFetching || outputsQuery.isFetching || transcriptQuery.isFetching,
     setSelectedPreset,
     toggleChatView,
@@ -845,7 +953,7 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
       resume: () => requestStatus('active'),
       review: () => requestStatus('reviewing'),
       backToMeeting: () => requestStatus('paused'),
-      stop: () => stopMutation.mutate(),
+      stop: (onSuccess?: () => void) => stopMutation.mutate(undefined, { onSuccess }),
       mute: (agentId: string, muted: boolean) => muteMutation.mutate({ agentId, muted }),
       toggleAgent: (agentId: string, enable: boolean) =>
         toggleAgentMutation.mutate({ agentId, enable }),
@@ -870,6 +978,7 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
     pending: {
       starting: startMutation.isPending,
       stopping: stopMutation.isPending,
+      resettingAgents: resetAgentsMutation.isPending,
       /** The target status of an in-flight pause/resume/review change, or null. */
       settingStatus: statusMutation.isPending ? statusMutation.variables ?? null : null,
       filing: fileTaskMutation.isPending ? fileTaskMutation.variables : null,

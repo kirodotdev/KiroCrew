@@ -310,6 +310,12 @@ async def handle_start_meeting(request: web.Request) -> web.Response:
     # (`became_ready` True) or genuinely failed. Keep init inside this lock.
     async with START_LOCK:
         existing = ACTIVE.get()
+        if existing is not None and existing.agent_drain_incomplete:
+            raise BadRequest(
+                "meeting agents did not finish; reset the paused agent before starting",
+                status=HTTPStatus.SERVICE_UNAVAILABLE,
+                code="meeting_drain_incomplete",
+            )
         if (
             existing is not None
             and existing.meeting_id != meeting_id
@@ -420,6 +426,14 @@ async def handle_start_meeting(request: web.Request) -> web.Response:
                 buffered,
                 dropped,
             )
+        if buffered or dropped:
+            # Every enqueue above started the ordinary 30-second batch timer. This
+            # is the meeting's opening, already delayed by agent initialization, so
+            # send it on the next event-loop turn instead of adding another full
+            # interval. Scheduling is synchronous: START_LOCK must not wait for an
+            # ordinary transcript turn, which has no lifecycle timeout.
+            for queue in session.agents.values():
+                queue.flush_soon()
         if dropped:
             # Off the lock (this is disk IO) but still inside START_LOCK. Recorded
             # so the human transcript states the loss too: the agents were told by
@@ -501,6 +515,17 @@ async def handle_meeting_status(request: web.Request) -> web.Response:
     # request in this endpoint's queue.
     async with START_LOCK:
         async with DISPATCH_LOCK:
+            session = ACTIVE.get(meeting_id)
+            if (
+                session is not None
+                and status in (k.STATUS_ACTIVE, k.STATUS_ENDED)
+                and session.agent_drain_incomplete
+            ):
+                raise BadRequest(
+                    "meeting agents did not finish; reset the paused agent before resuming or ending",
+                    status=HTTPStatus.SERVICE_UNAVAILABLE,
+                    code="meeting_drain_incomplete",
+                )
             meta = await asyncio.to_thread(_apply_status, meeting_id, status, root)
             if meta is None:
                 return web.json_response(
@@ -508,7 +533,6 @@ async def handle_meeting_status(request: web.Request) -> web.Response:
                     status=404,
                 )
 
-            session = ACTIVE.get(meeting_id)
             # Every non-active state closes ingress: paused, reviewing, and ended
             # all stop accepting dispatches at the server, so a second tab, the
             # broadcast bar, or a direct API call cannot fan lines out to agents
@@ -557,9 +581,35 @@ async def handle_stop_meeting(request: web.Request) -> web.Response:
     async with START_LOCK:
         async with DISPATCH_LOCK:
             session = ACTIVE.get(meeting_id)
+            if session is not None and session.agent_drain_incomplete:
+                raise BadRequest(
+                    "meeting agents did not finish; reset the paused agent and retry stop",
+                    status=HTTPStatus.SERVICE_UNAVAILABLE,
+                    code="meeting_drain_incomplete",
+                )
             ACTIVE.suspend_dispatches(session)
         if session is not None:
-            await sess.broadcast_system(session, k.SYSTEM_MEETING_ENDED)
+            drained = await sess.broadcast_system(
+                session,
+                k.SYSTEM_MEETING_ENDED,
+                timeout_secs=sess._AGENT_DRAIN_TIMEOUT_SECS,
+            )
+            if not drained:
+                # A bounded lifecycle drain may cancel a wedged turn, but the
+                # undispatched transcript and finalize notice stay on that queue.
+                # Keep the live session installed so the Reset endpoint can retry;
+                # clearing here would make the retained batch unreachable forever.
+                audit(
+                    "meetings.stop",
+                    meeting_id,
+                    outcome="error",
+                    error="agent drain incomplete",
+                )
+                raise BadRequest(
+                    "meeting agents did not finish; reset the paused agent and retry stop",
+                    status=HTTPStatus.SERVICE_UNAVAILABLE,
+                    code="meeting_drain_incomplete",
+                )
             # The finalize notice is itself enqueued, so the teardown MUST drain or
             # the very notice just broadcast would never reach the agents.
             await ACTIVE.drain_and_clear()
