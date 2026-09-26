@@ -124,6 +124,9 @@ import EmbeddedHostBridge from './components/EmbeddedHostBridge'
 import EmbeddedDragRegionReporter from './components/EmbeddedDragRegionReporter'
 import EmbedTabStrip from './components/EmbedTabStrip'
 import DeveloperPage from './pages/DeveloperPage'
+// Dev-only layout-editor harness (RFC §7 PR 2). Lazy so it never weighs the main
+// bundle — it is a developer route, not a shipped surface.
+const LayoutEditorHarnessPage = lazy(() => import('./pages/LayoutEditorHarnessPage'))
 import SchedulePage from './pages/SchedulePage'
 import { useUpdateSubscription, type UpdateState } from './hooks/useUpdateSubscription'
 import UpdateModal from './components/UpdateModal'
@@ -4961,6 +4964,9 @@ export default function App() {
                 Matches bare /settings too (empty splat). */}
             <Route path="/settings/*" element={<SettingsPage />} />
             <Route path="/developer" element={<DeveloperPage />} />
+            {/* Dev-only layout-editor harness (RFC §7 PR 2) — a standalone route
+                to exercise the editor in isolation. Not linked from nav. */}
+            <Route path="/developer/layout-editor" element={<ErrorBoundary><Suspense fallback={null}><LayoutEditorHarnessPage /></Suspense></ErrorBoundary>} />
             <Route path="/artifacts" element={<ArtifactsPage />} />
             <Route path="/artifacts/deploy" element={<Navigate to="/deploy" replace />} />
             <Route path="/artifacts/remote/:provider/:externalId" element={<ErrorBoundary><RemoteArtifactDetailPage /></ErrorBoundary>} />

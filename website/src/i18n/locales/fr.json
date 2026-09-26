@@ -9038,6 +9038,33 @@
       "from_app": "Envoyé par l'application {{app}}",
       "delivery_failed": "Impossible de transmettre ton message — réessaie.",
       "from_app_tooltip": "Cette app a publié un message dans la discussion — Kiro le traite comme les mots de l'app, pas les tiens"
+    },
+    "crewLayout": {
+      "element": {
+        "chat": "Chat",
+        "sidePanel": "Panneau latéral",
+        "files": "Fichiers",
+        "git": "Git",
+        "changes": "Modifications",
+        "subagents": "Sous-agents",
+        "terminal": "Terminal",
+        "notes": "Notes",
+        "workLog": "Journal de travail",
+        "group": "Groupe",
+        "tabs": "Onglets"
+      },
+      "paletteContent": "Contenu",
+      "hint": "Faites glisser une tuile sur la grille · faites glisser un volet à l’extérieur pour le retirer",
+      "remove": "Retirer",
+      "removeElement": "Retirer {{label}}",
+      "moveElement": "Déplacer {{label}}",
+      "dragTile": "Faire glisser {{label}} sur la grille",
+      "cols": "colonnes",
+      "rows": "lignes",
+      "fewerCols": "moins de colonnes",
+      "moreCols": "plus de colonnes",
+      "fewerRows": "moins de lignes",
+      "moreRows": "plus de lignes"
     }
   },
   "hooks": {
@@ -16549,6 +16576,10 @@
       "age_for": "depuis {{age}}",
       "age_tip": "Temps passé dans l’état indiqué par le badge.",
       "open_chat": "Ouvrir le chat"
+    },
+    "layoutEditorHarness": {
+      "title": "Banc d’essai de l’éditeur de disposition",
+      "reset": "Réinitialiser à la valeur initiale"
     }
   },
   "privacyDisclosure": {

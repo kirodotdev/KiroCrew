@@ -8917,6 +8917,33 @@
       "from_app": "Von der App {{app}} gesendet",
       "delivery_failed": "Deine Nachricht konnte nicht zugestellt werden – versuch es erneut.",
       "from_app_tooltip": "Diese App hat eine Nachricht in den Chat gestellt — Kiro behandelt sie als Worte der App, nicht als deine"
+    },
+    "crewLayout": {
+      "element": {
+        "chat": "Chat",
+        "sidePanel": "Seitenleiste",
+        "files": "Dateien",
+        "git": "Git",
+        "changes": "Änderungen",
+        "subagents": "Subagenten",
+        "terminal": "Terminal",
+        "notes": "Notizen",
+        "workLog": "Arbeitsprotokoll",
+        "group": "Gruppe",
+        "tabs": "Tabs"
+      },
+      "paletteContent": "Inhalt",
+      "hint": "Eine Kachel auf das Raster ziehen · ein Feld hinausziehen zum Entfernen",
+      "remove": "Entfernen",
+      "removeElement": "{{label}} entfernen",
+      "moveElement": "{{label}} verschieben",
+      "dragTile": "{{label}} auf das Raster ziehen",
+      "cols": "Spalten",
+      "rows": "Zeilen",
+      "fewerCols": "weniger Spalten",
+      "moreCols": "mehr Spalten",
+      "fewerRows": "weniger Zeilen",
+      "moreRows": "mehr Zeilen"
     }
   },
   "hooks": {
@@ -16323,6 +16350,10 @@
       "age_for": "seit {{age}}",
       "age_tip": "Zeit im Zustand, den das Badge nennt.",
       "open_chat": "Chat öffnen"
+    },
+    "layoutEditorHarness": {
+      "title": "Layout-Editor-Testumgebung",
+      "reset": "Auf Startwert zurücksetzen"
     }
   },
   "privacyDisclosure": {

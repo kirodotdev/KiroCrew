@@ -8796,6 +8796,33 @@
       "from_app": "由 {{app}} 应用发送",
       "delivery_failed": "无法送达你的消息，请重试。",
       "from_app_tooltip": "该应用向聊天中发布了一条消息 — Kiro 将其视为应用的话，而不是你的话"
+    },
+    "crewLayout": {
+      "element": {
+        "chat": "聊天",
+        "sidePanel": "侧边栏",
+        "files": "文件",
+        "git": "Git",
+        "changes": "更改",
+        "subagents": "子代理",
+        "terminal": "终端",
+        "notes": "笔记",
+        "workLog": "工作日志",
+        "group": "组",
+        "tabs": "标签页"
+      },
+      "paletteContent": "内容",
+      "hint": "将磁贴拖到网格上 · 将窗格拖出以移除",
+      "remove": "移除",
+      "removeElement": "移除 {{label}}",
+      "moveElement": "移动 {{label}}",
+      "dragTile": "将 {{label}} 拖到网格上",
+      "cols": "列",
+      "rows": "行",
+      "fewerCols": "减少列",
+      "moreCols": "增加列",
+      "fewerRows": "减少行",
+      "moreRows": "增加行"
     }
   },
   "hooks": {
@@ -16097,6 +16124,10 @@
       "age_for": "已 {{age}}",
       "age_tip": "处于徽标所示状态的时长。",
       "open_chat": "打开聊天"
+    },
+    "layoutEditorHarness": {
+      "title": "布局编辑器测试台",
+      "reset": "重置为初始值"
     }
   },
   "privacyDisclosure": {

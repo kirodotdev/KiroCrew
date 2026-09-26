@@ -8917,6 +8917,33 @@
       "from_app": "{{app}} ऐप द्वारा भेजा गया",
       "delivery_failed": "तुम्हारा संदेश नहीं पहुंचाया जा सका — फिर से कोशिश करो।",
       "from_app_tooltip": "इस ऐप ने चैट में एक संदेश पोस्ट किया — Kiro इसे ऐप के शब्द मानता है, तुम्हारे नहीं"
+    },
+    "crewLayout": {
+      "element": {
+        "chat": "चैट",
+        "sidePanel": "साइड पैनल",
+        "files": "फ़ाइलें",
+        "git": "Git",
+        "changes": "परिवर्तन",
+        "subagents": "सब-एजेंट",
+        "terminal": "टर्मिनल",
+        "notes": "नोट्स",
+        "workLog": "कार्य लॉग",
+        "group": "समूह",
+        "tabs": "टैब"
+      },
+      "paletteContent": "सामग्री",
+      "hint": "ग्रिड पर एक टाइल खींचें · हटाने के लिए एक पैन बाहर खींचें",
+      "remove": "हटाओ",
+      "removeElement": "{{label}} हटाओ",
+      "moveElement": "{{label}} हिलाओ",
+      "dragTile": "{{label}} को ग्रिड पर खींचें",
+      "cols": "कॉलम",
+      "rows": "पंक्तियाँ",
+      "fewerCols": "कम कॉलम",
+      "moreCols": "अधिक कॉलम",
+      "fewerRows": "कम पंक्तियाँ",
+      "moreRows": "अधिक पंक्तियाँ"
     }
   },
   "hooks": {
@@ -16323,6 +16350,10 @@
       "age_for": "{{age}} से",
       "age_tip": "बैज वाली स्थिति में बीता समय।",
       "open_chat": "चैट खोलो"
+    },
+    "layoutEditorHarness": {
+      "title": "लेआउट एडिटर हार्नेस",
+      "reset": "सीड पर रीसेट करो"
     }
   },
   "privacyDisclosure": {

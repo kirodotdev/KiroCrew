@@ -1,0 +1,302 @@
+/**
+ * Layout editor styling — mirrors the spark-neoframe "Bench" build-mode look
+ * (src/App.css) on Kiro Crew's OWN theme tokens (--bg / --bg-elevated / --card /
+ * --text / --muted / --border / --accent / --danger / --radius-*).
+ *
+ * The visual language, ported faithfully rather than approximated:
+ *  - a top palette SHELF of vertical tiles (tinted icon chip over a tiny label),
+ *  - a cursor-following drag-ghost card (blurred, centered, big tinted icon),
+ *  - items as elevated cards with a grab title bar, depth from background steps
+ *    + subtle borders (not heavy shadow),
+ *  - dashed drop cells that go solid-accent on a valid target, danger on a bad one.
+ *
+ * Follow-up PRs add the corner resize grip, the draggable track dividers, and the
+ * tabs container; their selectors are not in this core stylesheet yet.
+ *
+ * Per-element tint colors live in `--le-tint` set inline by the component, the
+ * same way Neo-Frame's `chipStyle(def.tint)` tints each element's chip.
+ */
+
+.le-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  font-family: var(--font-body);
+}
+
+/* ---- palette shelf ---- */
+.le-palette {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 8px 16px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.le-palette-group {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.le-palette-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+  opacity: 0.7;
+  padding-left: 1px;
+}
+.le-tiles {
+  display: flex;
+  gap: 2px;
+}
+.le-tile {
+  min-width: 52px;
+  max-width: 92px;
+  touch-action: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 6px 4px;
+  border-radius: 8px;
+  cursor: grab;
+  border: 1px solid transparent;
+  background: transparent;
+  transition: border-color 0.13s ease, background 0.13s ease, box-shadow 0.13s ease;
+}
+.le-tile:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-strong, var(--accent));
+  box-shadow: var(--shadow-md, 0 2px 8px rgba(0, 0, 0, 0.18));
+}
+.le-tile:active {
+  cursor: grabbing;
+  transform: scale(0.97);
+}
+.le-tile-icon {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  color: #fff;
+  background: var(--le-tint, var(--accent));
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+}
+.le-tile-label {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--muted);
+  text-align: center;
+  line-height: 1.25;
+}
+.le-hint {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 10.5px;
+  color: var(--muted);
+  opacity: 0.6;
+  white-space: nowrap;
+}
+
+/* ---- canvas + cells ---- */
+.le-canvas-wrap {
+  flex: 1;
+  min-height: 0;
+  padding: 14px;
+}
+.le-canvas {
+  position: relative;
+  display: grid;
+  height: 100%;
+  min-height: 0;
+  width: 100%;
+}
+.le-cell {
+  margin: 5px;
+  border: 1.5px dashed var(--border);
+  border-radius: var(--radius-md);
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+.le-cell.le-on-target {
+  border-color: var(--accent);
+  border-style: solid;
+  background: var(--accent);
+  opacity: 0.14;
+  transform: scale(1.01);
+}
+.le-cell.le-invalid {
+  border-color: var(--danger);
+  background: var(--danger);
+  opacity: 0.1;
+}
+
+/* ---- placed items ---- */
+.le-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  margin: 5px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.28);
+}
+.le-item.le-moving {
+  opacity: 0.35;
+}
+.le-item.le-on-target {
+  box-shadow: 0 0 0 2.5px var(--accent), 0 4px 16px rgba(0, 0, 0, 0.36);
+}
+.le-bar {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 8px 6px 7px;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  cursor: grab;
+  touch-action: none;
+}
+.le-bar:active {
+  cursor: grabbing;
+}
+.le-bar-icon {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 5px;
+  color: #fff;
+  background: var(--le-tint, var(--accent));
+  flex-shrink: 0;
+}
+.le-bar-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.le-close {
+  margin-left: auto;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 5px;
+  cursor: pointer;
+}
+.le-close:hover {
+  color: var(--danger);
+  background: var(--bg-hover);
+}
+.le-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+/* Empty-state label a content cell shows in the builder — the editor never
+   renders a live pane, so a placed cell just names its element (see
+   LayoutEditor's renderBody). */
+.le-cell-label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  width: 100%;
+  font-size: 12px;
+  color: var(--muted);
+}
+/* ---- drag ghost ---- */
+.le-ghost {
+  position: fixed;
+  transform: translate(-50%, -55%) scale(1.02);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 18px 10px;
+  background: color-mix(in srgb, var(--bg-elevated) 92%, transparent);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.5), 0 6px 16px rgba(0, 0, 0, 0.34);
+  pointer-events: none;
+  z-index: 100;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+.le-ghost.le-removing {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+.le-ghost-icon {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  color: #fff;
+  background: var(--le-tint, var(--accent));
+}
+
+/* ---- dimension steppers ---- */
+.le-dims {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+.le-dims-x {
+  color: var(--muted);
+  font-size: 11px;
+}
+.le-stepper {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.le-stepper button {
+  width: 20px;
+  height: 22px;
+  border: none;
+  background: var(--bg-elevated);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+}
+.le-stepper button:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+.le-stepper button:disabled {
+  color: var(--muted);
+  opacity: 0.4;
+  cursor: default;
+}
+.le-stepper-val {
+  min-width: 18px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text);
+}
