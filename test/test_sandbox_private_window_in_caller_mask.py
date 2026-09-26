@@ -100,7 +100,27 @@ class TestSeatbeltHonoursAWindowInsideACallerMask:
     def test_a_sibling_app_in_the_masked_tree_gets_no_exception(self) -> None:
         lines = _seatbelt(extra_hidden_dirs=(_APPS,), extra_private_dirs=(_DATA,))
         assert not any(_SIBLING in ln and "require-not" in ln for ln in lines)
-        assert not any(ln.lstrip().startswith("(allow") and _APPS in ln for ln in lines)
+        allows = [ln.strip() for ln in lines if ln.lstrip().startswith("(allow") and _APPS in ln]
+        assert allows == [
+            f"(allow file-read-metadata (literal {json.dumps(_BUNDLE)}))",
+            f"(allow file-read-metadata (literal {json.dumps(_APPS)}))",
+        ], allows
+
+    def test_the_masked_ancestors_of_a_window_stay_stat_able(self) -> None:
+        """``realpath`` of the window lstat()s every component above it, so a
+        blanket ``file-read*`` deny on the masked root breaks any harness that
+        canonicalizes its own $TMPDIR (the Copilot CLI fails session/new with
+        "Directory does not exist or cannot be accessed"). The re-open is
+        metadata-only and literal: no listing, no read, no sibling."""
+        lines = _seatbelt(extra_hidden_dirs=(_APPS,), extra_private_dirs=(_DATA,))
+        deny_at = max(
+            i for i, ln in enumerate(lines) if ln in _rules_for(lines, "file-read*", _APPS)
+        )
+        for ancestor in (_APPS, _BUNDLE):
+            rule = f"(allow file-read-metadata (literal {json.dumps(ancestor)}))"
+            at = [i for i, ln in enumerate(lines) if ln.strip() == rule]
+            assert at and at[0] > deny_at, (ancestor, "must follow the deny: last match wins")
+        assert not any("(allow" in ln and "subpath" in ln and _APPS in ln for ln in lines)
 
     def test_an_exposed_file_keeps_its_read_carve_out_beside_a_window(self) -> None:
         """A tree can carry both: the window (read-write, its own state) and a

@@ -1212,6 +1212,24 @@ def _private_window_spellings(
     return list(dict.fromkeys(windows))
 
 
+def _window_ancestors(target: str, windows: list[str]) -> list[str]:
+    """Every directory from masked *target* down to each window's parent.
+
+    These are the path components ``realpath`` must ``lstat`` to reach a
+    window, all of them inside the mask. Lexical, like
+    :func:`_private_window_spellings`.
+    """
+    root = target.rstrip("/")
+    ancestors: list[str] = []
+    for window in windows:
+        parent = os.path.dirname(window.rstrip("/"))
+        while parent.startswith(root + "/"):
+            ancestors.append(parent)
+            parent = os.path.dirname(parent)
+        ancestors.append(root)
+    return list(dict.fromkeys(ancestors))
+
+
 def carveout_shadowed_by_foreign_mask(path: str, mode: str = "standard") -> bool:
     """Whether carving *path* out of the sandbox masks would unmask a foreign tree.
 
@@ -8329,6 +8347,13 @@ def _build_seatbelt_profile(
             predicate = f"(require-all (subpath {json.dumps(target)}) {exceptions})"
             for operation in ("file-read*", "file-write*", "file-link"):
                 rules.append(f"(deny {operation} {predicate})")
+            # ...but stat on the masked directories ABOVE each window stays
+            # allowed. ``realpath`` of the window lstat()s every component, so
+            # without this a harness that canonicalizes its $TMPDIR (the GitHub
+            # Copilot CLI refuses session/new) fails on its own window. Metadata
+            # only, literal paths only: no sibling becomes listable or readable.
+            for ancestor in _window_ancestors(target, windows):
+                rules.append(f"(allow file-read-metadata (literal {json.dumps(ancestor)}))")
             continue
         if _hidden_path_contains_visible_path(
             target, extra_visible_dirs
@@ -8469,6 +8494,9 @@ def _build_seatbelt_profile(
             rules.append(f"(deny file-read* (require-all {subpath} {read_exceptions}))")
             for operation in ("file-write*", "file-link"):
                 rules.append(f"(deny {operation} (require-all {subpath} {window_exceptions}))")
+            # Stat-able ancestors, for the same ``realpath`` reason as the tier loop.
+            for ancestor in _window_ancestors(target, windows):
+                rules.append(f"(allow file-read-metadata (literal {json.dumps(ancestor)}))")
             continue
         if _hidden_path_contains_visible_path(target, extra_visible_dirs):
             continue
