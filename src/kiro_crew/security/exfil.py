@@ -17,6 +17,8 @@ anything here.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import fnmatch
 import ipaddress
 import json
@@ -26,6 +28,7 @@ import socket
 import string
 import uuid
 from collections import Counter
+from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
@@ -34,7 +37,11 @@ from urllib.parse import parse_qs, unquote, unquote_plus, urlparse
 from kiro_crew.credential_patterns import AWS_KEY_ID
 from kiro_crew.sel import SecurityEvent, SecurityEventLog
 
-from .redaction import _contains_fixed_credential, _text_contains_bare_secret
+from .redaction import (
+    _contains_fixed_credential,
+    _text_contains_bare_secret,
+    redact_credentials,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -1078,28 +1085,479 @@ def scan_exfiltration_urls(text: str) -> list[str]:
 EXFILTRATION_REDACTION_TAG_PREFIX = "[REDACTED: suspicious URL to "
 
 
+#: What one message may retain about blocked links. The bound belongs at the
+#: RETENTION points rather than at a render site, because the store IS the
+#: transcript line: a record is cheap to write there, and every render of that
+#: message re-validates and re-serializes whatever the line holds. A path longer
+#: than this is dropped rather than truncated, which keeps the rule "only what
+#: the removers pass is kept" from acquiring a second, weaker branch. Records
+#: past the count are not recorded and the overflow is counted in one log line.
+MAX_BLOCKED_LINKS_PER_MESSAGE = 32
+MAX_BLOCKED_LINK_PATH_CHARS = 256
+#: A query longer than this did not come from a message a client can render, so
+#: a count above it marks the record as malformed rather than merely large.
+MAX_BLOCKED_LINK_QUERY_CHARS = 100_000
+#: The longest full address a record keeps for Open once / Copy. A longer one is
+#: withheld with the reason ``length`` rather than truncated, because a truncated
+#: address opens a different page than the one the agent wrote.
+MAX_BLOCKED_LINK_URL_CHARS = 8192
+#: Why a record carries no full address. ``credential``: some decoded form of it
+#: is changed by the credential remover, so opening it would send that secret,
+#: which is the one request the gate exists to stop. ``length``: it is longer
+#: than ``MAX_BLOCKED_LINK_URL_CHARS``.
+_BLOCKED_LINK_URL_WITHHELD = frozenset({"credential", "length"})
+
+
+def _credential_clean(value: str) -> bool:
+    """Whether the credential remover leaves *value* unchanged in every form.
+
+    Checked as written AND in every bounded percent-decoded form. A partially
+    encoded credential (``ghp%5F...``) is unchanged by the remover as literal text
+    while a browser decodes it back into the secret the moment it is requested.
+    Saturation fails closed: a value still decodable when the budget runs out was
+    never seen in plaintext by anything.
+    """
+    if redact_credentials(value)[0] != value:
+        return False
+    decoded = value
+    for _ in range(_MAX_URL_DECODE_PASSES):
+        nxt = unquote_plus(decoded)
+        if nxt == decoded:
+            return True
+        decoded = nxt
+        if redact_credentials(decoded)[0] != decoded:
+            return False
+    return unquote_plus(decoded) == decoded
+
+
+def _blocked_link_url_verdict(url: object, domain: str) -> tuple[str | None, str | None]:
+    """Return ``(url, None)`` to keep a full address, or ``(None, reason)``.
+
+    The address is kept so a wrongly blocked link can be opened by the person
+    reading it. It is kept only when opening it cannot send a credential, it is an
+    http(s) address on exactly the host the record names with no userinfo, and it
+    fits the bound. A value that is not an address at all yields ``(None, None)``,
+    which the caller treats as a malformed record.
+    """
+    if not isinstance(url, str):
+        return None, None
+    if len(url) > MAX_BLOCKED_LINK_URL_CHARS:
+        return None, "length"
+    lower = url.lower()
+    for scheme in ("https://", "http://"):
+        if lower.startswith(scheme):
+            rest = url[len(scheme) :]
+            break
+    else:
+        return None, None
+    # The host must be the record's own, followed by a port, path, query or
+    # fragment delimiter, so the chip's domain and the address that opens agree.
+    if not rest.startswith(domain) or rest[len(domain) : len(domain) + 1] not in (
+        "",
+        ":",
+        "/",
+        "?",
+        "#",
+    ):
+        return None, None
+    authority = rest.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    if "@" in authority:
+        return None, "credential"
+    if not _credential_clean(url):
+        return None, "credential"
+    return url, None
+
+
+def _exfil_retained_path(
+    domain: str,
+    path: str,
+    exempt_hosts: frozenset[str],
+    *,
+    port: str = "",
+    is_https: bool = True,
+) -> str | None:
+    """Return *path* only when both removers leave it as written, else None.
+
+    A path can smuggle data as readily as a query, so the rule is "keep only
+    what the redactors themselves pass": the path alone must not trip the URL
+    warning, and it must survive credential redaction unchanged in every bounded
+    decoded form (``_credential_clean``).
+    """
+    if not path:
+        return None
+    if len(path) > MAX_BLOCKED_LINK_PATH_CHARS:
+        return None
+    if _exfil_url_warning(domain, path, exempt_hosts, port=port, is_https=is_https) is not None:
+        return None
+    return path if _credential_clean(path) else None
+
+
+#: The keys a blocked-link record carries, and nothing besides.
+_BLOCKED_LINK_RECORD_KEYS = frozenset(
+    {"domain", "rule", "path", "query_chars", "url", "url_withheld"}
+)
+#: Every STRING a record may retain, with the bound that applies to it. The
+#: validator reads this table rather than each field by name, so a field added to
+#: the record without an entry here is not retained at all: being bounded is a
+#: property of the record's shape instead of a check someone has to remember to
+#: write for each new field. 253 is the DNS maximum, so a longer host cannot
+#: resolve and is not a host this collector saw.
+_BLOCKED_LINK_STRING_BOUNDS = {
+    "domain": 253,
+    "rule": 64,
+    "path": MAX_BLOCKED_LINK_PATH_CHARS,
+    "url": MAX_BLOCKED_LINK_URL_CHARS,
+    "url_withheld": 16,
+}
+#: A host in the forms ``_URL_RE`` group 1 emits: a DNS name, an IPv4 literal,
+#: or a bracketed IPv6 literal. Quantifiers are bounded so the pattern and the
+#: table above cannot disagree about what length is acceptable.
+_BLOCKED_LINK_DOMAIN_RE = re.compile(
+    r"(?:[a-zA-Z0-9._-]{1,253}\.[a-zA-Z]{2,63}"
+    r"|\d{1,3}(?:\.\d{1,3}){3}"
+    r"|\[[0-9A-Fa-f:.]{1,45}\])"
+)
+#: A stable rule id, as ``_exfil_url_warning`` reports through ``_rule_out``.
+_BLOCKED_LINK_RULE_RE = re.compile(r"[a-z0-9_]{1,64}")
+
+
+def _blocked_link_safe_domain(domain: object) -> bool:
+    """Whether a host is safe to RETAIN in a record, by the rule the path obeys.
+
+    The retained path is kept only when both removers pass it unchanged; the host
+    is a retained string too, so it answers to the same rule. A DNS label can be
+    shaped like a credential, and a record carrying one would walk that secret
+    past the text redaction into meta and onto the chip.
+    """
+    if not isinstance(domain, str) or len(domain) > _BLOCKED_LINK_STRING_BOUNDS["domain"]:
+        return False
+    if _BLOCKED_LINK_DOMAIN_RE.fullmatch(domain) is None:
+        return False
+    return redact_credentials(domain)[0] == domain
+
+
+def _blocked_link_fields_ok(domain: object, rule: object, query_chars: object) -> bool:
+    """Whether the posture-INDEPENDENT fields of a record may be retained.
+
+    One function for the collection point and the read-back re-check, because a
+    record's fields answer to the same bounds wherever it comes from. Splitting
+    them produced a bound present on one side and absent on the other every time:
+    a host the collector kept and the reload dropped, which makes an explanation
+    vanish under the reader, and a field bound the reader's path enforced while
+    the writer's did not. Only the retained PATH differs between the two callers,
+    because its check is the one that depends on the posture the URL arrived
+    under, so it stays with each caller.
+    """
+    if not _blocked_link_safe_domain(domain):
+        return False
+    if not isinstance(rule, str) or _BLOCKED_LINK_RULE_RE.fullmatch(rule) is None:
+        return False
+    if len(rule) > _BLOCKED_LINK_STRING_BOUNDS["rule"]:
+        return False
+    # bool is an int subclass; a True/False char count is malformed input.
+    if isinstance(query_chars, bool) or not isinstance(query_chars, int) or query_chars < 0:
+        return False
+    return query_chars <= MAX_BLOCKED_LINK_QUERY_CHARS
+
+
+def revalidate_blocked_link(record: object) -> dict | None:
+    """Return a blocked-link record safe to keep, or None to drop it.
+
+    A persisted transcript line is attacker-writable, so a record read back from
+    meta is re-checked against the shape the collector emits before it reaches a
+    client: exactly the known keys, every retained string within the bound
+    ``_BLOCKED_LINK_STRING_BOUNDS`` gives it, a host both removers pass, a rule id
+    of ``[a-z0-9_]``, a bounded non-negative int char count, a retained path
+    that still passes BOTH removers, and EXACTLY one of a full address that still
+    passes ``_blocked_link_url_verdict`` or a known reason it was withheld. The
+    address is re-checked here, on every serve, so a remover rule that changed
+    since the message was written applies before anyone can open it. A record
+    that fails is dropped on its own; its siblings stand.
+    """
+    if not isinstance(record, dict) or set(record.keys()) != _BLOCKED_LINK_RECORD_KEYS:
+        return None
+    domain = record["domain"]
+    rule = record["rule"]
+    path = record["path"]
+    query_chars = record["query_chars"]
+    url = record["url"]
+    url_withheld = record["url_withheld"]
+    # Length first and from the table, so the cheap bound runs before any regex
+    # and no field can be retained without one.
+    for field, limit in _BLOCKED_LINK_STRING_BOUNDS.items():
+        value = record[field]
+        if value is None:
+            continue
+        if not isinstance(value, str) or len(value) > limit:
+            return None
+    if not _blocked_link_fields_ok(domain, rule, query_chars):
+        return None
+    if path is not None:
+        # The strictest posture available, not the one the URL was collected
+        # under: `is_https` and `port` only ever UNLOCK exemptions inside the
+        # warning (the Slack app-create alias needs https and no port), so
+        # re-checking as plain http with no port can only reject more. A
+        # legitimate record dropped here degrades the chip to host and reason,
+        # which is the fail-closed direction for attacker-writable input.
+        if _exfil_retained_path(domain, path, _exfil_exempt_hosts(), is_https=False) != path:
+            return None
+    if url is not None:
+        if url_withheld is not None or _blocked_link_url_verdict(url, domain) != (url, None):
+            return None
+    elif url_withheld not in _BLOCKED_LINK_URL_WITHHELD:
+        return None
+    return {
+        "domain": domain,
+        "rule": rule,
+        "path": path,
+        "query_chars": query_chars,
+        "url": url,
+        "url_withheld": url_withheld,
+    }
+
+
+def bounded_blocked_links(raw: object) -> list[dict]:
+    """Turn attacker-writable meta into a bounded, validated record list.
+
+    This is the ONE way to build a list of blocked-link records from something
+    read back off a transcript line, which is what makes the count bound a
+    property of the operation rather than a rule each retention point has to
+    remember. Every field bound already lives in the record shape
+    (``_BLOCKED_LINK_STRING_BOUNDS``); the COUNT bound lives here, so a new site
+    that reads records cannot retain an unbounded number of them by forgetting to
+    slice. A forged line can carry any number of well-formed records, and the
+    cap bounds what is DESCRIBED, never what is removed -- the text's
+    placeholders are unaffected by anything dropped here.
+    """
+    if not isinstance(raw, list):
+        return []
+    kept: list[dict] = []
+    for record in raw[:MAX_BLOCKED_LINKS_PER_MESSAGE]:
+        checked = revalidate_blocked_link(record)
+        if checked is not None:
+            kept.append(checked)
+    omitted = len(raw) - MAX_BLOCKED_LINKS_PER_MESSAGE
+    if omitted > 0:
+        # Counted and said, as the birth site does: a silently dropped tail reads
+        # exactly like a message that never had those links. The birth site never
+        # writes more than the cap, so a longer list came from an edited line.
+        logger.warning(
+            "blocked-link records on a transcript line exceed the cap of %d; %d further "
+            "record(s) are not described (their placeholders stay redacted in the text)",
+            MAX_BLOCKED_LINKS_PER_MESSAGE,
+            omitted,
+        )
+    return kept
+
+
+def redact_exfiltration_urls_with_records(
+    text: str,
+    *,
+    extra_exempt_hosts: frozenset[str] = frozenset(),
+) -> tuple[str, list[str], list[dict]]:
+    """Redact suspicious URLs and, in the SAME pass, describe each one.
+
+    ``extra_exempt_hosts`` joins the platform's exact-host exemption for this
+    call: the hosts a reader allowed for one workspace from the dashboard
+    (``security.redaction_allow``). Like the platform's set, it relaxes only
+    the query-length and base64 heuristics; every credential check still runs.
+
+    Returns ``(cleaned_text, warnings, records)``. The redaction and the records
+    come out of one loop on purpose: two independent scans can disagree, and a
+    single collector feeding every consumer makes that class of drift
+    unrepresentable. :func:`redact_exfiltration_urls` is a thin wrapper that
+    drops the third element, so callers needing only the text are untouched.
+
+    A record retains the link's structure and, when opening it cannot send a
+    credential, the full address, so a wrongly blocked link can be opened by the
+    person reading it::
+
+        {"domain": str, "rule": str, "path": str | None, "query_chars": int,
+         "url": str | None, "url_withheld": "credential" | "length" | None}
+
+    Exactly one of ``url`` and ``url_withheld`` is set. The text is redacted the
+    same way either way: the address lives only in meta, which is never replayed
+    to the model.
+
+    A URL string appearing more than once yields ONE record, in first-appearance
+    order. There is deliberately no positional index: the placeholder carries
+    only the domain, so two URLs on one domain redact to byte-identical text and
+    a position could pair one link's path with another's.
+    """
+    # The warnings come from the same loop, under the same exempt hosts, so a
+    # link on a host the reader allowed is neither redacted nor reported.
+    exempt_hosts = (
+        _exfil_exempt_hosts()
+        | frozenset(h.lower() for h in extra_exempt_hosts)
+        | _SCOPED_EXEMPT_HOSTS.get()
+    )
+    warnings: list[str] = []
+    result = text
+    records: list[dict] = []
+    seen: set[str] = set()
+    overflow = 0
+    for match in _URL_RE.finditer(text):
+        domain = match.group(1)
+        path_and_query = match.group(3) or ""
+        port = match.group(2) or ""
+        is_https = match.group(0).lower().startswith("https://")
+        rules: list[str] = []
+        warning = _exfil_url_warning(
+            domain,
+            path_and_query,
+            exempt_hosts,
+            port=port,
+            is_https=is_https,
+            _rule_out=rules,
+        )
+        if not warning:
+            continue
+        warnings.append(warning)
+        matched = match.group(0)
+        # replace() rewrites every occurrence of this exact URL, and the loop can
+        # revisit it, so the record set is keyed by the matched string.
+        result = result.replace(matched, f"{EXFILTRATION_REDACTION_TAG_PREFIX}{domain}]")
+        if matched in seen:
+            continue
+        qmark = path_and_query.find("?")
+        query = path_and_query[qmark + 1 :] if qmark != -1 else ""
+        path_only = path_and_query[:qmark] if qmark != -1 else path_and_query
+        # Every rejection happens BEFORE `seen` grows, because `seen` holds whole
+        # URLs and is bounded only by the record cap beside it: a dedupe row for a
+        # match that produces no record is state nothing bounds. The fields answer
+        # to the one shared check, so a host or a rule the reload would drop is
+        # never retained here either -- an explanation that vanishes on reload is
+        # worse than one that never appeared. The URL is redacted from the text
+        # regardless: a dropped record costs the reader an explanation, never the
+        # removal.
+        if not _blocked_link_fields_ok(domain, rules[0] if rules else None, len(query)):
+            continue
+        if len(records) >= MAX_BLOCKED_LINKS_PER_MESSAGE:
+            # Before `seen` grows, not after: a dedupe row for a match the cap
+            # already refused is state the cap was supposed to bound.
+            overflow += 1
+            continue
+        seen.add(matched)
+        kept_url, url_withheld = _blocked_link_url_verdict(matched, domain)
+        if kept_url is None and url_withheld is None:
+            # Not reachable for a _URL_RE match, which is always an http(s)
+            # address on its own host; fail closed so the record keeps its
+            # "exactly one of url / url_withheld" shape regardless.
+            url_withheld = "credential"
+        records.append(
+            {
+                "domain": domain,
+                "rule": rules[0],
+                "path": _exfil_retained_path(
+                    domain, path_only, exempt_hosts, port=port, is_https=is_https
+                ),
+                "query_chars": len(query),
+                "url": kept_url,
+                "url_withheld": url_withheld,
+            }
+        )
+    if overflow:
+        logger.info(
+            "blocked-link records capped at %d for this message; %d further blocked "
+            "link match(es) are redacted in the text but carry no record",
+            MAX_BLOCKED_LINKS_PER_MESSAGE,
+            overflow,
+        )
+    return result, warnings, records
+
+
 def redact_exfiltration_urls(text: str) -> tuple[str, list[str]]:
     """Scan and redact suspicious exfiltration URLs from text.
 
     Returns (cleaned_text, list_of_warnings).
     """
-    warnings = scan_exfiltration_urls(text)
-    if not warnings:
-        return text, []
+    cleaned, warnings, _ = redact_exfiltration_urls_with_records(text)
+    return cleaned, warnings
 
-    exempt_hosts = _exfil_exempt_hosts()
-    result = text
-    for match in _URL_RE.finditer(text):
-        domain = match.group(1)
-        if _exfil_url_warning(
-            domain,
-            match.group(3) or "",
-            exempt_hosts,
-            port=match.group(2) or "",
-            is_https=match.group(0).lower().startswith("https://"),
+
+#: Hosts a reader allowed for the workspace whose message is being redacted,
+#: set only by :func:`scoped_exempt_hosts` around one render. The display pass
+#: re-redacts what the segment flush kept, so it must relax the same hosts or an
+#: allowed link would be removed again on the way to the page.
+_SCOPED_EXEMPT_HOSTS: contextvars.ContextVar[frozenset[str]] = contextvars.ContextVar(
+    "kiro_crew_scoped_exempt_hosts", default=frozenset()
+)
+
+
+@contextlib.contextmanager
+def scoped_exempt_hosts(hosts: frozenset[str]) -> Iterator[None]:
+    """Relax the length and base64 checks for ``hosts`` inside the block only."""
+    token = _SCOPED_EXEMPT_HOSTS.set(frozenset(h.lower() for h in hosts))
+    try:
+        yield
+    finally:
+        _SCOPED_EXEMPT_HOSTS.reset(token)
+
+
+#: The rules an allowed host relaxes (see :func:`scoped_exempt_hosts`): a long
+#: query and a base64-looking one. A link blocked for anything else stays
+#: blocked whatever the reader allowed.
+ALLOWABLE_BLOCKED_LINK_RULES = frozenset({"exfil_query_length", "exfil_query_pattern"})
+
+_PLACEHOLDER_RE = re.compile(re.escape(EXFILTRATION_REDACTION_TAG_PREFIX) + r"([^\]\s]+)\]")
+
+
+def restore_allowed_links(
+    text: str, records: list[dict], hosts: frozenset[str]
+) -> tuple[str, list[dict]]:
+    """Put back the address of each blocked link whose host the reader allowed.
+
+    Every saved message carries each blocked link as a placeholder, allowed host
+    or not, and its records keep the full address. For each placeholder
+    whose record is kept (``url`` set), was blocked only by a rule an allowed
+    host relaxes, and names a host in ``hosts``, the placeholder becomes the
+    address again and the record is dropped, so the reply shows the link it
+    was written with. A placeholder carries only its host, so it cannot say
+    which of several addresses on that host it stood for: a host is restored
+    only when every record for it keeps the same address, and otherwise its
+    placeholders stay. It is also restored only when the text holds exactly one
+    placeholder per record for it, so a placeholder with no record behind it
+    (one the model echoed in prose, or one whose record was dropped) never
+    becomes a link to an address that did not stand there. Returns the text and
+    the records left.
+    """
+    if not hosts or not records or EXFILTRATION_REDACTION_TAG_PREFIX not in text:
+        return text, records
+    by_domain: dict[str, list[int]] = {}
+    for i, rec in enumerate(records):
+        by_domain.setdefault(str(rec.get("domain", "")).lower(), []).append(i)
+    placeholders: dict[str, int] = {}
+    for m in _PLACEHOLDER_RE.finditer(text):
+        placeholders[m.group(1).lower()] = placeholders.get(m.group(1).lower(), 0) + 1
+    address: dict[str, str] = {}
+    restored: set[int] = set()
+    for domain, indexes in by_domain.items():
+        if domain not in hosts:
+            continue
+        urls = {records[i].get("url") for i in indexes}
+        rules_ok = all(records[i].get("rule") in ALLOWABLE_BLOCKED_LINK_RULES for i in indexes)
+        url = next(iter(urls)) if len(urls) == 1 else None
+        if (
+            rules_ok
+            and isinstance(url, str)
+            and url
+            and placeholders.get(domain, 0) == len(indexes)
         ):
-            result = result.replace(match.group(0), f"{EXFILTRATION_REDACTION_TAG_PREFIX}{domain}]")
-    return result, warnings
+            address[domain] = url
+            restored.update(indexes)
+    if not address:
+        return text, records
+
+    def swap(m: re.Match[str]) -> str:
+        return address.get(m.group(1).lower(), m.group(0))
+
+    out = _PLACEHOLDER_RE.sub(swap, text)
+    return out, [r for i, r in enumerate(records) if i not in restored]
+
+
+def current_scoped_exempt_hosts() -> frozenset[str]:
+    """The hosts :func:`scoped_exempt_hosts` has in effect here, for cache keys."""
+    return _SCOPED_EXEMPT_HOSTS.get()
 
 
 # Markerless 40-character values collide with OAuth entropy only for these

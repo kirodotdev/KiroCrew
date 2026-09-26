@@ -2821,6 +2821,65 @@ function LayersSection() {
   )
 }
 
+/* ── Redaction: hosts allowed long queries, per workspace ── */
+export function RedactionAllowedHostsCard() {
+  const queryClient = useQueryClient()
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['redaction-allowed-hosts'],
+    queryFn: () => api.redactionAllowedHosts(),
+  })
+  const revoke = useMutation({
+    mutationFn: ({ workspace, host }: { workspace: string; host: string }) => api.redactionRevokeHost(workspace, host),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['redaction-allowed-hosts'] }),
+  })
+  const rows = Object.entries(data?.workspaces ?? {}).flatMap(([workspace, hosts]) => hosts.map(host => ({ workspace, host })))
+  return (
+    <SettingsCard>
+      <div className="mb-3 text-[12px] leading-relaxed text-muted" data-testid="redaction-settings-note">
+        {i18nT('pages.settings.securityPanel.redaction_always_on')}
+      </div>
+      <ErrorNotice
+        variant="inline"
+        askAgent
+        message={error ? i18nT('pages.settings.securityPanel.redaction_load_failed') : null}
+      />
+      <ErrorNotice
+        variant="inline"
+        askAgent
+        message={revoke.isError ? i18nT('pages.settings.securityPanel.redaction_revoke_failed') : null}
+        onDismiss={() => revoke.reset()}
+      />
+      {!isLoading && !error && rows.length === 0 && (
+        <div className="text-[12px] text-muted" data-testid="redaction-allowed-empty">
+          {i18nT('pages.settings.securityPanel.redaction_no_allowed_hosts')}
+        </div>
+      )}
+      {rows.length > 0 && (
+        <div className="divide-y divide-border" data-testid="redaction-allowed-list">
+          {rows.map(({ workspace, host }) => (
+            <div key={`${workspace}\u0000${host}`} className="flex items-center justify-between gap-3 py-2">
+              <div className="min-w-0">
+                <div className="truncate font-mono text-[13px] text-text">{host}</div>
+                <div className="text-[11px] text-muted">
+                  {i18nT('pages.settings.securityPanel.redaction_workspace', { workspace })}
+                </div>
+              </div>
+              <Btn
+                danger
+                disabled={revoke.isPending}
+                onClick={() => revoke.mutate({ workspace, host })}
+                data-testid="redaction-revoke"
+              >
+                {i18nT('pages.settings.securityPanel.redaction_revoke')}
+              </Btn>
+            </div>
+          ))}
+        </div>
+      )}
+    </SettingsCard>
+  )
+}
+
 /* ── Documentation section ── */
 function DocsSection() {
   return (
@@ -2877,7 +2936,7 @@ export const SECTION_LABEL_KEY: Record<SecuritySectionKey, string> = {
   rules: 'pages.settings.securityPanel.denied_commands',
   tailnet: 'pages.settings.securityPanel.tailnet_section',
   apps: 'pages.settings.securityPanel.third_party_apps_section',
-  redaction: 'pages.settings.securityPanel.credential_redaction_section',
+  redaction: 'pages.settings.securityPanel.redaction_section',
   delivery: 'pages.settings.securityPanel.file_delivery_section',
   layers: 'pages.settings.securityPanel.defense_in_depth_architecture',
   governance: 'pages.settings.securityPanel.governance_policy',
@@ -2945,6 +3004,20 @@ function fmtRailExpiry(expiry: Date, now: Date = new Date()): string {
 /** Security tab. `basePath` opts the section sub-nav into path navigation
  *  (`${basePath}/security/<section>`); omitted, the historical ?sub= /
  *  ?section= query behavior is unchanged. Passed by the Settings host. */
+/** Settings -> Security -> Redaction: the file-view switch above the allowed link hosts. */
+export function RedactionSection() {
+  return (
+    <>
+      <SettingsSection title={i18nT('pages.settings.securityPanel.credential_redaction_section')}>
+        <CredentialRedactionCard />
+      </SettingsSection>
+      <SettingsSection title={i18nT('pages.settings.securityPanel.redaction_allowed_hosts_section')}>
+        <RedactionAllowedHostsCard />
+      </SettingsSection>
+    </>
+  )
+}
+
 export function SecurityPanel({ basePath }: { basePath?: string } = {}) {
   // Held HERE, not in the rules pane: picking another rail section unmounts that
   // pane, and a half-typed deny pattern living in its local state would be
@@ -3096,11 +3169,7 @@ export function SecurityPanel({ basePath }: { basePath?: string } = {}) {
                 <ThirdPartyAppsCard />
               </SettingsSection>
             )}
-            {key === 'redaction' && (
-              <SettingsSection title={i18nT('pages.settings.securityPanel.credential_redaction_section')}>
-                <CredentialRedactionCard />
-              </SettingsSection>
-            )}
+            {key === 'redaction' && <RedactionSection />}
             {key === 'delivery' && (
               <SettingsSection title={i18nT('pages.settings.securityPanel.file_delivery_section')}>
                 <FileDeliveryConsentCard />

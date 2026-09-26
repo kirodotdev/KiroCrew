@@ -1549,6 +1549,15 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
 # catches an omission.
 NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
     {
+        # The redaction cards' owner-only route (allowed hosts). It applies no
+        # redactor; the call-site scan matches its
+        # handler names (`api_redaction_allow_host`, ...).
+        "dashboard/handlers/redaction.py",
+        # Gate-side: the link-preview route runs both redactors on the URL it was
+        # asked to fetch only to REFUSE it (`400 blocked_url`) when either would
+        # change it, so a zero-click fetch never carries what redaction removes.
+        # Nothing it returns is redacted text, so it is a gate, not an egress sink.
+        "dashboard/handlers/link_meta.py",
         # Drives the backup redaction pass and reports what it did, but applies no
         # redactor itself: the outbound bytes are rewritten in `snapshot_redact.py`,
         # which is the registered sink. What matches the call-site scan here are the

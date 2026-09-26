@@ -101,6 +101,12 @@ _MIN_HEALTHY_CONN_SECS = 5.0
 # lands in the conversation the recipient is reading.
 _NO_MENTIONS: dict[str, Any] = {"parse": []}
 
+#: Discord message flag SUPPRESS_EMBEDS (``1 << 2``). Every outbound message
+#: carries it so an agent-written URL cannot trigger a server-side link-preview
+#: fetch. This client constructs no explicit rich embeds, so suppressing embeds
+#: does not remove any intentional message content.
+_FLAG_SUPPRESS_EMBEDS = 1 << 2
+
 
 def _message_payload(
     text: str,
@@ -117,6 +123,7 @@ def _message_payload(
     payload: dict[str, Any] = {
         "content": text[:DISCORD_MAX_TEXT],
         "allowed_mentions": _NO_MENTIONS,
+        "flags": _FLAG_SUPPRESS_EMBEDS,
     }
     include = components is not None if keep_empty_components else bool(components)
     if include:
@@ -1062,12 +1069,12 @@ class DiscordClient:
         member who can see it. A caller that genuinely wants a visible message
         passes ``ephemeral=False`` and says why.
         """
+        data = _message_payload(text, components, keep_empty_components=False)
+        if ephemeral:
+            data["flags"] = int(data["flags"]) | _FLAG_EPHEMERAL
         payload: dict[str, Any] = {
             "type": _CALLBACK_CHANNEL_MESSAGE_WITH_SOURCE,
-            "data": {
-                **_message_payload(text, components, keep_empty_components=False),
-                **({"flags": _FLAG_EPHEMERAL} if ephemeral else {}),
-            },
+            "data": data,
         }
         result = await self._api(
             "POST",
@@ -1240,7 +1247,10 @@ class DiscordClient:
         result = await self._api(
             "PATCH",
             f"/channels/{channel_id}/messages/{message_id}",
-            {"components": components},
+            {
+                "components": components,
+                "flags": _FLAG_SUPPRESS_EMBEDS,
+            },
         )
         return result is not None
 

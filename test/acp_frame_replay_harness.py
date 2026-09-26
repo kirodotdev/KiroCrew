@@ -162,6 +162,10 @@ def event_dict(event: AcpEvent) -> dict[str, Any]:
             continue
         if value in (None, "", 0, 0.0, False, [], {}):
             continue
+        if name == "tool_output_credentials":
+            # Fingerprints are keyed per process (credential_sources), so the
+            # snapshot records that one was taken and its source, not the hash.
+            value = [["<fingerprint>", *rest] for _fp, *rest in value]
         out[name] = value
     return out
 

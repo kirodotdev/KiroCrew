@@ -492,7 +492,11 @@ class TestOutboundRest:
 
         monkeypatch.setattr(client, "_api", _api)
         assert await client.edit_message_components("c1", "m1", []) is True
-        assert calls[0] == ("PATCH", "/channels/c1/messages/m1", {"components": []})
+        assert calls[0] == (
+            "PATCH",
+            "/channels/c1/messages/m1",
+            {"components": [], "flags": 4},
+        )
 
     @pytest.mark.asyncio
     async def test_create_dm_channel_success_and_failure(
@@ -1520,11 +1524,15 @@ class TestMentionSuppression:
         await client.send_message_with_files("c1", "@here look", [payload_file])
         await client.edit_message_with_files("c1", "m1", "@here look", [payload_file])
         await client.respond_interaction("i1", "tok", "@everyone status")
+        await client.respond_interaction("i2", "tok", "public status", ephemeral=False)
 
-        assert len(seen) == 5
+        assert len(seen) == 6
         for payload in seen:
             body = payload.get("data", payload)
             assert body["allowed_mentions"] == {"parse": []}, payload
+            assert body["flags"] & 4, payload
+        assert seen[4]["data"]["flags"] == 4 | 64
+        assert seen[5]["data"]["flags"] == 4
 
     @pytest.mark.asyncio
     async def test_the_mention_text_survives_so_only_the_ping_is_removed(
@@ -1666,11 +1674,10 @@ class TestApplicationCommandRegistration:
 
 class TestEphemeralInteractionResponse:
     @pytest.mark.asyncio
-    async def test_ephemeral_sets_the_flag_and_visible_omits_it(
+    async def test_ephemeral_ors_with_suppress_embeds_flag(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """EPHEMERAL is message flag 1<<6. A command reply carries runtime state
-        or a login link, so it is the default."""
+        """EPHEMERAL (1<<6) composes with the always-on SUPPRESS_EMBEDS (1<<2)."""
         client = _make_client()
         seen: list[Any] = []
 
@@ -1684,5 +1691,5 @@ class TestEphemeralInteractionResponse:
         assert seen[0][0] == "/interactions/i1/tok/callback"
         # CHANNEL_MESSAGE_WITH_SOURCE
         assert seen[0][1]["type"] == 4
-        assert seen[0][1]["data"]["flags"] == 64
-        assert "flags" not in seen[1][1]["data"]
+        assert seen[0][1]["data"]["flags"] == 64 | 4
+        assert seen[1][1]["data"]["flags"] == 4

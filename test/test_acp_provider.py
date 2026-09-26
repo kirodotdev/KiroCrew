@@ -324,6 +324,8 @@ class TestToLlmEventFieldParity:
             return default + 1.5
         if default is None:
             return {"sentinel": field.name}
+        if isinstance(default, tuple):
+            return (("sentinel-" + field.name, None),)
         return None
 
     def test_all_acp_event_fields_forwarded_or_allowlisted(self):

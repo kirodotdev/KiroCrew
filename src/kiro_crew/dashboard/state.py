@@ -110,6 +110,7 @@ from kiro_crew.preview_text import strip_markdown_preview
 from kiro_crew.release_channel import channel as _release_channel_of_build
 from kiro_crew.safety_override import cached_disabled_approval_modes, safety_override
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security.credential_sources import CredentialEvidence
 from kiro_crew.sel import sel
 from kiro_crew.session_compaction import (
     COMPACT_OUTCOME_COMPACTED,
@@ -2432,6 +2433,8 @@ class _ChatSlot:
         "_source_links_cache",
         "_source_links_revision",
         "_closing",
+        "credential_evidence",
+        "segment_raw_text",
         "key",
         "title",
         "agent",
@@ -2796,6 +2799,17 @@ class _ChatSlot:
         # I/O. A DEPTH: two retractions can overlap on one slot, and each must
         # release only its own acquisition (see ``begin_close``).
         self._closing = 0
+        # This turn's tool results, reduced to sources and credential
+        # fingerprints, so a credential in the reply can name where it came
+        # from. Memory only and cleared at every turn start; see
+        # ``security.credential_sources``.
+        self.credential_evidence = CredentialEvidence()
+        # The current segment's text as the model wrote it, before any
+        # redaction. The run loop redacts each streamed delta as it arrives,
+        # which removes a value whole-in-one-delta before the segment flush can
+        # describe it; the flush redacts THIS copy instead when it agrees with
+        # the redacted one. Memory only, never persisted, dropped at each flush.
+        self.segment_raw_text: str | None = ""
         self.total_messages: int = 0  # lifetime count (survives trimming)
         self._task: asyncio.Task[Any] | None = None
         # Monotonic publication history for turn ownership. ``task`` returns to
@@ -6910,10 +6924,24 @@ class DashboardState:
         from kiro_crew.dashboard.chat_utils import (
             redact_display_content,
             serialize_wire_content,
+            with_allowed_links_restored,
         )
 
+        restored_meta: dict | None = None
         if role != "user" and content:
-            content = redact_display_content(content)
+            # The same allowed-host scope as _prepare_messages, so the live
+            # frame and the history agree on an allowed link: its placeholder
+            # becomes the address again, then the display pass runs.
+            from kiro_crew.security.exfil import scoped_exempt_hosts
+            from kiro_crew.security.redaction_allow import allowed_hosts_for
+
+            _slot = self.get_slot(slot_key)
+            with scoped_exempt_hosts(allowed_hosts_for(getattr(_slot, "workspace", None))):
+                if isinstance(content, str) and isinstance(msg.get("meta"), dict):
+                    shown = with_allowed_links_restored({"content": content, "meta": msg["meta"]})
+                    content = shown["content"]
+                    restored_meta = shown["meta"]
+                content = redact_display_content(content)
         else:
             # The wire-string invariant covers EVERY row: a structured user
             # row or a falsy container serializes to text without redaction.
@@ -6963,7 +6991,7 @@ class DashboardState:
         # test_rehydrate_does_not_broadcast_replayed_messages and
         # test_restore_recent_sessions_does_not_broadcast_either. Do not relax
         # it further without re-checking that meta is still absent.
-        direct_meta = msg.get("meta")
+        direct_meta = restored_meta if restored_meta is not None else msg.get("meta")
         if direct_meta and isinstance(direct_meta, dict):
             payload["meta"] = {**(payload.get("meta") or {}), **direct_meta}
         self._broadcast(payload)

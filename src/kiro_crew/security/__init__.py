@@ -290,12 +290,14 @@ from .exfil import (
     _valid_oauth_extension_path,
     _validate_operator_oauth_entries,
     audit_bash_exfiltration,
+    bounded_blocked_links,
     canonicalize_ip,
     diagnose_oauth_url_credential,
     exfil_query_min_len,
     oauth_rejection_is_endpoint_exemptible,
     oauth_url_contains_credential,
     redact_exfiltration_urls,
+    redact_exfiltration_urls_with_records,
     scan_exfiltration_urls,
 )
 from .helpers import (

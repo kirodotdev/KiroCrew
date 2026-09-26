@@ -155,6 +155,7 @@ from kiro_crew.dashboard.chat_utils import (
     remember_slack_options,
     slack_mirror_is_paused,
     user_text_span,
+    with_bounded_redaction_records,
 )
 from kiro_crew.dashboard.handlers import (
     MAX_PROMPT_BYTES,
@@ -290,7 +291,7 @@ from kiro_crew.messaging.link import (
     parse_session_key,
     telemetry_channel_of,
 )
-from kiro_crew.messaging.renderer import chunk_for_transport, count_redaction_tags
+from kiro_crew.messaging.renderer import chunk_for_transport
 from kiro_crew.metrics.events import TURN_TIMEOUT_CAUSE, emit_counter
 from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.metrics.turns import emit_turn_duration, emit_turn_usage, turn_outcome
@@ -338,9 +339,13 @@ from kiro_crew.security import (
     redact_and_truncate,
     redact_credentials,
     redact_exfiltration_urls,
+    redact_exfiltration_urls_with_records,
     sanitized_oauth_endpoint,
 )
+from kiro_crew.security.credential_sources import credential_records
+from kiro_crew.security.exfil import MAX_BLOCKED_LINKS_PER_MESSAGE
 from kiro_crew.security.readonly_bash import is_read_only_bash, unsafe_bash_reason
+from kiro_crew.security.redaction import redact_credentials_with_records
 from kiro_crew.sel import SecurityEvent, sel, sel_is_warm
 from kiro_crew.session import SessionBusyError, SessionClosingError, SpeculativeResumeRefused
 from kiro_crew.session_agent_selection import (
@@ -4599,57 +4604,6 @@ def _prepare_mirror_msg(raw_user_message: str) -> str:
     return safe[:500]
 
 
-def _redaction_notice(cred_count: int, url_count: int) -> str:
-    """Build the user-visible notice for a segment the redactors rewrote.
-
-    ``cred_count`` and ``url_count`` are the numbers of redaction placeholders
-    standing in the persisted text -- credential tags counted exactly from
-    ``CREDENTIAL_REDACTION_TAGS``, URL tags counted by
-    ``EXFILTRATION_REDACTION_TAG_PREFIX`` prefix (the URL tag interpolates the
-    domain, so it has no constant form to compare) -- so the wording always
-    matches what the user can see in the message above it. The notice carries no
-    secret bytes and no redacted URL -- by the time it is built, a tag has
-    already replaced them.
-
-    Says "a redaction placeholder" rather than naming a specific tag: the
-    redactors emit more than one (see ``CREDENTIAL_REDACTION_TAGS`` and the URL
-    prefix), so naming one would print a marker the user cannot find in the text
-    whenever the substitution came from a different pass.
-
-    The wording is BY KIND because the remedies differ: telling a user whose
-    URL was rewritten that "a credential was replaced; supply the secret
-    yourself" names a remedy that cannot help them. A credential needs the
-    secret re-entered where the command runs; a rewritten URL needs the original
-    link re-checked from a trusted source. The second sentence stays
-    deliberately blunt either way: a redacted command is not a working command,
-    and an opaque ``getaddrinfo EAI_AGAIN`` surfaces far from the real cause. At
-    least one count must be non-zero -- the caller gates on that.
-    """
-    subjects: list[str] = []
-    if cred_count:
-        subjects.append("a credential" if cred_count == 1 else f"{cred_count} credentials")
-    if url_count:
-        subjects.append("a suspicious URL" if url_count == 1 else f"{url_count} suspicious URLs")
-    subject = " and ".join(subjects)
-    subject = subject[0].upper() + subject[1:]
-    verb = "was" if (cred_count + url_count) == 1 and len(subjects) == 1 else "were"
-    lead = "Any command shown above" if not url_count else "Any command or link shown above"
-    if cred_count and url_count:
-        remedy = (
-            "supply the secret yourself on the machine where you run it, and "
-            "re-check any redacted URL against a trusted source."
-        )
-    elif cred_count:
-        remedy = "supply the secret yourself on the machine where you run it."
-    else:
-        remedy = "re-check the original URL against a trusted source before using it."
-    return (
-        f"Security notice: {subject} in this message {verb} replaced with a "
-        f"redaction placeholder before it reached this page. {lead} "
-        f"will not work if you paste it as-is; {remedy}"
-    )
-
-
 def _discard_stale_decision(slot: _ChatSlot) -> None:
     """Drop an outcome left pending by an earlier turn of this session. Never raises.
 
@@ -5372,52 +5326,6 @@ async def _tool_risk_meta(
         return None
 
 
-def _append_redaction_notice(slot: _ChatSlot, redacted: str) -> None:
-    """Append the redaction notice for an already-persisted body.
-
-    ``redacted`` is the SAME string that was just written to the assistant row,
-    so counting composes with per-chunk redaction unchanged: whatever pass wrote
-    the tag (per-chunk in the run loop, or a finalizing re-redact), the artifact
-    is already in the text by the time this runs. The wire-stream redactors are
-    deliberately not in that list: they rewrite only what crosses WS/SSE, and
-    ``assistant_text`` is accumulated independently of them.
-
-    Tell the user the text was altered. Without this the rewrite is silent: the
-    redactors' warnings are logged and nothing else, so a user copies a command
-    whose credential has become a placeholder or whose URL has been rewritten
-    and only finds out when it fails downstream.
-
-    The counts come from the TAGS in the persisted text, not from the redactors'
-    returned warnings, because on the streaming path those warning lists are
-    almost always empty here: the run loop redacts every chunk before it enters
-    ``assistant_text``, so a finalizing re-redact re-redacts already-clean text
-    and reports nothing. Warnings only fire for a secret or URL split across
-    chunk boundaries, the rarer case. Reading the artifact instead of the event
-    answers the question the user actually has -- "is what I am about to copy
-    still what the assistant wrote?" -- and stays correct wherever the
-    substitution happened.
-
-    The counts sum every tag the redactors can emit: every CREDENTIAL tag, read
-    from ``CREDENTIAL_REDACTION_TAGS`` which the security package owns beside
-    the passes that write them, plus the exfiltration-URL tag, counted by
-    ``EXFILTRATION_REDACTION_TAG_PREFIX`` prefix because that tag interpolates
-    the redacted domain and so has no constant form to equality-compare (the
-    substitution is built FROM the exported prefix, so the two cannot drift).
-    Enumerating tags by hand here is what would leave an
-    encoded-credential-only segment silently rewritten and undercounted a mixed
-    one; asking the redactor's own module means a newly added tag cannot escape.
-
-    SCOPE: both body rewriters -- ``redact_credentials`` and
-    ``redact_exfiltration_urls``, worded by kind because the
-    remedies differ. Display-string redactions (titles, tool names, feed
-    strings, stashed variants -- not text the user copies commands from) stay
-    notice-free, deliberately.
-    """
-    cred_count, url_count = count_redaction_tags(redacted)
-    if cred_count or url_count:
-        slot.append("notice", _redaction_notice(cred_count, url_count), "msg msg-info")
-
-
 #: Shapes that make glued footer text look like an instruction to a later
 #: reader. Used only to tag the audit event; the label is applied regardless.
 _DIRECTIVE_SHAPED_RE = re.compile(
@@ -5473,6 +5381,101 @@ def _log_glued_footer_text(slot: Any, glued: list[str]) -> None:
             },
         )
     )
+
+
+def _segment_row_meta(
+    slot: _ChatSlot, blocked_links: list[dict], redactions: list[dict] | None = None
+) -> dict | None:
+    """The assistant row's ``meta``: the decision strip plus redaction records.
+
+    One function because every field has to reach ``slot.append`` in the same
+    dict -- that call broadcasts the live frame from inside itself, so a field
+    written onto the row afterwards would persist but be missing from the frame
+    an open tab renders. Returns None when there is nothing to carry, which is
+    what ``slot.append`` expects for a row with no meta.
+    """
+    meta = _decisions_strip_meta(slot)
+    if not blocked_links and not redactions:
+        return meta
+    out = dict(meta) if meta else {}
+    if blocked_links:
+        out["blocked_links"] = blocked_links
+    if redactions:
+        out["redactions"] = redactions
+    return out
+
+
+#: Past this the raw segment copy is abandoned and the flush describes only
+#: what survived per-delta redaction.
+_SEGMENT_RAW_MAX_CHARS = 2_000_000
+
+
+def _accumulate_segment_raw(slot: _ChatSlot, text: str) -> None:
+    """Append one streamed delta to the slot's raw segment copy."""
+    raw = slot.segment_raw_text
+    if raw is None:
+        return
+    raw += text
+    slot.segment_raw_text = raw if len(raw) <= _SEGMENT_RAW_MAX_CHARS else None
+
+
+def _redact_segment(slot: _ChatSlot, text: str) -> tuple[str, list[dict], list[dict]]:
+    """Redact one assistant segment and describe every placeholder it wrote.
+
+    The records come out of the redaction pass because that is the last moment
+    the removed values exist: what ``slot.append`` stores is the placeholder,
+    so a later scan of the row finds only that and would describe nothing.
+
+    ``text`` was already redacted delta by delta as it streamed, so a value that
+    arrived inside one delta is gone from it. The slot's raw copy of the same
+    segment still holds it, so the raw copy's records are used wherever they
+    pair with a placeholder ``text`` still carries: a link record by the domain
+    its placeholder names, the credential records by position when both texts
+    hold the same number of credential tags. A transform on ``text`` (label
+    reflow, plan-marker stripping) or a delta boundary that cut a value
+    differently changes neither pairing. Where they do not pair, ``text``'s own
+    records stand, which describe fewer placeholders but never a wrong one.
+    Returns ``(text, blocked_links, redactions)``.
+    """
+    raw = slot.segment_raw_text
+    slot.segment_raw_text = ""
+    redacted, blocked_links, redactions = _redact_segment_text(slot, text)
+    if not raw or raw == text:
+        return redacted, blocked_links, redactions
+    raw_redacted, raw_links, raw_redactions = _redact_segment_text(slot, raw)
+    if raw_redacted == redacted:
+        return redacted, raw_links, raw_redactions
+    seen = {r.get("url") or (r.get("domain"), r.get("path")) for r in blocked_links}
+    for record in raw_links:
+        key = record.get("url") or (record.get("domain"), record.get("path"))
+        placeholder = f"[REDACTED: suspicious URL to {record.get('domain')}]"
+        if key not in seen and placeholder in redacted:
+            if len(blocked_links) >= MAX_BLOCKED_LINKS_PER_MESSAGE:
+                break
+            blocked_links.append(record)
+            seen.add(key)
+    tags = len(_CREDENTIAL_TAG_RE.findall(redacted))
+    if tags and tags == len(_CREDENTIAL_TAG_RE.findall(raw_redacted)) == len(raw_redactions):
+        redactions = raw_redactions
+    return redacted, blocked_links, redactions
+
+
+#: Every credential tag the redactor writes (the frontend pairs the same form).
+_CREDENTIAL_TAG_RE = re.compile(r"\[REDACTED: (?:encoded )?credential\]")
+
+
+def _redact_segment_text(slot: _ChatSlot, text: str) -> tuple[str, list[dict], list[dict]]:
+    """Both removers over ``text``, with the records each placeholder needs."""
+    # Never relaxed by the reader's allowed hosts: what is saved must not depend
+    # on the allow-list, so an allowed link is kept as a placeholder with its
+    # record and shown again at display time (chat_utils._prepare_messages).
+    redacted, exfil_warnings, blocked_links = redact_exfiltration_urls_with_records(text)
+    for w in exfil_warnings:
+        logger.warning("Exfiltration URL redacted in chat segment: %s", w)
+    redacted, cred_warnings, matches = redact_credentials_with_records(redacted)
+    for w in cred_warnings:
+        logger.warning("Credential redacted in chat segment: %s", w)
+    return redacted, blocked_links, credential_records(matches, slot.credential_evidence)
 
 
 def _flush_segment(
@@ -5550,13 +5553,7 @@ def _flush_segment(
     # is labelled as the assistant's own output and the event is audited: a
     # model that later re-reads the line must not take it for an instruction.
     assistant_text = _reflow_label_and_audit(slot, assistant_text)
-    # Redact the accumulated text
-    redacted, exfil_warnings = redact_exfiltration_urls(assistant_text)
-    for w in exfil_warnings:
-        logger.warning("Exfiltration URL redacted in chat segment: %s", w)
-    redacted, cred_warnings = redact_credentials(redacted)
-    for w in cred_warnings:
-        logger.warning("Credential redacted in chat segment: %s", w)
+    redacted, blocked_links, redactions = _redact_segment(slot, assistant_text)
     # Persist as assistant message. Broadcast is kept enabled so that
     # other tabs viewing the same slot receive the finalized text.
     # The active tab already has this content from streaming chunks;
@@ -5566,10 +5563,11 @@ def _flush_segment(
         redacted,
         "msg msg-a",
         broadcast=not quiet_persist,
-        # The decision strip, when this turn made one. Passed here rather than
-        # written onto the row afterwards so the frame this call broadcasts
-        # carries it too -- see _decisions_strip_meta.
-        meta=_decisions_strip_meta(slot),
+        # The decision strip, when this turn made one, and the blocked-link records
+        # from the redaction above. Passed here rather than written onto the row
+        # afterwards so the frame this call broadcasts carries them too -- see
+        # _decisions_strip_meta for why that matters.
+        meta=_segment_row_meta(slot, blocked_links, redactions),
     )
     # The append-only log's copy of the same body. Written here rather than at the
     # turn's terminal event because a turn produces SEVERAL assistant messages --
@@ -5587,28 +5585,29 @@ def _flush_segment(
     last_msg: dict = slot.messages[-1]
     # If a regenerate is pending, attach the stashed variants to this fresh assistant message.
     if slot._pending_variants:
-        pending_list = [
-            {
-                **v,
-                "content": redact_credentials(redact_exfiltration_urls(v.get("content", ""))[0])[0],
-            }
-            for v in slot._pending_variants
-            if isinstance(v, dict)
-        ]
-        pending_list.append({"content": redacted, "ts": last_msg.get("ts", "")})
+        pending_list = []
+        for v in slot._pending_variants:
+            if not isinstance(v, dict):
+                continue
+            # A stashed variant's text is ALREADY redacted, so its records are
+            # carried rather than derived: the URL they describe is gone from that
+            # text and a rescan of it would return nothing, which would destroy
+            # the only explanation the reader can switch back to. Records are
+            # derived exactly once, at the redaction that writes the placeholder.
+            # The removers still run -- they are idempotent, and a variant that
+            # reached here unredacted must not be stored that way.
+            v_text, _ = redact_exfiltration_urls(v.get("content", ""))
+            entry = with_bounded_redaction_records({**v, "content": redact_credentials(v_text)[0]})
+            pending_list.append(entry)
+        newest: dict = {"content": redacted, "ts": last_msg.get("ts", "")}
+        if blocked_links:
+            newest["blocked_links"] = blocked_links
+        if redactions:
+            newest["redactions"] = redactions
+        pending_list.append(newest)
         last_msg["variants"] = pending_list
         last_msg["variant_idx"] = len(pending_list) - 1
         slot._pending_variants = []
-    # Tell the user the text was altered; shared with
-    # the exception-path persists via `_append_redaction_notice` so all eight
-    # persists carry one notice contract. The notice broadcasts unconditionally
-    # even under `quiet_persist`: that flag exists to suppress a DUPLICATE of the
-    # pre-steer assistant text clients already rendered, and a notice row has no
-    # streamed counterpart to duplicate -- suppressing it would drop the warning
-    # on exactly the path this fix exists to cover. See the helper for why the
-    # counts read the persisted TAGS rather than the redactors' warnings and how
-    # the two rewriters are counted.
-    _append_redaction_notice(slot, redacted)
     # Re-append any stop_event that belongs to this segment's trailing run,
     # placed AFTER the finalized assistant message so the UI shows
     # prose → stop card.
@@ -9625,9 +9624,13 @@ async def _run_chat(
         # same accumulated text, and it is rendered by the same grammar.
         body = _reflow_label_and_audit(slot, assistant_text)
         slot.purge_chunks()
-        _redacted = redact_credentials(redact_exfiltration_urls(body)[0])[0]
-        slot.append("assistant", _redacted, "msg msg-a", meta=_decisions_strip_meta(slot))
-        _append_redaction_notice(slot, _redacted)
+        # Records come out of the same pass for the reason _redact_segment gives:
+        # after this line only the placeholder exists, so an interrupted reply
+        # would otherwise lose what it explains for good.
+        _redacted, _blocked, _redactions = _redact_segment(slot, body)
+        slot.append(
+            "assistant", _redacted, "msg msg-a", meta=_segment_row_meta(slot, _blocked, _redactions)
+        )
         crew_log_emit.on_message_sent(
             _crew_log_sid,
             _crew_log_turn_no,
@@ -10173,6 +10176,9 @@ async def _run_chat(
     # A directive belongs to the turn that asked for it: a record parked by a turn
     # that was cancelled before consuming it must not be claimable by a later one.
     _turn_started = time.monotonic()
+    # A credential in this turn's reply is traced only to this turn's tools.
+    slot.credential_evidence.clear()
+    slot.segment_raw_text = ""
     # session_id -> {started, done, agent, task} for native kiro-cli subagents,
     # reconciled from `_kiro.dev/subagent/list_update` (one card per sub-agent).
     # The slot holds the same live dict so reconnect snapshots can restore cards.
@@ -10220,6 +10226,10 @@ async def _run_chat(
     # subtract them (see _answer_text_only) without re-parsing the prose.
     _compaction_notice_chunks: list[str] = []
     _turn_tool_calls = 0  # tool dispatches this turn (refusal diagnostic)
+    # Calls the backend identified as shell commands this turn. Only such a call's
+    # `command` input names a command that ran, so only it may become a credential
+    # card's Open in Terminal pre-fill; any other tool's `command` field is data.
+    _shell_tool_calls: set[str] = set()
     # Every unambiguous coding tool call retains the turn's shared bounded key
     # (`_tcid_identity_key`, a fixed 16-char digest) until its permission
     # decision, so a statusless call that a later denial rejects is never
@@ -12649,6 +12659,7 @@ async def _run_chat(
                 # text where the credential is intact and therefore matchable.
                 safe_chunk, _ = redact_exfiltration_urls(event.text)
                 safe_chunk, _ = redact_credentials(safe_chunk)
+                _accumulate_segment_raw(slot, event.text)
                 assistant_text += safe_chunk
                 if event.control_notice:
                     # A backend control notice that arrived as assistant text
@@ -12730,6 +12741,12 @@ async def _run_chat(
                 _turn_thought = True
             elif event.kind == EVENT_TOOL_CALL:
                 _turn_tool_calls += 1
+                if (
+                    event.is_shell
+                    and event.tool_call_id
+                    and len(_shell_tool_calls) < _MAX_TCID_SOURCES
+                ):
+                    _shell_tool_calls.add(event.tool_call_id)
                 if event.tool_call_id:
                     if is_coding_event(
                         event.tool_name or "",
@@ -12965,6 +12982,12 @@ async def _run_chat(
                     except Exception:
                         logger.debug("Mirror tool task failed", exc_info=True)
             elif event.kind == EVENT_TOOL_CALL_UPDATE:
+                if (
+                    event.is_shell
+                    and event.tool_call_id
+                    and len(_shell_tool_calls) < _MAX_TCID_SOURCES
+                ):
+                    _shell_tool_calls.add(event.tool_call_id)
                 # claude-agent-acp emits an initial `tool_call` with empty
                 # input (title falls back to generic name like "Terminal" or
                 # "grep") followed by a `tool_call_update` carrying the
@@ -13170,6 +13193,23 @@ async def _run_chat(
                 # stream actually reported. `stop_reason` on this event describes
                 # the turn, not the tool, so it is not used here.
                 _tool_terminal = event.tool_final or (event.tool_status in TERMINAL_TOOL_STATUSES)
+                if event.tool_output_credentials and _tcid_identifies:
+                    # The call's own input (already redacted) names the source;
+                    # the fingerprints say which credentials it produced. An id
+                    # that collapsed onto several calls names none of them, so
+                    # its result records no source rather than borrowing another
+                    # call's input and shell status.
+                    for _row in reversed(slot.messages):
+                        if (
+                            _row.get("role") == "tool"
+                            and _row.get("meta", {}).get("tool_call_id") == _tcid
+                        ):
+                            slot.credential_evidence.record(
+                                str(_row["meta"].get("input") or ""),
+                                event.tool_output_credentials,
+                                is_shell=event.tool_call_id in _shell_tool_calls,
+                            )
+                            break
                 if _tool_terminal:
                     # The backend's own word, unmapped, with the refusal this
                     # process decided taking precedence -- a refused call never

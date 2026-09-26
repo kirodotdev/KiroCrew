@@ -255,4 +255,15 @@ describe('ChatPage follow-up worktree orchestration', () => {
     await waitFor(() => expect(composer().value).toContain(ITEM.prompt))
     expect(composer().value).toBe(`half-written thought\n\n${ITEM.prompt}`)
   })
+
+  it('a redaction card pre-fill appends to an unsent draft instead of destroying it', async () => {
+    const store = makeStore()
+    await renderPage(store)
+    fireEvent.change(composer(), { target: { value: 'half-written thought' } })
+    act(() => {
+      window.dispatchEvent(new CustomEvent('mc:prefill-composer', { detail: { text: 'Please rotate the key.' } }))
+    })
+    await waitFor(() => expect(composer().value).toContain('Please rotate the key.'))
+    expect(composer().value).toBe('half-written thought\n\nPlease rotate the key.')
+  })
 })

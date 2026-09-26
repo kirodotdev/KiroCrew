@@ -36,10 +36,10 @@ class ProbeStubClient(SlackClientOps):
         return self._outcomes.get(channel)
 
     # Abstract members not exercised by the probe.
-    async def post_message(self, channel, text, thread_ts=None, unfurl_links=None, unfurl_media=None):
+    async def post_message(self, channel, text, thread_ts=None):
         raise NotImplementedError
 
-    async def post_blocks(self, channel, blocks, text, thread_ts=None, unfurl_links=None, unfurl_media=None):
+    async def post_blocks(self, channel, blocks, text, thread_ts=None):
         raise NotImplementedError
 
     async def update_message(self, channel, ts, text="", blocks=None):

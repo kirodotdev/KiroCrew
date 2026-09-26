@@ -261,9 +261,7 @@ class _ErrorPostFailsSlack(MockSlackClient):
         self.actions.append(("update", {"channel": channel, "ts": ts, "text": text}))
         raise RuntimeError("slack down")
 
-    async def post_message(
-        self, channel, text, thread_ts=None, unfurl_links=None, unfurl_media=None
-    ):
+    async def post_message(self, channel, text, thread_ts=None):
         self.actions.append(("post_message", {"channel": channel, "text": text}))
         raise RuntimeError("slack down")
 
@@ -287,9 +285,7 @@ class _FooterFailsSlackClient(RecordingSlackClient):
     """Streaming succeeds (answer delivered), but the final footer post_blocks
     fails. A delivered turn must stay a success."""
 
-    async def post_blocks(
-        self, channel, blocks, text, thread_ts=None, unfurl_links=None, unfurl_media=None
-    ):
+    async def post_blocks(self, channel, blocks, text, thread_ts=None):
         self._rec("post_blocks", channel=channel, text=text)
         raise RuntimeError("slack post_blocks failed at footer")
 
@@ -429,15 +425,11 @@ class _OptionsFooterFailsSlack(MockSlackClient):
         self._stream_enabled = True
         self.fallback_posts = []
 
-    async def post_blocks(
-        self, channel, blocks, text, thread_ts=None, unfurl_links=None, unfurl_media=None
-    ):
+    async def post_blocks(self, channel, blocks, text, thread_ts=None):
         self.actions.append(("post_blocks", {"channel": channel}))
         raise RuntimeError("footer post_blocks failed")
 
-    async def post_message(
-        self, channel, text, thread_ts=None, unfurl_links=None, unfurl_media=None
-    ):
+    async def post_message(self, channel, text, thread_ts=None):
         self.actions.append(("post_message", {"channel": channel, "text": text}))
         if text.startswith("*Options:*"):
             self.fallback_posts.append(text)
@@ -476,15 +468,11 @@ class _OptionsFooterAndFallbackFailSlack(MockSlackClient):
         super().__init__()
         self._stream_enabled = True
 
-    async def post_blocks(
-        self, channel, blocks, text, thread_ts=None, unfurl_links=None, unfurl_media=None
-    ):
+    async def post_blocks(self, channel, blocks, text, thread_ts=None):
         self.actions.append(("post_blocks", {"channel": channel}))
         raise RuntimeError("footer post_blocks failed")
 
-    async def post_message(
-        self, channel, text, thread_ts=None, unfurl_links=None, unfurl_media=None
-    ):
+    async def post_message(self, channel, text, thread_ts=None):
         self.actions.append(("post_message", {"channel": channel, "text": text}))
         if text.startswith("*Options:*"):
             raise RuntimeError("fallback post_message failed too")
@@ -520,14 +508,10 @@ class _OptionsFooterFailsCapturingSlack(MockSlackClient):
         self._stream_enabled = True
         self.fallback_text = None
 
-    async def post_blocks(
-        self, channel, blocks, text, thread_ts=None, unfurl_links=None, unfurl_media=None
-    ):
+    async def post_blocks(self, channel, blocks, text, thread_ts=None):
         raise RuntimeError("footer failed")
 
-    async def post_message(
-        self, channel, text, thread_ts=None, unfurl_links=None, unfurl_media=None
-    ):
+    async def post_message(self, channel, text, thread_ts=None):
         if text.startswith("*Options:*"):
             self.fallback_text = text
         return await super().post_message(channel, text, thread_ts)
@@ -591,15 +575,11 @@ class _TransportOptionsBothFailSlack(RecordingSlackClient):
     """Answer streams fine, but the footer post_blocks AND the options fallback
     post_message both fail — the choices never reached the reader."""
 
-    async def post_blocks(
-        self, channel, blocks, text, thread_ts=None, unfurl_links=None, unfurl_media=None
-    ):
+    async def post_blocks(self, channel, blocks, text, thread_ts=None):
         self._rec("post_blocks", channel=channel, text=text)
         raise RuntimeError("footer post_blocks failed")
 
-    async def post_message(
-        self, channel, text, thread_ts=None, unfurl_links=None, unfurl_media=None
-    ):
+    async def post_message(self, channel, text, thread_ts=None):
         self._rec("post_message", channel=channel, text=text)
         if text.startswith("*Options:*"):
             raise RuntimeError("options fallback failed too")
@@ -704,14 +684,10 @@ class _OptionsFooterFailsCapturingSlack2(MockSlackClient):
         self._stream_enabled = True
         self.fallback_text = None
 
-    async def post_blocks(
-        self, channel, blocks, text, thread_ts=None, unfurl_links=None, unfurl_media=None
-    ):
+    async def post_blocks(self, channel, blocks, text, thread_ts=None):
         raise RuntimeError("footer failed")
 
-    async def post_message(
-        self, channel, text, thread_ts=None, unfurl_links=None, unfurl_media=None
-    ):
+    async def post_message(self, channel, text, thread_ts=None):
         # The display-safe scrub strips the ``*Options:*`` emphasis to
         # ``Options:`` when it downgrades a message carrying a canonical-form
         # credential (formatting is worth less than a leaked key), so match the
@@ -1042,9 +1018,7 @@ class _OptionsFooterCancelsSlackClient(RecordingSlackClient):
     OPTIONS footer) raises CancelledError — a mid-turn cancellation on the
     answer-carrying footer await."""
 
-    async def post_blocks(
-        self, channel, blocks, text, thread_ts=None, unfurl_links=None, unfurl_media=None
-    ):
+    async def post_blocks(self, channel, blocks, text, thread_ts=None):
         raise asyncio.CancelledError()
 
 

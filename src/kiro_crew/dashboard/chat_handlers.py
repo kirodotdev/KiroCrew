@@ -2855,6 +2855,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     # are shared with live mutation, which _prepare_messages tolerates by the
     # same snapshot discipline the flush-thread save path relies on.
     key = slot.key
+    workspace = slot.workspace
     running = slot.running
     stopping = slot._stopping
     display_title = slot.display_title
@@ -2877,7 +2878,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
         # blocked the event loop past the loop-stall watchdog's exit budget
         # and hard-exited the gateway. json.dumps of the same payload is a
         # second loop-blocking cost, so it lives in the thread too.
-        prepared = _prepare_messages(messages, running, live_child=live_child)
+        prepared = _prepare_messages(messages, running, live_child=live_child, workspace=workspace)
         return json.dumps(
             {
                 "key": key,
@@ -11337,7 +11338,10 @@ async def _live_slot_resume_response(
         total = len(window)
         recent = window[-200:] if total > 200 else window
         prepared = _prepare_messages(
-            recent, existing.running, live_child=_live_child_instance(state, existing)
+            recent,
+            existing.running,
+            live_child=_live_child_instance(state, existing),
+            workspace=existing.workspace,
         )
         # Raw index this window starts at: the frozen on-disk prefix plus the
         # in-memory rows it skipped. has_more is derived from the same number so
@@ -12313,7 +12317,10 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
             # raw index the next older page starts from.
             "next_before": total - len(recent),
             "messages": _prepare_messages(
-                recent, slot.running, live_child=_live_child_instance(state, slot)
+                recent,
+                slot.running,
+                live_child=_live_child_instance(state, slot),
+                workspace=slot.workspace,
             ),
             "queue": [queue_entry_view(q) for q in slot._queue],
             "total": total,

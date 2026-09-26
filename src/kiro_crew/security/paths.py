@@ -1075,6 +1075,18 @@ _WRITE_PROTECTED_HOME_PATHS += [
     for prefix in _CREW_HOME_PREFIXES
 ]
 _WRITE_PROTECTED_HOME_PATHS += [
+    # The redaction allow-list (``redaction-allow/hosts.json``,
+    # ``security.redaction_allow``): the hosts a reader allowed long-query and
+    # base64 links for. An agent that could write it could allow the host it
+    # wants to send conversation data to. Readable, since it names hosts and no
+    # secret; there is no legitimate agent WRITE -- the gateway's owner-only
+    # ``/api/redaction/allowed-hosts`` routes write it directly. The directory
+    # is also mounted read-only in the sandbox (``sandbox._CREW_READONLY_LEAVES``);
+    # this entry covers the file-edit tool on a host with no OS sandbox.
+    f"{prefix}/redaction-allow"
+    for prefix in _CREW_HOME_PREFIXES
+]
+_WRITE_PROTECTED_HOME_PATHS += [
     # The dashboard session-history store, fourth instance of the
     # input-to-an-authorization-decision class (rotation.yaml, the alias
     # ownership record, the OMC index). Each slot's persisted metadata carries

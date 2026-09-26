@@ -111,7 +111,7 @@ describe('MarkdownRenderer XSS sanitization', () => {
 
   it('strips event handler attributes', () => {
     const { container } = render(
-      <MarkdownRenderer content={'<img src="x" onerror="alert(1)">'} />
+      <MarkdownRenderer content={'<img src="/api/file-raw?path=x" onerror="alert(1)">'} />
     )
     const img = container.querySelector('img')
     expect(img?.getAttribute('onerror')).toBeNull()
@@ -1619,7 +1619,7 @@ describe('MarkdownRenderer softBreaks', () => {
     // them adds an empty line box and blocks margin collapse, inflating the
     // gap between two attached screenshots from ~8px to ~37px.
     const { container } = render(<MarkdownRenderer
-      content={'shots\n\n![a](https://x.test/a.png)\n![b](https://x.test/b.png)'} softBreaks />)
+      content={'shots\n\n![a](/api/file-raw?path=a.png)\n![b](/api/file-raw?path=b.png)'} softBreaks />)
     expect(container.querySelectorAll('img').length).toBe(2)
     expect(container.querySelectorAll('br').length).toBe(0)
   })

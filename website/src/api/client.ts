@@ -3471,6 +3471,15 @@ export const api = {
     patch('/api/security/denied-commands/user/' + encodeURIComponent(id), { enabled }).then(j) as Promise<DeniedCommandsData>,
   deleteUserDeniedCommand: (id: string) =>
     del('/api/security/denied-commands/user/' + encodeURIComponent(id)).then(j) as Promise<DeniedCommandsData>,
+  // Redaction cards: the per-workspace allowed-host list (Settings → Security →
+  // Redaction). Every route is owner-only.
+  redactionAllowedHosts: () =>
+    get('/api/redaction/allowed-hosts').then(j) as Promise<{ workspaces: Record<string, string[]> }>,
+  redactionAllowHost: (slot: string, host: string) =>
+    post('/api/redaction/allowed-hosts', { slot, host }).then(j) as Promise<{ ok: boolean; workspace: string }>,
+  redactionRevokeHost: (workspace: string, host: string) =>
+    del(`/api/redaction/allowed-hosts?workspace=${encodeURIComponent(workspace)}&host=${encodeURIComponent(host)}`)
+      .then(j) as Promise<{ ok: boolean; removed: boolean }>,
   // Third-party app trust (Settings → Security). Like denied-commands, every
   // endpoint returns the full refreshed snapshot so callers can seed the query
   // cache from the mutation response instead of re-fetching.

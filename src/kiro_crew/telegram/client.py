@@ -40,6 +40,13 @@ logger = logging.getLogger(__name__)
 # Telegram message text limit.
 TELEGRAM_MAX_TEXT = 4096
 
+#: Bot API 7.0+ link_preview_options payload disabling server-side link
+#: previews. ONE shared source injected into EVERY text-bearing call
+#: (sendMessage, sendMessageDraft, editMessageText, sendRichMessage): a URL
+#: appearing mid-stream must not gain a preview on the edit path that the
+#: send path already denies — the fetch happens with no recipient click.
+_LINK_PREVIEW_DISABLED: dict[str, Any] = {"is_disabled": True}
+
 #: Caption cap on every media-bearing send (sendPhoto, sendDocument, …),
 #: measured after entities parsing — a quarter of the text budget, which is why
 #: the renderer never folds an answer into a caption.
@@ -793,6 +800,7 @@ class TelegramClient:
         params: dict[str, Any] = {
             "chat_id": chat_id,
             "text": _cap_text(text, parse_mode),
+            "link_preview_options": _LINK_PREVIEW_DISABLED,
         }
         if message_thread_id is not None:
             params["message_thread_id"] = message_thread_id
@@ -857,6 +865,7 @@ class TelegramClient:
         params: dict[str, Any] = {
             "chat_id": chat_id,
             "rich_message": {"markdown": markdown},
+            "link_preview_options": _LINK_PREVIEW_DISABLED,
         }
         if message_thread_id is not None:
             params["message_thread_id"] = message_thread_id
@@ -912,6 +921,7 @@ class TelegramClient:
             "chat_id": chat_id,
             "draft_id": draft_id,
             "text": _cap_text(text, parse_mode),
+            "link_preview_options": _LINK_PREVIEW_DISABLED,
         }
         if message_thread_id is not None:
             params["message_thread_id"] = message_thread_id
@@ -939,6 +949,7 @@ class TelegramClient:
             "chat_id": chat_id,
             "message_id": message_id,
             "text": _cap_text(text, parse_mode),
+            "link_preview_options": _LINK_PREVIEW_DISABLED,
         }
         if parse_mode:
             params["parse_mode"] = parse_mode

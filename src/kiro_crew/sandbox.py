@@ -578,6 +578,13 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # day-file written later is visible), and every legitimate writer is the
     # gateway, outside the sandbox. Nothing writes a decision row from inside one.
     "decisions",
+    # The hosts a reader allowed long-query links for, per workspace. Every entry
+    # relaxes the exfiltration check for that host, so a writable list lets a
+    # prompt-injected agent allow the host it wants to send conversation data to.
+    # A top-level DIRECTORY for the ``decisions`` reasons: the gateway is the only
+    # writer, an empty directory reads as "no host allowed", and a directory bind
+    # shows the gateway's later writes live.
+    "redaction-allow",
     # Recorded consent to deliver a scanner-flagged file. Same class as
     # ``aws_service_consent.json``: a writable grant lets an auto-approved agent
     # consent, on the owner's behalf, to shipping the owner's secrets. This seal is
@@ -915,6 +922,9 @@ _CREW_CHILD_READABLE_LEAVES: tuple[str, ...] = (
     # outside the sandbox, and nothing writes a decision row from inside one. Also off
     # the read-gate floor, so the mask never covered it either way.
     "decisions",
+    # Allowed hosts for the exfiltration check. Host names, not credentials; the
+    # risk is a write, answered by the read-only seal.
+    "redaction-allow",
     # The operator's cloud configuration and the launch record beside it. Neither holds
     # a credential (``CloudConfig`` documents the file as the operator's own, with none),
     # and in-sandbox code READS both: the provisioner selector resolves the Fargate block
@@ -1416,6 +1426,9 @@ _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
     # which is the state of every install that has never sampled a decision, and
     # leaves exactly the name an agent would create in order to forge a verdict.
     "decisions",
+    # The redaction allow-list, on the same argument: no file means no host
+    # allowed, which is what an empty directory means too, and the bind is live.
+    "redaction-allow",
     # Pi's gate launcher and sealed extension. Materialised here rather than only by
     # the adapter so the directory is a read-only mountpoint before ANY sandbox starts,
     # including the first pi spawn on a fresh install.
@@ -1432,6 +1445,7 @@ _CREW_NOFOLLOW_READONLY_DIR_LEAVES: tuple[str, ...] = (
     "subagents",
     "member-memory-bindings",
     "decisions",
+    "redaction-allow",
     "pi-gate",
 )
 assert set(_CREW_NOFOLLOW_READONLY_DIR_LEAVES) <= set(_CREW_PRECREATE_READONLY_DIR_LEAVES)
@@ -1484,6 +1498,10 @@ _DELEGATED_OVERLAP_LEAF_REASONS: "dict[str, tuple[str, str]]" = {
         "sealed decision log",
         "the agent could append a feedback row the owner's summary counts as a "
         "verdict nobody gave",
+    ),
+    "redaction-allow": (
+        "sealed redaction allow-list",
+        "the agent could allow the host it wants to send conversation data to",
     ),
     "pi-gate": (
         "sealed pi gate runtime",

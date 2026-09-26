@@ -2031,6 +2031,9 @@ class AcpProvider(LLMProvider):
             tool_output=e.tool_output,
             tool_output_digest=e.tool_output_digest,
             tool_output_bytes=e.tool_output_bytes,
+            # The fingerprints the credential card traces a source by. Dropping
+            # them leaves every credential in the reply with no source.
+            tool_output_credentials=e.tool_output_credentials,
             tool_final=e.tool_final,
             # Dropping this clears the task panel and records an empty plan/updated.
             todo=e.todo,

@@ -31,6 +31,7 @@ from kiro_crew.dashboard.handlers import (
 )
 from kiro_crew.dashboard.handlers import prompts as _prompts_mod
 from kiro_crew.platform_compat import IS_POSIX
+from kiro_crew.security.credential_sources import CredentialEvidence
 
 # ── Shared fixtures ──
 
@@ -224,6 +225,10 @@ class _Slot:
         # from a genuine message, prompt turns included.
         self._refusal_retry_text = ""
         self._refusal_fallback_attempted = False
+        # Mirrors _ChatSlot's per-turn redaction state: _run_chat clears both
+        # at every turn start.
+        self.credential_evidence = CredentialEvidence()
+        self.segment_raw_text: str | None = ""
         self.linked_session_key = ""
         # Mirrors _ChatSlot.project: the per-slot local project @mention/​/prompts
         # resolve against. "" means no project (global prompts only), matching

@@ -145,11 +145,12 @@ describe('windows image paths render through file-raw (issue #3497)', () => {
     )
   })
 
-  it('remote images stay untouched', () => {
+  it('remote images stay behind the click-to-load gate', () => {
     const { container } = render(
       <MarkdownRenderer content="![image](https://example.com/x.png)" />,
     )
-    expect(srcOf(container)).toBe('https://example.com/x.png')
+    expect(container.querySelector('img')).toBeNull()
+    expect(container.querySelector('button')?.getAttribute('title')).toBe('https://example.com/x.png')
   })
 
   it('a drive-path LINK still renders with no live href (strict default kept)', () => {

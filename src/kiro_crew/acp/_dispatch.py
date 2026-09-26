@@ -64,6 +64,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.acp_backends import ACP_BACKENDS_META_IDENTITY
 from kiro_crew.metrics.tool_calls import note_tool_call_started, record_tool_call_finished
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security.credential_sources import tool_output_fingerprints
 
 logger = logging.getLogger(__name__)
 
@@ -2230,6 +2231,9 @@ def _build_tool_result_event(update: dict[str, Any], cache_scope: str = "") -> A
         tool_output=final_output,
         tool_output_digest=tool_output_digest,
         tool_output_bytes=tool_output_bytes,
+        # Only a result the redactor changed can hold a credential worth a
+        # fingerprint, so an ordinary result pays nothing extra.
+        tool_output_credentials=tool_output_fingerprints(joined) if _redacted != joined else (),
         tool_final=update.get("status") == "completed",
         tool_status=str(update.get("status") or ""),
     )
