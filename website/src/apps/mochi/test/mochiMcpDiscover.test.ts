@@ -69,6 +69,13 @@ describe('discoverMcpTools', () => {
     expect(r?.errorCode).toBe('probe_failed')
   })
 
+  it('preserves needs_auth as a non-error not-verified state', async () => {
+    mockFetch(200, { tools: [], status: 'needs_auth' })
+    const r = await api.discoverMcpTools?.('oauth-server')
+    expect(r?.status).toBe('needs_auth')
+    expect(r?.errorCode).toBeUndefined()
+  })
+
   it('reports success without an errorCode', async () => {
     mockFetch(200, { tools: [{ name: 'x' }], status: 'ok', cached: false })
     const r = await api.discoverMcpTools?.('srv')
