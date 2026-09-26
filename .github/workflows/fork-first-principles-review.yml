@@ -49,18 +49,11 @@ permissions:
   pull-requests: write
 
 concurrency:
-  # Keyed on (head repository, head branch, head sha), NOT the sha alone: two fork
-  # PRs can share a commit -- the same fork commit pushed under two branch names --
-  # and a sha-only group makes one run cancel the other. The survivor then posts a
-  # check-run keyed to that sha, which BOTH pull requests read, so one of them shows
-  # a verdict computed from the other's diff and intent. Same reason the resolver
-  # below disambiguates on those fields.
-  group: >-
-    fork-first-principles-review-${{
-      github.event.workflow_run.head_repository.full_name
-    }}-${{ github.event.workflow_run.head_branch }}-${{
-      github.event.workflow_run.head_sha
-    }}
+  # A workflow run id is unique per triggering Fast Gate run, including sibling
+  # PRs whose repository/ref/SHA text differs only by case. GitHub retains that
+  # id across run attempts, so reruns still collapse without putting unbounded,
+  # case-sensitive ref text into a case-insensitive concurrency namespace.
+  group: fork-first-principles-review-${{ github.event.workflow_run.id }}
   cancel-in-progress: true
 
 jobs:

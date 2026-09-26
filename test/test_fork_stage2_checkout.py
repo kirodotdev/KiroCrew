@@ -67,6 +67,39 @@ INHERITED_REF = re.compile(r"^\$\{\{ needs\.([A-Za-z0-9_-]+)\.outputs\.base_sha 
 DIFF_RANGE = re.compile(r"base_sha[\"'}\s]*\.\.\.", re.IGNORECASE)
 
 
+_CONCURRENCY_WORKFLOW_RUN_LANES = (
+    "fork-gpt-review.yml",
+    "fork-opus-review.yml",
+    "fork-design-review.yml",
+    "fork-ux-review.yml",
+    "fork-first-principles-review.yml",
+    "fork-security-scope-review.yml",
+    "fork-internal-content-scan.yml",
+)
+
+
+def test_fork_stage2_concurrency_uses_the_trusted_trigger_run_identity() -> None:
+    for name in _CONCURRENCY_WORKFLOW_RUN_LANES:
+        doc = yaml.safe_load((WORKFLOWS / name).read_text(encoding="utf-8"))
+        concurrency = doc["concurrency"]
+        group = " ".join(str(concurrency["group"]).split())
+
+        assert group == f"{name.removesuffix('.yml')}-${{{{ github.event.workflow_run.id }}}}", name
+        assert concurrency["cancel-in-progress"] is True, name
+
+
+def test_workflow_guard_concurrency_preserves_both_event_shapes() -> None:
+    doc = yaml.safe_load((WORKFLOWS / "fork-workflow-guard.yml").read_text(encoding="utf-8"))
+    concurrency = doc["concurrency"]
+    group = " ".join(str(concurrency["group"]).split())
+
+    assert (
+        group
+        == "fork-workflow-guard-${{ github.event_name }}-${{ github.event.workflow_run.id || github.event.pull_request.id }}"
+    )
+    assert concurrency["cancel-in-progress"] is True
+
+
 def _jobs(path: pathlib.Path) -> dict[str, dict]:
     # YAML 1.1 parses a bare `on:` key as the boolean True, so never index "on".
     doc = yaml.safe_load(path.read_text(encoding="utf-8"))

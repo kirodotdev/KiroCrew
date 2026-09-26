@@ -29,6 +29,13 @@ FORK_REVIEW_LANES = (
     "fork-first-principles-review.yml",
     "fork-security-scope-review.yml",
 )
+FORK_STAGE2_WORKFLOW_RUN_LANES = FORK_REVIEW_LANES + ("fork-internal-content-scan.yml",)
+EXACT_IDENTITY_REVIEW_LANES = (
+    "fork-opus-review.yml",
+    "fork-gpt-review.yml",
+    "fork-design-review.yml",
+    "fork-ux-review.yml",
+)
 REVIEW_PROMPTS = ROOT / ".github" / "review-prompts"
 PREPARE_PR_SKILL = (
     ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" / "prepare-pr" / "SKILL.md"
@@ -230,6 +237,403 @@ def _step(workflow_name: str, step_name: str) -> dict:
 
 def _step_env(workflow_name: str, step_name: str) -> dict[str, str]:
     return {k: str(v) for k, v in (_step(workflow_name, step_name).get("env") or {}).items()}
+
+
+def _concurrency_group(workflow_name: str) -> str:
+    workflow = yaml.safe_load((WORKFLOWS / workflow_name).read_text(encoding="utf-8"))
+    return " ".join(str(workflow["concurrency"]["group"]).split())
+
+
+def _render_trusted_event_group(template: str, event: dict) -> str:
+    """Render the deliberately tiny trusted-event expression used by fork lanes."""
+    workflow_run = event.get("workflow_run") or {}
+    pull_request = event.get("pull_request") or {}
+    if "||" in template:
+        identity = workflow_run.get("id") or pull_request.get("id")
+        event_name = str(event.get("event_name") or "")
+        expression = "${{ github.event.workflow_run.id || github.event.pull_request.id }}"
+        assert event_name
+        assert template.count("${{") == 2
+        assert "${{ github.event_name }}" in template
+        template = template.replace("${{ github.event_name }}", event_name)
+    else:
+        identity = workflow_run.get("id")
+        expression = "${{ github.event.workflow_run.id }}"
+        assert template.count("${{") == 1
+    assert identity is not None
+    assert expression in template
+    return template.replace(expression, str(identity))
+
+
+class TestForkStage2ConcurrencyIdentity:
+    @pytest.mark.parametrize("lane", FORK_STAGE2_WORKFLOW_RUN_LANES)
+    def test_case_only_and_long_refs_cannot_collide_or_expand_review_groups(
+        self, lane: str
+    ) -> None:
+        template = _concurrency_group(lane)
+        prefix = f"{lane.removesuffix('.yml')}-"
+        sha = "a" * 40
+        case_upper = {
+            "workflow_run": {
+                "id": 101,
+                "run_attempt": 1,
+                "head_repository": {"full_name": "outside/example"},
+                "head_branch": "Feature/Case",
+                "head_sha": sha,
+            }
+        }
+        case_lower = {
+            "workflow_run": {
+                "id": 202,
+                "run_attempt": 1,
+                "head_repository": {"full_name": "outside/example"},
+                "head_branch": "feature/case",
+                "head_sha": sha,
+            }
+        }
+        long_ref = {
+            "workflow_run": {
+                "id": 303,
+                "run_attempt": 1,
+                "head_repository": {"full_name": "outside/example"},
+                "head_branch": "feature/" + "x" * 4096,
+                "head_sha": sha,
+            }
+        }
+
+        assert _render_trusted_event_group(template, case_upper) == f"{prefix}101"
+        assert _render_trusted_event_group(template, case_lower) == f"{prefix}202"
+        assert _render_trusted_event_group(template, long_ref) == f"{prefix}303"
+        assert len(f"{prefix}303") < 64
+        assert "head_branch" not in template
+        assert "head_repository" not in template
+        assert "head_sha" not in template
+
+    @pytest.mark.parametrize("lane", FORK_STAGE2_WORKFLOW_RUN_LANES)
+    def test_same_trigger_rerun_collapses_to_the_same_review_group(self, lane: str) -> None:
+        template = _concurrency_group(lane)
+        first = {"workflow_run": {"id": 987654321, "run_attempt": 1}}
+        rerun = {"workflow_run": {"id": 987654321, "run_attempt": 2}}
+
+        assert _render_trusted_event_group(template, first) == _render_trusted_event_group(
+            template, rerun
+        )
+
+    def test_workflow_guard_uses_bounded_identity_for_both_event_shapes(self) -> None:
+        template = _concurrency_group("fork-workflow-guard.yml")
+        sha = "a" * 40
+        workflow_run = {
+            "event_name": "workflow_run",
+            "workflow_run": {
+                "id": 404,
+                "run_attempt": 1,
+                "head_repository": {"full_name": "outside/example"},
+                "head_branch": "Feature/Case",
+                "head_sha": sha,
+            },
+        }
+        pull_request_target = {
+            "event_name": "pull_request_target",
+            "pull_request": {
+                "id": 404,
+                "head": {
+                    "repo": {"full_name": "outside/example"},
+                    "ref": "feature/" + "x" * 4096,
+                    "sha": sha,
+                },
+            },
+        }
+
+        assert (
+            _render_trusted_event_group(template, workflow_run)
+            == "fork-workflow-guard-workflow_run-404"
+        )
+        assert (
+            _render_trusted_event_group(template, pull_request_target)
+            == "fork-workflow-guard-pull_request_target-404"
+        )
+        assert len(_render_trusted_event_group(template, pull_request_target)) < 64
+        assert "head_branch" not in template
+        assert "head.ref" not in template
+        assert "head_sha" not in template
+
+
+class TestForkStage2ExactHeadIdentity:
+    """Execute the privileged resolvers against authoritative identity cases."""
+
+    _SHA = "a" * 40
+    _BASE = "b" * 40
+    _REPO = "outside/example"
+    _REF = "feature/exact-head"
+    _SPECIAL_REF = 'feature/slash-"quote"-% space-유니코드'
+
+    @staticmethod
+    def _row(number: int, *, sha: str, repo: str, ref: str) -> dict:
+        return {
+            "number": number,
+            "state": "open",
+            "head": {"sha": sha, "repo": {"full_name": repo}, "ref": ref},
+        }
+
+    def _run_review_resolver(
+        self,
+        tmp_path: Path,
+        lane: str,
+        pages: list[list[dict]],
+        *,
+        repo: str | None = None,
+        ref: str | None = None,
+        list_rc: int = 0,
+    ) -> subprocess.CompletedProcess[str]:
+        bash = _bash()
+        if bash is None:
+            pytest.skip("the resolver step is Bash; skip where Bash is absent")
+
+        pages_file = tmp_path / "pages.json"
+        pages_file.write_text(
+            "\n".join(json.dumps(page, ensure_ascii=False) for page in pages),
+            encoding="utf-8",
+        )
+        calls = tmp_path / "gh-calls"
+        calls.touch()
+        gh = tmp_path / "gh"
+        gh.write_text(
+            "#!/usr/bin/env bash\n"
+            'printf \'%s\\n\' "$*" >> "$CALLS"\n'
+            'case "${2:-}" in\n'
+            '  *"pulls?state=open&per_page=100"*)\n'
+            '    if [ "$LIST_RC" -ne 0 ]; then exit "$LIST_RC"; fi\n'
+            '    cat "$PAGES"; exit 0 ;;\n'
+            "  */pulls/*) printf '%s\\n' \"$BASE_SHA\"; exit 0 ;;\n"
+            "esac\n"
+            'echo "unexpected gh call: $*" >&2\n'
+            "exit 9\n",
+            encoding="utf-8",
+        )
+        sleep = tmp_path / "sleep"
+        sleep.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        gh.chmod(0o755)
+        sleep.chmod(0o755)
+        output = tmp_path / "github-output"
+        output.touch()
+
+        return subprocess.run(
+            [
+                bash,
+                "-e",
+                "-o",
+                "pipefail",
+                "-c",
+                _step_script(
+                    _workflow(lane), "Resolve and validate PR (authoritative from GitHub)"
+                ),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=_child_env(
+                {
+                    "PATH": _stub_path(tmp_path),
+                    "GH_TOKEN": "stub",
+                    "REPO": "kirodotdev/KiroCrew",
+                    "WR_HEAD_SHA": self._SHA,
+                    "WR_HEAD_REPO": self._REPO if repo is None else repo,
+                    "WR_HEAD_REF": self._REF if ref is None else ref,
+                    "PAGES": str(pages_file),
+                    "CALLS": str(calls),
+                    "LIST_RC": str(list_rc),
+                    "BASE_SHA": self._BASE,
+                    "GITHUB_OUTPUT": str(output),
+                }
+            ),
+            cwd=tmp_path,
+        )
+
+    @pytest.mark.parametrize("lane", EXACT_IDENTITY_REVIEW_LANES)
+    def test_same_sha_sibling_on_an_earlier_page_cannot_answer(
+        self, lane: str, tmp_path: Path
+    ) -> None:
+        pages = [
+            [self._row(11, sha=self._SHA, repo="another/fork", ref=self._REF)],
+            [self._row(22, sha=self._SHA, repo=self._REPO, ref=self._REF)],
+        ]
+
+        result = self._run_review_resolver(tmp_path, lane, pages)
+
+        assert result.returncode == 0, _proc_log(result)
+        output = (tmp_path / "github-output").read_text(encoding="utf-8")
+        assert "pr=22\n" in output
+
+    @pytest.mark.parametrize("lane", EXACT_IDENTITY_REVIEW_LANES)
+    def test_special_ref_is_compared_as_data(self, lane: str, tmp_path: Path) -> None:
+        pages = [[self._row(22, sha=self._SHA, repo=self._REPO, ref=self._SPECIAL_REF)]]
+
+        result = self._run_review_resolver(tmp_path, lane, pages, ref=self._SPECIAL_REF)
+
+        assert result.returncode == 0, _proc_log(result)
+        assert "pr=22\n" in (tmp_path / "github-output").read_text(encoding="utf-8")
+
+    @pytest.mark.parametrize("lane", EXACT_IDENTITY_REVIEW_LANES)
+    def test_matches_across_pages_have_authoritative_cardinality(
+        self, lane: str, tmp_path: Path
+    ) -> None:
+        pages = [
+            [self._row(21, sha=self._SHA, repo=self._REPO, ref=self._REF)],
+            [self._row(22, sha=self._SHA, repo=self._REPO, ref=self._REF)],
+        ]
+
+        result = self._run_review_resolver(tmp_path, lane, pages)
+
+        assert result.returncode != 0, _proc_log(result)
+        assert "more than one open PR" in result.stdout + result.stderr
+
+    @pytest.mark.parametrize("lane", EXACT_IDENTITY_REVIEW_LANES)
+    def test_zero_match_keeps_the_review_lanes_fail_closed(self, lane: str, tmp_path: Path) -> None:
+        result = self._run_review_resolver(tmp_path, lane, [[]])
+
+        assert result.returncode != 0, _proc_log(result)
+        assert "superseded or closed" in result.stdout + result.stderr
+
+    @pytest.mark.parametrize("lane", EXACT_IDENTITY_REVIEW_LANES)
+    def test_read_failure_is_not_reported_as_zero_match(self, lane: str, tmp_path: Path) -> None:
+        result = self._run_review_resolver(tmp_path, lane, [[]], list_rc=7)
+
+        assert result.returncode != 0, _proc_log(result)
+        assert "query itself failed" in result.stdout + result.stderr
+        assert "superseded or closed" not in result.stdout + result.stderr
+
+    @pytest.mark.parametrize("lane", EXACT_IDENTITY_REVIEW_LANES)
+    @pytest.mark.parametrize(("repo", "ref"), [("", _REF), (_REPO, "")])
+    def test_empty_trigger_identity_fails_before_the_api_read(
+        self, lane: str, repo: str, ref: str, tmp_path: Path
+    ) -> None:
+        result = self._run_review_resolver(tmp_path, lane, [[]], repo=repo, ref=ref)
+
+        assert result.returncode != 0, _proc_log(result)
+        assert "empty workflow_run head identity" in result.stdout + result.stderr
+        assert (tmp_path / "gh-calls").read_text(encoding="utf-8") == ""
+
+    def test_every_review_resolver_aggregates_pages_before_exact_matching(self) -> None:
+        for lane in EXACT_IDENTITY_REVIEW_LANES:
+            step = _step_script(
+                _workflow(lane), "Resolve and validate PR (authoritative from GitHub)"
+            )
+            assert '--arg sha "$head_sha"' in step, lane
+            assert '--arg repo "$WR_HEAD_REPO"' in step, lane
+            assert '--arg ref "$WR_HEAD_REF"' in step, lane
+            assert '.state == "open"' in step, lane
+            assert ".head.repo.full_name == $repo" in step, lane
+            assert ".head.ref == $ref" in step, lane
+            assert ".head.sha == $sha" in step, lane
+            assert '$repo == ""' not in step, lane
+            assert '$ref == ""' not in step, lane
+            assert "candidate_count" in step, lane
+            assert re.search(r"--paginate \\\n\s+\| jq -rs", step), lane
+
+    def test_workflow_guard_keeps_its_distinct_identity_dispositions(self, tmp_path: Path) -> None:
+        bash = _bash()
+        if bash is None:
+            pytest.skip("the resolver step is Bash; skip where Bash is absent")
+        workflow = _workflow("fork-workflow-guard.yml")
+        step = _step_script(workflow, "Evaluate workflow-change guard")
+        step = step.split("\n  strip-stale-override:", 1)[0]
+        gh = tmp_path / "gh"
+        gh.write_text(
+            "#!/usr/bin/env bash\n"
+            'case "${2:-}" in\n'
+            '  *"pulls?state=open&per_page=100"*)\n'
+            '    if [ "$LIST_RC" -ne 0 ]; then exit "$LIST_RC"; fi\n'
+            '    cat "$PAGES"; exit 0 ;;\n'
+            "  */pulls/*/files) printf 'src/example.py\\n'; exit 0 ;;\n"
+            "  */issues/*/labels) exit 0 ;;\n"
+            "  --method) exit 0 ;;\n"
+            "esac\n"
+            'echo "unexpected gh call: $*" >&2\n'
+            "exit 9\n",
+            encoding="utf-8",
+        )
+        gh.chmod(0o755)
+
+        def run(
+            pages: list[list[dict]], *, list_rc: int = 0, pull_request_target: bool = False
+        ) -> subprocess.CompletedProcess[str]:
+            pages_file = tmp_path / "guard-pages.json"
+            pages_file.write_text("\n".join(json.dumps(page) for page in pages), encoding="utf-8")
+            wr = ("", "", "") if pull_request_target else (self._SHA, self._REPO, self._REF)
+            pr = (self._SHA, self._REPO, self._REF) if pull_request_target else ("", "", "")
+            return subprocess.run(
+                [bash, "-e", "-o", "pipefail", "-c", step],
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                env=_child_env(
+                    {
+                        "PATH": _stub_path(tmp_path),
+                        "GH_TOKEN": "stub",
+                        "REPO": "kirodotdev/KiroCrew",
+                        "WR_HEAD_SHA": wr[0],
+                        "WR_HEAD_REPO": wr[1],
+                        "WR_HEAD_REF": wr[2],
+                        "PR_HEAD_SHA": pr[0],
+                        "PR_HEAD_REPO": pr[1],
+                        "PR_HEAD_REF": pr[2],
+                        "OVERRIDE_LABEL": "allow-fork-workflow-change",
+                        "PAGES": str(pages_file),
+                        "LIST_RC": str(list_rc),
+                    }
+                ),
+                cwd=tmp_path,
+            )
+
+        zero = run([[]])
+        assert zero.returncode == 0, _proc_log(zero)
+        assert "superseded or closed" in zero.stdout + zero.stderr
+
+        ambiguous = run(
+            [
+                [self._row(21, sha=self._SHA, repo=self._REPO, ref=self._REF)],
+                [self._row(22, sha=self._SHA, repo=self._REPO, ref=self._REF)],
+            ]
+        )
+        assert ambiguous.returncode != 0, _proc_log(ambiguous)
+        assert "more than one open PR" in ambiguous.stdout + ambiguous.stderr
+
+        unreadable = run([[]], list_rc=7)
+        assert unreadable.returncode != 0, _proc_log(unreadable)
+        assert "query itself failed" in unreadable.stdout + unreadable.stderr
+        assert "superseded or closed" not in unreadable.stdout + unreadable.stderr
+
+        pull_request_target = run(
+            [[self._row(22, sha=self._SHA, repo=self._REPO, ref=self._REF)]],
+            pull_request_target=True,
+        )
+        assert pull_request_target.returncode == 0, _proc_log(pull_request_target)
+        assert "guard verdict: success" in pull_request_target.stdout
+
+    def test_workflow_guard_uses_exact_identity_for_both_event_shapes(self) -> None:
+        workflow = _workflow("fork-workflow-guard.yml")
+        step = _step_script(workflow, "Evaluate workflow-change guard")
+        env = _step_env("fork-workflow-guard.yml", "Evaluate workflow-change guard")
+
+        for name in (
+            "WR_HEAD_SHA",
+            "WR_HEAD_REPO",
+            "WR_HEAD_REF",
+            "PR_HEAD_SHA",
+            "PR_HEAD_REPO",
+            "PR_HEAD_REF",
+        ):
+            assert name in env
+        assert '--arg repo "$head_repo"' in step
+        assert '--arg ref "$head_ref"' in step
+        assert '--arg sha "$head_sha"' in step
+        assert ".head.repo.full_name == $repo" in step
+        assert ".head.ref == $ref" in step
+        assert ".head.sha == $sha" in step
+        assert "candidate_count" in step
+        assert 'gh api "repos/$REPO/pulls/$pr/files" --paginate' in step
 
 
 # The three steps of the blocking-finding adjudication stage, in both GPT lanes.
@@ -1453,8 +1857,13 @@ class TestFirstPrinciplesReview:
             "WR_HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}" in workflow
         )
         assert "WR_HEAD_REF: ${{ github.event.workflow_run.head_branch }}" in workflow
-        # The concurrency group must not collapse two PRs that share a commit.
-        assert "github.event.workflow_run.head_repository.full_name\n    }}-${{" in workflow
+        # The upstream run id is unique for sibling PR triggers and stable across
+        # attempts, so case-only refs cannot collide in GitHub's case-insensitive
+        # concurrency namespace while a rerun still replaces its earlier attempt.
+        assert (
+            _concurrency_group("fork-first-principles-review.yml")
+            == "fork-first-principles-review-${{ github.event.workflow_run.id }}"
+        )
 
     def test_aborted_review_is_not_reported_as_a_skip(self) -> None:
         # The diff fetch fails CLOSED on an oversized/empty diff or a rewritten

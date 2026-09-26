@@ -48,7 +48,10 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: fork-opus-review-${{ github.event.workflow_run.head_sha }}
+  # The upstream run id is immutable across attempts and unique per trigger.
+  # Unlike repository/ref text, it cannot collide under GitHub's
+  # case-insensitive concurrency comparison or exceed the group length limit.
+  group: fork-opus-review-${{ github.event.workflow_run.id }}
   cancel-in-progress: true
 
 jobs:
@@ -138,6 +141,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           WR_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          WR_HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+          WR_HEAD_REF: ${{ github.event.workflow_run.head_branch }}
         run: |
           set -uo pipefail
           # head_sha from the triggering run is set by GitHub and is authoritative.
@@ -170,29 +175,36 @@ jobs:
             return "$rc"
           }
 
-          # Resolve the PR by matching the open PR whose head SHA equals the
-          # trigger head_sha (workflow_run.pull_requests is empty for forks).
-          #
-          # An empty result has TWO causes that need OPPOSITE reporting, and
-          # collapsing them into one message made this abort unfalsifiable: the
-          # same text and the same exit 1 were emitted whether the query FAILED
-          # or whether it SUCCEEDED and matched nothing, while `2>/dev/null`
-          # discarded the only evidence of which.
-          #   * query FAILED -> nothing is known about this head. Retried above;
-          #     if it still fails, say the QUERY failed and fail closed.
-          #   * query SUCCEEDED with no match -> the push was superseded, or its
-          #     PR closed, while CI was queued. There is nothing to review.
-          # Both still exit 1, so the fail-closed finalize step is unchanged and
-          # no verdict is withheld; what changes is that the log names the cause.
-          if ! pr="$(gh_read gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate \
-            --jq "[.[] | select(.head.sha == \"$head_sha\")][0].number // empty")"; then
+          # workflow_run.pull_requests is empty for forks, so all open-PR pages
+          # are aggregated before matching the trigger's repository, ref and SHA.
+          # Every coordinate is required and reaches jq through --arg. Zero
+          # candidates means the head was superseded or closed; multiple exact
+          # candidates are ambiguous. This blocking lane fails closed on both.
+          if [ -z "$WR_HEAD_REPO" ] || [ -z "$WR_HEAD_REF" ]; then
+            echo "::error::empty workflow_run head identity (repository/ref); failing closed"
+            exit 1
+          fi
+          if ! candidates="$(gh_read gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate \
+            | jq -rs --arg sha "$head_sha" --arg repo "$WR_HEAD_REPO" --arg ref "$WR_HEAD_REF" '
+                [.[][]
+                  | select(.state == "open"
+                           and .head.repo.full_name == $repo
+                           and .head.ref == $ref
+                           and .head.sha == $sha)]
+              ')"; then
             echo "::error::could not query open PRs while resolving $head_sha - the query itself failed on all 3 attempts; see the errors above"
             exit 1
           fi
-          if [ -z "$pr" ]; then
-            echo "::error::no open PR has head $head_sha - superseded or closed while CI was queued; nothing to review"
+          candidate_count="$(printf '%s' "$candidates" | jq -r 'length')"
+          if [ "$candidate_count" -eq 0 ]; then
+            echo "::error::no open PR has head $head_sha on $WR_HEAD_REPO:$WR_HEAD_REF - superseded or closed while CI was queued; nothing to review"
             exit 1
           fi
+          if [ "$candidate_count" -ne 1 ]; then
+            echo "::error::more than one open PR matches head $head_sha on $WR_HEAD_REPO:$WR_HEAD_REF; refusing to select one"
+            exit 1
+          fi
+          pr="$(printf '%s' "$candidates" | jq -r '.[0].number')"
 
           # Authoritative base SHA straight from the PR (NOT from the artifact).
           if ! base_sha="$(gh_read gh api "repos/$REPO/pulls/$pr" --jq '.base.sha')"; then

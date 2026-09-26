@@ -2491,9 +2491,23 @@ Nothing the fork controls can influence these reviews:
 
 - `workflow_run` **always** runs the workflow definition from the **default branch**,
   so a fork editing these files in its PR has no effect on what runs.
-- `github.event.workflow_run.head_sha` is set by GitHub and is the only authoritative
-  input taken from the trigger. The PR is resolved by matching an open PR whose head
-  SHA equals it, because `workflow_run.pull_requests` is empty for forks.
+- `github.event.workflow_run.head_sha`, `head_repository.full_name`, and
+  `head_branch` are set by GitHub and form the authoritative trigger identity. The
+  four review resolvers changed in D1 (Design, GPT, Opus, and UX), plus Workflow
+  Guard, aggregate every open-PR page, match all three values as jq data, and
+  proceed only when exactly one candidate remains; empty or ambiguous identity
+  fails closed instead of degrading to a SHA-only first match. First Principles
+  and Security Scope remain outside D1's resolver-conversion boundary: they filter
+  repository and ref when those fields are present, but retain first-match and
+  empty-field compatibility until the dependent D2 change normalizes them.
+- Fork-lane concurrency uses the immutable numeric id of the triggering trusted
+  workflow run. GitHub retains that id across attempts but assigns distinct runs to
+  sibling PR triggers, so reruns collapse while case-only or very long fork refs
+  neither collide nor expand the group. The workflow guard prefixes the trusted
+  event name, then uses the same run id for `workflow_run` and the immutable
+  pull-request id for `pull_request_target`, keeping those numeric ID domains
+  separate; its case-sensitive `(repository, ref, SHA)` resolver remains the
+  authorization check.
 - The base SHA is re-fetched from the PR via the API and the diff is re-derived from
   GitHub's compare endpoint pinned to `(base_sha...head_sha)`. Stage 1's artifact is
   an untrusted **hint** only, so a fork faking it changes nothing.
