@@ -9985,7 +9985,9 @@
         "tool_call_blocked": "工具调用被阻止",
         "tool_stopped_responding": "工具停止响应",
         "turn_interrupted": "轮次被中断",
-        "turn_stalled": "轮次停滞"
+        "turn_stalled": "轮次停滞",
+        "plan_left_open": "计划未完成",
+        "open_items_follow_up": "任务列表仍有未完成项 · 已自动发送跟进请求"
       },
       "sessionColorPicker": {
         "change_your_color_palette_in_display_settings": "在“显示”设置中更改你的配色方案",
@@ -10139,10 +10141,13 @@
       "taskProgressBar": {
         "all_tasks_complete": "所有任务已完成",
         "aria_collapse_task_list": "已完成 {{done}}/{{total}} 个任务。折叠任务列表",
+        "aria_collapse_task_list_stopped": "已停止，{{total}} 项任务中已完成 {{done}} 项。收起任务列表",
         "aria_expand_task_list": "已完成 {{done}}/{{total}} 个任务。展开任务列表",
+        "aria_expand_task_list_stopped": "已停止，{{total}} 项任务中已完成 {{done}} 项。展开任务列表",
         "current_task": "当前任务",
         "more": "更多…",
         "of": "/",
+        "stopped": "已停止",
         "task_completion": "任务完成度"
       },
       "thinkingBlock": {

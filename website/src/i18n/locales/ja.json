@@ -9985,7 +9985,9 @@
         "tool_call_blocked": "ツール呼び出しがブロックされました",
         "tool_stopped_responding": "ツールが応答しなくなりました",
         "turn_interrupted": "ターンが中断されました",
-        "turn_stalled": "ターンが停止しています"
+        "turn_stalled": "ターンが停止しています",
+        "plan_left_open": "計画が未完了",
+        "open_items_follow_up": "タスクリストに未完了の項目あり · フォローアップを自動送信しました"
       },
       "sessionColorPicker": {
         "change_your_color_palette_in_display_settings": "表示設定でカラーパレットを変更できます",
@@ -10139,10 +10141,13 @@
       "taskProgressBar": {
         "all_tasks_complete": "すべてのタスクが完了しました",
         "aria_collapse_task_list": "{{total}} 件中 {{done}} 件のタスクが完了。タスク一覧を折りたたむ",
+        "aria_collapse_task_list_stopped": "{{total}} 件中 {{done}} 件完了で停止。タスクリストを折りたたむ",
         "aria_expand_task_list": "{{total}} 件中 {{done}} 件のタスクが完了。タスク一覧を展開",
+        "aria_expand_task_list_stopped": "{{total}} 件中 {{done}} 件完了で停止。タスクリストを展開",
         "current_task": "現在のタスク",
         "more": "ほか…",
         "of": "／",
+        "stopped": "停止",
         "task_completion": "タスクの完了状況"
       },
       "thinkingBlock": {

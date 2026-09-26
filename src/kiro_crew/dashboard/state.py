@@ -1704,6 +1704,12 @@ HOOK_HALTED_RECOVERY_PREFIX = "[Stop-hook nudge cap reached]"
 # recovered and no continuation was sent, which is the whole point. Same
 # reasoning as HOOK_HALTED_RECOVERY_PREFIX, whose row is also display-only.
 REFUSAL_INBAND_RECOVERY_PREFIX = "[Tool blocked — reason sent to the agent]"
+# Prefix on the ONE follow-up turn queued when a turn ended normally with items
+# still open in the agent's own todo_list (see kiro_crew.open_plan). Named into
+# the *_RECOVERY_PREFIX family so test_recovery_card_prefixes.py's drift guard
+# sees it. The VALUE does not say "recovery": nothing failed. The turn finished
+# with its own plan unreconciled, and the host asked it to settle the list.
+PLAN_RECONCILE_RECOVERY_PREFIX = "[Open plan — automatic reminder]"
 
 
 def should_queue_refusal_recovery(
@@ -2495,6 +2501,7 @@ class _ChatSlot:
         "_resumed_count",
         "_hook_continuation_depth",
         "_todo",
+        "_plan_reconcile_used",
         "_mcp_report",
         "_mcp_report_session_id",
         "_on_message",
@@ -2972,6 +2979,11 @@ class _ChatSlot:
         # None = the agent has never used its todo tool in this slot, which the
         # UI renders as "no pill" rather than "an empty list".
         self._todo: dict[str, Any] | None = None
+        # One-shot budget for the open-plan follow-up (kiro_crew.open_plan).
+        # Spent when the follow-up is queued; re-armed only at the start of a
+        # GENUINE prompt (not a runner continuation), so a follow-up turn that
+        # still leaves items open lands as it is instead of looping.
+        self._plan_reconcile_used: bool = False
         # What THIS slot's agent session reported about its MCP servers, as
         # published by the ACP layer at session init and updated by later
         # registration frames. None = this slot has no live session that

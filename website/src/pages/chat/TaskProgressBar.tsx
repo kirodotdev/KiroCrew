@@ -29,6 +29,11 @@ const TaskProgressBar = memo(function TaskProgressBar({ slot, disclosureKey }: {
   const todo = useAppSelector(s =>
     (s.dashboard.slots ?? []).find(x => x.key === slot)?.todo ?? null
   ) as TodoList | null
+  // Whether a turn is in flight on this slot. A boolean primitive, so this
+  // selector does not re-render on unrelated slot churn either.
+  const running = useAppSelector(s =>
+    Boolean((s.dashboard.slots ?? []).find(x => x.key === slot)?.running)
+  )
 
   const tasks = useMemo(() => todo?.tasks ?? [], [todo])
   const toggle = useCallback(() => setExpanded(v => !v), [setExpanded])
@@ -38,11 +43,26 @@ const TaskProgressBar = memo(function TaskProgressBar({ slot, disclosureKey }: {
   const total = typeof todo.total === 'number' ? todo.total : tasks.length
   const done = typeof todo.completed === 'number' ? todo.completed : 0
   const allDone = total > 0 && done >= total
+  // Open items with no turn running: the agent is not working through this list
+  // right now. Without this state the pill reads exactly like a list still in
+  // progress, which is how an abandoned plan went unnoticed. The gateway sends
+  // one follow-up when a turn ends like this, so while that follow-up runs
+  // `running` is true again and the pill returns to its in-progress look.
+  const stopped = !allDone && !running
   // `current` is the first not-completed task (server-derived). When everything
   // is done there is no current task, so the label reports completion instead.
   const current = sanitizeLlmOutput(todo.current || '')
   const label = allDone ? i18nT('pages.chat.taskProgressBar.all_tasks_complete') : current || i18nT('pages.chat.taskProgressBar.current_task')
   const pct = total > 0 ? Math.round((done / total) * 100) : 0
+  // Four literal calls rather than a computed key, so every key stays
+  // statically referenced for the catalog checks.
+  const ariaLabel = stopped
+    ? expanded
+      ? i18nT('pages.chat.taskProgressBar.aria_collapse_task_list_stopped', { done, total })
+      : i18nT('pages.chat.taskProgressBar.aria_expand_task_list_stopped', { done, total })
+    : expanded
+      ? i18nT('pages.chat.taskProgressBar.aria_collapse_task_list', { done, total })
+      : i18nT('pages.chat.taskProgressBar.aria_expand_task_list', { done, total })
 
   return (
     // `relative z-[2]` clears the transcript's bottom mask (`z-[1]`), which
@@ -63,9 +83,8 @@ const TaskProgressBar = memo(function TaskProgressBar({ slot, disclosureKey }: {
           data-testid="todo-pill"
           onClick={toggle}
           aria-expanded={expanded}
-          aria-label={expanded
-            ? i18nT('pages.chat.taskProgressBar.aria_collapse_task_list', { done, total })
-            : i18nT('pages.chat.taskProgressBar.aria_expand_task_list', { done, total })}
+          aria-label={ariaLabel}
+          data-stopped={stopped ? 'true' : undefined}
           className={`flex items-center gap-2 py-1.5 text-[13px] font-mono bg-transparent border-none cursor-pointer hover:bg-accent/5 transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-accent ${
             expanded ? 'w-full px-3' : 'px-3 min-w-0'
           }`}
@@ -80,6 +99,17 @@ const TaskProgressBar = memo(function TaskProgressBar({ slot, disclosureKey }: {
           >
             {done} {i18nT('pages.chat.taskProgressBar.of')} {total}
           </span>
+          {stopped && (
+            // Warn tone, not error: nothing failed, the agent just is not
+            // working this list now. Text beside the colour, so the state does
+            // not rest on colour alone.
+            <span
+              className="shrink-0 rounded-full border border-warn/40 bg-warn/10 px-1.5 text-[11px] leading-4 text-warn"
+              data-testid="todo-stopped"
+            >
+              {i18nT('pages.chat.taskProgressBar.stopped')}
+            </span>
+          )}
           <span
             className={`truncate text-left text-muted ${expanded ? 'min-w-0 flex-1' : 'min-w-0 max-w-[42ch]'}`}
             data-testid="todo-current"
@@ -96,7 +126,7 @@ const TaskProgressBar = memo(function TaskProgressBar({ slot, disclosureKey }: {
             aria-label={i18nT('pages.chat.taskProgressBar.task_completion')}
           >
             <span
-              className={`block h-full rounded-full transition-all ${allDone ? 'bg-ok' : 'bg-accent'}`}
+              className={`block h-full rounded-full transition-all ${allDone ? 'bg-ok' : stopped ? 'bg-warn' : 'bg-accent'}`}
               style={{ width: `${pct}%` }}
             />
           </span>

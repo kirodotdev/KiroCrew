@@ -10265,7 +10265,9 @@
         "tool_call_blocked": "Chamada de ferramenta bloqueada",
         "tool_stopped_responding": "A ferramenta parou de responder",
         "turn_interrupted": "Turno interrompido",
-        "turn_stalled": "Turno travado"
+        "turn_stalled": "Turno travado",
+        "plan_left_open": "Plano não concluído",
+        "open_items_follow_up": "ainda há tarefas abertas na lista · acompanhamento enviado automaticamente"
       },
       "sessionColorPicker": {
         "change_your_color_palette_in_display_settings": "Altere sua paleta de cores nas configurações de Exibição",
@@ -10433,10 +10435,13 @@
       "taskProgressBar": {
         "all_tasks_complete": "Todas as tarefas concluídas",
         "aria_collapse_task_list": "{{done}} de {{total}} tarefas concluídas. Recolher a lista de tarefas",
+        "aria_collapse_task_list_stopped": "Parado com {{done}} de {{total}} tarefas concluídas. Recolher a lista de tarefas",
         "aria_expand_task_list": "{{done}} de {{total}} tarefas concluídas. Expandir a lista de tarefas",
+        "aria_expand_task_list_stopped": "Parado com {{done}} de {{total}} tarefas concluídas. Expandir a lista de tarefas",
         "current_task": "Tarefa atual",
         "more": "mais…",
         "of": "de",
+        "stopped": "Parado",
         "task_completion": "Conclusão das tarefas"
       },
       "thinkingBlock": {
