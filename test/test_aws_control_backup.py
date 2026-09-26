@@ -4383,9 +4383,12 @@ class TestALostRunWriteDoesNotReUploadForever:
         Forcing the contender to win makes that window deterministic rather than a
         property of how loaded the machine is. What must hold is that the run is
         never LOST -- ``last_runs`` and ``uploaded_keys`` read it through the
-        overlay, the loop is not due on it, and the next update persists it -- and
-        that the run record's own slot goes to the newer run, not to the recovered
-        one.
+        overlay and the next update persists it -- and that the run record's own
+        slot goes to the newer run, not to the recovered one. Due-ness is asserted
+        here only as the loop's state after the window, not as a pin on the hold:
+        the contender's stamp is on disk, so it settles the answer on its own.
+        :meth:`test_a_lost_write_does_not_leave_the_nightly_loop_due` is where the
+        held run carries that pin, because there nothing reaches disk at all.
 
         MUTATION: drop the ``_merge_pending`` recovery, or the overlay merge in
         ``uploaded_keys``, and this reddens. It is also the test to change, rather
@@ -4402,6 +4405,12 @@ class TestALostRunWriteDoesNotReUploadForever:
         monkeypatch.setattr(backup, "dt", mock.Mock(datetime=clock, timezone=dt.timezone))
         real_write = backup.write_state
         real_remember = backup._remember_unpersisted
+        # Granted BEFORE `write_state` is patched, so this write lands for real and is
+        # not the one the injection fails. Without it `due_for_nightly` returns at its
+        # own first statement on absent consent and never reaches the stamp reader,
+        # which would make the assertion below pass for a reason that has nothing to
+        # do with any run.
+        backup.set_nightly(ACCOUNT, True)
 
         def writer(state):
             if not entered.is_set():
@@ -4445,7 +4454,12 @@ class TestALostRunWriteDoesNotReUploadForever:
         assert backup.uploaded_keys(ACCOUNT) == {"first.tar.gz", "second.tar.gz"}
         # The newer run owns the slot; recovery does not hand it to the older one.
         assert backup.last_runs(ACCOUNT)[backup.KIND_SNAPSHOT] == second
-        # And the loop the hold exists to protect is not due on either run.
+        # Consent is granted and the contender's stamp is on disk at `now`, so this
+        # reaches the stamp reader and answers not-due. It does NOT isolate the held
+        # run's contribution -- the persisted run alone settles due-ness here. The
+        # held run's own pin is
+        # `test_a_lost_write_does_not_leave_the_nightly_loop_due`, where nothing
+        # reaches disk and the overlay is the only possible answer.
         assert backup.due_for_nightly(ACCOUNT, now=now) is False
 
         # The promise is the NEXT successful update, and this is it.
