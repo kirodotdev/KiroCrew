@@ -54,12 +54,12 @@
 /**
  * Page permissions granted to the trusted dashboard with no OS (TCC) leg.
  *
- * Both members share one shape: the dashboard's own code requests them, they
+ * Every member shares one shape: the dashboard's own code requests them, they
  * claim no OS resource Electron must broker (so they are answered before the
  * media path rather than folded into its macOS machinery), and denying them is
  * SILENT in the renderer — the exact failure mode this module's header
- * documents for the microphone. The trust gate applies to both: an untrusted
- * page in the embedded browser view is refused regardless of origin.
+ * documents for the microphone. The trust gate applies to all of them: an
+ * untrusted page in the embedded browser view is refused regardless of origin.
  *
  * - `fullscreen`: Electron routes a DOM `element.requestFullscreen()` through
  *   these handlers as `permission === "fullscreen"`. Before it was granted,
@@ -79,12 +79,17 @@
  *   as real OS notifications with zero renderer changes. Denied to untrusted
  *   views so a browsed page cannot post OS toasts wearing this app's identity.
  *
- * This set exists because it now has TWO consumers with identical treatment.
+ * - `clipboard-sanitized-write`: `writeText()`. `clipboard-read` is not granted.
+ *
  * Capabilities routed through the same handler with NO consumer in this
  * product (`pointerLock`, `keyboardLock`) stay out: widening a permission set
  * without a consumer is how a security default quietly erodes.
  */
-const TRUSTED_PAGE_PERMISSIONS = new Set(["fullscreen", "notifications"]);
+const TRUSTED_PAGE_PERMISSIONS = new Set([
+  "fullscreen",
+  "notifications",
+  "clipboard-sanitized-write",
+]);
 
 /**
  * Trusted-page permissions that are additionally restricted to the MAIN frame.
@@ -206,8 +211,8 @@ function logDeny(kind, permission, wc, origin, details) {
  * Build the handler for session.setPermissionRequestHandler().
  *
  * Grants `media` for the app origin unless video is explicitly requested, plus
- * the TRUSTED_PAGE_PERMISSIONS set (fullscreen, notifications). Denies every
- * other permission type (geolocation, clipboard, MIDI, …).
+ * the TRUSTED_PAGE_PERMISSIONS set (fullscreen, notifications, clipboard
+ * write). Denies every other type (geolocation, clipboard-read, MIDI, …).
  *
  * ── The macOS (TCC) leg ──────────────────────────────────────────────────────
  *
@@ -266,7 +271,7 @@ function createPermissionRequestHandler(deps = {}) {
     // otherwise inherit the dashboard's microphone grant. A page never gets a
     // capability just for being served from loopback.
     //
-    // Non-OS page capabilities (fullscreen, notifications) are answered HERE,
+    // Non-OS page capabilities (fullscreen, notifications, clipboard) answered
     // before the media rule: they need the same trust gate but none of the
     // macOS TCC machinery below, and letting one fall through would put a
     // fullscreen click or a notification behind a microphone prompt. Logged

@@ -563,3 +563,66 @@ describe("notifications — the silent desktop-notification gap", () => {
     }
   });
 });
+
+describe("clipboard write — the dead Copy-link menu item", () => {
+  const WRITE = "clipboard-sanitized-write";
+
+  it("GRANTS clipboard write to the dashboard", () => {
+    const req = createPermissionRequestHandler(quiet);
+    assert.equal(grant(req, APP, WRITE, {}), true);
+    const check = createPermissionCheckHandler(quiet);
+    assert.equal(check(APP, WRITE, ORIGIN, {}), true);
+  });
+
+  it("still DENIES clipboard READ to the dashboard", () => {
+    const req = createPermissionRequestHandler(quiet);
+    assert.equal(grant(req, APP, "clipboard-read", {}), false);
+    const check = createPermissionCheckHandler(quiet);
+    assert.equal(check(APP, "clipboard-read", ORIGIN, {}), false);
+  });
+
+  it("DENIES clipboard write to the untrusted embedded browser view", () => {
+    const untrusted = { isUntrusted: (wc) => wc === APP, onDeny: () => {} };
+    const req = createPermissionRequestHandler(untrusted);
+    assert.equal(grant(req, APP, WRITE, {}), false);
+    const check = createPermissionCheckHandler(untrusted);
+    assert.equal(check(APP, WRITE, ORIGIN, {}), false);
+  });
+
+  it("DENIES clipboard write to a foreign origin", () => {
+    const foreign = wcAt("https://evil.example/");
+    assert.equal(grant(createPermissionRequestHandler(quiet), foreign, WRITE, {}), false);
+    assert.equal(
+      createPermissionCheckHandler(quiet)(foreign, WRITE, "https://evil.example", {}),
+      false,
+    );
+  });
+
+  it("answers clipboard write WITHOUT entering the macOS mic path", () => {
+    const boom = () => { throw new Error("TCC leg must not run for clipboard write"); };
+    const req = createPermissionRequestHandler({
+      ...quiet,
+      getMicAccessStatus: boom,
+      askForMicAccess: boom,
+      onMicBlocked: boom,
+    });
+    assert.equal(grant(req, APP, WRITE, {}), true);
+  });
+
+  it("stays FRAME-AGNOSTIC so the instance pane can copy", () => {
+    const sub = { isMainFrame: false };
+    const req = createPermissionRequestHandler(quiet);
+    assert.equal(grant(req, APP, WRITE, sub), true);
+    const check = createPermissionCheckHandler(quiet);
+    assert.equal(check(APP, WRITE, ORIGIN, sub), true);
+  });
+
+  it("request and check handlers AGREE on clipboard write", () => {
+    for (const isUntrusted of [() => false, () => true]) {
+      const deps = { ...quiet, isUntrusted };
+      const fromRequest = grant(createPermissionRequestHandler(deps), APP, WRITE, {});
+      const fromCheck = createPermissionCheckHandler(deps)(APP, WRITE, ORIGIN, {});
+      assert.equal(fromRequest, fromCheck);
+    }
+  });
+});
