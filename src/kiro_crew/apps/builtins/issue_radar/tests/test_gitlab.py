@@ -35,6 +35,7 @@ from kiro_crew.apps.builtins.issue_radar.backend import (
     azure_client,
     github_client,
     gitlab_client,
+    gitlab_transport,
     provider,
     routes,
     store,
@@ -60,6 +61,36 @@ class TestGitlabUrlParsing(unittest.TestCase):
         self.assertEqual(
             gitlab_client.parse_gitlab_repo_url("https://gitlab.com/a/b/c/proj"),
             ("gitlab.com", "a/b/c", "proj"),
+        )
+
+    def test_namespace_at_gitlabs_nesting_ceiling_is_accepted(self):
+        # The maximum must not refuse a namespace GitLab itself creates, so the
+        # boundary case parses. Depth comes from the bound rather than being
+        # written down again, and the count is measured off the PARSED namespace.
+        depth = gitlab_transport.MAX_NAMESPACE_SEGMENTS
+        namespace = "/".join(f"g{level}" for level in range(depth))
+        host, owner, repo = gitlab_client.parse_gitlab_repo_url(
+            f"https://gitlab.com/{namespace}/proj"
+        )
+        self.assertEqual((host, repo), ("gitlab.com", "proj"))
+        self.assertEqual(len(owner.split("/")), depth)
+
+    def test_namespace_one_level_past_the_ceiling_is_refused(self):
+        # The COUNT is bounded, not only each segment's shape: every segment here
+        # satisfies SEGMENT_RE and none is a traversal, so shape checks alone admit
+        # this URL and only the maximum refuses it.
+        namespace = "/".join(
+            f"g{level}" for level in range(gitlab_transport.MAX_NAMESPACE_SEGMENTS + 1)
+        )
+        with self.assertRaises(RepoUrlError):
+            gitlab_client.parse_gitlab_repo_url(f"https://gitlab.com/{namespace}/proj")
+
+    def test_namespace_ceiling_is_derived_from_gitlabs_ancestor_limit(self):
+        # ``ancestors.count`` excludes the group itself, so the legal path is the
+        # ancestors GitLab permits plus the group they are ancestors of.
+        self.assertEqual(
+            gitlab_transport.MAX_NAMESPACE_SEGMENTS,
+            gitlab_transport.GITLAB_MAX_GROUP_ANCESTORS + 1,
         )
 
     def test_deep_page_urls_resolve_to_the_project(self):
