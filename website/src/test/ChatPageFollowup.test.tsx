@@ -39,6 +39,7 @@ vi.mock('../api/client', () => ({
     models: vi.fn().mockResolvedValue([]),
     agents: vi.fn().mockResolvedValue([]),
     agentDetail: vi.fn().mockResolvedValue({}),
+    kirocrewConfig: vi.fn().mockResolvedValue({}),
     workspaces: vi.fn().mockResolvedValue({ workspaces: [] }),
     slackChannels: vi.fn().mockResolvedValue([]),
     spawnList: vi.fn().mockResolvedValue({ agents: [] }),

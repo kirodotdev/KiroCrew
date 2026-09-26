@@ -18,6 +18,7 @@ from kiro_crew.acp.client import (
     AcpAuthRequired,
     AcpClient,
     AcpError,
+    TurnLockBusy,
     _is_config_value_rejection,
     advertised_model_ids,
     model_is_unusable,
@@ -99,6 +100,11 @@ from kiro_crew.workspace_cli_settings import (
 )
 
 logger = logging.getLogger(__name__)
+
+# A dashboard effort request holds slot and switch locks while it pushes live.
+# Three seconds admits short command traffic without parking those locks for a
+# whole model turn; a busy turn is deferred by the caller instead.
+EFFORT_PUSH_TURN_LOCK_TIMEOUT_SECS = 3.0
 
 
 def _write_cli_overlay(
@@ -1639,7 +1645,9 @@ class AcpProvider(LLMProvider):
         except Exception:
             logger.warning("ACP tool-search overlay write failed", exc_info=True)
 
-    async def _set_effort_config_option(self, level: str) -> None:
+    async def _set_effort_config_option(
+        self, level: str, *, lock_timeout: float | None = None
+    ) -> None:
         """Push an effort level over ``session/set_config_option``, stepping down
         on reject.
 
@@ -1696,18 +1704,27 @@ class AcpProvider(LLMProvider):
                 target,
                 self._client.backend,
             )
+
+        async def _push(value: str) -> None:
+            if lock_timeout is None:
+                await self._client.set_config_option(effort_option, value)
+            else:
+                await self._client.set_config_option(
+                    effort_option, value, lock_timeout=lock_timeout
+                )
+
         # Descend from the requested level through lower levels (e.g.
         # max → xhigh → high). Never escalate above what was asked.
         try:
             start = EFFORT_LEVELS.index(target)
         except ValueError:
-            await self._client.set_config_option(effort_option, target)
+            await _push(target)
             return
         ladder = [lvl for lvl in reversed(EFFORT_LEVELS[: start + 1])]
         last_exc: Exception | None = None
         for candidate in ladder:
             try:
-                await self._client.set_config_option(effort_option, candidate)
+                await _push(candidate)
                 if candidate != target:
                     logger.info(
                         "CC effort %r unsupported by model %s — applied %r instead",
@@ -1804,7 +1821,20 @@ class AcpProvider(LLMProvider):
             )
         try:
             if via_config_option:
-                await self._set_effort_config_option(level)
+                await self._set_effort_config_option(
+                    level,
+                    lock_timeout=(
+                        EFFORT_PUSH_TURN_LOCK_TIMEOUT_SECS
+                        if isinstance(self._client, AcpClient)
+                        else None
+                    ),
+                )
+            elif isinstance(self._client, AcpClient):
+                await self._client.send_command(
+                    "/effort",
+                    args={"level": level},
+                    lock_timeout=EFFORT_PUSH_TURN_LOCK_TIMEOUT_SECS,
+                )
             else:
                 await self._client.send_command("/effort", args={"level": level})
         except Exception:
@@ -1909,7 +1939,26 @@ class AcpProvider(LLMProvider):
                     model,
                 )
                 return None
-            await self._client.send_command("/effort", args={"level": level})
+            try:
+                if isinstance(self._client, AcpClient):
+                    await self._client.send_command(
+                        "/effort",
+                        args={"level": level},
+                        lock_timeout=EFFORT_PUSH_TURN_LOCK_TIMEOUT_SECS,
+                    )
+                else:
+                    await self._client.send_command("/effort", args={"level": level})
+            except TurnLockBusy:
+                # The live session is unchanged, but the cleared map and the
+                # persisted workspace default are the next cold start's source
+                # of truth. Keep them cleared so a deferred reset cannot revive
+                # the old override while the slot reports Default.
+                logger.info(
+                    "ACP effort clear deferred until cold start (model=%s default=%s)",
+                    model,
+                    level,
+                )
+                raise
             logger.info("ACP effort cleared to workspace default %s (kiro)", level)
             return True
         # No default to push live — clear the overlay and let the caller reset

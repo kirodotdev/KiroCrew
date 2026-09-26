@@ -844,6 +844,63 @@ class TestChatSlotReasoningEffortLiveProvider:
             state.sessions.reset.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_turn_lock_busy_defers_without_reset(self):
+        from kiro_crew.acp.client import TurnLockBusy
+        from kiro_crew.providers.acp import AcpProvider
+
+        provider = MagicMock(spec=AcpProvider)
+        provider.supports_effort = MagicMock(return_value=True)
+        provider.has_active_turn = MagicMock(return_value=False)
+        provider.change_effort = AsyncMock(side_effect=TurnLockBusy("turn active"))
+        slot = _ChatSlot("test")
+        state = _mock_state(slot, provider=provider)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/test/reasoning-effort",
+                json={"reasoning_effort": "max"},
+            )
+            data = await resp.json()
+
+        assert resp.status == 200
+        assert data == {"ok": True, "reasoning_effort": "max", "deferred": True}
+        assert slot.reasoning_effort == "max"
+        provider.change_effort.assert_awaited_once_with("max")
+        state.sessions.reset.assert_not_awaited()
+        state.push_slots_update.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_live_push_replaced_slot_returns_not_found_without_committing(self):
+        from kiro_crew.providers.acp import AcpProvider
+
+        provider = MagicMock(spec=AcpProvider)
+        provider.supports_effort = MagicMock(return_value=True)
+        provider.has_active_turn = MagicMock(return_value=False)
+        dead_slot = _ChatSlot("test")
+        dead_slot.reasoning_effort = "low"
+        replacement = _ChatSlot("test")
+        replacement.reasoning_effort = "max"
+        state = _mock_state(dead_slot, provider=provider)
+
+        async def _push_then_replace(level: str) -> bool:
+            state._slots["test"] = replacement
+            return True
+
+        provider.change_effort = AsyncMock(side_effect=_push_then_replace)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/test/reasoning-effort",
+                json={"reasoning_effort": "high"},
+            )
+
+        assert resp.status == 404
+        assert dead_slot.reasoning_effort == "low"
+        assert replacement.reasoning_effort == "max"
+        provider.change_effort.assert_awaited_once_with("high")
+        state.sessions.reset.assert_not_awaited()
+        state.push_slots_update.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_active_turn_defers_live_push(self):
         # A live effort change while a turn is streaming must NOT push live
         # (change_effort's response wait would race the in-flight prompt read

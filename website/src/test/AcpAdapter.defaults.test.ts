@@ -63,22 +63,3 @@ describe('AcpAdapter.resolveModel — delegates to the backend resolver', () => 
     expect(await new AcpAdapter().resolveModel('oncall')).toBe('')
   })
 })
-
-describe('AcpAdapter.resolveDefaultEffort', () => {
-  beforeEach(() => vi.clearAllMocks())
-
-  it('returns the configured default effort', async () => {
-    kirocrewConfig.mockResolvedValue({ agent: { reasoning_effort: 'high' } })
-    expect(await new AcpAdapter().resolveDefaultEffort()).toBe('high')
-  })
-
-  it('returns "" when unset, so callers keep the model-default semantics', async () => {
-    kirocrewConfig.mockResolvedValue({ agent: {} })
-    expect(await new AcpAdapter().resolveDefaultEffort()).toBe('')
-  })
-
-  it('returns "" on a failed config read rather than throwing', async () => {
-    kirocrewConfig.mockRejectedValue(new Error('boom'))
-    expect(await new AcpAdapter().resolveDefaultEffort()).toBe('')
-  })
-})
