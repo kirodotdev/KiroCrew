@@ -22,6 +22,20 @@ from kiro_crew.agent_spec_format import iter_agent_spec_files
 from kiro_crew.hooks import FileTooLargeError
 
 
+def _hold_the_prune_clock(monkeypatch):
+    """Freeze ``time.monotonic`` for a test that asserts how many aliases one
+    prune walk RECLAIMS rather than how the time budget cuts it short.
+
+    Those counts only hold if the walk finishes. The budget is real wall-clock
+    time, so on a slow CI runner it ends a nine-candidate walk one reclaim early
+    and the count assertion reads that as a wrong cap. A clock that never
+    advances leaves the budget itself untouched and simply never spends it;
+    the budget's own semantics are pinned by :func:`_prune_walk`, which drives
+    this same clock one tick per candidate, and by the zero-budget tests.
+    """
+    monkeypatch.setattr(projection.time, "monotonic", lambda: 0.0)
+
+
 @pytest.fixture
 def native_tree(tmp_path, monkeypatch):
     monkeypatch.delenv("KIROCREW_NATIVE_SKILL_PROJECTION", raising=False)
@@ -1041,6 +1055,7 @@ def test_prune_reclaims_at_least_as_many_aliases_as_one_spawn_publishes(
         lambda **kw: [SimpleNamespace(name=n, filename=f"{n}.json", scope="global") for n in names],
     )
     monkeypatch.setattr(projection, "_PRUNE_MAX_RECLAIMS_PER_RUN", 1)
+    _hold_the_prune_clock(monkeypatch)
     run_dir = tmp_path / "subagent_00000001"
     run_dir.mkdir()
     ended = projection.prepare_native_skill_projection(run_dir)
@@ -1070,6 +1085,7 @@ def test_prune_drains_headroom_beyond_one_spawn_publishes(native_tree, monkeypat
         lambda **kw: [SimpleNamespace(name=n, filename=f"{n}.json", scope="global") for n in names],
     )
     monkeypatch.setattr(projection, "_PRUNE_MAX_RECLAIMS_PER_RUN", 2)
+    _hold_the_prune_clock(monkeypatch)
 
     def edit(version):
         for name in names:
@@ -1773,6 +1789,10 @@ def test_boot_drain_continues_past_a_batch_the_budget_cut_short(native_tree, mon
     real_budget = projection._PRUNE_MAX_SECONDS_PER_RUN
     batches = _recorded_batches(monkeypatch)
     recording = projection._prune_stale_managed_aliases
+    # Every batch after the starved one must finish its walk for the reclaim
+    # counts below to mean anything; with the clock held, the real budget is
+    # never spent by wall-clock time.
+    _hold_the_prune_clock(monkeypatch)
 
     def starve_the_first_batch(directory, crew_home_id, **kwargs):
         # A zero budget is spent at the first candidate, before any is classified.
