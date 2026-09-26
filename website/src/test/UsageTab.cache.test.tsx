@@ -27,6 +27,12 @@ vi.mock('../api/client', () => ({
     memorySettings: vi.fn().mockResolvedValue({ migrated: true }),
     kirocrewConfig: vi.fn().mockResolvedValue({ agent: { acp_backend: '' } }),
     wakatimeStats: vi.fn().mockResolvedValue({ configured: false }),
+    // The page also mounts the Today card, which reads these three; a missing
+    // method would surface as an ErrorNotice (role=alert) and trip the
+    // "no alert" assertions below for the wrong reason.
+    sessions: vi.fn().mockResolvedValue({ sessions: [] }),
+    chatFolders: vi.fn().mockResolvedValue([]),
+    memoryHistory: vi.fn().mockResolvedValue({ content: '' }),
   },
 }))
 

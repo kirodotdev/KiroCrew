@@ -49,6 +49,7 @@ const PINNED: Record<string, Counts> = {
   'src/pages/chat/WorkflowRunCard.tsx': { announced: 1, keepTarget: 0, plain: 0, reason: 'run-card session link announces' },
   'src/pages/chat/useChatPageSessionController.ts': { announced: 3, keepTarget: 0, plain: 6, reason: 'tab-strip select + foreground open-in-tab + late-frame deep-link recovery announce; the plain sites are close-tab successor selection, URL deep-link restore (x2), mount re-sync, tab fallback and app-launch activation with its own sidError notice' },
   'src/pages/overview/PromptsTab.tsx': { announced: 0, keepTarget: 0, plain: 1, reason: 'switches to a just-created slot' },
+  'src/pages/overview/TodayTab.tsx': { announced: 1, keepTarget: 0, plain: 0, reason: 'today drill-in session row announces' },
   'src/store/chatSlice.ts': { announced: 0, keepTarget: 0, plain: 1, reason: 'deleteSlot internal fallback navigation; self-handles via unwrap().catch' },
 }
 

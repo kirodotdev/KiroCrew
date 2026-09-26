@@ -13058,6 +13058,28 @@
         "err_name_taken": "その名前はすでにテンプレートまたはクルーメイトに使われています。",
         "err_name_reserved": "「{{name}}」は組み込みエージェント用に予約されています。別の名前を選んでください。",
         "err_generic": "リクエストに失敗しました。もう一度お試しください。"
+      },
+      "todayCard": {
+        "folder_sessions_other": "{{folder}} のセッション {{count}} 件",
+        "go_to_chat": "チャットに移動",
+        "in_memory": "メモリに保存済み",
+        "last_active": "最終アクティビティ {{time}}",
+        "memory_empty_title": "今日の分はまだメモリに保存されていません",
+        "memory_entries_other": "メモリに保存済みのエントリ {{count}} 件",
+        "memory_footnote_other": "セッションは {{count}} 時間未使用のあとにメモリへ要約されます。",
+        "memory_read_failed": "今日のメモリのエントリを読み取れませんでした",
+        "messages_other": "{{count}} 件のメッセージ",
+        "no_sessions_body": "今日作業したセッションが、フォルダーごとにここに表示されます。",
+        "no_sessions_yet": "今日はまだセッションがありません",
+        "open_memory": "メモリを開く",
+        "running": "実行中 {{n}} 件",
+        "running_label": "実行中",
+        "sessions_read_failed": "今日のセッションを読み取れませんでした",
+        "sessions_active_scope": "今日アクティビティのあったセッション（以前に開始したものを含む）。",
+        "sessions_active_other": "今日アクティブなセッション {{count}} 件",
+        "sessions_today": "今日のセッション",
+        "title": "今日",
+        "unfiled": "未分類"
       }
     },
     "overviewPage": {
@@ -13074,7 +13096,7 @@
       "overview": "概要",
       "reconnecting": "再接続中…",
       "semantic_memory_active": "· 意味的メモリがアクティブ",
-      "sessions": "セッション ·",
+      "sessions": "セッション開始 ·",
       "stat_cron_jobs": "Cronジョブ",
       "stat_lessons": "レッスン",
       "stat_messages": "メッセージ",

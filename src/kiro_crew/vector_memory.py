@@ -1745,6 +1745,11 @@ class VectorMemoryStore:
         with self._db_lock:
             return self._read_editable_history_for_day(day)
 
+    def read_history_for_day(self, day: str) -> str:
+        """Read ONE day's history row (``YYYY-MM-DD``); a missing day is ``""``."""
+        with self._db_lock:
+            return self._read_editable_history_for_day(day)
+
     def replace_today_history(
         self, content: str, *, expected_baseline: str, validate_current: Callable[[str], None]
     ) -> bool:

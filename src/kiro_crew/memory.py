@@ -648,6 +648,23 @@ class MemoryStore:
         return self._member_store().read_editable_history()
 
     @named_store_operation
+    def read_history_for_date(self, day: _date) -> str:
+        """Read ONE day's history file, in both memory versions.
+
+        The dashboard's Today card asks for a single server-local day rather
+        than the decayed aggregate ``read_recent_history`` assembles for the
+        prompt. V2 reads that day's database history row; V1 reads the dated
+        file, whose path is built from the parsed date, never from caller
+        text, so no traversal component can reach the reader. A missing day
+        is an ordinary empty day; a refused one raises like the editable read.
+        """
+        day_name = day.strftime("%Y-%m-%d")
+        if self._memory_version == 2:
+            return self._member_store().read_history_for_day(day_name)
+        path = self._history_dir / f"{day_name}.md"
+        return self._guarded_entry(path, require_readable=True)["content"]
+
+    @named_store_operation
     def write_today_history(
         self,
         content: str,

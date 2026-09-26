@@ -67,6 +67,16 @@ A new session carries none of these bodies either way. It carries a bounded inde
 of the last three days' headings, and the body arrives only when `memory_recall`
 asks for it.
 
+To see what you worked on today, open **Settings → Overview** and read the
+**Today** card: it counts the sessions active today and, under **View details**,
+lists them grouped by folder next to the entries already written to today's
+history file. A session is summarized into that file only after it has been
+idle for the consolidation window (`memory.history_idle_hours`, 3 hours by
+default), so the memory half fills in behind the sessions half; **Summarize
+now** on the Memory tab folds the open sessions in early. The card works in both
+memory modes, including installs where semantic memory has made the Daily
+history document read-only.
+
 ### Lessons
 
 Corrections and rules you teach Kiro Crew. Two ways to create:

@@ -13058,6 +13058,28 @@
         "err_name_taken": "그 이름은 이미 템플릿이나 크루메이트가 사용 중입니다.",
         "err_name_reserved": "‘{{name}}’은(는) 기본 제공 에이전트용으로 예약된 이름입니다. 다른 이름을 선택하세요.",
         "err_generic": "요청이 실패했습니다. 다시 시도하세요."
+      },
+      "todayCard": {
+        "folder_sessions_other": "{{folder}}의 세션 {{count}}개",
+        "go_to_chat": "채팅으로 이동",
+        "in_memory": "메모리에 저장됨",
+        "last_active": "마지막 활동 {{time}}",
+        "memory_empty_title": "오늘은 아직 메모리에 저장된 내용이 없습니다",
+        "memory_entries_other": "메모리에 저장된 항목 {{count}}개",
+        "memory_footnote_other": "세션은 {{count}}시간 동안 유휴 상태가 지나면 메모리로 요약됩니다.",
+        "memory_read_failed": "오늘의 메모리 항목을 읽을 수 없습니다",
+        "messages_other": "{{count}}개 메시지",
+        "no_sessions_body": "오늘 작업한 세션이 폴더별로 여기에 표시됩니다.",
+        "no_sessions_yet": "오늘은 아직 세션이 없습니다",
+        "open_memory": "메모리 열기",
+        "running": "실행 중 {{n}}개",
+        "running_label": "실행 중",
+        "sessions_read_failed": "오늘의 세션을 읽을 수 없습니다",
+        "sessions_active_scope": "이전에 시작한 세션을 포함해 오늘 활동이 있었던 세션입니다.",
+        "sessions_active_other": "오늘 활성 세션 {{count}}개",
+        "sessions_today": "오늘의 세션",
+        "title": "오늘",
+        "unfiled": "미분류"
       }
     },
     "overviewPage": {
@@ -13074,7 +13096,7 @@
       "overview": "개요",
       "reconnecting": "다시 연결하는 중…",
       "semantic_memory_active": "· 의미 기억 활성",
-      "sessions": "세션 ·",
+      "sessions": "세션 시작 ·",
       "stat_cron_jobs": "cron 작업",
       "stat_lessons": "학습 내용",
       "stat_messages": "메시지",
