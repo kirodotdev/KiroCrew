@@ -949,6 +949,18 @@ _PARTIAL_JWT_TAIL_RE = re.compile(
     rf"eyJ{_JWT_SEGMENT_VALUE_CLASS}+(?:\.{_JWT_SEGMENT_VALUE_CLASS}*){{0,4}}\Z"
 )
 
+
+def _partial_jwt_tail(buf: str) -> re.Match[str] | None:
+    """The trailing partial JWT, skipping one whose finished header is not a JSON object."""
+    m = _PARTIAL_JWT_TAIL_RE.search(buf)
+    while m is not None and "." in m.group():
+        header = m.group().split(".", 1)[0]
+        if header.find("eyJ", 1) != -1 or redaction._is_json_object_segment(header):
+            break
+        m = _PARTIAL_JWT_TAIL_RE.search(buf, m.start() + 1)
+    return m
+
+
 # Trailing (possibly incomplete) `Authorization: Bearer <token>` anchor at the end
 # of the stream buffer. Unlike a bare credential run, this anchor embeds WHITESPACE
 # (`Authorization: Bearer `) which is NOT in `_CRED_CLASS`, so the maximal-trailing-
@@ -1049,7 +1061,7 @@ class StreamRedactor:
         natural_cut = len(self._buf)
         while natural_cut > 0 and self._buf[natural_cut - 1] in _CRED_CLASS:
             natural_cut -= 1
-        partial_jwt = _PARTIAL_JWT_TAIL_RE.search(self._buf)
+        partial_jwt = _partial_jwt_tail(self._buf)
         safety_cuts = [natural_cut]
 
         # Canonical credential tags are fixed points only when a batch-redaction

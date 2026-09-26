@@ -23,12 +23,13 @@ import base64
 import bisect
 import hashlib
 import hmac
+import json
 import math
 import posixpath
 import re
 import secrets
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import NamedTuple
 
 from kiro_crew.credential_patterns import AWS_KEY_ID, JWT_MULTI_SEGMENT
@@ -283,6 +284,52 @@ def get_credential_patterns() -> list[re.Pattern[str]]:
     combined compiled regex, so the list has one element.
     """
     return [_CREDENTIAL_PATTERNS]
+
+
+# The JWS/JWE branch is shape-only (it matches `honeyJar.example.com`), so its hits need a
+# JSON-object header. Only it and the one-dot link token start with `eyJ`: two dots mark them.
+_CREDENTIAL_PATTERNS_SANS_JWT = re.compile(
+    _CREDENTIAL_PATTERNS.pattern.replace(f"|{JWT_MULTI_SEGMENT}", "", 1)
+)
+
+
+def _is_json_object_segment(segment: str) -> bool:
+    """Whether *segment* base64url-decodes to a JSON object: JOSE, itsdangerous, Flask session."""
+    try:
+        header = json.loads(base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4)))
+    except (ValueError, RecursionError):
+        return False
+    return isinstance(header, dict)
+
+
+def _credential_matches(text: str) -> Iterator[re.Match[str]]:
+    """``_CREDENTIAL_PATTERNS.finditer(text)``, minus JWT-branch hits whose header is not JSON.
+
+    A rejected hit retries the other branches at its start, then resumes one character on,
+    so a credential nested inside the rejected span is still found. A header holding a
+    second ``eyJ`` stays a credential: rejecting it would rescan that header once per ``eyJ``.
+    """
+    pos = 0
+    while (m := _CREDENTIAL_PATTERNS.search(text, pos)) is not None:
+        header = m.group().split(".", 1)[0]
+        if (
+            m.group().startswith("eyJ")
+            and m.group().count(".") >= 2
+            and header.find("eyJ", 1) == -1
+            and not _is_json_object_segment(header)
+        ):
+            alt = _CREDENTIAL_PATTERNS_SANS_JWT.match(text, m.start())
+            if alt is None:
+                pos = m.start() + 1
+                continue
+            m = alt
+        yield m
+        pos = max(m.end(), m.start() + 1)
+
+
+def _contains_credential_pattern(text: str) -> bool:
+    """Validated ``_CREDENTIAL_PATTERNS.search``: see :func:`_credential_matches`."""
+    return next(_credential_matches(text), None) is not None
 
 
 # ── Cheap pre-filter for `_CREDENTIAL_PATTERNS` (performance only) ──
@@ -856,7 +903,7 @@ def _decode_b64_chunk(chunk: str) -> str:
     # characters -- so this straddles the crossover instead of sitting above it.
     if len(decoded) >= _PREFILTER_MIN_LEN and not _might_contain_credential(decoded):
         return ""
-    return decoded if _CREDENTIAL_PATTERNS.search(decoded) else ""
+    return decoded if _contains_credential_pattern(decoded) else ""
 
 
 def _decode_b64_safe(text: str) -> str:
@@ -872,7 +919,7 @@ def _decode_b64_safe(text: str) -> str:
     for m in _B64_CHUNK_RE.finditer(text):
         try:
             decoded = base64.b64decode(m.group(), validate=True).decode("utf-8", errors="ignore")
-            if _CREDENTIAL_PATTERNS.search(decoded):
+            if _contains_credential_pattern(decoded):
                 return decoded
         except Exception:
             continue
@@ -886,7 +933,7 @@ def _contains_fixed_credential(text: str) -> bool:
     front-channel state and PKCE values are high-entropy by design, while the
     canonical signatures and decoded credentials remain unambiguous.
     """
-    return bool(_CREDENTIAL_PATTERNS.search(text) or _decode_b64_safe(text))
+    return bool(_contains_credential_pattern(text) or _decode_b64_safe(text))
 
 
 def _text_contains_bare_secret(text: str) -> bool:
@@ -1532,7 +1579,7 @@ def _credential_redaction_plan(
     # disjoint; it is what the later passes subtract from.
     taken: list[_RedactionSpan] = []
     if _might_contain_credential(text):
-        for m in _CREDENTIAL_PATTERNS.finditer(text):
+        for m in _credential_matches(text):
             # Emit ONLY non-sensitive metadata (length). Do NOT slice any part of
             # the match into the warning: `_CREDENTIAL_PATTERNS` matches the raw
             # secret value itself (e.g. `ghp_…`, `sk-ant-…`), so even a short prefix
