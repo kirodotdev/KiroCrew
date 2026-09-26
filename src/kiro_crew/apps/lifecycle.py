@@ -12,11 +12,13 @@ import logging
 from functools import partial
 from typing import Any
 
-from kiro_crew.apps.context import AppContext, build_app_context
+from kiro_crew.apps.context import AppContext, build_app_context, manifest_declares_routes
 from kiro_crew.apps.execution import shipped_builtin_app_root
 from kiro_crew.apps.manager import app_dir
 from kiro_crew.apps.module_loader import (
+    cache_http_app_grant,
     cache_shutdown_callable,
+    cached_http_app_grant,
     load_app_module,
     resolve_loaded_callable,
 )
@@ -143,10 +145,18 @@ class LifecycleDispatcher:
         cron_service: Any = None,
         broadcast_fn: Any = None,
         spawn_impl: Any = None,
+        http_app: Any = None,
     ) -> None:
         self._cron_service = cron_service
         self._broadcast_fn = broadcast_fn
         self._spawn_impl = spawn_impl
+        # Held for the same reason as the three handles above: every context this
+        # dispatcher builds must look like the one the enable path built. A
+        # shutdown context without the Application would hand ``on_shutdown`` a
+        # ``None`` where its ``on_startup`` had the real object, so the hook whose
+        # job is to stop the background work that startup began would return as if
+        # there were nothing to stop -- and the work would outlive the disable.
+        self._http_app = http_app
 
     async def dispatch_startup(self, enabled_apps: list[dict[str, Any]]) -> list[str]:
         """Call on_startup hooks for all enabled apps with hooks declared.
@@ -163,7 +173,7 @@ class LifecycleDispatcher:
             hook_path = self._get_hook(app_info, "on_startup")
             if not hook_path:
                 continue
-            ctx = self._build_context(app_info)
+            ctx = self._build_context(app_info, phase="startup")
             success = await self._invoke(name, hook_path, ctx, phase="startup")
             if success:
                 invoked.append(name)
@@ -204,7 +214,7 @@ class LifecycleDispatcher:
                 continue
             if not hook_path:
                 continue
-            ctx = self._build_context(app_info)
+            ctx = self._build_context(app_info, phase="shutdown")
             success = await self._invoke(name, hook_path, ctx, phase="shutdown")
             if success:
                 invoked.append(name)
@@ -219,7 +229,7 @@ class LifecycleDispatcher:
         hook_path = self._get_hook(app_info, "on_startup")
         if not hook_path:
             return True
-        ctx = self._build_context(app_info)
+        ctx = self._build_context(app_info, phase="startup")
         return await self._invoke(name, hook_path, ctx, phase="startup")
 
     async def cache_shutdown_for(self, app_info: dict[str, Any]) -> None:
@@ -252,6 +262,14 @@ class LifecycleDispatcher:
         teardown, so it must never fail the enable.
         """
         name = app_info.get("name", "")
+        # Record the enable-time grant here as well as in the startup builder,
+        # because an app may declare ``on_shutdown`` and NO ``on_startup``: no
+        # startup context is built for it, yet its route handlers can have spawned
+        # work its shutdown hook is meant to stop. Both writers derive the answer
+        # from the same manifest through the same predicate, so they cannot
+        # disagree; what this adds is coverage of the enable that builds no
+        # startup context at all.
+        cache_http_app_grant(name, manifest_declares_routes(app_info.get("manifest", {})))
         shutdown_path = self._get_hook(app_info, "on_shutdown")
         if not shutdown_path:
             return
@@ -279,7 +297,7 @@ class LifecycleDispatcher:
         hook_path = self._get_hook(app_info, "on_shutdown")
         if not hook_path:
             return True
-        ctx = self._build_context(app_info)
+        ctx = self._build_context(app_info, phase="shutdown")
         return await self._invoke(name, hook_path, ctx, phase="shutdown")
 
     async def stop_detached_startup_hooks(
@@ -384,13 +402,34 @@ class LifecycleDispatcher:
             return func
         return load_app_module(app_name, app_dir(app_name), hook_path)
 
-    def _build_context(self, app_info: dict[str, Any]) -> AppContext:
-        """Build an AppContext for the given app."""
+    def _build_context(self, app_info: dict[str, Any], *, phase: str) -> AppContext:
+        """Build an AppContext for the given app.
+
+        ``phase`` is ``"startup"`` or ``"shutdown"`` and is REQUIRED, because it
+        decides where the ``http_app`` answer comes from. A startup context reads
+        the manifest in front of it and records that answer; a shutdown context
+        reuses the recorded one. Recomputing at teardown would read a manifest the
+        app may have rewritten since, and an app that drops its ``routes`` hook
+        while keeping ``on_shutdown`` would then be handed ``None`` in the hook
+        documented to early-return on it -- leaving the worker its ``on_startup``
+        spawned running past the disable. With no recorded answer (an app enabled
+        by a path that did not go through the production wiring) the manifest is
+        read as before, so the fallback is the pre-existing behaviour and never a
+        silently withheld handle.
+        """
         name = app_info.get("name", "")
         manifest = app_info.get("manifest", {})
         permissions = manifest.get("permissions", {})
         data_path = app_dir(name) / "data"
         data_path.mkdir(parents=True, exist_ok=True)
+
+        if phase == "shutdown":
+            granted = cached_http_app_grant(name)
+            if granted is None:
+                granted = manifest_declares_routes(manifest)
+        else:
+            granted = manifest_declares_routes(manifest)
+            cache_http_app_grant(name, granted)
 
         return build_app_context(
             app_name=name,
@@ -400,6 +439,9 @@ class LifecycleDispatcher:
             broadcast_fn=self._broadcast_fn,
             spawn_impl=self._spawn_impl,
             app_config=manifest.get("extra", {}),
+            # The same shared predicate the enable/boot builder uses, so a
+            # shutdown context carries the handle exactly when the startup one did.
+            http_app=self._http_app if granted else None,
         )
 
     async def _invoke(self, app_name: str, hook_path: str, ctx: AppContext, *, phase: str) -> bool:

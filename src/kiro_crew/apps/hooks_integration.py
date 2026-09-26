@@ -24,7 +24,7 @@ from kiro_crew.apps.bridges import (
     disarm_app_crons_for_execution,
     register_app_crons_with_service,
 )
-from kiro_crew.apps.context import AppContext, build_app_context
+from kiro_crew.apps.context import AppContext, build_app_context, http_app_for_manifest
 from kiro_crew.apps.execution import (
     app_execution_denied,
     shipped_builtin_app_root,
@@ -287,6 +287,7 @@ def init_hooks_system(
         cron_service=cron_service,
         broadcast_fn=broadcast_fn,
         spawn_impl=spawn_impl,
+        http_app=app,
     )
 
     logger.info("Hooks system initialized")
@@ -330,6 +331,19 @@ def _build_app_context_from_info(
     permissions = manifest.get("permissions", {})
     data_path = app_dir(name) / "data"
     data_path.mkdir(parents=True, exist_ok=True)
+    # Only an app that declares a ``routes`` hook is handed the gateway's
+    # Application, and only because it already has it: the registry dispatches
+    # the real ``web.Request`` into that app's handlers, so ``request.app`` is
+    # this same object on every call. Reading it from the registry rather than a
+    # parameter keeps the two in step by construction -- the object an app can
+    # reach through its requests is the object it is given here, or nothing.
+    #
+    # The gate itself lives in ``http_app_for_manifest`` and is shared with the
+    # lifecycle dispatcher's builder, so a startup context and a shutdown context
+    # for the same app cannot disagree about whether the handle is present.
+    http_app = http_app_for_manifest(
+        manifest, _route_registry.http_app if _route_registry else None
+    )
     ctx = build_app_context(
         app_name=name,
         data_dir=data_path,
@@ -338,6 +352,7 @@ def _build_app_context_from_info(
         broadcast_fn=broadcast_fn,
         spawn_impl=spawn_impl,
         app_config=manifest.get("extra", {}),
+        http_app=http_app,
     )
     # The shared _jobs routes are mounted once for every app and resolve the app
     # from the URL, so they need a name -> SDK lookup. Publishing happens here,
@@ -695,7 +710,7 @@ async def on_app_disable(
         success = await _lifecycle_dispatcher._invoke(
             app_name,
             shutdown_hook,
-            _lifecycle_dispatcher._build_context(app_info),
+            _lifecycle_dispatcher._build_context(app_info, phase="shutdown"),
             phase="shutdown",
         )
         result["hooks_shutdown"] = "ok" if success else "failed"

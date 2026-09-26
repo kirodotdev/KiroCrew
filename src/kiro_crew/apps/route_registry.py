@@ -114,6 +114,18 @@ class RouteRegistry:
         self._contexts: dict[str, AppContext] = {}  # app_name -> context
         self._catch_all_registered = False
 
+    @property
+    def http_app(self) -> web.Application:
+        """The aiohttp Application this registry dispatches on.
+
+        Read by the hooks wiring to fill ``AppContext.http_app``. Exposed as a
+        property so that wiring does not reach into ``_app``: the registry is the
+        one component the gateway already hands the Application to, so it is the
+        honest place to ask, and a read-only property keeps it from being
+        reassigned by a caller that only meant to look.
+        """
+        return self._app
+
     def ensure_catch_all(self) -> None:
         """Register the catch-all route on the aiohttp app (idempotent)."""
         if self._catch_all_registered:

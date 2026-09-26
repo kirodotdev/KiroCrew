@@ -798,6 +798,44 @@ successful async startup hook that returns within the deadline is unaffected.
 
 Writer: `apps/lifecycle.py::LifecycleDispatcher._invoke`.
 
+### 7.2 The gateway Application is granted per manifest, identically on both context paths
+
+`AppContext.http_app` carries the gateway's own aiohttp `Application` for an app
+whose background work must be anchored on it — a poller reading the same dashboard
+state the app's request handlers read, and stashing its running service where those
+handlers resolve it. It is populated for an app that declares a `routes` hook and
+`None` for every other app. That gate is the grant's whole justification rather
+than a policy knob: a routes-declaring app is dispatched the real `web.Request`, so
+`request.app` is already the same object, while an app with lifecycle hooks and no
+routes has no request path and would be gaining reach.
+
+Two builders construct app contexts — `apps/hooks_integration.py::_build_app_context_from_info`
+for enable and boot, `apps/lifecycle.py::LifecycleDispatcher._build_context` for
+disable and gateway shutdown — and both resolve the grant through the single
+predicate `apps/context.py::manifest_declares_routes`. The sharing is load-bearing, not
+tidiness: a startup context that carried the Application while the shutdown context
+did not would let an app start background work it can never be asked to stop, since
+its `on_shutdown` would read `None` and return as though there were nothing to do,
+and nothing re-supplies the handle afterwards (the cached shutdown entry is a
+callable, not a context).
+
+One predicate is not sufficient on its own, because the two builders do not read
+the same manifest: a teardown is handed the CURRENT on-disk record, which the app
+writes. So `_build_context` takes a required `phase`, records the answer at
+`startup` (`apps/module_loader.py::cache_http_app_grant`, generation tagged and
+cleared with the shutdown callable) and reuses it at `shutdown`. An app that drops
+its `routes` hook while keeping `on_shutdown` therefore still receives the
+Application at teardown instead of the `None` the app-kit guidance tells it to
+early-return on, and one that adds `routes` after an enable that had none does not
+gain the object at teardown. With no record from the current load generation the
+manifest is read as before, so the fallback is the pre-existing behaviour rather
+than a withheld handle.
+
+Writers: `apps/context.py::manifest_declares_routes`,
+`apps/module_loader.py::cache_http_app_grant`,
+`apps/hooks_integration.py::_build_app_context_from_info`,
+`apps/lifecycle.py::LifecycleDispatcher._build_context`.
+
 After the hook sweep, graceful shutdown stops the backend **processes this
 gateway spawned** (`apps/hooks_integration.py::on_gateway_shutdown` →
 `stop_app_backend`). Spawned backends are gateway children: without this stop

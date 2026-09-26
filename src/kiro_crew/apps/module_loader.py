@@ -37,6 +37,19 @@ _warned_third_party_apps: set[str] = set()
 #: touching disk. Cleared by ``clear_shutdown_callable`` on teardown/unload.
 _shutdown_callables: dict[str, tuple[int, Callable[..., Any]]] = {}
 
+#: Per-app record of whether ENABLE-time wiring handed this app the gateway
+#: ``Application`` (``AppContext.http_app``). Teardown must NOT recompute that from
+#: the current on-disk manifest, which the app itself can rewrite: one that drops
+#: its ``routes`` hook while keeping ``on_shutdown`` would hand ``None`` to the hook
+#: the shipped guidance tells it to early-return on, so the worker ``on_startup``
+#: spawned outlives disable with no recovery short of a gateway restart. Recording
+#: the enable-time answer closes the mirror case too -- a manifest that ADDS
+#: ``routes`` afterwards must not reach a shutdown hook whose startup never held
+#: the object. Kept beside ``_shutdown_callables`` and cleared by the same two
+#: functions on purpose: both describe ONE enable, and a teardown reading the
+#: callable from this enable and the grant from an earlier one would read two.
+_http_app_grants: dict[str, tuple[int, bool]] = {}
+
 #: Per-app load generation. Bumped every time an app's modules are unloaded (a
 #: disable, or the gateway teardown sweep), so a shutdown callable captured under
 #: one generation can be told apart from the code loaded by a LATER enable. A
@@ -62,6 +75,33 @@ def cache_shutdown_callable(app_name: str, func: Callable[..., Any]) -> None:
 def clear_shutdown_callable(app_name: str) -> None:
     """Drop the cached ``on_shutdown`` callable (teardown complete / module unloaded)."""
     _shutdown_callables.pop(app_name, None)
+    _http_app_grants.pop(app_name, None)
+
+
+def cache_http_app_grant(app_name: str, granted: bool) -> None:
+    """Record whether enable-time wiring gave this app the gateway ``Application``.
+
+    Generation tagged exactly like the shutdown callable, so an unload + re-enable
+    invalidates it rather than letting one enable's answer describe another's.
+    """
+    _http_app_grants[app_name] = (_current_generation(app_name), granted)
+
+
+def cached_http_app_grant(app_name: str) -> bool | None:
+    """The enable-time grant for *app_name*, or ``None`` when none was recorded.
+
+    ``None`` means "no answer from this load generation" and is deliberately NOT
+    ``False``: the caller must then fall back to reading the manifest, which is the
+    pre-existing behaviour, rather than silently withhold a handle the app holds.
+    """
+    cached = _http_app_grants.get(app_name)
+    if cached is None:
+        return None
+    generation, granted = cached
+    if generation != _current_generation(app_name):
+        _http_app_grants.pop(app_name, None)
+        return None
+    return granted
 
 
 def clear_all_shutdown_callables() -> None:
@@ -72,6 +112,7 @@ def clear_all_shutdown_callables() -> None:
     selected to stop a v2 worker. Clearing wholesale on teardown closes that.
     """
     _shutdown_callables.clear()
+    _http_app_grants.clear()
 
 
 def _is_builtin_app(app_name: str, app_resolved: Path) -> bool:

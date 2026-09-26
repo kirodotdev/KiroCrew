@@ -85,6 +85,48 @@ class AppContext:
     # `build_app_context` always populates it, so a context built by the factory
     # never sees None.
     audit: AuditSDK | None = None
+    # The gateway's own aiohttp Application, for an app whose background work has
+    # to be anchored on it -- a poller that reads the dashboard state its request
+    # handlers already read, and stashes the running service where those handlers
+    # look it up. Typed ``Any`` so this module keeps its aiohttp-free import.
+    #
+    # Populated ONLY for an app that declares a ``routes`` hook, and that gate is
+    # what keeps this from being a new grant: such an app is handed the real
+    # ``web.Request`` on every call, so ``request.app`` is already this same
+    # object. An app with only lifecycle hooks gets ``None`` and must say so
+    # rather than guess -- hence ``| None`` and no default instance.
+    http_app: Any | None = None
+
+
+def manifest_declares_routes(manifest: dict[str, Any]) -> bool:
+    """Whether *manifest* declares a ``routes`` hook, read defensively.
+
+    The grant decision itself, separated from the handle so a caller that must
+    REMEMBER the answer can store a bool rather than a live Application: a cached
+    object would pin the gateway's Application past its own lifetime, and a cached
+    ``None`` could not be told apart from "this app was never granted".
+    """
+    return bool(manifest.get("backend", {}).get("hooks", {}).get("routes"))
+
+
+def http_app_for_manifest(manifest: dict[str, Any], http_app: Any) -> Any:
+    """The Application *manifest*'s app may carry on its context, or ``None``.
+
+    ONE predicate, called by every builder, because the hazard here is two
+    builders disagreeing: a startup context that carries the handle and a
+    shutdown context that does not means an app can start background work it can
+    never be asked to stop, and the teardown hook that exists to stop it sees
+    ``None`` and returns as if there were nothing to do.
+
+    The grant is decided by the app declaring a ``routes`` hook, and that is what
+    keeps it from being a new grant at all -- see :attr:`AppContext.http_app`.
+
+    Reading the CURRENT manifest is right only while the two contexts are built
+    from one enable. A teardown that may run against a manifest the app has since
+    rewritten must instead reuse the answer recorded at enable time -- see
+    ``module_loader.cache_http_app_grant``.
+    """
+    return http_app if manifest_declares_routes(manifest) else None
 
 
 def build_app_context(
@@ -96,6 +138,7 @@ def build_app_context(
     broadcast_fn: Any = None,
     spawn_impl: Any = None,
     app_config: dict[str, Any] | None = None,
+    http_app: Any = None,
 ) -> AppContext:
     """Factory that builds an AppContext based on app permissions.
 
@@ -106,6 +149,10 @@ def build_app_context(
         cron_service: The gateway's CronService instance (for CronSDK).
         broadcast_fn: The gateway's broadcast function (for EventBus).
         app_config: App-specific configuration dict.
+        http_app: The gateway's aiohttp Application, or None. Passed straight
+            through, NOT gated on a permission: the caller decides, because the
+            decision is whether this app already reaches the object by another
+            route (see ``AppContext.http_app``) and only the wiring knows that.
 
     Returns:
         AppContext with services populated based on permissions.
@@ -163,4 +210,5 @@ def build_app_context(
         # Both unconditional: see the fields' comments on AppContext.
         scrub=ScrubSDK(),
         audit=AuditSDK(app_name),
+        http_app=http_app,
     )

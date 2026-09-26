@@ -603,6 +603,47 @@ the log directly, so treat `app:<name>` as "which app said this", not as proof.
 `"publish"`. No permission gates it: an app cannot obtain anything with it, only
 state what it did.
 
+### Gateway Application (`ctx.http_app`)
+
+The gateway's own aiohttp `Application`, for background work that must be anchored
+on it — a poller that has to read the same dashboard state your request handlers
+read, and stash its running service where those handlers look it up.
+
+```python
+async def on_startup(ctx):
+    if ctx.http_app is None:
+        ctx.health.mark_degraded("poller not started: no gateway application on this host")
+        return
+    await start_my_poller(ctx.http_app)
+
+
+async def on_shutdown(ctx):
+    if ctx.http_app is None:
+        return
+    await stop_my_poller(ctx.http_app)
+```
+
+Present **only if your manifest declares a `routes` hook**, and `None` otherwise.
+That gate is not a permission you can ask for: an app with routes is dispatched the
+real `web.Request`, so `request.app` is already this exact object and the field adds
+no reach. An app with lifecycle hooks and no routes has no request path either, so
+handing it the Application would be a genuinely new grant.
+
+Read it with `getattr(ctx, "http_app", None)` if your app must also run on a gateway
+older than this field, and **report the gap** — `ctx.health.mark_degraded` with the
+user-visible consequence — rather than returning quietly. Background work that
+silently never starts is indistinguishable from having nothing to do.
+
+Your `on_startup` and `on_shutdown` contexts are built by different code paths and
+are guaranteed to agree about this field, so work you start with it can always be
+stopped with it. That holds across a version bump too: teardown reuses the answer
+recorded when the app was enabled, so dropping your `routes` hook in a later release
+does not strand the work an earlier one started — your `on_shutdown` still receives
+the Application it was given. The same rule runs the other way, so adding a `routes`
+hook does not hand the object to a teardown whose startup never held it. Declare
+`on_shutdown` whenever you declare `on_startup`: anything you spawn outlives the
+startup call, and teardown is the only thing that stops it.
+
 ### Lessons
 
 | Method | Returns | Description |
