@@ -4456,13 +4456,46 @@ class GatewayOrchestrator:
             if job.execution_context is not None:
                 cron_execution = execution_from_record({"execution_context": job.execution_context})
             else:
+                # ── Default-agent fallback (LLM jobs) ──
+                # A job with no explicit agent_id must run the configured default
+                # agent (config.agent.default_agent), matching the chat transports'
+                # fallback (transport_dispatch: `self.agent or cfg.agent.default_agent`).
+                # Without it the empty selector is captured below and reaches
+                # execution_for_store as `template_id=... or "kirocrew"` -- an agent
+                # whose config carries none of the default agent's MCP servers, so
+                # agent-less cron sessions silently run without the expected toolset
+                # (observed in production, 2026-08-19).
+                #
+                # Resolved INTO the capture rather than by mutating `job`: the
+                # snapshot below is deliberately immune to later mutation
+                # ("captured selectors, never the scheduler's mutable job"), and
+                # job.agent_id has no other reader in this callback -- so a write
+                # to it after this point is a silent no-op. A declared
+                # agent_sequence owns its own dispatch and is left untouched.
+                # Typed deliberately: template_id must be a str
+                # (ExecutionContext.__post_init__ rejects anything else), so a
+                # malformed or non-str configured default falls back to the
+                # existing "kirocrew" floor instead of failing the dispatch.
+                # agent_sequence_dispatches is the ONE spelling of "the sequence
+                # owns dispatch": a lone entry is dormant and dispatch falls
+                # through to agent_id, which must still get the default.
+                _default_agent = ""
+                if not (job.agent_id or "").strip() and not agent_sequence_dispatches(
+                    job.agent_sequence
+                ):
+                    try:
+                        _configured = self._cfg.agent.default_agent
+                        if isinstance(_configured, str):
+                            _default_agent = _configured.strip()
+                    except Exception:
+                        _default_agent = ""
                 legacy_selection = CronJob(
                     id=job.id,
                     name=job.name,
                     message=job.message,
                     member_id=job.member_id,
                     memory_store=job.memory_store,
-                    agent_id=job.agent_id,
+                    agent_id=(job.agent_id or "").strip() or _default_agent,
                 )
 
                 def resolve_legacy_execution():
