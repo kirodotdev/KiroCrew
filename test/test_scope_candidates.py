@@ -29,6 +29,7 @@ from __future__ import annotations
 import importlib.util
 import itertools
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -1203,6 +1204,108 @@ class TestConcludeNothingNew:
         assert without[0] == scope._UNSETTLED_CONCLUSION
 
 
+class TestConcludeNamesTheValidateRefusalCause:
+    """A `validate` refusal dispatches no leg, so the fold reads `no-report`. The
+    generic sentence for that row -- "no leg reported, and this was not the
+    nothing-to-adjudicate short circuit" -- is true of a broken lane and of a
+    regression in the author's own diff alike, and a refusal whose cause reaches a
+    reader only through a job annotation is four hops from the check they read.
+    These pin the cause and its remedy onto the lane's own verdict, without
+    relaxing the refusal.
+    """
+
+    #: What a check-run title costs before the table's `why` starts: GitHub caps
+    #: `output[title]` at 255 characters and 422s a longer one, which would turn a
+    #: more explanatory refusal into a check-run that never publishes at all.
+    _TITLE_CAP = 255
+    _TITLE_PREFIX = "[scope-floor:unsettled] Security Scope Review — "
+
+    @staticmethod
+    def _no_report(**over):
+        kwargs = dict(
+            lane="fork",
+            fold="no-report",
+            model="UNKNOWN",
+            marker_present=False,
+            nothing_new=False,
+            gap_script=False,
+            gap_model=False,
+        )
+        kwargs.update(over)
+        return scope.conclude_lane(**kwargs)
+
+    def test_a_credential_shape_refusal_names_itself_and_its_remedy(self) -> None:
+        conclusion, why = self._no_report(refusal="corpus-credential")
+        assert conclusion == scope._UNSETTLED_CONCLUSION
+        assert "credential shape" in why
+        # The defect: the generic sentence is what this replaces.
+        assert "no leg reported" not in why
+        remedy = scope.validate_refusal_remedy("corpus-credential")
+        assert "Re-run this lane" in remedy
+        assert "without the embedded credential" in remedy
+
+    def test_an_uncheckable_corpus_refusal_names_itself_and_its_remedy(self) -> None:
+        conclusion, why = self._no_report(refusal="corpus-uncheckable")
+        assert conclusion == scope._UNSETTLED_CONCLUSION
+        assert "could not be checked" in why
+        assert "no leg reported" not in why
+        assert "Re-run this lane" in scope.validate_refusal_remedy("corpus-uncheckable")
+
+    def test_naming_the_cause_never_softens_the_verdict(self) -> None:
+        # The whole safety property: explaining a refusal must not publish a softer
+        # conclusion than the same unmeasured run got while it was unexplained.
+        generic = self._no_report()[0]
+        for refusal in scope._VALIDATE_REFUSALS:
+            assert self._no_report(refusal=refusal)[0] == generic
+
+    def test_a_refusal_outranks_the_green_nothing_new_row(self) -> None:
+        # Fail-closed ORDERING. `validate` refuses only on its rc=0 path, so it
+        # cannot also be the exit-3 short circuit -- but were both ever supplied,
+        # the green `nothing-new` reading would publish a pass for a corpus no leg
+        # ever saw. The refusal is the half that must win.
+        conclusion, why = self._no_report(
+            refusal="corpus-credential", nothing_new=True, marker_present=True
+        )
+        assert conclusion == scope._UNSETTLED_CONCLUSION
+        assert "credential shape" in why
+        assert "already a committed golden path" not in why
+
+    def test_an_unnamed_validate_code_falls_through_to_the_generic_sentence(self) -> None:
+        # `rc` also carries 1, 2, 3, `missing` and the empty string. None of those
+        # name a cause this table can explain, so each must read as no refusal
+        # rather than reaching an author as a half-matched sentence.
+        generic = self._no_report()
+        for code in ("", "0", "1", "2", "3", "missing", "corpus", "CORPUS-CREDENTIAL"):
+            assert self._no_report(refusal=code) == generic, code
+            assert scope.validate_refusal_remedy(code) == "", code
+        assert self._no_report(refusal=None) == generic
+
+    def test_a_refusal_row_does_not_differ_by_lane(self) -> None:
+        # The table's standing contract: no row reaches a different conclusion for a
+        # fork than for same-repo. Only the fork lane emits these codes today, and
+        # this is what keeps that a caller fact rather than a branch in the table.
+        for refusal in scope._VALIDATE_REFUSALS:
+            fork = self._no_report(lane="fork", refusal=refusal)
+            same = self._no_report(lane="same-repo", refusal=refusal)
+            assert fork == same, refusal
+
+    def test_both_halves_stay_publishable(self) -> None:
+        for refusal, (why, remedy) in scope._VALIDATE_REFUSALS.items():
+            # A `why` is written into `$GITHUB_OUTPUT` as one `key=value` line and
+            # then into a capped check-run title.
+            assert "\n" not in why and "\n" not in remedy, refusal
+            assert len(self._TITLE_PREFIX) + len(why) <= self._TITLE_CAP, (
+                refusal,
+                len(self._TITLE_PREFIX) + len(why),
+            )
+            # Names the SHAPE, never a value: this text is published on a public
+            # repository's check-run, which is the same reason the corpus itself is
+            # refused rather than scrubbed.
+            for shape in ("arn:", "aws_", "AKIA", "ASIA"):
+                assert shape not in why and shape not in remedy, (refusal, shape)
+            assert not re.search(r"\d{12}", why + remedy), refusal
+
+
 class TestConcludeCli:
     def test_cli_prints_github_output_lines_and_exits_zero(self, capsys) -> None:
         rc = scope.main(
@@ -1276,6 +1379,60 @@ class TestConcludeCli:
         with pytest.raises(SystemExit) as exc:
             scope.main(["conclude", "--lane", "sideways", "--fold", "clean"])
         assert exc.value.code == 2
+
+    def test_cli_carries_a_named_refusal_as_the_why_plus_a_remedy_line(self, capsys) -> None:
+        # The lane reads these back with `sed -n 's/^key=//p'`, so the remedy is a
+        # key of its own rather than appended to the why: the why becomes a check-run
+        # TITLE, which GitHub caps at 255 characters, and the remedy is the half that
+        # does not fit there.
+        rc = scope.main(
+            [
+                "conclude",
+                "--lane",
+                "fork",
+                "--fold",
+                "no-report",
+                "--refusal",
+                "corpus-credential",
+            ]
+        )
+        assert rc == 0
+        out = capsys.readouterr().out.splitlines()
+        assert f"conclusion={scope._UNSETTLED_CONCLUSION}" in out, out
+        assert "settled=no" in out, out
+        why = [line for line in out if line.startswith("why=")]
+        remedy = [line for line in out if line.startswith("remedy=")]
+        assert why and "credential shape" in why[0], out
+        assert remedy and "Re-run this lane" in remedy[0], out
+
+    def test_cli_prints_no_remedy_key_without_a_named_refusal(self, capsys) -> None:
+        # Both lanes select keys rather than lines, so an extra key is inert -- but a
+        # run with nothing to remedy must not publish an empty one either.
+        scope.main(
+            [
+                "conclude",
+                "--lane",
+                "fork",
+                "--fold",
+                "no-report",
+                "--refusal",
+                "1",
+            ]
+        )
+        out = capsys.readouterr().out.splitlines()
+        assert not [line for line in out if line.startswith("remedy=")], out
+        assert (
+            "why=no leg reported, and this was not the nothing-to-adjudicate short circuit" in out
+        )
+
+    def test_the_refusal_flag_is_optional(self, capsys) -> None:
+        scope.main(["conclude", "--lane", "same-repo", "--fold", "clean", "--marker", "present"])
+        out = capsys.readouterr().out.splitlines()
+        assert out == [
+            "conclusion=error",
+            "why=no parseable Scope-Verdict header carrying a marker for this head",
+            "settled=no",
+        ], out
 
 
 class TestMonotonicConclusionFloor:

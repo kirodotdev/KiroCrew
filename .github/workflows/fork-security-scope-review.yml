@@ -1486,6 +1486,10 @@ jobs:
           # for its own run, but the publish step marks its check-run so it sets
           # NO per-head floor -- one flake must not red the head forever.
           settled="yes"
+          # Empty unless a NAMED validate refusal supplies one below: this step runs
+          # under `set -u`, and the `in_scope == false` pre-check returns without
+          # reaching the ladder that assigns it.
+          remedy=""
           # The marker is the ONLY proof the review ran for THIS revision. A
           # `Scope-Verdict:` header without it is a verdict earned on other code,
           # so an absent or mismatched marker fails CLOSED -- this lane is
@@ -1548,9 +1552,15 @@ jobs:
             # reads its answer and maps it to a check-run conclusion.
             conc="$(python3 scripts/scope_candidates.py conclude --lane fork \
               --fold "$fold" --model "${MODEL_VERDICT:-UNKNOWN}" --marker "$marker" \
-              --nothing-new "$nothing_new" --gap-script "$gap_script" --gap-model "$gap_model")"
+              --nothing-new "$nothing_new" --gap-script "$gap_script" --gap-model "$gap_model" \
+              --refusal "${VALIDATE_RC:-}")"
             token="$(printf '%s\n' "$conc" | sed -n 's/^conclusion=//p')"
             title="$(printf '%s\n' "$conc" | sed -n 's/^why=//p')"
+            # The actionable half of a NAMED validate refusal, which the check-run
+            # carries in its summary because a title is capped at 255 characters.
+            # Absent for every other run, and authored by the table rather than
+            # taken from `$VALIDATE_RC`, so no caller string reaches the summary.
+            remedy="$(printf '%s\n' "$conc" | sed -n 's/^remedy=//p')"
             # `settled` comes from the TABLE, never from the token arms below. The
             # table compares against `_UNSETTLED_CONCLUSION` itself, so flipping
             # that constant keeps this correct -- reading it off a `case` arm here
@@ -1616,16 +1626,21 @@ jobs:
               conclusion="failure"
               title="the per-head floor could not be computed, so the lane fails closed"
               settled="no"
+              # The published title is no longer the refusal, so its remedy explains
+              # nothing a reader can act on here.
+              remedy=""
             elif [ "$raised" != "$conclusion" ]; then
               echo "Per-head floor raises $conclusion -> $raised: $floor_why"
               conclusion="$raised"
               title="$floor_why"
+              remedy=""
             fi
           fi
           echo "conclusion=$conclusion" >> "$GITHUB_OUTPUT"
           echo "title=$title" >> "$GITHUB_OUTPUT"
           echo "marker=$marker" >> "$GITHUB_OUTPUT"
           echo "settled=$settled" >> "$GITHUB_OUTPUT"
+          echo "remedy=$remedy" >> "$GITHUB_OUTPUT"
           echo "Scope lane conclusion: $conclusion — $title"
 
       - name: Assemble the comment body
@@ -2404,6 +2419,7 @@ jobs:
           WR_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
           CONCLUSION: ${{ steps.decide.outputs.conclusion }}
           TITLE: ${{ steps.decide.outputs.title }}
+          REMEDY: ${{ steps.decide.outputs.remedy }}
           SETTLED: ${{ steps.decide.outputs.settled }}
           FOLD_RC: ${{ steps.fold.outputs.rc }}
           BODY: ${{ runner.temp }}/scope-verdict.md
@@ -2413,7 +2429,16 @@ jobs:
             echo "::warning::no head sha to key a check-run to"
             exit 0
           fi
-          summary="Security scope review for $HEAD. See the PR comment for the confirmed rows."
+          # The GENERIC arm, reached when no deterministic body was folded: no leg
+          # produced rows, so there are none to read in a PR comment or anywhere
+          # else -- and on the `validate`-refusal path that comment is not posted
+          # either, so a pointer at it sends a reader to nothing. The decided title
+          # is the cause, repeated here because a check's summary is what a reader
+          # lands on, and a NAMED refusal appends the action that clears it (#13617).
+          summary="Security scope review for $HEAD — $TITLE. No leg produced confirmed rows, so there are none to read: this run's logs are linked from this check."
+          if [ -n "${REMEDY:-}" ]; then
+            summary="$(printf '%s\n\n%s\n' "Security scope review for $HEAD — $TITLE." "$REMEDY")"
+          fi
           # Carry the deterministic body into the Checks UI itself, capped with a
           # Bash substring rather than a pipe into `head`: a piped cap SIGPIPEs
           # the writer, and `pipefail` turns that into a step failure on exactly

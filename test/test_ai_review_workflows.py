@@ -13403,6 +13403,47 @@ class TestScopeConclusionLadderLivesInOnePlace:
         fork = _step_script(_workflow(self.FORK), "Decide the lane's conclusion")
         assert "scripts/scope_candidates.py conclude" in fork
 
+    def test_the_fork_lane_hands_the_validate_refusal_code_to_the_table(self) -> None:
+        # A `validate` refusal dispatches no leg, so the fold reads `no-report` and
+        # the table's generic sentence for that row names no cause. The code the
+        # refusal writes as a job output is an INPUT to the shared table, so the
+        # cause and its remedy are decided in the one place both lanes read.
+        decide = _step_by_name(self.FORK, "publish", "Decide the lane's conclusion")
+        assert decide["env"]["VALIDATE_RC"] == "${{ needs.validate.outputs.rc }}"
+        run = decide["run"]
+        assert '--refusal "${VALIDATE_RC:-}"' in run
+        # The remedy is a key of its own because a check-run title is capped at 255
+        # characters; the lane selects it by key, never by line number.
+        assert "remedy=\"$(printf '%s\\n' \"$conc\" | sed -n 's/^remedy=//p')\"" in run
+        assert 'echo "remedy=$remedy" >> "$GITHUB_OUTPUT"' in run
+        # Not re-derived in shell: the cause text is authored in the table, so no
+        # value of `$VALIDATE_RC` is ever interpolated into a published verdict.
+        assert "corpus-credential" not in run
+        assert "corpus-uncheckable" not in run
+
+    def test_a_floor_override_drops_the_refusal_remedy(self) -> None:
+        # The floor can REPLACE the title with its own reason. A remedy that outlived
+        # it would explain a sentence the check-run does not carry.
+        run = _step_script(_workflow(self.FORK), "Decide the lane's conclusion")
+        after_floor = run.split("floor_ok", 1)[1]
+        assert after_floor.count('remedy=""') >= 2, after_floor.count('remedy=""')
+
+    def test_the_fork_check_run_summary_promises_no_rows_it_has_none_of(self) -> None:
+        # A run where no leg folded any rows has none to point at, in a PR comment or
+        # anywhere else -- and on the refusal path that comment is not posted either.
+        publish = _step_by_name(self.FORK, "publish", "Publish check-run")
+        assert publish["env"]["REMEDY"] == "${{ steps.decide.outputs.remedy }}"
+        run = publish["run"]
+        assert "See the PR comment for the confirmed rows" not in run
+        assert "No leg produced confirmed rows" in run
+        assert '[ -n "${REMEDY:-}" ]' in run
+        # The comment pointer survives only in the arm that HAS a deterministic body
+        # to point at, which is the arm that stamps and publishes one.
+        body_arm = run.split('elif [ -s "$BODY" ]', 1)
+        assert len(body_arm) == 2, "the deterministic-body arm is gone"
+        assert "Full review in the PR comment" in body_arm[1]
+        assert "Full review in the PR comment" not in body_arm[0]
+
 
 _SCOPE_HEAD = "cafe1234cafe1234cafe1234cafe1234cafe1234"
 
