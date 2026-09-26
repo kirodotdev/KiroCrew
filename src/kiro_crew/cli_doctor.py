@@ -2967,6 +2967,10 @@ def _doctor_pod_session_bus(issues: list[str]) -> None:
     pod probe keeps that state separate from an absent user session bus and from
     an unclassified systemctl failure.
 
+    A host without a per-user manager unit is not applicable: enabling linger
+    cannot start a unit that does not exist. This advisory check precedes the
+    connection probe; the execution gate remains permissive when a bus exists.
+
     Advisory only. Pods are an optional development feature, so an unavailable
     backend never changes doctor's exit code. Doctor reports the action but does
     not enable linger or change the caller's sandbox.
@@ -2991,7 +2995,24 @@ def _doctor_pod_session_bus(issues: list[str]) -> None:
         USER_BUS_SANDBOXED_AWAY,
         probe_user_bus,
         user_bus_failure_message,
+        user_manager_unit,
     )
+
+    uid = getattr(os, "getuid", lambda: -1)()
+    if user_manager_unit(uid) is None:
+        # Probed before the bus on purpose: a stray session dbus-daemon can
+        # create a socket without a per-user manager. Doctor only reports;
+        # require_systemd() stays permissive when a bus exists so an incomplete
+        # unit-path probe cannot prevent execution on a working host.
+        print(
+            "  session bus: ⏹ not applicable (no systemd per-user manager on this "
+            "host — pods are unavailable)"
+        )
+        print("               Enterprise Linux 7 derivatives (RHEL 7, CentOS 7,")
+        print("               Amazon Linux 2) ship systemd without `user@.service`,")
+        print("               so `loginctl enable-linger` cannot help. Use")
+        print("               `./dev-backend.sh` to run a worktree gateway here.")
+        return
 
     result = probe_user_bus()
     if result.status != USER_BUS_REACHABLE:

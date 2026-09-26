@@ -916,6 +916,121 @@ class UserBusProbe:
     detail: str
 
 
+# systemd's load path for SYSTEM units, highest precedence first. This is
+# Table 1 ("Load path when running in system mode") of systemd.unit(5),
+# transcribed in full and verified against the systemd 261 manual. `user@.service`
+# is a system unit that PID 1 instantiates per uid, so the system table is the
+# right one, not the user table.
+#
+# The list is deliberately the COMPLETE table rather than the directories that
+# seem plausible for this unit. A short search path is a false "absent": the
+# probe reports no per-user manager on a host that HAS one, and the caller then
+# names a platform limit instead of telling the reader to start the manager. Two
+# review rounds on this PR each named a different missing entry, so the fix is to
+# make completeness checkable against one document instead of guessing again.
+# `/lib/systemd/system` is not in Table 1; it is the pre-usr-merge location of
+# `/usr/lib/systemd/system` and is kept for split-usr hosts.
+#
+# The order decides only WHICH path a message names, because presence is "any one
+# of these exists". Naming the highest-precedence hit is the accurate choice.
+#
+# Known limitations, both from reading the load path rather than asking systemd
+# for it. A MASKED template (an entry symlinked to `/dev/null`) reads as present,
+# because `os.path.exists` follows the symlink and `/dev/null` exists; reporting
+# that correctly needs real shadowing semantics, where a mask in a
+# high-precedence directory suppresses a lower-precedence unit. And a host that
+# sets `$SYSTEMD_UNIT_PATH` moves the load path out from under this list
+# entirely. Both are deliberately out of scope: such a host was offered
+# `enable-linger` before this probe existed, so its behaviour is unchanged rather
+# than newly wrong. Asking `systemctl list-unit-files 'user@*.service'` at SYSTEM
+# scope needs no user bus and would subsume this list, the env var and the mask
+# case; that is the right shape and is tracked separately, not bolted onto a fix.
+_SYSTEMD_SYSTEM_UNIT_DIRS = (
+    "/etc/systemd/system.control",
+    "/run/systemd/system.control",
+    "/run/systemd/transient",
+    "/run/systemd/generator.early",
+    "/etc/systemd/system",
+    "/etc/systemd/system.attached",
+    "/run/systemd/system",
+    "/run/systemd/system.attached",
+    "/run/systemd/generator",
+    "/usr/local/lib/systemd/system",
+    "/usr/lib/systemd/system",
+    "/lib/systemd/system",
+    "/run/systemd/generator.late",
+)
+
+# Both shapes of per-user manager unit are searched in the SAME directories,
+# derived from the one list above rather than kept in a second tuple. A separate
+# list is what produced three review rounds on this file: each round named a
+# directory one tuple knew and the other did not, and the narrower tuple made
+# `user_manager_unit` report "absent" for a hand-installed unit in a directory the
+# template search already covered. Deriving both filenames from one list makes
+# that divergence unrepresentable instead of merely fixed.
+_USER_MANAGER_TEMPLATE_NAME = "user@.service"
+
+
+def _unit_paths(name: str) -> tuple[str, ...]:
+    """Candidate paths for a unit ``name``, in systemd precedence order."""
+    return tuple(f"{directory}/{name}" for directory in _SYSTEMD_SYSTEM_UNIT_DIRS)
+
+
+def _user_manager_template() -> str | None:
+    """Path of systemd's per-user manager template, or ``None`` when absent.
+
+    Only the TEMPLATE. A host without it can still have a per-user manager, via a
+    hand-installed ``user@<uid>.service``, so absence here is not the answer to
+    "can this host run pods" -- :func:`user_manager_unit` is, and it checks both
+    shapes. Enterprise Linux 7 derivatives (RHEL 7, CentOS 7, Amazon Linux 2) are
+    the case that matters: they carry systemd 219 with the per-user manager left
+    out, so neither shape is present and ``loginctl enable-linger`` has nothing to
+    start.
+
+    Probed by unit path rather than by asking ``systemctl``, because the question
+    is whether the machinery EXISTS at all; asking the very tool that needs it
+    returns the raw "Failed to connect to bus" that :func:`require_systemd` is
+    there to translate. Deliberately NOT keyed on the bus socket either: a stray
+    session ``dbus-daemon`` can create the socket on a host with no per-user
+    manager, which makes the socket a false positive for "pods can run".
+    """
+    for path in _unit_paths(_USER_MANAGER_TEMPLATE_NAME):
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def user_manager_unit(uid: int) -> str | None:
+    """Path of a per-user manager unit this host could start, or ``None``.
+
+    Wider than :func:`_user_manager_template` on purpose, and it is this — not the
+    template alone — that answers "can this host have a ``systemd --user``
+    instance". Two shapes count:
+
+    * the template ``user@.service``, which logind instantiates per uid; and
+    * a concrete ``user@<uid>.service`` installed directly.
+
+    The second is not hypothetical: ``docs/guides/remote-and-mobile.md`` tells
+    the reader to write ``/etc/systemd/system/user@$(id -u).service`` by hand and
+    enable it, which is the documented way to get a per-user manager on a host
+    whose distribution ships no template. systemd loads that concrete unit
+    without ever consulting the template, so keying the platform gate on the
+    template alone would refuse pods on a host that followed this repo's own
+    guide and has a working instance.
+    """
+    template = _user_manager_template()
+    if template is not None:
+        return template
+    # Callers resolve the uid, so a host without `os.getuid` (Windows) reaches
+    # here with -1 rather than a uid this function invented.
+    if uid < 0:
+        return None
+    for path in _unit_paths(f"user@{uid}.service"):
+        if os.path.exists(path):
+            return path
+    return None
+
+
 def _systemctl_env() -> dict[str, str]:
     """Environment for ``systemctl --user``, with the session-bus pointers
     backfilled when absent.
@@ -1077,6 +1192,11 @@ def require_systemd() -> None:
     This gate stays in-process because every systemd and journalctl helper calls
     it. The authoritative connection attempt belongs at :func:`require_backend`
     verb entry and in doctor, not before every unit query.
+
+    A missing bus has two causes with different remedies. With a per-user
+    manager unit installed, ``enable-linger`` starts the stopped instance.
+    Without either a template or a concrete uid unit, there is no manager for
+    linger to start: name the platform limit and point at ``dev-backend.sh``.
     """
     if not IS_LINUX:
         raise PodError(
@@ -1086,6 +1206,18 @@ def require_systemd() -> None:
     if shutil.which("systemctl") is None:
         raise PodError("pods require `systemctl --user`, but no `systemctl` was found on PATH.")
     if not has_session_bus():
+        uid = getattr(os, "getuid", lambda: -1)()
+        if user_manager_unit(uid) is None:
+            raise PodBackendAbsent(
+                "pods require `systemd --user`, which this host does not provide: no "
+                "per-user manager unit is installed (looked for "
+                f"{_USER_MANAGER_TEMPLATE_NAME} and user@{uid}.service under "
+                f"{', '.join(_SYSTEMD_SYSTEM_UNIT_DIRS)}).\n"
+                "Enterprise Linux 7 derivatives (RHEL 7, CentOS 7, Amazon Linux 2) ship "
+                "systemd without it, so `loginctl enable-linger` cannot help: there is "
+                "no unit for it to start.\n"
+                "Use `./dev-backend.sh` to run a worktree gateway on this host."
+            )
         raise PodBackendAbsent(
             user_bus_failure_message(UserBusProbe(USER_BUS_NO_SESSION, session_bus_socket(), ""))
         )
