@@ -11100,6 +11100,7 @@
       "folders_load_failed": "Ordner konnten nicht geladen werden",
       "columns_load_failed": "Board-Spalten konnten nicht geladen werden",
       "folder_update_failed": "Ordner-Aktualisierung fehlgeschlagen",
+      "pinned_order_save_failed": "Die Reihenfolge der angehefteten Sitzungen konnte nicht gespeichert werden",
       "board_update_failed": "Board-Aktualisierung fehlgeschlagen",
       "open_crew_members": "Crew-Mitglieder",
       "open_crew_members_desc": "Öffnet die Seite Crew-Mitglieder – jedes Mitglied ist ein dauerhafter Agent mit eigenem Thread.",

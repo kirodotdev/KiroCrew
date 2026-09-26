@@ -11264,6 +11264,7 @@
       "folders_load_failed": "No se pudieron cargar las carpetas",
       "columns_load_failed": "No se pudieron cargar las columnas del tablero",
       "folder_update_failed": "Fallo al actualizar la carpeta",
+      "pinned_order_save_failed": "No se pudo guardar el orden de las sesiones fijadas",
       "board_update_failed": "Fallo al actualizar el tablero",
       "open_crew_members": "Miembros del equipo",
       "open_crew_members_desc": "Abre la página Miembros del equipo: cada miembro es un agente permanente con su propio hilo.",

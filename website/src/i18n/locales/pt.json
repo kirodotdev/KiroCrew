@@ -11264,6 +11264,7 @@
       "folders_load_failed": "Não foi possível carregar as pastas",
       "columns_load_failed": "Não foi possível carregar as colunas do quadro",
       "folder_update_failed": "Falha ao atualizar a pasta",
+      "pinned_order_save_failed": "Não foi possível salvar a ordem das sessões fixadas",
       "board_update_failed": "Falha ao atualizar o quadro",
       "open_crew_members": "Membros da equipe",
       "open_crew_members_desc": "Abre a página Membros da equipe — cada membro é um agente permanente com o próprio tópico.",

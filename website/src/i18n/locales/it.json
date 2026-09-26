@@ -11264,6 +11264,7 @@
       "folders_load_failed": "Impossibile caricare le cartelle",
       "columns_load_failed": "Impossibile caricare le colonne della board",
       "folder_update_failed": "Aggiornamento della cartella non riuscito",
+      "pinned_order_save_failed": "Impossibile salvare l'ordine delle sessioni fissate",
       "board_update_failed": "Aggiornamento della board non riuscito",
       "open_crew_members": "Membri della crew",
       "open_crew_members_desc": "Apre la pagina Membri della crew: ogni membro è un agente permanente con il proprio thread.",

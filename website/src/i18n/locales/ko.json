@@ -10936,6 +10936,7 @@
       "folders_load_failed": "폴더를 불러올 수 없습니다",
       "columns_load_failed": "보드 열을 불러올 수 없습니다",
       "folder_update_failed": "폴더 업데이트 실패",
+      "pinned_order_save_failed": "고정된 순서를 저장할 수 없습니다",
       "board_update_failed": "보드 업데이트 실패",
       "open_crew_members": "크루 멤버",
       "open_crew_members_desc": "크루 멤버 페이지를 엽니다. 각 멤버는 자기 스레드를 가진 상주 에이전트입니다.",

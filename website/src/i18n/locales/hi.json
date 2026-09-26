@@ -11100,6 +11100,7 @@
       "folders_load_failed": "फ़ोल्डर लोड नहीं हो सके",
       "columns_load_failed": "बोर्ड कॉलम लोड नहीं हो सके",
       "folder_update_failed": "फ़ोल्डर अपडेट विफल",
+      "pinned_order_save_failed": "पिन किया गया क्रम सहेजा नहीं जा सका",
       "board_update_failed": "बोर्ड अपडेट विफल",
       "open_crew_members": "क्रू सदस्य",
       "open_crew_members_desc": "क्रू सदस्य पेज खोलता है — हर सदस्य एक स्थायी एजेंट है, जिसका अपना थ्रेड है।",

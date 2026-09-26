@@ -4694,6 +4694,10 @@ export const api = {
    *  an index-only null would leave a custom hex behind. */
   clearSlotColor: (slot: string) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/color', { color_index: null, color_hex: null }).then(j),
   setSlotPin: (slot: string, pinned: boolean) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/pin', { pinned }).then(j),
+  /** Set the order of pinned sessions in one atomic write; answers the stored order.
+   *  `onlyIfUnset` lands the write only while no order is stored (a 409
+   *  otherwise), which is how a browser hands over its old local order. */
+  setPinnedOrder: (keys: string[], onlyIfUnset = false) => post('/api/chat/pinned-order', onlyIfUnset ? { keys, only_if_unset: true } : { keys }).then(j) as Promise<{ ok: boolean; order: string[] }>,
   setSlotMode: (slot: string, mode: string) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/mode', { mode }).then(j),
   // Tags
   chatTags: () => fetch('/api/chat/tags', { headers: { ..._sk } }).then(j),
