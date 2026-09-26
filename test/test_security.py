@@ -9565,6 +9565,191 @@ class TestGluedShellCommandPayloadExtraction:
         assert is_denied("bash -Cc'git push origin my-feature'") is None
         assert is_denied("bash -cc'ls -la'") is None
 
+    def test_long_assignment_name_glued_carrier_split_is_found_by_its_reference(self) -> None:
+        """A first word longer than the window is a NAME, found by its later use.
+
+        A glued ``-Cc'<name>=<program>; $<name> <verb>'`` folds to
+        ``-cc<name>=…``, and the letter region runs through the WHOLE
+        assignment name up to the ``=``.  With a name longer than the split
+        window the only ``c``-run sat outside the window measured from the
+        region's end, so the correct split was never a candidate: the payload
+        read as ``c<name>=…``, the assignment went to a different name, the
+        use never resolved and the mint went unexamined -- while a short name
+        was denied.  A word that long matters only as a name the payload
+        refers back to, so the split is yielded where the first word it
+        produces is referenced later -- whatever padding precedes the option
+        ``c`` (``-C<78 flags>c'<78 letters>=…'`` puts it out of reach of any
+        fixed window from either end).
+        """
+        from kiro_crew.security import (
+            _CARRIER_SPLIT_WINDOW,
+            _is_credential_mint,
+            _shell_c_carrier_payloads,
+            is_denied,
+        )
+
+        long_name = "a" * (_CARRIER_SPLIT_WINDOW + 14)
+        padding = "a" * (_CARRIER_SPLIT_WINDOW + 14)
+        for name in ("x", long_name):
+            for shell in ("zsh", "bash", "sh"):
+                for cmd in (
+                    f"{shell} -Cc'{name}=kirocrew; ${name} token'",
+                    f"{shell} -cc'{name}=kirocrew; ${name} token'",  # folded, written directly
+                    f"{shell} -C{padding}c'{name}=kirocrew; ${name} token'",
+                    f"{shell} -C{padding}c'{name}(){{ kirocrew token; }}; {name}'",
+                ):
+                    assert _is_credential_mint(cmd.lower(), raw_text=cmd), cmd
+                    assert is_denied(cmd) is not None, cmd
+        # The ``<name>=…`` split is among the candidates for the long name, with
+        # and without padding before the option letter.
+        script = f"{long_name}=kirocrew; ${long_name} token"
+        assert script in _shell_c_carrier_payloads(f"-cc{script}")
+        assert script in _shell_c_carrier_payloads(f"-c{padding}c{script}")
+        # A name referenced only through its leading letters (``name_1``) is
+        # still found; a ``c`` before the window whose first word is never
+        # referenced yields nothing beyond the always-present first-``c`` split.
+        assert f"{long_name}_1=x; ${long_name}_1" in _shell_c_carrier_payloads(
+            f"-c{padding}c{long_name}_1=x; ${long_name}_1"
+        )
+        assert _shell_c_carrier_payloads(f"-{padding}c{padding}'ls'") == [f"{padding}'ls'"]
+        # Benign spellings with a long assignment name stay allowed.
+        assert is_denied(f"bash -Cc'{long_name}=ls; ${long_name} -la'") is None
+        assert is_denied(f"bash -C{padding}c'{long_name}=ls; ${long_name} -la'") is None
+
+    def test_a_spaced_carrier_payload_is_walked_whole(self) -> None:
+        """A quoted script is ONE operand; its inner ``;`` is not a top-level operator.
+
+        ``bash -c '<name>=<cli>; $<name> <verb>'`` hands the whole script to
+        ``-c`` as one token, but the outer frame's assignment resolver split
+        that token at its inner ``;`` -- it begins with an assignment and
+        carries an operator -- so the payload walk, which takes the ONE token
+        after the carrier, descended only ``<name>=<cli>`` and the script's
+        own command line was never examined.  Measured ALLOWED for the spaced
+        ``-c``, ``eval``, herestring and ``env -S`` carriers at every name
+        length while the shell ran the mint (the glued ``-c'…'`` spelling was
+        denied, because a ``-``-led token is never split).  A token holding
+        whitespace was quoted -- shlex splits on every unquoted whitespace --
+        so it is yielded whole AHEAD of its pieces: the whole reaches the walk,
+        which re-tokenizes it as its own command line, and the pieces keep
+        resolving a top-level glued run whose quoted VALUE holds the space.
+        """
+        from kiro_crew.security import (
+            _CARRIER_SPLIT_WINDOW,
+            _is_credential_mint,
+            _split_glued_operators,
+            is_denied,
+        )
+
+        long_name = "a" * (_CARRIER_SPLIT_WINDOW + 14)
+        for name in ("x", long_name):
+            script = f"{name}=kirocrew; ${name} token"
+            for cmd in (
+                *(f"{shell} -Cc '{script}'" for shell in ("zsh", "bash", "sh")),
+                *(f"{shell} -c '{script}'" for shell in ("zsh", "bash", "sh")),
+                f"bash -x -c '{script}'",
+                f"bash -c -- '{script}'",
+                f'bash -c "{script}"',
+                f"eval '{script}'",
+                f"bash <<< '{script}'",
+                f"env -S '{script}'",
+                f"bash -c '{name}=kirocrew;${name} token'",
+                f"bash -c '{name}=kirocrew && ${name} token'",
+                # The script's own binding wins over an outer one of the same name.
+                f"{name}=foo; bash -c '{script}'",
+                # An outer binding the script does NOT assign still reaches it
+                # (``eval`` runs in the same shell) -- the whole-token reading
+                # must not lose it.
+                f"y=kirocrew; eval '{name}=${{y}}; ${name} token'",
+                f"y=kirocrew; eval '{name}=$y;${name} token'",
+                # ...and stays in force until the script reassigns the name: a
+                # reassignment AFTER the use does not hide the outer binding.
+                f"{name}=kirocrew; eval 'y=1; ${name} token; {name}=foo'",
+                f"{name}=kirocrew; eval '${name} token; {name}=foo'",
+            ):
+                assert _is_credential_mint(cmd.lower(), raw_text=cmd), cmd
+                assert is_denied(cmd) is not None, cmd
+        # The unit: a whitespace-bearing token yields the whole first, then the
+        # pieces; the glued evasion this splitter exists for has no whitespace
+        # and is split exactly as before.
+        assert _split_glued_operators(["x=kirocrew; $x token"]) == [
+            "x=kirocrew; $x token",
+            "x=kirocrew",
+            ";",
+            " $x token",
+        ]
+        assert _split_glued_operators(["x=kirocrew\t$x"]) == ["x=kirocrew\t$x"]
+        assert _split_glued_operators(["x=kirocrew;$x", "token"]) == [
+            "x=kirocrew",
+            ";",
+            "$x",
+            "token",
+        ]
+        assert is_denied("x=kirocrew;$x token") is not None
+        # A top-level glued run whose quoted value carries a space still
+        # resolves through the pieces -- and so does one whose unquoted
+        # non-breaking space shlex never split on.
+        assert is_denied('X="a b";Y=kirocrew;$Y token') is not None
+        assert is_denied("X=a\u00a0b;Y=kirocrew;$Y token") is not None
+        # A quoted kill target reaches the kill check whole, not as a shredded pair
+        # -- the same refusal the unshredded target already meets.
+        assert is_denied("pkill -f 'x=pkill; $x -f kirocrew'") is not None
+        assert is_denied("pkill -f 'KIROCREW_PORT=6777 npm run dev'") is not None
+        assert is_denied("pkill -f 'v=6777; KIROCREW_PORT=$v npm run dev'") is not None
+        assert is_denied("pkill -f 'v=6777; PORT=$v npm run dev'") is None
+        # Benign scripts stay allowed.
+        assert is_denied(f"bash -c '{long_name}=ls; ${long_name} -la'") is None
+        assert is_denied("bash -c 'x=echo; $x hello'") is None
+        # A reassignment BEFORE the use is the script's own binding.
+        assert is_denied("x=kirocrew; eval 'x=echo; $x token'") is None
+        assert is_denied('X="a b";Y=kirocrew;$Y doctor') is None
+
+    def test_a_variable_push_target_inside_a_carrier_is_refused_like_the_top_level_spelling(
+        self,
+    ) -> None:
+        """A push whose destination is an expansion is refused wherever the shell runs it.
+
+        The publish floor refuses ``b=<branch>; git push origin $b`` at top
+        level: the destination cannot be determined through ``$b`` before the
+        push runs, so the push is refused for a feature branch and a protected
+        branch alike.  Inside a carrier the same command was ALLOWED, because
+        the quoted script was shredded at its inner ``;`` in the outer frame
+        and ``git push origin $b`` never reached the floor as a command line --
+        a bypass of the floor, not a narrower rule.  The script is now walked
+        whole, so the payload spelling meets the floor the top-level spelling
+        already meets, with and without ``-u``.
+        """
+        from kiro_crew.security import is_denied
+
+        for branch in ("feat/example", "main"):
+            assert is_denied(f"b={branch}; git push origin $b") is not None, branch
+            for cmd in (
+                f"bash -c 'b={branch}; git push origin $b'",
+                f"bash -c 'b={branch}; git push -u origin $b'",
+            ):
+                assert is_denied(cmd) is not None, cmd
+        # The literal feature-branch push stays allowed in both frames.
+        assert is_denied("git push origin feat/example") is None
+        assert is_denied("bash -c 'true; git push origin feat/example'") is None
+
+    def test_referenced_splits_keep_the_candidate_set_bounded(self) -> None:
+        """Finding splits by reference is bounded by the references, not the ``c`` count.
+
+        The ~3 KB alternating ``-acac…`` token (the shape that made the
+        candidate set quadratic and outlived the loop watchdog) yields the
+        same bounded set as before; a payload that references k distinct
+        region suffixes adds at most k candidates and needs k*(k+1)/2
+        characters to do so.
+        """
+        from kiro_crew.security import _shell_c_carrier_payloads
+
+        flooded = _shell_c_carrier_payloads("-" + "ac" * 1600 + "c'git push origin main'")
+        assert len(flooded) <= 70, len(flooded)
+        refs = [f"${'ac' * k}" for k in range(1, 55)]
+        adversary = "-c" + "ac" * 1600 + "=x; " + " ".join(refs)
+        assert len(_shell_c_carrier_payloads(adversary)) <= len(flooded) + len(refs)
+        one_run = _shell_c_carrier_payloads("-" + "c" * 3000 + "'git push origin main'")
+        assert len(one_run) <= 3, len(one_run)
+
     def test_an_uppercase_cluster_does_not_eat_the_command_flag_stop(self) -> None:
         """The flag pattern stays lowercase-only ON PURPOSE.
 
