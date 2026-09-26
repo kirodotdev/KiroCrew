@@ -4083,11 +4083,23 @@ def resolve_pin_spelling(model_id: str, advertised: Sequence[str] | None) -> str
     naming the 1M ``claude-opus-4.8``) is rejected even though ``catalog_key``
     folds the window marker away -- see
     :func:`model_registry.same_registered_model` -- so a pin never resolves to
-    its neighbour with another context window. Several advertised spellings of
-    the SAME model can remain (a base and a 1M variant the registry lists as one
-    model); the winner is :func:`model_registry.preferred_advertised_spelling`,
-    the tie-break :func:`model_registry.resolve_wire_model_id` applies, so the
-    two folds cannot prefer different spellings.
+    its neighbour with another context window. EFFORT is refused on the same
+    ground and needs its own rule, because ``catalog_key`` folds the effort
+    suffix on purpose -- right for judging nativeness, where the dial is not
+    part of the identity, and wrong for choosing a spelling to SEND. A harness
+    in ``ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS`` advertises one row per model x
+    effort while its ``model`` option takes only the bare id, so the pin stored
+    for it names no effort and every advertised row names one: folding across
+    that gap let the tie-break pick a row by LENGTH, and
+    :func:`_push_model_via_effort_split` then applied that row's bracket as
+    ``reasoning_effort``. A candidate whose effort half differs from the pin's
+    (:func:`model_registry.split_effort_suffix`, which reports no effort for a
+    ``[1m]`` WINDOW suffix) is therefore not a spelling of it. Several
+    advertised spellings of the SAME model at the SAME effort can remain (a base
+    and a 1M variant the registry lists as one model); the winner is
+    :func:`model_registry.preferred_advertised_spelling`, the tie-break
+    :func:`model_registry.resolve_wire_model_id` applies, so two candidates this
+    fold admits cannot be ordered differently by the wire fold.
 
     Returns the ADVERTISED spelling of the match, not the caller's: the result
     is meant to be sent on the wire (``session/set_model`` accepts advertised
@@ -4115,16 +4127,100 @@ def resolve_pin_spelling(model_id: str, advertised: Sequence[str] | None) -> str
     wanted_key = model_registry.catalog_key(wanted)
     if not wanted_key:
         return ""
+    _base, wanted_effort = model_registry.split_effort_suffix(wanted)
     folded = [
         m
         for m in ids
         if model_registry.catalog_key(m) == wanted_key
+        and model_registry.split_effort_suffix(m.strip().lower())[1] == wanted_effort
         and model_registry.same_registered_model(model_id, m)
     ]
     return model_registry.preferred_advertised_spelling(folded)
 
 
-def resolve_usable_model(preferred: str, advertised: Sequence[str] | None) -> str:
+def _pair_id_bare_spelling(model_id: str, ids: Sequence[str]) -> str:
+    """The BARE model half an advertised pair row offers *model_id*, or ``""``.
+
+    A harness in ``ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS`` keeps TWO spellings of
+    one selection and advertises only one of them. ``models.availableModels`` is
+    one row per model x reasoning effort (``gpt-6-astra[max]``) while the
+    ``model`` config option -- the channel a switch actually goes down -- takes
+    only the bare ``gpt-6-astra``, the effort travelling down a separate option.
+    So on this harness "absent from the advertised list" does not mean "not
+    served": the pin Crew stores is routinely the bare id, the one
+    :func:`_push_model_via_effort_split` itself records whenever an effort is
+    refused, and the one the adapter accepts in a single write.
+
+    Answers with the bare half of an advertised row -- evidence from the same
+    ``session/new`` the spelling fold already reads, not a spelling invented
+    here -- for a row that names an EFFORT and whose model half is the pin's:
+
+      - a model no row names under any effort resolves to ``""`` and takes the
+        withhold, because there is no advertised bare half to answer with;
+      - a BARE advertised row is skipped: the literal test and the spelling fold
+        above own that case, and this is only the SECOND vocabulary;
+      - a ``[1m]`` WINDOW suffix is not an effort
+        (:func:`model_registry.split_effort_suffix`), so no comparison here ever
+        sheds a window marker, and a claude-shaped id can never reach this at all
+        because its harness is not a member.
+
+    An effort the account does not advertise resolves to the bare model too --
+    the degradation ``_push_model_via_effort_split`` already performs when the
+    adapter refuses the effort write: the MODEL is applied and the adapter owns
+    the dial. What never happens is the inverse, answering with another row's
+    bracket, which would apply a reasoning effort the operator did not choose.
+    """
+    wanted_base, _effort = model_registry.split_effort_suffix(model_id.strip().lower())
+    if "[" in wanted_base:
+        # A bracket ``split_effort_suffix`` declined to take names a context WINDOW,
+        # not an effort. The bare half of a pair row carries no window marker, so
+        # answering with it would move the pin to its other-window neighbour --
+        # exactly the swap :func:`model_registry.same_registered_model` refuses one
+        # dial over, and the reason ``[1m]`` is excluded from the effort split in
+        # the first place. Not this rule's to decide.
+        return ""
+    wanted_key = model_registry.catalog_key(wanted_base)
+    if not wanted_key:
+        return ""
+    for candidate in ids:
+        base, effort = model_registry.split_effort_suffix(candidate.strip())
+        if not effort:
+            continue
+        if model_registry.catalog_key(base) != wanted_key:
+            continue
+        if not model_registry.same_registered_model(wanted_base, base):
+            continue
+        return base
+    return ""
+
+
+def resolve_pin_spelling_on(
+    model_id: str, advertised: Sequence[str] | None, *, backend: str = ""
+) -> str:
+    """:func:`resolve_pin_spelling`, plus the second vocabulary of a pair-id harness.
+
+    ONE home for that question rather than a copy per wire site: the startup
+    application of a persisted pin, the shared-runtime substitute path and the
+    warm-pool re-apply all cross it, and three spellings of "what does this pin
+    resolve to here" would eventually disagree about a model the operator pinned.
+
+    *backend* is the harness the answer will be SENT to. An empty one -- a caller
+    that is not choosing a wire spelling for a live session, such as the picker
+    filter or the fallback chain -- keeps :func:`resolve_pin_spelling` verbatim,
+    ADVERTISED-spelling contract and all. Only a member of
+    ``ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS`` widens it, and only where the fold has
+    already answered ``""``, so no resolution that succeeds today changes.
+    """
+    resolved = resolve_pin_spelling(model_id, advertised)
+    if resolved or backend not in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS:
+        return resolved
+    ids = [m.strip() for m in (advertised or []) if m and m.strip()]
+    return _pair_id_bare_spelling(model_id, ids) if ids else ""
+
+
+def resolve_usable_model(
+    preferred: str, advertised: Sequence[str] | None, *, backend: str = ""
+) -> str:
     """Resolve a SUBSTITUTE (non-explicit) model choice to what the account can
     run, mirroring the interactive path's reset-to-default (``_wire_model_id``).
 
@@ -4141,6 +4237,9 @@ def resolve_usable_model(preferred: str, advertised: Sequence[str] | None) -> st
         else ``""`` — exactly ``_wire_model_id``'s
         ``"auto" if "auto" in advertised else ""``;
       - concrete + usable             -> that id;
+      - concrete, served only as the bare half of an advertised ``<model>[<effort>]``
+        row, on a *backend* whose ``model`` option takes that bare half ->
+        the BARE spelling (:func:`resolve_pin_spelling_on`);
       - concrete, served only under its peeled spelling -> the ADVERTISED
         spelling. A persisted pin can carry a stale ``<namespace>::<bare-id>``
         qualifier while the session advertises the bare id; the literal miss is
@@ -4170,7 +4269,10 @@ def resolve_usable_model(preferred: str, advertised: Sequence[str] | None) -> st
     # qualifier. The fold answers with the advertised spelling on a hit and
     # ``""`` when the model is absent under both spellings — exactly the
     # inherit-the-default answer this path wants.
-    return resolve_pin_spelling(preferred, ids)
+    # *backend* additionally admits a pair-id harness's bare ``model``-option
+    # spelling, which its advertised list never carries; a caller that passes
+    # none keeps the fold verbatim.
+    return resolve_pin_spelling_on(preferred, ids, backend=backend)
 
 
 def pick_served_default(current: str, advertised: Sequence[str] | None) -> str:

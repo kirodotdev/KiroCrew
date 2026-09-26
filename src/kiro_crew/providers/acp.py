@@ -21,7 +21,7 @@ from kiro_crew.acp.client import (
     _is_config_value_rejection,
     advertised_model_ids,
     model_is_unusable,
-    resolve_pin_spelling,
+    resolve_pin_spelling_on,
     sandbox_init_failure_for_runtime,
 )
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeError
@@ -1340,9 +1340,17 @@ class AcpProvider(LLMProvider):
                     # A literal miss can be a stale `<namespace>::` qualifier on
                     # a model the backend fully serves: resolve to the
                     # advertised spelling and send THAT — same fold the display
-                    # verdict uses, so chip and wire agree. A pin absent under
-                    # either spelling still takes the withhold.
-                    _send_model = resolve_pin_spelling(configured_model, _advertised)
+                    # verdict uses, so chip and wire agree. It can also be a BARE
+                    # pin on a harness that advertises only ``<model>[<effort>]``
+                    # rows while its ``model`` option takes the bare id, and the
+                    # backend-aware resolver answers that with the model the
+                    # operator pinned, leaving the adapter to own the effort. A pin
+                    # absent under every spelling still takes the withhold.
+                    _send_model = resolve_pin_spelling_on(
+                        configured_model,
+                        _advertised,
+                        backend=self._client.backend,
+                    )
                 if not _send_model and not _foreign_scope:
                     logger.warning(
                         "Configured model %s is not available to this account; "

@@ -28,6 +28,7 @@ account. Available models: ..., gpt-6-astra[max], ...". A bare id typed by hand
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -704,3 +705,174 @@ async def test_a_non_member_refusal_of_an_advertised_id_keeps_the_entitlement_wo
     assert "not available on your account" in str(caught.value)
     assert "not an account restriction" not in str(caught.value)
     assert "whoami" in str(caught.value)
+
+
+# ── a BARE pin on the pair-id harness: the second vocabulary ──
+
+
+#: The same session/new as above with the bare rows removed from view: what a
+#: session advertises is one row per model x effort, and NOTHING bare. The
+#: ``model`` config option still takes only the bare id -- that is the whole
+#: point of the pair split -- so "absent from availableModels" and "not served"
+#: are different questions on this harness.
+CODEX_PAIR_ROWS = [
+    "openai.gpt-6-astra[high]",
+    "openai.gpt-6-astra[xhigh]",
+    "openai.gpt-6-astra[max]",
+]
+
+
+class TestABarePinOnAPairIdHarness:
+    """A persisted pin for codex is routinely the BARE id -- it is the spelling
+    its ``model`` config option takes, the one
+    ``test_a_bare_id_typed_by_hand_still_works_in_one_write`` proves the adapter
+    accepts, and the one ``_push_model_via_effort_split`` records when an effort
+    is refused. Every advertised row names an effort the pin does not.
+
+    So the entitlement fold must answer with the MODEL. Answering ``""`` reads
+    the advertised list as the whole vocabulary, which on this harness it is
+    not: the pin is dropped, no model write is made, and the session silently
+    runs the backend's default while the picker still shows the pinned row.
+    """
+
+    @staticmethod
+    def _startup_provider(model: str):
+        provider = AcpProvider(model=model, acp_backend=ACP_BACKEND_CODEX)
+        provider._client._work_dir = "/tmp/ws"
+        provider._client._agent = "kirocrew"
+        provider._client._resume_session_id = ""
+        return provider
+
+    @pytest.mark.asyncio
+    async def test_a_persisted_bare_pin_is_applied_at_startup(self, caplog) -> None:
+        """``AcpProvider`` startup, the path a persisted pin actually takes."""
+        provider = self._startup_provider("openai.gpt-6-astra")
+        handle = MagicMock()
+        handle.session_id = "codex-sess-2"
+        handle.store_session_config = MagicMock()
+        handle.set_model = AsyncMock()
+        handle.available_models = [{"modelId": m, "name": m} for m in CODEX_PAIR_ROWS]
+        runtime = MagicMock(pid=4321)
+        runtime.spawn = AsyncMock()
+        runtime.create_session = AsyncMock(return_value=handle)
+
+        with (
+            patch("kiro_crew.providers.acp.AcpRuntime", return_value=runtime),
+            patch(
+                "kiro_crew.providers.acp.AcpSessionProvider",
+                side_effect=lambda h, r, **kw: MagicMock(_handle=h, _runtime=r, resumed=False),
+            ),
+            patch("pathlib.Path.exists", return_value=False),
+            caplog.at_level(logging.WARNING),
+        ):
+            await provider._start_kiro_runtime_impl({}, {})
+
+        # The MODEL the operator pinned reaches the wire...
+        handle.set_model.assert_awaited_once_with("openai.gpt-6-astra")
+        # ...and no advertised row's bracket was borrowed to get it there.
+        assert "[" not in handle.set_model.await_args.args[0]
+        assert not [r for r in caplog.records if "not available to this account" in r.getMessage()]
+
+    @pytest.mark.asyncio
+    async def test_the_handle_sends_a_bare_pin_as_one_model_write(self) -> None:
+        """``AcpSessionHandle.set_model``, the second layer the same pin crosses.
+
+        Repairing only the provider leaves this one dropping it again:
+        ``resolve_usable_model`` reaches the same fold on the literal miss.
+        """
+        handle = MagicMock()
+        handle._runtime = MagicMock()
+        handle._runtime.acp_backend = ACP_BACKEND_CODEX
+        handle._config_options = CODEX_1_11_SESSION_NEW["configOptions"]
+        handle._advertised_model_ids = MagicMock(return_value=list(CODEX_PAIR_ROWS))
+        handle._resolved_model_id = "openai.gpt-6-astra[high]"
+        applied: list[tuple[str, str]] = []
+        handle.set_config_option = _codex_acp_1_11(applied)
+        handle.supports_config_option = lambda config_id: any(
+            opt["id"] == config_id for opt in CODEX_1_11_SESSION_NEW["configOptions"]
+        )
+        handle._push_model_config_option = lambda model_id, *, strict: (
+            AcpSessionHandle._push_model_config_option(handle, model_id, strict=strict)
+        )
+
+        await AcpSessionHandle.set_model(handle, "openai.gpt-6-astra")
+
+        assert applied == [("model", "openai.gpt-6-astra")]
+        assert CODEX_EFFORT not in [config_id for config_id, _ in applied]
+        assert handle._model == "openai.gpt-6-astra"
+
+    @pytest.mark.asyncio
+    async def test_a_model_the_harness_does_not_serve_is_still_withheld(self) -> None:
+        """The widening is per-MODEL evidence, not a licence to send anything.
+
+        An id no advertised row names under any effort has no bare half to fall
+        back on, so it takes the withhold exactly as before.
+        """
+        handle = MagicMock()
+        handle._runtime = MagicMock()
+        handle._runtime.acp_backend = ACP_BACKEND_CODEX
+        handle._advertised_model_ids = MagicMock(return_value=list(CODEX_PAIR_ROWS))
+        applied: list[tuple[str, str]] = []
+        handle.set_config_option = _codex_acp_1_11(applied)
+
+        await AcpSessionHandle.set_model(handle, "openai.gpt-7-nova")
+
+        assert applied == []
+
+    @pytest.mark.asyncio
+    async def test_a_non_member_backend_keeps_the_literal_withhold(self) -> None:
+        """Harness-parity H13 is opt-in, so a bare pin against bracketed rows on
+        a NON-pair harness still resolves to nothing: there the bracket is part
+        of the id the wire takes, not a second option."""
+        handle = MagicMock()
+        handle._runtime = MagicMock()
+        handle._runtime.acp_backend = ACP_BACKEND_KIRO
+        handle._advertised_model_ids = MagicMock(return_value=["some-model[max]"])
+        applied: list[tuple[str, str]] = []
+        handle.set_config_option = _codex_acp_1_11(applied)
+        handle._runtime.send_request = AsyncMock()
+
+        await AcpSessionHandle.set_model(handle, "some-model")
+
+        assert applied == []
+        handle._runtime.send_request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_warm_pool_claim_applies_a_bare_pin_too(self) -> None:
+        """The third layer: a pooled process re-applies the caller's pin without
+        the factory, and reads the same fold. A warm claim must run exactly what
+        a cold start of the same pin runs -- that equality is the whole point of
+        the dependency -- so a bare pin dropped here would make the model a
+        session got depend on whether it was served from the pool.
+        """
+        from kiro_crew.session import SessionManager
+
+        cfg = MagicMock()
+        cfg.session.pool_size = 2
+        cfg.session.pool_agent = "kirocrew"
+        cfg.session.pool_ttl_secs = 1800
+        cfg.session.timeout_secs = 3600
+        cfg.agent.default_agent = ""
+        cfg.agent.model = "auto"
+        cfg.agent.acp_backend = ACP_BACKEND_CODEX
+
+        pooled = MagicMock(spec=AcpProvider)
+        pooled.client = MagicMock()
+        pooled.client.backend = ACP_BACKEND_CODEX
+        pooled.client._model = CODEX_PAIR_ROWS[0]
+        pooled.client.rekey = MagicMock()
+        pooled.client.set_model = AsyncMock()
+        pooled.available_models = MagicMock(
+            return_value=[{"modelId": m, "name": m} for m in CODEX_PAIR_ROWS]
+        )
+        pooled.is_process_alive = MagicMock(return_value=True)
+        pooled.cwd = ""
+
+        manager = SessionManager(cfg, MagicMock(return_value=pooled))
+        manager._drain_and_claim = AsyncMock(return_value=pooled)
+        manager._resolve_agent_model = MagicMock(return_value=CODEX_PAIR_ROWS[0])
+
+        provider, _, _ = await manager.get_or_create("slot-bare", model="openai.gpt-6-astra")
+
+        assert provider is pooled
+        pooled.client.set_model.assert_awaited_once_with("openai.gpt-6-astra")
