@@ -293,7 +293,7 @@ describe('crew roster — memory ownership notice', () => {
     // Page-level, so it is on screen before the user picks a view.
     expect(screen.getByText(NOTICE)).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'List' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'List' }))
     await screen.findByRole('table')
     // Switching the layout must not take the caveat away with the cards.
     expect(screen.getByText(NOTICE)).toBeInTheDocument()
@@ -322,7 +322,7 @@ describe('crew roster — memory ownership notice', () => {
 
   it('marks the workspace and memory columns in the list view', async () => {
     await renderRoster()
-    fireEvent.click(screen.getByRole('button', { name: 'List' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'List' }))
     const table = await screen.findByRole('table')
     expect(within(table).getAllByTitle(TIP)).toHaveLength(2)
     // Each tip is a named control rather than announcing as "question mark",
@@ -441,7 +441,7 @@ describe('crew roster — description', () => {
     // OTHER_CREW is non-default with no description -> the placeholder.
     expect(within(crewCard('oncall')).getByText('No description')).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'List' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'List' }))
     await screen.findByRole('table')
     const row = screen.getByRole('button', { name: 'Edit agent oncall' }).closest('tr')!
     expect(within(row).getByText('No description')).toBeInTheDocument()
@@ -460,7 +460,7 @@ describe('crew roster — view toggle', () => {
     await renderRoster()
     expect(screen.queryByRole('table')).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'List' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'List' }))
 
     const table = await screen.findByRole('table')
     expect(screen.getAllByTestId('crew-row')).toHaveLength(2)
@@ -476,7 +476,7 @@ describe('crew roster — view toggle', () => {
 
   it('carries each crew’s bindings into its row', async () => {
     await renderRoster()
-    fireEvent.click(screen.getByRole('button', { name: 'List' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'List' }))
     await screen.findByRole('table')
 
     const row = screen.getByRole('button', { name: 'Edit agent oncall' }).closest('tr')!
@@ -487,7 +487,7 @@ describe('crew roster — view toggle', () => {
 
   it('opens the editor from a row', async () => {
     await renderRoster()
-    fireEvent.click(screen.getByRole('button', { name: 'List' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'List' }))
     await screen.findByRole('table')
 
     fireEvent.click(screen.getByRole('button', { name: 'Edit agent oncall' }))
@@ -498,7 +498,7 @@ describe('crew roster — view toggle', () => {
     // The row is a click target for convenience AND contains a real control
     // with the same action. One gesture must not fire both.
     await renderRoster()
-    fireEvent.click(screen.getByRole('button', { name: 'List' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'List' }))
     await screen.findByRole('table')
 
     const nameControl = screen.getByRole('button', { name: 'Edit agent oncall' })
@@ -510,7 +510,7 @@ describe('crew roster — view toggle', () => {
 
   it('remembers the choice across mounts', async () => {
     const { unmount } = await renderRoster()
-    fireEvent.click(screen.getByRole('button', { name: 'List' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'List' }))
     await screen.findByRole('table')
     expect(localStorage.getItem('mc-crews-view')).toBe('list')
 
@@ -529,7 +529,7 @@ describe('crew roster — view toggle', () => {
       default_agent: 'kirocrew',
     })
     await renderRoster()
-    fireEvent.click(screen.getByRole('button', { name: 'List' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'List' }))
     await screen.findByRole('table')
 
     const row = screen.getByRole('button', { name: 'Edit agent oncall' }).closest('tr')!
@@ -543,8 +543,8 @@ describe('crew roster — view toggle', () => {
     await waitFor(() =>
       expect(screen.getByTestId('empty-state-title')).toHaveTextContent('No agents'),
     )
-    expect(screen.queryByRole('button', { name: 'List' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Cards' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('radio', { name: 'List' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('radio', { name: 'Cards' })).not.toBeInTheDocument()
   })
 })
 
@@ -1558,13 +1558,13 @@ describe('crew avatar — uploaded picture', () => {
     fireEvent.click(within(sheet).getByTestId('header-avatar-button'))
     const builder = await screen.findByRole('dialog', { name: 'Customize avatar' })
 
-    fireEvent.click(within(builder).getByRole('button', { name: 'Picture' }))
+    fireEvent.click(within(builder).getByRole('radio', { name: 'Picture' }))
     expect(within(builder).getByTestId('avatar-upload-dropzone')).toBeInTheDocument()
     // No picture chosen and none saved: Apply must not stage an empty image
     // override.
     expect(within(builder).getByTestId('avatar-builder-save')).toBeDisabled()
     // The ghost pane's draft survives the round-trip through the picture tab.
-    fireEvent.click(within(builder).getByRole('button', { name: 'Ghost face' }))
+    fireEvent.click(within(builder).getByRole('radio', { name: 'Ghost face' }))
     expect(within(builder).getByTestId('avatar-builder-preview')).toBeInTheDocument()
   })
 })

@@ -29,10 +29,10 @@ describe('SegmentedControl compact', () => {
   it('hides the unselected label even when the parent measures roomy', async () => {
     stubRoomyParent()
     render(<SegmentedControl segments={SEGMENTS} value="grid" onChange={vi.fn()} compact />)
-    await waitFor(() => expect(screen.getAllByRole('button')).toHaveLength(2))
+    await waitFor(() => expect(screen.getAllByRole('radio')).toHaveLength(2))
     // Selected keeps its label — the current state must stay readable.
-    expect(screen.getByRole('button', { name: /gallery/i }).textContent).toContain('Gallery')
-    expect(screen.getByRole('button', { name: /table/i }).textContent).toBe('')
+    expect(screen.getByRole('radio', { name: /gallery/i }).textContent).toContain('Gallery')
+    expect(screen.getByRole('radio', { name: /table/i }).textContent).toBe('')
   })
 
   it('stays a real two-button control in a parent that measures zero', async () => {
@@ -40,26 +40,26 @@ describe('SegmentedControl compact', () => {
     // Compact trades labels for width; it must NOT also trade away the one-tap
     // switch, which is what the dropdown form costs.
     render(<SegmentedControl segments={SEGMENTS} value="grid" onChange={vi.fn()} compact />)
-    await waitFor(() => expect(screen.getAllByRole('button')).toHaveLength(2))
+    await waitFor(() => expect(screen.getAllByRole('radio')).toHaveLength(2))
   })
 
   it('keeps both labels without it, in the same roomy parent', async () => {
     stubRoomyParent()
     render(<SegmentedControl segments={SEGMENTS} value="grid" onChange={vi.fn()} />)
-    await waitFor(() => expect(screen.getAllByRole('button')).toHaveLength(2))
-    expect(screen.getByRole('button', { name: /table/i }).textContent).toContain('Table')
+    await waitFor(() => expect(screen.getAllByRole('radio')).toHaveLength(2))
+    expect(screen.getByRole('radio', { name: /table/i }).textContent).toContain('Table')
   })
 
   it('names the icon-only segment explicitly, not via its tooltip', async () => {
     stubRoomyParent()
     render(<SegmentedControl segments={SEGMENTS} value="grid" onChange={vi.fn()} compact />)
-    await waitFor(() => expect(screen.getAllByRole('button')).toHaveLength(2))
+    await waitFor(() => expect(screen.getAllByRole('radio')).toHaveLength(2))
     // `title` is only the accessible-name FALLBACK and never renders on touch,
     // which is the form factor compact exists for — the hidden label has to be
     // carried by aria-label.
-    expect(screen.getByRole('button', { name: /table/i }).getAttribute('aria-label')).toBe('Table')
+    expect(screen.getByRole('radio', { name: /table/i }).getAttribute('aria-label')).toBe('Table')
     // The selected segment still shows its label, so naming it again would be
     // a duplicate the screen reader has to sit through.
-    expect(screen.getByRole('button', { name: /gallery/i }).getAttribute('aria-label')).toBeNull()
+    expect(screen.getByRole('radio', { name: /gallery/i }).getAttribute('aria-label')).toBeNull()
   })
 })

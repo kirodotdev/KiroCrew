@@ -126,12 +126,13 @@ function renderDetail(
 }
 
 /** Pick a document tab regardless of whether SegmentedControl collapsed to its
- *  dropdown (it does under a zero-width test layout). */
+ *  dropdown (it does under a zero-width test layout). The tabs are radios in
+ *  both forms; only the collapsed dropdown's trigger is a plain button. */
 async function selectTab(label: string) {
-  let options = screen.queryAllByRole('button', { name: label })
+  let options = screen.queryAllByRole('radio', { name: label })
   if (!options.length) {
     fireEvent.click(screen.getAllByRole('button', { name: /Requirements|Design|Tasks/ })[0])
-    options = await screen.findAllByRole('button', { name: label })
+    options = await screen.findAllByRole('radio', { name: label })
   }
   fireEvent.click(options[options.length - 1])
 }

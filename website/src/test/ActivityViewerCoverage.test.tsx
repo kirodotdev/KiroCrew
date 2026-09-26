@@ -795,8 +795,10 @@ describe('ActivityViewer — panel behaviour', () => {
     const store = createTestStore()
     renderPanel(<ActivityViewer {...baseProps} />, store)
     // jsdom reports a zero-width parent, so the control collapses to a dropdown.
+    // The trigger carries the ACTIVE label (Links) and is a plain button; the
+    // options in the open popup are radios.
     fireEvent.click(screen.getByRole('button', { name: /Links/ }))
-    fireEvent.click(screen.getByRole('button', { name: /Artifacts/ }))
+    fireEvent.click(screen.getByRole('radio', { name: /Artifacts/ }))
 
     await waitFor(() => expect(store.getState().chat.activityTab).toBe('artifacts'))
   })

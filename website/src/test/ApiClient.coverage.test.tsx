@@ -139,6 +139,22 @@ describe('client transport', () => {
     expect(call(2).body).toEqual({ enabled: false })
   })
 
+  it('uses a distinct adoption route before ordinary tag policy PATCH', async () => {
+    await api.adoptChatTag('tag / one', true)
+    expect(call()).toMatchObject({
+      url: '/api/chat/tags/tag%20%2F%20one/adopt',
+      method: 'POST',
+      body: { status: true },
+    })
+
+    await api.updateChatTag('tag / one', { agent: 'add-only' })
+    expect(call(1)).toMatchObject({
+      url: '/api/chat/tags/tag%20%2F%20one',
+      method: 'PATCH',
+      body: { agent: 'add-only' },
+    })
+  })
+
   it('DELETE omits the JSON content type when it carries no body, and sets it when it does', async () => {
     await api.deleteUserDeniedCommand('r1')
     expect(call().method).toBe('DELETE')

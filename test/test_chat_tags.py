@@ -467,11 +467,11 @@ class TestTagVocabulary:
     async def test_update_tag_string_status_row_not_promoted_by_agent_patch(
         self, tmp_path, monkeypatch
     ):
-        """``"status": "false"`` persisted in agent-writable
-        tags.json is truthy; an agent-policy PATCH must not record it as
-        workflow-state authority in the protected store. With no protected
-        row to inherit from, the PATCH is refused outright (status_required)
-        — and an explicit ``status: False`` succeeds without promotion."""
+        """A forged string status never overrides protected identity.
+
+        Dashboard create records the tag as non-status, so an agent-policy
+        PATCH inherits that bit rather than truth-testing agent-writable JSON.
+        """
         from kiro_crew.dashboard.chat_tags import agent_tag_grant
 
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
@@ -483,21 +483,12 @@ class TestTagVocabulary:
             live = next(t for t in state._tags if t["id"] == tag["id"])
             live["status"] = "false"
             resp = await client.patch(f"/api/chat/tags/{tag['id']}", json={"agent": "add-only"})
-            assert resp.status == 400
-            assert (await resp.json())["code"] == "status_required"
-            # The explicit form passes the gate and still never promotes.
-            resp = await client.patch(
-                f"/api/chat/tags/{tag['id']}", json={"agent": "add-only", "status": False}
-            )
             assert resp.status == 200
             assert agent_tag_grant({"id": tag["id"]}) == ("add-only", False)
 
     @pytest.mark.asyncio
     async def test_agent_patch_does_not_promote_forged_bool_status(self, tmp_path, monkeypatch):
-        """an agent can write a REAL ``status: true`` into
-        tags.json; the PATCH must never source the minted bit from the file.
-        With no protected row, the implicit form is refused (status_required);
-        the explicit form succeeds and the forged file bit stays dead."""
+        """A forged boolean status never overrides protected identity."""
         from kiro_crew.dashboard.chat_tags import agent_tag_grant
 
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
@@ -508,11 +499,6 @@ class TestTagVocabulary:
             live = next(t for t in state._tags if t["id"] == tag["id"])
             live["status"] = True  # forged in agent-writable tags.json
             resp = await client.patch(f"/api/chat/tags/{tag['id']}", json={"agent": "add-remove"})
-            assert resp.status == 400
-            assert (await resp.json())["code"] == "status_required"
-            resp = await client.patch(
-                f"/api/chat/tags/{tag['id']}", json={"agent": "add-remove", "status": False}
-            )
             assert resp.status == 200
             # Policy updated, but NO workflow-state authority minted — the
             # forged tags.json bit never reaches the protected store.
@@ -585,18 +571,17 @@ class TestTagVocabulary:
             assert resp.status == 200
             assert ct.agent_tag_grant({"id": narrowed["id"]}) == ("add-only", True)
 
-            # No protected record yet (a plain tag promoted to a workflow state):
-            # the out-of-the-box default applies.
+            # A plain tag already has protected identity. Promoting it to a
+            # workflow state without an explicit policy stays human-only.
             plain = await (await client.post("/api/chat/tags", json={"name": "Plain"})).json()
-            assert not ct.has_grant_row(plain["id"])
+            assert ct.has_grant_row(plain["id"])
             resp = await client.patch(f"/api/chat/tags/{plain['id']}", json={"status": True})
             assert resp.status == 200
-            assert ct.agent_tag_grant({"id": plain["id"]}) == ("add-remove", True)
+            assert ct.agent_tag_grant({"id": plain["id"]}) == ("none", True)
 
     @pytest.mark.asyncio
     async def test_failed_mint_rolls_back_vocabulary(self, tmp_path, monkeypatch):
-        """a PATCH whose grant mint fails must not leave the
-        vocabulary change durable behind the 500 — both stores roll back."""
+        """A PATCH whose grant transition fails leaves both stores unchanged."""
         from kiro_crew.dashboard import chat_tags as ct
 
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
@@ -611,8 +596,8 @@ class TestTagVocabulary:
             monkeypatch.setattr(ct, "mint_grant", _failing_mint)
             resp = await client.patch(
                 f"/api/chat/tags/{tag['id']}",
-                # Explicit status: the tag has no protected row, and the point
-                # here is the post-gate rollback, not the status_required gate.
+                # The final policy is the intended failing write; the identity
+                # downgrade occurs before the vocabulary write.
                 json={"name": "Renamed", "agent": "add-only", "status": False},
             )
             assert resp.status == 500
@@ -718,10 +703,8 @@ class TestTagVocabulary:
         assert ct.agent_tag_grant({"id": tag["id"]}) == ("add-remove", True)
 
     @pytest.mark.asyncio
-    async def test_update_vocab_failure_on_rowless_tag_leaves_no_row(self, tmp_path, monkeypatch):
-        """A tag with NO protected row (upgraded install) gets an explicit status
-        on PATCH; if the vocabulary write then fails, the identity row minted for
-        the window is revoked again -- a failed PATCH is a no-op on both stores."""
+    async def test_rowless_tag_is_refused_before_vocab_write(self, tmp_path, monkeypatch):
+        """A legacy or planted row cannot recreate provenance through PATCH."""
         from kiro_crew.dashboard import chat_tag_grants as grants
         from kiro_crew.dashboard import chat_tags as ct
 
@@ -730,7 +713,7 @@ class TestTagVocabulary:
         app = _make_tags_app(state)
 
         def _failing_write(_state, _snapshot):
-            raise OSError("simulated tags.json write failure")
+            pytest.fail("rowless refusal must happen before the vocabulary write")
 
         async with TestClient(TestServer(app)) as client:
             tag = await (
@@ -743,7 +726,8 @@ class TestTagVocabulary:
             resp = await client.patch(
                 f"/api/chat/tags/{tag['id']}", json={"status": True, "agent": "add-remove"}
             )
-            assert resp.status == 500
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "tag_id_not_grantable"
         grants.refresh_cache()
         assert not grants.has_grant_row(tag["id"])
 

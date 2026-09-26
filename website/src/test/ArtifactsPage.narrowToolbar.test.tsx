@@ -95,7 +95,7 @@ describe('ArtifactsPage filter toolbar at phone width', () => {
   it('pairs the Starred toggle with the view switcher on one justified row', async () => {
     renderWithProviders(<ArtifactsPage />)
     const starred = await waitFor(() => screen.getByRole('group', { name: /filter starred/i }))
-    const gallery = screen.getByRole('button', { name: /gallery/i })
+    const gallery = screen.getByRole('radio', { name: /gallery/i })
     const row = starred.parentElement as HTMLElement
     // Both answer "what am I looking at". One justified row gives the toolbar's
     // last line a left AND a right edge; alone, either control strands one side.

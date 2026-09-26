@@ -24,6 +24,51 @@ beforeAll(() => {
 })
 
 describe('SegmentedControl disabled segments', () => {
+  it('exposes an exclusive selected radio and associates disabled choices with help', () => {
+    render(
+      <>
+        <p id="why-disabled">This choice is unavailable.</p>
+        <SegmentedControl<Key>
+          segments={SEGMENTS}
+          value="live"
+          onChange={vi.fn()}
+          collapse={false}
+          ariaLabel="Release channel"
+          ariaDescribedBy="why-disabled"
+        />
+      </>,
+    )
+    const group = screen.getByRole('radiogroup', { name: 'Release channel' })
+    expect(group).toHaveAttribute('aria-describedby', 'why-disabled')
+    expect(screen.getByRole('radio', { name: 'Live' })).toHaveAttribute('aria-checked', 'true')
+    const planned = screen.getByRole('radio', { name: 'Planned' })
+    expect(planned).toHaveAttribute('aria-checked', 'false')
+    expect(planned).toHaveAttribute('aria-describedby', 'why-disabled')
+  })
+
+  it('keeps the selected pill on a disabled selected segment and one tab stop on an all-disabled group', () => {
+    const ALL_DISABLED: Array<Segment<Key>> = SEGMENTS.map(segment => ({ ...segment, disabled: true }))
+    const { container } = render(
+      <SegmentedControl<Key> segments={ALL_DISABLED} value="planned" onChange={vi.fn()} collapse={false} />,
+    )
+    const planned = screen.getByRole('radio', { name: 'Planned' })
+    // Greyed out, but still shows which option is in force.
+    expect(planned.querySelector('.bg-card')).not.toBeNull()
+    expect(container.querySelectorAll('.bg-card')).toHaveLength(1)
+    expect(screen.getAllByRole('radio').filter(radio => radio.tabIndex === 0)).toEqual([planned])
+  })
+
+  it('arrow keys move focus without persisting a passed-over option', () => {
+    const onChange = vi.fn()
+    const TWO: Array<Segment<Key>> = [{ key: 'live', label: 'Live' }, { key: 'planned', label: 'Planned' }]
+    render(<SegmentedControl<Key> segments={TWO} value="live" onChange={onChange} collapse={false} />)
+    const live = screen.getByRole('radio', { name: 'Live' })
+    live.focus()
+    fireEvent.keyDown(live, { key: 'ArrowRight' })
+    expect(screen.getByRole('radio', { name: 'Planned' })).toHaveFocus()
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
   it('renders a disabled segment instead of hiding it', () => {
     render(<SegmentedControl<Key> segments={SEGMENTS} value="live" onChange={vi.fn()} collapse={false} />)
     expect(screen.getByText('Planned')).toBeInTheDocument()
@@ -43,15 +88,15 @@ describe('SegmentedControl disabled segments', () => {
     expect(onChange).toHaveBeenCalledWith('live')
   })
 
-  it('marks the segment aria-disabled rather than using the disabled attribute', () => {
-    // `aria-disabled` keeps the control focusable, so a keyboard or
-    // screen-reader user can still reach it and read the tooltip that explains
-    // WHY it is unavailable. The `disabled` attribute would remove it from the
-    // tab order and take that explanation with it.
+  it('marks disabled segments with ARIA semantics and removes them from the tab sequence', () => {
+    // `aria-disabled` exposes the unavailable state and the tooltip keeps the
+    // pointer explanation. Roving focus must still skip the segment, so it is
+    // programmatically present but not a sequential tab stop.
     render(<SegmentedControl<Key> segments={SEGMENTS} value="live" onChange={vi.fn()} collapse={false} />)
     const planned = screen.getByText('Planned').closest('button')
     expect(planned).toHaveAttribute('aria-disabled', 'true')
     expect(planned).not.toBeDisabled()
+    expect(planned).toHaveAttribute('tabindex', '-1')
     expect(planned).toHaveAttribute('title', 'Not wired up yet')
   })
 

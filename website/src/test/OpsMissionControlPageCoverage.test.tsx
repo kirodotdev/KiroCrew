@@ -208,16 +208,17 @@ async function expandFirstRow() {
 /**
  * Pick a tab. jsdom reports zero width for every element, so `SegmentedControl`
  * measures its parent as too narrow and collapses to its dropdown form: one
- * trigger button carrying the ACTIVE label, and the options only in the open
- * popup. The trigger precedes the popup in the DOM, hence the last-match pick —
- * when the target is already active, both exist and only the popup one selects.
+ * trigger button carrying the ACTIVE label, and the options — radios in the
+ * dropdown's radiogroup — only in the open popup. The trigger precedes the
+ * popup in the DOM, hence the last-match pick — when the target is already
+ * active, both exist and only the popup one selects.
  */
 async function switchTab(label: 'Board' | 'Signals' | 'Handover' | 'Settings') {
   const trigger = screen.getAllByRole('button', {
     name: /^(Board|Signals|Handover|Settings)$/,
   })[0]
   fireEvent.click(trigger)
-  const options = await waitFor(() => screen.getAllByRole('button', { name: label }))
+  const options = await waitFor(() => screen.getAllByRole('radio', { name: label }))
   fireEvent.click(options[options.length - 1])
 }
 

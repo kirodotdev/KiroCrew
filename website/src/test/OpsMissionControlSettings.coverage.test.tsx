@@ -231,7 +231,7 @@ describe('the autonomy ceiling', () => {
 
   it('writes the picked mode through the settings route', async () => {
     renderPanel()
-    fireEvent.click(await screen.findByRole('button', { name: /Act/ }))
+    fireEvent.click(await screen.findByRole('radio', { name: /Act/ }))
     await waitFor(() => expect(mockApi.putSettings).toHaveBeenCalledWith({ mode: 'act' }))
   })
 
@@ -254,7 +254,7 @@ describe('the autonomy ceiling', () => {
   it('surfaces a refused write instead of leaving the click silent', async () => {
     mockApi.putSettings.mockRejectedValue(new Error('mode not accepted: act'))
     renderPanel()
-    fireEvent.click(await screen.findByRole('button', { name: /Act/ }))
+    fireEvent.click(await screen.findByRole('radio', { name: /Act/ }))
     expect(await screen.findByText('mode not accepted: act')).toBeInTheDocument()
   })
 })

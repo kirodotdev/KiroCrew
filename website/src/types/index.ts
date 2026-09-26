@@ -1321,8 +1321,13 @@ export interface ChatFolder {
   channel?: string
 }
 
+export type AgentTagPolicy = 'none' | 'add-only' | 'add-remove'
+
 export interface ChatTag {
   id: string; name: string; color: string; order: number; status?: boolean
+  agent?: AgentTagPolicy
+  agent_provenanced?: boolean
+  agent_store_degraded?: boolean
 }
 
 export type TagColumnMode = 'any' | 'all' | 'none'

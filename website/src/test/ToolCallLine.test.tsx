@@ -304,8 +304,8 @@ describe('ToolCallLine inline expansion', () => {
     })
     renderWithProviders(<ToolCallLine message={toolMsg()} running={false} />, { store })
     fireEvent.click(screen.getByRole('button', { name: /Show details/i }))
-    expect(screen.queryByRole('button', { name: 'Input' })).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Output' })).toBeNull()
+    expect(screen.queryByRole('radio', { name: 'Input' })).toBeNull()
+    expect(screen.queryByRole('radio', { name: 'Output' })).toBeNull()
     // The section is still named, so the user knows which half they are reading.
     expect(screen.getByText('Output')).toBeTruthy()
     expect(screen.getByText('only-output')).toBeTruthy()
@@ -368,7 +368,7 @@ describe('ToolCallLine inline expansion', () => {
     // Default segment is Output → output content visible
     expect(await screen.findByText(/127\.0\.0\.1 localhost/)).toBeTruthy()
     // Input segment exists and is enabled (data is available)
-    const inputBtn = screen.getByRole('button', { name: 'Input' })
+    const inputBtn = screen.getByRole('radio', { name: 'Input' })
     expect(inputBtn.hasAttribute('disabled')).toBe(false)
     fireEvent.click(inputBtn)
     // AnimatePresence mode="wait" sequences the exit→enter, so wait for the

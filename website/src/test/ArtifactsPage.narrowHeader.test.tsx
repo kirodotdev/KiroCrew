@@ -50,9 +50,9 @@ describe('ArtifactsPage header row at phone width', () => {
     renderWithProviders(<ArtifactsPage />)
     // The selected view keeps its label so the current state stays readable;
     // the unselected one is the width that has to go.
-    await waitFor(() => expect(screen.getByRole('button', { name: /gallery/i })).toBeTruthy())
-    expect(screen.getByRole('button', { name: /gallery/i }).textContent).toContain('Gallery')
-    expect(screen.getByRole('button', { name: /table/i }).textContent).toBe('')
+    await waitFor(() => expect(screen.getByRole('radio', { name: /gallery/i })).toBeTruthy())
+    expect(screen.getByRole('radio', { name: /gallery/i }).textContent).toContain('Gallery')
+    expect(screen.getByRole('radio', { name: /table/i }).textContent).toBe('')
   })
 
   it('moves the folder action off the row and into the add menu', async () => {

@@ -332,11 +332,29 @@ def _make_folder_app(state: DashboardState) -> web.Application:
     return app
 
 
-def _make_tags_app(state: DashboardState) -> web.Application:
+def _make_tags_app(
+    state: DashboardState, *, authenticate_owner: bool = True, booted_store: bool = True
+) -> web.Application:
     """Minimal aiohttp app with chat_tags endpoints (vocabulary, columns, drop, slot tags)."""
+    from kiro_crew.dashboard import chat_tag_grants
+
+    # A real boot always writes the grant store (``DashboardState.load_tags``
+    # seeds it, empty on an upgraded install), and an owner create refuses to
+    # mint into a MISSING one. Mirror that boot here unless the test has
+    # arranged a store condition of its own: an existing (even broken) file,
+    # a boot quarantine it is exercising, or ``booted_store=False`` for a
+    # test about the missing store itself.
+    if (
+        booted_store
+        and not chat_tag_grants._store_path().exists()
+        and not chat_tag_grants._quarantined_this_boot
+    ):
+        chat_tag_grants.seed_default_grants([])
+        chat_tag_grants.refresh_cache()
     from kiro_crew.dashboard.chat_tags import (
         api_chat_slot_drop,
         api_chat_slot_tags,
+        api_chat_tag_adopt,
         api_chat_tag_column_create,
         api_chat_tag_column_delete,
         api_chat_tag_column_update,
@@ -348,10 +366,21 @@ def _make_tags_app(state: DashboardState) -> web.Application:
         api_chat_tags,
     )
 
-    app = web.Application()
+    @web.middleware
+    async def _test_auth_middleware(request: web.Request, handler):
+        """Simulate owner claims installed by token_auth_middleware."""
+        if authenticate_owner:
+            if "app" not in request:
+                request["app"] = ""
+            if "user" not in request:
+                request["user"] = "local-app"
+        return await handler(request)
+
+    app = web.Application(middlewares=[_test_auth_middleware])
     app["state"] = state
     app.router.add_get("/api/chat/tags", api_chat_tags)
     app.router.add_post("/api/chat/tags", api_chat_tag_create)
+    app.router.add_post("/api/chat/tags/{id}/adopt", api_chat_tag_adopt)
     app.router.add_patch("/api/chat/tags/{id}", api_chat_tag_update)
     app.router.add_delete("/api/chat/tags/{id}", api_chat_tag_delete)
     app.router.add_put("/api/chat/slots/{slot}/tags", api_chat_slot_tags)

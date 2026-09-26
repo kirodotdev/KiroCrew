@@ -292,7 +292,7 @@ test('a known configured model that is not serving reads configured-not-active w
     return { status: run.status, error: run.error, errorCode: run.error_code, result: run.result }
   }).toEqual({ status: 'finished', error: storageError, errorCode: 'workflow_checkpoint_failed', result: { evidence: 'checkpoint-result-kept' } })
   await page.goto('/workflows')
-  await page.getByRole('button', { name: 'Runs', exact: true }).click()
+  await page.getByRole('radio', { name: 'Runs', exact: true }).click()
   await page.getByRole('button', { name: /Checkpoint storage evidence/ }).click()
   const storageNotice = page.getByTestId('workflow-run-tree-error')
   await expect(storageNotice).toContainText('Progress could not be saved.')

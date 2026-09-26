@@ -774,10 +774,10 @@ describe('private member memory lifecycle', () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
     await loaded()
     expect(screen.getByText('Facts save details. Lessons guide the member’s work. Experiences are events the member can recall.', { exact: true })).toBeVisible()
-    fireEvent.click(screen.getByRole('button', { name: /^Experiences/ }))
+    fireEvent.click(screen.getByRole('radio', { name: /^Experiences/ }))
     expect(await screen.findByText(EPISODE.text)).toBeInTheDocument()
     expect(screen.queryByText(FACT.value_json)).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'All' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'All' }))
     expect(await screen.findByText(FACT.value_json)).toBeInTheDocument()
   })
 

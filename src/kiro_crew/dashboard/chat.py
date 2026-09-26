@@ -135,6 +135,7 @@ from kiro_crew.dashboard.chat_slack import (  # noqa: F401
 from kiro_crew.dashboard.chat_tags import (  # noqa: F401
     api_chat_slot_drop,
     api_chat_slot_tags,
+    api_chat_tag_adopt,
     api_chat_tag_column_create,
     api_chat_tag_column_delete,
     api_chat_tag_column_update,

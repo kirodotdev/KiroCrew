@@ -102,6 +102,7 @@ def register(app: web.Application) -> None:
     # Tags
     app.router.add_get("/api/chat/tags", chat.api_chat_tags)
     app.router.add_post("/api/chat/tags", chat.api_chat_tag_create)
+    app.router.add_post("/api/chat/tags/{id}/adopt", chat.api_chat_tag_adopt)
     app.router.add_patch("/api/chat/tags/{id}", chat.api_chat_tag_update)
     app.router.add_delete("/api/chat/tags/{id}", chat.api_chat_tag_delete)
     app.router.add_put("/api/chat/slots/{slot}/tags", chat.api_chat_slot_tags)
