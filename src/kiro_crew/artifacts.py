@@ -45,6 +45,7 @@ logic.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -225,6 +226,26 @@ class ArtifactStillPublishedError(ArtifactError):
     "not this one" instead of silently erasing that handle. Distinct from the base
     error so such a caller can separate "refused, and correctly" from a real failure.
     """
+
+
+class ArtifactConflictError(ArtifactError):
+    """Raised by ``update(expected_token=...)`` when the content changed since that read.
+
+    Another writer -- a second dashboard window, an agent edit -- saved after the
+    caller read the content its token names. Carries the live token and version so
+    the client can refetch and re-base instead of overwriting the newer content.
+    """
+
+    def __init__(self, message: str, *, current_token: str, version: int) -> None:
+        super().__init__(message)
+        self.current_token = current_token
+        self.version = version
+
+
+#: Shape of a wire ``content_token`` / ``expected_token``: hex HMAC-SHA256.
+_TOKEN_RE = re.compile(r"[0-9a-f]{64}")
+#: Shape of a persisted ``content_salt``: 128 random bits as lowercase hex.
+_CONTENT_SALT_RE = re.compile(r"[0-9a-f]{32}")
 
 
 class ArtifactReplacedError(ArtifactError):
@@ -605,6 +626,18 @@ class Artifact:
     #: Tolerant-loaded from meta.json (older/other-kind artifacts default to
     #: ``None``).
     image: "ImageMetadata | None" = None
+    #: Optimistic-concurrency token for the current content, set by ``get()`` for
+    #: store-backed artifacts and by ``update()`` after a content write. Opaque:
+    #: HMAC-SHA256 under the store's per-process key, so it reveals nothing about
+    #: content the HTTP layer redacts. Clients echo it back as ``expected_token``.
+    #: ``None`` for versioned reads and live file-backed artifacts. Not persisted.
+    content_token: str | None = None
+    #: Per-artifact token domain, rotated on every content write so a token
+    #: minted for one write never equals a token for another -- a caller who can
+    #: write cannot save a guess and compare tokens to learn redacted content.
+    #: Persisted in meta.json; never serialized to clients. Empty on artifacts
+    #: that predate it.
+    content_salt: str = ""
 
     def to_dict(self, *, include_content: bool = False, persist: bool = False) -> dict[str, Any]:
         """Render as a JSON-friendly dict, optionally including the content blob.
@@ -617,6 +650,11 @@ class Artifact:
         d = asdict(self)
         if not include_content:
             d.pop("content", None)
+        # The token only means something next to the content it was minted for.
+        if persist or not include_content or not d.get("content_token"):
+            d.pop("content_token", None)
+        if not persist:
+            d.pop("content_salt", None)
         # slug_collided_with is an internal create-time signal read off the
         # attribute, never through this dict: a response that reports it composes
         # the key itself, and serializing it here would leak it into every later
@@ -645,6 +683,11 @@ def _now_iso() -> str:
     deterministically by ``updated_at``.
     """
     return datetime.now(timezone.utc).isoformat(timespec="microseconds")
+
+
+def _new_content_salt() -> str:
+    """A fresh :attr:`Artifact.content_salt`: 128 random bits as lowercase hex."""
+    return os.urandom(16).hex()
 
 
 def slugify(name: str) -> str:
@@ -1219,6 +1262,23 @@ def _lock_for_root(root: Path) -> threading.Lock:
         return lock
 
 
+#: Content-token keys, one per resolved root per process -- keyed like
+#: :data:`_root_locks` so every instance on a root mints and checks the same
+#: tokens. Held in memory only: a restart issues a new key, so a token read
+#: before it answers 409 once and the client re-bases on the token it is given.
+_root_token_keys: dict[str, bytes] = {}
+
+
+def _token_key_for_root(root: Path) -> bytes:
+    key = str(root)
+    with _root_locks_guard:
+        secret = _root_token_keys.get(key)
+        if secret is None:
+            secret = os.urandom(32)
+            _root_token_keys[key] = secret
+        return secret
+
+
 def _fence_refuses(resolved: Path) -> bool:
     """Ask the sensitive-path fence about a path the store already canonicalised.
 
@@ -1295,6 +1355,7 @@ class ArtifactStore:
         # Keyed by the RESOLVED root so a symlinked alias of the same
         # directory still shares the lock, not just a literal path match.
         self._lock = _lock_for_root(resolved)
+        self._token_key = _token_key_for_root(resolved)
         self._root.mkdir(parents=True, exist_ok=True)
 
     # ── public API ────────────────────────────────────────────────────────
@@ -1302,6 +1363,20 @@ class ArtifactStore:
     @property
     def root(self) -> Path:
         return self._root
+
+    def _content_token(self, art: Artifact, content: str) -> str:
+        """The opaque token for *content* as held by *art* (see ``Artifact.content_token``)."""
+        # Artifacts that predate the salt get a per-slug domain until their next write.
+        domain = art.content_salt or f"legacy:{art.slug}"
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        return hmac.new(
+            self._token_key, f"{domain}\0{digest}".encode("utf-8"), hashlib.sha256
+        ).hexdigest()
+
+    @staticmethod
+    def _is_live_pointer(art: Artifact) -> bool:
+        """True when reads come from ``source_path`` rather than the store's own copy."""
+        return bool(art.source_path) and not art.source_copy_only
 
     def set_change_listener(self, listener: Callable[[str, str], None] | None) -> None:
         """Register a callback fired after a content-affecting mutation.
@@ -1678,6 +1753,7 @@ class ArtifactStore:
                     meta.content = self._read_text(self._artifact_dir(slug) / "current.html")
             else:
                 meta.content = self._read_text(self._artifact_dir(slug) / "current.html")
+                meta.content_token = self._content_token(meta, meta.content)
             # Compute live_dirty by comparing the live content to the
             # latest numbered snapshot. Catches both silent saves AND
             # external file edits to source_path that we never saw —
@@ -1912,6 +1988,7 @@ class ArtifactStore:
         event_type: str | None = None,
         from_version: int | None = None,
         snapshot: bool = False,
+        expected_token: str | None = None,
     ) -> Artifact:
         """Update an artifact in place. Content writes always update the live
         state (source_path on disk for file-backed artifacts, current.html
@@ -1931,10 +2008,46 @@ class ArtifactStore:
         ``user``. Must be in :data:`ALLOWED_EVENT_TYPES` if provided.
         ``from_version`` is recorded on ``reverted`` events so the timeline
         can show "Reverted to vN".
+
+        ``expected_token`` makes a content write conditional: it is the
+        ``content_token`` a prior ``get()`` returned, and when the live content
+        mints a different token the write raises :class:`ArtifactConflictError`
+        and changes nothing. Omitted, the write is last-write-wins.
+        It applies to store-backed artifacts only; a live file-backed artifact
+        mints no token and ignores it, because its content is owned by the
+        source file, which writers outside the store change without the lock.
         """
         slug = _validate_slug(slug)
+        # Before any side effect: an invalid type must not leave a partial write.
+        if event_type is not None and event_type not in ALLOWED_EVENT_TYPES:
+            raise ArtifactValidationError(
+                f"invalid event type {event_type!r}: "
+                f"must be one of {sorted(ALLOWED_EVENT_TYPES)}"
+            )
+        if expected_token is not None and not (
+            isinstance(expected_token, str) and _TOKEN_RE.fullmatch(expected_token)
+        ):
+            raise ArtifactValidationError(
+                "expected_token must be the 64-character hex content_token from a prior read"
+            )
         with self._lock:
             art = self._load_meta(slug)
+            guarded = (
+                expected_token is not None
+                and content is not None
+                and not self._is_live_pointer(art)
+            )
+            if guarded:
+                assert expected_token is not None  # narrowed by ``guarded``
+                live_token = self._content_token(
+                    art, self._read_text(self._artifact_dir(slug) / "current.html")
+                )
+                if not hmac.compare_digest(live_token, expected_token):
+                    raise ArtifactConflictError(
+                        f"artifact {slug!r} changed since it was read; refetch and re-base",
+                        current_token=live_token,
+                        version=art.version,
+                    )
             changed_content = False
             # True when this call READ art.content off source_path (snapshot path),
             # which makes writing it back unsafe -- see the snapshot branch below.
@@ -2027,6 +2140,9 @@ class ArtifactStore:
                         art.kind = detected
                 prev = self._artifact_dir(slug) / "current.html"
                 self._write_text(prev, live_content)
+                if content is not None:
+                    # A new write is a new token domain (see ``Artifact.content_salt``).
+                    art.content_salt = _new_content_salt()
                 # Never mirror back for a copy — editing it must not rewrite
                 # the user's original file — and never for content this call
                 # just READ off that same file (see snapshot_derived above).
@@ -2055,6 +2171,8 @@ class ArtifactStore:
                             art.source_path,
                         )
                         art.source_copy_only = True
+                if not self._is_live_pointer(art):
+                    art.content_token = self._content_token(art, live_content)
                 # Content changed — re-validate comment anchors so threads
                 # whose quoted text no longer exists get flagged as orphaned
                 # (and restored if the text comes back, e.g. on a revert).
@@ -2063,16 +2181,6 @@ class ArtifactStore:
                 self._rescan_comment_anchors_locked(slug, live_content)
 
                 if snapshot:
-                    # Validate event_type BEFORE side effects.
-                    # Otherwise an invalid event_type raises after the
-                    # version bump and versions/v{N}.html write, leaving an
-                    # orphaned file on disk because _write_meta is never
-                    # reached. Validate first; commit second.
-                    if event_type is not None and event_type not in ALLOWED_EVENT_TYPES:
-                        raise ArtifactValidationError(
-                            f"invalid event type {event_type!r}: "
-                            f"must be one of {sorted(ALLOWED_EVENT_TYPES)}"
-                        )
                     # Bump version + capture the new state under
                     # versions/v{N}.html so it's preserved in history.
                     art.version += 1
@@ -2393,6 +2501,7 @@ class ArtifactStore:
         """
         self._write_text(self._artifact_dir(art.slug) / "current.html", draft)
         art.content = draft
+        art.content_salt = _new_content_salt()
         # A settled draft is this document's first content, so it gets the same
         # kind detection an ordinary save would have applied. Without this, typing
         # JSON into a blank and navigating away stored it as markdown and rendered
@@ -3446,6 +3555,7 @@ class ArtifactStore:
         (adir / "versions").mkdir(parents=True, exist_ok=True)
         self._write_text(adir / "current.html", content)
         self._snapshot_version(art.slug, art.version, adir / "current.html")
+        art.content_salt = _new_content_salt()
         self._write_meta(art)
 
     def _write_image_artifact(self, art: Artifact, data: bytes) -> None:
@@ -3465,6 +3575,7 @@ class ArtifactStore:
         self._snapshot_version(art.slug, art.version, adir / "current.html")
         assert art.image is not None  # set by create_image before this is called
         self._write_bytes(adir / f"asset.{art.image.ext}", data)
+        art.content_salt = _new_content_salt()
         self._write_meta(art)
 
     def _snapshot_version(self, slug: str, version: int, src: Path) -> None:
@@ -3613,6 +3724,12 @@ class ArtifactStore:
             for vk_k, vk_v in raw_vk.items():
                 if isinstance(vk_k, str) and isinstance(vk_v, str):
                     version_kinds[vk_k] = vk_v
+        # The salt feeds the token HMAC, so only the shape the store writes loads.
+        content_salt = raw.get("content_salt") or ""
+        if not isinstance(content_salt, str) or (
+            content_salt and _CONTENT_SALT_RE.fullmatch(content_salt) is None
+        ):
+            raise ArtifactError(f"meta.json content_salt malformed: {path}")
         return Artifact(
             slug=str(slug),
             name=str(raw.get("name", slug)),
@@ -3641,6 +3758,7 @@ class ArtifactStore:
             version_kinds=version_kinds,
             webapp_metadata=webapp_metadata_from_dict(raw.get("webapp_metadata")),
             image=image,
+            content_salt=content_salt,
         )
 
     @staticmethod

@@ -1688,6 +1688,9 @@ export interface Artifact {
   created_at: string
   updated_at: string
   content?: string
+  /** Opaque optimistic-concurrency token for `content`; echo it back as
+   * `expected_token` on a content save. Absent for live file-backed artifacts. */
+  content_token?: string
   /** Original source path for file-backed artifacts (live pointer). */
   source_path?: string
   /** True when the live state differs from the latest numbered snapshot.
