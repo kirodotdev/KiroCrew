@@ -35,7 +35,7 @@ const cfgMock = vi.hoisted(() => ({ loadChatConfig: vi.fn(() => ({ confirmCloseS
 vi.mock('../pages/chat/ChatSettings', () => cfgMock)
 
 import { store } from '../store'
-import { sseSlots, markSlotUnread, updateSlotPin } from '../store/dashboardSlice'
+import { sseSlots, sseSlotPatch, markSlotUnread, updateSlotPin } from '../store/dashboardSlice'
 import { useSessionActions } from '../hooks/useSessionActions'
 
 const SLOT = 'chat-actions-1'
@@ -103,6 +103,68 @@ describe('useSessionActions', () => {
     expect(slotOf()?.pinned).toBe(true)
     await waitFor(() => expect(mocks.setSlotPin).toHaveBeenCalledWith(SLOT, true))
     expect(slotOf()?.pinned).toBe(true)                        // no rollback
+  })
+
+  it('togglePin reconciles from the PATCH answer without re-reading the slot list', async () => {
+    mocks.setSlotPin.mockResolvedValue({ ok: true, pinned: true })
+    seed(false)
+    const a = renderActions()
+    act(() => a.current.togglePin(SLOT))
+    await waitFor(() => expect(mocks.setSlotPin).toHaveBeenCalledWith(SLOT, true))
+    await waitFor(() => expect(slotOf()?.pinned).toBe(true))
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(mocks.chatSlots).not.toHaveBeenCalled()
+  })
+
+  it('togglePin re-reads the slot list after a stale full frame reverts the row', async () => {
+    let answer: (value: unknown) => void = () => {}
+    mocks.setSlotPin.mockReturnValue(new Promise(resolve => { answer = resolve }))
+    mocks.chatSlots.mockResolvedValue([
+      { key: SLOT, title: SLOT, messages: 0, running: false, folder_id: '', pinned: true } as ChatSlot,
+    ])
+    seed(false)
+    const a = renderActions()
+    act(() => a.current.togglePin(SLOT))
+    await waitFor(() => expect(mocks.setSlotPin).toHaveBeenCalled())
+    // A list serialized before the PATCH committed lands while it is in flight.
+    act(() => { store.dispatch(sseSlots([{ key: SLOT, title: SLOT, messages: 0, running: false, folder_id: '', pinned: false }])) })
+    expect(slotOf()?.pinned).toBe(false)
+    await act(async () => { answer({ ok: true, pinned: true }) })
+    await waitFor(() => expect(mocks.chatSlots).toHaveBeenCalled())
+    await waitFor(() => expect(slotOf()?.pinned).toBe(true))
+  })
+
+  it('togglePin keeps a later full-frame unpin over the PATCH answer', async () => {
+    let answer: (value: unknown) => void = () => {}
+    mocks.setSlotPin.mockReturnValue(new Promise(resolve => { answer = resolve }))
+    mocks.chatSlots.mockResolvedValue([
+      { key: SLOT, title: SLOT, messages: 0, running: false, folder_id: '', pinned: false } as ChatSlot,
+    ])
+    seed(false)
+    const a = renderActions()
+    act(() => a.current.togglePin(SLOT))
+    await waitFor(() => expect(mocks.setSlotPin).toHaveBeenCalled())
+    // Another tab's full snapshot unpins after this tab's PATCH committed.
+    act(() => { store.dispatch(sseSlots([{ key: SLOT, title: SLOT, messages: 0, running: false, folder_id: '', pinned: false }])) })
+    await act(async () => { answer({ ok: true, pinned: true }) })
+    await waitFor(() => expect(mocks.chatSlots).toHaveBeenCalled())
+    await waitFor(() => expect(slotOf()?.pinned).toBe(false))
+  })
+
+  it('togglePin keeps a newer single-row write over its own answer', async () => {
+    let answer: (value: unknown) => void = () => {}
+    mocks.setSlotPin.mockReturnValue(new Promise(resolve => { answer = resolve }))
+    seed(false)
+    const a = renderActions()
+    act(() => a.current.togglePin(SLOT))
+    await waitFor(() => expect(mocks.setSlotPin).toHaveBeenCalled())
+    // Another tab unpinned after this PATCH committed; its slot_patch arrives
+    // before this tab's HTTP answer.
+    act(() => { store.dispatch(sseSlotPatch({ slots: [{ key: SLOT, pinned: false }] })) })
+    await act(async () => { answer({ ok: true, pinned: true }) })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(slotOf()?.pinned).toBe(false)
+    expect(mocks.chatSlots).not.toHaveBeenCalled()
   })
 
   it('close honours confirmCloseSession', () => {

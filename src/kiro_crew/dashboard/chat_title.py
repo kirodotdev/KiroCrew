@@ -1550,7 +1550,10 @@ async def api_chat_slot_rename(request: web.Request) -> web.Response:
     slot._title_origin = _TITLE_ORIGIN_USER
     slot._title_epoch += 1
     await _persist_title(state, slot)
-    state.push_slot_title(slot.key, title)
+    # ``slot_title`` keeps every consumer's title current; the patch carries the
+    # projected (redacted) title to patch-capable tabs in place of a full list.
+    state.push_slot_title(slot.key, title, full=False)
+    state.push_slot_patch(slot.key, ("title",))
     sel().log_api_access(
         caller="dashboard",
         operation="chat.slot_rename",

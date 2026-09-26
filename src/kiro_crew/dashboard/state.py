@@ -68,7 +68,7 @@ from kiro_crew.dashboard.slot_queue_repository import (
 )
 from kiro_crew.dashboard.slot_registry import SlotRegistry
 from kiro_crew.dashboard.system_notices import is_system_notice
-from kiro_crew.dashboard.websocket_hub import WebSocketHub
+from kiro_crew.dashboard.websocket_hub import SLOT_PATCH_WS_FLAG, WebSocketHub
 from kiro_crew.deny_guidance import remediation_for
 from kiro_crew.deny_notice import (  # noqa: F401 -- re-exported for dashboard importers
     _DENY_CAUSE_TEXT,
@@ -317,6 +317,10 @@ def _registry_for(state: Any) -> SlotRegistry:
 #: against this one number, so raising the ceiling is a single edit and no entry
 #: point can silently drift to a different limit.
 MAX_LIVE_SLOTS = 500
+
+#: Fields whose dashboard-user projection is identical for every slot-patch
+#: audience. Per-audience fields such as ``source_links`` require a full frame.
+_SLOT_PATCH_FIELDS = frozenset({"pinned", "title", "folder_id"})
 
 #: The most live slots ONE creator may hold, as a sub-ceiling under
 #: :data:`MAX_LIVE_SLOTS`. The global ceiling alone bounds the total but not the
@@ -4828,6 +4832,13 @@ class DashboardState:
     _slots_broadcast_lock: "threading.Lock | None" = None
     _slots_broadcast_timer: "asyncio.TimerHandle | None" = None
     _slots_broadcast_last: float = 0.0
+    # Who the next coalesced slots broadcast is owed to, written under
+    # ``_slots_broadcast_lock``. A ``push_slots_update(legacy_only=True)`` owes
+    # the full list only to consumers that cannot apply a ``slot_patch`` frame;
+    # any ordinary push owes it to everyone and wins. Both False (the state of a
+    # direct ``_do_slots_broadcast`` call) means everyone.
+    _slots_push_all_owed: bool = False
+    _slots_push_legacy_owed: bool = False
     # The one loop this dashboard is served on. Every surface that hands work in
     # from a foreign thread -- the coalesced slots broadcast, an off-loop
     # websocket send, the log handler's fan-out -- resolves it through
@@ -8305,7 +8316,7 @@ class DashboardState:
                 exc_info=True,
             )
 
-    def push_slots_update(self) -> None:
+    def push_slots_update(self, *, legacy_only: bool = False) -> None:
         """Push slots, keeping provider status confined to owner websockets.
 
         Coalesces on a leading plus trailing edge: the first call after an idle
@@ -8315,7 +8326,22 @@ class DashboardState:
         so an uncoalesced burst redraws the whole sidebar once per mutation for
         what the user sees as one change. The trailing flush re-serializes at
         delivery time, so a coalesced frame is never a stale frame.
+
+        ``legacy_only`` owes the full list only to consumers that cannot apply a
+        ``slot_patch`` frame (SSE readers, app tokens, a tab whose bundle
+        predates the frame). :meth:`push_slot_patch` and
+        :meth:`push_slot_removed` use it: the patch already reached every
+        socket that declared the capability, so those sockets skip this
+        broadcast. An ordinary call absorbed into the same window widens the
+        broadcast back to everyone.
         """
+        lock = self._slots_broadcast_lock
+        if lock is not None:
+            with lock:
+                if legacy_only:
+                    self._slots_push_legacy_owed = True
+                else:
+                    self._slots_push_all_owed = True
         if self._slots_push_suspend:
             # Inside suspend_slots_push(); remember that a push is owed and let the
             # outermost block emit a single coalesced broadcast on exit.
@@ -8324,7 +8350,6 @@ class DashboardState:
 
         now = time.monotonic()
         broadcast_now = False
-        lock = self._slots_broadcast_lock
         if lock is None:
             # Partially-constructed state (built via __new__): no coalescing.
             self._do_slots_broadcast()
@@ -8429,6 +8454,35 @@ class DashboardState:
                 self._slots_broadcast_last = time.monotonic()
         self._do_slots_broadcast()
 
+    def _take_slots_audience(self) -> bool:
+        """Consume the owed-audience flags; True when only legacy consumers are owed."""
+        lock = self._slots_broadcast_lock
+        if lock is None:
+            return False
+        with lock:
+            legacy_only = self._slots_push_legacy_owed and not self._slots_push_all_owed
+            self._slots_push_legacy_owed = False
+            self._slots_push_all_owed = False
+        return legacy_only
+
+    def _has_legacy_slots_audience(self) -> bool:
+        """True when some consumer can only learn slot changes from a full list.
+
+        That is every SSE reader, and every open socket that did not declare
+        the ``slot_patch`` capability at connect: an app token, a companion
+        window, or a tab still running a bundle from before the frame existed.
+        App sockets count even when their scope would filter the list to
+        nothing, because asking the scope gate here would audit a denial per
+        socket per metadata edit; the cost is one serialization that the
+        pre-patch protocol paid on every edit anyway.
+        """
+        if getattr(self, "_sse_queues", None):
+            return True
+        return any(
+            not ws.closed and not ws.get(SLOT_PATCH_WS_FLAG, False)
+            for ws in list(getattr(self, "_ws_clients", None) or ())
+        )
+
     def _do_slots_broadcast(self) -> None:
         """Serialize and broadcast the slot list. Bypasses coalescing."""
         from kiro_crew.dashboard.handlers.source_providers import (
@@ -8437,6 +8491,13 @@ class DashboardState:
         from kiro_crew.platform.governance_profiles import (
             governance_answer_generation,
         )
+
+        legacy_only = self._take_slots_audience()
+        if legacy_only and not self._has_legacy_slots_audience():
+            # Every consumer already applied the patch this broadcast was owed
+            # for, so serializing the whole list would reach nobody.
+            self._emit_member_slot_transitions()
+            return
 
         yolo_active = self.is_yolo_active()  # expire first if needed
         # PUBLIC-repo chip status rides the general frame so any authenticated
@@ -8457,6 +8518,10 @@ class DashboardState:
         # One serialization pass for all three audiences -- see
         # ``serialize_slot_views`` for why three passes stalled the event loop.
         owner_ws_clients = getattr(self, "_owner_ws_clients", None)
+        if legacy_only and owner_ws_clients:
+            owner_ws_clients = {
+                ws for ws in owner_ws_clients if not ws.get(SLOT_PATCH_WS_FLAG, False)
+            }
         slots_data, slots_data_ws, owner_slots = self.serialize_slot_views(
             owner=bool(owner_ws_clients)
         )
@@ -8530,6 +8595,9 @@ class DashboardState:
                 # tree alone is not a change signal.
                 "foldersGeneration": self.folders_generation(),
                 "governanceGeneration": answer_generation,
+                # Read by ``_broadcast`` to skip sockets that already applied
+                # the ``slot_patch`` this broadcast was owed for.
+                "_legacy_only": legacy_only,
             }
         )
         # The owner frame is the owner's ONLY slots frame — `_send_ws_all` skips
@@ -8549,9 +8617,20 @@ class DashboardState:
                     folders=_safe_folder_tree(getattr(self, "_folders", None)),
                     folders_gen=self.folders_generation(),
                     governance_gen=answer_generation,
-                )
+                ),
+                **({"skip_slot_patch_clients": True} if legacy_only else {}),
             )
 
+        self._emit_member_slot_transitions()
+
+    def _emit_member_slot_transitions(self) -> None:
+        """Log slot/opened and slot/closed for member-driven slots.
+
+        Runs after every slots broadcast and after :meth:`push_slot_removed`,
+        which is how a close reaches the log when no consumer needed the full
+        list. It diffs against the last-seen set, so a second call for the same
+        registry state emits nothing.
+        """
         # Best-effort per-member event log: emit slot/opened and slot/closed
         # for slots DRIVEN by a member (created_by is a member NAME), diffed
         # against the last-seen set on this state object. Additive; never
@@ -8750,6 +8829,87 @@ class DashboardState:
         if full:
             self.push_slots_update()
 
+    def push_slot_patch(self, key: str, fields: Iterable[str]) -> None:
+        """Publish a metadata edit to one slot without re-sending the slot list.
+
+        Sockets that declared the ``slot_patch`` capability receive
+        ``{"type": "slot_patch", "data": {"slots": [{"key", <field>: ...}]}}``,
+        a row carrying only the named fields, and merge it into their copy of
+        the row. Every other consumer gets the full list through
+        ``push_slots_update(legacy_only=True)``, so an old tab kept open across
+        a gateway restart sees the same thing it always did.
+
+        The values come from the dashboard-user projection of the slot, so a
+        patched field reads exactly as it would in the full frame (the title is
+        redacted the same way). Only fields in :data:`_SLOT_PATCH_FIELDS` are
+        accepted because ``source_links`` and other per-audience fields require
+        a full frame. A slot that is gone or still under construction falls back
+        to an ordinary full push.
+        """
+        field_names = tuple(fields)
+        unsupported = sorted(set(field_names) - _SLOT_PATCH_FIELDS)
+        if unsupported:
+            raise ValueError(f"unsupported slot patch fields: {', '.join(unsupported)}")
+        slot = self._slots.get(key)
+        under_construction = getattr(self, "_slots_under_construction", None) or ()
+        if slot is None or key in under_construction:
+            self.push_slots_update()
+            return
+        if self._has_legacy_slots_audience():
+            self.push_slots_update(legacy_only=True)
+        if not self._has_slot_patch_clients():
+            return
+        row = self.serialize_slot(slot, dashboard_user=True)
+        patch: dict[str, Any] = {"key": key}
+        for field in field_names:
+            if field in row:
+                patch[field] = row[field]
+        self._send_slot_patch({"slots": [patch]})
+
+    def push_slot_removed(self, key: str) -> None:
+        """Publish that slot *key* left the registry without re-sending the list.
+
+        Patch-capable sockets receive ``{"slots": [...], "removed": [key]}``.
+        The ``slots`` rows re-state the ``parent`` of every row whose creator is
+        not live, because a removed conductor turns its workers' ``parent.key``
+        to ``None`` in the full frame; carrying those rows keeps the sidebar's
+        nesting identical to what a full list would have produced. Everyone else
+        gets the full list, as with :meth:`push_slot_patch`.
+
+        A key that is registered again (a same-name replacement landed while the
+        close was tearing down) is not removed: the full push describes it.
+        """
+        if key in self._slots:
+            self.push_slots_update()
+            return
+        if self._has_legacy_slots_audience():
+            self.push_slots_update(legacy_only=True)
+        if self._has_slot_patch_clients():
+            under_construction = getattr(self, "_slots_under_construction", None) or ()
+            rows: list[dict[str, Any]] = [
+                {"key": k} for k in list(self._slots) if k not in under_construction
+            ]
+            _attach_slot_parents(rows, getattr(self, "spend_slot_by_session", None))
+            orphans = [
+                {"key": row["key"], "parent": row["parent"]}
+                for row in rows
+                if isinstance(row.get("parent"), dict)
+                and row["parent"].get("key") is None
+                and not row.get("lineage_pending")
+            ]
+            self._send_slot_patch({"slots": orphans, "removed": [key]})
+        self._emit_member_slot_transitions()
+
+    def _has_slot_patch_clients(self) -> bool:
+        return any(
+            not ws.closed and ws.get(SLOT_PATCH_WS_FLAG, False)
+            for ws in list(getattr(self, "_ws_clients", None) or ())
+        )
+
+    def _send_slot_patch(self, data: dict[str, Any]) -> None:
+        """Serialize one ``slot_patch`` frame and hand it to patch-capable sockets."""
+        _websocket_for(self).send_ws_slot_patch(json.dumps({"type": "slot_patch", "data": data}))
+
     def push_session_summary(self, key: str) -> None:
         """Broadcast that a session's intent summary was regenerated.
 
@@ -8845,6 +9005,8 @@ class DashboardState:
                     "slots": slots_list,
                     "yolo": note.get("_yolo", False),
                     "channelTrusted": note.get("channelTrusted", False),
+                    # Consumed by ``_send_ws_all``; never serialized to a client.
+                    "_legacy_only": bool(note.get("_legacy_only", False)),
                 }
                 # Built by `_slots_ws_frame`, NOT inline: the owner frame in
                 # `_do_slots_broadcast` has to carry an identical key set, and it
@@ -8929,8 +9091,11 @@ class DashboardState:
     def _send_ws_all(self, msg_type: str, data: object, msg: str) -> None:
         _websocket_for(self)._send_ws_all(msg_type, data, msg)
 
-    def _send_ws_owners(self, msg: str) -> None:
-        _websocket_for(self)._send_ws_owners(msg)
+    def _send_ws_owners(self, msg: str, *, skip_slot_patch_clients: bool = False) -> None:
+        if skip_slot_patch_clients:
+            _websocket_for(self)._send_ws_owners(msg, skip_slot_patch_clients=True)
+        else:
+            _websocket_for(self)._send_ws_owners(msg)
 
     def broadcast_ws(self, msg_type: str, data: object) -> None:
         # Mirror first, broadcast second. A relay reader consumes the SSE stream,

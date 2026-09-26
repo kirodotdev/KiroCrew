@@ -2219,6 +2219,10 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
     # per slot object and persisted, so echoing it back is the caller's proof
     # that the slot it is filing is the one it resolved.
     expected_created = str(body.get("expected_created") or "")
+    # Filing into a hidden folder unhides it, which changes the folder tree the
+    # full slots frame carries; only a placement that left the tree alone can
+    # travel as a one-row patch.
+    folders_generation_before = state.folders_generation()
     # Serialize the whole re-check/mutate/persist/rollback span under the
     # state-wide metadata txn lock (rebind-stable; see _slot_meta_txn_lock):
     # with awaits inside the span, a second concurrent request would capture
@@ -2299,7 +2303,10 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
         # occupied. Inside the lock, in the same span as the save it attests to:
         # recorded outside it, a refused save could still leave the claim behind.
         note_folder_filed(state, folder_id)
-    state.push_slots_update()
+    if state.folders_generation() == folders_generation_before:
+        state.push_slot_patch(slot.key, ("folder_id",))
+    else:
+        state.push_slots_update()
     source, caller = _audit_origin(request)
     sel().log_api_access(
         caller=caller,
@@ -2382,7 +2389,7 @@ async def api_chat_slot_pin(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "session was deleted or rebound", "code": "session_gone"}, status=409
             )
-    state.push_slots_update()
+    state.push_slot_patch(slot.key, ("pinned",))
     sel().log_api_access(
         caller="dashboard",
         operation="chat.slot_pin",

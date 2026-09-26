@@ -44,7 +44,7 @@ import { isReconcileNote } from '../lib/noteContract'
 import { approvalNotificationBody } from '../lib/approvalNotificationBody'
 import { useAppDispatch, useAppSelector } from '../store'
 import { store } from '../store'
-import { sseStatus, sseYolo, sseConnected, sseDisconnected, sseSlots, sseTodoUpdate, sseMcpReportUpdate, setChannelTrusted, sseSlotTitle, triggerRefresh, fetchSlots, markSlotUnread, remoteSlotRead, setUpdateProgress, sseSubagentStatus, sseSubagentText, touchSlotActivity, patchSlotSourceLinks, type SubagentDetail } from '../store/dashboardSlice'
+import { sseStatus, sseYolo, sseConnected, sseDisconnected, sseSlots, sseTodoUpdate, sseMcpReportUpdate, setChannelTrusted, sseSlotTitle, sseSlotPatch, triggerRefresh, fetchSlots, markSlotUnread, remoteSlotRead, setUpdateProgress, sseSubagentStatus, sseSubagentText, touchSlotActivity, patchSlotSourceLinks, type SubagentDetail, type SlotPatchFrame } from '../store/dashboardSlice'
 import { addNotification, ackNotificationByTs, unackNotificationByTs, removeNotificationByTs, clearAllNotifications, fetchNotifications, markBootNotificationsFetched } from '../store/notificationsSlice'
 import { dispatchMcNotification, dispatchLiveNotification, TURN_DONE_KIND, APPROVAL_KIND, shouldChimeOnTurnDone } from './notificationEvent'
 import { shouldNotifyOnChatComplete } from './chatCompleteNotify'
@@ -1217,7 +1217,12 @@ export function useWebSocket() {
     if (closingRef.current) return  // component unmounted, don't reconnect
     // closingRef invariant: reset by useEffect before calling connect()
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const ws = new WebSocket(`${proto}//${location.host}/api/ws`)
+    // `caps=slot_patch`: this bundle applies one-row `slot_patch` frames, so
+    // the gateway sends those instead of the full slot list after a pin,
+    // rename, folder move or close. A gateway that predates the frame ignores
+    // the parameter and keeps sending full lists, which this handler still
+    // applies.
+    const ws = new WebSocket(`${proto}//${location.host}/api/ws?caps=slot_patch`)
     wsRef.current = ws
 
     ws.onopen = () => {
@@ -1637,6 +1642,21 @@ export function useWebSocket() {
           case 'slot_title':
             dispatch(sseSlotTitle(data as { key: string; title: string }))
             break
+          case 'slot_patch': {
+            const frame = data as SlotPatchFrame
+            const dashboard = store.getState().dashboard
+            const removed = new Set(frame.removed ?? [])
+            const hasUnknownRow = (frame.slots ?? []).some(row =>
+              typeof row?.key === 'string'
+              && !removed.has(row.key)
+              && !Object.prototype.hasOwnProperty.call(dashboard.closingSlots ?? {}, row.key)
+              && !dashboard.slots.some(slot => slot.key === row.key))
+            // A stale list can remove a newly created row; its later patch cannot
+            // restore that row, so the authoritative list repairs the omission.
+            if (hasUnknownRow) dispatch(fetchSlots())
+            dispatch(sseSlotPatch(frame))
+            break
+          }
           case 'session_summary': {
             // A turn finished and the backend regenerated this session's intent
             // summary. Invalidate so the panel picks it up immediately.
