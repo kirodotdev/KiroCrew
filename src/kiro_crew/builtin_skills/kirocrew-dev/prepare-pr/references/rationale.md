@@ -33,7 +33,7 @@ In practice the loop stopped at every `--rounds` exit 30: the parent collected t
 retrospective, posted the remove / replace / keep verdicts as a menu, and waited.
 That turned an every-third-round review into a mandatory user gate, which is the
 opposite of what the loop is for. The verdicts are almost always decidable from the
-intent comment and the defect the mechanism was added for, so the skill now names
+PR body's frozen goal and the defect the mechanism was added for, so the skill names
 the pick order and a default, and lists the only four situations where a human
 supplies something the agent cannot. Recurrence is the trigger for the review, not
 a reason to hand the PR back.
@@ -115,12 +115,15 @@ owes a `Breaking:` line plus a writer sweep re-run on fresh `origin/main` right
 before the last push, with that sha written into the body. `green_age.py` asks that
 question of the tests; the sweep asks it of the callers.
 
-The section is deliberately absent from `fork-pr-description.yml`'s
-`REQUIRED_SECTIONS`. That list is matched against the body of every open fork PR
-on each `edited`/`synchronize`, so adding a heading to it would fail every body
-written before this change -- a red that says nothing about the diff. The rule
-reaches the author through the template's own prompt and through prepare-pr's
-Phase 1.5 instead, where it costs an existing PR nothing.
+The section is deliberately absent from `REQUIRED_SECTIONS` in
+`.github/scripts/pr-description-check.sh`, the list PR Hygiene and
+`fork-pr-description.yml` both check. That list is matched against the body of
+every open PR on each `edited`/`synchronize`, so adding a heading to it would fail
+every body written before this change -- a red that says nothing about the diff.
+The rule reaches the author through the template's own prompt and through
+prepare-pr's Phase 1.5 instead, where it costs an existing PR nothing. The frozen
+goal sections pay that cost on purpose: a PR with no goal is exactly what the
+gate exists to stop, so its red does say something about the PR.
 
 ## Why force-with-lease must be SHA-pinned
 

@@ -136,7 +136,39 @@ def test_rounds_view_fails_closed_when_comments_are_unreadable(monkeypatch, caps
 def test_skill_wires_the_rounds_view_and_the_two_lines():
     skill = (SCRIPT.parent.parent / "SKILL.md").read_text(encoding="utf-8")
     assert "pr_findings.py <pr#> --rounds" in skill
-    assert "prepare-pr-intent" in skill
+    # The intent lives in the PR body's frozen sections, not in a separate comment.
+    assert "prepare-pr-intent" not in skill
+    flat = " ".join(skill.split())
+    assert "Copy the frozen goal verbatim every round." in flat
+    assert "revert to `<head sha>` and redo via a smaller path" in flat
     assert "`self-added: yes|no`" in skill and "`mechanism: <one line>`" in skill
     assert "round_notes" not in skill
     assert "## Three questions per finding" in skill
+
+
+def test_the_frozen_goal_line_is_printed_from_the_pr_body(monkeypatch, capsys):
+    mod = _load()
+    _wire(mod, monkeypatch, [])
+    body = "## Problem / Motivation\r\n\r\n**Goal:**  Users can resume a chat.  \r\n"
+    assert mod.rounds_view("o/r", 7, "f" * 40, {"body": body}) == 0
+    assert "goal (frozen): Users can resume a chat.\n" in capsys.readouterr().out
+
+
+def test_an_unfilled_or_absent_goal_line_reads_as_missing(monkeypatch, capsys):
+    mod = _load()
+    _wire(mod, monkeypatch, [])
+    # The template ships an empty `**Goal:**` scaffold; that is not a goal.
+    for pr_json in ({"body": "## Problem / Motivation\n\n**Goal:**\n\nText.\n"}, {}):
+        mod.rounds_view("o/r", 7, "f" * 40, pr_json)
+        assert "goal (frozen): MISSING" in capsys.readouterr().out
+
+
+def test_the_goal_line_is_redacted_before_printing(monkeypatch, capsys):
+    """The body is PR-controlled, so a credential in it must not reach the transcript."""
+    mod = _load()
+    _wire(mod, monkeypatch, [])
+    secret = "ghp_" + "a" * 36
+    mod.rounds_view("o/r", 7, "f" * 40, {"body": "**Goal:** leak token={}\n".format(secret)})
+    out = capsys.readouterr().out
+    assert "goal (frozen): leak" in out
+    assert secret not in out

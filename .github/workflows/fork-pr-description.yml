@@ -26,19 +26,20 @@ name: Fork PR Description
 #     `head.sha` puts it beside the other checks (same idiom as the Stage-2
 #     fork AI reviewers).
 #
-# TRUST MODEL: nothing here checks out, builds, or executes fork code. The only
-# fork-controlled value read is the PR body, which is passed through the
-# environment and matched with `grep -F` -- never interpolated into a script.
+# TRUST MODEL: nothing here checks out, builds, or executes fork code. The
+# rules live in `.github/scripts/pr-description-check.sh`, checked out from the
+# BASE. The only fork-controlled value read is the PR body, which is passed
+# through the environment and scanned as data -- never interpolated into a
+# script.
 #
-# Fork-only by design: same-repo PRs are authored by maintainers who own this
-# template, and pr-scope.yml already covers the shape questions that apply to
-# both paths. No check-run is created for them at all.
+# Fork-only check-run: same-repo PRs get the same rules from the same script
+# through PR Hygiene in code-review.yml, which also blocks PR Readiness for
+# forks once their runs are approved. No check-run is created for them here.
 #
-# LIMIT, stated plainly: this verifies that the required HEADINGS are present,
-# not that they are filled in. A PR that keeps the template verbatim passes.
-# Judging whether the prose actually explains the change is the AI reviewers'
-# job; this gate only catches the description that was replaced wholesale or
-# never written.
+# LIMIT, stated plainly: this verifies that the required parts are present,
+# not that they are well written. Judging whether the prose actually explains
+# the change is the AI reviewers' job; this gate only catches the description
+# that was replaced wholesale or never written.
 
 on:
   pull_request_target:
@@ -56,6 +57,8 @@ on:
 
 permissions:
   checks: write
+  # Only to check out the base branch's copy of the rules script.
+  contents: read
 
 concurrency:
   # NOT cancel-in-progress. This job's whole contract is a single idempotent row,
@@ -77,158 +80,22 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # The base branch's copy of the script, never the fork's: on
+      # `pull_request_target` the default ref is the base, which is also where
+      # this workflow file itself was read from.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts/pr-description-check.sh
+          sparse-checkout-cone-mode: false
+
       - name: Evaluate PR description
         id: evaluate
         env:
           # Fork-controlled. Read as data only.
           PR_BODY: ${{ github.event.pull_request.body }}
           PR_DRAFT: ${{ github.event.pull_request.draft }}
-          # Kept byte-identical to the maintainer cron's REQUIRED_SECTIONS so
-          # the check and the approval decision can never disagree. Matched as
-          # a case-insensitive prefix, so a heading may carry a suffix (the
-          # template's own "## What changed (motivation -> approach -> change)"
-          # matches "## What changed").
-          REQUIRED_SECTIONS: |
-            ## Problem / Motivation
-            ## Why it matters
-            ## What changed
-            ## Tests
-        run: |
-          set -uo pipefail
-
-          # Strip CR at the input. GitHub returns a web-authored PR body with
-          # CRLF line endings, so a closing fence arrives as "```\r" -- and a
-          # fence closer may carry nothing but whitespace after the marker, so
-          # the stray CR would stop it closing, swallow every heading below the
-          # code block, and mark a template-compliant PR non-compliant. Fixing
-          # it here rather than in the scanner keeps the CommonMark rules below
-          # reading like the spec, and covers the heading text too.
-          body_file="$(mktemp)"
-          printf '%s' "${PR_BODY:-}" | tr -d '\r' > "$body_file"
-
-          # Collect the body's real ATX heading lines, lowercased, EXCLUDING
-          # anything inside a fenced code block.
-          #
-          # Why a scanner and not a grep. Matching the raw body passes a PR that
-          # merely mentions "## Tests" mid-sentence, or that pastes the template
-          # into a fence to ask a question about it -- both report full
-          # compliance for a description that has no sections at all. And
-          # matching whole lines is equally wrong in the other direction: the
-          # template's own heading is "## What changed (motivation -> approach
-          # -> change)", so the match must stay a PREFIX of a heading line.
-          #
-          # Why CommonMark's real rules rather than a toggle. A naive
-          # "any fence line flips a boolean" scanner is wrong for nested
-          # examples: a ````-fenced block that CONTAINS ``` lines flips the
-          # boolean off mid-block and starts accepting the enclosed text as
-          # headings. The invariant that makes that whole family unreachable is
-          # the spec's own: a fence closes only on the SAME character, at a
-          # length >= the opener, with nothing but whitespace after it; and an
-          # ATX heading takes at most 3 leading spaces (4+ is indented code).
-          # Implemented below with substr/while rather than regex interval
-          # expressions, because `awk` is mawk on the Ubuntu runners and its
-          # interval support is not something to bet a gate on.
-          headings="$(awk '
-            {
-              s = $0
-              n = 0
-              while (n < 3 && substr(s, 1, 1) == " ") { s = substr(s, 2); n++ }
-
-              mch = ""
-              if (substr(s, 1, 3) == "```") mch = "`"
-              else if (substr(s, 1, 3) == "~~~") mch = "~"
-              mlen = 0
-              if (mch != "") {
-                while (substr(s, mlen + 1, 1) == mch) mlen++
-                rest = substr(s, mlen + 1)
-              }
-
-              if (open == "") {
-                # An opening fence may carry an info string; a closing one may not.
-                if (mch != "") { open = mch; olen = mlen; next }
-              } else {
-                if (mch == open && mlen >= olen && rest ~ /^[ \t]*$/) {
-                  open = ""; olen = 0
-                }
-                next
-              }
-
-              hn = 0
-              while (hn < 7 && substr(s, hn + 1, 1) == "#") hn++
-              if (hn >= 1 && hn <= 6) {
-                c = substr(s, hn + 1, 1)
-                if (c == " " || c == "\t") print tolower(s)
-              }
-            }
-          ' "$body_file")"
-
-          missing=()
-          while IFS= read -r section; do
-            [ -n "$section" ] || continue
-            # Prefix-compare with `case`, not a regex: the needle is data, and
-            # this way no section name ever needs regex-escaping.
-            needle="$(printf '%s' "$section" | tr '[:upper:]' '[:lower:]')"
-            found=0
-            while IFS= read -r heading; do
-              case "$heading" in
-                "$needle"*) found=1; break ;;
-              esac
-            done <<< "$headings"
-            if [ "$found" -eq 0 ]; then
-              missing+=("$section")
-            fi
-          done <<< "$REQUIRED_SECTIONS"
-
-          if [ "${#missing[@]}" -gt 0 ]; then
-            conclusion="failure"
-            if [ "${#missing[@]}" -eq 1 ]; then
-              title="1 required description section is missing"
-            else
-              title="${#missing[@]} required description sections are missing"
-            fi
-          elif [ "$PR_DRAFT" = "true" ]; then
-            # Not a defect -- the author parked it deliberately. `neutral`
-            # renders grey rather than red while still carrying the reason.
-            conclusion="neutral"
-            title="Draft — workflow runs are not auto-approved yet"
-          else
-            conclusion="success"
-            title="Description follows the PR template"
-          fi
-
-          {
-            echo "conclusion=$conclusion"
-            echo "title=$title"
-          } >> "$GITHUB_OUTPUT"
-
-          # Multiline output via a delimiter that cannot occur in the body.
-          {
-            echo "summary<<__FORK_PR_DESCRIPTION__"
-            if [ "${#missing[@]}" -gt 0 ]; then
-              echo "Your PR description is missing these sections from the"
-              echo "[PR template](https://github.com/${GITHUB_REPOSITORY}/blob/main/.github/PULL_REQUEST_TEMPLATE.md):"
-              echo
-              for section in ${missing[@]+"${missing[@]}"}; do
-                echo "- \`$section\`"
-              done
-              echo
-              echo "Add them and save the description — no push needed. This check"
-              echo "re-runs on edit, and automatic approval of your workflow runs"
-              echo "resumes on the next cycle."
-            fi
-            if [ "$PR_DRAFT" = "true" ]; then
-              echo
-              echo "This PR is also a **draft**. Workflow runs are not"
-              echo "auto-approved until it is marked ready for review."
-            fi
-            if [ "${#missing[@]}" -eq 0 ] && [ "$PR_DRAFT" != "true" ]; then
-              echo "All required template sections are present and the PR is"
-              echo "ready for review."
-            fi
-            echo "__FORK_PR_DESCRIPTION__"
-          } >> "$GITHUB_OUTPUT"
-
-          rm -f "$body_file"
+        run: bash .github/scripts/pr-description-check.sh
 
       - name: Publish check-run
         env:

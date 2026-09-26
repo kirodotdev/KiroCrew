@@ -1,18 +1,33 @@
-<!-- Fill in each section below. Omit a section only when it is genuinely not
-     applicable, and say so (e.g. "N/A — ..."). Keep the diff and this
-     description in sync: every claim here must be supported by the diff. -->
+<!-- The first three sections (Problem / Motivation, Why it matters, Not a
+     goal) state the PR's goal. They are FROZEN once the PR opens: agents
+     never edit them on their own, only when a human explicitly asks. Every
+     section from "What changed" down is rewritten to match the current diff.
+     Omit a section only when it is genuinely not applicable, and say so
+     (e.g. "N/A — ..."). Every claim here must be supported by the diff. -->
 
 ## Problem / Motivation
 
-<!-- Bug fix: the concrete symptom — what is broken or missing, ideally what the
+**Goal:**
+
+<!-- Fill in the Goal line above: ONE sentence on what this PR achieves, in
+     user terms -- the outcome, not the mechanism.
+     Then:
+     Bug fix: the concrete symptom — what is broken or missing, ideally what the
      user observes.
      New feature / enhancement: the gap, use case, or opportunity this addresses
-     — what a user cannot do (or does awkwardly) today. -->
+     — what a user cannot do (or does awkwardly) today.
+     New evidence found after the PR opens goes in a PR comment, not here. -->
 
 ## Why it matters
 
-<!-- Impact if this is left undone: for a fix, who is hit by the bug and how
-     badly; for a feature, the user/business value it unlocks. -->
+<!-- Frozen. Impact if this is left undone: for a fix, who is hit by the bug
+     and how badly; for a feature, the user/business value it unlocks. -->
+
+## Not a goal
+
+<!-- Frozen. What this PR deliberately does NOT do, one bullet per excluded
+     scope. A review finding outside the Goal is answered (rebutted or
+     deferred), never absorbed by widening this section or the Goal. -->
 
 ## What changed (motivation → approach → change)
 
