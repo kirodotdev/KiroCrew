@@ -1251,6 +1251,24 @@ class TestQrRefusals:
         for call in audit.call_args_list:
             assert "SECRET-TOKEN-VALUE" not in " ".join(str(a) for a in call.args)
 
+    @pytest.mark.asyncio
+    async def test_access_code_is_rendered_at_the_mobile_box_size(
+        self, _unrestricted, _quiet_audit
+    ) -> None:
+        """The dialog shows this image at its natural size, so the handler must ask
+        for the small module size, not the shared default that the browser would
+        shrink by a fractional factor."""
+        with _machine():
+            with (
+                patch.object(tailnet_mobile, "generate_token", return_value="tok"),
+                patch.object(
+                    tailnet_mobile, "render_qr_data_uri", return_value="data:image/png;base64,x"
+                ) as render,
+            ):
+                resp = await tailnet_mobile.api_tailnet_mobile_qr(_request(tailnet_host=_HOST))
+        assert resp.status == 200
+        assert render.call_args.kwargs == {"box_size": tailnet_mobile.MOBILE_QR_BOX_SIZE}
+
 
 class TestQrCallerBounds:
     """The QR-minted token never out-scopes the session that authorized it.

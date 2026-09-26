@@ -230,8 +230,17 @@ function TailnetQrSection({ onClose }: { onClose: () => void }) {
       {mintQr.data && (
         <div className="flex flex-col items-center gap-3 mb-2">
           <div className="bg-white p-2.5 rounded-lg leading-none">
-            {/* Server-rendered PNG carrying a live session token — shown, never logged. */}
-            <img src={mintQr.data.image} alt={t('components.mobileConnect.qr_code_for_mobile_access')} width={176} height={176} />
+            {/* Server-rendered PNG carrying a live session token — shown, never logged.
+                Shown at its natural size, never a fixed box: the server draws each
+                module as a whole number of pixels, and squeezing the code into a
+                smaller box leaves its modules too small and soft for a phone camera.
+                pixelated keeps a high-density screen's upscale sharp; max-w-full
+                only shrinks a code wider than the dialog. */}
+            <img
+              src={mintQr.data.image}
+              alt={t('components.mobileConnect.qr_code_for_mobile_access')}
+              className="block max-w-full h-auto [image-rendering:pixelated]"
+            />
           </div>
           <div className="flex items-center gap-2 w-full">
             <input

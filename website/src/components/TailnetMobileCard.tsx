@@ -588,12 +588,15 @@ export function TailnetMobileCard() {
           {/* ── The QR itself ───────────────────────────────────────────── */}
           {qr ? (
             <div className="mt-4 border-t border-border pt-3">
+              {/* Shown at its natural size, never a fixed box: the server draws
+                  each module as a whole number of pixels, and squeezing the code
+                  into a smaller box leaves its modules too small and soft for a
+                  phone camera. pixelated keeps a high-density screen's upscale
+                  sharp; max-w-full only shrinks a code wider than the card. */}
               <img
                 src={qr.image}
-                width={180}
-                height={180}
                 alt={i18nT('components.tailnetMobile.qr_alt')}
-                className="rounded-md bg-white p-2"
+                className="block max-w-full h-auto rounded-md bg-white p-2 [image-rendering:pixelated]"
               />
               <p className="mt-2 text-warn">
                 {i18nT('components.tailnetMobile.qr_warning', {

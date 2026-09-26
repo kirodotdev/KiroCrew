@@ -83,6 +83,14 @@ DEFAULT_QR_TTL_SECS = 3600
 #: credential that travels as a scannable image.
 MAX_QR_TTL_SECS = 12 * 3600
 
+#: Pixels per QR module for the access code. The connect dialog and the Overview
+#: card both show this image at its natural size, so each module is exactly 4 CSS
+#: pixels (8 device pixels on a 2x screen). The access URL carries a signed token,
+#: so the symbol runs to about 80 modules, and at 4 pixels a module it fits the
+#: dialog. It is not the shared default of 8: that image is about twice the
+#: dialog's width, so the browser would shrink it by a fractional factor.
+MOBILE_QR_BOX_SIZE = 4
+
 Step = Literal[
     "pinned",
     "install",
@@ -1091,7 +1099,7 @@ async def api_tailnet_mobile_qr(request: web.Request) -> web.Response:
     url = f"https://{host}/?token={token}"
     try:
 
-        image = await asyncio.to_thread(render_qr_data_uri, url)
+        image = await asyncio.to_thread(render_qr_data_uri, url, box_size=MOBILE_QR_BOX_SIZE)
     except Exception:
         logger.debug("tailnet mobile QR encode failed", exc_info=True)
         await _audit_async(request, "tailnet.mobile.qr", "denied", "encode-failed")

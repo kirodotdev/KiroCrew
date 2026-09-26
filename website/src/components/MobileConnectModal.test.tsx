@@ -72,6 +72,22 @@ describe('MobileConnectModal', () => {
     expect(mocks.tailnetMobileQr).toHaveBeenCalledTimes(1)
   })
 
+  it('shows the QR at its natural size so the browser never blurs its modules', async () => {
+    // A fixed 176px box squeezes a code of about 80 modules to roughly 2px a
+    // module, with smoothing, which is too small and soft for a phone camera.
+    mocks.tailnetMobileQr.mockResolvedValue({
+      url: 'https://host/?token=live',
+      image: 'data:image/png;base64,x',
+    })
+    mount(['tailnet_qr'])
+    fireEvent.click(await screen.findByText('Show QR code'))
+    const img = await screen.findByAltText('QR code for mobile access')
+    expect(img).not.toHaveAttribute('width')
+    expect(img).not.toHaveAttribute('height')
+    expect(img.className).toContain('[image-rendering:pixelated]')
+    expect(img.className).toContain('max-w-full')
+  })
+
   it('not-ready tailnet routes to setup instead of offering a mint', async () => {
     mocks.tailnetMobile.mockResolvedValue({ step: 'publish' })
     mount(['tailnet_qr'])
