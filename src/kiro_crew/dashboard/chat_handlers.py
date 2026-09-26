@@ -182,6 +182,7 @@ from kiro_crew.jsonl_util import OversizedRecord, SplitlinesBoundaryRecord
 from kiro_crew.llm_helpers import pick_epoch_host, slot_switch_session_lock
 from kiro_crew.memory_startup import MemoryStartupUnavailable, wait_for_memory_preparation
 from kiro_crew.messaging.link import canonical_key, is_channel_session_key
+from kiro_crew.project_dir import ProjectDirRefused, resolve_project_dir
 from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.providers.base import LLMProvider
 from kiro_crew.safety_override import (
@@ -10692,18 +10693,24 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
     if project:
-        project = os.path.realpath(os.path.expanduser(project))
-        if not os.path.isdir(project):
-            return web.json_response({"error": "Not a directory"}, status=400)
-        if is_sensitive_path(project):
-            sel().log_api_access(
-                caller=request.get("user", "dashboard"),
-                operation="chat_slot_project",
-                outcome="denied",
-                resources=f"slot={name} project={project}",
-                error="sensitive path",
+        # The one project-directory rule (absolute, canonical, non-sensitive,
+        # existing; UNC refused; a reparse-point component refused on
+        # Windows), shared with the chat-folder and cron validators, so this
+        # surface cannot drift from them. Off-loop: it canonicalises through
+        # the filesystem. The sensitive-path denial (and the network/reparse
+        # ones) are SEL-audited inside the rule under ``chat_slot_project``.
+        try:
+            project = await asyncio.to_thread(
+                resolve_project_dir,
+                project,
+                label="Project directory",
+                audit_operation="chat_slot_project",
+                audit_caller=request.get("user", "dashboard"),
             )
-            return web.json_response({"error": "Access denied"}, status=403)
+        except ProjectDirRefused as exc:
+            if exc.reason == "sensitive":
+                return web.json_response({"error": "Access denied"}, status=403)
+            return web.json_response({"error": str(exc)}, status=400)
         # Pre-flight the voice-runtime workspace guard: a
         # workspace that contains (or sits inside) the Kiro Crew data home is
         # refused at agent spawn anyway, but only after the session exists and

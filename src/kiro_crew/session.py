@@ -147,7 +147,7 @@ from kiro_crew.config.loader import (
     normalize_agent_model,
     published_autocompact_pct,
 )
-from kiro_crew.config.paths import config_dir
+from kiro_crew.config.paths import config_dir, default_work_dir
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.executors import maintenance_executor, subprocess_executor
 from kiro_crew.mcp_gateway.abort import schedule_abort
@@ -175,6 +175,9 @@ from kiro_crew.session_allocation import (
 from kiro_crew.session_allocation import SessionBusyError as SessionBusyError  # noqa: F401
 from kiro_crew.session_allocation import (
     SessionClosingError,
+)
+from kiro_crew.session_allocation import SessionCwdMismatch as SessionCwdMismatch  # noqa: F401
+from kiro_crew.session_allocation import (
     SessionRegistryState,
 )
 from kiro_crew.session_allocation import (  # noqa: F401
@@ -953,6 +956,21 @@ class FirstTurnState(Enum):
     def resumed(self) -> bool:
         """The ``resumed`` boolean this state derives to at the return boundary."""
         return self is FirstTurnState.RESUMED
+
+
+@dataclass(frozen=True, slots=True)
+class ConversationRoot:
+    """One observation of where a key's resumable conversation is rooted.
+
+    Returned by :meth:`SessionManager.conversation_root` and handed back to
+    :meth:`SessionManager.discard_conversation_root`, so the discard names the
+    exact conversation the caller judged -- by its ``sid`` as well as its
+    ``cwd`` -- rather than whatever the key holds by then. ``sid == ""`` means
+    the key had nothing to resume; ``cwd`` is then ``""`` too.
+    """
+
+    sid: str
+    cwd: str
 
 
 @dataclass
@@ -2401,10 +2419,21 @@ class SessionManager:
         speculative: bool = False,
         speculative_resume: bool = False,
         wait_if_busy: bool = True,
+        require_cwd: bool = False,
         _won_race_retries: int = 0,
         **extra_factory_kwargs: Any,
     ) -> tuple[LLMProvider, bool, bool]:
-        """Claim or allocate a session and return its held lease."""
+        """Claim or allocate a session and return its held lease.
+
+        ``require_cwd``: refuse (``SessionCwdMismatch``) to hand back a live
+        session whose cwd is not the requested ``cwd`` -- or, for a cwd-less
+        claim, not one of :meth:`default_conversation_roots`, where this claim's
+        own cold start would land. Decided under the registry lock on every
+        hand-back path (reuse, won-race, retries) so no acquisition can slip a
+        differently-rooted session in between a caller's own check and this
+        claim. Off by default: the reuse path otherwise ignores ``cwd``, which
+        is what every existing caller expects.
+        """
         return await self._allocation_boundary().get_or_create(
             key,
             agent=agent,
@@ -2416,25 +2445,115 @@ class SessionManager:
             speculative=speculative,
             speculative_resume=speculative_resume,
             wait_if_busy=wait_if_busy,
+            require_cwd=require_cwd,
             _won_race_retries=_won_race_retries,
             **extra_factory_kwargs,
         )
+
+    def default_conversation_roots(self) -> list[str]:
+        """The cwd(s) a session created with no explicit ``cwd`` can land on.
+
+        A cwd-less cold start roots at the pool cwd when the workspace
+        resolves, else at the ACP runtime's own default work dir. A caller that
+        must tell "rooted at the gateway default" from "rooted at a stale
+        project" (e.g. a cron job whose ``project_dir`` was cleared) compares
+        the conversation root against this list rather than hardcoding either
+        path. Both are returned because which one a given cold start used
+        depends on whether the workspace was resolvable at the time.
+        """
+        roots = []
+        pool_cwd = str(self._pool_cwd or "")
+        if pool_cwd:
+            roots.append(pool_cwd)
+        roots.append(str(default_work_dir()))
+        return roots
+
+    def conversation_root(self, key: str) -> ConversationRoot:
+        """Where *key*'s RESUMABLE conversation is rooted, as an observation.
+
+        ``.cwd`` is the directory a later ``get_or_create(key, cwd=None)``
+        would root a cold start at, because a cwd-less acquisition falls back
+        to the cwd the session map persisted for the key's stored session id.
+        It is durable — it survives a process recycle (a plain ``reset`` keeps
+        the sid) and a gateway restart (the map is on disk) — so a caller that
+        rooted a session at a directory and later needs to know whether the
+        conversation is STILL rooted there reads it here rather than trusting
+        an in-process note. ``.cwd`` is ``""`` when the key has no stored
+        session (nothing to resume) so the caller cold-starts freely. A LIVE
+        provider's own cwd outranks this, and the caller that has one should
+        prefer it; this answers for the no-live-provider case the live cwd
+        cannot.
+
+        The record also carries the sid it read, so the observation names ONE
+        conversation: :meth:`discard_conversation_root` acts only on exactly
+        this one, never on a successor that happens to share the cwd.
+        """
+        # One locked read for both fields (``SessionMap.get_sid_and_cwd``): two
+        # reads could interleave with a writer and yield a sid from one state of
+        # the entry and a cwd from another -- an observation of no conversation
+        # that ever existed, which the compare-and-clear would then judge by.
+        sid, cwd = self._session_map.get_sid_and_cwd(key)
+        return ConversationRoot(sid=sid, cwd=cwd)
+
+    def discard_conversation_root(self, key: str, *, observed: ConversationRoot) -> bool:
+        """Drop the key's resume pointer, if it is still the conversation *observed*.
+
+        For the no-live-provider counterpart of an ``ends_conversation`` reset:
+        with a live session that reset ends the conversation and clears the sid,
+        but when nothing is live there is no session to reset and the durable
+        sid still points at a conversation rooted at a directory the caller has
+        moved away from. Clearing the sid (via the same stash-and-clear a
+        provider switch uses) makes the stored record inert — the entry and its
+        cwd note survive for diagnosis, but a resume cannot restore it, so the
+        next wake cold-starts at the caller's chosen cwd.
+
+        A compare-and-clear on BOTH the sid and the cwd the caller observed
+        (:meth:`conversation_root`), read and cleared under the map's own lock.
+        A concurrent cold start publishes its sid on the key AFTER building its
+        provider, so a caller that looked before that publication cannot see
+        it; and because a cwd-less cold start adopts the stored cwd and
+        republishes it, the successor ordinarily carries the SAME cwd -- the
+        sid is what tells the two apart, so the newer conversation keeps its
+        pointer. Returns whether a pointer was dropped; ``False`` for an
+        observation that named no conversation.
+        """
+        if not observed.sid:
+            return False
+        return self._session_map.clear_sid_if(key, sid=observed.sid, cwd=observed.cwd)
 
     async def reset(
         self,
         key: str,
         *,
         expect_session: _Session | None = None,
+        expect_provider: LLMProvider | None = None,
         skip_if_busy: bool = False,
         skip_if_injecting: bool = False,
         refuse_only_on_active_turn: bool = False,
         clear_conversation: bool = False,
         ends_conversation: bool = False,
     ) -> bool:
-        """Reset a live session while preserving its persistence entry."""
+        """Reset a live session while preserving its persistence entry.
+
+        ``expect_provider``: reset only if the key's live session is still the
+        one whose provider the caller observed (via :meth:`get_provider`);
+        otherwise return ``False`` and touch nothing. The public counterpart of
+        ``expect_session`` for a caller that decided on a snapshot taken before
+        an ``await``: a session that replaced the observed one in that gap --
+        possibly a correctly-rooted one with live child work -- is not the one
+        the caller judged, so it is left for the caller to judge afresh. The
+        identity check itself runs under the registry lock, atomic with the pop.
+        """
+        expect = expect_session
+        if expect_provider is not None:
+            folded = self._fold_key(key)
+            entry = self._sessions.get(folded)
+            if entry is None or entry.provider is not expect_provider:
+                return False
+            expect = entry
         return await self._lifecycle_boundary().reset(
             key,
-            expect_session=cast(Any, expect_session),
+            expect_session=cast(Any, expect),
             skip_if_busy=skip_if_busy,
             skip_if_injecting=skip_if_injecting,
             refuse_only_on_active_turn=refuse_only_on_active_turn,

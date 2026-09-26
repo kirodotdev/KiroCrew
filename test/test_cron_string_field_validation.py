@@ -340,6 +340,9 @@ class TestAntiDrift:
     # - approval_mode: validated by a separate finite-set check, not length
     # - memory_store: resolved internally from trusted member/session identity;
     #   never accepted from a cron creation or update caller
+    # - project_dir_was: the rescope marker, copied by the store from an
+    #   already-validated project_dir when that field changes; a caller may
+    #   only CLEAR it (the store refuses any other value)
     _RUNTIME_ONLY_FIELDS: frozenset[str] = frozenset(
         {
             "id",
@@ -351,6 +354,7 @@ class TestAntiDrift:
             "last_failure_hash",
             "approval_mode",
             "memory_store",
+            "project_dir_was",
         }
     )
 

@@ -17,6 +17,7 @@ import asyncio
 import copy
 import json
 import os
+import shutil
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -939,6 +940,37 @@ class TestScaffoldPartialFailure:
         assert str(root / "web") in dirs
 
     @pytest.mark.asyncio
+    async def test_a_candidate_deleted_after_the_scan_is_reported_as_moved(
+        self, state: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A confirmed path the validator now refuses outright is the same verdict.
+
+        The create path vouches the candidate was canonical and valid at scan
+        time, so ANY refusal now -- gone, or (on Windows, where a reparse point
+        is refused rather than resolved) replaced by a link -- means the
+        directory differs from the one confirmed. One code for the one meaning.
+        """
+
+        root = _sibling_repos(tmp_path / "work")
+
+        async def _scan_then_delete(scan_root: str, identity: Any = None) -> Any:
+            tree = await _scan_off_loop(scan_root, identity)
+            shutil.rmtree(root / "api")
+            return tree
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_folder_scaffold._scan_off_loop", _scan_then_delete
+        )
+        async with TestClient(TestServer(_make_scaffold_app(state))) as client:
+            status, body = await _scaffold(client, root, [root / "api", root / "web"])
+
+        assert status == 200
+        failed = {entry["path"]: entry for entry in body["failed"]}
+        assert set(failed) == {str(root / "api")}
+        assert failed[str(root / "api")]["code"] == "folder_project_dir_moved"
+        assert str(root / "web") in _by_project_dir(state)
+
+    @pytest.mark.asyncio
     async def test_the_root_swapped_for_a_symlink_after_the_scan_is_refused(
         self, state: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1362,10 +1394,18 @@ class TestRootReplacedAfterValidation:
             body = await resp.json()
         assert resp.status == 400
         assert body["code"] == "folder_scan_root_invalid"
-        assert "moved or replaced after the scan" in body["error"]
         assert scanned == []
         assert state._folders == []
         denied = [e for e in events if e.get("outcome") == "denied"]
+        if os.name == "nt":
+            # Windows never resolves a reparse point (its target may be a share,
+            # and resolving it is an outbound authentication), so the validator
+            # itself refuses the replaced root before anything compares where
+            # it leads; there is no redirect target to audit.
+            assert "reparse point" in body["error"]
+            assert denied == []
+            return
+        assert "moved or replaced after the scan" in body["error"]
         assert [e["error"] for e in denied] == ["root replaced after validation"]
         # The audit names where the name now leads, so the trail shows the redirect.
         assert denied[0]["resources"] == os.path.realpath(outside)

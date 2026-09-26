@@ -1173,6 +1173,47 @@ class SessionMap:
             return True
         return False
 
+    @_guarded
+    def get_sid_and_cwd(self, key: str) -> tuple[str, str]:
+        """The ``(sid, cwd)`` pair *key* records, read under ONE hold of the map lock.
+
+        ``get`` and ``get_cwd`` are two reads; a writer landing between them
+        (a cold start republishing the key with a fresh sid, a rekey moving its
+        cwd) yields a pair that no single state of the entry ever held. A caller
+        that will later compare-and-clear against the pair -- ``clear_sid_if``
+        -- needs an observation, not a mixture, so this reads both fields
+        together. ``("", "")`` when the key holds no sid.
+        """
+        entry = self._data.get(canonical_key(key))
+        if not entry:
+            return "", ""
+        sid = entry.get("sid", "") or ""
+        if not sid:
+            return "", ""
+        return sid, entry.get("cwd", "") or ""
+
+    @_guarded
+    def clear_sid_if(self, key: str, *, sid: str, cwd: str) -> bool:
+        """Compare-and-clear: drop *key*'s sid only if the entry still records
+        exactly the ``(sid, cwd)`` pair the caller observed.
+
+        The read and the clear happen under one hold of :data:`_MAP_LOCK`, so a
+        caller that judged a conversation by what it saw recorded cannot drop
+        the pointer of a DIFFERENT conversation published on the key in
+        between. Both fields are compared because the cwd alone does not
+        discriminate: a cwd-less cold start on the key adopts the stored cwd
+        and republishes it with its own fresh sid, so a successor conversation
+        ordinarily carries the very cwd the caller judged. Returns whether a
+        pointer was dropped; ``False`` also when either field moved on.
+        """
+        entry = self._data.get(canonical_key(key))
+        if not entry or entry.get("sid", "") != sid or entry.get("cwd", "") != cwd:
+            return False
+        if _stash_and_clear_sid(entry):
+            self._save()
+            return True
+        return False
+
     def get_discarded_sid(self, key: str) -> str:
         """Return the last sid dropped from *key* by any path, or ''.
 

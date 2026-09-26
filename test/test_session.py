@@ -21,6 +21,7 @@ from kiro_crew.messaging.link import ChannelLink
 from kiro_crew.session import (
     _BG_BLIND_RECYCLE_PROMPTS,
     BACKGROUND_KEY,
+    ConversationRoot,
     SessionClosingError,
     SessionManager,
 )
@@ -445,6 +446,373 @@ class TestSessionManager:
         assert is_new2 is True  # reported as new
         p1.shutdown.assert_awaited()  # dead provider was reaped
         mgr.release("A")
+
+
+class TestConversationRoot:
+    """The public cwd-root surface the cron gateway consumes to detect a job
+    whose ``project_dir`` moved: it must answer off the DURABLE session-map
+    record (what a cold start would resume), not any in-process note, and it
+    must be a public method so a session-internal refactor cannot silently
+    disable the guard.
+    """
+
+    @staticmethod
+    def _seed(mgr, key: str, sid: str, cwd: str) -> None:
+        # A non-default provider label skips SessionMap.get's kiro-cli
+        # transcript-existence check, so the seeded sid reads back as a real
+        # resumable entry without planting a transcript file.
+        mgr._session_map.set(key, sid, provider="claude_code", cwd=cwd)
+
+    def test_root_is_empty_without_a_stored_session(self, cfg):
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        assert mgr.conversation_root("cron:none") == ConversationRoot(sid="", cwd="")
+
+    def test_root_is_one_locked_read_of_both_fields(self, cfg, tmp_path, monkeypatch):
+        # Two reads (``get`` then ``get_cwd``) could interleave with a writer and
+        # pair a sid from one state of the entry with a cwd from another. The
+        # facade reads the pair through the map's single locked accessor and
+        # never through the two single-field readers.
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        self._seed(mgr, "cron:j", "sid-1", str(tmp_path / "repo"))
+        monkeypatch.setattr(
+            type(mgr._session_map), "get", lambda *a, **k: pytest.fail("two-step read")
+        )
+        monkeypatch.setattr(
+            type(mgr._session_map), "get_cwd", lambda *a, **k: pytest.fail("two-step read")
+        )
+        assert mgr.conversation_root("cron:j") == ConversationRoot(
+            sid="sid-1", cwd=str(tmp_path / "repo")
+        )
+
+    def test_root_reports_the_stored_sid_and_cwd(self, cfg, tmp_path):
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        self._seed(mgr, "cron:j", "sid-1", str(tmp_path / "repo"))
+        assert mgr.conversation_root("cron:j") == ConversationRoot(
+            sid="sid-1", cwd=str(tmp_path / "repo")
+        )
+
+    def test_root_cwd_is_empty_when_the_stored_sid_carries_no_cwd(self, cfg):
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        mgr._session_map.set("cron:j", "sid-1", provider="claude_code")
+        assert mgr.conversation_root("cron:j") == ConversationRoot(sid="sid-1", cwd="")
+
+    def test_discard_drops_the_conversation_it_was_asked_about(self, cfg, tmp_path):
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        self._seed(mgr, "cron:j", "sid-1", str(tmp_path / "repo"))
+        seen = mgr.conversation_root("cron:j")
+        assert mgr.discard_conversation_root("cron:j", observed=seen) is True
+        # sid gone -> nothing to resume -> root reads empty, so a later
+        # cwd-less cold start cannot root at the stale directory.
+        assert mgr.conversation_root("cron:j").cwd == ""
+        assert _raw_sid(mgr, "cron:j") in (None, "")
+
+    def test_discard_leaves_a_conversation_published_after_the_caller_looked(self, cfg, tmp_path):
+        # The caller judged the key by what it saw (sid-old at the old repo); a
+        # concurrent cold start then published a NEW conversation rooted at the
+        # project. A blind clear would orphan it; the compare-and-clear finds a
+        # different conversation recorded and touches nothing.
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        self._seed(mgr, "cron:j", "sid-old", str(tmp_path / "old"))
+        seen = mgr.conversation_root("cron:j")
+        self._seed(mgr, "cron:j", "sid-new", str(tmp_path / "project"))  # the race
+        assert mgr.discard_conversation_root("cron:j", observed=seen) is False
+        assert _raw_sid(mgr, "cron:j") == "sid-new"
+
+    def test_discard_leaves_a_successor_that_adopted_the_same_cwd(self, cfg, tmp_path):
+        # The ordinary interleaving: a cwd-less cold start on the key adopts
+        # the STORED cwd and republishes it under its own fresh sid, so the
+        # successor carries the very cwd the caller judged. The sid is what
+        # tells them apart -- a cwd-only compare would orphan the successor.
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        self._seed(mgr, "cron:j", "sid-old", str(tmp_path / "old"))
+        seen = mgr.conversation_root("cron:j")
+        self._seed(mgr, "cron:j", "sid-new", str(tmp_path / "old"))  # same cwd, new sid
+        assert mgr.discard_conversation_root("cron:j", observed=seen) is False
+        assert _raw_sid(mgr, "cron:j") == "sid-new"
+
+    def test_discard_of_an_empty_observation_is_a_no_op(self, cfg):
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        assert (
+            mgr.discard_conversation_root("cron:never", observed=ConversationRoot(sid="", cwd=""))
+            is False
+        )
+
+    def test_default_roots_lead_with_the_pool_cwd(self, cfg, tmp_path):
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        mgr._pool_cwd = str(tmp_path / "ws")
+        roots = mgr.default_conversation_roots()
+        assert roots and roots[0] == str(tmp_path / "ws")
+        # The ACP runtime's own default work dir is always included as a
+        # fallback, so a cwd-less session that could not resolve a pool cwd
+        # still matches "the default".
+        assert any(r.endswith("workspace") for r in roots)
+
+
+class TestRequireCwd:
+    """``get_or_create(require_cwd=True)`` refuses, under the registry lock, to
+    reuse a live session rooted somewhere other than the requested ``cwd``.
+
+    The reuse path otherwise ignores ``cwd`` (a cold-start argument), which is
+    what every existing caller expects, so this is opt-in. It exists for the
+    cron wake: its retire-then-claim has an unavoidable gap between two awaits,
+    and a dashboard follow-up on the job's own tab can install a session on the
+    same key inside it. Deciding under the claim's lock is the only place that
+    gap cannot be reopened.
+    """
+
+    @staticmethod
+    def _factory_with_cwd():
+        def factory(session_key=None, agent=None, channel_id=None, cwd=None, **kwargs):
+            m = _mock_provider_factory()(session_key, agent, channel_id, **kwargs)
+            m.cwd = cwd or ""
+            return m
+
+        return factory
+
+    @pytest.mark.asyncio
+    async def test_live_session_at_another_cwd_is_refused(self, cfg, tmp_path):
+        from kiro_crew.session import SessionCwdMismatch
+
+        mgr = SessionManager(cfg, provider_factory=self._factory_with_cwd())
+        a, b = tmp_path / "a", tmp_path / "b"
+        a.mkdir()
+        b.mkdir()
+        provider, _, _ = await mgr.get_or_create("cron:j", cwd=str(a))
+        mgr.release("cron:j")
+        with pytest.raises(SessionCwdMismatch) as ei:
+            await mgr.get_or_create("cron:j", cwd=str(b), require_cwd=True)
+        assert ei.value.requested == str(b)
+        assert ei.value.live == str(a)
+        # The refused claim did not disturb the live session.
+        assert mgr.get_provider("cron:j") is provider
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_live_session_at_the_requested_cwd_is_reused(self, cfg, tmp_path):
+        mgr = SessionManager(cfg, provider_factory=self._factory_with_cwd())
+        a = tmp_path / "a"
+        a.mkdir()
+        p1, _, _ = await mgr.get_or_create("cron:j", cwd=str(a))
+        mgr.release("cron:j")
+        p2, is_new, _ = await mgr.get_or_create("cron:j", cwd=str(a), require_cwd=True)
+        assert p2 is p1 and is_new is False
+        mgr.release("cron:j")
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_without_the_flag_the_reuse_path_ignores_cwd_as_before(self, cfg, tmp_path):
+        # Pins the default every existing caller relies on.
+        mgr = SessionManager(cfg, provider_factory=self._factory_with_cwd())
+        a, b = tmp_path / "a", tmp_path / "b"
+        a.mkdir()
+        b.mkdir()
+        p1, _, _ = await mgr.get_or_create("cron:j", cwd=str(a))
+        mgr.release("cron:j")
+        p2, is_new, _ = await mgr.get_or_create("cron:j", cwd=str(b))
+        assert p2 is p1 and is_new is False
+        mgr.release("cron:j")
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_cwd_less_claim_refuses_a_session_rooted_off_the_default(self, cfg, tmp_path):
+        # A cleared-project cron wake claims with cwd=None: its own cold start
+        # would land on a gateway default root, so a live session anywhere else
+        # (the old project) is refused under the same lock.
+        from kiro_crew.session import SessionCwdMismatch
+
+        mgr = SessionManager(cfg, provider_factory=self._factory_with_cwd())
+        a = tmp_path / "a"
+        a.mkdir()
+        p1, _, _ = await mgr.get_or_create("cron:j", cwd=str(a))
+        mgr.release("cron:j")
+        with pytest.raises(SessionCwdMismatch) as ei:
+            await mgr.get_or_create("cron:j", cwd=None, require_cwd=True)
+        assert ei.value.live == str(a)
+        for root in mgr.default_conversation_roots():
+            assert root in ei.value.requested
+        assert mgr.get_provider("cron:j") is p1
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_cwd_less_claim_reuses_a_session_at_a_default_root(self, cfg, tmp_path):
+        mgr = SessionManager(cfg, provider_factory=self._factory_with_cwd())
+        root = mgr.default_conversation_roots()[-1]
+        p1, _, _ = await mgr.get_or_create("cron:j", cwd=root)
+        mgr.release("cron:j")
+        p2, is_new, _ = await mgr.get_or_create("cron:j", cwd=None, require_cwd=True)
+        assert p2 is p1 and is_new is False
+        mgr.release("cron:j")
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_an_equivalent_symlinked_spelling_is_not_refused(self, cfg, tmp_path):
+        # The provider keeps the spelling it was rooted with; a cron job's
+        # project_dir is a realpath. Two spellings of one directory (a
+        # symlinked workspace, macOS /tmp) must compare equal, or a scoped job
+        # would be refused at every wake with nothing left to re-root.
+        real = tmp_path / "real"
+        real.mkdir()
+        link = tmp_path / "link"
+        os.symlink(real, link, target_is_directory=True)
+        if os.name == "nt":
+            pytest.skip(
+                "the Windows rule compares canonical strings and never resolves a "
+                "spelling by name; its behaviour is pinned by the windows-rule tests"
+            )
+        mgr = SessionManager(cfg, provider_factory=self._factory_with_cwd())
+        p1, _, _ = await mgr.get_or_create("cron:j", cwd=str(link))
+        mgr.release("cron:j")
+        p2, is_new, _ = await mgr.get_or_create(
+            "cron:j", cwd=os.path.realpath(real), require_cwd=True
+        )
+        assert p2 is p1 and is_new is False
+        mgr.release("cron:j")
+        # And the other way round: rooted at the realpath, claimed by the link.
+        p3, _, _ = await mgr.get_or_create("cron:j", cwd=str(link), require_cwd=True)
+        assert p3 is p1
+        mgr.release("cron:j")
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_the_claim_never_resolves_a_named_root_by_name_on_the_windows_rule(
+        self, cfg, tmp_path, monkeypatch
+    ):
+        # On Windows both sides of the cwd compare are already canonical
+        # strings, and resolving either by name would open a component swapped
+        # for a junction (an outbound authentication if it aims at a share).
+        # The allocation goes through ``platform_compat.compare_key``, which is
+        # string-only there; ``realpath`` must not be reached for the roots or
+        # the live session's cwd.
+        from kiro_crew import platform_compat
+
+        monkeypatch.setattr(platform_compat, "_COMPARE_KEY_RESOLVES", False)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        mgr = SessionManager(cfg, provider_factory=self._factory_with_cwd())
+        p1, _, _ = await mgr.get_or_create("cron:j", cwd=str(repo))
+        mgr.release("cron:j")
+        real_realpath = os.path.realpath
+
+        def _guard(p, *a, **k):
+            if os.fspath(p).startswith(str(tmp_path)):
+                pytest.fail(f"realpath reached for the named root {p!r}")
+            return real_realpath(p, *a, **k)
+
+        monkeypatch.setattr(os.path, "realpath", _guard)
+        p2, is_new, _ = await mgr.get_or_create("cron:j", cwd=str(repo), require_cwd=True)
+        assert p2 is p1 and is_new is False
+        mgr.release("cron:j")
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_a_session_that_won_the_race_answers_to_the_same_check(self, cfg, tmp_path):
+        # Two claimants cold-start at once for different directories; the one
+        # that registers second finds the other's session already on the key
+        # (won-race) and is handed it. That hand-back is a reuse in all but
+        # name, so it is refused the same way -- BEFORE waiting on the winner's
+        # lease. Either claimant may win the race, so both require their cwd
+        # and the assertion is on the shape: one winner, one refusal naming
+        # the winner's directory.
+        from kiro_crew.session import SessionCwdMismatch
+
+        mgr = SessionManager(cfg, provider_factory=self._factory_with_cwd())
+        a, b = tmp_path / "a", tmp_path / "b"
+        a.mkdir()
+        b.mkdir()
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                mgr.get_or_create("cron:j", cwd=str(a), require_cwd=True),
+                mgr.get_or_create("cron:j", cwd=str(b), require_cwd=True),
+                return_exceptions=True,
+            ),
+            timeout=10,
+        )
+        try:
+            winners = [r for r in results if isinstance(r, tuple)]
+            refused = [r for r in results if isinstance(r, SessionCwdMismatch)]
+            assert len(winners) == 1 and len(refused) == 1, results
+            assert refused[0].live == winners[0][0].cwd
+            assert refused[0].live in (str(a), str(b))
+            assert mgr.count == 1
+        finally:
+            for _ in [r for r in results if isinstance(r, tuple)]:
+                mgr.release("cron:j")
+            await mgr.close_all()
+
+    def test_every_retry_forwards_the_flag(self):
+        # The stale-session and won-race retries re-enter get_or_create; a
+        # retry that dropped the flag would run the claim it was asked to
+        # guard without the guard. Pinned structurally: every recursive
+        # ``owner.get_or_create(...)`` in the claim forwards require_cwd.
+        import ast
+        import inspect
+
+        from kiro_crew import session_allocation
+
+        tree = ast.parse(inspect.getsource(session_allocation))
+        impl = next(
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, ast.AsyncFunctionDef) and n.name == "_get_or_create_impl"
+        )
+        retries = [
+            n
+            for n in ast.walk(impl)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "get_or_create"
+            and isinstance(n.func.value, ast.Name)
+            and n.func.value.id == "owner"
+        ]
+        assert len(retries) == 2, "the stale-session retry and the won-race retry"
+        for call in retries:
+            forwarded = [
+                kw
+                for kw in call.keywords
+                if kw.arg == "require_cwd"
+                and isinstance(kw.value, ast.Name)
+                and kw.value.id == "require_cwd"
+            ]
+            assert forwarded, f"retry at line {call.lineno} drops require_cwd"
+
+
+class TestResetExpectProvider:
+    """``reset(expect_provider=...)`` ends only the session the caller observed.
+
+    A caller that judged a session on a snapshot taken before an ``await``
+    must not tear down whatever replaced it in the gap -- possibly a
+    correctly-rooted session carrying live child work. The identity check
+    is atomic with the pop, under the registry lock.
+    """
+
+    @pytest.mark.asyncio
+    async def test_resets_the_observed_session(self, cfg):
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        p1, _, _ = await mgr.get_or_create("k")
+        mgr.release("k")
+        assert await mgr.reset("k", expect_provider=p1) is True
+        assert mgr.get_provider("k") is None
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_declines_when_the_session_was_replaced(self, cfg):
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        stale, _, _ = await mgr.get_or_create("k")
+        mgr.release("k")
+        await mgr.reset("k")  # replaced under the caller's snapshot
+        fresh, _, _ = await mgr.get_or_create("k")
+        mgr.release("k")
+        assert fresh is not stale
+        assert await mgr.reset("k", expect_provider=stale) is False
+        assert mgr.get_provider("k") is fresh, "the replacement is untouched"
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_declines_when_nothing_is_live(self, cfg):
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        ghost = MagicMock()
+        assert await mgr.reset("k", expect_provider=ghost) is False
+        await mgr.close_all()
 
 
 class TestWarmPool:
@@ -7386,6 +7754,9 @@ class TestParentEndCancelsItsChildren:
             # ``clear_conversation`` throws the conversation away: sid cleared, replay
             # suppressed, so the successor cold-starts with none of its history.
             "session_compaction.py",
+            # A cron job's project_dir moved: the conversation rooted in the old
+            # directory is over, and a fresh one cold-starts at the new project.
+            "slack/gateway.py",
         }, f"the conversation-ending reset callers changed: {sorted(found)}"
 
     @pytest.mark.asyncio

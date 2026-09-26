@@ -348,6 +348,10 @@ def _stub_common(stack: list, rec: _Recorder, tmp_path: Path, backend: str = "")
                 "bind_voice_safe_agent_workspace_async",
                 new=AsyncMock(return_value=(str(tmp_path), None)),
             ),
+            # The Windows work-dir chain pin is the same kind of pre-spawn hold
+            # as the macOS binding above: a filesystem fact about the capture
+            # host, not a launch answer, so it is off for the capture.
+            patch.object(client_mod, "_PIN_WORK_DIR_CHAIN", False),
             # kiro-cli's own pre-spawn gates. Each reads disk or the agents tree;
             # the argv they guard is what this capture records, not their verdicts.
             patch.object(
@@ -543,6 +547,7 @@ def _capture_runtime_served(backend: str, tmp_path: Path, parent_env: dict) -> d
                 "create_windows_cleanup_owned_process",
                 side_effect=_windows_cleanup_passthrough,
             ),
+            patch.object(runtime_mod, "_PIN_WORK_DIR_CHAIN", False),
             patch.object(runtime_mod, "_forward_ssh_auth_sock", return_value=False),
             patch.object(runtime_mod, "browser_session_env", return_value={}),
             patch.object(runtime_mod, "browser_socket_env", return_value={}),

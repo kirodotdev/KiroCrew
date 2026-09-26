@@ -168,6 +168,7 @@ import threading
 import time
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Optional
 
+from kiro_crew.config.paths import default_work_dir
 from kiro_crew.metrics.schema import validate_name
 
 if TYPE_CHECKING:  # annotation-only; never imported at runtime
@@ -547,9 +548,7 @@ def read_memory_migrated() -> Optional[int]:
 
 def _read_knowledge_documents_uncached() -> Optional[int]:
     """Uncached knowledge-source count. See :func:`read_knowledge_documents`."""
-    from kiro_crew.config.paths import config_dir
-
-    db_path = config_dir() / "workspace" / "knowledge" / "knowledge.db"
+    db_path = default_work_dir() / "knowledge" / "knowledge.db"
     if not db_path.exists():
         # Never ingested: the database is created on first write, and this probe
         # must not be what creates it.

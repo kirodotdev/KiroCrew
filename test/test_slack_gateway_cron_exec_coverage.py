@@ -45,6 +45,7 @@ import pytest
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.cron import CronJob, CronStoreBusy
 from kiro_crew.dashboard import chat_persistence
+from kiro_crew.session import ConversationRoot
 from kiro_crew.slack import gateway as gw
 
 # ─── Helpers ─────────────────────────────────────────────────────────────
@@ -1949,6 +1950,81 @@ class TestCronResolvesAgentAlias:
         # Carried the alias as crew_agent so prepare_runtime still resolves the
         # member identity (capability gates, model/effort pins, watchdogs).
         assert kw.get("crew_agent") == "in-3d"
+
+    @pytest.mark.asyncio
+    async def test_a_jobs_project_dir_outranks_the_alias_workspace(self, tmp_path, monkeypatch):
+        # Both name a directory: the operator scoped THIS job to a repository,
+        # so the session roots there; the alias workspace is the fallback for
+        # a job that did not.
+        from kiro_crew.slack import gateway as _gw
+
+        monkeypatch.setattr(_gw.live, "snapshot", lambda: None)
+        ws_dir = str(tmp_path / "in-3d-ws")
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        orch = _make_orchestrator()
+        orch._cfg = self._cfg_with_alias(ws_dir)
+        orch.sessions = _message_arm_sessions()
+        orch.sessions.get_provider = MagicMock(return_value=None)
+        orch.sessions.conversation_root = MagicMock(return_value=ConversationRoot(sid="", cwd=""))
+        orch.dashboard_state = _mock_dashboard_state()
+        job = _job(id="ja2", name="scoped alias", agent_id="in-3d", project_dir=str(repo))
+
+        async with _cron_message_cb(orch, result_text="ok") as callback:
+            await callback(job)
+
+        kw = orch.sessions.get_or_create.await_args.kwargs
+        assert kw.get("agent") == "kirocrew"
+        assert kw.get("crew_agent") == "in-3d"
+        assert kw.get("cwd") == str(repo.resolve())
+        assert kw.get("require_cwd") is True
+
+    @pytest.mark.asyncio
+    async def test_a_cleared_project_dir_falls_back_to_the_alias_workspace(
+        self, tmp_path, monkeypatch
+    ):
+        # A rescoped job with no project left roots where an unscoped alias
+        # job roots -- the alias workspace -- and its conversation still sitting
+        # in the old repository is ended rather than resumed there.
+        from kiro_crew.slack import gateway as _gw
+
+        monkeypatch.setattr(_gw.live, "snapshot", lambda: None)
+        ws_dir = tmp_path / "in-3d-ws"
+        ws_dir.mkdir()
+        old_repo = tmp_path / "old"
+        old_repo.mkdir()
+        orch = _make_orchestrator()
+        orch._cfg = self._cfg_with_alias(str(ws_dir))
+        orch.sessions = _message_arm_sessions()
+        stale = MagicMock()
+        stale.cwd = str(old_repo)
+        orch.sessions.get_provider = MagicMock(return_value=stale)
+        orch.sessions.conversation_root = MagicMock(return_value=ConversationRoot(sid="", cwd=""))
+        orch.sessions.reset = AsyncMock(return_value=True)
+        orch.dashboard_state = _mock_dashboard_state()
+        job = _job(
+            id="ja3",
+            name="rescoped alias",
+            agent_id="in-3d",
+            project_dir="",
+            project_dir_was=str(old_repo),
+        )
+
+        async with _cron_message_cb(orch, result_text="ok") as callback:
+            orch.cron_svc.update_job_async = AsyncMock(return_value=job)
+            await callback(job)
+
+        # Re-rooted this wake: the store's rescope marker is cleared.
+        orch.cron_svc.update_job_async.assert_awaited_once_with(
+            "ja3", project_dir_was="", expect_project_scope=("", str(old_repo))
+        )
+        ending = [
+            c for c in orch.sessions.reset.await_args_list if c.kwargs.get("ends_conversation")
+        ]
+        assert len(ending) == 1 and ending[0].kwargs["expect_provider"] is stale
+        kw = orch.sessions.get_or_create.await_args.kwargs
+        assert kw.get("cwd") == str(ws_dir)
+        assert kw.get("require_cwd") is True
 
     @pytest.mark.asyncio
     async def test_relative_workspace_dir_is_anchored_under_data_home(self, tmp_path, monkeypatch):

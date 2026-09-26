@@ -35,6 +35,7 @@ from kiro_crew.folder_steering import crosses_memory_silo, memory_silo_fence
 from kiro_crew.hooks import is_unc_shape, unc_probe_allowed, validate_file_path
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.project_dir import ProjectDirRefused, resolve_project_dir
 from kiro_crew.sandbox import voice_runtime_workspace_conflict
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -476,24 +477,26 @@ async def api_chat_folders(request: web.Request) -> web.Response:
 
 
 def _validate_project_dir(raw: str) -> tuple[str, str | None]:
-    """Validate and normalize project_dir. Returns (resolved_path, error_msg)."""
-    if not raw:
-        return "", None
-    if not os.path.isabs(raw) and not raw.startswith("~"):
-        return "", "Project directory must be an absolute path"
-    resolved = os.path.realpath(os.path.expanduser(raw))
-    if is_sensitive_path(resolved):
-        sel().log_api_access(
-            caller="dashboard",
-            operation="chat.folder_project_dir",
-            outcome="denied",
-            resources=resolved,
-            error="sensitive path",
+    """Validate and normalize project_dir. Returns (resolved_path, error_msg).
+
+    The rule lives in :func:`kiro_crew.project_dir.resolve_project_dir`, the
+    one body the cron store's ``project_dir`` validator calls too; this
+    wrapper only supplies the folder surface's wording and audit attribution
+    and translates the refusal into the ``(value, error)`` shape the folder
+    routes return.
+    """
+    try:
+        return (
+            resolve_project_dir(
+                raw,
+                label="Project directory",
+                audit_operation="chat.folder_project_dir",
+                audit_caller="dashboard",
+            ),
+            None,
         )
-        return "", "project_dir refers to a sensitive path"
-    if not os.path.isdir(resolved):
-        return "", "Project directory must be an existing directory"
-    return resolved, None
+    except ProjectDirRefused as exc:
+        return "", str(exc)
 
 
 def _folder_project_overlap_denied(resolved: str) -> str | None:
@@ -1121,6 +1124,16 @@ async def create_folder_record(
     # and the scaffold calls this once per folder in a loop, so a slow or
     # network-mounted directory would otherwise stall every other request.
     project_dir, err = await asyncio.to_thread(_validate_project_dir, requested_dir)
+    if err and require_resolved_project_dir and requested_dir:
+        # The caller vouched its path was already canonical and valid moments
+        # ago, so a refusal now means the directory on disk differs from the
+        # one it confirmed: gone, or -- on Windows, where a reparse point is
+        # refused rather than resolved -- replaced by a link. Same verdict as
+        # a resolution that lands elsewhere, so the same code.
+        raise FolderCreateError(
+            "That directory was moved or replaced after the scan — re-scan and retry",
+            "folder_project_dir_moved",
+        )
     if err:
         raise FolderCreateError(err)
     if require_resolved_project_dir and project_dir != requested_dir:
@@ -1453,7 +1466,12 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
                 )
         changes["parent_id"] = new_parent
     if "project_dir" in body:
-        pd, err = _validate_project_dir(str(body["project_dir"] or "").strip())
+        # Off-loop like the create path: the validator canonicalises through
+        # the filesystem (a per-component handle walk on Windows), and a slow
+        # or remote mount must not stall the loop.
+        pd, err = await asyncio.to_thread(
+            _validate_project_dir, str(body["project_dir"] or "").strip()
+        )
         if err:
             return web.json_response({"error": err}, status=400)
         if pd:

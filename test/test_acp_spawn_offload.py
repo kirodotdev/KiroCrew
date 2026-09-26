@@ -765,6 +765,12 @@ class TestRuntimeShieldSurvivesAFailedAppend:
             ),
             file_lock=platform_compat.file_lock,
             open_lock_file=platform_compat.open_lock_file,
+            # The work-dir chain pin (Windows) and its release: nothing to hold
+            # for a stand-in tree, so the pin answers no handles.
+            pin_directory_chain=lambda path: [],
+            pin_directory_chain_bound=lambda path: ([], str(path)),
+            compare_key=platform_compat.compare_key,
+            release_directory_chain=lambda fds: None,
         )
         monkeypatch.setattr(runtime_mod, "platform_compat", backend)
         monkeypatch.setattr(session_pid, "platform_compat", backend)

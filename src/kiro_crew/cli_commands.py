@@ -1699,6 +1699,7 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
     script = (getattr(args, "script", "") or "").strip()
     command = (getattr(args, "shell_command", "") or "").strip()
     model = (getattr(args, "model", "") or "").strip()
+    project_dir = (getattr(args, "project_dir", "") or "").strip()
     silent = bool(getattr(args, "silent", False))
     hide_in_chat = bool(getattr(args, "hide_in_chat", False))
     timeout = getattr(args, "timeout", None)
@@ -1716,6 +1717,9 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
         _cron_add_fail("message is required for an agent job (only --script/--command may omit it)")
     if agent and not _AGENT_NAME_RE.match(agent):
         _cron_add_fail("invalid agent name (alphanumeric, hyphens, underscores; 1-64 chars)")
+    if project_dir and zero_token:
+        # Same rule the store enforces; refused here so the message names the flag.
+        _cron_add_fail("--project-dir applies only to an agent job (not --script/--command)")
     if timeout is not None:
         if not zero_token:
             _cron_add_fail("--timeout applies only to a --script or --command job")
@@ -1891,6 +1895,8 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
             timezone=tz,
             hide_in_chat=hide_in_chat,
             folder_id=folder_id,
+            project_dir=project_dir,
+            audit_caller="cli",
             command=command,
             script=script,
             persistent_session=persistent_session,
@@ -1929,6 +1935,10 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
     except Exception:
         logging.getLogger(__name__).debug("cron add success audit emit failed", exc_info=True)
     print(f"Added job: {job.id} ({job.name}) [{sched_desc}]")
+    if project_dir:
+        # The RESOLVED path (realpath of what was given), so the caller sees the
+        # directory the wake will actually run in.
+        print(f"  project: {job.project_dir}")
 
 
 def _cron(args: argparse.Namespace) -> None:
@@ -1983,6 +1993,8 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
                 detail = "owner: none (manage from CLI or the dashboard Schedule page)"
             if provenance:
                 detail += f"  created by: {provenance}"
+            if j.project_dir:
+                detail += f"  project: {j.project_dir}"
             print(f"      {detail}")
 
     elif action == "adopt":
@@ -2089,6 +2101,10 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             kwargs["agent_id"] = agent_val
         if getattr(args, "approval_mode", None) is not None:
             kwargs["approval_mode"] = "" if args.approval_mode == "default" else args.approval_mode
+        if getattr(args, "project_dir", None) is not None:
+            # "" clears; a non-empty value is resolved and checked by the store
+            # (absolute, existing, not sensitive, agent job only).
+            kwargs["project_dir"] = args.project_dir.strip()
         if not kwargs:
             print("Provide at least one field to update")
             return
@@ -2096,7 +2112,7 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             print("Provide --every or --cron, not both")
             return
         try:
-            updated = svc.update_job(args.job_id, **kwargs)
+            updated = svc.update_job(args.job_id, audit_caller="cli", **kwargs)
         except ValueError as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)

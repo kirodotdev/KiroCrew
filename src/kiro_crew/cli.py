@@ -50,7 +50,7 @@ from kiro_crew.config.loader import (
     DASHBOARD_PORT,
     build_provider_factory,
 )
-from kiro_crew.config.paths import _default_home, _legacy_home
+from kiro_crew.config.paths import _default_home, _legacy_home, default_work_dir
 from kiro_crew.constants import BANNER, MIN_NODE_MAJOR, env_flag_enabled
 from kiro_crew.crash_guard import install as _install_crash_guard
 from kiro_crew.env import git_build_info
@@ -607,7 +607,7 @@ def _diagnostic_port(gw_kwargs: dict) -> int | None:
 def _knowledge_stats(args) -> None:
     """``kirocrew knowledge stats [--json]`` -- read-only counts, no repair verb."""
 
-    db_path = config_dir() / "workspace" / "knowledge" / "knowledge.db"
+    db_path = default_work_dir(config_dir()) / "knowledge" / "knowledge.db"
     as_json = bool(getattr(args, "json", False))
     if not db_path.exists():
         sel().log_tool_invocation(
@@ -693,7 +693,7 @@ def _knowledge(args) -> None:
         print("Usage: kirocrew knowledge dedup [--apply] | kirocrew knowledge stats [--json]")
         return
     apply = bool(getattr(args, "apply", False))
-    db_path = config_dir() / "workspace" / "knowledge" / "knowledge.db"
+    db_path = default_work_dir(config_dir()) / "knowledge" / "knowledge.db"
     if not db_path.exists():
         sel().log_tool_invocation(
             session_key="cli", source="cli", tool_name="knowledge_dedup", outcome="not_configured"
@@ -1519,6 +1519,8 @@ Examples:
       --no-persistent-session --minimal-context
   kirocrew cron add "disk" "" --every 600 --command "df -h /" --timeout 30 --timeout-secs 60
   kirocrew cron add "reminder" "call the vet" --at "tomorrow 9am"
+  kirocrew cron add "nightly-drift" "graduate schema drift; open a PR" --cron "0 3 * * *" \\
+      --project-dir ~/Repos/my-service
 """,
         formatter_class=_fmt,
     )
@@ -1605,6 +1607,17 @@ Examples:
         help="Model id for the agent wake (as advertised by kiro-cli --list-models)",
     )
     cron_add.add_argument(
+        "--project-dir",
+        dest="project_dir",
+        default="",
+        metavar="DIR",
+        help="Absolute path of the repository the agent wake runs in. The session is "
+        "rooted there, so that repo's .kiro/steering/**/*.md loads into every wake "
+        "exactly as for a chat scoped to the project. Must be an existing, non-sensitive "
+        "directory; agent jobs only (refused with --script/--command). Omitted: the "
+        "gateway default working directory, which carries no repo steering.",
+    )
+    cron_add.add_argument(
         "--persistent-session",
         dest="persistent_session",
         action=argparse.BooleanOptionalAction,
@@ -1672,6 +1685,15 @@ Examples:
         choices=["auto", "default"],
         default=None,
         help='Tool approval mode ("auto" to auto-approve, "default" to reset)',
+    )
+    cron_update.add_argument(
+        "--project-dir",
+        dest="project_dir",
+        default=None,
+        metavar="DIR",
+        help="Absolute path of the repository the agent wake runs in (agent jobs only); "
+        'an empty string ("") clears it. Takes effect on the next wake: a live '
+        "persistent session rooted elsewhere is reset so it cold-starts there.",
     )
     cron_rm = cron_sub.add_parser("remove", help="Remove a cron job")
     cron_rm.add_argument("job_id", help="Job ID to remove")

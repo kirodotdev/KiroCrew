@@ -9,7 +9,7 @@ from pathlib import Path
 
 from kiro_crew.config import KiroCrewConfig, config_dir
 from kiro_crew.config.loader import workspace_dir_for
-from kiro_crew.config.paths import project_agents_dir
+from kiro_crew.config.paths import default_work_dir, project_agents_dir
 from kiro_crew.frontmatter import STEERING_LOADER, split_frontmatter
 from kiro_crew.hooks import safe_read_file_bytes_nolink, validate_file_path
 from kiro_crew.platform_compat import first_linked_ancestor, is_link_or_junction
@@ -71,7 +71,7 @@ def _refuse_managed_source(path: Path) -> None:
     """
     cfg = KiroCrewConfig.load()
     roots = [config_dir(), Path.home() / ".kiro/crew", Path.home() / ".kirocrew"]
-    workspaces = [config_dir() / "workspace"]
+    workspaces = [default_work_dir(config_dir())]
     workspaces.extend(workspace_dir_for(name) for name in cfg.workspaces)
     candidate = Path(os.path.abspath(path))
     # Reuse only within this check. A later call must observe new configuration

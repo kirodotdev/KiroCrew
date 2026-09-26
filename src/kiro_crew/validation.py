@@ -91,6 +91,9 @@ MAX_ACP_SESSION_ID_LEN = 128
 # (_build_job/update_job), so the CLI and apps SDK cannot admit a larger value
 # than the validated surfaces.
 MAX_CRON_MESSAGE = 50_000
+# Filesystem path fields (a cron job's project_dir). 4096 = Linux PATH_MAX; the
+# store resolves the path and enforces absolute / existing / not-sensitive.
+MAX_PROJECT_DIR_LEN = 4096
 MAX_RESPONSE_LEN = 100_000  # truncate tool responses
 
 # Allowed categories for lessons
@@ -2778,6 +2781,9 @@ CRON_ADD_SCHEMA = ToolSchema(
         ),
         FieldSpec("timezone", str, max_len=50, pattern=re.compile(r"^[A-Za-z0-9_/+-]+$")),
         FieldSpec("folder", str, max_len=MAX_SHORT_STRING),
+        # Shape gate only; the store resolves the path and enforces
+        # absolute / existing-directory / not-sensitive.
+        FieldSpec("project_dir", str, max_len=MAX_PROJECT_DIR_LEN),
         FieldSpec("persistent_session", bool),
         FieldSpec("minimal_context", bool),
         FieldSpec("hide_in_chat", bool),
@@ -3514,6 +3520,7 @@ MCP_CRON_SCHEMAS: dict[str, ToolSchema] = {
             ),
             FieldSpec("timezone", str, max_len=50, pattern=re.compile(r"^[A-Za-z0-9_/+-]+$")),
             FieldSpec("folder", str, max_len=MAX_SHORT_STRING),
+            FieldSpec("project_dir", str, max_len=MAX_PROJECT_DIR_LEN),
             FieldSpec("persistent_session", bool),
             FieldSpec("minimal_context", bool),
             FieldSpec("hide_in_chat", bool),

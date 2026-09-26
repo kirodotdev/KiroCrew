@@ -204,7 +204,7 @@ from kiro_crew.agent_sdk.backends import (
 )
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.browser_cli.launch import browser_session_env, browser_socket_env
-from kiro_crew.config.paths import config_dir, kiro_sessions_dir
+from kiro_crew.config.paths import config_dir, default_work_dir, kiro_sessions_dir
 from kiro_crew.constants import (
     COMPACT_WAIT_TIMEOUT_SECS,
     KIROCREW_SPAWNED_ENV,
@@ -272,6 +272,12 @@ from kiro_crew.session_token_sig import schedule_session_token_publish
 from kiro_crew.skill_usage import get_global_skill_read_observer
 
 logger = logging.getLogger(__name__)
+
+#: Whether the spawn pins the caller-named work dir's directory chain across
+#: process creation (Windows: a re-resolved pathname can be aimed at a share).
+#: A module attribute rather than an inline platform read so a test can drive
+#: the composition on any host.
+_PIN_WORK_DIR_CHAIN: bool = platform_compat.IS_WINDOWS
 
 CLIENT_NAME = "kirocrew"
 #: The version reported to the agent host in ``initialize``'s ``clientInfo``, and
@@ -5367,11 +5373,14 @@ class AcpClient:
         if work_dir:
             self._work_dir = Path(work_dir)
         else:
-            # config.paths is a stdlib-only leaf: importing it here can't
-            # re-enter the config.loader -> providers.acp -> acp.client cycle.
-            from kiro_crew.config.paths import config_dir
-
-            self._work_dir = config_dir() / "workspace"
+            self._work_dir = default_work_dir()
+        # A caller-named work dir (a slot's project, a folder's project, a
+        # cron job's ``project_dir``, an alias workspace) is operator-chosen and
+        # was handed over as a canonical STRING; on Windows the spawn pins its
+        # directory chain so that string still reaches the verified
+        # directories when the child enters it (``_pin_work_dir_chain``).
+        # The runtime's own default tree is not operator-named and is left alone.
+        self._work_dir_is_named = bool(work_dir)
         # Once-per-instance guard for the ensure_ready work-dir check: True
         # after the first (off-loop) mkdir, so the per-prompt warm path pays
         # no filesystem syscall at all.
@@ -5507,6 +5516,7 @@ class AcpClient:
         self._stub_session_token = mint_stub_session_token()
         self._sandbox_cleanup: str | None = None
         self._bound_workspace_fd: int | None = None
+        self._work_dir_chain: list[int] = []
         self._spawn_work_dir = str(self._work_dir)
         self._process: asyncio.subprocess.Process | None = None
         self._pid: int | None = None
@@ -8271,20 +8281,71 @@ class AcpClient:
             self._sandbox_cleanup = None
 
     async def _discard_bound_workspace(self) -> None:
-        """Close the parent copy of a macOS workspace identity off-loop."""
+        """Close the parent copy of a macOS workspace identity off-loop.
+
+        Also releases the Windows work-dir chain pins (``_pin_work_dir_chain``):
+        both are the parent's hold on the directory the child entered, and both
+        end with the process.
+        """
         descriptor = getattr(self, "_bound_workspace_fd", None)
         self._bound_workspace_fd = None
+        chain = getattr(self, "_work_dir_chain", [])
+        self._work_dir_chain = []
         work_dir = getattr(self, "_work_dir", None)
         if work_dir is not None:
             self._spawn_work_dir = str(work_dir)
         if descriptor is not None:
             await release_bound_agent_workspace(descriptor)
+        if chain:
+            await asyncio.to_thread(platform_compat.release_directory_chain, chain)
+
+    async def _pin_work_dir_chain(self) -> None:
+        """Windows: hold every directory on the caller-named work dir across the spawn.
+
+        Mirrors ``AcpRuntime._pin_work_dir_chain``; the rationale lives there.
+        """
+        if not (_PIN_WORK_DIR_CHAIN and self._work_dir_is_named):
+            return
+
+        def _pin() -> tuple[list[int], str]:
+            # The session pool hands its default cwd over EXPLICITLY too -- the
+            # realpath of the default work dir -- and that is the runtime's own
+            # tree, not an operator-named one: pinning it would hold the data
+            # home's directories from the gateway for as long as any pooled
+            # agent lives, which is exactly the hold a shutdown or a pod
+            # teardown must not meet. Compared with ``compare_key``: on the
+            # Windows rule that is string work only, so neither the default (a
+            # tree the agent can write under) nor the named work dir is
+            # resolved by name inside the very guard against a re-resolved name.
+            own_default = platform_compat.compare_key(default_work_dir())
+            if platform_compat.compare_key(self._spawn_work_dir) == own_default:
+                return [], self._spawn_work_dir
+            return platform_compat.pin_directory_chain_bound(self._spawn_work_dir)
+
+        try:
+            # The child is created under the spelling the chain was opened
+            # under: on the binding rule the volume's own identity, so the
+            # kernel's open of the current directory at process creation goes
+            # through the volume, not through a letter a writer can rebind
+            # between the pin and the create. The peer-facing session cwd
+            # (``_session_work_dir``) stays the validated DOS spelling.
+            self._work_dir_chain, self._spawn_work_dir = await asyncio.to_thread(_pin)
+        except OSError as exc:
+            raise RuntimeError(
+                f"refusing to start the agent in {self._spawn_work_dir!r}: a directory on "
+                f"that path could not be pinned ({exc.strerror or exc.__class__.__name__}); "
+                "a component may have been replaced by a symlink or junction since the "
+                "directory was validated."
+            ) from exc
 
     async def _session_work_dir(self) -> str:
         """Return the ACP cwd backed by the process's bound directory identity.
 
         Unbound -- every platform but macOS, where nothing binds -- this is the
-        spawn's own pathname and there is nothing to re-check.
+        validated work dir and there is nothing to re-check. It is the work dir,
+        not the process's own current-directory spelling: on Windows that
+        spelling is the volume identity the chain pin walked, a kernel name the
+        peer is not handed (``_pin_work_dir_chain``).
 
         Bound, the descriptor is re-verified and the peer receives the DESCRIPTOR's
         own name. The rule itself is ``sandbox.resolve_bound_session_workspace``,
@@ -8294,7 +8355,7 @@ class AcpClient:
         method for the residual limit a string cannot close.
         """
         if self._bound_workspace_fd is None:
-            return self._spawn_work_dir
+            return str(self._work_dir)
         try:
             return await resolve_bound_session_workspace(
                 self._bound_workspace_fd, self._spawn_work_dir
@@ -9271,6 +9332,7 @@ class AcpClient:
                 await bind_voice_safe_agent_workspace_async(self._work_dir)
             )
         try:
+            await self._pin_work_dir_chain()
             self._process = await platform_compat.create_windows_cleanup_owned_process(
                 functools.partial(
                     create_subprocess_limited,

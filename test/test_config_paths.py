@@ -366,3 +366,51 @@ class TestBackCompatReexport:
 
         assert cfg.config_dir is paths.config_dir
         assert cfg.KiroCrewConfig.__name__ == "KiroCrewConfig"
+
+
+class TestDefaultWorkDir:
+    """``default_work_dir()`` is the ONE spelling of where a cwd-less session runs.
+
+    The ACP runtime and client root a cwd-less process there, and the session
+    manager's ``default_conversation_roots`` must recognise a conversation
+    rooted there as "at the gateway default" -- a cleared-project cron job is
+    judged against it every wake. Two spellings that drift would end that
+    job's conversation on every wake.
+    """
+
+    def test_is_the_workspace_under_the_data_home(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+        monkeypatch.setattr(paths, "_resolved_home", None)
+        monkeypatch.setattr(paths, "_config_dir_memo", None)
+        assert paths.default_work_dir() == paths.config_dir() / "workspace"
+
+    def test_a_caller_may_hand_in_the_home_it_already_resolved(self, tmp_path: Path) -> None:
+        # A CLI verb resolves config_dir() through its own module seam (which
+        # its tests point at a fixture home); the spelling beneath stays here.
+        assert paths.default_work_dir(tmp_path) == tmp_path / "workspace"
+
+    def test_no_module_spells_the_default_work_dir_itself(self) -> None:
+        # Tree-wide: the only ``config_dir() / "workspace"`` in the package is
+        # the helper's own body, so a change to it moves every consumer (the
+        # ACP runtime and client, the session manager's default roots, the
+        # deploy allowed-roots, member essential context, the knowledge db
+        # paths) together instead of leaving one pointing at the old place.
+        import re
+
+        pkg = Path(paths.__file__).resolve().parents[1]
+        literal = re.compile(r'config_dir\(\)\s*/\s*"workspace"')
+        offenders: list[str] = []
+        for py in pkg.rglob("*.py"):
+            if py.name == "paths.py" and py.parent.name == "config":
+                continue
+            for line in py.read_text(encoding="utf-8").splitlines():
+                stripped = line.lstrip()
+                # A comment or a backticked docstring mention describes the
+                # directory; only CODE that computes it is a second spelling.
+                if stripped.startswith("#") or "``" in line:
+                    continue
+                if literal.search(line):
+                    offenders.append(f"{py.relative_to(pkg)}: {line.strip()}")
+        assert offenders == [], offenders

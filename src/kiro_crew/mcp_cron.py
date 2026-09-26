@@ -31,10 +31,11 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from kiro_crew import model_registry
-from kiro_crew.config.loader import config_dir, read_local_secret
+from kiro_crew.config.loader import KiroCrewConfig, config_dir, read_local_secret
 from kiro_crew.cron import (
     _JOB_TIMEOUT_SECS,
     CronJob,
+    CronProjectDirOutOfScope,
     CronService,
     CronStoreBusy,
     CronStoreUnreadable,
@@ -1089,6 +1090,37 @@ def _log_cron_denial(tool_name: str, error: str) -> None:
 _CRON_FOLDER_ID_RE = re.compile(r"[0-9a-f]{8}")
 
 
+def _agent_cwd_allowed_roots() -> list[str]:
+    """The roots an AGENT-supplied ``project_dir`` may name; empty when unreadable (fail closed).
+
+    The store admits any existing, non-sensitive directory, which is the right
+    rule for an operator at the dashboard or the CLI. This tool is called by
+    an agent, and ``cron_add`` is auto-approved by default, so a directory it
+    names here is a root a future session runs in with no human between the
+    two. The same LLM-supplied choice for ``spawn_run``'s ``cwd`` is confined
+    to ``agent.subagent_cwd_allowed_roots``; this is that confinement and
+    nothing wider (in particular this PROCESS's working directory is not a
+    root: the tool may run inside the gateway or a pooled backend, whose cwd
+    is the operator's, not the caller's). The roots are handed to the store,
+    which judges containment on the canonical value it persists, inside the
+    same locked operation (``validate_cron_project_dir``); a refusal comes
+    back as :class:`CronProjectDirOutOfScope` and is audited here as an
+    authorization denial, since the generic tool-call row redacts every
+    argument and carries no denial class.
+    """
+    try:
+        return list(KiroCrewConfig.load().agent.subagent_cwd_allowed_roots)
+    except Exception:
+        return []
+
+
+def _audit_project_dir_scope_refusal(tool_name: str, exc: CronProjectDirOutOfScope) -> None:
+    _log_cron_denial(
+        tool_name,
+        f"project_dir outside the allowed roots: {redact_log_via_context(exc.canonical)}",
+    )
+
+
 def _resolve_cron_folder(ref: str, *, session_key: str | None) -> tuple[str, str | None]:
     """Resolve a cron-folder reference (id or name) to a folder id, creating it.
 
@@ -1292,6 +1324,20 @@ def _list_tools() -> list[dict[str, Any]]:
                         "id (e.g. 'Veille'). A missing name is created. Empty or omitted "
                         "leaves the job ungrouped.",
                     },
+                    "project_dir": {
+                        "type": "string",
+                        "description": "Absolute path of the repository/project this job's agent "
+                        "session runs in (agent jobs only; refused with script/command). The "
+                        "session is rooted there, so that repo's .kiro/steering/**/*.md loads "
+                        "into every wake exactly as for an interactive chat scoped to the "
+                        "project, and the [PROJECT] context line names it. Must be an existing, "
+                        "non-sensitive directory under a configured "
+                        "agent.subagent_cwd_allowed_roots entry (the same confinement as "
+                        "spawn_run's cwd). Omitted: the gateway default working "
+                        "directory, which carries no repo steering. Set this for any job that "
+                        "does real work in a repository (builds, commits, PRs) so the repo's "
+                        "policies reach the job instead of having to be restated in message.",
+                    },
                     "persistent_session": {
                         "type": "boolean",
                         "description": "Whether this cron reuses one agent session across "
@@ -1437,6 +1483,18 @@ def _list_tools() -> list[dict[str, Any]]:
                         "Empty string clears the override (inherits from agent/global). Applies "
                         "when the job's session is created; a running persistent session keeps "
                         "its current model until it is reset.",
+                    },
+                    "project_dir": {
+                        "type": "string",
+                        "description": "Absolute path of the repository/project the job's agent "
+                        "session runs in (agent jobs only). Its .kiro/steering/**/*.md loads "
+                        "into every wake exactly as for an interactive chat scoped to that "
+                        "project. Confined like cron_add's: under a configured "
+                        "agent.subagent_cwd_allowed_roots entry. Empty string "
+                        "clears it (back to the gateway default cwd). "
+                        "A changed value takes effect on the next wake: a live persistent "
+                        "session rooted elsewhere is reset so it cold-starts in the new "
+                        "directory.",
                     },
                 },
                 "required": ["job_id"],
@@ -1745,6 +1803,7 @@ def _render_cron_list_json(jobs: list[Any]) -> str:
             "minimal_context": bool(job.minimal_context),
             "persistent_session": bool(job.persistent_session),
             "hide_in_chat": bool(job.hide_in_chat),
+            "project_dir": _sanitize(str(getattr(job, "project_dir", "") or "")),
             "message": message[:_JSON_MESSAGE_LEN],
             # A consumer classifies the prompt, and anything past the cut is
             # invisible to it -- including the words that would RULE OUT a
@@ -1884,6 +1943,9 @@ def _render_cron_list_compact(jobs: list[Any]) -> str:
             # _sanitize applies the full redact_credentials +
             # redact_exfiltration_urls chain required for LLM-controlled values.
             extras.append(f"model={_sanitize(model_val)}")
+        project_dir_raw = getattr(j, "project_dir", "")
+        if isinstance(project_dir_raw, str) and project_dir_raw:
+            extras.append(f"project_dir={_sanitize(project_dir_raw)}")
         if channel:
             extras.append(f"channel={_sanitize(channel)}")
         last_status = getattr(j, "last_status", None)
@@ -2610,6 +2672,11 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             folder_id, folder_err = _resolve_cron_folder(args["folder"], session_key=session_key)
             if folder_err:
                 return f"Error: {folder_err}"
+        # Validated by the store (absolute, existing, not sensitive, agent job
+        # only) and confined to the agent allowlist, both on the canonical
+        # value inside the single locked add_job below; a refusal surfaces as
+        # the ValueError branch and leaves no job behind.
+        project_dir = str(args.get("project_dir") or "").strip()
         try:
             job = svc.add_job(
                 name=n,
@@ -2630,6 +2697,9 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 strict_schedule=strict_schedule if isinstance(strict_schedule, bool) else False,
                 hide_in_chat=hide_in_chat if isinstance(hide_in_chat, bool) else False,
                 folder_id=folder_id,
+                project_dir=project_dir,
+                project_dir_allowed_roots=_agent_cwd_allowed_roots() if project_dir else None,
+                audit_caller=session_key or "mcp",
                 command=command or "",
                 script=script or "",
                 persistent_session=(
@@ -2644,6 +2714,9 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             return "Error: cron store busy, please retry"
         except CronStoreUnreadable as exc:
             return f"Error: {exc}"
+        except CronProjectDirOutOfScope as e:
+            _audit_project_dir_scope_refusal("cron_add", e)
+            return f"Error: {e}"
         except ValueError as e:
             return f"Error: {e}"
         sched_str = format_schedule(job.schedule, tz_name=job.timezone or "")
@@ -2750,6 +2823,13 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                     # "auto" sentinel — explicit inherit, same as clearing.
                     m = ""
             kwargs["model"] = m
+        if "project_dir" in args:
+            # "" clears; anything else is resolved, checked and confined to the
+            # agent allowlist by the store, on the canonical value it persists.
+            new_root = str(args["project_dir"] or "").strip()
+            kwargs["project_dir"] = new_root
+            if new_root:
+                kwargs["project_dir_allowed_roots"] = _agent_cwd_allowed_roots()
         if "cron_expr" in args and args["cron_expr"]:
             kwargs["cron_expr"] = args["cron_expr"]
         if "every" in args and args["every"]:
@@ -2761,11 +2841,14 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         if not kwargs:
             return "Error: no fields to update"
         try:
-            updated = svc.update_job(jid, **kwargs)
+            updated = svc.update_job(jid, audit_caller=_authz_session_key() or "mcp", **kwargs)
         except CronStoreBusy:
             return "Error: cron store busy, please retry"
         except CronStoreUnreadable as exc:
             return f"Error: {exc}"
+        except CronProjectDirOutOfScope as e:
+            _audit_project_dir_scope_refusal("cron_update", e)
+            return f"Error: {e}"
         except ValueError as e:
             return f"Error: {e}"
         if not updated:

@@ -1654,6 +1654,12 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # probe and gateway logger modules that consume the returned string are
         # the output boundaries.
         "sandbox.py",
+        # Gate-side audit hygiene: the shared project-directory rule redacts the
+        # refused path before it reaches the SEL denial event it records for a
+        # sensitive-location refusal (the chat-folder and cron surfaces both
+        # call it). An audit write, not an output bound for a human or a third
+        # party, so it is not an egress boundary.
+        "project_dir.py",
         # Shared model-fallback text builders (fallback_story_of /
         # annotate_model_fallback): scrub the chain-exhaustion story and the
         # fallback-served warning line ONCE, centrally, so every consumer gets
