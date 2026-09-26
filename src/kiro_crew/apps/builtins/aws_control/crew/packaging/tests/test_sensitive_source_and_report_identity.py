@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import importlib
+import inspect
 import json
 import os
 import pathlib
@@ -921,24 +922,36 @@ def test_MUTATION_a_concurrent_staging_claim_would_crash_without_the_translation
 
 
 def test_the_windows_narrowing_is_the_repos_own_settled_answer() -> None:
-    """Windows cannot pin a traversal, and this build does not pretend otherwise.
+    """Windows cannot pin a TRAVERSAL, and this build does not pretend otherwise.
 
     A review asked twice for descriptor-anchored traversal on Windows -- "use Windows
     no-reparse handles for every component". Three facts, each checkable:
 
     * ``pinned_fs.supports_pinned_walk()`` requires ``O_DIRECTORY``, ``O_NOFOLLOW`` and
-      ``os.open in os.supports_dir_fd``, and returns False on Windows. The repo's own pinning
-      module therefore does not offer this either -- adopting it would not close the gap.
+      ``os.open in os.supports_dir_fd``, and returns False on Windows: there is no open,
+      stat or enumeration RELATIVE to a held directory handle there, and a walk, a stat,
+      an enumeration and a mutation each need exactly that (``_nofollow_primitive_available``).
     * Every caller of it in the tree branches on that predicate rather than assuming it.
     * ``eval/bench/safepath.py`` reached this exact question and settled it against a ctypes
       ``CreateFileW`` with ``FILE_FLAG_OPEN_REPARSE_POINT``, because it buys a property
       another mechanism already gives "at the price of security code that cannot be
       exercised on the machine this harness is developed on".
 
-    So the Windows branch checks each component by attribute, states that a swap inside the
-    remaining window wins, and refuses a redirect planted before the build ran -- which is
-    the realistic shape. Pinned as a rejection so the next review pass reads the reasoning
-    instead of re-filing the request.
+    What the repo HAS since gained is narrower than the request, and this test records the
+    line: ``pinned_fs.real_dir_path_pinned`` resolves ONE directory on Windows through a
+    root-first chain of ``platform_compat.pin_directory`` handles (``CreateFileW`` with
+    ``FILE_FLAG_OPEN_REPARSE_POINT``, held without ``FILE_SHARE_DELETE``), exercised on the
+    Windows CI shard for the dashboard's project-directory admission. That answers "is this
+    directory, named once, really the directory" -- a single by-name open per component,
+    each under ancestors already held. It does not answer what the builder asks, which is
+    to ENUMERATE and COPY a tree relative to what it holds: ``os.scandir``, ``os.stat`` and
+    ``os.open`` take no ``dir_fd`` on Windows, so every child of a held directory would
+    still be reached by NAME, and a name is what a watcher swaps. So the Windows branch here
+    still checks each component by attribute, states that a swap inside the remaining window
+    wins, and refuses a redirect planted before the build ran -- which is the realistic shape.
+    Pinned as a rejection so the next review pass reads the reasoning instead of re-filing
+    the request, and as a confinement so the day pinned_fs grows a handle-relative WALK on
+    Windows this test fires and the narrowing is re-argued.
     """
     import kiro_crew.pinned_fs as pinned_fs
 
@@ -947,10 +960,16 @@ def test_the_windows_narrowing_is_the_repos_own_settled_answer() -> None:
         "supports_pinned_walk stopped gating on dir_fd support; if the repo has gained "
         "pinned traversal on Windows, this build should use it"
     )
-    assert "FILE_FLAG_OPEN_REPARSE_POINT" not in src, (
-        "pinned_fs has grown a Windows no-reparse path; the narrowing below is then "
-        "avoidable and should be replaced by it"
+    # The Windows handle pin is confined to the single-directory resolver: one call site
+    # of ``pin_directory`` in the module, inside ``real_dir_path_pinned``. A second one --
+    # a handle-pinned scandir, copy or write -- is the walk this rejection says does not
+    # exist, and the narrowing below would then be avoidable.
+    assert src.count("pin_directory(") == 1, (
+        "pinned_fs has grown a second Windows handle-pinned path; if that is a "
+        "handle-relative walk, the narrowing below is avoidable and should be replaced by it"
     )
+    assert "pin_directory(" in inspect.getsource(pinned_fs.real_dir_path_pinned)
+    assert not pinned_fs.supports_pinned_walk() or os.name != "nt"
 
     # Read from THIS tree, and matched on a fragment that does not span the wrap: the
     # sentence is broken across two source lines, so "worth considering" as one

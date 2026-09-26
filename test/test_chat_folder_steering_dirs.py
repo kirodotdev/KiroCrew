@@ -679,7 +679,12 @@ def _make_app(state: DashboardState) -> web.Application:
 
     @web.middleware
     async def _publish_app(request: web.Request, handler: Any) -> Any:
+        # The PERSON's own sidebar call, as the token middleware publishes it:
+        # no app claim, and the positive ``is_dashboard_user`` stamp the
+        # steering and binding fences read the person by
+        # (``chat_folders._is_the_person``).
         request["app"] = ""
+        request["is_dashboard_user"] = True
         return await handler(request)
 
     app.middlewares.append(_publish_app)

@@ -198,7 +198,146 @@ NOT seed a first message: that would be delivery.
 `session_create` also takes an optional `folder` — a folder id or `/`-separated
 human path, resolved with `chat_folder_create`'s `parent` semantics (missing
 segments created, behind the same tree-shaping gate) — and files the slot as
-part of creation (#6118). The caller's OWN slot is filed the same way with
+part of creation (#6118).
+A folder's project binding is NOT agent-settable: no tool on this server carries
+`project_dir` (#10432 stays open; the agent bind path is a follow-up), and the
+folder routes refuse a non-person caller's `project_dir` whole — a non-empty one
+at create, a set or clear on the PATCH — before the path is looked at
+(`chat_folders._agent_binding_refusal`, 403 `folder_project_dir_forbidden`,
+audited under `app_isolation` against the caller's principal or, for a session
+nobody else names, its session key). WHO is the person is ONE POSITIVE bit,
+`chat_folders._is_the_person`: `request["is_dashboard_user"] is True`, the stamp
+the token middleware sets only when the person's own cookie or session token
+validated (the sidebar's Folder settings); the internal-secret transport (the
+managed MCP set: every agent session's tool call, an ordinary dashboard
+session's included) never sets it, an app's own token sets it `False`, and a
+request that met no middleware is refused rather than admitted — the person is
+the caller the middleware named, never the caller nothing else claimed; no
+caller is sorted by its key. The person's `project_dir` runs the folder
+endpoint's own validator (`_admit_project_dir`, which picks the validator by the
+request's positive stamp: for the person, `_validate_project_dir` — main's own
+resolution by name, a share by its UNC spelling included) and the
+workspace-overlap guard, and a chat the person opens in a bound folder
+(`POST /api/chat/slots`) inherits the nearest ancestor's `project_dir` at
+creation, before its context is built. The UNC rule is scoped to every OTHER
+principal (`screen_and_resolve_project_dir`): the probe it prevents is a caller other
+than the operator steering the gateway onto a host of that caller's choosing,
+which does not exist when the operator picks a path for the operator's own
+gateway — a person could bind a project on a share before this rule and still
+can. It has two halves. Lexical: a UNC-shaped `project_dir` (`\\host\share`,
+`//host/share`, `\\?\UNC\host\share`) from a non-person principal is refused
+before the first filesystem call through the repo's one UNC gate
+(`hooks.is_unc_shape` / `unc_probe_allowed`), on every host — at the
+`set_project` directive, a non-person request at the slot project endpoint, a
+and any folder route a non-person `project_dir` reaches
+(none does; `_agent_binding_refusal` refuses it whole first, and the scaffold
+routes refuse every non-person caller before the root is read). Never on the read
+path: every stored binding is the person's and keeps resolving as it did
+(refusing it there would fail every chat opened in that folder with a 400, a
+retroactive refusal with no migration). Link half
+(inside `screen_and_resolve_project_dir`):
+`realpath` follows every link in a path,
+and a LOCAL link whose target is a share makes the gateway open the share on
+the way, so before anything follows a link on a non-person path the repo's one
+link-target screen (`hooks.link_screen`, the walk `validate_file_path` already
+runs for file reads, made platform-neutral and given a per-cause answer) reads
+each link on the way — the first linked ancestor, root-first, then the leaf —
+with `os.readlink`, never following it, refuses a share-shaped target, and hands
+back the path re-spelled through every link it read. The walk resolves in
+component order: on POSIX no `..` is folded before it (`_anchored_spelling`
+only anchors a relative path), so `link/../sibling` reaches the link target's
+parent as `realpath` does; on Windows the Win32 parser folds `..` before any
+filesystem sees a name, so `abspath` there is the platform's rule and runs
+first. A request whose link the screen cannot read or place is refused apart
+from the share-shaped cause (`PROJECT_DIR_UNSCREENABLE_LINK_REFUSAL`; at the
+slot project endpoint the code `project_dir_link_unscreenable`, audited
+`unscreenable link`). That screened spelling, never the original, is what is
+resolved next, and never by name: `pinned_fs.real_dir_path_pinned` opens every
+component without following a link and reads the real path back from the
+directory it holds (`pinned_fs.fd_real_path`) — on POSIX an `openat` chain under
+`O_NOFOLLOW` (`pinned_fs.open_in_pinned_parent` with `traverse_flags`: `O_PATH`
+where the platform has it, so the chain needs only the search permission a
+by-name `realpath` needs and a directory under a search-only ancestor still
+resolves), on Windows a root-first chain of handles opened with
+`FILE_FLAG_OPEN_REPARSE_POINT` and held without `FILE_SHARE_DELETE`
+(`platform_compat.pin_directory`, admitting a reparse point that redirects
+nothing, such as a cloud-files placeholder: the tag is read off the open handle
+and only `IsReparseTagNameSurrogate` refuses — a junction and a symlink carry the
+bit, a Files On-Demand placeholder does not; the Windows CI shard proves a real
+junction refused through `real_dir_path_pinned` and the placeholder arm accepted
+through the tag seam, while a live Files On-Demand folder is confirmed by a
+maintainer with OneDrive, not by CI) — so a component swapped for a link
+between the screen and the open is refused at the open on every host
+(`PROJECT_DIR_UNVERIFIABLE_REFUSAL`), a component this process may not traverse
+answers `PROJECT_DIR_UNOPENABLE_REFUSAL` (the endpoint's `project_dir_unopenable`),
+a spelling no filesystem can carry answers the missing-directory refusal on both
+arms rather than a server error, and a host that can pin neither way fails
+closed. The sensitive-path verdict at those sites is taken on the pinned real
+path — for a missing path, on the link-free spelling — as it stands
+(`project_dir_sensitive_refusal` over `is_sensitive_resolved_path`, on the
+worker thread), never by resolving the name again, which would follow a
+component swapped after the pin. The same screen-and-resolve call (`screen_and_resolve_project_dir`) runs
+on a worker thread for the `set_project` directive and the slot project
+endpoint's non-person arm, so neither holds a `realpath` of its own or resolves
+on the event loop; the endpoint's person arm runs main's `realpath` off the loop
+too. The READ path (`_resolve_folder_project_dir`, the stored-value reader) is
+main's by-name resolution for every stored value and runs neither half: only the
+person binds, so a stored binding is the operator's own choice, honoured as it
+always was. A non-person request is refused for any cause. A session already filed in a folder is not re-scoped
+by a binding change itself: it picks up the folder's current binding on its
+next agent switch (`api_chat_slot_agent` re-resolves the slot's folder chain on
+every switch to a non-project-scope agent) — and immediately through
+`set_project`. What a binding confers is main's, unchanged: the nearest
+ancestor's binding, for every chat filed beneath it.
+The reparent path is bound by the same bit: an unbound folder's subtree inherits
+its nearest bound ancestor, so a non-person caller's `parent_id` change is
+refused (same 403, decided under the store lock) when the stored binding the two
+places confer differs (`_move_changes_inherited_binding` over
+`_inherited_project_dir`) — moving under a folder that carries a binding, or out
+from under one, would rebind the chats filed inside it; a folder carrying its
+own binding moves freely (nearest wins, so its subtree resolves it wherever it
+sits), and a move between places that confer the same binding lands. The
+ownership fences stay on the folder principal, which is why an ordinary session
+may still reparent the person's folders between places with the same binding.
+The reparent branch compares what the moved subtree would inherit for STEERING
+as well (`_inherited_steering_dirs`: the stored declarations of every ancestor,
+root-first, with each declaring folder's owner — the data
+`_resolve_folder_steering_dirs` consumes, compared under the same lock and
+validation-free like the binding walk), and refuses a non-person caller's move
+that changes it with the steering gate's 403 (`steering_dirs_forbidden`): such a
+caller may not declare steering, and a move under a folder that declares it, or
+out from under one, would hand those documents to — or take them from — every
+chat filed in the moved subtree at its next start, while the binding branch is
+silent whenever both places inherit the same binding. A move between places
+that inherit the same steering lands. Filing is the one way a session acquires
+a folder's binding and steering, so every request-driven filing takes ONE
+decision, `refuse_filing_across_inheritance`, taken in ONE section with the
+write under the folder store lock (`file_slot_across_inheritance`) at `PATCH
+/api/chat/slots/{slot}/folder` (behind `chat_folder_move_session` and
+`chat_folder_file_self`) and at `POST /api/chat/slots` with a `folder_id` (a
+refusal at the write retracts the slot the request minted); the agent tools
+`session_create` / `session_fork` apply the same comparison
+(`filing_crosses_inheritance`) from the creator's or the source's own placement,
+before the mint and again adjacent to the child's assignment in their
+synchronous configuration window, refusing while a folder write is in flight
+(`folder_store_busy`) and retracting the child on refusal. The person files anywhere; any other principal may not
+place a session where it would inherit a binding or steering it does not have
+today — the same two comparisons over the committed folder tree
+(`read_folders`, so a binding clear whose write is still in flight and about to
+roll back is never judged), the slot revalidated after that read, with the same
+two codes (`folder_project_dir_forbidden`, `steering_dirs_forbidden`) — while a
+filing between places that confer the same binding and steering lands. A
+structural test enumerates every writer of a session's folder or project in the
+dashboard package and holds the request-driven ones to that decision, naming
+why each other writer (a restore, a fork's copy, a channel or cron placement
+from configuration, a session's own project) is not a filing.
+The `steering_dirs` declaration gate at
+both of its write sites (`_refuse_agent_steering_dirs`, spec'd in `config.md`)
+is main's #11827 rule: an app's or a member's declaration is refused with that
+gate's own 403 (`steering_dirs_forbidden`).
+`session_create` itself still resolves the child's project from the caller's
+workspace (`default_project_dir`), not from the folder it files into; #11680
+adds that inheritance. The caller's OWN slot is filed the same way with
 `chat_folder_file_self` (folder tools, same server): it takes no `session`
 argument, resolves the target from the verified caller key, and so can be
 granted where `chat_folder_move_session` is withheld — a conductor files itself

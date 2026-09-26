@@ -16,7 +16,7 @@ Three properties belong to this module rather than to the scanner:
 * **The scan root is validated by the folder API's own validator.** ``scan``
   refuses exactly what creating a folder by hand refuses — a relative path, a
   sensitive path, a path that is not a directory — because it calls the same
-  :func:`~kiro_crew.dashboard.chat_folders._validate_project_dir`. One function,
+  :func:`~kiro_crew.dashboard.chat_folders._admit_project_dir`. One function,
   and the message the user reads is the one they would have read anyway.
 * **Reconcile marking is an overlay, not a detection rule.** The scanner's
   output depends only on the filesystem and the passed configuration, which is
@@ -48,13 +48,13 @@ from kiro_crew.apps.manager import is_app_enabled
 from kiro_crew.dashboard.chat_folders import (
     FolderCreateError,
     FolderOwnershipError,
-    _audit_origin,
+    _admit_project_dir,
+    _agent_binding_refusal,
     _effective_request_app,
+    _is_the_person,
     _refuse_unattributable_caller,
-    _validate_project_dir,
     create_folder_record,
 )
-from kiro_crew.dashboard.create_rate_limit import FOLDER_CREATE, allow_create
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor
 from kiro_crew.project_scan import (
@@ -122,11 +122,13 @@ def _resolve_root(body: object) -> tuple[str, tuple[int, int]]:
         raise _BadRequest("request body must be a JSON object", "invalid_json")
     raw = _submitted_root(body)
     if not raw:
-        # ``_validate_project_dir`` accepts "" — a folder is allowed to have no
+        # ``_admit_project_dir`` accepts "" — a folder is allowed to have no
         # project directory at all — so the empty case has to be caught here or a
         # rootless scan would fall through to scanning nothing.
         raise _BadRequest("root required", "folder_scan_root_required")
-    resolved, err = _validate_project_dir(raw)
+    # The person's validator, by construction: both routes refuse every other
+    # principal before this runs (``_refuse_non_person``).
+    resolved, err = _admit_project_dir(raw)
     if err:
         raise _BadRequest(err, "folder_scan_root_invalid")
     # The folder validator answers "is this path itself protected?" — the scan
@@ -179,6 +181,28 @@ def _bad_request_response(exc: _BadRequest) -> web.Response:
 
 
 APP_NAME = "project-scaffolder"
+
+
+def _refuse_non_person(
+    state: DashboardState, request: web.Request, *, operation: str
+) -> web.Response | None:
+    """The scaffold is the PERSON's verb: refuse every other principal before the root is read.
+
+    Every folder a scaffold creates carries a ``project_dir``, and a binding is
+    the one field the folder routes refuse an agent outright
+    (:func:`~kiro_crew.dashboard.chat_folders._agent_binding_refusal`: the
+    person binds from the sidebar; an agent has no admitted path to a binding).
+    The same rule holds here, keyed on the same one bit
+    (:func:`~kiro_crew.dashboard.chat_folders._is_the_person`), and it runs
+    before the body is parsed: an agent-named root would otherwise be resolved
+    and walked -- an existence oracle -- on the way to a refusal. An enabled
+    scaffolder app posting with its own token is exactly the caller this turns
+    away (review-caught); the person's sidebar call carries the stamp and is
+    unchanged. Same 403 and code as the sibling routes, audited the same way.
+    """
+    if _is_the_person(request):
+        return None
+    return _agent_binding_refusal(state, request, operation=operation, resources="scaffold")
 
 
 async def _refuse_when_app_disabled(request: web.Request, resource: str) -> web.Response | None:
@@ -361,6 +385,8 @@ async def api_chat_folders_scan(request: web.Request) -> web.Response:
         refusal := await _refuse_when_app_disabled(request, "/api/project-scaffold/scan")
     ) is not None:
         return refusal
+    if (refusal := _refuse_non_person(state, request, operation="chat.folder_scan")) is not None:
+        return refusal
     try:
         body = await request.json()
     except Exception:
@@ -371,7 +397,7 @@ async def api_chat_folders_scan(request: web.Request) -> web.Response:
         # and one stalled network mount must not stall every chat behind it.
         root, identity = await asyncio.to_thread(_resolve_root, body)
     except _BadRequest as exc:
-        # ``_validate_project_dir`` already SEL-logs a sensitive-path refusal;
+        # ``_admit_project_dir`` already SEL-logs a sensitive-path refusal;
         # the other rejections are ordinary caller error.
         return _bad_request_response(exc)
 
@@ -675,25 +701,19 @@ async def api_chat_folders_scaffold(request: web.Request) -> web.Response:
         refusal := await _refuse_when_app_disabled(request, "/api/project-scaffold/create")
     ) is not None:
         return refusal
-    # A write to the shared folder tree: the same two guards the folder-create
-    # route applies, for the same reasons. A caller naming a popped dashboard
-    # slot cannot be attributed, so handing it the person's authority over the
-    # person's folders is refused. And the rate budget is consumed ONCE per
-    # scaffold call even though the call creates many folders — the limiter
-    # exists to stop an automated loop on an auto-approved verb, and one
-    # scaffold per goal is the legitimate shape; without this check the
-    # scaffold route would be the loophole around the sibling route's limit.
+    # A write to the shared folder tree, of BOUND folders: the person's verb
+    # (``_refuse_non_person``, before the root the caller named is read), then
+    # the guard the folder-create route applies for the same reason -- a caller
+    # naming a popped dashboard slot cannot be attributed, so handing it the
+    # person's authority over the person's folders is refused. No create-rate
+    # limiter here: it would guard an internal caller, and every such caller is
+    # refused above before it could reach this point.
+    if (
+        refusal := _refuse_non_person(state, request, operation="chat.folder_scaffold")
+    ) is not None:
+        return refusal
     if (refusal := _refuse_unattributable_caller(state, request)) is not None:
         return refusal
-    rl_source, rl_caller = _audit_origin(request)
-    if rl_source != "dashboard" and not allow_create(FOLDER_CREATE, rl_caller):
-        return web.json_response(
-            {
-                "error": "too many folders created recently; retry shortly",
-                "code": "create_rate_limited",
-            },
-            status=429,
-        )
     try:
         body = await request.json()
     except Exception:

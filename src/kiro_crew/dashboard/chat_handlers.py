@@ -55,8 +55,19 @@ from kiro_crew.dashboard.chat_delivery import (
     steer_into_running_turn,
 )
 from kiro_crew.dashboard.chat_folders import (
+    PROJECT_DIR_LINK_REFUSAL,
+    PROJECT_DIR_MISSING_REFUSAL,
+    PROJECT_DIR_SENSITIVE_REFUSAL,
+    PROJECT_DIR_UNOPENABLE_REFUSAL,
+    PROJECT_DIR_UNSCREENABLE_LINK_REFUSAL,
+    _is_the_person,
     _resolve_folder_project_dir,
     _unhide_folder,
+    file_slot_across_inheritance,
+    project_dir_sensitive_refusal,
+    project_dir_unc_refusal,
+    refuse_filing_across_inheritance,
+    screen_and_resolve_project_dir,
 )
 from kiro_crew.dashboard.chat_orchestrator import (
     _cancel_stage_subagents,
@@ -192,6 +203,7 @@ from kiro_crew.safety_override import (
 from kiro_crew.sandbox import voice_runtime_workspace_conflict
 from kiro_crew.security import (
     is_sensitive_path,
+    is_unverifiable_path_refusal,
     redact_credentials,
     redact_exfiltration_urls,
 )
@@ -3121,10 +3133,29 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             status=409,
         )
     folder_project = ""
-    if folder_id and (existing_slot is None or not existing_slot.project):
+    if folder_id:
+        # Filing at creation is how a session acquires a folder's binding and
+        # steering, so it goes through the one filing decision the PATCH folder
+        # route and the agent tools take (``refuse_filing_across_inheritance``):
+        # the person files anywhere; any other principal -- an app's own
+        # credential included -- may not place a session where it would inherit
+        # a binding or steering it does not have today. Decided over the
+        # committed tree before that binding is resolved or the slot is filed.
         folder_snapshot = await state.read_folders(
             lambda folders: [dict(folder) for folder in folders]
         )
+        refused = refuse_filing_across_inheritance(
+            state,
+            request,
+            folder_snapshot,
+            slot_key=str(name or ""),
+            from_folder_id=existing_slot.folder_id if existing_slot is not None else "",
+            to_folder_id=folder_id,
+            operation="chat.slot_create",
+        )
+        if refused is not None:
+            return refused
+    if folder_id and (existing_slot is None or not existing_slot.project):
         folder_project, folder_project_error = await asyncio.to_thread(
             _resolve_folder_project_dir, folder_snapshot, folder_id
         )
@@ -3593,9 +3624,29 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             # breadcrumb fires regardless and the flag is consumed there.
             previous_folder = slot.folder_id
             previous_changed = slot._folder_changed
-            if folder_id != slot.folder_id:
-                slot._folder_changed = True
-            slot.folder_id = folder_id
+            # The filing decision again, HERE, in one section with the write
+            # (``file_slot_across_inheritance``): the early decision above ran
+            # before the peer round-trip, the mint and the other awaits of this
+            # route, and a folder mutation committing inside that window could
+            # change what the destination confers. Under the store lock nothing
+            # can. A refusal on a slot this request minted retracts the mint --
+            # not running, no messages, still the object registered under its
+            # key -- so no session is left behind; a peer slot already created
+            # for it is left to the crew, as the concurrent-create refusal above
+            # leaves it. An existing slot addressed by name stays as it was.
+            refused = await file_slot_across_inheritance(
+                state, request, slot, to_folder_id=folder_id, operation="chat.slot_create"
+            )
+            if refused is not None:
+                if (
+                    is_new_slot
+                    and not slot.running
+                    and not slot.messages
+                    and state._slots.get(slot.key) is slot
+                ):
+                    state._slots.pop(slot.key, None)
+                    state.push_slots_update()
+                return refused
             # Existence is only reliable inside the store lock. If the folder
             # went away, abandon THIS assignment and leave the slot as it was —
             # `name` can address an already-used slot, so clearing outright would
@@ -10663,6 +10714,50 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
     return web.json_response(ws_resp)
 
 
+def _person_project_by_name(project: str) -> tuple[str, bool, str | None]:
+    """main's own resolution of the PERSON's project spelling, on a worker thread.
+
+    ``expanduser`` then ``realpath``, by name -- the person's arm of the slot
+    project endpoint; every other principal's spelling goes through
+    ``screen_and_resolve_project_dir`` instead. Returns ``(real, is_dir,
+    sensitive)``: the sensitive verdict (``project_dir_sensitive_refusal``, a
+    match or the resolver's stall refusal, else ``None``) is taken on the
+    resolved path as it stands, on this thread, so nothing resolves the name a
+    second time after it was resolved here. A spelling no filesystem can carry
+    (an embedded NUL) resolves to ``""``, which is not a directory.
+    """
+    try:
+        real = os.path.realpath(os.path.expanduser(project))
+    except ValueError:
+        return "", False, None
+    if not os.path.isdir(real):
+        return real, False, None
+    return real, True, project_dir_sensitive_refusal(real)
+
+
+def _slot_project_sensitive_refusal(
+    request: web.Request, name: str, project: str, verdict: str
+) -> web.Response:
+    """main's 403 for a project that is (or resolves to) a sensitive location, audited.
+
+    *verdict* is ``project_dir_sensitive_refusal``'s answer: a match, or the
+    resolver's stall refusal, which is refused the same way (fail closed) and
+    audited as such.
+    """
+    sel().log_api_access(
+        caller=request.get("user", "dashboard"),
+        operation="chat_slot_project",
+        outcome="denied",
+        resources=f"slot={name} project={project}",
+        error=(
+            "sensitive path (unverifiable)"
+            if is_unverifiable_path_refusal(verdict)
+            else "sensitive path"
+        ),
+    )
+    return web.json_response({"error": "Access denied"}, status=403)
+
+
 async def api_chat_slot_project(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/project — set project directory for file search scoping."""
     state: DashboardState = request.app["state"]
@@ -10691,19 +10786,96 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
     denied = _app_cancel_denied(request, slot, "chat.slot_project", effective_session_key(slot))
     if denied is not None:
         return denied
-    if project:
-        project = os.path.realpath(os.path.expanduser(project))
-        if not os.path.isdir(project):
-            return web.json_response({"error": "Not a directory"}, status=400)
-        if is_sensitive_path(project):
+    if project and _is_the_person(request):
+        # The PERSON choosing a project for the person's own gateway is not the
+        # threat the UNC gate exists for (a caller other than the operator
+        # steering the gateway onto a host of that caller's choosing), so the
+        # person's request resolves exactly as it always did -- by name, a
+        # share by its UNC spelling included. Off the loop like the fenced arm:
+        # a stalled mapped drive stalls a worker thread, not every chat. The
+        # sensitive verdict comes back from the same worker call, decided on the
+        # resolved path -- no second resolve of the name on the loop.
+        project, is_dir, sensitive = await asyncio.to_thread(_person_project_by_name, project)
+        if not is_dir:
+            return web.json_response(
+                {"error": "Not a directory", "code": "project_not_a_directory"}, status=400
+            )
+        if sensitive is not None:
+            return _slot_project_sensitive_refusal(request, name, project, sensitive)
+    elif project:
+        # Any other principal: before anything resolves it, a UNC-shaped project
+        # -- or a local link whose target names a share, read without following
+        # it -- makes a Windows gateway's ``realpath`` open an SMB connection to
+        # a host the caller named. The folder endpoint's own helpers decide --
+        # one rule for every site where a non-person request names path text
+        # (the folder routes, the scaffold's scan root, the set_project
+        # directive, this endpoint) -- in that validator's 400 shape, audited
+        # like the sensitive-path refusal below. The screen stats and reads
+        # links and the resolve opens every component
+        # (``pinned_fs.real_dir_path_pinned``: a descriptor- or handle-pinned
+        # walk that never follows a link, so a component swapped between the
+        # screen and the open is refused instead of traversed -- there is no
+        # by-name ``realpath`` on this arm), so both run off the loop like the
+        # overlap scan further down.
+        unc_err = project_dir_unc_refusal(project)
+        unc_audit = "UNC path"
+        resolved = ""
+        if not unc_err:
+            resolved, resolve_err = await asyncio.to_thread(
+                screen_and_resolve_project_dir, os.path.expanduser(project)
+            )
+            if resolve_err == PROJECT_DIR_LINK_REFUSAL:
+                # A link whose target names a share: the UNC class, one link
+                # away, refused with the UNC code and audited as the link it is.
+                unc_err = resolve_err
+                unc_audit = "UNC link target"
+            elif resolve_err == PROJECT_DIR_UNSCREENABLE_LINK_REFUSAL:
+                # The screen stopped without naming a share (an unreadable
+                # link, an ambiguous target, a path too deep): its own code and
+                # its own SEL line, so an outbound-credential attempt and an
+                # ordinary unscreenable symlink stay distinguishable in the audit
+                # (review-caught).
+                sel().log_api_access(
+                    caller=request.get("user", "dashboard"),
+                    operation="chat_slot_project",
+                    outcome="denied",
+                    resources=f"slot={name} project={project}",
+                    error="unscreenable link",
+                )
+                return web.json_response(
+                    {"error": resolve_err, "code": "project_dir_link_unscreenable"}, status=400
+                )
+            elif resolve_err == PROJECT_DIR_MISSING_REFUSAL:
+                return web.json_response(
+                    {"error": "Not a directory", "code": "project_not_a_directory"}, status=400
+                )
+            elif resolve_err == PROJECT_DIR_SENSITIVE_REFUSAL or (
+                resolve_err and is_unverifiable_path_refusal(resolve_err)
+            ):
+                # Decided inside the fenced resolve, on the pinned real path (or
+                # the link-free spelling when nothing was found), on the worker
+                # thread -- never by resolving the name again here. A resolver
+                # stall is the same 403, fail closed.
+                return _slot_project_sensitive_refusal(request, name, project, resolve_err)
+            elif resolve_err == PROJECT_DIR_UNOPENABLE_REFUSAL:
+                return web.json_response(
+                    {"error": resolve_err, "code": "project_dir_unopenable"}, status=400
+                )
+            elif resolve_err:
+                return web.json_response(
+                    {"error": resolve_err, "code": "project_dir_unverifiable"}, status=400
+                )
+        if unc_err:
             sel().log_api_access(
                 caller=request.get("user", "dashboard"),
                 operation="chat_slot_project",
                 outcome="denied",
                 resources=f"slot={name} project={project}",
-                error="sensitive path",
+                error=unc_audit,
             )
-            return web.json_response({"error": "Access denied"}, status=403)
+            return web.json_response({"error": unc_err, "code": "project_unc_path"}, status=400)
+        project = resolved
+    if project:
         # Pre-flight the voice-runtime workspace guard: a
         # workspace that contains (or sits inside) the Kiro Crew data home is
         # refused at agent spawn anyway, but only after the session exists and

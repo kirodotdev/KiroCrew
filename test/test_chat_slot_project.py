@@ -78,13 +78,47 @@ class TestChatSlotProject:
     async def test_sensitive_path_returns_403(self, tmp_path):
         slot = _ChatSlot("test")
         state = _mock_state(slot)
-        with patch("kiro_crew.dashboard.chat_handlers.is_sensitive_path", return_value=True):
+        with patch(
+            "kiro_crew.dashboard.chat_folders.is_sensitive_resolved_path", return_value=True
+        ):
             async with TestClient(TestServer(_make_app(state))) as client:
                 resp = await client.post(
                     "/api/chat/slots/test/project",
                     json={"project": str(tmp_path)},
                 )
                 assert resp.status == 403
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "unc", [r"\\evil\share\proj", "//evil/share/proj", r"\\?\UNC\evil\share\proj"]
+    )
+    async def test_a_unc_project_is_refused_before_realpath(self, monkeypatch, unc):
+        """The project endpoint is the HTTP twin of the ``set_project`` directive:
+        request-body path text reaching ``realpath``, which on a Windows gateway
+        opens an SMB connection to a UNC host. It runs the folder endpoint's own
+        lexical UNC refusal first (one helper across the admission sites), in
+        the folder validator's 400 shape, audited; nothing is probed or set."""
+        monkeypatch.setattr("kiro_crew.dashboard.chat_folders.unc_probe_allowed", lambda raw: False)
+        touched = MagicMock(side_effect=AssertionError("filesystem touched for a UNC project"))
+        monkeypatch.setattr("os.path.realpath", touched)
+        monkeypatch.setattr("os.path.isdir", touched)
+        slot = _ChatSlot("test")
+        state = _mock_state(slot)
+        with patch("kiro_crew.dashboard.chat_handlers.sel") as sel_fn:
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/test/project", json={"project": unc})
+                body = await resp.json()
+        assert resp.status == 400, body
+        assert body == {
+            "error": "Project directory must not be a network (UNC) path",
+            "code": "project_unc_path",
+        }
+        touched.assert_not_called()
+        assert slot.project == ""
+        kwargs = sel_fn.return_value.log_api_access.call_args.kwargs
+        assert kwargs["operation"] == "chat_slot_project"
+        assert kwargs["outcome"] == "denied"
+        assert "UNC" in kwargs["error"]
 
     @pytest.mark.asyncio
     async def test_data_home_overlap_returns_actionable_400(self, tmp_path, monkeypatch):

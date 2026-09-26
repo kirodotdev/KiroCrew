@@ -1428,6 +1428,113 @@ class TestPinDirectory:
         assert (tmp_path / "swapped").is_dir()
 
 
+class TestAReparsePointThatRedirectsNothingIsTheDirectoryItIs:
+    """The ``allow_filter_reparse`` arm of ``pin_directory``, and through it every
+    Windows project-directory admission (``pinned_fs.real_dir_path_pinned``).
+
+    OneDrive's Files On-Demand stamps every synced folder with a cloud-files
+    reparse tag, so a rule that refused every reparse point would refuse the
+    person's Documents folder on a default Windows install. The rule instead
+    reads the tag off the handle already open and refuses only a tag carrying
+    ``IsReparseTagNameSurrogate`` -- the bit a symlink, a junction and a WSL
+    symlink carry and a cloud-files placeholder does not. Two things are
+    checked here, because no CI runner has a placeholder directory: the
+    classification itself, on every host, with the documented tag values; and
+    on the Windows shard the arm end to end -- a REAL junction (a real reparse
+    attribute, its real tag read off the handle) refused through
+    ``real_dir_path_pinned`` at the leaf and as an ancestor, and the same
+    junction accepted as the directory it is once the tag read answers the
+    cloud-files tag (``_win_reparse_tag`` is the one seam between the Windows
+    API and the classifier), resolving to its OWN path -- what a placeholder
+    resolves to -- rather than to its target. A tag that cannot be read stays
+    a refusal. What no fixture can show is a live Files On-Demand folder; the
+    PR body names the one-line command a maintainer with OneDrive runs.
+    """
+
+    @pytest.mark.parametrize(
+        ("tag", "redirects"),
+        [
+            (pc._IO_REPARSE_TAG_MOUNT_POINT, True),  # a junction
+            (0xA000000C, True),  # IO_REPARSE_TAG_SYMLINK
+            (0xA000001D, True),  # IO_REPARSE_TAG_LX_SYMLINK (WSL)
+            (pc._WIN_REPARSE_TAG_CLOUD, False),  # a Files On-Demand placeholder
+            (0x9000101A, False),  # IO_REPARSE_TAG_CLOUD_1
+            (0x9000F01A, False),  # IO_REPARSE_TAG_CLOUD_F
+            (0x80000013, False),  # IO_REPARSE_TAG_DEDUP
+            (0x8000001B, False),  # IO_REPARSE_TAG_APPEXECLINK
+        ],
+    )
+    def test_the_classifier_reads_the_surrogate_bit_and_nothing_else(self, tag, redirects):
+        assert pc._reparse_tag_redirects(tag) is redirects
+
+    def test_an_unreadable_tag_is_a_surrogate(self, monkeypatch):
+        """Fail closed: no tag, no admission."""
+        monkeypatch.setattr(pc, "_win_reparse_tag", lambda fd: None)
+        assert pc._win_reparse_tag_is_name_surrogate(7) is True
+        monkeypatch.setattr(pc, "_win_reparse_tag", lambda fd: pc._WIN_REPARSE_TAG_CLOUD)
+        assert pc._win_reparse_tag_is_name_surrogate(7) is False
+        monkeypatch.setattr(pc, "_win_reparse_tag", lambda fd: pc._IO_REPARSE_TAG_MOUNT_POINT)
+        assert pc._win_reparse_tag_is_name_surrogate(7) is True
+
+    @staticmethod
+    def _junction(tmp_path):
+        import _winapi
+
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "inside").mkdir()
+        link = tmp_path / "junction"
+        _winapi.CreateJunction(str(target), str(link))
+        return target, link
+
+    @pytest.mark.skipif(
+        not pc.IS_WINDOWS, reason="a junction and its reparse tag exist only on Windows"
+    )
+    def test_a_real_junction_is_refused_through_the_pinned_resolve(self, tmp_path):
+        """The real tag read: ``IO_REPARSE_TAG_MOUNT_POINT`` carries the surrogate
+        bit, so the junction is refused at the leaf and as an ancestor, and the
+        plain directory beside it resolves."""
+        from kiro_crew import pinned_fs
+
+        target, link = self._junction(tmp_path)
+        with pytest.raises(pinned_fs.PinnedPathRefusal):
+            pinned_fs.real_dir_path_pinned(str(link), what="project directory")
+        with pytest.raises(pinned_fs.PinnedPathRefusal):
+            pinned_fs.real_dir_path_pinned(str(link / "inside"), what="project directory")
+        assert os.path.normcase(
+            pinned_fs.real_dir_path_pinned(str(target), what="project directory")
+        ) == os.path.normcase(os.path.realpath(str(target)))
+
+    @pytest.mark.skipif(not pc.IS_WINDOWS, reason="the placeholder arm opens a Windows handle")
+    def test_a_filter_reparse_directory_is_accepted_as_itself(self, tmp_path, monkeypatch):
+        """The placeholder path, end to end on the Windows shard: a real reparse
+        point (the junction's attribute is read off the real handle) whose tag
+        read answers the cloud-files tag is accepted by ``pin_directory(...,
+        allow_filter_reparse=True)`` and by ``real_dir_path_pinned``, and
+        resolves to its OWN path -- the object held, as a placeholder would --
+        never to the junction's target. The default (``allow_filter_reparse``
+        off) still refuses it: the gateway's own directories opt out."""
+        from kiro_crew import pinned_fs
+
+        target, link = self._junction(tmp_path)
+        seen: list[int] = []
+
+        def _cloud_tag(fd: int) -> int:
+            seen.append(fd)
+            return pc._WIN_REPARSE_TAG_CLOUD
+
+        monkeypatch.setattr(pc, "_win_reparse_tag", _cloud_tag)
+        fd = pc.pin_directory(link, allow_filter_reparse=True)
+        os.close(fd)
+        assert seen, "the tag was read off the open handle"
+        with pytest.raises(NotADirectoryError):
+            pc.pin_directory(link)
+        own = os.path.join(os.path.realpath(str(tmp_path)), link.name)
+        resolved = pinned_fs.real_dir_path_pinned(str(link), what="project directory")
+        assert os.path.normcase(resolved) == os.path.normcase(own)
+        assert os.path.normcase(resolved) != os.path.normcase(os.path.realpath(str(target)))
+
+
 # ---------------------------------------------------------------------------
 # POSIX-branch coverage for the new platform_compat helpers. The
 # tests below deliberately exercise the ``if IS_POSIX:`` / Linux ``/proc`` paths

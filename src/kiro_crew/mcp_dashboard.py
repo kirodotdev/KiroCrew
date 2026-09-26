@@ -182,7 +182,10 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "or inside a folder it created itself, and the new folder belongs to "
                 "it; creating inside one of the person's folders is refused. A crew "
                 "member follows the same rule: it owns the folders it creates and "
-                "may nest only under its own."
+                "may nest only under its own. A folder's project directory (what a "
+                "chat opened inside it inherits) is bound by the person from the "
+                "sidebar's Folder settings, not through this tool; ask the person to "
+                "bind it."
             ),
             "inputSchema": {
                 "type": "object",
@@ -220,7 +223,23 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "the anchor. An app agent may move only a folder it created itself, "
                 "and only to the top level or under another of its own; positioning "
                 "is refused outright when it would renumber siblings the app does "
-                "not own. A crew member is bound by the same own-folders-only rule."
+                "not own. A crew member is bound by the same own-folders-only rule. "
+                "ONE rule holds every non-person mover -- an app agent, a crew member, "
+                "an ordinary session -- alike: a folder may not be moved to where the "
+                "sessions filed in it would inherit a DIFFERENT project directory. An "
+                "unbound folder resolves its nearest bound ancestor, so moving it under "
+                "a bound folder, or out from under one, would rebind the chats filed "
+                "inside it (a binding reaches every chat filed beneath it, whoever owns "
+                "the folder); such a folder moves only between places with the same "
+                "inherited binding. A folder carrying its OWN binding moves freely, "
+                "whoever owns it -- nearest wins, so its subtree resolves it wherever it "
+                "sits. Likewise no non-person mover may move a folder to where those "
+                "sessions would inherit DIFFERENT steering directories: a folder's "
+                "steering_dirs are read into every chat filed beneath it, accumulating "
+                "up the parent chain, so a move under a folder that declares them, or "
+                "out from under one, is refused the way declaring them is. Both "
+                "refusals answer 403 folder_project_dir_forbidden / "
+                "steering_dirs_forbidden; the person is not confined."
             ),
             "inputSchema": {
                 "type": "object",
@@ -260,7 +279,11 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "transcript, model, and any running turn. ARCHIVED (history) sessions "
                 "cannot be moved — revive one into the sidebar first, then call this. "
                 "An app agent may file only its own sessions; a crew member may file "
-                "only a session it owns or created."
+                "only a session it owns or created. No agent may file a session where "
+                "it would inherit a different project directory or different steering "
+                "directories (a folder's binding and steering reach a chat through the "
+                "folder it is filed in): file between places that confer the same "
+                "binding and steering, or ask the person."
             ),
             "inputSchema": {
                 "type": "object",
@@ -292,7 +315,10 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "conductor floating at the top level. Writes ONLY the caller's own "
                 "placement: to file a different session use "
                 "chat_folder_move_session. Metadata only — transcript, model and "
-                "any running turn are untouched; already filed there is a no-op."
+                "any running turn are untouched; already filed there is a no-op. Held "
+                "to the same rule as chat_folder_move_session: refused where the "
+                "destination would hand this session a different project directory or "
+                "steering than it inherits today."
             ),
             "inputSchema": {
                 "type": "object",

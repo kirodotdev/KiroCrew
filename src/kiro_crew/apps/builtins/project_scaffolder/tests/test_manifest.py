@@ -199,7 +199,7 @@ def test_unreadable_identity_fails_closed_with_a_400(tmp_path, monkeypatch):
     from kiro_crew.dashboard import chat_folder_scaffold as mod
 
     resolved = str(tmp_path)
-    monkeypatch.setattr(mod, "_validate_project_dir", lambda raw: (resolved, None))
+    monkeypatch.setattr(mod, "_admit_project_dir", lambda raw: (resolved, None))
     monkeypatch.setattr(mod, "path_contains_sensitive", lambda path: False)
     monkeypatch.setattr(mod, "root_identity", lambda path: None)
 
