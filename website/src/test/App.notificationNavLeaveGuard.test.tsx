@@ -50,7 +50,7 @@ vi.mock('../pages/CapabilitiesPage', () => {
   function CapabilitiesPageStub() {
     return (
       <SidePanelLayout
-        title="Agent Capabilities"
+        title="Customize"
         tabs={[
           { key: 'drafts', label: 'Drafts', icon: null },
           { key: 'other', label: 'Other', icon: null },

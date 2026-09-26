@@ -67,10 +67,10 @@ describe('KiroGhostMark', () => {
   })
 })
 
-describe('Agent Capabilities nav icon', () => {
+describe('Customize nav icon', () => {
   it('uses the Kiro ghost mark', () => {
     const surface = getBuiltinSurface('capabilities')
-    expect(surface?.label).toBe('Agent Capabilities')
+    expect(surface?.label).toBe('Customize')
     expect((surface?.icon as ReactElement).type).toBe(KiroGhostMark)
   })
 })

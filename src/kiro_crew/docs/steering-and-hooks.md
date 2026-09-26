@@ -8,7 +8,7 @@ Three ways to change what an agent does without editing its agent spec:
   starting, a prompt arriving, a tool about to run. Automation.
 - **Saved prompts** are reusable message bodies you call up by name. Shortcuts.
 
-All three live under Agent Capabilities in the dashboard, on the **Steering
+All three live under Customize in the dashboard, on the **Steering
 files**, **Hooks** and **Prompts** tabs. Hooks also have their own page at
 `/hooks`.
 

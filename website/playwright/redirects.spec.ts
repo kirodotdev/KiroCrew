@@ -16,22 +16,22 @@ import { test, expect } from '@playwright/test'
  */
 
 test.describe('Redirect contracts', () => {
-  test('/agents redirects to /capabilities and renders Agent Capabilities', async ({ page }) => {
+  test('/agents redirects to /capabilities and renders Customize', async ({ page }) => {
     await page.goto('/agents', { waitUntil: 'domcontentloaded' })
     // React Router Navigate replace — URL should land on /capabilities
     await page.waitForURL('**/capabilities', { timeout: 10000 })
     // Verify the destination page actually rendered (not a blank error page)
-    await expect(page.locator('text=Agent Capabilities')).toBeVisible({ timeout: 10000 })
-    // Verify the default tab content (the Crews roster) is present. The primary
+    await expect(page.getByTestId('side-panel-nav-title')).toHaveText('Customize', { timeout: 10000 })
+    // Verify the default tab content (the Crewmates roster) is present. The primary
     // action's testid is the landmark: it survives restyling of the roster,
     // unlike the StatCard label this used to read.
     await expect(page.getByTestId('new-crew')).toBeVisible({ timeout: 5000 })
   })
 
-  test('/mc-agents redirects to /capabilities and renders Agent Capabilities', async ({ page }) => {
+  test('/mc-agents redirects to /capabilities and renders Customize', async ({ page }) => {
     await page.goto('/mc-agents', { waitUntil: 'domcontentloaded' })
     await page.waitForURL('**/capabilities', { timeout: 10000 })
-    await expect(page.locator('text=Agent Capabilities')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByTestId('side-panel-nav-title')).toHaveText('Customize', { timeout: 10000 })
     await expect(page.getByTestId('new-crew')).toBeVisible({ timeout: 5000 })
   })
 

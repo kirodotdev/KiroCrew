@@ -1,4 +1,4 @@
-# Smoke: the Connections tab of Agent Capabilities, reached through the
+# Smoke: the Connections tab of Customize, reached through the
 # `/connections` redirect (it lands on the tab directly, so the rail's
 # remembered-tab behaviour cannot put the tester elsewhere). The tab has two
 # sub-tabs. "Services" is the gallery of official providers, built from the
@@ -38,7 +38,7 @@ preconditions:
   start_url: /connections
 steps:
   - >-
-    You are on the Agent Capabilities page with its "Connections" tab selected in the left
+    You are on the Customize page with its "Connections" tab selected in the left
     rail. The pane has two sub-tabs at the top, "Services" (selected) and "MCP Servers". Below
     them are a search box whose placeholder reads "Search services", a badge counting the
     services, and a grid of provider cards (Notion, Linear, Atlassian, ...) each with a

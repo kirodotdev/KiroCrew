@@ -86,7 +86,7 @@ documented by their own in-panel help.
 | Voice | Speech-to-text and spoken replies | [Configuration](configuration.md) |
 | Notifications | Where a proactive message is delivered | — |
 | Shortcuts | Keyboard bindings | — |
-| Skills | Whether sessions auto-generate skills, and whether a generated one needs your approval; installed skills live under Agent Capabilities | [Skills](skills.md) |
+| Skills | Whether sessions auto-generate skills, and whether a generated one needs your approval; installed skills live under Customize | [Skills](skills.md) |
 | Messaging Channels | Per-channel setup and access control | [Channel capabilities](channel-capabilities.md) |
 | Browser | Installing the browser engine and the attach token | [Browser control](browser-control.md) |
 | Computer Use | Driving native desktop apps; off by default | [Computer use](computer-use.md) |

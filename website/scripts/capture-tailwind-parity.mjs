@@ -167,16 +167,16 @@ async function shootSettings(page, base, out, theme) {
 
 async function shootAgents(page, base, out, theme) {
   await page.goto(`${base}/capabilities?tab=crews`, { waitUntil: 'domcontentloaded' })
-  await page.locator('#main-content').getByText('Agents you chat with', { exact: false })
+  await page.locator('#main-content').getByText('Your AI teammates', { exact: false })
     .waitFor({ state: 'visible', timeout: 15000 })
   await page.waitForTimeout(1200)
   await freezeMotion(page)
   await page.screenshot({ path: join(out, `${theme}-agents.png`) })
 
-  const card = page.getByRole('button', { name: /Edit (crew|agent) atlas/i })
+  const card = page.getByRole('button', { name: /Edit (crew|agent|crewmate) atlas/i })
   await card.waitFor({ state: 'visible', timeout: 15000 })
   await card.click()
-  const sheet = page.getByRole('dialog', { name: /edit (crew|agent)/i })
+  const sheet = page.getByRole('dialog', { name: /edit (crew|agent|crewmate)/i })
   await sheet.waitFor({ state: 'visible', timeout: 10000 })
   await page.waitForTimeout(800)
   await assertPainted(sheet, 'edit-crew dialog')

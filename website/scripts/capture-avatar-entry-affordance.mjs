@@ -41,7 +41,7 @@ async function openEditor(page) {
   const card = page.locator(`[data-testid="crew-card"][aria-label="Edit crew ${CREW}"], [data-testid="crew-card"]:has-text("${CREW}")`).first()
   await card.waitFor({ state: 'visible', timeout: 20000 })
   await card.click()
-  const sheet = page.getByRole('dialog', { name: `Edit agent ${CREW}` })
+  const sheet = page.getByRole('dialog', { name: `Edit crewmate ${CREW}` })
   await sheet.waitFor({ state: 'visible', timeout: 10000 })
   return sheet
 }
@@ -102,7 +102,7 @@ async function stills(browser, theme) {
   await titleRow.locator('div').first().hover()
   await page.waitForTimeout(250)
   await pencil.click()
-  const editor = page.getByRole('dialog', { name: `Edit agent ${CREW}` })
+  const editor = page.getByRole('dialog', { name: `Edit crewmate ${CREW}` })
   await editor.waitFor({ state: 'visible', timeout: 20000 })
   check(`[${theme}] deep link from Members opens the editor for ${CREW}`, true)
   check(`[${theme}] the builder is not open on top`, (await page.getByRole('dialog', { name: BUILDER_TITLE }).count()) === 0)

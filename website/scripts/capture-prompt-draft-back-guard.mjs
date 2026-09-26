@@ -44,7 +44,7 @@ const { base, page, dialogs, pane, answer, shot, fail } = rig
 
 /** The sidebar rows this run travels through. `exact` matters: other chrome
  *  carries labels containing these words. */
-const capabilitiesRow = () => page.getByRole('button', { name: 'Agent Capabilities', exact: true })
+const capabilitiesRow = () => page.getByRole('button', { name: 'Customize', exact: true })
 const originRow = () => page.getByRole('button', { name: 'Settings', exact: true })
 /** The gesture under test, driven the way the platform delivers it. Not
  *  `page.goBack()`: that awaits a document navigation, and the press this guard

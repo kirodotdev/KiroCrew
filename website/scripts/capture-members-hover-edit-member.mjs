@@ -36,7 +36,7 @@ const EDIT_MEMBER = 'Edit member'
 const EDIT_AVATAR = 'Edit avatar'
 const EDIT_IN_MANAGER = 'Edit in crew manager'
 const BUILDER_TITLE = 'Customize avatar' // the builder DialogContent's aria-label
-const EDITOR_TITLE = `Edit agent ${CREW}` // the crew editor DialogContent's aria-label
+const EDITOR_TITLE = `Edit crewmate ${CREW}` // the crew editor DialogContent's aria-label
 
 mkdirSync(OUT, { recursive: true })
 

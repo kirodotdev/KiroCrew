@@ -331,7 +331,7 @@ logged, or fail with none.
   or through a lane-scoped role that trusts the branch.
 - **On a PR**: not yet -- see the note at the top and phase 2 of the tracking issue.
 - **Nightly**: `20 9 * * *` UTC on `main`, full tier (currently 32 smoke plus
-  4 nightly-only scenarios). A non-PASS night opens or updates the single open
+  8 nightly-only scenarios). A non-PASS night opens or updates the single open
   issue labelled `gui-test-report`.
 
 ### Locally

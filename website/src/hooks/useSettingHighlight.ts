@@ -99,6 +99,14 @@ export const SETTINGS_DEFAULT_MODEL_ID = 'chat.default-model'
  * a typo cannot leave a dangling `?highlight=` in the URL.
  */
 export const KIRO_SIGN_IN_HIGHLIGHT_ANCHOR = 'kiro-sign-in'
+/** `data-setting-key` of the Default crewmate row on Developer → Config
+ *  (`KiroCrewCfgTab`), the one control that changes which crewmate a new
+ *  session starts as. The Crewmates roster's `default` badge links here. */
+export const DEFAULT_CREWMATE_HIGHLIGHT_ANCHOR = 'default-crewmate'
+/** Anchors whose card mounts AFTER its page: the sign-in card waits on the
+ *  backend probe, the Default crewmate row on the config query. A `key:` link
+ *  to one of these waits for the element instead of stripping the param. */
+const LATE_MOUNT_ANCHORS: ReadonlySet<string> = new Set([KIRO_SIGN_IN_HIGHLIGHT_ANCHOR, DEFAULT_CREWMATE_HIGHLIGHT_ANCHOR])
 
 
 /**
@@ -174,11 +182,11 @@ export function useSettingHighlight(owns: boolean = true): void {
         const candidate = matches[entry.occurrence - 1] ?? matches[0]
         return candidate && !candidate.hasAttribute('data-setting-key') && !candidate.hasAttribute('data-setting-id') ? candidate : null
       }
-      // A declared identity -- a registry entry, or the late-mounting sign-in
-      // anchor -- is authoritative even before it mounts, so the probe waits
+      // A declared identity -- a registry entry, or a late-mounting anchor
+      // (LATE_MOUNT_ANCHORS) -- is authoritative even before it mounts, so the probe waits
       // for it. An anchor already in the DOM is highlighted at once. Any other
       // `key:` value with no entry and no element is unknown enough to strip.
-      if (entry || directConfigKey === KIRO_SIGN_IN_HIGHLIGHT_ANCHOR || findDirectTarget()) {
+      if (entry || (directConfigKey && LATE_MOUNT_ANCHORS.has(directConfigKey)) || findDirectTarget()) {
         let observer: MutationObserver | null = null
         const highlightTarget = (): boolean => {
           const el = findTarget()
