@@ -109,9 +109,13 @@ class TestTheMovedLaneIsTheSameLane:
         assert job["runs-on"] == "macos-15", "macos-latest moves under us; pin the label"
         assert job["strategy"]["matrix"]["group"] == [1, 2, 3]
         assert job["env"]["SHARD_COUNT"] == 3
-        # 40 was measured against the slowest observed shard; a runaway macOS shard
-        # costs about ten times a Linux one.
-        assert job["timeout-minutes"] == 40
+        # 60 = 1.5x the slowest shard observed across the 2026-09-22..26 nightlies
+        # (whole-job 32-39 minutes; the old 40 cancelled a still-passing shard at
+        # 98% twice, which skipped every publish job and filed #13720). The cap is
+        # the hang guard and the shard count is the billing knob: a shard passing
+        # 40 minutes again means a fourth shard, not a higher number here. A
+        # runaway macOS shard costs about ten times a Linux one, so it is not 120.
+        assert job["timeout-minutes"] == 60
         runs = "\n".join(str(step.get("run", "")) for step in job["steps"])
         assert "--splits" in runs and "--group" in runs
 
@@ -130,7 +134,7 @@ class TestTheMovedLaneIsTheSameLane:
         assert run.index("set -o pipefail") < run.index("pytest "), run
 
     def test_the_shard_log_is_uploaded_even_when_the_shard_is_cancelled(self) -> None:
-        # A shard killed at the 40-minute cap is `cancelled`, and its ids are the
+        # A shard killed at the job-level cap is `cancelled`, and its ids are the
         # ones a human most needs. `if: failure()` would drop exactly that case.
         steps = _load("platform-tests.yml")["jobs"]["backend-test-macos"]["steps"]
         upload = next(

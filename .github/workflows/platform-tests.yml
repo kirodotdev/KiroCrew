@@ -76,13 +76,22 @@ jobs:
   backend-test-macos:
     name: Backend Tests (macOS)
     runs-on: macos-15
-    # 40, matching backend-test-windows. MEASURED on the first full-suite run of
-    # this branch (run 34288884863): shards 1 and 2 finished their pytest step in
-    # 20.3 and 20.1 minutes, and shard 3 was still running past 27, so a 30-minute
-    # cap cancelled it. 1.5x the slowest observed shard is therefore at least 40.
-    # This is still a spend guard, not just a hang guard: a runaway macOS shard
-    # costs about ten times a Linux one.
-    timeout-minutes: 40
+    # 60 = 1.5x the slowest observed shard, RE-MEASURED 2026-09-26 on the six
+    # nightlies from 09-22 to 09-26 (runs 35693631271 .. 36223077241): whole-job
+    # times climbed from 27-32 minutes to 32-39, and the last two runs each had a
+    # shard CANCELLED at the old 40-minute cap while still passing -- 36223077241
+    # shard 2 was at 98% of its tests when the clock fired. That cancellation
+    # skips every publish job (they `needs:` this lane), so an ordinary green
+    # suite shipped nothing and filed a failure issue (#13720) for a cap the
+    # suite had simply outgrown. The first measurement (run 34288884863: shards
+    # at 20.3, 20.1 and 27+ minutes) set 40 by the same 1.5x rule; 60 is that
+    # rule applied to today's slowest shard. When a shard passes 40 minutes
+    # again, add a fourth shard rather than raising this further: the shard
+    # count is the billing knob, the cap is the hang guard.
+    #
+    # Still a spend guard, not just a hang guard: a runaway macOS shard costs
+    # about ten times a Linux one, which is why this is not 120.
+    timeout-minutes: 60
     strategy:
       # Full failure picture across shards, same as backend-test.
       fail-fast: false
@@ -195,9 +204,9 @@ jobs:
         # test/macos-expected-failures.txt, applied by the rootdir conftest through
         # the same matcher as the Windows list.
         # PYTHONUNBUFFERED plus faulthandler_timeout: the first full run of shard
-        # 3 on macos-15 hit the 40-minute cap having printed NOTHING after the
-        # pytest command line, and the runner then reaped nine orphan bash and two
-        # Python processes. A hang that leaves no output is a lost run, not a
+        # 3 on macos-15 hit the (then 40-minute) cap having printed NOTHING after
+        # the pytest command line, and the runner then reaped nine orphan bash and
+        # two Python processes. A hang that leaves no output is a lost run, not a
         # failed test (testing-conventions.md, class 6). faulthandler fires at
         # 150 s, while the test is still stuck, and dumps every thread's traceback
         # to stderr naming the frame; the per-test --timeout then fails it by
@@ -224,7 +233,7 @@ jobs:
       # mac runner.
       #
       # `if: always()` and not `failure()`: a shard that times out at the
-      # 40-minute cap is `cancelled`, which is exactly the outcome whose node ids
+      # job-level cap is `cancelled`, which is exactly the outcome whose node ids
       # a human most needs, and `failure()` would drop it. `tee` has already
       # written whatever ran before the cap.
       - name: Upload the shard's pytest log
