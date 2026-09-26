@@ -53,6 +53,8 @@ from kiro_crew.agent_spec_format import (
     is_agent_spec_name,
     is_markdown_spec,
     iter_agent_spec_files,
+    markdown_head_is_fenceless,
+    opens_frontmatter_fence,
     parse_agent_spec_text,
     parse_markdown_spec,
     shadowed_markdown_specs,
@@ -152,6 +154,52 @@ class TestParser:
         assert split_markdown_spec("# README\n\nnotes\n") is None
         with pytest.raises(ValueError):
             parse_markdown_spec("# README\n\nnotes\n")
+
+    @pytest.mark.parametrize(
+        ("text", "opens"),
+        [
+            ("---\nname: a\n", True),
+            ("\ufeff---\r\nname: a\r\n", True),
+            ("---\nname: a\nno close\n", True),
+            ("# README\n", False),
+            ("---junk\n", False),
+            ("", False),
+        ],
+        ids=["lf", "bom-crlf", "unclosed", "prose", "dashed-junk", "empty"],
+    )
+    def test_the_opening_fence_rule(self, text: str, opens: bool) -> None:
+        """An unclosed fence still OPENS: only the split refuses it."""
+        assert opens_frontmatter_fence(text) is opens
+
+    @pytest.mark.parametrize(
+        ("head", "complete", "fenceless"),
+        [
+            (b"# README\n", True, True),
+            (b"\xef\xbb\xbf# README\n", True, True),
+            (b"---\nname: a\n", True, False),
+            (b"\xef\xbb\xbf---\r\n", False, False),
+            (b"\xff\xfe-\x00-\x00-\x00\n\x00", True, False),
+            (b"# prose \x00\n", True, False),
+            (b"# pr\xe9se\n", True, False),
+            (b"# README with a cut " + "\u00e9".encode()[:1], False, True),
+            (b"# README ends mid " + "\u00e9".encode()[:1], True, False),
+        ],
+        ids=[
+            "prose",
+            "bom-prose",
+            "fenced",
+            "bom-crlf-fence",
+            "utf16",
+            "nul",
+            "latin1",
+            "cut-multibyte",
+            "eof-multibyte",
+        ],
+    )
+    def test_the_head_predicate_is_true_only_when_proven_fenceless(
+        self, head: bytes, complete: bool, fenceless: bool
+    ) -> None:
+        assert markdown_head_is_fenceless(head, complete=complete) is fenceless
 
     def test_non_mapping_frontmatter_is_refused(self) -> None:
         with pytest.raises(ValueError):
@@ -406,8 +454,29 @@ class TestKasProjection:
         (tmp_path / "other.md").write_text(_md("y"), encoding="utf-8")
         assert kas_agents.load_agent_spec(tmp_path, "other")["name"] == "x"
 
-    def test_a_broken_markdown_file_is_a_translation_error(self, tmp_path: Path) -> None:
-        (tmp_path / "bot.md").write_text("# no fence\n", encoding="utf-8")
+    def test_a_fence_less_markdown_file_is_skipped_not_read_as_a_broken_spec(
+        self, tmp_path: Path
+    ) -> None:
+        """``<id>.md`` with no opening fence is a prose document, not a spec:
+        the agent has no spec, the same answer as no file, and the error says
+        so instead of reporting a spec that does not parse."""
+        (tmp_path / "bot.md").write_text("# notes\n\nno fence here\n", encoding="utf-8")
+        with pytest.raises(KasAgentTranslationError, match="has no spec") as info:
+            kas_agents.load_agent_spec(tmp_path, "bot")
+        assert "not a valid spec" not in str(info.value)
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "---\nname: [unclosed\n---\nbody\n",
+            "---\nname: bot\nno closing fence\n",
+        ],
+        ids=["bad-yaml", "unclosed-fence"],
+    )
+    def test_a_fenced_markdown_file_that_fails_to_parse_still_raises(
+        self, tmp_path: Path, content: str
+    ) -> None:
+        (tmp_path / "bot.md").write_text(content, encoding="utf-8")
         with pytest.raises(KasAgentTranslationError, match="not a valid spec"):
             kas_agents.load_agent_spec(tmp_path, "bot")
 
@@ -781,6 +850,32 @@ def test_a_markdown_sharer_is_counted_by_the_census(
     # revoke as a sharer nor makes the census incomplete.
     assert unreadable == ()
     assert specs.get("agent:README.md", {}) == {}
+
+
+def test_an_unclosed_fence_leaves_the_census_incomplete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A document that OPENS a fence announced itself as a spec: when it does
+    not parse, what it declares is unknown, so the census is incomplete rather
+    than treating it as a README."""
+    from kiro_crew import mcp_discovery
+    from kiro_crew.config import paths as connections_paths
+    from kiro_crew.connections import ownership
+    from kiro_crew.dashboard.handlers import mcp as mcp_handlers
+
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    monkeypatch.setattr(mcp_discovery, "_MCP_SOURCES", ((tmp_path / "mcp.json", "kirocrew"),))
+    monkeypatch.setattr(mcp_discovery, "_extra_scope_sources", list)
+    monkeypatch.setattr(connections_paths, "kiro_agents_dir", lambda: agents)
+    monkeypatch.setattr(mcp_handlers, "_extra_mcp_scopes", list)
+    (agents / "research.md").write_text(
+        "---\nname: research\nmcpServers:\n  notion: {}\n", encoding="utf-8"
+    )
+
+    _specs, unreadable = ownership.spec_census()
+
+    assert unreadable == ("agent:research.md",)
 
 
 # ── the kiro-cli harness ────────────────────────────────────────────────────

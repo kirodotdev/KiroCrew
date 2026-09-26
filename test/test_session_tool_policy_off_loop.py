@@ -495,7 +495,7 @@ async def test_the_fence_probe_is_bounded_and_an_oversized_plain_file_still_skip
     (tmp_path / "big.md").write_text("# prose\n" + "x" * 4096, encoding="utf-8")
 
     probe_limits: list[int] = []
-    real_read_head = sessions_mod._read_head
+    real_read_head = agent_discovery._read_head
 
     def recording_read_head(fd: int, limit: int) -> tuple[bytes, bool]:
         probe_limits.append(limit)
@@ -503,7 +503,7 @@ async def test_the_fence_probe_is_bounded_and_an_oversized_plain_file_still_skip
         assert len(head) <= limit
         return head, truncated
 
-    monkeypatch.setattr(sessions_mod, "_read_head", recording_read_head)
+    monkeypatch.setattr(agent_discovery, "_read_head", recording_read_head)
 
     response = await _call(monkeypatch, tmp_path)
     assert response.status == 200
@@ -745,13 +745,13 @@ async def test_the_fence_probe_judges_the_canonical_target_with_the_spec_readers
     canonical = str(target.resolve(strict=True))
 
     seen: list[str] = []
-    real_gate = sessions_mod.is_sensitive_canonical_path
+    real_gate = agent_discovery.is_sensitive_canonical_path
 
     def recording(resolved: str) -> bool:
         seen.append(resolved)
         return real_gate(resolved)
 
-    monkeypatch.setattr(sessions_mod, "is_sensitive_canonical_path", recording)
+    monkeypatch.setattr(agent_discovery, "is_sensitive_canonical_path", recording)
     response = await _call(monkeypatch, agents)
     assert response.status == 200
     assert _body(response) == {}
@@ -763,7 +763,6 @@ async def test_the_fence_probe_judges_the_canonical_target_with_the_spec_readers
 
     monkeypatch.setattr(agent_discovery, "is_sensitive_canonical_path", fenced)
     monkeypatch.setattr(agent_discovery, "_sel", lambda: MagicMock())
-    monkeypatch.setattr(sessions_mod, "is_sensitive_canonical_path", fenced)
     response = await _call(monkeypatch, agents)
     assert response.status == 409
     assert _body(response)["code"] == "policy_unreadable"

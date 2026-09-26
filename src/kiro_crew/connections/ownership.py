@@ -35,8 +35,8 @@ from urllib.parse import urlsplit
 from kiro_crew.agent_spec_format import (
     is_agent_spec_name,
     is_markdown_spec,
+    opens_frontmatter_fence,
     parse_agent_spec_text,
-    split_markdown_spec,
 )
 
 logger = logging.getLogger(__name__)
@@ -238,10 +238,11 @@ def spec_census(
             if not path.is_file():
                 continue  # genuinely absent: no entries here, nothing hidden
             text = safe_read_file(str(path))
-            if is_markdown_spec(path) and split_markdown_spec(text) is None:
+            if is_markdown_spec(path) and not opens_frontmatter_fence(text):
                 # A markdown file with no frontmatter fence (a README, notes) is
                 # not a spec: it declares nothing and hides nothing. Only a
-                # FENCED document that fails to parse is unknown, below.
+                # FENCED document that fails to parse -- an unclosed fence
+                # included -- is unknown, below.
                 continue
             data = parse_agent_spec_text(text, path)
         except (OSError, ValueError):

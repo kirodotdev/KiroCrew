@@ -33,6 +33,7 @@ from kiro_crew.agent_spec_format import (
     is_markdown_spec,
     is_native_skill_alias_name,
     iter_agent_spec_files,
+    markdown_head_is_fenceless,
     parse_agent_spec_bytes,
     shadowed_markdown_specs,
     spec_stem,
@@ -496,6 +497,94 @@ def read_agent_spec_strict(path: Path, *, operation: str, source: str) -> Any:
     except _SpecReadRefused as exc:
         raise OSError(errno.EACCES, "agent spec could not be read", str(path)) from exc
     return parse_agent_spec_bytes(raw, path)
+
+
+# The fence probe's head: a UTF-8 BOM (3 bytes) plus the longest opening fence
+# line (``---\r\n``, 5 bytes) is 8, so 64 leaves the probe nothing to judge but
+# the fence -- which is the point. Never the file's length.
+_FENCE_PROBE_BYTES = 64
+
+
+def _read_head(fd: int, limit: int) -> tuple[bytes, bool]:
+    """At most *limit* bytes from *fd*, and whether the file continues past them.
+
+    Reads ``limit + 1`` bytes (looping over short reads) so the caller can tell
+    a file that ends exactly at the bound from one that runs past it: a
+    multibyte sequence broken at the cut is incomplete, one broken at
+    end-of-file is the parser's own decode failure.
+    """
+    data = b""
+    while len(data) <= limit:
+        chunk = os.read(fd, limit + 1 - len(data))
+        if not chunk:
+            break
+        data += chunk
+    return data[:limit], len(data) > limit
+
+
+def plain_markdown_document(path: Path) -> bool:
+    """Whether the markdown file at *path* has no OPENING frontmatter fence.
+
+    The one answer to "is this ``.md`` in an agents directory a spec at all":
+    a plain markdown file dropped there -- a README, a shared prompt fragment
+    -- declares nothing and hides nothing, so it is not a spec. Callers ask it
+    only AFTER :func:`read_agent_spec_strict` refused the file, to decide
+    whether to skip the file rather than raise. A FENCED document that fails
+    to parse is not plain: it announced itself as a spec and may be a
+    truncated real one, so the caller keeps raising. The byte test is
+    :func:`kiro_crew.agent_spec_format.markdown_head_is_fenceless`, the same
+    opening-fence rule :func:`~kiro_crew.agent_spec_format.split_markdown_spec`
+    applies; this function only reads the head it judges.
+
+    The read path is the strict reader's own gates, never
+    :func:`kiro_crew.hooks.validate_file_path`: that gate re-resolves on the
+    two-worker ``mc-pathres`` pool and fails closed when the pool misses its
+    budget, and a policy request probes here on every call after the strict
+    reader refused -- the saturation the strict reader was moved off the pool
+    to survive. Refused, exactly as the strict reader refuses: a spelling or a
+    resolved target that is a UNC path outside the trusted roots on Windows
+    (:func:`_unc_refused`, before and after the resolve); a spelling
+    ``Path.resolve(strict=True)`` cannot canonicalise (absent, broken or
+    looping link, permission) -- a link is otherwise FOLLOWED and its target
+    judged; a resolved target :func:`_fence_refuses` fences; and whatever
+    :func:`kiro_crew.pinned_fs.open_fenced_for_read` refuses at the open. No
+    SEL row is written: the strict reader already audited any denial.
+
+    The read is BOUNDED at ``_FENCE_PROBE_BYTES`` through :func:`_read_head`.
+    The strict reader refuses an oversize file AT the cap precisely so it is
+    never slurped into memory, and an unbounded re-read here would hand the
+    caller an attacker-sized allocation whose ``MemoryError`` escapes every
+    fail-closed arm. An over-cap plain document is still skipped: the probe
+    judges its opening, not its length.
+
+    Every failure is ``False``: a file that cannot even be probed is unknown,
+    not ignorable, so the caller keeps raising.
+    """
+    if _unc_refused(str(path)):
+        return False
+    try:
+        real = path.resolve(strict=True)
+    except (OSError, RuntimeError):
+        # RuntimeError: pathlib's signal for a symlink loop on the Pythons
+        # that raise it as such.
+        return False
+    if _unc_refused(str(real)) or _fence_refuses(real):
+        return False
+    try:
+        fd = open_fenced_for_read(
+            real,
+            fence=lambda fd_real: _fence_refuses(Path(fd_real)),
+            refusal=_SpecReadRefused,
+        )
+    except OSError:
+        return False
+    try:
+        head, truncated = _read_head(fd, _FENCE_PROBE_BYTES)
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+    return markdown_head_is_fenceless(head, complete=not truncated)
 
 
 class AmbiguousAgentSpecError(ValueError):

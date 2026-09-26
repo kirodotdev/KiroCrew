@@ -76,12 +76,13 @@ from kiro_crew.acp.kas_permissions import (
 from kiro_crew.agent_discovery import (
     AgentsDirMemo,
     AmbiguousAgentSpecError,
+    plain_markdown_document,
     read_agent_spec_strict,
     spec_by_declared_name,
     spec_welcome_message,
 )
 from kiro_crew.agent_files import KAS_RESERVED_AGENT_IDS
-from kiro_crew.agent_spec_format import agent_spec_candidates
+from kiro_crew.agent_spec_format import agent_spec_candidates, is_markdown_spec
 from kiro_crew.mcp_cleanup import (
     KIROCREW_BIN_MCP_SERVERS,
     MCP_REGISTRY_TYPE,
@@ -983,9 +984,19 @@ def load_agent_spec(agents_dir: Path, agent_id: str) -> dict[str, Any]:
         # user-writable, so a symlink here must not be followed to a sensitive
         # target or an oversized file slurped into the projection.
         raw = read_agent_spec_strict(path, operation="kas_agent_projection", source="unknown")
-    except OSError as exc:
-        raise KasAgentTranslationError(f"agent spec {path} is unreadable: {exc}") from exc
-    except ValueError as exc:
+    except (OSError, ValueError) as exc:
+        if is_markdown_spec(path) and plain_markdown_document(path):
+            # ``<agent_id>.md`` with no opening fence and no JSON twin is a
+            # prose document sharing the name, not this agent's spec: it is
+            # skipped, which leaves the agent with no spec at all -- the same
+            # answer as no candidate file. A FENCED document that fails to
+            # parse falls through and raises as a broken spec.
+            raise KasAgentTranslationError(
+                f"agent {agent_id!r} has no spec: {path} has no frontmatter fence, "
+                "so it is a plain markdown document, not an agent spec"
+            ) from None
+        if isinstance(exc, OSError):
+            raise KasAgentTranslationError(f"agent spec {path} is unreadable: {exc}") from exc
         raise KasAgentTranslationError(f"agent spec {path} is not a valid spec: {exc}") from exc
     if not isinstance(raw, dict):
         raise KasAgentTranslationError(f"agent spec {path} is not an object")

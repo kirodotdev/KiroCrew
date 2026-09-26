@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import codecs
 import functools
 import hashlib
 import json
@@ -35,6 +34,7 @@ from kiro_crew.agent_discovery import (
     AmbiguousAgentSpecError,
     SensitiveAgentSpecPathError,
     _SpecReadRefused,
+    plain_markdown_document,
     read_agent_spec_strict,
     spec_by_declared_name,
 )
@@ -77,7 +77,6 @@ from kiro_crew.history import (
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.mcp_discovery import sync_discovered_servers
 from kiro_crew.messaging.link import _in_namespace, canonical_key
-from kiro_crew.pinned_fs import open_fenced_for_read
 from kiro_crew.platform import redact_log_via_context
 from kiro_crew.sandbox import (
     cgroup_scope_argv,
@@ -87,7 +86,6 @@ from kiro_crew.sandbox import (
     wrap_argv,
 )
 from kiro_crew.security import (
-    is_sensitive_canonical_path,
     redact,
     redact_credentials,
     redact_exfiltration_urls,
@@ -3839,146 +3837,6 @@ class ManagedToolPolicyUnreadable(Exception):
     """
 
 
-# The fence probe's head: a UTF-8 BOM (3 bytes) plus the longest opening fence
-# line (``---\r\n``, 5 bytes) is 8, so 64 leaves the probe nothing to judge but
-# the fence -- which is the point. Never the file's length.
-_FENCE_PROBE_BYTES = 64
-
-
-def _read_head(fd: int, limit: int) -> tuple[bytes, bool]:
-    """The first *limit* bytes of *fd*, and whether the file continues past them.
-
-    Read with ``os.read`` straight off the descriptor, ``limit + 1`` bytes in
-    all: a buffered reader would pull its own 8 KiB block to answer a 64-byte
-    question, and the one extra byte is what tells a file that ENDS inside the
-    head from one that was cut there -- the decode step treats a multibyte
-    sequence broken at the cut as incomplete, and one broken at end-of-file as
-    the parser's own decode failure.
-    """
-    data = b""
-    while len(data) <= limit:
-        chunk = os.read(fd, limit + 1 - len(data))
-        if not chunk:
-            break
-        data += chunk
-    return data[:limit], len(data) > limit
-
-
-def _unc_refused(spelling: str) -> bool:
-    """The Windows UNC trusted-root gate, composed as the strict spec reader composes it.
-
-    A UNC path names a HOST: on Windows, resolving or opening one is an outbound
-    SMB connection the path's author controls, so only the shares
-    :func:`kiro_crew.hooks.unc_probe_allowed` names are admitted -- the two
-    predicates ``hooks.validate_file_path`` and the strict spec reader both
-    apply, on the spelling before the resolve and on the resolved target after
-    it. Every other platform answers ``False``.
-    """
-    return (
-        os.name == "nt" and hooks.is_unc_shape(spelling) and not hooks.unc_probe_allowed(spelling)
-    )
-
-
-def _plain_markdown_document(path: Path) -> bool:
-    """Whether *path* is a markdown document with no OPENING frontmatter fence.
-
-    The rule this repo already applies twice (``connections/ownership.py``,
-    ``agent_discovery.agent_spec_stems``): a plain markdown file dropped into
-    the agents directory -- a README, a shared prompt fragment -- is not a
-    spec. It declares nothing and hides nothing, so it cannot hold any agent's
-    policy.
-
-    Deliberately NOT ``split_markdown_spec(text) is None``: that also folds in
-    a document whose fence OPENS and never closes, which announced itself as a
-    spec and may be a truncated real one -- the guard must keep refusing on
-    those. The probe here is the opening-fence test ``split_markdown_spec``
-    applies first: BOM aside, the document starts with a ``---`` line.
-
-    The answer is ``True`` only for a document PROVEN fence-less: its head
-    decodes as the UTF-8 the strict parser (``parse_agent_spec_bytes``) reads
-    every spec as, and the decoded text does not open with a fence. A head that
-    is not UTF-8 -- a UTF-16 or UTF-32 BOM (``0xFF``/``0xFE`` are never UTF-8
-    bytes), a Latin-1 byte, a file that ends inside a multibyte sequence -- is
-    ``False``: the parser could not decode it, so nothing here can say what
-    fence test the parser would have applied, and a UTF-16-saved spec whose
-    decoded text opens with a fence must keep the refusal rather than have its
-    exclusion list skipped as prose. A multibyte character cut by the 64-byte
-    bound is NOT that case: the head is decoded with ``final=False`` when the
-    file continues past it, so a sequence split at the cut is held back, not
-    raised. A UTF-8 BOM is stripped from the decoded text exactly as the
-    parser strips it.
-
-    The read path is the strict spec reader's own, never
-    :func:`kiro_crew.hooks.validate_file_path`: that gate re-resolves the path
-    on the two-worker ``mc-pathres`` pool and fails closed when the pool misses
-    its budget, and this probe runs on every policy request after the strict
-    reader already refused -- the exact saturation
-    :func:`kiro_crew.agent_discovery.read_agent_spec_strict` was moved off
-    that pool to survive, which would otherwise turn a stray ``.md`` back into
-    a denial of every agent whenever the pool is busy. What this path refuses,
-    and nothing else: a spelling or a resolved target that is a UNC path
-    outside the trusted roots, on Windows, checked before and after the
-    resolve as the strict reader checks it (:func:`_unc_refused`); a
-    spelling ``Path.resolve(strict=True)`` cannot canonicalise (absent, broken
-    or looping link, permission) -- a link at the name is otherwise FOLLOWED,
-    as the strict reader follows it, and its target is what is judged; a
-    resolved path :func:`kiro_crew.security.is_sensitive_canonical_path`
-    fences, the gate that submits nothing to the pool off the event loop (this
-    runs under ``asyncio.to_thread``); and, from
-    :func:`kiro_crew.pinned_fs.open_fenced_for_read`, a link at the final
-    component of the RESOLVED path (the re-point window between the resolve
-    and the open), a hardlinked or non-regular inode, an inode whose kernel
-    path cannot be read back, and an opened inode whose kernel path differs
-    from the judged one and is itself fenced. Size is not judged (below), and
-    no SEL row is written here: the strict reader already audited any
-    sensitive-target denial for this path.
-
-    The read is BOUNDED at ``_FENCE_PROBE_BYTES`` through :func:`_read_head`:
-    the strict reader refuses an oversize file AT the cap precisely so it is
-    never slurped into memory, and an unbounded re-read here would hand the
-    loop an attacker-sized allocation whose ``MemoryError`` escapes every
-    fail-closed arm. The fence test needs only the first bytes (a BOM plus one
-    ``---`` line), so 64 is generous, and an over-cap plain document is still
-    skipped: the probe judges its opening, not its length.
-
-    Every failure -- unresolvable, a refused open, an unreadable descriptor, an
-    undecodable or NUL-bearing head -- is ``False``, because the caller is
-    deciding whether to SKIP a file its strict reader already refused, and a
-    file that cannot even be probed is unknown, not ignorable: fail closed,
-    the guard keeps raising.
-    """
-    if _unc_refused(str(path)):
-        return False
-    try:
-        real = path.resolve(strict=True)
-    except (OSError, RuntimeError):
-        # OSError: absent, broken link, permission; RuntimeError: pathlib's
-        # signal for a symlink loop on the Pythons that raise it as such.
-        return False
-    real_str = str(real)
-    if _unc_refused(real_str) or is_sensitive_canonical_path(real_str):
-        return False
-    try:
-        fd = open_fenced_for_read(real, fence=is_sensitive_canonical_path)
-    except OSError:
-        return False
-    try:
-        head, truncated = _read_head(fd, _FENCE_PROBE_BYTES)
-    except OSError:
-        return False
-    finally:
-        os.close(fd)
-    try:
-        text = codecs.getincrementaldecoder("utf-8")().decode(head, final=not truncated)
-    except UnicodeDecodeError:
-        return False
-    if "\x00" in text:
-        return False
-    if text.startswith("\ufeff"):
-        text = text[1:]
-    return not text.startswith(("---\n", "---\r\n"))
-
-
 def _spec_failure_kind(path: Path, exc: BaseException) -> str:
     """WHY *path* failed the strict read, in plain words and with NO path in it.
 
@@ -4122,8 +3980,9 @@ def _refuse_if_any_spec_is_unreadable(agents_dir: Path, agent_name: str) -> None
 
     One exception, taken only after the strict read already refused: a markdown
     file with no opening frontmatter fence is not a spec at all (see
-    :func:`_plain_markdown_document`), so it is skipped rather than allowed to
-    deny every agent that has no spec of its own. A FENCED document that fails
+    :func:`kiro_crew.agent_discovery.plain_markdown_document`), so it is
+    skipped rather than allowed to deny every agent that has no spec of its
+    own. A FENCED document that fails
     to parse still raises: its declared name is unrecoverable, so the policy
     stays unknown.
 
@@ -4139,7 +3998,7 @@ def _refuse_if_any_spec_is_unreadable(agents_dir: Path, agent_name: str) -> None
         try:
             read_agent_spec_strict(path, operation="session_tool_policy", source="dashboard")
         except (OSError, ValueError) as exc:
-            if is_markdown_spec(path) and _plain_markdown_document(path):
+            if is_markdown_spec(path) and plain_markdown_document(path):
                 # Not a spec (no opening fence): it cannot declare a policy,
                 # so it must not turn into a denial of every other agent.
                 continue
@@ -4204,7 +4063,8 @@ def _read_managed_tool_policy_uncached(agents_dir: Path, agent_name: str) -> dic
 
     ``None`` means "this agent has no policy to report" -- no spec file, a spec
     that declares none, or a fence-less ``<agent_name>.md`` in the filename slot,
-    which is a prose document and not a spec (:func:`_plain_markdown_document`).
+    which is a prose document and not a spec
+    (:func:`kiro_crew.agent_discovery.plain_markdown_document`).
     The caller answers ``{}`` for it, without a SEL ``ok`` record when nothing
     was parsed.
 
@@ -4253,15 +4113,15 @@ def _read_managed_tool_policy_uncached(agents_dir: Path, agent_name: str) -> dic
                     spec_path, operation="session_tool_policy", source="dashboard"
                 )
             except (OSError, ValueError):
-                if not (is_markdown_spec(spec_path) and _plain_markdown_document(spec_path)):
+                if not (is_markdown_spec(spec_path) and plain_markdown_document(spec_path)):
                     raise
                 # ``<agent_name>.md`` with no opening fence and no JSON twin is
                 # not this agent's spec: it is a prose document sharing the
-                # name (see ``_plain_markdown_document``), so it cannot hold a
-                # policy any more than a stray ``README.md`` can. The same
-                # not-a-spec rule the enumeration guard applies, at the one
-                # other place a fence-less file is parsed as a spec -- and the
-                # same disposition as no candidate at all. A fenced document
+                # name (see ``agent_discovery.plain_markdown_document``), so it
+                # cannot hold a policy any more than a stray ``README.md`` can.
+                # The same not-a-spec rule the enumeration guard and the KAS
+                # projection's direct-filename read apply -- and the same
+                # disposition as no candidate at all. A fenced document
                 # that fails to parse re-raised above: it announced itself as
                 # a spec, so its policy stays unknown.
                 _refuse_if_any_spec_is_unreadable(agents_dir, agent_name)
