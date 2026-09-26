@@ -297,6 +297,15 @@ def test_ssh_auth_sock_forward_is_not_an_agent_config_field() -> None:
     assert not hasattr(cfg.agent, "sandbox_forward_ssh_auth_sock")
 
 
+def test_episodic_max_count_is_floored_at_one() -> None:
+    """A zero or negative V1 episodic cap would refuse every merge-only write, even
+    on an empty store, so the loader clamps it to 1. A positive value is kept as
+    written."""
+    assert _load_from_dict({"memory": {"episodic_max_count": 0}}).memory.episodic_max_count == 1
+    assert _load_from_dict({"memory": {"episodic_max_count": -5}}).memory.episodic_max_count == 1
+    assert _load_from_dict({"memory": {"episodic_max_count": 7}}).memory.episodic_max_count == 7
+
+
 def test_max_stop_hook_nudges_loads_from_config_and_round_trips() -> None:
     """The Stop-hook nudge cap is built field-by-field in load(), so an
     operator's value must hydrate and survive a to_dict() -> load() round-trip.

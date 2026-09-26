@@ -686,11 +686,7 @@ def _get_vector_store(state: DashboardState):
         from kiro_crew.vector_memory import VectorMemoryStore  # noqa: F811
 
         cfg = KiroCrewConfig.load()
-        store = VectorMemoryStore(
-            embedding_dim=cfg.memory.embedding_dim,
-            decay_rates=cfg.memory.decay_rates or None,
-            dedup_threshold=cfg.memory.episodic_dedup_threshold,
-        )
+        store = VectorMemoryStore(embedding_dim=cfg.memory.embedding_dim, config=cfg)
         store.init()
         state._standalone_vector = store  # type: ignore[attr-defined]
         mem.vector_store = store

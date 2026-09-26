@@ -284,6 +284,18 @@ a real install recall returned zero hits forever while every unit test passed. T
 can be individually correct and collectively dead; only an integration caller proves
 otherwise.
 
+The index stage builds its store with the install's `memory.episodic_max_count` and
+`memory.episodic_dedup_threshold`, and `import_pending` cursors an entry only when the store
+wrote it or reported it as a duplicate or unacceptable. A V1 store at its cap refuses
+merge-only writes; `import_pending` reads that verdict from `write_episodic_outcome()`
+(`AT_CAPACITY`, decided inside the transaction that refused the row, so a concurrent cap
+raise or eviction cannot turn it into a duplicate), stops, and leaves that entry and the
+rest off the cursor. A later pass indexes them once `memory.episodic_max_count` is raised or
+an unrelated delete (an operator delete, stale retirement) drops the active count below the
+cap; cap eviction by other writers always leaves the count AT the cap, so it never frees a
+slot for the importer. The pause is logged as a warning naming how many entries are left
+pending, because the result counts alone match a caught-up run. Pinned by `TestCapacityRefusal` in `test_ledger_index.py`.
+
 Dispatch prepares the other half of semantic retrieval: after claiming an incident it
 binds the process-wide cached embed callable to its short-lived store, attempts one
 interactive query embedding with a five-second queue/admission budget, and passes that

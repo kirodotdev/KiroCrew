@@ -22,6 +22,7 @@ from kiro_crew.vector_memory import (
     _HAS_NUMPY,
     _MAX_EPISODIC_RETIRED_PER_WRITE,
     _MMR_MAX_POOL,
+    EpisodicWriteOutcome,
     SemanticRejectCode,
     VectorMemoryStore,
     _contains_injection,
@@ -482,6 +483,33 @@ class TestConflictResolution:
             ).fetchone()[0]
             == 1
         )
+
+    def test_write_outcome_names_the_refusal_cause(self, tmp_path: Path) -> None:
+        """The tri-state verdict the ops-mission-control ledger indexer cursors on.
+
+        ``write_episodic`` folds every refusal into ``False``; a caller that must
+        retry a capacity refusal but never a duplicate reads the cause from
+        ``write_episodic_outcome``, decided inside the refusing transaction.
+        """
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db", episodic_max=1)
+        store.init()
+        try:
+            first = "Outcome contract: the first row takes the only slot."
+            assert store.write_episodic_outcome(first, preserve_existing=True) is (
+                EpisodicWriteOutcome.WRITTEN
+            )
+            assert store.write_episodic_outcome(first, preserve_existing=True) is (
+                EpisodicWriteOutcome.REFUSED
+            )
+            assert store.write_episodic_outcome(
+                "Outcome contract: a second distinct row finds the store full.",
+                preserve_existing=True,
+            ) is (EpisodicWriteOutcome.AT_CAPACITY)
+            assert store.write_episodic_outcome("short") is EpisodicWriteOutcome.REFUSED
+            # The bool wrapper keeps its contract: True only for a written row.
+            assert store.write_episodic(first, preserve_existing=True) is False
+        finally:
+            store.close()
 
     def test_preserving_writes_respect_cap_across_store_instances(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -2456,6 +2484,9 @@ class TestEmbeddingDimPlumbing:
             def __init__(self, **kwargs):
                 captured_kwargs.update(kwargs)
 
+            def reconfigure(self, cfg):
+                pass
+
             def init(self):
                 pass
 
@@ -2484,29 +2515,54 @@ class TestEmbeddingDimPlumbing:
         assert captured_kwargs.get("embedding_dim") == 384
 
 
-class TestDedupThresholdPlumbing:
-    """`memory.episodic_dedup_threshold` must reach the store it configures.
+class TestMemoryTuningPlumbing:
+    """Configured ``memory.*`` tuning must reach every store that consumes it.
 
-    The loader parses the key into ``MemorySection``; no production
-    ``VectorMemoryStore(...)`` site passed it on, so the store always used
-    ``_DEFAULT_DEDUP_THRESHOLD`` and the documented knob was inert regardless of
-    faiss (the separate faiss gating of the cosine check is a separate concern, not
-    this one). These tests pin the plumbing only — no embedding or index needed.
+    ``VectorMemoryStore.reconfigure(cfg)`` applies every tunable the class copies
+    out of config, and the live reload path already uses it. Each plumbed site
+    passes its loaded config as ``config=``, which the constructor applies through
+    ``reconfigure`` before subscribing to the watcher, so boot and reload apply the
+    same values by construction, not by a hand-copied keyword list that can drop a
+    key.
     """
 
-    # Production stores whose episodic writes reach the inline similarity check
-    # (history consolidation, migrate_from_markdown, import_memory). Deferred
-    # writers (ledger_index, onboarding_import) skip that check by contract and
-    # the bench harness (eval/bench/ingest.py) supplies its own sweep value, so
-    # neither is required to plumb the config key.
+    # Production stores on the live install whose episodic reads or writes reach
+    # the similarity, cap-eviction or keyword-fallback paths. The cap check runs on
+    # deferred writes too, so the ops-mission-control ledger indexer and lesson
+    # recall are listed, as are the CLI's lesson, carve and import/migrate stores.
     _PLUMBED_SITES = (
         "slack/gateway.py",
         "cli_server.py",
+        "cli_commands.py",
         "dashboard/handlers/memory.py",
+        "apps/builtins/ops_mission_control/backend/dispatch.py",
+        "apps/builtins/ops_mission_control/backend/routes.py",
+        # Named stores: both the V1 constructor and the V2 open_member_database.
+        "context.py",
     )
+    # Every other file that constructs a store, with the reason the AST guard does
+    # not check it. The inventory test fails on a new construction site that is in
+    # neither table, so a new store cannot silently fall back to the defaults.
+    _EXEMPT_SITES = {
+        # Forwards its caller's `**vector_options` unchanged.
+        "vector_memory.py": "open_member_database forwards caller options",
+        # Builds its store on an arbitrary data_home whose config
+        # KiroCrewConfig.load() does not read.
+        "onboarding_import.py": "foreign data_home",
+        # The bench harness sweeps its own values.
+        "eval/bench/ingest.py": "bench sweep values",
+        # The V2 bench harness opens its own throwaway member database.
+        "eval/bench/member_v2.py": "bench V2 member database",
+        # Scenario workspaces are throwaway stores, not the install's memory.
+        "eval/runner.py": "eval scenario workspace",
+        # Read-only injection audit; it never writes an episode.
+        "security/__init__.py": "read-only injection audit",
+    }
 
-    def test_dashboard_fallback_passes_dedup_threshold(self, tmp_path: Path, monkeypatch) -> None:
-        """The dashboard standalone fallback builds a store carrying cfg's value."""
+    def test_dashboard_fallback_passes_configured_options(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """The dashboard standalone fallback carries the configured tuning."""
         from unittest.mock import MagicMock
 
         import kiro_crew.dashboard.handlers.memory as mem_mod
@@ -2514,14 +2570,17 @@ class TestDedupThresholdPlumbing:
         mock_cfg = MagicMock()
         mock_cfg.memory.embedding_dim = 1024
         mock_cfg.memory.decay_rates = {}
-        # Deliberately NOT 0.88: a test written against the default would pass
-        # against the module constant even with nothing plumbed.
+        # Deliberately differ from both defaults so omitted keywords cannot pass.
         mock_cfg.memory.episodic_dedup_threshold = 0.42
+        mock_cfg.memory.episodic_max_count = 321
+        mock_cfg.memory.semantic_confidence_threshold = 0.61
+        mock_cfg.memory.episodic_max_results = 7
+        mock_cfg.memory.semantic_keys = ["team."]
 
         built: list[VectorMemoryStore] = []
 
         class TmpPathStore(VectorMemoryStore):
-            """Real store (so __init__ stores the value) on a throwaway db."""
+            """A real store carrying captured configuration on a throwaway DB."""
 
             def __init__(self, **kwargs):
                 kwargs.setdefault("db_path", tmp_path / "dashboard.db")
@@ -2548,42 +2607,61 @@ class TestDedupThresholdPlumbing:
 
         assert len(built) == 1, "fallback did not construct the standalone store"
         assert built[0]._dedup_threshold == 0.42
+        assert built[0]._episodic_max == 321
+        assert built[0]._confidence_threshold == 0.61
+        assert built[0]._episodic_limit == 7
+        assert "team." in built[0]._prefixes
 
     @staticmethod
     def _find_unplumbed_sites(tree, where: str = "") -> list[str]:
-        """Report every ``VectorMemoryStore(...)`` call that drops the key.
+        """Report every store construction that does not take ``config=``.
 
-        Structural rather than behavioural for the gateway and `kirocrew run`:
-        both construct inside long async bootstraps (`_init_services`,
-        `_run_task`) that cannot be driven in a unit test without mocking the
-        whole service graph, and the regression this guards is a missing
-        keyword at a call site.
+        Each ``VectorMemoryStore(...)``, and each ``open_member_database(...)``
+        (which constructs one), must pass the loaded config as ``config=``: the
+        constructor applies it through ``reconfigure`` before it subscribes to
+        the live watcher, so a reload landing during construction is never
+        overwritten by the caller's older snapshot. Checked per call, so each
+        branch that builds a store carries its own ``config=``. A literal value
+        is flagged (``config=None`` is the defaults), and so is a tuning keyword:
+        ``reconfigure`` is the one source, and a second copy is how boot and
+        reload drift apart.
         """
         import ast
 
+        tunables = {
+            "confidence_threshold",
+            "extra_prefixes",
+            "dedup_threshold",
+            "episodic_max",
+            "episodic_limit",
+            "decay_rates",
+        }
         violations: list[str] = []
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
             func = node.func
             name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
-            if name != "VectorMemoryStore":
+            if name not in ("VectorMemoryStore", "open_member_database"):
                 continue
-            kw = next((k for k in node.keywords if k.arg == "dedup_threshold"), None)
-            if kw is None:
+            config = next((kw.value for kw in node.keywords if kw.arg == "config"), None)
+            if config is None:
                 violations.append(
-                    f"{where}line {node.lineno}: VectorMemoryStore(...) omits "
-                    "dedup_threshold — pass memory.episodic_dedup_threshold (#8903)"
+                    f"{where}line {node.lineno}: {name}(...) does not pass config=cfg"
                 )
-                continue
-            if not ast.unparse(kw.value).endswith("memory.episodic_dedup_threshold"):
+            elif isinstance(config, ast.Constant):
                 violations.append(
-                    f"{where}line {node.lineno}: dedup_threshold is not bound to "
-                    f"memory.episodic_dedup_threshold (got {ast.unparse(kw.value)!r})"
+                    f"{where}line {node.lineno}: {name}(...) passes a literal config="
                 )
+            for kw in node.keywords:
+                if kw.arg in tunables:
+                    violations.append(
+                        f"{where}line {node.lineno}: {kw.arg} is set on the "
+                        "constructor — config=cfg is its only source"
+                    )
         return violations
 
-    def test_production_sites_pass_the_configured_threshold(self) -> None:
+    def test_production_sites_pass_configured_options(self) -> None:
         import ast
         import inspect
         from pathlib import Path as _Path
@@ -2597,26 +2675,82 @@ class TestDedupThresholdPlumbing:
             assert src.is_file(), f"construction site moved: {rel}"
             tree = ast.parse(src.read_text(encoding="utf-8"))
             violations.extend(self._find_unplumbed_sites(tree, where=f"{rel}:"))
-        assert not violations, "config key never reaches the store:\n" + "\n".join(violations)
+        assert not violations, "stores built without config=cfg:\n" + "\n".join(violations)
 
-    def test_guard_catches_a_seeded_violation(self) -> None:
-        """The guard must flag both failure shapes and stay quiet on the good
-        one — otherwise a refactor could silently disarm it."""
+    def test_every_construction_site_is_plumbed_or_exempted(self) -> None:
+        """A new production store construction must join one of the tables.
+
+        ``open_member_database(...)`` counts: it constructs a store, and the
+        per-site guard checks it the same way.
+        """
+        import ast
+        import inspect
+        from pathlib import Path as _Path
+
+        import kiro_crew
+
+        pkg_root = _Path(inspect.getfile(kiro_crew)).parent
+        found: set[str] = set()
+        for src in pkg_root.rglob("*.py"):
+            rel = src.relative_to(pkg_root).as_posix()
+            text = src.read_text(encoding="utf-8")
+            if "/tests/" in f"/{rel}" or (
+                "VectorMemoryStore(" not in text and "open_member_database(" not in text
+            ):
+                continue
+            tree = ast.parse(text)
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+                if name in ("VectorMemoryStore", "open_member_database"):
+                    found.add(rel)
+                    break
+        known = set(self._PLUMBED_SITES) | set(self._EXEMPT_SITES)
+        assert found - known == set(), (
+            "new store construction site(s) neither pass config=cfg nor carry "
+            f"an exemption: {sorted(found - known)}"
+        )
+        assert known - found == set(), f"stale site table entries: {sorted(known - found)}"
+
+    def test_guard_catches_seeded_violations(self) -> None:
+        """The guard flags a missing or literal config= and a constructor tunable."""
         import ast
 
         seeded = ast.parse(
-            "a = VectorMemoryStore(embedding_dim=1024)\n"
-            "b = VectorMemoryStore(dedup_threshold=0.88)\n"
-            "c = VectorMemoryStore(dedup_threshold=cfg.memory.episodic_dedup_threshold)\n"
-            "d = vm.VectorMemoryStore(dedup_threshold=self._cfg.memory.episodic_dedup_threshold)\n"
+            "def a():\n"
+            "    s = VectorMemoryStore(embedding_dim=1024)\n"
+            "def b(cfg):\n"
+            "    s = VectorMemoryStore(embedding_dim=1024, dedup_threshold=0.88, config=cfg)\n"
+            "def c(cfg):\n"
+            "    s = VectorMemoryStore(embedding_dim=cfg.memory.embedding_dim, config=cfg)\n"
+            "class D:\n"
+            "    def e(self):\n"
+            "        self.vm = vm.VectorMemoryStore(embedding_dim=1024, config=self._cfg)\n"
+            "def f():\n"
+            "    return VectorMemoryStore(config=None)\n"
+            "def g(path, cfg, v2):\n"
+            "    if v2:\n"
+            "        s = open_member_database(path, member_id='m', store_id='s', config=cfg)\n"
+            "    else:\n"
+            "        s = VectorMemoryStore(db_path=path)\n"
+            "    s.reconfigure(cfg)\n"
         )
         violations = self._find_unplumbed_sites(seeded)
-        # `a` omits the keyword, `b` hardcodes it; `c` and `d` are the two
-        # spellings the production sites use (module-local and attribute call,
-        # plain and `self._cfg`).
-        assert len(violations) == 2
-        assert "omits dedup_threshold" in violations[0]
-        assert "not bound to" in violations[1]
+        # `c`, `e` and g's V2 arm are the production spellings and must stay quiet.
+        # g's V1 arm is caught although the function reconfigures `s` afterwards:
+        # the check is per call, and a late reconfigure is the race config= closes.
+        # Pin each line exactly: a count alone would pass with one kind listed twice.
+        assert sorted(violations) == sorted(
+            [
+                "line 2: VectorMemoryStore(...) does not pass config=cfg",
+                "line 4: dedup_threshold is set on the constructor — "
+                "config=cfg is its only source",
+                "line 11: VectorMemoryStore(...) passes a literal config=",
+                "line 16: VectorMemoryStore(...) does not pass config=cfg",
+            ]
+        )
 
 
 @pytest.mark.skipif(not _HAS_NUMPY, reason="numpy not available (Linux-compiled binary)")

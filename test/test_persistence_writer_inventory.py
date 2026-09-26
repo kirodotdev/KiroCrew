@@ -35,6 +35,7 @@ _WRITE_PRIMITIVES = frozenset(
     {
         "write_lesson",
         "write_episodic",
+        "write_episodic_outcome",
         "set_semantic",
         "set_semantic_if_absent",
         "write_preferences",
@@ -82,6 +83,7 @@ EXEMPT = {
     # the module docstring): these are reached from the classified entry points
     # or from an explicit migration/import the user asked for.
     "vector_memory.py::write_lesson": "storage primitive",
+    "vector_memory.py::write_episodic": "storage primitive (bool wrapper of write_episodic_outcome)",
     "vector_memory.py::seed_item_if_absent": "storage primitive",
     "vector_memory.py::import_memory": "explicit user-initiated import",
     "vector_memory.py::migrate_from_markdown": "explicit one-shot migration",

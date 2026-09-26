@@ -173,9 +173,10 @@ class TestVectorMemoryStore:
 class TestEpisodicMaxCountIsConsumed:
     """``memory.episodic_max_count`` was parsed by the loader and read by nobody.
 
-    Two halves close it: the gateway now passes it into the store it builds, and
-    ``reconfigure`` pushes it on every reload -- so the value is in force at boot
-    and after any later write.
+    Both halves go through ``reconfigure``: the gateway hands its config to the
+    store's constructor, which applies it before subscribing, and the live reload
+    path calls it again -- so the value is in force at boot and after any later
+    write.
     """
 
     def test_the_store_constructor_takes_it(self, tmp_path: Path) -> None:
@@ -191,7 +192,68 @@ class TestEpisodicMaxCountIsConsumed:
                 "config\\live.py", "slack\\gateway.py"
             )
         ).read_text(encoding="utf-8")
-        assert "episodic_max=self._cfg.memory.episodic_max_count" in source
+        assert "config=self._cfg" in source
+
+    def test_a_reload_during_construction_is_not_overwritten(self, tmp_path: Path) -> None:
+        """A reload delivered as the store subscribes must stay in force.
+
+        The caller's config was loaded before the store existed. Applied after the
+        subscription, that older snapshot would put a cap raised in between back
+        down, and the next write would evict to the old cap.
+        """
+        from kiro_crew.vector_memory import VectorMemoryStore
+
+        real_watch_object = live.watch_object
+
+        def reload_lands_on_subscribe(owner, *prefixes, **kw):
+            sub = real_watch_object(owner, *prefixes, **kw)
+            owner.reconfigure(_memory_cfg(episodic_max=900))  # the watcher's delivery
+            return sub
+
+        with patch.object(live, "watch_object", side_effect=reload_lands_on_subscribe):
+            store = VectorMemoryStore(
+                db_path=tmp_path / "m.db", config=_memory_cfg(episodic_max=10)
+            )
+        assert store._episodic_max == 900
+
+    def test_a_reload_dispatched_before_the_store_subscribed_is_replayed(
+        self, tmp_path: Path
+    ) -> None:
+        """A reload the watcher adopted after the caller's load, and dispatched
+        before the store registered, never reaches the store through dispatch. The
+        store's subscription replays the adopted config, so a raised cap holds."""
+        from kiro_crew.vector_memory import VectorMemoryStore
+
+        live.reset_for_tests()
+        try:
+            with patch.object(
+                live.ConfigWatch, "_current_fingerprint", staticmethod(lambda: ("fp",))
+            ):
+                live.watch().prime(_memory_cfg(episodic_max=900), ("fp",))
+                store = VectorMemoryStore(
+                    db_path=tmp_path / "m.db", config=_memory_cfg(episodic_max=10)
+                )
+            assert store._episodic_max == 900
+        finally:
+            live.reset_for_tests()
+
+    def test_a_store_built_without_a_config_is_not_replayed(self, tmp_path: Path) -> None:
+        """A ``config=None`` store (onboarding import's foreign data_home, an eval
+        harness) keeps its constructor defaults at construction: the watcher's
+        adopted ``memory.*`` tuning is not replayed onto it."""
+        from kiro_crew.vector_memory import VectorMemoryStore
+
+        live.reset_for_tests()
+        try:
+            with patch.object(
+                live.ConfigWatch, "_current_fingerprint", staticmethod(lambda: ("fp",))
+            ):
+                live.watch().prime(_memory_cfg(episodic_max=900), ("fp",))
+                store = VectorMemoryStore(db_path=tmp_path / "m.db", episodic_max=77)
+            assert store._episodic_max == 77
+            assert live.watch()._stale == {}
+        finally:
+            live.reset_for_tests()
 
     def test_a_reload_pushes_the_count_onto_a_store_that_missed_it(self, tmp_path: Path) -> None:
         from kiro_crew.vector_memory import VectorMemoryStore

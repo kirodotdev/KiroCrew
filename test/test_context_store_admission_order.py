@@ -16,6 +16,7 @@ and stays admitted.
 
 from __future__ import annotations
 
+import json
 import shutil
 
 import pytest
@@ -66,6 +67,36 @@ async def test_intact_declared_store_still_builds(home):
     try:
         assert store is not None
         assert context._vector_stores.get("member-alice") is store
+    finally:
+        for cached in context._vector_stores.values():
+            cached.close()
+
+
+@pytest.mark.asyncio
+async def test_named_store_uses_configured_episodic_options(home):
+    """A newly built named store carries the live episodic configuration."""
+    config_path = home / "config.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    memory = config.setdefault("memory", {})
+    memory["episodic_dedup_threshold"] = 0.42
+    memory["episodic_max_count"] = 321
+    memory["semantic_confidence_threshold"] = 0.61
+    memory["episodic_max_results"] = 7
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    from kiro_crew.vector_memory import open_member_database
+
+    db = home / "memory_stores" / "member-alice" / "memory.db"
+    seed = open_member_database(db, member_id="alice", store_id="member-alice")
+    seed.close()
+
+    store = await context._build_store_vectors("member-alice")
+    try:
+        assert store is not None
+        assert store._dedup_threshold == 0.42
+        assert store._episodic_max == 321
+        assert store._confidence_threshold == 0.61
+        assert store._episodic_limit == 7
     finally:
         for cached in context._vector_stores.values():
             cached.close()

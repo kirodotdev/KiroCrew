@@ -2951,7 +2951,7 @@ def _learn(args: argparse.Namespace) -> None:
             "kirocrew config set memory.persistence_enabled true"
         )
         return
-    vs = VectorMemoryStore(embedding_dim=cfg.memory.embedding_dim)
+    vs = VectorMemoryStore(embedding_dim=cfg.memory.embedding_dim, config=cfg)
     vs.init()
     try:
         if action == "add":
@@ -3527,7 +3527,7 @@ def _memory_carve(args: argparse.Namespace) -> None:
     db_path = _admitted_store_path(name, cfg, may_create=False)
     if db_path is None:
         return
-    store = VectorMemoryStore(db_path=db_path, embedding_dim=cfg.memory.embedding_dim)
+    store = VectorMemoryStore(db_path=db_path, embedding_dim=cfg.memory.embedding_dim, config=cfg)
     store.init()
     try:
         # Keyed by facet NAME, read off the namespace by that name: an omitted flag
@@ -3831,7 +3831,9 @@ def _memory_cmd(args: argparse.Namespace) -> None:
         preexisting_sidecars = (
             set(db_path.parent.glob(db_path.name + "-*")) if import_created_db else set()
         )
-        store = VectorMemoryStore(db_path=db_path, embedding_dim=cfg.memory.embedding_dim)
+        store = VectorMemoryStore(
+            db_path=db_path, embedding_dim=cfg.memory.embedding_dim, config=cfg
+        )
         try:
             # INSIDE the try, because `init()` is itself a creation step: SQLite makes
             # `memory.db` there, and an interrupt raising out of it would otherwise

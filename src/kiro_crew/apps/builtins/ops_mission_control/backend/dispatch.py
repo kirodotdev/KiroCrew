@@ -246,7 +246,8 @@ def _attach_similar_safely(claimed: ClaimedIncident) -> None:
         # Constructed per call, matching the convention in cli_commands/onboarding_import:
         # there is no shared singleton, and holding one open across cycles would keep a
         # SQLite handle alive for a feature that may never be used on this install.
-        store_obj = VectorMemoryStore(embedding_dim=KiroCrewConfig.load().memory.embedding_dim)
+        cfg = KiroCrewConfig.load()
+        store_obj = VectorMemoryStore(embedding_dim=cfg.memory.embedding_dim, config=cfg)
         # One-shot read: bind the shared callable, but no lazy factory. If the
         # model is cold the callable kicks its background load and returns None;
         # this store closes after the keyword fallback and has no later work for

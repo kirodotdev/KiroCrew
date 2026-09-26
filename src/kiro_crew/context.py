@@ -441,22 +441,21 @@ async def _build_store_vectors(name: str) -> "VectorMemoryStore | None":
             # database must remain a visible loss rather than being recreated by
             # the lazy opener.
             require_memory_store(name)
-            options: dict[str, Any] = dict(
-                confidence_threshold=mem.semantic_confidence_threshold,
-                extra_prefixes=mem.semantic_keys or None,
-                episodic_limit=mem.episodic_max_results,
-                embedding_dim=mem.embedding_dim,
-                decay_rates=mem.decay_rates or None,
-            )
+            # Tuning comes from `config=cfg`, applied through the same `reconfigure`
+            # the live reload calls, so boot and reload cannot drift apart on a
+            # hand-copied list.
             if declaration.memory_version == 2:
                 store = open_member_database(
                     resolve_store_path(name),
                     member_id=declaration.owner_member_id,
                     store_id=name,
-                    **options,
+                    embedding_dim=mem.embedding_dim,
+                    config=cfg,
                 )
             else:
-                store = VectorMemoryStore(db_path=resolve_store_path(name), **options)
+                store = VectorMemoryStore(
+                    db_path=resolve_store_path(name), embedding_dim=mem.embedding_dim, config=cfg
+                )
                 store.init()
             if cancelled.is_set():
                 return None

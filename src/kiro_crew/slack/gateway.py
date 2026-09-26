@@ -3507,13 +3507,7 @@ class GatewayOrchestrator:
         from kiro_crew.vector_memory import VectorMemoryStore
 
         self.vector_memory = VectorMemoryStore(
-            confidence_threshold=self._cfg.memory.semantic_confidence_threshold,
-            extra_prefixes=self._cfg.memory.semantic_keys or None,
-            episodic_limit=self._cfg.memory.episodic_max_results,
-            episodic_max=self._cfg.memory.episodic_max_count,
-            embedding_dim=self._cfg.memory.embedding_dim,
-            decay_rates=self._cfg.memory.decay_rates or None,
-            dedup_threshold=self._cfg.memory.episodic_dedup_threshold,
+            embedding_dim=self._cfg.memory.embedding_dim, config=self._cfg
         )
         # Preserve one object for context, consolidation and the dashboard;
         # its database opens only in the authorized preparation worker.

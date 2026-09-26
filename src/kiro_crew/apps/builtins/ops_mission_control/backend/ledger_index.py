@@ -132,7 +132,12 @@ def import_pending(store: Any, *, limit: int = MAX_PER_IMPORT) -> dict[str, int]
     real SQLite/FAISS pair, and so a caller that already holds the shared store does not
     open a second connection to the same files.
 
-    Returns counts: ``{"scanned", "written", "skipped", "embedded"}``. Never raises —
+    Returns counts: ``{"scanned", "written", "skipped", "embedded"}``. Entries a full
+    store refused count in ``scanned`` but in none of ``written``, ``skipped`` or
+    ``embedded``, and stay off the cursor, so a later import
+    retries them once the cap is raised or an unrelated delete (an operator delete,
+    stale retirement) drops the active count below it; cap eviction by other writers
+    always leaves the count AT the cap. Never raises —
     the index is an enhancement to matching, and failing to build it must not fail the
     cycle that asked for it.
     """
@@ -162,24 +167,46 @@ def import_pending(store: Any, *, limit: int = MAX_PER_IMPORT) -> dict[str, int]
             # deferred: the batch is embedded once by the sweep below.
             # preserve_existing: import is merge-only — it must never tombstone a row
             # another writer owns, which is what this flag exists for upstream.
-            wrote = store.write_episodic(
-                text,
-                tags=[SOURCE_TAG, f"confidence:{entry.confidence}", f"trust:{entry.trust}"],
-                importance=_importance(entry),
-                source="ops-ledger-import",
-                preserve_existing=True,
-                defer_embedding=True,
-            )
+            #
+            # The verdict comes from `write_episodic_outcome`, whose capacity
+            # refusal is decided inside the transaction that refused the row.
+            # A separate "is the store full?" probe after a falsy
+            # `write_episodic` would race a concurrent cap raise (`reconfigure`)
+            # or another writer's eviction, and a capacity refusal misread as a
+            # final one would be cursored and never retried.
+            kwargs: dict[str, Any] = {
+                "tags": [SOURCE_TAG, f"confidence:{entry.confidence}", f"trust:{entry.trust}"],
+                "importance": _importance(entry),
+                "source": "ops-ledger-import",
+                "preserve_existing": True,
+                "defer_embedding": True,
+            }
+            verdict = store.write_episodic_outcome(text, **kwargs)
+            outcome = str(getattr(verdict, "value", verdict))
         except Exception:  # noqa: BLE001 — one bad row must not abort the import
             logger.exception("ops-mission-control: failed to index ledger entry %s", entry.entry_id)
             continue
-        newly.add(entry.entry_id)
-        if wrote:
+        if outcome == "written":
+            newly.add(entry.entry_id)
             result["written"] += 1
-        else:
-            # Already present (the store's own prefix-dedup check) — cursor it so the
-            # next import does not pay for the round trip again.
-            result["skipped"] += 1
+            continue
+        if outcome == "at_capacity":
+            # Refused for capacity, not as a duplicate: leave it and every later
+            # entry off the cursor so the next import retries them; a cursored
+            # entry is never offered to the store again. Logged because the
+            # result counts alone read like a caught-up run.
+            logger.warning(
+                "ops-mission-control: ledger index paused, vector store is at its episodic"
+                " cap; %d ledger entries left pending for a later import"
+                " (raise memory.episodic_max_count to resume)",
+                len(pending) - len(newly),
+            )
+            break
+        # Already present (the store's own dedup check) or text the store will
+        # never accept -- cursor it so the next import does not pay for the
+        # round trip again.
+        newly.add(entry.entry_id)
+        result["skipped"] += 1
 
     if newly:
         _write_cursor(cursor | newly)

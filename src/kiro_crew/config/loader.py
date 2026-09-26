@@ -3096,8 +3096,13 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
             memory_data.get("episodic_dedup_threshold", 0.88), 0.88, 0.0, 1.0
         ),
         episodic_max_results=_safe_int(memory_data.get("episodic_max_results", 8), 8, 1, None),
+        # Floor of 1, not 0. A normal write keeps the row it writes either way, so a
+        # cap of 0 behaves as 1 there: `_enforce_episodic_cap` tombstones every older
+        # active V1 row, which is what a cap that small means. A merge-only write is
+        # where 0 differs: `active_count >= 0` holds on an empty store, so every one
+        # is refused as at-capacity and the ledger import can never index anything.
         episodic_max_count=_safe_int(
-            memory_data.get("episodic_max_count", 10_000), 10_000, 0, None
+            memory_data.get("episodic_max_count", 10_000), 10_000, 1, None
         ),
         decay_rates=(dr if isinstance(dr := memory_data.get("decay_rates", {}), dict) else {}),
         semantic_keys=memory_data.get("semantic_keys", []),

@@ -1659,6 +1659,25 @@ exist as nine hand-written copies. What stays on `subscribe` is orchestration
 rather than value adoption: the in-process channel restart, the provider
 switch, the SEL-audited approval widening, the Slack section's fan-out.
 
+`ConfigWatch.replay(sub)`, called on a subscription `watch_object` just returned,
+closes the registration gap for an owner that applied a config it loaded itself.
+A reload adopts its config and only then
+snapshots the registry, so one that snapshotted before the owner registered never
+reaches it. Run right after registration: when the
+watcher's fingerprint still matches the file, it hands the adopted snapshot to the
+applier, re-reading it after each apply so a reload landing mid-replay is not undone;
+when the file has moved past the snapshot (or nothing is fingerprinted yet), the
+snapshot may be older than the owner's own load, so it marks the subscription stale
+for its prefixes and the next tick delivers the new document even where it leaves
+them unchanged. A deferred, failed or async applier is marked stale the same way.
+Unstarted watchers (nothing adopted) make it a no-op. `VectorMemoryStore` is the one
+caller, and replays only when it was built with `config=` (a raised
+`memory.episodic_max_count` adopted during construction is not lost); a `config=None`
+store keeps its constructor defaults at construction. The other `watch_object`
+owners that copy caller-loaded config before registering (`cron_history.py`,
+`subagent.py`, `history_consolidation.py`, `adaptive/controller.py`,
+`slack/gateway.py`) keep the registration gap; they are out of scope for #10889.
+
 ### The point-of-use read
 
 `live.current(fallback, log_prefix=...)` is for a call site that reads a value

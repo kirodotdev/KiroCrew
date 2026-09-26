@@ -2125,3 +2125,124 @@ class TestOwnedAppliers:
             cfg = replace(KiroCrewConfig(), _degraded_sections=frozenset(degraded))
             await w._dispatch(self._change(cfg, "agent.max_channels"))
         assert got == [KiroCrewConfig().agent.max_channels] * 2
+
+
+# ── replay on registration ────────────────────────────────────────────────
+
+
+class _ModelOwner:
+    """An owner that, like a store built from a loaded config, applies its own copy."""
+
+    def __init__(self, cfg: KiroCrewConfig) -> None:
+        self.models: list[str] = []
+        self.reconfigure(cfg)
+
+    def reconfigure(self, cfg: KiroCrewConfig) -> None:
+        self.models.append(cfg.agent.model)
+
+
+class TestReplayOnRegistration:
+    """A reload dispatched before a subscriber registered must still reach it.
+
+    A reload adopts its config, then snapshots the registry. An owner that loaded
+    its config, and registered only after such a reload snapshotted the registry,
+    is never dispatched to, so without ``replay`` it keeps the older copy.
+    """
+
+    @staticmethod
+    def _write_settled(path: Path, doc: dict) -> None:
+        """Write *doc* and let the loader's migration write-back land now, so the
+        file's fingerprint afterwards is the one the watcher records."""
+        _write(path, doc)
+        KiroCrewConfig.load()
+
+    @pytest.mark.asyncio
+    async def test_a_reload_that_missed_the_registration_is_replayed(self, cfg_file: Path) -> None:
+        w = ConfigWatch(poll_interval_secs=0.05)
+        self._write_settled(cfg_file, {"agent": {"model": "model-a", "log_level": "INFO"}})
+        w.prime(KiroCrewConfig.load(), ConfigWatch._current_fingerprint())
+        owned = KiroCrewConfig.load()  # the owner's own load, before the reload
+        self._write_settled(cfg_file, {"agent": {"model": "model-bbbb", "log_level": "INFO"}})
+        assert await w.refresh_now() is not None  # dispatched to nobody
+
+        control = _ModelOwner(owned)
+        w.watch_object(control, "agent", name="control")
+        owner = _ModelOwner(owned)
+        w.replay(w.watch_object(owner, "agent", name="owner"))
+
+        assert control.models == ["model-a"], "without replay the reload is lost"
+        assert owner.models == ["model-a", "model-bbbb"]
+
+    @pytest.mark.asyncio
+    async def test_a_snapshot_behind_the_file_is_not_replayed_but_queued(
+        self, cfg_file: Path
+    ) -> None:
+        """When the file moved past the snapshot, the owner's own load may be the
+        newer one, so the snapshot is not applied; the next tick delivers the file,
+        even when that tick leaves the owner's prefix unchanged."""
+        w = ConfigWatch(poll_interval_secs=0.05)
+        self._write_settled(cfg_file, {"agent": {"model": "model-a", "log_level": "INFO"}})
+        w.prime(KiroCrewConfig.load(), ConfigWatch._current_fingerprint())
+        self._write_settled(cfg_file, {"agent": {"model": "model-bbbb", "log_level": "INFO"}})
+        assert await w.refresh_now() is not None  # adopts model-bbbb
+        stale = KiroCrewConfig()  # an owner holding a copy older than the snapshot
+        stale.agent.model = "model-a"
+        # The file moves again, on a field outside the owner's prefix.
+        self._write_settled(cfg_file, {"agent": {"model": "model-bbbb", "log_level": "DEBUG"}})
+
+        owner = _ModelOwner(stale)
+        w.replay(w.watch_object(owner, "agent.model", name="owner"))
+        assert owner.models == ["model-a"], "a snapshot behind the file is not applied"
+
+        change = await w.refresh_now()
+        assert change is not None and change.changed == {"agent.log_level"}
+        assert owner.models == ["model-a", "model-bbbb"]
+
+    def test_a_reload_landing_mid_replay_is_not_undone(self, cfg_file: Path) -> None:
+        w = ConfigWatch(poll_interval_secs=0.05)
+        self._write_settled(cfg_file, {"agent": {"model": "model-a", "log_level": "INFO"}})
+        first = KiroCrewConfig.load()
+        w.prime(first, ConfigWatch._current_fingerprint())
+        second = KiroCrewConfig()
+        second.agent.model = "model-cccc"
+
+        class Racing(_ModelOwner):
+            def reconfigure(self, cfg: KiroCrewConfig) -> None:
+                super().reconfigure(cfg)
+                if cfg is first:
+                    # A reload adopted while the replay was applying the older one.
+                    w._cfg = second
+
+        owner = Racing(KiroCrewConfig())
+        w.replay(w.watch_object(owner, "agent", name="owner"))
+        assert owner.models[-1] == "model-cccc"
+
+    def test_a_degraded_section_is_deferred_on_replay_not_logged_as_a_failure(
+        self, cfg_file: Path, caplog
+    ) -> None:
+        """``watch_object`` fails closed: its applier raises ``ConfigDeferred`` while
+        the owner's section is degraded. Replay must queue that as a deferral (the
+        owner keeps its values, the paths go stale) and must not report it as an
+        applier failure, which is what a generic ``except Exception`` would log."""
+        from dataclasses import replace
+
+        w = ConfigWatch(poll_interval_secs=0.05)
+        self._write_settled(cfg_file, {"agent": {"model": "model-a", "log_level": "INFO"}})
+        degraded = replace(KiroCrewConfig.load(), _degraded_sections=frozenset({"agent"}))
+        w.prime(degraded, ConfigWatch._current_fingerprint())
+
+        owner = _ModelOwner(KiroCrewConfig())
+        caplog.set_level("ERROR", logger="kiro_crew.config.live")
+        sub = w.watch_object(owner, "agent", name="owner")
+        w.replay(sub)
+
+        assert len(owner.models) == 1, "degraded defaults never reach reconfigure"
+        assert w._stale.get(id(sub)), "the deferred paths are retried, not forgotten"
+        assert "failed on replay" not in caplog.text
+
+    def test_replay_is_a_no_op_before_anything_is_adopted(self) -> None:
+        w = ConfigWatch(poll_interval_secs=0.05)
+        owner = _ModelOwner(KiroCrewConfig())
+        w.replay(w.watch_object(owner, "agent", name="owner"))
+        assert len(owner.models) == 1
+        assert w._stale == {}

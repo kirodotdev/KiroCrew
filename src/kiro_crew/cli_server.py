@@ -2484,14 +2484,7 @@ async def _run_task(args: argparse.Namespace) -> None:
 
     # Vector memory (structured semantic store)
 
-    vector_memory = VectorMemoryStore(
-        confidence_threshold=cfg.memory.semantic_confidence_threshold,
-        extra_prefixes=cfg.memory.semantic_keys or None,
-        episodic_limit=cfg.memory.episodic_max_results,
-        embedding_dim=cfg.memory.embedding_dim,
-        decay_rates=cfg.memory.decay_rates or None,
-        dedup_threshold=cfg.memory.episodic_dedup_threshold,
-    )
+    vector_memory = VectorMemoryStore(embedding_dim=cfg.memory.embedding_dim, config=cfg)
     # CALLER CONTRACT (vector_memory.py): async callers offload init() — it is
     # blocking file IO end to end (sqlite connect, migrations, lockdown pass)
     # and would stall the loop.

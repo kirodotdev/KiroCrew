@@ -743,7 +743,7 @@ class TestCommitTimeGenerationCheck:
         import inspect
         import textwrap
 
-        for fn in (VectorMemoryStore.write_episodic, VectorMemoryStore.write_lesson):
+        for fn in (VectorMemoryStore.write_episodic_outcome, VectorMemoryStore.write_lesson):
             tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
             parents = {
                 child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)

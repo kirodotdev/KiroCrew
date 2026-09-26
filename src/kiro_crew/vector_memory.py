@@ -310,6 +310,27 @@ class LessonWriteOutcome(str, Enum):
     REFUSED = "refused"
 
 
+class EpisodicWriteOutcome(str, Enum):
+    """What an episodic write DID, for callers that must tell refusals apart.
+
+    ``write_episodic`` returns ``False`` for both refusals. A caller that
+    records refused rows as handled (the ops-mission-control ledger cursor) must
+    retry an ``AT_CAPACITY`` refusal once space frees, but never a final one, so
+    it needs the cause the store decided, not a guess made afterwards.
+    """
+
+    WRITTEN = "written"
+    #: Treated as final: an active row already has this text (prefix/exact dedup)
+    #: or a similar vector (similarity conflict), or the text itself is
+    #: unacceptable (length bounds, injection screen). Only the text refusals are
+    #: final in fact; a dedup or similarity refusal can change once the colliding
+    #: row is tombstoned, and a caller that cursors ``REFUSED`` (the ledger
+    #: indexer) accepts losing that later retry.
+    REFUSED = "refused"
+    #: A merge-only (``preserve_existing``) write found a full V1 store.
+    AT_CAPACITY = "at_capacity"
+
+
 # The two outcomes that changed the store. UNCHANGED is deliberately NOT here: the
 # lesson IS stored as submitted, but nothing was written, so a caller asking "did I
 # need to do something" gets no, while a caller asking "is my lesson stored" reads
@@ -1403,6 +1424,7 @@ class VectorMemoryStore:
         embedding_dim: int = 1024,
         episodic_limit: int = _DEFAULT_EPISODIC_LIMIT,
         decay_rates: dict[str, float] | None = None,
+        config: object | None = None,
     ):
         self._db_path = db_path or (config_dir() / _DB_FILE)
         from kiro_crew.memory_stores import named_store_of_db
@@ -1520,7 +1542,25 @@ class VectorMemoryStore:
         # store is long-lived and read on the retrieval hot path, so point-of-use
         # loading is the wrong trade) and held on self because the watcher holds the
         # owner weakly.
+        #
+        # A caller building the store from a loaded config passes it as *config*, and
+        # it is applied here, BEFORE the subscription exists. Applied after, a reload
+        # the watcher delivered in between would be overwritten by the caller's older
+        # snapshot (a raised cap put back down, evicting on the next write). A reload
+        # the watcher dispatched between the caller's load and the registration never
+        # reaches this store at all, so the new subscription is replayed
+        # (``ConfigWatch.replay``), which hands it the watcher's adopted config (or
+        # queues it for the next tick when the file has moved past that config).
+        #
+        # Only a store built FROM a config is replayed. A ``config=None`` store (a
+        # foreign ``data_home`` such as onboarding import, an eval harness) keeps its
+        # constructor defaults at construction; replaying would hand it this
+        # install's ``memory.*`` tuning the moment it exists.
+        if config is not None:
+            self.reconfigure(config)
         self._config_sub = live.watch_object(self, "memory", name="VectorMemoryStore")
+        if config is not None:
+            live.watch().replay(self._config_sub)
 
     def reconfigure(self, cfg: object) -> None:
         """Push new ``memory.*`` retrieval settings onto this live store.
@@ -3961,7 +4001,48 @@ class VectorMemoryStore:
         facets: "memory_schema.MemoryFacets | None" = None,
         metadata: dict | None = None,
     ) -> bool:
+        """Write an episodic memory; ``True`` only if a row was written.
+
+        See :meth:`write_episodic_outcome`, which this wraps, for the arguments
+        and for WHY a write was refused.
+        """
+        return (
+            self.write_episodic_outcome(
+                text,
+                embedding,
+                conversation_id,
+                tags,
+                importance,
+                source,
+                preserve_existing=preserve_existing,
+                defer_embedding=defer_embedding,
+                facets=facets,
+                metadata=metadata,
+            )
+            is EpisodicWriteOutcome.WRITTEN
+        )
+
+    def write_episodic_outcome(
+        self,
+        text: str,
+        embedding: list[float] | None = None,
+        conversation_id: str = "",
+        tags: list[str] | None = None,
+        importance: float = 0.5,
+        source: str = "consolidation",
+        *,
+        preserve_existing: bool = False,
+        defer_embedding: bool = False,
+        facets: "memory_schema.MemoryFacets | None" = None,
+        metadata: dict | None = None,
+    ) -> "EpisodicWriteOutcome":
         """Write an episodic memory with optional embedding and dedup.
+
+        Returns what the write DID. The capacity refusal is decided inside the
+        same ``BEGIN IMMEDIATE`` transaction that would have inserted the row, so
+        :attr:`EpisodicWriteOutcome.AT_CAPACITY` is the store's own verdict at
+        refusal time -- a caller must not re-derive it from a later count, which a
+        concurrent cap raise or eviction can change in between.
 
         *facets* stamps the crew lineage's carve axes and is ignored on v1. An
         episode is the kind that most needs them: it is delivered ONLY by
@@ -3995,7 +4076,7 @@ class VectorMemoryStore:
                 _EPISODIC_TEXT_MIN,
                 _EPISODIC_TEXT_MAX,
             )
-            return False
+            return EpisodicWriteOutcome.REFUSED
 
         # Prompt-injection screening (XPIA defense-in-depth).
         # Episodic text is derived from conversation transcripts, so a poisoned
@@ -4015,7 +4096,7 @@ class VectorMemoryStore:
                 safe_snippet,
                 source,
             )
-            return False
+            return EpisodicWriteOutcome.REFUSED
 
         clean_tags = [t.strip().lower()[:50] for t in (tags or [])[:10] if t.strip()]
         importance = max(0.0, min(1.0, importance))
@@ -4034,7 +4115,7 @@ class VectorMemoryStore:
             ).fetchone()
         if existing:
             logger.debug("Episodic text-hash dedup: prefix matches id=%s", existing["id"])
-            return False
+            return EpisodicWriteOutcome.REFUSED
 
         # Auto-embed if no embedding provided and embed_fn available.
         #
@@ -4092,7 +4173,7 @@ class VectorMemoryStore:
                     "Episodic text-hash dedup under lock: prefix matches id=%s",
                     existing["id"],
                 )
-                return False
+                return EpisodicWriteOutcome.REFUSED
             # Dedup via FAISS — only when THIS write has an embedding. The index
             # being non-empty says nothing about the current write: with embeddings
             # disabled (embedding_provider="none") or a transient embed failure,
@@ -4133,7 +4214,7 @@ class VectorMemoryStore:
                                 text[:200],
                                 source,
                             )
-                            return False
+                            return EpisodicWriteOutcome.REFUSED
                         if len(text) > len(existing["text"]) * 1.2:
                             self._delete_episodic_row(existing_id)
                             self._log_event(
@@ -4154,7 +4235,7 @@ class VectorMemoryStore:
                                 text[:200],
                                 source,
                             )
-                            return False
+                            return EpisodicWriteOutcome.REFUSED
 
             if preserve_existing:
                 mem_id = str(uuid4())
@@ -4168,7 +4249,7 @@ class VectorMemoryStore:
                     ).fetchone()[0]
                     if self.algorithm_version != "v2" and active_count >= self._episodic_max:
                         self.db.commit()
-                        return False
+                        return EpisodicWriteOutcome.AT_CAPACITY
                     self.db.execute(
                         memory_schema.episodic_insert(self._lineage),
                         memory_schema.episodic_insert_params(
@@ -4246,7 +4327,7 @@ class VectorMemoryStore:
             has_vec,
             text[:80],
         )
-        return True
+        return EpisodicWriteOutcome.WRITTEN
 
     def has_episodic_text(self, text: str) -> bool:
         """Return whether an active episodic memory exactly matches *text*."""

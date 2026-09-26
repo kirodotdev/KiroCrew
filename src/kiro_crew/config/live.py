@@ -435,7 +435,9 @@ class ConfigWatch:
         For an object whose settings span sections (or that normalizes several
         fields together): fires when anything under any of *prefixes* changes and
         hands it the reloaded :class:`KiroCrewConfig`. *owner* is held weakly.
-        *method* names the receiving method when ``reconfigure`` is taken.
+        *method* names the receiving method when ``reconfigure`` is taken. An owner
+        that applied a config it loaded itself calls :meth:`replay` on the returned
+        subscription to be brought up to the adopted config at once.
         """
         return self._subscribe_owned(
             owner,
@@ -443,6 +445,72 @@ class ConfigWatch:
             _object_applier(method, prefixes),
             name or f"{type(owner).__name__}.{method}",
         )
+
+    def replay(self, sub: Subscription) -> None:
+        """Bring *sub*, which has just registered, up to the adopted config.
+
+        A reload adopts its config and only then snapshots the registry to
+        dispatch, so a reload that snapshotted before *sub* was appended never
+        reaches it. The owner keeps the config it loaded itself, which may be
+        older than the one adopted in between, and nothing corrects it until the
+        same paths change again. A ``memory.episodic_max_count`` raise lost that
+        way leaves a store evicting to the old cap.
+
+        Every reload that can have missed *sub* adopted its config BEFORE it read
+        the registry, so the snapshot read here, after registration, is at least as
+        new as any of them, and every later reload includes *sub*. The snapshot is
+        re-read after each apply so a reload landing mid-replay is not undone by
+        the older one. When the file has moved past the snapshot (or the watcher
+        has not fingerprinted it yet), the snapshot may be OLDER than what the
+        owner loaded, so it is not applied; *sub* is marked stale for its prefixes
+        instead, and the next tick delivers the new document to it even where that
+        document leaves them unchanged. A no-op on a watcher that has adopted
+        nothing (an unstarted process: the CLI, most tests).
+        """
+        applied: KiroCrewConfig | None = None
+        while True:
+            cfg = self._cfg
+            if cfg is None or cfg is applied:
+                return
+            paths = frozenset(sub.prefixes)
+            try:
+                current = self._fingerprint is not None and (
+                    self._fingerprint == self._current_fingerprint()
+                )
+            except Exception:  # noqa: BLE001 - an unreadable file: let the tick decide
+                current = False
+            if not current:
+                self._mark_stale(sub, paths)
+                return
+            cb = sub.callback()
+            if cb is None:
+                return
+            try:
+                result = cb(ConfigChange(old=cfg, new=cfg, changed=paths))
+            except ConfigDeferred as deferred:
+                self._mark_stale(sub, deferred.paths or paths)
+                return
+            except Exception:  # noqa: BLE001 - same containment as a dispatch
+                logger.error(
+                    "config applier %r failed on replay; retrying on the next tick",
+                    sub.name,
+                    exc_info=True,
+                )
+                self._mark_stale(sub, paths)
+                return
+            if inspect.isawaitable(result):
+                # Nothing here can await it; the loop's retry delivers it instead.
+                close = getattr(result, "close", None)
+                if callable(close):
+                    close()
+                self._mark_stale(sub, paths)
+                return
+            applied = cfg
+
+    def _mark_stale(self, sub: Subscription, paths: frozenset[str]) -> None:
+        """Record *paths* as not yet adopted by *sub*, for the next tick to deliver."""
+        prior = self._stale.get(id(sub))
+        self._stale[id(sub)] = (sub, paths | (prior[1] if prior else frozenset()))
 
     def bind(
         self, path: str, setter: Callable[[Any], Any], *, name: str | None = None
