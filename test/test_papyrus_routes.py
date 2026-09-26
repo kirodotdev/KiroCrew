@@ -256,6 +256,39 @@ class TestProjects:
         assert payload["files"] == ["main.tex", "references.bib"]
         assert payload["has_pdf"] is False
 
+    async def test_get_carries_the_title_the_list_resolved(
+        self, enabled: None, project: Path
+    ) -> None:
+        """The workspace header reads this. It must not disagree with the row that
+        opened the paper, so detail resolves the title the same way the list does —
+        a directory name that reads as a clone id is exactly what both must avoid.
+        """
+        (project / "main.tex").write_text(
+            "\\documentclass{article}\n\\title{MACKEREL}\n", encoding="utf-8"
+        )
+        request = make_mocked_request("GET", "/api/apps/papyrus/project?name=my-paper")
+        payload = _json_of(await routes._handle_get_project(request))
+        assert payload["title"] == "MACKEREL"
+        assert payload["name"] == "my-paper", "the key must stay the directory"
+
+    async def test_get_prefers_the_name_the_user_set(
+        self, enabled: None, project: Path
+    ) -> None:
+        """A rename that the header ignored would be a rename that did nothing."""
+        (project / "main.tex").write_text(
+            "\\documentclass{article}\n\\title{The long declared one}\n", encoding="utf-8"
+        )
+        store.set_project_title(project, "Short")
+        request = make_mocked_request("GET", "/api/apps/papyrus/project?name=my-paper")
+        assert _json_of(await routes._handle_get_project(request))["title"] == "Short"
+
+    async def test_get_falls_back_to_the_directory_with_no_title(
+        self, enabled: None, project: Path
+    ) -> None:
+        """The fixture document declares none, so the header must still read."""
+        request = make_mocked_request("GET", "/api/apps/papyrus/project?name=my-paper")
+        assert _json_of(await routes._handle_get_project(request))["title"] == "my-paper"
+
     async def test_get_404s_a_project_with_no_tex(self, enabled: None, data_root: Path) -> None:
         proj = store.projects_dir() / "not-a-paper"
         proj.mkdir(parents=True)
@@ -309,6 +342,26 @@ class TestClone:
             )
         assert response.status == 422
         assert not (store.projects_dir() / "p").exists()
+
+    async def test_a_rejected_clone_is_removed_under_the_config_lock(
+        self, enabled: None, data_root: Path
+    ) -> None:
+        """A title write racing an unlocked cleanup would recreate the rejected paper."""
+        async def fake_clone(_url: str, destination: Path) -> None:
+            destination.mkdir(parents=True)
+            (destination / "README.md").write_text("", encoding="utf-8")
+
+        with (
+            mock.patch.object(gitops, "clone", fake_clone),
+            mock.patch.object(store, "delete_project", wraps=store.delete_project) as delete,
+        ):
+            await routes._handle_clone_project(
+                _request(
+                    "POST", "/api/apps/papyrus/projects/clone",
+                    {"url": "https://example.com/g/p.git"},
+                )
+            )
+        delete.assert_called_once()
 
     async def test_derives_the_name_from_the_url(self, enabled: None, data_root: Path) -> None:
         async def fake_clone(_url: str, destination: Path) -> None:
@@ -1272,6 +1325,7 @@ class TestNoBlockingCallsOnTheLoop:
             routes._handle_create_file,
             routes._handle_delete_file,
             routes._handle_set_main,
+            routes._handle_set_title,
             routes._handle_pdf,
         ):
             src = inspect.getsource(handler)
@@ -1442,3 +1496,288 @@ class TestValidationErrorsSurviveTheOffload:
                     )
                 )
         assert clone.await_count == 0
+
+
+@pytest.mark.asyncio
+class TestPaperTitleRoute:
+    """``PUT /title`` renames what the list DISPLAYS; the directory keeps its name.
+
+    The directory name is the app's identifier — it is the ``?name=`` of every
+    other route here — so a rename that moved it would break the PDF URL, the
+    stored "last opened paper" pointer and the paper's co-author session key.
+    """
+
+    async def test_the_list_carries_a_title_for_every_paper(
+        self, enabled: None, project: Path
+    ) -> None:
+        response = await routes._handle_list_projects(
+            _request("GET", "/api/apps/papyrus/projects")
+        )
+        (row,) = _json_of(response)["projects"]
+        # No `\title{}` in the fixture, so the identifier is what shows.
+        assert row["name"] == "my-paper"
+        assert row["title"] == "my-paper"
+
+    async def test_the_list_shows_the_documents_own_title(
+        self, enabled: None, project: Path
+    ) -> None:
+        (project / "main.tex").write_text(
+            "\\documentclass{article}\n\\title{When Peers Disagree}\n", encoding="utf-8"
+        )
+        response = await routes._handle_list_projects(
+            _request("GET", "/api/apps/papyrus/projects")
+        )
+        (row,) = _json_of(response)["projects"]
+        assert (row["name"], row["title"]) == ("my-paper", "When Peers Disagree")
+
+    async def test_renaming_wins_over_the_document_title(
+        self, enabled: None, project: Path
+    ) -> None:
+        (project / "main.tex").write_text(r"\title{The declared one}", encoding="utf-8")
+        response = await routes._handle_set_title(
+            _request("PUT", "/api/apps/papyrus/title", {"name": "my-paper", "title": "MACKEREL"})
+        )
+        assert _json_of(response) == {"ok": True, "title": "MACKEREL"}
+
+        listed = await routes._handle_list_projects(
+            _request("GET", "/api/apps/papyrus/projects")
+        )
+        (row,) = _json_of(listed)["projects"]
+        assert row["title"] == "MACKEREL"
+
+    async def test_an_empty_title_restores_the_document_title(
+        self, enabled: None, project: Path
+    ) -> None:
+        """Clearing the field is the only way back, so it must answer with what wins."""
+        (project / "main.tex").write_text(r"\title{The declared one}", encoding="utf-8")
+        await routes._handle_set_title(
+            _request("PUT", "/api/apps/papyrus/title", {"name": "my-paper", "title": "Renamed"})
+        )
+        response = await routes._handle_set_title(
+            _request("PUT", "/api/apps/papyrus/title", {"name": "my-paper", "title": ""})
+        )
+        assert _json_of(response)["title"] == "The declared one"
+
+    async def test_renaming_leaves_the_directory_alone(
+        self, enabled: None, project: Path
+    ) -> None:
+        await routes._handle_set_title(
+            _request("PUT", "/api/apps/papyrus/title", {"name": "my-paper", "title": "A name"})
+        )
+        assert project.is_dir()
+        assert (project / "main.tex").is_file()
+
+    async def test_an_unknown_project_is_a_404(self, enabled: None, data_root: Path) -> None:
+        with pytest.raises(web.HTTPNotFound):
+            await routes._handle_set_title(
+                _request("PUT", "/api/apps/papyrus/title", {"name": "absent", "title": "x"})
+            )
+
+    async def test_an_invalid_project_name_is_a_400(
+        self, enabled: None, data_root: Path
+    ) -> None:
+        with pytest.raises(web.HTTPBadRequest):
+            await routes._handle_set_title(
+                _request("PUT", "/api/apps/papyrus/title", {"name": "../evil", "title": "x"})
+            )
+
+
+@pytest.mark.asyncio
+class TestSetTitleRefusals:
+    """A rename that did not happen must not answer as if it had."""
+
+    async def test_a_body_without_a_title_is_refused(
+        self, enabled: None, project: Path
+    ) -> None:
+        """Read as "", a missing field would CLEAR an existing name."""
+        store.set_project_title(project, "Kept")
+        with pytest.raises(web.HTTPBadRequest):
+            await routes._handle_set_title(
+                _request("PUT", "/api/apps/papyrus/title", {"name": "my-paper"})
+            )
+        assert store.read_project_config(project)[store.PROJECT_TITLE_KEY] == "Kept"
+
+    async def test_a_non_string_title_is_refused(
+        self, enabled: None, project: Path
+    ) -> None:
+        store.set_project_title(project, "Kept")
+        with pytest.raises(web.HTTPBadRequest):
+            await routes._handle_set_title(
+                _request("PUT", "/api/apps/papyrus/title", {"name": "my-paper", "title": 7})
+            )
+        assert store.read_project_config(project)[store.PROJECT_TITLE_KEY] == "Kept"
+
+    async def test_an_explicit_empty_title_still_clears(
+        self, enabled: None, project: Path
+    ) -> None:
+        """The refusal above must not take away the one way back."""
+        store.set_project_title(project, "Gone soon")
+        await routes._handle_set_title(
+            _request("PUT", "/api/apps/papyrus/title", {"name": "my-paper", "title": ""})
+        )
+        assert store.PROJECT_TITLE_KEY not in store.read_project_config(project)
+
+    async def test_an_unwritable_config_is_an_error_not_a_success(
+        self, enabled: None, project: Path
+    ) -> None:
+        with mock.patch.object(store, "_config_path", return_value=None):
+            response = await routes._handle_set_title(
+                _request("PUT", "/api/apps/papyrus/title", {"name": "my-paper", "title": "New"})
+            )
+        assert response.status == 409
+        assert _json_of(response)["code"] == "project_config_refused"
+
+
+@pytest.mark.asyncio
+class TestRenameHoldsTheConfigLockThroughAuthorization:
+    async def test_the_existence_check_runs_under_the_config_lock(
+        self, enabled: None, project: Path
+    ) -> None:
+        """A delete and same-name create must not land between the check and the write."""
+        held: list[bool] = []
+        real = routes._project
+
+        def observing(name: str) -> Path:
+            held.append(store.config_lock(store.safe_project_dir(name)).locked())
+            return real(name)
+
+        with mock.patch.object(routes, "_project", observing):
+            response = await routes._handle_set_title(
+                _request("PUT", "/api/apps/papyrus/title", {"name": "my-paper", "title": "New"})
+            )
+        assert response.status == 200
+        assert held == [True]
+
+    async def test_a_rename_waiting_behind_a_delete_leaves_the_recreated_paper_alone(
+        self, enabled: None, project: Path
+    ) -> None:
+        lock = store.config_lock(project)
+        lock.acquire()
+        try:
+            pending = asyncio.ensure_future(
+                routes._handle_set_title(
+                    _request("PUT", "/api/apps/papyrus/title", {"name": "my-paper", "title": "Stale"})
+                )
+            )
+            await asyncio.sleep(0.2)
+            store._delete_locked(project, lock)
+            project.mkdir()
+        finally:
+            lock.release()
+        response = await pending
+        assert response.status == 409
+        assert "title" not in store.read_project_config(project)
+
+
+@pytest.mark.asyncio
+class TestMarkupOnlyRename:
+    async def test_a_markup_only_name_is_a_400_not_a_clear(
+        self, enabled: None, project: Path
+    ) -> None:
+        store.set_project_title(project, "Kept")
+        response = await routes._handle_set_title(
+            _request("PUT", "/api/apps/papyrus/title", {"name": "my-paper", "title": "~"})
+        )
+        assert response.status == 400
+        assert _json_of(response)["code"] == "title_rejected"
+        assert store.read_project_config(project)["title"] == "Kept"
+
+
+@pytest.mark.asyncio
+class TestPaperTitleIsRedacted:
+    """A title is untrusted content rendered in the dashboard, like the compile log.
+
+    Both of its sources arrive wholesale with ``POST /projects/clone``: the
+    document's own ``\\title{}`` and the ``.papyrus.json`` a repository can ship.
+    ``backend-security-controls`` requires the redaction pass before either
+    reaches the UI.
+    """
+
+    async def test_a_credential_in_a_title_is_redacted(
+        self, enabled: None, project: Path
+    ) -> None:
+        (project / "main.tex").write_text(
+            f"\\title{{aws_secret_access_key = {_FAKE_AWS_SECRET}}}", encoding="utf-8"
+        )
+        response = await routes._handle_list_projects(
+            _request("GET", "/api/apps/papyrus/projects")
+        )
+        (row,) = _json_of(response)["projects"]
+        assert _FAKE_AWS_SECRET not in row["title"]
+        assert "[REDACTED" in row["title"]
+
+    async def test_the_detail_response_is_redacted_too(
+        self, enabled: None, project: Path
+    ) -> None:
+        """Same value, the workspace header: opening the paper is the whole trigger."""
+        (project / "main.tex").write_text(
+            f"\\title{{aws_secret_access_key = {_FAKE_AWS_SECRET}}}", encoding="utf-8"
+        )
+        response = await routes._handle_get_project(
+            _request("GET", "/api/apps/papyrus/project?name=my-paper")
+        )
+        title = _json_of(response)["title"]
+        assert _FAKE_AWS_SECRET not in title
+        assert "[REDACTED" in title
+
+    async def test_the_rename_response_is_redacted_too(
+        self, enabled: None, project: Path
+    ) -> None:
+        """Same value, the other surface: the PUT echoes the resolved title back."""
+        response = await routes._handle_set_title(
+            _request(
+                "PUT",
+                "/api/apps/papyrus/title",
+                {"name": "my-paper", "title": f"key {_FAKE_AWS_SECRET}"},
+            )
+        )
+        assert _FAKE_AWS_SECRET not in _json_of(response)["title"]
+
+    async def test_a_token_straddling_the_length_cap_is_not_leaked(
+        self, enabled: None, project: Path
+    ) -> None:
+        """Cut first and the token loses its tail, so the redactor misses the head."""
+        prefix = "x" * (store.MAX_TITLE_CHARS - 20) + " "
+        (project / "main.tex").write_text(
+            "\\title{" + prefix + _FAKE_PAT + "}", encoding="utf-8"
+        )
+        response = await routes._handle_list_projects(
+            _request("GET", "/api/apps/papyrus/projects")
+        )
+        (row,) = _json_of(response)["projects"]
+        assert "ghp_" not in row["title"]
+
+    async def test_a_token_straddling_the_input_bound_is_not_leaked(
+        self, enabled: None, project: Path
+    ) -> None:
+        """Notes flatten away, so a token cut at the input bound can reach the row."""
+        notes = "\\thanks{x}" * ((store._TITLE_INPUT_CHARS - 20) // len("\\thanks{x}"))
+        store.write_project_config(project, {"title": notes + " " + _FAKE_PAT})
+        response = await routes._handle_list_projects(
+            _request("GET", "/api/apps/papyrus/projects")
+        )
+        (row,) = _json_of(response)["projects"]
+        assert "ghp_" not in row["title"]
+
+    async def test_a_long_title_is_capped_for_display(
+        self, enabled: None, project: Path
+    ) -> None:
+        (project / "main.tex").write_text("\\title{" + "B" * 4000 + "}", encoding="utf-8")
+        response = await routes._handle_list_projects(
+            _request("GET", "/api/apps/papyrus/projects")
+        )
+        (row,) = _json_of(response)["projects"]
+        assert row["title"] == "B" * store.MAX_TITLE_CHARS
+
+    async def test_the_title_falls_back_to_the_identifier_without_redaction(
+        self, enabled: None, project: Path
+    ) -> None:
+        """Fails CLOSED, but with a usable name: the withheld-output marker is the
+        right answer for a log pane and the wrong one for a row's name."""
+        (project / "main.tex").write_text(r"\title{Perfectly fine}", encoding="utf-8")
+        with mock.patch.object(routes, "_HAS_SECURITY", False):
+            response = await routes._handle_list_projects(
+                _request("GET", "/api/apps/papyrus/projects")
+            )
+        (row,) = _json_of(response)["projects"]
+        assert row["title"] == "my-paper"

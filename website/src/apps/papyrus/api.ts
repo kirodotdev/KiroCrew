@@ -23,10 +23,31 @@ export interface Project {
   /** Main-document mtime, in epoch SECONDS (Python's st_mtime). */
   modified: number
   has_pdf: boolean
+  /**
+   * What to DISPLAY for this paper: the name the user set, else the document's
+   * own `\title{}`, else `name`. Never an identifier — `name` stays the key for
+   * every call below, for the PDF URL and for the paper's chat slot, so a
+   * rename cannot break a link.
+   *
+   * The server always sends something displayable (it falls back to `name`), but
+   * an older backend does not send the field at all — hence the `??` at the one
+   * render site rather than trust here.
+   */
+  title: string
 }
 
 export interface ProjectDetail {
   name: string
+  /**
+   * What to DISPLAY for this paper, resolved exactly as {@link Project.title}
+   * is — so the workspace header and the list row that opened it agree.
+   *
+   * Resolved server-side rather than carried over from the list: a paper opened
+   * straight from a URL never went through the list, and the client holds only
+   * `name`. An older backend omits the field, hence the fallback at the render
+   * site.
+   */
+  title: string
   main_file: string
   files: string[]
   has_pdf: boolean
@@ -209,6 +230,15 @@ export const papyrusApi = {
   deleteFile: (name: string, path: string) => del<{ ok: boolean }>('/file', { name, path }),
   setMainFile: (name: string, path: string) =>
     send<{ ok: boolean; main_file: string }>('PUT', '/main', { name, path }),
+  /**
+   * Rename what the list shows for a paper. `name` (the directory) is untouched.
+   *
+   * An empty `title` CLEARS the override, and the response carries whatever wins
+   * next — the document's own `\title{}` if it declares one, else `name` — so the
+   * caller renders the answer instead of re-deriving it.
+   */
+  setTitle: (name: string, title: string) =>
+    send<{ ok: boolean; title: string }>('PUT', '/title', { name, title }),
 
   compile,
 

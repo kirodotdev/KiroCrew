@@ -9,14 +9,14 @@
  */
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, Download, FileCheck2, FilePlus2, GitBranch, Loader2, ScrollText, Trash2 } from 'lucide-react'
+import { AlertTriangle, Download, FileCheck2, FilePlus2, GitBranch, Loader2, Pencil, ScrollText, Trash2 } from 'lucide-react'
 import { Btn, Card, CardTitle, ContentSkeleton, EmptyState, Input, PageHeader, SendBtn, StatCard } from '../../components/ui'
 import Clickable from '../../components/Clickable'
 import ErrorNotice from '../../components/ErrorNotice'
 import InfoTip from '../../components/InfoTip'
 import { fmtBytes, fmtDateTime } from '../../i18n/format'
 import { papyrusApi, type Project } from './api'
-import { pruneSlots } from './lib'
+import { pruneSlots, PROJECTS_QUERY_KEY, projectQueryKey } from './lib'
 
 import { i18nT } from '../../i18n/t'
 import { useImeGuard } from '../../hooks/useImeGuard'
@@ -25,7 +25,7 @@ export interface ProjectListProps {
   onOpenProject: (name: string) => void
 }
 
-const PROJECTS_KEY = ['papyrus', 'projects']
+const PROJECTS_KEY = PROJECTS_QUERY_KEY
 const HEALTH_KEY = ['papyrus', 'health']
 
 /** How often /health is re-read while a compiler install is running. */
@@ -46,6 +46,11 @@ export default function ProjectList({ onOpenProject }: ProjectListProps) {
   const [newName, setNewName] = useState('')
   const [cloneUrl, setCloneUrl] = useState('')
   const [error, setError] = useState('')
+  /** Directory name of the paper whose title is being edited, or '' for none. */
+  const [renaming, setRenaming] = useState('')
+  const [renameDraft, setRenameDraft] = useState('')
+  // What the field opened with — a draft still equal to it is not an edit.
+  const [renameSeed, setRenameSeed] = useState('')
 
   const projectsQuery = useQuery({
     queryKey: PROJECTS_KEY,
@@ -137,13 +142,85 @@ export default function ProjectList({ onOpenProject }: ProjectListProps) {
     onError: (err: Error) => setError(err.message),
   })
 
+  const renameMutation = useMutation({
+    mutationFn: ({ name, title }: { name: string; title: string }) =>
+      papyrusApi.setTitle(name, title),
+    onSuccess: (result, { name }) => {
+      // Show the saved name NOW, from the answer, rather than only after the
+      // list refetch below — which can fail, and would leave the old title on
+      // screen with the field already closed.
+      queryClient.setQueryData<{ projects: Project[] }>(PROJECTS_KEY, data =>
+        data && Array.isArray(data.projects)
+          ? { ...data, projects: data.projects.map(p => (p.name === name ? { ...p, title: result.title } : p)) }
+          : data,
+      )
+      invalidate()
+      // The workspace holds its OWN cache entry for this paper, with a finite
+      // staleTime — so refreshing only the list left the renamed paper opening
+      // under its old name until the window was reloaded.
+      void queryClient.invalidateQueries({ queryKey: projectQueryKey(name) })
+    },
+    onError: (err: Error) => setError(err.message),
+  })
+
+  /** Open the editor on a row, seeded with what that row currently displays. */
+  const startRename = (project: Project) => {
+    const seed = project.title || project.name
+    setRenaming(project.name)
+    setRenameDraft(seed)
+    setRenameSeed(seed)
+  }
+
+  /**
+   * Abandon the edit. Safe against the blur-commits-the-draft trap: clearing
+   * `renaming` UNMOUNTS the field, and neither a browser nor React fires a blur
+   * for an element that was removed — so Escape cannot save what it rejected.
+   * `PapyrusPaperTitle.test.tsx` pins that as behaviour rather than trusting it.
+   */
+  const cancelRename = () => {
+    setRenaming('')
+    setRenameDraft('')
+    setRenameSeed('')
+  }
+
+  const commitRename = (name: string) => {
+    // A blur during the round-trip (Enter, then a click away) must not send twice.
+    if (renameMutation.isPending) return
+    const title = renameDraft.trim()
+    // Opening the pencil and leaving is not a rename. Without this the seed —
+    // usually the document's own `\title{}` — would be written as a user
+    // override, and later edits to that title would silently stop showing.
+    if (title === renameSeed.trim()) {
+      cancelRename()
+      return
+    }
+    // Sent even when blank: an empty title CLEARS the override on the server, which
+    // is how a paper goes back to the title its document declares. The field only
+    // closes on success, so a failed request leaves the typed name in place.
+    renameMutation.mutate({ name, title }, { onSuccess: cancelRename })
+  }
+
+  /**
+   * Open a paper, unless a rename is still open. Clicking another row blurs the
+   * field, which starts the save — and leaving now would unmount this list, so
+   * a save that then failed would lose the draft it is meant to keep. The field
+   * closes on success, after which the click goes through.
+   */
+  const renameOpen = Boolean(renaming) || renameMutation.isPending
+  const openProject = (name: string) => {
+    if (renameOpen) return
+    onOpenProject(name)
+  }
+
+  // Create and Clone open the new paper on success, which unmounts this list
+  // exactly like opening a row does — so they wait for an open rename too.
   const submitCreate = () => {
     const name = newName.trim()
-    if (name) createMutation.mutate(name)
+    if (name && !renameOpen) createMutation.mutate(name)
   }
   const submitClone = () => {
     const url = cloneUrl.trim()
-    if (url) cloneMutation.mutate(url)
+    if (url && !renameOpen) cloneMutation.mutate(url)
   }
 
   return (
@@ -227,13 +304,17 @@ export default function ProjectList({ onOpenProject }: ProjectListProps) {
           </div>
         )}
 
-        {/* The hand-off is offered only while the new-paper name and clone-URL
-            fields are empty: with either typed, the navigation would discard it. */}
+        {/* No hand-off: while a draft is unsaved — the new-paper name, the clone
+            URL, or a rename typed into a row's field (the draft a failed rename
+            deliberately leaves in place). The hand-off navigates to chat and
+            unmounts this list, discarding whichever of them is open. */}
         <ErrorNotice
           className="mb-4 animate-rise"
-          message={error}
+          // A failed list load or refetch lands here too: a list that silently
+          // stays stale reads as a rename, create or delete that did nothing.
+          message={error || (projectsQuery.isError ? projectsQuery.error.message : '')}
           onDismiss={() => setError('')}
-          askAgent={!newName && !cloneUrl}
+          askAgent={!newName && !cloneUrl && !renaming}
         />
 
         <Card>
@@ -250,7 +331,7 @@ export default function ProjectList({ onOpenProject }: ProjectListProps) {
               onChange={e => setNewName(e.target.value)}
               {...ime.bindEnter({ onEnter: submitCreate })}
             />
-            <SendBtn onClick={submitCreate} disabled={!newName.trim() || createMutation.isPending}>
+            <SendBtn onClick={submitCreate} disabled={!newName.trim() || createMutation.isPending || renameOpen}>
               {createMutation.isPending
                 ? <Loader2 className="lucide-inline animate-spin motion-reduce:animate-none" />
                 : <FilePlus2 className="lucide-inline" />}
@@ -266,7 +347,7 @@ export default function ProjectList({ onOpenProject }: ProjectListProps) {
               onChange={e => setCloneUrl(e.target.value)}
               {...ime.bindEnter({ onEnter: submitClone })}
             />
-            <Btn onClick={submitClone} disabled={!cloneUrl.trim() || cloneMutation.isPending}>
+            <Btn onClick={submitClone} disabled={!cloneUrl.trim() || cloneMutation.isPending || renameOpen}>
               {cloneMutation.isPending
                 ? <Loader2 className="lucide-inline animate-spin motion-reduce:animate-none" />
                 : <GitBranch className="lucide-inline" />}
@@ -313,13 +394,54 @@ export default function ProjectList({ onOpenProject }: ProjectListProps) {
                 {projects.map(project => (
                   <tr key={project.name}>
                     <td className="px-2.5 py-2">
-                      <Clickable
-                        onClick={() => onOpenProject(project.name)}
-                        className="inline-flex items-center gap-1.5 text-[13px] text-text-strong font-medium cursor-pointer hover:text-accent focus-ring rounded"
-                      >
-                        <ScrollText className="lucide-inline shrink-0 opacity-70" />
-                        {project.name}
-                      </Clickable>
+                      {renaming === project.name ? (
+                        <Input
+                          autoFocus
+                          aria-label={i18nT('apps.papyrus.page.paper_name')}
+                          value={renameDraft}
+                          // Locked while saving: keystrokes typed after Enter would be
+                          // neither sent nor kept once the save closes the field.
+                          disabled={renameMutation.isPending}
+                          // The directory name: the paper's identifier, and the LAST of
+                          // the three fallbacks. Emptying the field drops the override,
+                          // so this is the name that comes back only for a paper whose
+                          // document declares no title — one that declares a `\title{}`
+                          // returns to that title instead. It is shown rather than a
+                          // hint sentence because it is the one part a reader can act
+                          // on: the string every route and the co-author session key on.
+                          placeholder={project.name}
+                          onChange={e => setRenameDraft(e.target.value)}
+                          {...ime.bindEnter<HTMLInputElement>({
+                            onEnter: () => commitRename(project.name),
+                            onEscape: cancelRename,
+                            onBlur: () => commitRename(project.name),
+                          })}
+                        />
+                      ) : (
+                        <>
+                          <Clickable
+                            onClick={() => openProject(project.name)}
+                            className="inline-flex items-center gap-1.5 text-[13px] text-text-strong font-medium cursor-pointer hover:text-accent focus-ring rounded"
+                          >
+                            <ScrollText className="lucide-inline shrink-0 opacity-70" />
+                            {/* `anywhere`, not `break-words`: only it lowers the cell's
+                                min-content width, so an unbroken 120-char title wraps
+                                instead of pushing the row's actions off a narrow screen. */}
+                            <span className="min-w-0 [overflow-wrap:anywhere]">
+                              {project.title || project.name}
+                            </span>
+                          </Clickable>
+                          {/* The directory name, kept visible under a friendly title:
+                              it is the identifier the PDF URL and the paper's chat
+                              slot are keyed on, and for a cloned paper it is the
+                              remote's own id — the string you need to find it again
+                              on the host it came from. Hidden when it IS the title,
+                              which would otherwise print the same name twice. */}
+                          {(project.title || project.name) !== project.name && (
+                            <div className="text-[12px] text-muted [overflow-wrap:anywhere]">{project.name}</div>
+                          )}
+                        </>
+                      )}
                     </td>
                     <td className="px-2.5 py-2 text-[12px] text-muted">
                       {formatModified(project.modified)}
@@ -337,6 +459,22 @@ export default function ProjectList({ onOpenProject }: ProjectListProps) {
                       )}
                     </td>
                     <td className="px-2.5 py-2 text-right">
+                      <button
+                        type="button"
+                        aria-label={i18nT('apps.papyrus.page.rename_paper', {
+                          name: project.title || project.name,
+                        })}
+                        title={i18nT('apps.papyrus.page.rename_paper', {
+                          name: project.title || project.name,
+                        })}
+                        onClick={() => startRename(project)}
+                        // Another row's pencil would replace an open draft, which a
+                        // failed save of that draft must keep.
+                        disabled={renameOpen}
+                        className="p-1 rounded text-muted hover:text-accent hover:bg-accent/10 cursor-pointer bg-transparent border-none transition-colors disabled:opacity-40"
+                      >
+                        <Pencil className="lucide-inline" />
+                      </button>
                       <button
                         type="button"
                         aria-label={i18nT('apps.papyrus.page.delete_paper', { name: project.name })}

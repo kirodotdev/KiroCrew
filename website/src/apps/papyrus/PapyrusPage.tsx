@@ -42,7 +42,7 @@ import {
   COLLAPSED_TREE_WIDTH,
   PDF_WIDTH_KEY, MIN_PDF_WIDTH, maxPdfWidth, defaultPdfWidth,
   CHAT_WIDTH_KEY, DEFAULT_CHAT_WIDTH, MIN_CHAT_WIDTH, MAX_CHAT_WIDTH, CHAT_OPEN_KEY,
-  maxChatWidth,
+  maxChatWidth, projectQueryKey,
 } from './lib'
 import { loadColumnWidth, loadColumnCollapsed } from '../../lib/columnWidth'
 import { safeSetItem } from '../../utils/safeStorage'
@@ -264,7 +264,7 @@ export default function PapyrusPage() {
   // ── Project metadata ──────────────────────────────────────────────────────
 
   const projectQuery = useQuery({
-    queryKey: ['papyrus', 'project', project],
+    queryKey: projectQueryKey(project as string),
     queryFn: () => papyrusApi.getProject(project as string),
     enabled: !!project,
     retry: false,
@@ -373,7 +373,7 @@ export default function PapyrusPage() {
   })
 
   const invalidateFiles = useCallback(
-    () => queryClient.invalidateQueries({ queryKey: ['papyrus', 'project', project] }),
+    () => queryClient.invalidateQueries({ queryKey: projectQueryKey(project as string) }),
     [queryClient, project],
   )
 
@@ -983,7 +983,14 @@ export default function PapyrusPage() {
           <ArrowLeft className="lucide-inline" />
           {i18nT('apps.papyrus.workspace.papers')}
         </Btn>
-        <span className="text-[13px] font-medium text-text-strong truncate max-w-[12rem]">{project}</span>
+        {/* The paper's resolved title, matching the row that opened it — NOT the
+            directory name, which is the app's key and reads as an id for a
+            cloned paper. `||` rather than `??`: the fallback must also catch a
+            title that resolved to the empty string, and a header is not the
+            place to render `undefined`. */}
+        <span className="text-[13px] font-medium text-text-strong truncate max-w-[12rem]">
+          {detail?.title || project}
+        </span>
 
         {/* The picker is a `<button>` now, not a `<select>`, and HTML-AAM
             computes a button's accessible name from its own content — a
@@ -997,18 +1004,39 @@ export default function PapyrusPage() {
             `MAX_PROJECT_FILES`), so they are nested paths sharing a common
             prefix — a Radix Select's first-letter typeahead cannot separate
             `chapters/01.tex` from `chapters/02.tex`. */}
-        <span className="flex items-center gap-1.5 text-[12px] text-muted">
-          {i18nT('apps.papyrus.workspace.main_document')}
-          <SearchableSelect
-            options={mainOptions}
-            value={mainFile}
-            onChange={file => setMainMutation.mutate(file)}
-            disabled={setMainMutation.isPending || mainCandidates.length === 0}
-            aria-label={i18nT('apps.papyrus.workspace.main_document')}
-            // The trigger is `w-full`, so it needs a definite flex basis in this
-            // wrapping toolbar; a path too long for it truncates inside the span.
-            style={{ flex: '0 0 14rem' }}
-          />
+        {/* `max-w-full` + `flex-wrap`: on a narrow screen (320px leaves ~296px
+            inside the toolbar) the label and the 224px select do not fit side by
+            side, so the group is capped at the row and the select drops under
+            its label instead of pushing the row sideways. */}
+        <span className="flex flex-wrap items-center gap-1.5 shrink-0 max-w-full text-[12px] text-muted">
+          {/* `whitespace-nowrap`: the label is a flex item beside a select of
+              fixed width, so every bit of squeeze landed on the text — which
+              broke "Main document" across two lines and grew the whole toolbar
+              row. Refusing the break makes the toolbar wrap this group as a unit
+              instead, which is what `flex-wrap` is for. */}
+          <span className="whitespace-nowrap">
+            {i18nT('apps.papyrus.workspace.main_document')}
+          </span>
+          {/* The select's width lives HERE, as a definite `width` on a wrapper,
+              and NOT as a `flex-basis` on the trigger.
+
+              The trigger is `w-full`, so it needs its width from somewhere. When
+              that somewhere was `flex: 0 0 14rem` on the trigger itself, this
+              span sized to the trigger's TEXT (measured at 202px against 315px
+              of content) and the 224px trigger painted 113px past the span, over
+              the "Editing …" label beside it — a percentage width is circular
+              while the parent is being measured, so the basis never reached the
+              parent's intrinsic size. A definite width on a plain wrapper is not
+              circular, so the span measures the full group. */}
+          <span className="flex w-56 max-w-full shrink-0">
+            <SearchableSelect
+              options={mainOptions}
+              value={mainFile}
+              onChange={file => setMainMutation.mutate(file)}
+              disabled={setMainMutation.isPending || mainCandidates.length === 0}
+              aria-label={i18nT('apps.papyrus.workspace.main_document')}
+            />
+          </span>
         </span>
 
         <span className="text-[12px] text-muted truncate">

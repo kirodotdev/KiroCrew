@@ -31,12 +31,17 @@ import logging
 import os
 import re
 import stat
+import threading
+import unicodedata
+import weakref
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from kiro_crew import platform_compat
 from kiro_crew.apps.manager import app_data_dir
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.hooks import safe_read_file_bytes_nolink
 from kiro_crew.security import is_sensitive_path
 
 logger = logging.getLogger("kirocrew.app.papyrus")
@@ -51,6 +56,85 @@ DEFAULT_MAIN_FILE = "main.tex"
 
 #: Candidate main documents probed, in order, when ``main.tex`` is absent.
 MAIN_FILE_CANDIDATES = ("main.tex", "paper.tex", "article.tex", "manuscript.tex")
+
+#: Config key holding a display name the USER chose for the paper.
+#:
+#: Separate from the directory name on purpose: the directory name is the app's
+#: identifier — it appears in every route (``?name=``), in the PDF URL, in the
+#: "last opened paper" pointer and in the key of the paper's co-author session —
+#: so renaming the directory would break links a rename has no business
+#: touching. This key renames only what the list DISPLAYS.
+PROJECT_TITLE_KEY = "title"
+
+#: Ceiling on a displayed title, in characters.
+#:
+#: Both sources are untrusted (see :func:`project_title`), so a title is
+#: attacker-influenced text landing in a table cell: without a cap, a one-line
+#: ``\title{}`` holding 40 kB of text is a layout attack on the paper list, and
+#: every project row carries it in the list payload.
+MAX_TITLE_CHARS = 120
+
+#: How much of a raw title :func:`sanitize_title` works on. Generous against the
+#: 120-char display cap (LaTeX markup flattens away), small enough that the work
+#: stays bounded whatever a cloned ``.papyrus.json`` ships. The display cap itself
+#: is applied by the route AFTER redaction, never here: cutting first can split a
+#: credential across the boundary, and the half left behind does not match the
+#: pattern that would have redacted it.
+_TITLE_INPUT_CHARS = MAX_TITLE_CHARS * 64
+
+#: How much of the main document :func:`extract_title` reads, in bytes.
+#:
+#: ``\title{}`` belongs in the preamble, so a bounded prefix finds it in every
+#: conventional document while keeping the cost of listing N projects bounded —
+#: the alternative is reading each paper whole (up to
+#: :data:`MAX_FILE_BYTES`) on every request to ``GET /projects``. A document that
+#: declares its title past this point simply has no extractable title, which is
+#: the same answer as having none at all: the directory name is shown.
+TITLE_SCAN_BYTES = 64 * 1024
+
+#: ``\title`` with its optional short form: ``\title[Papyrus]{The long one}``.
+#:
+#: The braced argument is NOT matched here — ``[^}]*`` would stop at the first
+#: closing brace and truncate ``\title{A \textbf{bold} claim}`` to
+#: ``A \textbf{bold``. :func:`_braced_group` walks the braces instead.
+_RE_TITLE = re.compile(r"\\title\s*(?:\[(?P<short>[^\]]*)\])?\s*\{")
+
+#: A TeX comment: an unescaped ``%`` to end of line.
+#:
+#: Stripped before the title is looked for, because a commented-out alternative
+#: title above the real one is ordinary in a paper under revision, and taking it
+#: would show a title the document does not typeset.
+_RE_TEX_COMMENT = re.compile(r"(?<!\\)%.*?$", re.MULTILINE)
+
+#: Groups dropped whole from a title: author-note commands whose content is
+#: never part of the title as typeset.
+_RE_TITLE_NOTE = re.compile(r"\\(?:thanks|footnote|footnotemark|label)\s*\{")
+
+#: One pass over a title's markup. The alternation order is the whole design:
+#:
+#: * ``\%`` and friends are BACKSLASH-ESCAPED LITERALS — the character is part of
+#:   the title's text (``90\%``), so it is kept, and it must be recognised before
+#:   the generic control-sequence branch, which would eat it as a one-character
+#:   command and silently print ``90 and above``;
+#: * any other control sequence becomes a space, keeping its braced content
+#:   (``\textbf{x}`` -> ``x``): the markup goes, the words stay;
+#: * a bare brace or ``~`` becomes a space.
+#:
+#: Done as ONE pass rather than three substitutions because sequential passes
+#: reintroduce each other's output: unescaping ``\{`` first hands a literal brace
+#: to a later brace-stripping pass, which then deletes it.
+#:
+#: ``\$`` inside the class is a semantic no-op (a literal ``$`` either way) written
+#: that way on purpose: ``test_regex_anchor_contract`` walks every pattern in this
+#: package for a ``$`` that could be a trailing-newline-permissive ANCHOR, and its
+#: heuristic does not parse character classes. Do not "simplify" the escape away —
+#: ``cloud/login_target.py`` spells its own literal dollar the same way.
+_RE_TEX_TOKEN = re.compile(r"\\([%&_\$#{}])|\\(?:[A-Za-z@]+\*?\s*|.)|[{}~]")
+
+#: Control characters that SEPARATE words, so they collapse to a space instead of
+#: being deleted: ``"first\nsecond"`` is two words, not ``firstsecond``. Every
+#: other ``Cc``/``Cf`` character is removed outright — see :func:`sanitize_title`.
+_WHITESPACE_CONTROLS = frozenset("\t\n\v\f\r\x85")
 
 #: A project name must be one lowercase slug segment. Anything else (a slash, a
 #: dot, a leading dash) is refused rather than sanitized, because a "cleaned up"
@@ -98,9 +182,19 @@ class ProjectSummary:
     name: str
     modified: float
     has_pdf: bool
+    #: What to DISPLAY for this paper — see :func:`project_title`. Never the
+    #: identifier: ``name`` stays the key every route and stored pointer uses.
+    title: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return {"name": self.name, "modified": self.modified, "has_pdf": self.has_pdf}
+        return {
+            "name": self.name,
+            "modified": self.modified,
+            "has_pdf": self.has_pdf,
+            # Falls back to the identifier rather than shipping "", so a client
+            # can render `title` unconditionally and never print an empty row.
+            "title": self.title or self.name,
+        }
 
 
 def data_dir(root: Path | None = None) -> Path:
@@ -360,6 +454,43 @@ def _config_path(project: Path) -> Path | None:
         return None
 
 
+class TitleRejected(ValueError):
+    """A non-blank rename that sanitizes to nothing (``\\LaTeX``, ``~``).
+
+    Only a blank field clears the override; a name with no displayable text is
+    refused rather than read as a request to clear.
+    """
+
+
+class ConfigWriteRefused(Exception):
+    """``.papyrus.json`` exists as a link or outside the project, so it is not written.
+
+    Raised by the one caller whose success the user sees — a rename — instead of
+    answering "saved" over a write that never happened. :func:`set_main_file`
+    keeps the silent no-op: the compile path calls it implicitly and must not fail.
+    """
+
+
+# Weak values: a lock lives only while a writer holds it, so a deleted paper leaves
+# no entry behind. A concurrent writer still gets the SAME lock, because the one
+# holding it keeps it alive for as long as it matters.
+_CONFIG_LOCKS: weakref.WeakValueDictionary[str, threading.Lock] = weakref.WeakValueDictionary()
+_CONFIG_LOCKS_GUARD = threading.Lock()
+
+
+def _config_lock(project: Path) -> threading.Lock:
+    """Return the lock serializing *project*'s config read-modify-write.
+
+    Two mutators (the main document and the display title) each read the whole
+    file and write it back; run concurrently, both read the same stale config and
+    the later write silently discards the other's key. Keyed per project so two
+    papers never wait on each other.
+    """
+    key = str(project)
+    with _CONFIG_LOCKS_GUARD:
+        return _CONFIG_LOCKS.setdefault(key, threading.Lock())
+
+
 def read_project_config(project: Path) -> dict[str, Any]:
     """Read ``.papyrus.json``, returning ``{}`` when absent, corrupt or uncontained."""
     path = _config_path(project)
@@ -372,16 +503,24 @@ def read_project_config(project: Path) -> dict[str, Any]:
     return loaded if isinstance(loaded, dict) else {}
 
 
-def write_project_config(project: Path, config: dict[str, Any]) -> None:
+def write_project_config(project: Path, config: dict[str, Any]) -> bool:
     """Persist ``.papyrus.json`` atomically (crash mid-write keeps the old file).
 
     Refuses an uncontained path for the mirror of the reason the reader does: a
     symlinked config would have this WRITE land on whatever it points at.
+    Returns whether it wrote, so a caller that must not report a refused write
+    as saved can tell the two apart.
+
+    Also refuses once the project directory is gone: a write that lands after
+    :func:`delete_project` would recreate the directory, and the deleted paper's
+    name would stay taken. Callers hold :func:`_config_lock`, which the delete
+    holds too, so the check and the write cannot straddle a removal.
     """
     path = _config_path(project)
-    if path is None:
-        return
+    if path is None or not project.is_dir():
+        return False
     atomic_write(path, json.dumps(config, indent=2), fsync=True)
+    return True
 
 
 def get_main_file(project: Path) -> str:
@@ -451,12 +590,239 @@ def _contained_file(project: Path, relative: str) -> bool:
         return False
 
 
+#: Deletions performed while a lock was alive, keyed WEAKLY by that lock: a
+#: rename that holds the lock object sees every delete made meanwhile, and the
+#: count goes away with the lock, so nothing accumulates per deleted paper.
+_DELETIONS: weakref.WeakKeyDictionary[threading.Lock, int] = weakref.WeakKeyDictionary()
+
+
+def deletion_count(lock: threading.Lock) -> int:
+    """How many deletes ran under *lock* (see :data:`_DELETIONS`)."""
+    return _DELETIONS.get(lock, 0)
+
+
+def _delete_locked(project: Path, lock: threading.Lock) -> bool:
+    """Body of :func:`delete_project`; the caller holds *lock*."""
+    _DELETIONS[lock] = _DELETIONS.get(lock, 0) + 1
+    return platform_compat.rmtree_force(project)
+
+
+def delete_project(project: Path) -> bool:
+    """Remove *project*'s tree, returning whether it is gone afterwards.
+
+    Holds the config lock so a rename or main-document write in flight either
+    finishes before the removal or sees the directory gone and writes nothing.
+    """
+    lock = _config_lock(project)
+    with lock:
+        return _delete_locked(project, lock)
+
+
 def set_main_file(project: Path, main_file: str) -> None:
     """Set the main document (validated), preserving other config keys."""
     safe_child(project, main_file)
+    with _config_lock(project):
+        config = read_project_config(project)
+        config["main_file"] = main_file
+        write_project_config(project, config)
+
+
+def _braced_group(text: str, open_brace: int) -> str | None:
+    """Return the content of the ``{...}`` group starting at *open_brace*.
+
+    Walks nesting so a title carrying its own groups survives whole, and stops
+    at the matching close; returns ``None`` for an unbalanced group, which is a
+    truncated read as often as it is a broken document — either way there is no
+    title to show.
+
+    ``\\{`` is not a brace: an escaped brace is a literal character in the
+    title's text, and counting it would end the group one character into
+    ``\\title{a \\{ b}``.
+    """
+    depth = 0
+    index = open_brace
+    limit = len(text)
+    while index < limit:
+        char = text[index]
+        if char == "\\":
+            index += 2
+            continue
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[open_brace + 1 : index]
+        index += 1
+    return None
+
+
+def _flatten_tex(raw: str) -> str:
+    """Reduce a title's LaTeX source to the words it typesets.
+
+    Deliberately small: this renders nothing, it only removes the markup that
+    would otherwise be READ ALOUD in a table cell (``\\textbf``, ``\\\\``, ``~``).
+    Author notes are dropped with their content first — dropping the command
+    alone would splice the note INTO the title — and :data:`_RE_TEX_TOKEN` then
+    does the rest in one pass.
+    """
+    text = raw
+    while (match := _RE_TITLE_NOTE.search(text)) is not None:
+        group = _braced_group(text, match.end() - 1)
+        if group is None:
+            text = text[: match.start()]
+            break
+        # `match.end()` is one past the opening brace, so the group's content
+        # ends at `match.end() + len(group)` — the index OF the closing brace.
+        text = text[: match.start()] + text[match.end() + len(group) + 1 :]
+    return _RE_TEX_TOKEN.sub(lambda m: m.group(1) or " ", text)
+
+
+def sanitize_title(raw: str) -> str:
+    """Normalize an untrusted title for display: strip, flatten, bound.
+
+    Removes Unicode control and FORMAT characters (categories ``Cc``/``Cf``)
+    rather than only the ASCII controls: both title sources can arrive inside a
+    cloned repository, and the format class is where a bidi override lives — one
+    of those in a paper name reorders the surrounding row for every reader.
+
+    A control that SEPARATES words becomes a space rather than vanishing
+    (:data:`_WHITESPACE_CONTROLS`), so a two-line title reads as two words and a
+    newline still cannot break out of its cell. Deleting them uniformly is what
+    turns ``"first\\nsecond"`` into ``firstsecond``.
+
+    Returns ``""`` when nothing displayable survives, which every caller reads as
+    "no title", never as an empty name.
+
+    Does NOT apply :data:`MAX_TITLE_CHARS`: the route cuts to that length after
+    redacting, so a token that straddles the cap is redacted whole instead of
+    being split into a fragment the redactor does not recognize.
+    """
+    # Bound the WORK, not just the result: `.papyrus.json` is unbounded and
+    # clone-supplied, and the note-stripping loop recopies the remainder once per
+    # note, so capping only the output leaves a crafted title quadratic. The
+    # margin lets markup that flattens away still yield a full-length title.
+    head = raw[:_TITLE_INPUT_CHARS]
+    if len(raw) > _TITLE_INPUT_CHARS:
+        # Drop the word the cut landed in: a credential split here would leave a
+        # prefix the redactor does not recognize, so it goes whole or not at all.
+        cut = len(head)
+        while cut and not head[cut - 1].isspace():
+            cut -= 1
+        head = head[:cut]
+    flattened = _flatten_tex(head)
+    stripped = "".join(
+        " " if char in _WHITESPACE_CONTROLS
+        else char if unicodedata.category(char) not in ("Cc", "Cf")
+        else ""
+        for char in flattened
+    )
+    collapsed = re.sub(r"\s+", " ", stripped).strip()
+    return collapsed
+
+
+def extract_title(project: Path, main_file: str) -> str:
+    """Return the ``\\title{}`` of *main_file*, or ``""`` when it declares none.
+
+    Reads a bounded prefix (:data:`TITLE_SCAN_BYTES`) through :func:`safe_child`,
+    like every other read in this module: ``main_file`` can be a name a cloned
+    repository chose.
+
+    A beamer-style short title wins: ``\\title[Papyrus]{Papyrus: a LaTeX…}``
+    declares ``Papyrus`` as the form for a cramped slot, and a list row is
+    exactly that. Comments are stripped first so a commented-out alternative
+    title is not mistaken for the live one.
+    """
+    try:
+        path = safe_child(project, main_file)
+    except PathRejected:
+        logger.warning("papyrus: refused an uncontained main file in %s", project.name)
+        return ""
+    # Opened without following a link and checked against the project root on
+    # the descriptor itself: a pull can swap `main.tex` for a symlink after
+    # `safe_child`, and the list would otherwise title a paper with outside text.
+    raw = safe_read_file_bytes_nolink(
+        str(path),
+        str(project.resolve()),
+        max_bytes=TITLE_SCAN_BYTES,
+        allow_truncate=True,
+    )
+    if raw is None:
+        return ""
+    source = _RE_TEX_COMMENT.sub("", raw.decode("utf-8", errors="replace"))
+    match = _RE_TITLE.search(source)
+    if match is None:
+        return ""
+    short = match.group("short")
+    if short and sanitize_title(short):
+        return sanitize_title(short)
+    group = _braced_group(source, match.end() - 1)
+    return sanitize_title(group) if group is not None else ""
+
+
+def project_title(project: Path, main_file: str | None) -> str:
+    """Resolve what the paper list should CALL this project.
+
+    In order: the name the user set, then the document's own ``\\title{}``, then
+    the directory name. The user's choice comes first by design — it is the only
+    one of the three they can act on, and a document title that outranked it
+    would make renaming a paper that declares one do nothing at all.
+
+    Both of the first two are UNTRUSTED text — ``.papyrus.json`` can arrive
+    inside a cloned repository exactly as the ``.tex`` does — so both go through
+    :func:`sanitize_title`, and an empty result falls through to the next source
+    rather than showing a blank row.
+    """
+    configured = read_project_config(project).get(PROJECT_TITLE_KEY)
+    if isinstance(configured, str) and (chosen := sanitize_title(configured)):
+        return chosen
+    if main_file and (extracted := extract_title(project, main_file)):
+        return extracted
+    return project.name
+
+
+def config_lock(project: Path) -> threading.Lock:
+    """The lock a caller holds across authorizing *project* and writing its config.
+
+    :func:`set_project_title_locked` expects it held: taken BEFORE the route's
+    existence check, it keeps a delete (which holds it too) and a same-name
+    create from landing between that check and the write.
+    """
+    return _config_lock(project)
+
+
+def set_project_title(project: Path, title: str) -> str:
+    """Set the display name under :func:`config_lock`, returning the resolved title.
+
+    Returns what the list will now show, so a caller does not have to re-resolve
+    it to answer the request. The resolution runs AFTER the lock is released:
+    :func:`resolve_main_file` can persist a main document, which takes the same
+    (non-reentrant) lock.
+    """
+    with _config_lock(project):
+        set_project_title_locked(project, title)
+    return project_title(project, resolve_main_file(project))
+
+
+def set_project_title_locked(project: Path, title: str) -> None:
+    """Set (or clear) the user's display name; the caller holds :func:`config_lock`.
+
+    An empty *title* REMOVES the override instead of storing a blank, so the
+    field doubles as "go back to the document's own title" — which is the only
+    way back once a paper has been renamed, and needs no second control.
+    """
+    cleaned = sanitize_title(title)
+    if title.strip() and not cleaned:
+        raise TitleRejected(project.name)
     config = read_project_config(project)
-    config["main_file"] = main_file
-    write_project_config(project, config)
+    if cleaned:
+        config[PROJECT_TITLE_KEY] = cleaned
+    else:
+        config.pop(PROJECT_TITLE_KEY, None)
+    # The path is re-checked at write time: a link at `.papyrus.json`, or a
+    # directory deleted meanwhile, is refused there and must not answer as saved.
+    if not write_project_config(project, config):
+        raise ConfigWriteRefused(project.name)
 
 
 def pdf_path(project: Path, main_file: str) -> Path | None:
@@ -547,6 +913,7 @@ def list_projects(root: Path | None = None) -> list[ProjectSummary]:
                 modified=modified,
                 # An uncontained PDF reads as "no PDF": not servable either way.
                 has_pdf=bool((_pdf := pdf_path(entry, main_file)) and _pdf.is_file()),
+                title=project_title(entry, main_file),
             )
         )
     return out
