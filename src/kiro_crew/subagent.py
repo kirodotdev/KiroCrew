@@ -75,9 +75,12 @@ from kiro_crew.effort import effort_settings_key, model_supports_effort
 from kiro_crew.executors import maintenance_executor, subprocess_executor
 from kiro_crew.hooks import (
     HOOK_EVENT_POST_TOOL_USE,
+    HOOK_EVENT_PRE_TOOL_USE,
     TOOL_AUTO_APPROVE,
     TOOL_DENY,
+    _should_block_results,
     fire_tool_hooks,
+    hook_event_identity,
     hook_gate_kwargs,
     identity_grant_covers_child,
 )
@@ -3104,17 +3107,6 @@ class SubagentManager:
         error: str | None = None,
         metadata: dict | None = None,
     ) -> None:
-        await client.reject_tool(request_id)
-        # getattr: production LLMEvents always carry sub_session_id, but this
-        # static helper is also driven with lightweight test doubles.
-        if getattr(event, "sub_session_id", ""):
-            # Hang-resilience series: backend-child denials on the headless
-            # subagent surface (low-fidelity fail-close, escalation/turn-limit
-            # bails, interactive rejections). ``reason`` is a closed enum.
-            emit_counter(
-                CHILD_PERMISSION_DENIED,
-                {"surface": "subagent", "reason": error or "rejected"},
-            )
         sel().log_tool_invocation(
             session_key=session_key,
             source="subagent",
@@ -3125,6 +3117,17 @@ class SubagentManager:
             error=error or "",
             metadata=metadata,
         )
+        # getattr: production LLMEvents always carry sub_session_id, but this
+        # static helper is also driven with lightweight test doubles.
+        if getattr(event, "sub_session_id", ""):
+            # Hang-resilience series: backend-child denials on the headless
+            # subagent surface (low-fidelity fail-close, escalation/turn-limit
+            # bails, interactive rejections). ``reason`` is a closed enum.
+            emit_counter(
+                CHILD_PERMISSION_DENIED,
+                {"surface": "subagent", "reason": error or "rejected"},
+            )
+        await client.reject_tool(request_id)
 
     def start_reaper(self) -> None:
         return self._monitor.start_reaper_impl()
@@ -5038,6 +5041,7 @@ _COMPONENT_GLOBAL_BINDINGS = (
     FALLBACK_STORY_ATTR,
     FallbackState,
     HOOK_EVENT_POST_TOOL_USE,
+    HOOK_EVENT_PRE_TOOL_USE,
     KiroCrewConfig,
     LLMEvent,
     LivenessOracle,
@@ -5058,6 +5062,7 @@ _COMPONENT_GLOBAL_BINDINGS = (
     _SAMPLE_MAX_AGE_SECS,
     _agent_dir,
     _cleanup_session_files_sync,
+    _should_block_results,
     _subagents_dir,
     _ws_result_path,
     acp_error_is_transient,
@@ -5084,6 +5089,7 @@ _COMPONENT_GLOBAL_BINDINGS = (
     evict_completed_agents,
     extract_options,
     fire_tool_hooks,
+    hook_event_identity,
     hook_gate_kwargs,
     identity_grant_covers_child,
     has_dashboard_surface,

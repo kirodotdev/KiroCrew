@@ -942,6 +942,13 @@ specified there — one account of one workflow, not two.
 
 First-class `DeniedCommandRule` records in `BUILTIN_DENIED_RULES` (`security/`) — each a stable `id`, a Python regex `pattern`, a `category`, and a human `description` — blocking destructive and credential-exfiltrating operations. They are enforced **only** at Kiro Crew's own `hooks.py` PreToolUse gate (`HookManager.on_tool_call` → `PolicyAuthority.is_denied`), never by kiro-cli. They are no longer a raw `deniedCommands` array injected into a kiro agent JSON, so there is no `execute_bash`/`shell` tool-settings copy and no project-dir `agents/defaults.json` override for them. Built-ins are **default-ON but user-DISABLEABLE** from Settings → Security (see "Denied-command rules, opt-out state, and read-only auto-approve" below). Patterns for deployment-specific credential-vending CLIs are NOT in this catalog — a composed edition contributes those itself, either as an un-weakenable `SecurityOverlay` pattern or as a user-disableable rule through the `denied_rules` seam.
 
+Task-runner and subagent permission requests also pass through the global
+`ScriptHookStore` PreToolUse gate. A missing store, exit code 2, or any
+non-verdict result rejects before approval and is audited before the wire
+response; tool-call-only notifications remain informational. If a provider
+emits both event kinds for one call, the stable tool-call/request identity
+prevents a second hook execution while distinct identities remain separate.
+
 **Credential exfiltration blocks**:
 - `.*echo.*\$AWS_SECRET.*`, `.*echo.*\$AWS_ACCESS.*`, `.*echo.*\$AWS_SESSION.*` — env var echo
 - `credential-exfil-printenv-aws` — `printenv` (as a command word) naming a secret-bearing variable (`AWS_SECRET*` / `AWS_SESSION*` / `AWS_SECURITY*` / `AWS_ACCESS*`); `printenv AWS_REGION` is not a match. `credential-exfil-env-grep-aws` — an environment dump (`env` / `printenv` / `set` / `export -p` / `typeset` / `/proc/<pid>/environ`, as a command word) **piped** through `grep`/`awk`/`sed` selecting a name that can print a credential. The always-on keystone (`_ENV_CRED_SHARED_RULES`) reuses the identical regex (`_ENV_DUMP_GREP_AWS_PATTERN`) **on the same `_deny_matcher`**, so narrowing one tier never leaves the block standing on the other, and the tier with no length cap cannot be the slow one. Two boundaries define the narrowing, and both were chosen because an attacker cannot rewrite around them:

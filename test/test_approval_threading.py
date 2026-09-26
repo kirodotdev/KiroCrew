@@ -272,6 +272,7 @@ class TestSubagentPassesParentKey:
             on_spawn_approval=AsyncMock(return_value=True),
             is_yolo=lambda: False,
         )
+        manager.hook_store = MagicMock(fire=AsyncMock(return_value=[]))
 
         info = manager.spawn("ls /tmp", parent_session_key="1775113012.860459")
         assert info is not None

@@ -57,7 +57,12 @@ from kiro_crew.git_divergence import (
     count_divergence_sync,
 )
 from kiro_crew.history import ConversationLog, HistoryConsolidator
-from kiro_crew.hooks import HookManager, hooks_config_from_config_dict
+from kiro_crew.hooks import (
+    HookManager,
+    ScriptHookStore,
+    hooks_config_from_config_dict,
+    set_global_hook_store,
+)
 from kiro_crew.instances import run_marker
 from kiro_crew.kiro_cli import PATH_ONLY_INSTALL_NOTE, pin_kiro_cli
 from kiro_crew.learn import LessonStore
@@ -2566,6 +2571,7 @@ async def _run_task(args: argparse.Namespace) -> None:
 
     # Opt-out state is sourced from the keystone denied_commands.json, not
     # config.json's hooks section (the agent cannot write the keystone file).
+    set_global_hook_store(ScriptHookStore())
     hooks = HookManager(hooks_config_from_config_dict(cfg.hooks))
     ctx = ContextBuilder(
         memory=memory, skills=skills, hooks=hooks, lessons=lessons, bot_name=cfg.agent.bot_name

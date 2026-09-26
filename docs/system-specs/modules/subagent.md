@@ -1637,12 +1637,17 @@ Large waves must not flood the WS socket, the parent LLM's context, or the UI. F
 
 ### PostToolUse Firing
 
-The subagent loop fires both `PreToolUse` (on `EVENT_TOOL_CALL`) and
-`PostToolUse` (on `EVENT_TOOL_RESULT`), mirroring `chat_runner.py`. The
-tool name is cached on `EVENT_TOOL_CALL` by `tool_call_id` and looked up
-when the result arrives. The `Running: ` prefix is stripped so both hooks
-receive identical tool_name strings. Hook errors are caught at debug level
-to prevent misbehaving hooks from breaking the subagent loop.
+The subagent loop fires `PreToolUse` on `EVENT_PERMISSION_REQUEST` as a
+fail-closed gate and on `EVENT_TOOL_CALL` for calls without a permission
+request as an informational notification. A provider can emit both forms
+for one call; the stable `tool_call_id`/request identity is used to fire one
+hook and reuse its result, while distinct identities remain separate. The
+loop also fires `PostToolUse` on `EVENT_TOOL_RESULT`, mirroring
+`chat_runner.py`. The tool name is cached on `EVENT_TOOL_CALL` by
+`tool_call_id` and looked up when the result arrives. The `Running: ` prefix
+is stripped so both hooks receive identical `tool_name` strings. A
+permission-path hook error rejects and audits the request; a tool-call-only
+hook error is logged without breaking the loop.
 
 ### Hook Payload Metadata
 

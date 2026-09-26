@@ -245,6 +245,8 @@ from kiro_crew.hooks import (
     fire_tool_hooks,
     hook_gate_kwargs,
     identity_grant_covers_child,
+    parse_hook_tool_input,
+    pretooluse_should_block,
     safe_read_file,
     safe_read_file_bytes_nolink,
     validate_file_path,
@@ -9447,7 +9449,7 @@ async def _run_chat(
         event: str,
         context: str = "",
         tool_name: str = "",
-        tool_input: dict | None = None,
+        tool_input: object | None = None,
         tool_response: dict | None = None,
         hook_continuation_count: int = 0,
     ) -> list[str]:
@@ -9510,52 +9512,51 @@ async def _run_chat(
                             "text": f"Hook {r.hook_name} BLOCKED: {r.stderr[:100] if r.stderr else 'denied'}",
                         },
                     )
-                elif r.exit_code not in (0, 2):
+                elif pretooluse_should_block(r, event=event):
                     detail = (
                         r.error[:200]
                         if r.error
                         else (r.stderr[-200:] if r.stderr else f"exited with code {r.exit_code}")
                     )
-                    if event == HOOK_EVENT_PRE_TOOL_USE:
-                        # Fail closed. A PreToolUse hook has a two-valued
-                        # contract — exit 0 is a delivered allow, exit 2 a
-                        # delivered deny — so every other code means the gate
-                        # did not decide, and for a gate that resolves to deny.
-                        # Treating it as a pass would mean breaking, slowing, or
-                        # deleting the deny hook silently disables the policy it
-                        # enforces. Same shape as the hook-store and
-                        # fire()-raised denials on this path.
-                        #
-                        # This deliberately covers more than the undelivered
-                        # shapes (timeout and crash → -1, unexecutable → 126/127):
-                        # a hook that runs to completion and exits 1 also blocks
-                        # here. A hook's own uncaught error surfaces as exit 1
-                        # too and is
-                        # indistinguishable from a deliberate one, and the exit
-                        # code a failed exec produces is shell- and
-                        # platform-specific (cmd /c yields 9009 or 1 where
-                        # /bin/sh yields 127), so an allowlist of "real" failure
-                        # codes would fail open on Windows for exactly this
-                        # class. The hook store already calls every nonzero
-                        # non-2 exit an error (``last_status = "error"``); this
-                        # branch gives the gate the matching direction.
-                        injected.append(f"BLOCKED:{r.hook_name}:{detail}")
-                        logger.error(
-                            "Hook %s could not deliver a verdict (%s) - blocking tool",
-                            r.hook_name,
-                            detail,
-                        )
-                        state.broadcast_ws(
-                            "activity_event",
-                            {
-                                "slot": slot.key,
-                                "kind": "hook",
-                                "text": f"Hook {r.hook_name} BLOCKED (no verdict): {detail[:100]}",
-                            },
-                        )
-                    elif r.stderr:
-                        # Non-zero, non-block on a non-gating event: warn only.
-                        logger.warning("Hook %s warning: %s", r.hook_name, r.stderr[-200:])
+                    # Fail closed. A PreToolUse hook has a two-valued
+                    # contract — exit 0 is a delivered allow, exit 2 a
+                    # delivered deny — so every other code means the gate
+                    # did not decide, and for a gate that resolves to deny.
+                    # Treating it as a pass would mean breaking, slowing, or
+                    # deleting the deny hook silently disables the policy it
+                    # enforces. Same shape as the hook-store and
+                    # fire()-raised denials on this path.
+                    #
+                    # This deliberately covers more than the undelivered
+                    # shapes (timeout and crash → -1, unexecutable → 126/127):
+                    # a hook that runs to completion and exits 1 also blocks
+                    # here. A hook's own uncaught error surfaces as exit 1
+                    # too and is
+                    # indistinguishable from a deliberate one, and the exit
+                    # code a failed exec produces is shell- and
+                    # platform-specific (cmd /c yields 9009 or 1 where
+                    # /bin/sh yields 127), so an allowlist of "real" failure
+                    # codes would fail open on Windows for exactly this
+                    # class. The hook store already calls every nonzero
+                    # non-2 exit an error (``last_status = "error"``); this
+                    # branch gives the gate the matching direction.
+                    injected.append(f"BLOCKED:{r.hook_name}:{detail}")
+                    logger.error(
+                        "Hook %s could not deliver a verdict (%s) - blocking tool",
+                        r.hook_name,
+                        detail,
+                    )
+                    state.broadcast_ws(
+                        "activity_event",
+                        {
+                            "slot": slot.key,
+                            "kind": "hook",
+                            "text": f"Hook {r.hook_name} BLOCKED (no verdict): {detail[:100]}",
+                        },
+                    )
+                elif r.stderr:
+                    # Non-zero, non-block on a non-gating event: warn only.
+                    logger.warning("Hook %s warning: %s", r.hook_name, r.stderr[-200:])
         except Exception as exc:
             if event == HOOK_EVENT_PRE_TOOL_USE:
                 logger.warning("Hook fire error during blocking event %s: %s", event, exc)
@@ -14061,12 +14062,7 @@ async def _run_chat(
                             # Declarative auto-approve must NOT bypass scripted
                             # PreToolUse hooks — those are the audit/policy gate
                             # and exit-2 BLOCKED takes precedence over auto-approve.
-                            try:
-                                _parsed_input = (
-                                    json.loads(event.tool_input) if event.tool_input else None
-                                )
-                            except Exception:
-                                _parsed_input = None
+                            _parsed_input = parse_hook_tool_input(event.tool_input)
                             try:
                                 pre_hook_results = await _fire(
                                     HOOK_EVENT_PRE_TOOL_USE,
@@ -14142,10 +14138,7 @@ async def _run_chat(
                             refusal_reasons=_refusal_reasons,
                         )
                         continue
-                    try:
-                        _parsed_input = json.loads(event.tool_input) if event.tool_input else None
-                    except Exception:
-                        _parsed_input = None
+                    _parsed_input = parse_hook_tool_input(event.tool_input)
                     try:
                         pre_hook_results = await _fire(
                             HOOK_EVENT_PRE_TOOL_USE,
@@ -14437,12 +14430,7 @@ async def _run_chat(
                         )
                         continue
                     if not _pre_tool_hooks_fired:
-                        try:
-                            _parsed_input = (
-                                json.loads(event.tool_input) if event.tool_input else None
-                            )
-                        except Exception:
-                            _parsed_input = None
+                        _parsed_input = parse_hook_tool_input(event.tool_input)
                         try:
                             pre_hook_results = await _fire(
                                 HOOK_EVENT_PRE_TOOL_USE,
@@ -15030,10 +15018,7 @@ async def _run_chat(
                             state=state,
                         )
                         break
-                    try:
-                        _parsed_input = json.loads(event.tool_input) if event.tool_input else None
-                    except Exception:
-                        _parsed_input = None
+                    _parsed_input = parse_hook_tool_input(event.tool_input)
                     try:
                         pre_hook_results = await _fire(
                             HOOK_EVENT_PRE_TOOL_USE,

@@ -80,6 +80,14 @@ def _close_subagent_managers(monkeypatch):
                 pass
 
 
+@pytest.fixture(autouse=True)
+def _hook_store(monkeypatch):
+    store = MagicMock()
+    store.fire = AsyncMock(return_value=[])
+    monkeypatch.setattr(task_executor, "get_global_hook_store", lambda: store)
+    return store
+
+
 def _stub_verdict(monkeypatch, refusal):
     """Stub the shared off-loop entry point with a fixed verdict.
 
@@ -370,6 +378,7 @@ class TestSubagentSurface:
         ctx.hooks.on_tool_call = MagicMock(return_value=ToolHookResult(action=TOOL_AUTO_APPROVE))
 
         manager = SubagentManager(sessions=sessions, ctx_builder=ctx, default_turn_limit=1)
+        manager.hook_store = MagicMock(fire=AsyncMock(return_value=[]))
         info = SubagentInfo(
             execution_context=execution_for_store(""),
             id="ng01",

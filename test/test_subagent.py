@@ -32,6 +32,8 @@ def _mock_sessions() -> MagicMock:
     provider.start = AsyncMock()
     provider.shutdown = AsyncMock()
     provider.context_usage_pct = lambda: 0.0
+    provider.context_used_tokens = MagicMock(return_value=0)
+    provider.context_window_tokens = MagicMock(return_value=0)
 
     async def _empty_stream(*_args: object, **_kwargs: object):  # type: ignore[no-untyped-def]
         """Async generator that yields nothing — simulates an empty LLM stream."""
@@ -2248,6 +2250,8 @@ class TestIdentityTrustedChildParentPolicyAuto:
         ctx.hooks.on_tool_call = MagicMock(return_value=ToolHookResult.allow())
 
         manager = SubagentManager(sessions=sessions, ctx_builder=ctx, default_turn_limit=1)
+        manager.hook_store = MagicMock()
+        manager.hook_store.fire = AsyncMock(return_value=[])
         info = SubagentInfo(
             execution_context=execution_for_store(""),
             id="idmcp01",
@@ -2362,6 +2366,8 @@ class TestIdentityTrustedChildHookIdentityGrant:
         ctx.hooks.on_tool_call = MagicMock(return_value=hook_result)
 
         manager = SubagentManager(sessions=sessions, ctx_builder=ctx, default_turn_limit=1)
+        manager.hook_store = MagicMock()
+        manager.hook_store.fire = AsyncMock(return_value=[])
         info = SubagentInfo(
             execution_context=execution_for_store(""),
             id="idhook01",
@@ -2607,3 +2613,197 @@ class TestSpawnMemoryModeSnapshot:
             await asyncio.wait_for(
                 asyncio.gather(*manager._tasks.values(), return_exceptions=True), timeout=5
             )
+
+
+class TestSubagentPreToolUseHookGate:
+    """A PreToolUse script-hook deny on EVENT_PERMISSION_REQUEST rejects the
+    tool on autonomous paths.
+    """
+
+    async def _run_permission(self, result, *, store=True, events=None, fire_error=None):
+        from kiro_crew.hooks import TOOL_AUTO_APPROVE, ToolHookResult
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST, LLMEvent
+        from kiro_crew.subagent import SubagentInfo, SubagentManager
+
+        sessions = _mock_sessions()
+        sessions.get_approval_policy = MagicMock(return_value="auto")
+        provider = sessions.get_or_create.return_value[0]
+        provider.approve_tool = AsyncMock()
+        order: list[tuple[str, object]] = []
+
+        async def _reject(request_id):
+            order.append(("reject", request_id))
+
+        provider.reject_tool = AsyncMock(side_effect=_reject)
+
+        async def _stream(*_a, **_kw):
+            if events is not None:
+                for event in events:
+                    yield event
+            else:
+                yield LLMEvent(
+                    kind=EVENT_PERMISSION_REQUEST,
+                    title="@example-server/get-item",
+                    request_id=9101,
+                    tool_input='{"path": "/tmp/x"}',
+                    shell_classified=True,
+                    is_shell=False,
+                    mcp_server_name="example-server",
+                    tool_name="get-item",
+                    mcp_identity_trusted=True,
+                )
+                yield LLMEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+
+        provider.stream = MagicMock(side_effect=lambda *a, **kw: _stream())
+        ctx = MagicMock()
+        ctx.build_message = MagicMock(return_value=("msg", None))
+        ctx.hooks.on_tool_call = MagicMock(return_value=ToolHookResult(action=TOOL_AUTO_APPROVE))
+        ctx.hooks.auto_approve_subagent_spawn = True
+
+        manager = SubagentManager(sessions=sessions, ctx_builder=ctx, default_turn_limit=1)
+        if store:
+            manager.hook_store = MagicMock()
+            if fire_error is not None:
+                manager.hook_store.fire = AsyncMock(side_effect=fire_error)
+            else:
+                manager.hook_store.fire = AsyncMock(return_value=[] if result is None else [result])
+        info = SubagentInfo(
+            execution_context=execution_for_store(""),
+            id="deny01",
+            task="t",
+            parent_session_key="dashboard:default",
+        )
+        manager._log_spawned(info)
+        manager._agents[info.id] = info
+
+        audit = MagicMock()
+        audit.log_tool_invocation.side_effect = lambda **kwargs: order.append(("audit", kwargs))
+        with (
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel", return_value=audit),
+            patch(
+                "kiro_crew.subagent_manager.run.RunEventCoordinator._warn_unusable_mcp_servers",
+                return_value=[],
+            ),
+            patch("kiro_crew.subagent.window_for_provider_client", return_value=None),
+            patch("kiro_crew.subagent.update_state"),
+            patch("kiro_crew.subagent.create_agent_folder", MagicMock(), create=True),
+        ):
+            await manager._run_inner(info, f"subagent:{info.id}")
+        return manager, provider, audit, order
+
+    @pytest.mark.asyncio
+    async def test_permission_request_hook_deny_rejects(self) -> None:
+        from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE, ScriptHookResult
+
+        result = ScriptHookResult(
+            hook_id="h1",
+            hook_name="deny",
+            event=HOOK_EVENT_PRE_TOOL_USE,
+            exit_code=2,
+            stderr="nope",
+        )
+        manager, provider, audit, order = await self._run_permission(result)
+
+        provider.reject_tool.assert_awaited_once_with(9101)
+        provider.approve_tool.assert_not_awaited()
+        assert manager.hook_store.fire.await_args.kwargs["tool_input"] == {"path": "/tmp/x"}
+        assert order[:2] == [
+            ("audit", audit.log_tool_invocation.call_args.kwargs),
+            ("reject", 9101),
+        ]
+        assert audit.log_tool_invocation.call_count == 1
+        assert audit.log_tool_invocation.call_args.kwargs["outcome"] == "denied"
+        assert audit.log_tool_invocation.call_args.kwargs["metadata"]["subagent_id"] == "deny01"
+
+    @pytest.mark.asyncio
+    async def test_permission_request_hook_allow_approves(self) -> None:
+        from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE, ScriptHookResult
+
+        result = ScriptHookResult(
+            hook_id="h1",
+            hook_name="allow",
+            event=HOOK_EVENT_PRE_TOOL_USE,
+            exit_code=0,
+        )
+        _, provider, _, _ = await self._run_permission(result)
+
+        provider.approve_tool.assert_awaited_once_with(9101)
+        provider.reject_tool.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_permission_request_hook_timeout_rejects(self) -> None:
+        from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE, ScriptHookResult
+
+        result = ScriptHookResult(
+            hook_id="h1",
+            hook_name="timeout",
+            event=HOOK_EVENT_PRE_TOOL_USE,
+            exit_code=-1,
+            error="Timed out after 3s",
+        )
+        _, provider, audit, _ = await self._run_permission(result)
+
+        provider.reject_tool.assert_awaited_once_with(9101)
+        provider.approve_tool.assert_not_awaited()
+        assert audit.log_tool_invocation.call_count == 1
+        assert audit.log_tool_invocation.call_args.kwargs["outcome"] == "denied"
+
+    @pytest.mark.asyncio
+    async def test_permission_request_without_hook_store_rejects(self) -> None:
+        _, provider, audit, order = await self._run_permission(None, store=False)
+
+        provider.reject_tool.assert_awaited_once_with(9101)
+        provider.approve_tool.assert_not_awaited()
+        assert order[0][0] == "audit"
+        assert order[1][0] == "reject"
+        assert audit.log_tool_invocation.call_count == 1
+        assert audit.log_tool_invocation.call_args.kwargs["outcome"] == "denied"
+        assert audit.log_tool_invocation.call_args.kwargs["error"] == "hook_blocked"
+
+    @pytest.mark.asyncio
+    async def test_permission_request_hook_error_rejects_and_audits_first(self) -> None:
+        _, provider, audit, order = await self._run_permission(
+            None,
+            fire_error=RuntimeError("hook boom"),
+        )
+
+        provider.reject_tool.assert_awaited_once_with(9101)
+        provider.approve_tool.assert_not_awaited()
+        assert [entry[0] for entry in order[:2]] == ["audit", "reject"]
+        assert audit.log_tool_invocation.call_count == 1
+        assert audit.log_tool_invocation.call_args.kwargs["outcome"] == "denied"
+        assert audit.log_tool_invocation.call_args.kwargs["error"] == "hook_error"
+        assert audit.log_tool_invocation.call_args.kwargs["metadata"]["detail"] == "hook boom"
+
+    @pytest.mark.asyncio
+    async def test_combined_events_fire_once_per_identity(self) -> None:
+        from kiro_crew.providers.base import EVENT_PERMISSION_REQUEST, EVENT_TOOL_CALL, LLMEvent
+
+        events = [
+            LLMEvent(
+                kind=EVENT_PERMISSION_REQUEST,
+                title="read",
+                request_id=9201,
+                tool_call_id="call-1",
+                tool_input='{"path": "/tmp/one"}',
+            ),
+            LLMEvent(
+                kind=EVENT_TOOL_CALL,
+                title="read",
+                tool_call_id="call-1",
+                tool_input='{"path": "/tmp/one"}',
+            ),
+            LLMEvent(
+                kind=EVENT_TOOL_CALL, title="read", tool_call_id="call-2", tool_input='"scalar"'
+            ),
+            LLMEvent(kind="complete", stop_reason="end_turn"),
+        ]
+        manager, provider, _, _ = await self._run_permission(None, events=events)
+
+        provider.approve_tool.assert_awaited_once_with(9201)
+        assert manager.hook_store.fire.await_count == 2
+        assert [call.kwargs["tool_input"] for call in manager.hook_store.fire.await_args_list] == [
+            {"path": "/tmp/one"},
+            "scalar",
+        ]

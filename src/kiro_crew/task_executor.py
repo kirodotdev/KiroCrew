@@ -10,7 +10,7 @@ import asyncio
 import logging
 import time as _time
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Callable, cast
 
 from kiro_crew import git_coord, name_grant, platform_compat, shutdown_event
 from kiro_crew.acp.client import AcpProcessDied
@@ -25,10 +25,14 @@ from kiro_crew.agent_sdk.drivers.acp_vocab import (
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import (
+    HOOK_EVENT_PRE_TOOL_USE,
     TOOL_AUTO_APPROVE,
     TOOL_DENY,
+    ScriptHookResult,
+    _should_block_results,
     fire_tool_hooks,
     get_global_hook_store,
+    hook_event_identity,
     hook_gate_kwargs,
 )
 from kiro_crew.llm_helpers import provider_last_turn_usage, stream_and_collect_json
@@ -39,6 +43,7 @@ from kiro_crew.providers.base import (
     EVENT_PERMISSION_REQUEST,
     EVENT_TEXT_CHUNK,
     EVENT_TOOL_CALL,
+    EVENT_TOOL_RESULT,
     LLMEvent,
 )
 from kiro_crew.recovery.ladder import L3_ACP_RUNTIME, default_ladder
@@ -361,7 +366,6 @@ async def execute_single_task(
 
 async def _reject_and_log(client, history, session_key, agent, event, *, metadata=None):
     """Reject a tool call and log the rejection."""
-    await client.reject_tool(event.request_id)
     history.log_tool_invocation(
         session_key=session_key,
         agent=agent or "kirocrew",
@@ -372,6 +376,7 @@ async def _reject_and_log(client, history, session_key, agent, event, *, metadat
         request_id=event.request_id,
         **({"metadata": metadata} if metadata else {}),
     )
+    await client.reject_tool(event.request_id)
 
 
 async def execute_task(
@@ -510,6 +515,7 @@ async def execute_task(
             # build and episodic-query embed above are turn setup, not the turn,
             # and this loop re-runs per attempt so each row measures its own turn.
             _turn_t0 = _time.monotonic()
+            _hook_fire_cache: dict[tuple[str, str], list[ScriptHookResult] | Exception] = {}
             async for event in client.stream(full_prompt):
                 if event.kind == EVENT_TEXT_CHUNK:
                     result_text += event.text
@@ -535,7 +541,6 @@ async def execute_task(
                             **hook_gate_kwargs(event),
                         )
                         if tool_result.action == TOOL_DENY:
-                            await client.reject_tool(event.request_id)
                             sel().log_tool_invocation(
                                 session_key=session_key,
                                 agent=agent or "kirocrew",
@@ -546,7 +551,90 @@ async def execute_task(
                                 request_id=event.request_id,
                                 error="hook_deny",
                             )
+                            await client.reject_tool(event.request_id)
                             continue
+                    _hook_identity = hook_event_identity(event)
+                    _cached_hook = (
+                        _hook_fire_cache.get(_hook_identity) if _hook_identity is not None else None
+                    )
+                    if isinstance(_cached_hook, Exception):
+                        sel().log_tool_invocation(
+                            session_key=session_key,
+                            agent=agent or "kirocrew",
+                            source="taskrunner",
+                            tool_name=event.title,
+                            tool_kind=event.tool_kind,
+                            outcome="hook_error",
+                            request_id=event.request_id,
+                            error=str(_cached_hook)[:200],
+                        )
+                        await client.reject_tool(event.request_id)
+                        continue
+                    if _cached_hook is not None:
+                        _hook_results = _cached_hook
+                    else:
+                        _store = get_global_hook_store()
+                        if _store is None:
+                            sel().log_tool_invocation(
+                                session_key=session_key,
+                                agent=agent or "kirocrew",
+                                source="taskrunner",
+                                tool_name=event.title,
+                                tool_kind=event.tool_kind,
+                                outcome="hook_blocked",
+                                request_id=event.request_id,
+                                error="hook store not initialized",
+                            )
+                            await client.reject_tool(event.request_id)
+                            continue
+                        try:
+                            _hook_results = cast(
+                                list[ScriptHookResult],
+                                await fire_tool_hooks(
+                                    _store,
+                                    event.title,
+                                    event.tool_input,
+                                    parent_session_key=session_key or None,
+                                    agent_role=agent or None,
+                                    raise_on_error=True,
+                                    return_results=True,
+                                ),
+                            )
+                            if _hook_identity is not None:
+                                _hook_fire_cache[_hook_identity] = _hook_results
+                        except Exception as exc:  # noqa: BLE001 - fail-closed
+                            if _hook_identity is not None:
+                                _hook_fire_cache[_hook_identity] = exc
+                            sel().log_tool_invocation(
+                                session_key=session_key,
+                                agent=agent or "kirocrew",
+                                source="taskrunner",
+                                tool_name=event.title,
+                                tool_kind=event.tool_kind,
+                                outcome="hook_error",
+                                request_id=event.request_id,
+                                error=str(exc)[:200],
+                            )
+                            await client.reject_tool(event.request_id)
+                            continue
+                    _blocked, _detail = _should_block_results(
+                        _hook_results,
+                        event=HOOK_EVENT_PRE_TOOL_USE,
+                    )
+                    if _blocked:
+                        sel().log_tool_invocation(
+                            session_key=session_key,
+                            agent=agent or "kirocrew",
+                            source="taskrunner",
+                            tool_name=event.title,
+                            tool_kind=event.tool_kind,
+                            outcome="hook_blocked",
+                            request_id=event.request_id,
+                            error=_detail,
+                        )
+                        await client.reject_tool(event.request_id)
+                        continue
+                    if ctx:
                         if tool_result.action == TOOL_AUTO_APPROVE:
                             # The hook granted this by NAME (its
                             # `auto_approve_tools` globs, or the read-only
@@ -688,7 +776,9 @@ async def execute_task(
                         },
                     )
                 elif event.kind == EVENT_TOOL_CALL:
-                    # Fire PreToolUse hooks for auto-approved tools (informational only)
+                    _hook_identity = hook_event_identity(event)
+                    if _hook_identity is not None and _hook_identity in _hook_fire_cache:
+                        continue
                     sel().log_tool_invocation(
                         session_key=session_key,
                         agent=agent or "kirocrew",
@@ -698,13 +788,31 @@ async def execute_task(
                         outcome="auto_approved",
                         metadata={"task": task.index, "task_id": run.task_id},
                     )
-                    await fire_tool_hooks(
-                        get_global_hook_store(),
-                        event.title,
-                        event.tool_input,
-                        parent_session_key=session_key or None,
-                        agent_role=(agent or "kirocrew"),
-                    )
+                    _store = get_global_hook_store()
+                    try:
+                        _hook_results = cast(
+                            list[ScriptHookResult],
+                            await fire_tool_hooks(
+                                _store,
+                                event.title,
+                                event.tool_input,
+                                parent_session_key=session_key or None,
+                                agent_role=(agent or "kirocrew"),
+                                raise_on_error=True,
+                                return_results=True,
+                            ),
+                        )
+                    except Exception as exc:
+                        if _hook_identity is not None and _store is not None:
+                            _hook_fire_cache[_hook_identity] = exc
+                        logger.debug("PreToolUse hook error", exc_info=True)
+                    else:
+                        if _hook_identity is not None and _store is not None:
+                            _hook_fire_cache[_hook_identity] = _hook_results
+                elif event.kind == EVENT_TOOL_RESULT:
+                    _hook_identity = hook_event_identity(event)
+                    if _hook_identity is not None:
+                        _hook_fire_cache.pop(_hook_identity, None)
                 elif event.kind == EVENT_COMPLETE:
                     _complete_event = event
                     break

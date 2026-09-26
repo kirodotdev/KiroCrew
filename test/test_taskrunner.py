@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import kiro_crew.task_executor as task_executor_module
 import kiro_crew.taskrunner as taskrunner_module
 from conftest import requires_git
 from kiro_crew.task_models import PROGRESS_FILE
@@ -32,6 +33,15 @@ from kiro_crew.workflows.store import WorkflowRunStore
 # (an executor hop, an fsync). Returns as soon as the state is observed, so the
 # value only matters when the test is about to fail by name instead of hanging.
 _GENEROUS_DEADLINE = 30.0
+
+
+@pytest.fixture(autouse=True)
+def _hook_store(monkeypatch):
+    store = MagicMock()
+    store.fire = AsyncMock(return_value=[])
+    monkeypatch.setattr(task_executor_module, "get_global_hook_store", lambda: store)
+    return store
+
 
 # ── Fixtures ──
 

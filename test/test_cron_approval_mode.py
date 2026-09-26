@@ -413,6 +413,7 @@ class TestSubagentInheritsPolicy:
         runner = SubagentManager(
             sessions=sessions, ctx_builder=ctx_builder, on_tool_approval=on_tool_approval
         )
+        runner.hook_store = MagicMock(fire=AsyncMock(return_value=[]))
         info = SubagentInfo(
             id="sub1",
             task="test",

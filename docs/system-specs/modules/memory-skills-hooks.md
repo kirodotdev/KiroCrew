@@ -4481,6 +4481,16 @@ a hook is therefore **not portable across platforms**:
 Both platforms receive the same `KIROCREW_HOOK_EVENT` / `KIROCREW_HOOK_CONTEXT`
 env vars and the same hook-event JSON on stdin.
 
+For task-runner and subagent permission requests, `PreToolUse` is a fail-closed
+script-hook gate: the global `ScriptHookStore` must be initialized, exit code 0
+allows the request, and exit code 2 or any other result rejects it before the
+request is answered. A tool-call notification without a permission request stays
+informational. When a provider emits both forms for one call, the surfaces use
+its stable `tool_call_id` (or request identity when that is the only available
+identity) to fire and evaluate one hook result; distinct identities are not
+coalesced. Tool-input strings are parsed as JSON when possible and otherwise
+retained verbatim, including scalar JSON values.
+
 **A hook subprocess inherits only an allowlisted slice of the gateway
 environment, not the whole of `os.environ`.** The gateway process holds
 credentials (provider API keys, tokens) in its environment; copying that wholesale

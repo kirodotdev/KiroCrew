@@ -4711,6 +4711,69 @@ class ScriptHookResult:
     def succeeded(self) -> bool:
         return self.exit_code == 0
 
+    # Shared 0/2-verdict predicate: one definition serves the dashboard
+    # chat gate and the autonomous paths. A PreToolUse hook
+    # has a two-valued contract — 0 allow, 2 deny — every other code means
+    # the gate did not decide.
+    @property
+    def has_verdict(self) -> bool:
+        """True when the hook delivered a verdict (exit 0 allow or 2 deny)."""
+        return self.exit_code in (0, 2)
+
+
+def pretooluse_should_block(
+    result: "ScriptHookResult",
+    *,
+    event: str,
+) -> bool:
+    """Shared PreToolUse deny predicate (tightest-wins, fail-closed).
+
+    A PreToolUse hook has a two-valued contract — exit 0 allow, exit 2 deny
+    (``ScriptHookResult.has_verdict``). Any other exit means the gate did not
+    decide (timeout, crash, missing binary → -1/126/127/1) and — for a gating
+    event — resolves to deny. There is no fail-open escape hatch: the base
+    recorded the deliberate no-escape-hatch decision, and every surface
+    applies this one predicate. Other events never block on a non-verdict
+    (warn-only).
+
+    Single definition for the dashboard chat gate and the autonomous
+    subagent/task-runner gates (H13 harness-parity: no new scope).
+    """
+    if result.blocked:
+        return True
+    if result.has_verdict:
+        return False
+    return event == HOOK_EVENT_PRE_TOOL_USE
+
+
+def _pretooluse_block_reason(result: "ScriptHookResult") -> str:
+    """Preferred block detail for a non-verdict PreToolUse result (redacted)."""
+    return (result.error or result.stderr or f"exited with code {result.exit_code}")[:200]
+
+
+def _should_block_results(
+    results: list["ScriptHookResult"],
+    *,
+    event: str,
+) -> tuple[bool, str]:
+    """Evaluate a batch of hook results with the shared predicate.
+
+    Returns (should_block, detail) where detail is the first blocking reason.
+    Used by the autonomous gates (subagent, task-runner) so the verdict logic
+    has one definition (tightest-wins, fail-closed PreToolUse); the dashboard
+    chat gate shares the single-result predicate underneath.
+    """
+    for r in results:
+        if pretooluse_should_block(r, event=event):
+            # Prefer the hook-authored message, falling back to exit code.
+            detail = (
+                _pretooluse_block_reason(r)
+                if not r.blocked
+                else (r.stderr[:200] if r.stderr else "hook denied")
+            )
+            return True, detail
+    return False, ""
+
 
 def _script_hooks_capability_denied(session_key: str = "") -> str | None:
     """Return a denial reason if governance disables ``capabilities.script_hooks``.
@@ -5309,7 +5372,7 @@ class ScriptHookStore:
         event: str,
         context: str = "",
         tool_name: str = "",
-        tool_input: dict | None = None,
+        tool_input: object | None = None,
         tool_response: dict | None = None,
         subagent_id: str | None = None,
         parent_session_key: str | None = None,
@@ -5524,14 +5587,38 @@ def get_global_hook_store() -> ScriptHookStore | None:
     return _global_script_hook_store
 
 
+def parse_hook_tool_input(value: object) -> object | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return value
+
+
+def hook_event_identity(event: object) -> tuple[str, str] | None:
+    tool_call_id = getattr(event, "tool_call_id", "")
+    if tool_call_id not in ("", None):
+        return ("tool_call", str(tool_call_id))
+    request_id = getattr(event, "request_id", "")
+    if request_id not in ("", None):
+        return ("request", str(request_id))
+    return None
+
+
 async def fire_tool_hooks(
     hook_store: ScriptHookStore | None,
     event_title: str,
-    event_tool_input: str | None = None,
+    event_tool_input: object | None = None,
     subagent_id: str | None = None,
     parent_session_key: str | None = None,
     agent_role: str | None = None,
-) -> None:
+    *,
+    raise_on_error: bool = False,
+    return_results: bool = False,
+) -> list[ScriptHookResult] | None:
     """Fire PreToolUse hooks for an EVENT_TOOL_CALL event.
 
     PostToolUse is NOT fired here because EVENT_TOOL_CALL is a notification
@@ -5549,18 +5636,13 @@ async def fire_tool_hooks(
     ``None``; subagent and taskrunner callers pass real values.
     """
     if hook_store is None:
-        return
+        return [] if return_results else None
     tool_name = event_title or ""
     if tool_name.startswith("Running: "):
         tool_name = tool_name[9:]
-    tool_input = None
-    if event_tool_input:
-        try:
-            tool_input = json.loads(event_tool_input)
-        except Exception:
-            pass
+    tool_input = parse_hook_tool_input(event_tool_input)
     try:
-        await hook_store.fire(
+        results = await hook_store.fire(
             HOOK_EVENT_PRE_TOOL_USE,
             tool_name=tool_name,
             tool_input=tool_input,
@@ -5568,5 +5650,9 @@ async def fire_tool_hooks(
             parent_session_key=parent_session_key,
             agent_role=agent_role,
         )
+        return results if return_results else None
     except Exception:
+        if raise_on_error:
+            raise
         logger.debug("PreToolUse hook error", exc_info=True)
+        return [] if return_results else None
