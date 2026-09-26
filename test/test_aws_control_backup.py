@@ -3952,6 +3952,27 @@ class TestALostRunWriteDoesNotReUploadForever:
 
         assert backup.last_runs(ACCOUNT)[backup.KIND_SNAPSHOT]["key"] == "snapshots/x.tar.gz"
 
+    def test_a_held_success_hides_the_failure_it_superseded(self):
+        """The status projections must describe the same latest attempt.
+
+        The successful upload is held in memory when its state write fails, and
+        ``last_runs`` already serves it so the schedule does not upload again.  Serving
+        the older persisted failure beside that success reports a healthy account as
+        failing until some unrelated later state write happens to drain the overlay.
+        """
+        backup.set_nightly(ACCOUNT, True)
+        witness = backup.nightly_run_witness(ACCOUNT, backup.KIND_SNAPSHOT)
+        backup.record_nightly_failure(
+            ACCOUNT, backup.KIND_SNAPSHOT, "mount gone", run_witness=witness
+        )
+        assert backup.KIND_SNAPSHOT in backup.nightly_failures(ACCOUNT)
+
+        with self._full_disk():
+            backup._record_run(ACCOUNT, backup.KIND_SNAPSHOT, "snapshots/x.tar.gz", 7)
+
+        assert backup.last_runs(ACCOUNT)[backup.KIND_SNAPSHOT]["key"] == "snapshots/x.tar.gz"
+        assert backup.nightly_failures(ACCOUNT) == {}
+
     def test_the_log_names_the_write_not_the_read(self, caplog):
         backup.set_nightly(ACCOUNT, True)
         with caplog.at_level(logging.ERROR), self._full_disk():
@@ -5033,13 +5054,86 @@ class TestNightlyRetryBackoff:
         held = backup.last_runs(ACCOUNT).get(backup.KIND_SNAPSHOT)
         assert held and held["key"] == "snapshots/i/held.tar.gz"  # the overlay holds it
         # Still on disk, because the write never landed -- the precondition of the case.
-        assert backup.nightly_failures(ACCOUNT)[backup.KIND_SNAPSHOT]["consecutive"] == 4
+        # The public projection masks it beside the newer held success; inspect storage
+        # directly here because this assertion is specifically about persistence.
+        persisted_failures = backup._account_view(ACCOUNT)[backup.NIGHTLY_FAILURE_STATE_KEY]
+        assert persisted_failures[backup.KIND_SNAPSHOT]["consecutive"] == 4
+        assert backup.nightly_failures(ACCOUNT) == {}
 
         # Any later successful state update drains the overlay through `_merge_pending`.
         backup.set_nightly(ACCOUNT, True)
         persisted = backup._account_view(ACCOUNT).get("runs", {}).get(backup.KIND_SNAPSHOT)
         assert persisted and persisted["key"] == "snapshots/i/held.tar.gz"  # run recovered
         assert backup.nightly_failures(ACCOUNT) == {}  # ...and the count went with it
+
+    def _hold_a_success(self) -> dict:
+        """A completed upload whose state write fails: held in memory, not on disk."""
+        with mock.patch.object(
+            backup, "_locked_state_update", side_effect=OSError(errno.ENOSPC, "no space")
+        ):
+            backup._record_run(
+                ACCOUNT, backup.KIND_SNAPSHOT, "snapshots/i/held.tar.gz", 9, "fp9", "v9"
+            )
+        held = backup.last_runs(ACCOUNT)[backup.KIND_SNAPSHOT]
+        assert held["key"] == "snapshots/i/held.tar.gz"
+        return held
+
+    @staticmethod
+    def _stamp_failure_row(**fields) -> None:
+        """Rewrite the persisted failure row the way ANOTHER process's write lands.
+
+        ``read_state`` + ``write_state`` without ``_locked_state_update``, so this
+        process's held run is not merged in: a second process has no overlay to merge.
+        """
+        state = backup.read_state()
+        row = state["accounts"][ACCOUNT][backup.NIGHTLY_FAILURE_STATE_KEY][backup.KIND_SNAPSHOT]
+        row.update(fields)
+        backup.write_state(state)
+
+    def test_a_held_success_releases_the_backoff_of_the_failure_it_superseded(self):
+        # The retry schedule must read the latest outcome `last_runs` and the status
+        # read serve, not the raw row a held success has already superseded.
+        backup.set_nightly(ACCOUNT, True)
+        for _ in range(6):
+            _fail(ACCOUNT, backup.KIND_SNAPSHOT, "eio")
+        held = self._hold_a_success()
+        # Stamped strictly before the success, so the order does not rest on two
+        # stamps landing on different ticks of a coarse clock.
+        failed_at = self._at(held) - dt.timedelta(hours=1)
+        self._stamp_failure_row(at=failed_at.isoformat(timespec="microseconds"))
+
+        on_disk = backup._account_view(ACCOUNT)[backup.NIGHTLY_FAILURE_STATE_KEY]
+        assert on_disk[backup.KIND_SNAPSHOT]["consecutive"] == 6  # still persisted
+        assert backup.nightly_failures(ACCOUNT) == {}
+        # Six failures back off for the 12 h ceiling, and one hour has passed.
+        assert not backup._backoff_withholds(
+            ACCOUNT, backup.KIND_SNAPSHOT, failed_at + dt.timedelta(hours=1)
+        )
+        # And the schedule is due again a day after the held success.
+        assert backup.due_for_nightly(ACCOUNT, self._at(held) + dt.timedelta(hours=23, minutes=1))
+
+    def test_a_failure_newer_than_the_held_success_stays_and_backs_off(self):
+        # The held success is newer than the PERSISTED RUN, but a later attempt by
+        # another process failed after it. That failure is the latest outcome.
+        backup.set_nightly(ACCOUNT, True)
+        backup._record_run(ACCOUNT, backup.KIND_SNAPSHOT, "snapshots/i/old.tar.gz", 1)
+        persisted_run = backup._account_view(ACCOUNT)["runs"][backup.KIND_SNAPSHOT]
+        _fail(ACCOUNT, backup.KIND_SNAPSHOT, "eio")
+        held = self._hold_a_success()
+        assert backup._run_is_newer(held, persisted_run)
+
+        failed_at = self._at(held) + dt.timedelta(hours=22)
+        self._stamp_failure_row(at=failed_at.isoformat(timespec="microseconds"), consecutive=6)
+        assert not backup._run_is_newer(
+            held,
+            backup._account_view(ACCOUNT)[backup.NIGHTLY_FAILURE_STATE_KEY][backup.KIND_SNAPSHOT],
+        )
+
+        assert backup.nightly_failures(ACCOUNT)[backup.KIND_SNAPSHOT]["consecutive"] == 6
+        # A day after the held success, one hour into the later failure's 12 h backoff.
+        now = self._at(held) + dt.timedelta(hours=23, minutes=1)
+        assert backup._backoff_withholds(ACCOUNT, backup.KIND_SNAPSHOT, now)
+        assert backup.due_for_nightly(ACCOUNT, now) is False
 
     # -- the row says WHEN the streak started, not only the last attempt ------
 
