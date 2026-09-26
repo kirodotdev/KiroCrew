@@ -9,7 +9,12 @@ an error.
 from __future__ import annotations
 
 import pytest
-from container.common.config import ConfigError, parse_route_prefix, parse_task_ttl_seconds
+from container.common.config import (
+    ConfigError,
+    _interval,
+    parse_route_prefix,
+    parse_task_ttl_seconds,
+)
 
 
 @pytest.mark.parametrize("raw", ["/", "//", "///", " / ", " // "])
@@ -87,3 +92,28 @@ def test_a_lifetime_that_is_not_an_integer_is_refused(raw: str, monkeypatch) -> 
     monkeypatch.setenv(TTL_NAME, raw)
     with pytest.raises(ConfigError):
         parse_task_ttl_seconds(TTL_NAME)
+
+
+@pytest.mark.parametrize("raw", ["0", "-1", "-60"])
+def test_a_backup_cadence_that_is_not_a_cadence_is_refused(monkeypatch, raw: str) -> None:
+    """Zero or negative is a busy loop, not a faster backup.
+
+    The wait between cycles returns immediately, so the task uploads continuously
+    instead of serving turns. This is the only value the container can say is wrong, so
+    it is the only one refused.
+    """
+    monkeypatch.setenv("SMC_BACKUP_INTERVAL_SECS", raw)
+    with pytest.raises(ConfigError, match="not a cadence"):
+        _interval("SMC_BACKUP_INTERVAL_SECS", 60)
+
+
+@pytest.mark.parametrize("raw", ["1", "2", "5", "900"])
+def test_a_short_but_real_cadence_is_accepted(monkeypatch, raw: str) -> None:
+    """There is no floor above zero, and that absence is the decision.
+
+    A floor would be a claim about what a cycle costs on a real data home, and nothing
+    here has measured one. An operator running a crew with three small transcripts who
+    asks for two seconds is not making a mistake this module can see.
+    """
+    monkeypatch.setenv("SMC_BACKUP_INTERVAL_SECS", raw)
+    assert _interval("SMC_BACKUP_INTERVAL_SECS", 60) == int(raw)

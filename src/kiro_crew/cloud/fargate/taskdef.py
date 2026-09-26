@@ -149,6 +149,27 @@ CPU_ARCHITECTURES = frozenset({"X86_64", "ARM64"})
 #: The only operating-system family a crew image is built for.
 OPERATING_SYSTEM_FAMILY = "LINUX"
 
+#: How long the platform must wait after SIGTERM before it SIGKILLs the crew container.
+#:
+#: The number is one contract split across two subsystems: the supervisor inside the
+#: image drains its three children in sequence, and the LAST of those windows is the
+#: backup writer's final cycle -- the only copy of the turns the backend flushed on the
+#: way out. Fargate's default is 30s, which the front and backend drains alone can
+#: consume, so without this the writer is killed before that cycle starts, the supervisor
+#: dies with it, and the non-zero exit that reports the loss is never delivered. Every
+#: routine deploy would then lose up to one backup interval of turns silently.
+#:
+#: A DELIBERATE DUPLICATE of the total in the image's ``container/common/config.py``, not
+#: an import of it. That tree runs inside the Linux image on an installed layout where
+#: ``kiro_crew`` is absent, so importing it here would fail at runtime and would pull an
+#: audit-exempt tree into gateway code. The two copies are pinned equal from the test
+#: suite, which reads the image tree's source as data rather than importing it.
+#:
+#: The total is the three drain windows PLUS the teardown reap margin, because draining is
+#: signal, wait, sweep and reap rather than only the children's own time. Pinning this to
+#: the windows alone left it ten seconds short of what the image asks the platform for.
+CREW_STOP_TIMEOUT_SECS = 85
+
 #: Tag recording the revision key on the revision itself, so the account can
 #: answer what a revision was keyed on. Without it a lost local cache has no
 #: witness, and the launcher re-registers, which is the revision leak the key
@@ -570,6 +591,14 @@ def task_definition_document(spec: TaskDefinitionSpec) -> dict[str, Any]:
                 "name": CREW_CONTAINER_NAME,
                 "image": spec.image,
                 "essential": True,
+                # The platform must wait for the supervisor's whole drain sequence before
+                # it SIGKILLs. The last window in that sequence is the backup writer's
+                # final cycle, which carries the only copy of the turns the backend
+                # flushed on the way out, so Fargate's 30s default cuts it before it
+                # starts. The windows themselves live in the image's own config; the test
+                # suite pins this value equal to their sum. Set on the definition because
+                # RunTask cannot override it.
+                "stopTimeout": CREW_STOP_TIMEOUT_SECS,
                 "portMappings": [{"containerPort": FRONT_PORT, "protocol": "tcp"}],
                 # An init process inside the container, which AWS recommends
                 # specifically for ECS Exec: the SSM agent the Fargate platform

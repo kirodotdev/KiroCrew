@@ -7,10 +7,16 @@ the crash loop is invisible exactly when it matters.
 
 Nothing asserted the return value before, which is how it survived: the whole
 supervisor suite passed with the bug in place.
+
+An orderly stop has a second half. The sidecar's post-shutdown cycle runs after the
+backend's flush and carries the only copy of the turns in it, so its status belongs in
+the exit code too: a task signalled to stop, failing that cycle and still reporting 0,
+hands the platform a lossless replacement for a lossy one.
 """
 
 from __future__ import annotations
 
+import pytest
 from container.supervisor import __main__ as entry
 
 from .test_supervisor_main import make_settings, wired  # noqa: F401  (pytest fixture)
@@ -77,3 +83,54 @@ def test_teardown_still_runs_on_the_failure_path(wired, tmp_path):  # noqa: F811
     # real event names rather than a name I assumed: the first version of this test
     # looked for "teardown" and failed against a correct implementation.
     assert [e for e in wired if e.startswith("term:")] == ["term:front", "term:backend"], wired
+
+
+# --- the final backup cycle is the second half of an orderly stop -----------------
+
+
+class _FakeSidecar:
+    """A sidecar whose drain reports the status this test wants to exercise."""
+
+    pid = 8321
+
+    def __init__(self, status: int | None) -> None:
+        self._status = status
+
+    def terminate(self, drain_timeout: float) -> int | None:
+        return self._status
+
+
+def _stop_with_sidecar(monkeypatch, tmp_path, status: int | None) -> int:
+    """Take an orderly stop with a sidecar that drained reporting *status*."""
+    monkeypatch.setattr(entry, "restore_authority", lambda settings: None)
+    monkeypatch.setattr(entry, "_start_sidecar", lambda settings: _FakeSidecar(status))
+    monkeypatch.setattr(entry, "_sweep_orphans_the_backend_cannot_reap", lambda known: None)
+    return entry.run(make_settings(tmp_path, bucket="bkt"), wait_for_shutdown=lambda c: "signal")
+
+
+@pytest.mark.usefixtures("wired")
+def test_a_committed_final_cycle_keeps_an_orderly_stop_successful(tmp_path, monkeypatch):
+    """The success case has to stay reachable, or the check is just a broken task."""
+    assert _stop_with_sidecar(monkeypatch, tmp_path, 0) == 0
+
+
+@pytest.mark.usefixtures("wired")
+def test_a_failed_final_cycle_makes_an_orderly_stop_a_failure(tmp_path, monkeypatch):
+    """The writer exits non-zero for a post-shutdown cycle it could not complete.
+
+    That cycle runs after the backend's flush and holds the only copy of the turns in
+    it, so exiting 0 here reports a lossless replacement for a lossy one.
+    """
+    assert _stop_with_sidecar(monkeypatch, tmp_path, 1) != 0
+
+
+@pytest.mark.usefixtures("wired")
+def test_a_sidecar_killed_at_the_drain_window_is_a_failure(tmp_path, monkeypatch):
+    """A drain overrun mid-upload is reported as a negative status, not a code."""
+    assert _stop_with_sidecar(monkeypatch, tmp_path, -9) != 0
+
+
+@pytest.mark.usefixtures("wired")
+def test_an_unreadable_sidecar_status_is_a_failure(tmp_path, monkeypatch):
+    """Unknown fails closed here for the same reason an empty shutdown reason does."""
+    assert _stop_with_sidecar(monkeypatch, tmp_path, None) != 0

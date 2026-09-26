@@ -1,14 +1,16 @@
 """Track S3: launch the Kiro Crew backend headless and supervise the process tree.
 
 This package owns the container entrypoint. It runs the startup order the
-contract makes a correctness requirement (`docs/system-specs/modules/aws-control.md`, "Three
-processes, one task"): gate the environment and install the bundle, then the backend, then the
-front process. It also owns shutdown, which terminates process *groups* rather
-than pids because a `kiro-cli` worker is a two-process tree and signalling only
-the launcher orphans a child that finishes its turn anyway.
+contract makes a correctness requirement (`docs/system-specs/modules/aws-control.md`, "Four
+processes, one task"): gate the environment and install the bundle, restore the authority
+files, then the backend, then the front process, then the backup sidecar. It also owns
+shutdown, which terminates process *groups* rather than pids because a `kiro-cli` worker is
+a two-process tree and signalling only the launcher orphans a child that finishes its turn
+anyway.
 
-There is no restore phase and no sidecar: the backup subsystem was extracted from
-this PR (durability is tracked separately).
+The restore is third for a reason the ordering rule states: the backend's periodic flush
+persists its in-memory slot table, so a flush landing before the restore finishes writes an
+empty set over the record of which conversations existed.
 
 Public seams other tracks may call (do not import our internals otherwise):
 

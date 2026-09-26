@@ -200,7 +200,9 @@ def test_the_config_is_written_before_the_backend_starts(tmp_path: Path, monkeyp
     from container.supervisor import __main__ as entry
 
     calls: list[str] = []
-    settings = make_settings(tmp_path)
+    # No bucket: this test's subject is the config write's position in the order, and a
+    # configured bucket would make the boot restore the authority files for real.
+    settings = make_settings(tmp_path, bucket="")
 
     class _Fake:
         def terminate(self, *a, **k):
@@ -243,7 +245,7 @@ def test_the_config_is_written_before_the_backend_starts(tmp_path: Path, monkeyp
     monkeypatch.setattr(entry.backend_mod, "start_backend", _record_returning("backend", _Fake()))
     monkeypatch.setattr(entry.backend_mod, "wait_until_ready", lambda *a, **kw: None)
     monkeypatch.setattr(entry, "_start_front", _record_returning("front", _Fake()))
-    monkeypatch.setattr(entry, "_teardown", lambda front, backend: None)
+    monkeypatch.setattr(entry, "_teardown", lambda *children: None)
 
     entry.run(settings, wait_for_shutdown=lambda children: "signal")
 

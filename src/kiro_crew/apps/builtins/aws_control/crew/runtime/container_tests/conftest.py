@@ -74,9 +74,9 @@ else:
 
 # Floor on how many tests the suite must yield, checked only under _REQUIRED_ENV.
 #
-# Read off a real collection (327 items). The margin is 2, not a comfortable ten per
+# Read off a real collection (517 items). The margin is 0, not a comfortable ten per
 # cent, and the tightness IS the feature: the smallest module here contributes 3
-# tests, so a floor of 325 is tripped by losing even the smallest one, which a looser
+# tests, so this floor is tripped by losing even the smallest one, which a looser
 # floor would wave through. The per-module check below catches a module that stops
 # being collected at all; this catches the subtler shape, a module still collected
 # but yielding fewer tests than it holds -- a parametrize source that silently
@@ -86,21 +86,23 @@ else:
 # When the suite grows, raise it. It may be LOWERED only alongside a deliberate
 # deletion of tests, in the same commit, and never to make a red lane green: a floor
 # edited down to meet the measurement measures nothing.
-_MIN_COLLECTED = 325
+_MIN_COLLECTED = 517
 
-# Not collected on a non-POSIX host. This suite's SUBJECT is the source of a Linux
-# container image, built by the deploy driver and run on Fargate -- not part of the
-# application that installs on a user's machine. It depends on POSIX primitives that
-# are not incidental: the supervisor forks and signals a process group, and the
-# layout tests assert container filesystem paths. Running it on Windows measures
-# nothing about the only platform the image runs on, and it failed there for exactly
-# that reason.
+# Not collected off Linux. This suite's SUBJECT is the source of a Linux container
+# image, built by the deploy driver and run on Fargate -- not part of the application
+# that installs on a user's machine. It depends on LINUX primitives that are not
+# incidental: publication links a still-open descriptor through ``/proc/self/fd``, the
+# supervisor forks and signals a process group, and the layout tests assert container
+# filesystem paths. Linux rather than POSIX is the honest line, because macOS is POSIX
+# and has no ``/proc``: a POSIX gate admits it and every test reaching publication then
+# fails on a path that platform does not have. Running the suite anywhere but Linux
+# measures nothing about the only platform the image runs on.
 #
-# Marking individual tests was tried first and is the wrong shape: the POSIX
+# Marking individual tests was tried first and is the wrong shape: the platform
 # dependencies are spread across the suite, so the list was already incomplete and
-# the next test to touch a fork/signal path would redden Windows again without
-# changing anything real. Skipping the whole tree on a non-POSIX host is the honest
-# unit.
+# the next test to touch a fork, signal or descriptor path would redden a foreign
+# platform again without changing anything real. Declining the whole tree off Linux is
+# the honest unit.
 #
 # The suite is ALSO not collected when the image's own runtime dependencies are not
 # importable. ``container/requirements.txt`` (fastapi, uvicorn, httpx, boto3) is
@@ -129,8 +131,12 @@ _missing_image_deps = [
     name for name in _IMAGE_COLLECT_TIME_DEPS if importlib.util.find_spec(name) is None
 ]
 
-if os.name != "posix":  # pragma: no cover - the excluded platform
-    _declined: str | None = f"the host is not POSIX (os.name is {os.name!r})"
+# Annotated before the branch rather than inside it: a type checker resolves
+# ``sys.platform`` for the platform it is checking, so on Linux the first branch is
+# unreachable and an annotation living there is never seen.
+_declined: str | None
+if sys.platform != "linux":  # pragma: no cover - the excluded platform
+    _declined = f"the host is not Linux (sys.platform is {sys.platform!r})"
 elif _missing_image_deps:  # pragma: no cover - the app CI env without image deps
     _declined = "these image runtime dependencies are not importable: " + ", ".join(
         _missing_image_deps
@@ -145,7 +151,7 @@ if _declined is not None:  # pragma: no cover - decided by the host, not by a br
             f"the crew container suite, but it cannot: {_declined}. Refusing to skip. "
             "A skip here would take the whole suite out of collection while the run "
             "still reports success. Install the image's runtime dependencies "
-            "(container/requirements.txt) on a POSIX host, or unset "
+            "(container/requirements.txt) on a Linux host, or unset "
             f"{_REQUIRED_ENV} if this environment is not meant to run them."
         )
     collect_ignore_glob = ["test_*.py"]

@@ -13,10 +13,8 @@ ships green.
 from __future__ import annotations
 
 import importlib.util
-import os
 import re
 import sys
-import types
 from pathlib import Path
 from unittest import mock
 
@@ -591,29 +589,7 @@ _CONTAINER_CONFTEST = (
 )
 
 
-def _os_reporting(name: str):
-    """A stand-in ``os`` module whose ``name`` is *name*, for ``sys.modules``.
-
-    ``mock.patch.object(os, "name", ...)`` cannot be used here. ``pathlib.Path.__new__``
-    consults ``os.name`` on EVERY instantiation to pick ``PosixPath`` or ``WindowsPath``,
-    and the conftest calls ``Path(__file__).resolve()``, so patching the real attribute
-    makes that line raise ``cannot instantiate 'WindowsPath' on your system`` -- in both
-    directions, since a Windows runner patched to ``posix`` fails the mirror way.
-
-    Swapping the module that the conftest's own ``import os`` resolves to keeps the
-    change inside the module under test: ``pathlib`` bound the real ``os`` object when it
-    was first imported and never looks it up again.
-    """
-    proxy = types.ModuleType("os")
-    proxy.__dict__.update(vars(os))
-    # Through ``__dict__`` rather than ``proxy.name``: mypy types a ``ModuleType``
-    # attribute set by the stub for the real ``os``, so the direct assignment is an
-    # ``attr-defined`` error on a line that is doing exactly what it means to.
-    proxy.__dict__["name"] = name
-    return proxy
-
-
-def _run_container_conftest(*, present: set[str], os_name: str = "posix"):
+def _run_container_conftest(*, present: set[str], platform: str = "linux"):
     """Load the container conftest as a module with ``find_spec`` reporting only ``present``.
 
     Uses the same ``spec_from_file_location`` + ``exec_module`` mechanism as
@@ -637,14 +613,24 @@ def _run_container_conftest(*, present: set[str], os_name: str = "posix"):
     try:
         importlib.util.find_spec = fake_find_spec  # type: ignore[assignment]
         # Pin the platform the conftest sees, so what a caller measures is the branch it
-        # asked for. The conftest tests ``os.name`` BEFORE it tests the deps, so on a
-        # Windows runner ``collect_ignore_glob`` is set whatever ``present`` says, and
-        # every dep-branch assertion would be reading the platform branch's answer.
+        # asked for. The conftest tests ``sys.platform`` BEFORE it tests the deps, so on a
+        # Windows or macOS runner ``collect_ignore_glob`` is set whatever ``present`` says,
+        # and every dep-branch assertion would be reading the platform branch's answer.
+        # The default is therefore ``linux``, which is the only platform on which the dep
+        # branch is reachable at all.
         #
-        # Skipping those tests on Windows was the alternative and is worse: the
-        # dependency logic is not platform-specific, so a skip stops checking a live
-        # property on one platform while still scoring as a pass.
-        with mock.patch.dict(sys.modules, {"os": _os_reporting(os_name)}):
+        # Skipping those tests off Linux was the alternative and is worse: the dependency
+        # logic is not platform-specific, so a skip stops checking a live property on two
+        # of the three platforms while still scoring as a pass.
+        #
+        # ``sys.platform`` is a plain string and is safe to patch directly, unlike
+        # ``os.name``: ``pathlib.Path.__new__`` consults ``os.name`` on every
+        # instantiation to pick ``PosixPath`` or ``WindowsPath``, and the conftest calls
+        # ``Path(__file__).resolve()``, so pinning that attribute raises ``cannot
+        # instantiate 'WindowsPath' on your system`` -- in both directions, since a
+        # Windows runner pinned to a POSIX name fails the mirror way. Nothing consults
+        # ``sys.platform`` per-instantiation.
+        with mock.patch.object(sys, "platform", platform):
             spec.loader.exec_module(module)
     finally:
         importlib.util.find_spec = saved  # type: ignore[assignment]
@@ -665,24 +651,30 @@ def test_container_suite_runs_when_all_collect_time_deps_present() -> None:
     assert ns._missing_image_deps == []
     assert getattr(ns, "collect_ignore_glob", None) is None, (
         "conftest must NOT skip the image suite when every collection-time dep is "
-        "importable, or the 309 tests stop running where their subject can run"
+        "importable, or the suite stops running where its subject can run"
     )
 
 
-def test_the_platform_branch_wins_over_the_dep_branch() -> None:
-    """On a non-POSIX host the suite is skipped even with every dep importable.
+@pytest.mark.parametrize("platform", ["win32", "darwin"])
+def test_the_platform_branch_wins_over_the_dep_branch(platform: str) -> None:
+    """Off Linux the suite is skipped even with every dep importable.
 
     The two branches answer different questions -- "can this subject run here at all"
     and "are its imports satisfied" -- and the platform one has to win, because the
     image is Linux-only however complete the dev env is. Ordering them the other way
-    would collect 309 POSIX-dependent tests on Windows whenever someone had installed
-    ``requirements-dev.txt`` there.
+    would collect the whole Linux-dependent suite on Windows whenever someone had
+    installed ``requirements-dev.txt`` there.
+
+    ``darwin`` is covered beside ``win32`` because it is the case a POSIX test admits
+    and Linux does not: macOS is POSIX, and publication in this package links a
+    descriptor through ``/proc/self/fd``, which Darwin does not have. A gate keyed on
+    POSIX lets every such test through to a guaranteed ``FileNotFoundError``.
     """
-    ns = _run_container_conftest(present={"fastapi", "httpx", "uvicorn"}, os_name="nt")
+    ns = _run_container_conftest(present={"fastapi", "httpx", "uvicorn"}, platform=platform)
     assert ns._missing_image_deps == [], "the dep branch had nothing to complain about"
     assert getattr(ns, "collect_ignore_glob", None) == [
         "test_*.py"
-    ], "the image suite must not be collected on a non-POSIX host, whatever its deps"
+    ], "the image suite must not be collected on a host that is not Linux, whatever its deps"
 
 
 def test_boto3_is_not_a_collect_time_gate() -> None:

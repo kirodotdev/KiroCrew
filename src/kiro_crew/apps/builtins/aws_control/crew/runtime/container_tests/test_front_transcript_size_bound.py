@@ -16,6 +16,7 @@ import io
 from pathlib import Path
 
 import pytest
+from container.common import objects
 from container.front import transcript as t
 
 
@@ -33,18 +34,20 @@ class _Body:
 
 def test_a_transcript_under_the_ceiling_reads_whole() -> None:
     body = _Body(b"a" * 4096)
-    assert t._read_bounded(body, "k", limit=8192) == b"a" * 4096
+    assert objects.read_bounded(body, "k", limit=8192) == b"a" * 4096
 
 
 def test_a_transcript_over_the_ceiling_is_refused() -> None:
-    with pytest.raises(t.TranscriptTooLarge, match="exceeds"):
-        t._read_bounded(_Body(b"a" * 9000), "some/key.jsonl", limit=8192)
+    with pytest.raises(objects.ObjectTooLarge, match="exceeds"):
+        objects.read_bounded(_Body(b"a" * 9000), "some/key.jsonl", limit=8192)
 
 
 def test_the_refusal_names_the_key() -> None:
     """An operator has to know WHICH object, since the fix is on the bucket side."""
-    with pytest.raises(t.TranscriptTooLarge) as exc:
-        t._read_bounded(_Body(b"a" * 9000), "crews/frontdesk/dashboard_slot-1.jsonl", limit=8192)
+    with pytest.raises(objects.ObjectTooLarge) as exc:
+        objects.read_bounded(
+            _Body(b"a" * 9000), "crews/frontdesk/dashboard_slot-1.jsonl", limit=8192
+        )
     assert "crews/frontdesk/dashboard_slot-1.jsonl" in str(exc.value)
 
 
@@ -65,8 +68,8 @@ def test_the_read_is_chunked_rather_than_one_call() -> None:
     checked once the memory was already committed. Asserting on the number of reads is
     what pins that: one read of everything would be a single call.
     """
-    body = _Body(b"a" * (3 * t._READ_CHUNK_BYTES))
-    t._read_bounded(body, "k")
+    body = _Body(b"a" * (3 * objects.GET_CHUNK_BYTES))
+    objects.read_bounded(body, "k", limit=8 * objects.GET_CHUNK_BYTES)
     assert body.reads >= 3
 
 

@@ -6,8 +6,16 @@ becomes the next disagreement.
 """
 
 from .config import (
+    BACKEND_DRAIN_SECS,
     BACKEND_HOST,
+    BACKUP_MAX_ATTEMPTS,
+    BACKUP_REQUEST_TIMEOUT_SECS,
     CONTROL_SECRET_HEADER,
+    FRONT_DRAIN_SECS,
+    MAX_OBJECT_BYTES,
+    MAX_TASK_STOP_TIMEOUT_SECS,
+    SIDECAR_DRAIN_SECS,
+    TASK_STOP_TIMEOUT_SECS,
     ConfigError,
     Settings,
     load,
@@ -24,6 +32,14 @@ from .secret import (
 __all__ = [
     "BACKEND_HOST",
     "CONTROL_SECRET_HEADER",
+    "MAX_OBJECT_BYTES",
+    "BACKUP_MAX_ATTEMPTS",
+    "BACKUP_REQUEST_TIMEOUT_SECS",
+    "FRONT_DRAIN_SECS",
+    "BACKEND_DRAIN_SECS",
+    "SIDECAR_DRAIN_SECS",
+    "TASK_STOP_TIMEOUT_SECS",
+    "MAX_TASK_STOP_TIMEOUT_SECS",
     "ConfigError",
     "Settings",
     "load",

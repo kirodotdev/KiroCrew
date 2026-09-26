@@ -7,13 +7,15 @@ reasons from a premise the program does not hold.
 
 * ``front/app.py`` said the control header's name was "not pinned by the shared base",
   directly above ``CONTROL_SECRET_HEADER = common.CONTROL_SECRET_HEADER``.
-* ``front/transcript.py`` said the backup layout was "not ours to import", above an import
-  of it -- both the import and that comment left when the backup subsystem was extracted
-  from this PR, so the guard now only ensures neither returns.
+* ``front/transcript.py`` said the backup layout was "not ours to import", directly above
+  an import of it. The key derivation IS shared, by design: one definition serves both the
+  writer and the reader, because a disagreement between them is invisible in both
+  directions -- a GET simply misses, and a customer whose history was not found looks
+  exactly like a new customer.
 
 Neither code line was wrong. The header alias is the better choice than a second copy, and
-the transcript key helpers are now the front's own after backup left. So the comments were
-corrected to the code rather than the other way round.
+so is the shared key derivation. So the comments are corrected to the code rather than the
+other way round.
 
 These tests are the cheap half of keeping them honest. They cannot check that prose is
 accurate, only that the specific claims which HAD drifted cannot come back while the code
@@ -31,8 +33,11 @@ from __future__ import annotations
 import pathlib
 
 from container import common
+from container.common import keys
 from container.front import app as app_mod
 from container.front import transcript as transcript_mod
+
+from ._settings_helper import make_settings
 
 APP_SOURCE = pathlib.Path(app_mod.__file__)
 TRANSCRIPT_SOURCE = pathlib.Path(transcript_mod.__file__)
@@ -56,17 +61,23 @@ def test_the_header_comment_does_not_deny_the_shared_definition() -> None:
     )
 
 
-def test_the_transcript_key_helpers_are_defined_locally() -> None:
-    """The front owns its key derivation now that backup is extracted.
+def test_the_transcript_key_derivation_is_the_shared_one(tmp_path) -> None:
+    """The front's key comes from the module the writer also reads.
 
-    While the sidecar existed, the front imported ``full_key``/``sessions_prefix`` from the
-    backup layout so the two could not drift. Backup left this PR, so the helpers moved here.
-    This pins that the derivation is present as the front's own, callable functions -- a
-    replacement that dropped them would break the transcript fetch.
+    Pinned two ways, because either alone is weak. The key the front derives must equal
+    the shared derivation's, and the front must hold no private copy of the parts that
+    make one up: a local prefix helper is exactly how the two sides start to disagree
+    while each keeps passing its own tests.
     """
-    assert callable(transcript_mod._full_key)
-    assert callable(transcript_mod._sessions_prefix)
-    assert callable(transcript_mod._object_prefix)
+    settings = make_settings(tmp_path, crew="c1", prefix="p1")
+    assert transcript_mod.object_key(settings, "dashboard_s1") == keys.transcript_key(
+        settings, "dashboard_s1"
+    )
+    for private in ("_full_key", "_sessions_prefix", "_object_prefix"):
+        assert not hasattr(transcript_mod, private), (
+            f"{private} is a second copy of a derivation container.common.keys already "
+            "owns, and a reader that disagrees with the writer only ever misses"
+        )
 
 
 def test_the_transcript_comment_does_not_claim_a_backup_import() -> None:

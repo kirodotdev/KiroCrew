@@ -2,7 +2,7 @@
 
 The deployed unit is Kiro Crew's own backend, run in *dashboard mode*, on
 loopback, with no interface served (`docs/system-specs/modules/aws-control.md`,
-"Three processes, one task"). Dashboard mode is
+"Four processes, one task"). Dashboard mode is
 required and `--no-dashboard` is wrong: the smaller ``_init_api_server`` it
 starts has neither the chat endpoints nor the slot registry this design calls,
 and it quiets nothing, so headless here means "no interface exposed", not
@@ -335,7 +335,7 @@ def write_backend_config(settings: Settings) -> Path:
     a transport it starts there is already connected by the time anything else could
     object.
 
-    ``config_dir`` equals ``data_home`` (see the spec's "Three processes, one task").
+    ``config_dir`` equals ``data_home`` (see the spec's "Four processes, one task").
 
     Written through a sibling temp and one atomic replace, because the failure this
     file has is in the FUTURE: nothing reads it during this write, and a truncated
