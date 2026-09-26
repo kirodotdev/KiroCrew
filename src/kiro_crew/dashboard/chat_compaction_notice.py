@@ -37,6 +37,7 @@ from kiro_crew.session_compaction import (
     COMPACT_OUTCOME_COMPACTED,
     COMPACT_OUTCOME_RECYCLED,
     COMPACT_OUTCOME_RESTARTED_UNCOMPACTABLE,
+    COMPACT_OUTCOME_WAITING_FOR_SUBAGENTS,
 )
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,10 @@ logger = logging.getLogger(__name__)
 CHANNEL_COMPACT_NOTICE = (
     "Context reached {pct:.0f}% and was auto-compacted. Earlier turns are now a "
     "summary; this conversation continues where it left off."
+)
+CHANNEL_COMPACT_WAITING_NOTICE = (
+    "Context reached {pct:.0f}% but auto-compact failed. The session is waiting for "
+    "its sub-agents to finish before it restarts; your messages are kept."
 )
 CHANNEL_COMPACT_FAILED_NOTICE = (
     "Context reached {pct:.0f}% but auto-compact failed. It retries after a "
@@ -103,6 +108,8 @@ def notice_text(
     ``new_cmd`` is threaded into both restart notices because it is the one action a
     user can take afterwards, and it is already per-namespace.
     """
+    if outcome == COMPACT_OUTCOME_WAITING_FOR_SUBAGENTS:
+        return CHANNEL_COMPACT_WAITING_NOTICE.format(pct=pct)
     if not success:
         compact_cmd, new_cmd = _MANUAL_COMMANDS.get(namespace, _DEFAULT_COMMANDS)
         return CHANNEL_COMPACT_FAILED_NOTICE.format(pct=pct, cmd=compact_cmd, new_cmd=new_cmd)
