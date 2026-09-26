@@ -166,14 +166,50 @@ ignores `silent` degrades to the prior double-sound behavior and no worse.
 
 Two sound kinds are synthesized by the websocket layer. `TURN_DONE_KIND`
 (`'turn'`, on `chat_done`) is sound-only: it never appears in the feed (no Redux
-entry, no toast, no badge). `APPROVAL_KIND` (`'approval'`, on an `approval`
-frame) is synthesized for sound, but the same approval frame *separately* adds an
-approval notification to the feed — so approval both chimes and shows a feed
-entry, and the two are independent (the feed entry is also what carries the
-approval to the OS toast). Both chimes are suppressed during reconnect
-catch-up replay, and `shouldChimeOnTurnDone` also suppresses slot-less turn
-completions. A real feed `notification` frame fires `MC_NOTIFICATION_EVENT` with
-its own `kind`, except when the note is muted-channel (`silenced`) or `passive`.
+entry, no toast, no badge). `APPROVAL_KIND` (`'approval'`) is synthesized at
+three sites:
+
+- an `approval` frame (a coordinator-registry approval: a Slack, cron, or
+  sub-agent spawn gate). The same frame *separately* adds an approval
+  notification to the feed — so a coordinator approval both chimes and shows a
+  feed entry, and the two are independent (the feed entry is also what carries
+  the approval to the OS toast);
+- a `question_card` frame, once per server card identity;
+- a `chat_message` frame carrying the chat runner's `permission` row — an
+  INTERACTIVE chat parked on a tool prompt. The runner appends that row
+  (delivered once to every dashboard window as this frame), registers its
+  future and pushes the slots; no `approval` frame exists for it, and the
+  coordinator's own cards are synthesized on the client, so every server row
+  of this role is the runner's and its one delivery is the one sound.
+  `shouldChimeOnPermissionRow` requests it unless the row carries `resolved`
+  or the socket is in reconnect catch-up. A row arrives `resolved` when the
+  runner already knows nobody will answer it: the batch-rejection re-append,
+  and a turn with no budget left to wait, which the runner decides before the
+  append (no I/O is needed) because the in-place mark that closes a prompt
+  later reaches the client only as an `approval_resolved` frame, which
+  retires the card but cannot un-play a sound. A row pre-declined that way is
+  not mirrored to a linked Slack thread: the post is the one cancellable await
+  between the prompt's registration and the backstop that retires its future,
+  and a turn ceiling landing inside it would strand a future nothing resolves
+  (the Board keeps the session Blocked, Continue answers 409) for a card the
+  backstop deletes the moment the post returns — so the pre-declined row's
+  `resolved` is its final state and its future settles exactly as an
+  interactive prompt's does. The one host decline known
+  only after the row is out — a linked Slack thread the prompt could not be
+  posted to — retires the row through that frame; its arrival chime is the
+  accepted residual, since holding the row back until the post settles would
+  hide the card, the chime and the Board's pending state for the post's whole
+  duration on every linked prompt. This site is
+  the `chat_done` layering: sound only, no feed row, no toast, no producer for
+  the protected `system.approval` bus channel (which still has none). A
+  prompt already parked when a tab opens or reconnects reaches it through the
+  snapshot and the transcript rehydration, not through this frame, and stays
+  silent.
+
+Every chime is suppressed during reconnect catch-up replay, and
+`shouldChimeOnTurnDone` also suppresses slot-less turn completions. A real feed
+`notification` frame fires `MC_NOTIFICATION_EVENT` with its own `kind`, except
+when the note is muted-channel (`silenced`) or `passive`.
 
 ### Settings and resolution
 

@@ -56,6 +56,32 @@ export function shouldChimeOnTurnDone(opts: {
 }
 
 /**
+ * Whether a live `permission` row owes the `approval` sound.
+ *
+ * An interactive chat parked on a tool prompt announces it through this row
+ * alone: the chat runner appends the row (delivered once to every dashboard
+ * window as a `chat_message` frame), registers its future and pushes the
+ * slots. No `approval` frame exists for it — that frame belongs to the
+ * coordinator registry (Slack, cron and sub-agent approvals), whose cards are
+ * synthesized on the client and never arrive as a server `permission` row. So
+ * every server row of this role is the runner's, and its one delivery is the
+ * one sound. A row carrying `resolved` is a prompt the runner already knows
+ * nobody will answer: the batch-rejection re-append, or a turn with no budget
+ * left to wait, which it decides before the append so the frame knows its
+ * fate. A decline known only later (a linked Slack thread the prompt could
+ * not be posted to) retires the row through `approval_resolved` instead; that
+ * row's arrival chime is the accepted residual, since holding the row back
+ * would hide the card for the post's whole duration. Reconnect catch-up is
+ * silent, as for every other chime.
+ */
+export function shouldChimeOnPermissionRow(opts: {
+  meta?: { resolved?: unknown } | null
+  reconnecting: boolean
+}): boolean {
+  return !opts.reconnecting && !opts.meta?.resolved
+}
+
+/**
  * A feed `notification` frame the socket received LIVE — after this tab
  * mounted, outside a reconnect catch-up replay. The in-app banner
  * (`components/notifications/NotificationBanner.tsx`) listens for this, not

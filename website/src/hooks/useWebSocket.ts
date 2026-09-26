@@ -46,7 +46,7 @@ import { useAppDispatch, useAppSelector } from '../store'
 import { store } from '../store'
 import { sseStatus, sseYolo, sseConnected, sseDisconnected, sseSlots, sseTodoUpdate, sseMcpReportUpdate, setChannelTrusted, sseSlotTitle, triggerRefresh, fetchSlots, markSlotUnread, remoteSlotRead, setUpdateProgress, sseSubagentStatus, sseSubagentText, touchSlotActivity, patchSlotSourceLinks, type SubagentDetail } from '../store/dashboardSlice'
 import { addNotification, ackNotificationByTs, unackNotificationByTs, removeNotificationByTs, clearAllNotifications, fetchNotifications, markBootNotificationsFetched } from '../store/notificationsSlice'
-import { dispatchMcNotification, dispatchLiveNotification, TURN_DONE_KIND, APPROVAL_KIND, shouldChimeOnTurnDone } from './notificationEvent'
+import { dispatchMcNotification, dispatchLiveNotification, TURN_DONE_KIND, APPROVAL_KIND, shouldChimeOnTurnDone, shouldChimeOnPermissionRow } from './notificationEvent'
 import { shouldNotifyOnChatComplete } from './chatCompleteNotify'
 import { postNativeNotification } from '../lib/nativeNotify'
 import { isChatPath } from './notificationBanner'
@@ -1928,6 +1928,20 @@ export function useWebSocket() {
           case 'chat_message':
             flushChunks()
             dispatch(sseChatMessage(data))
+            // Approval-blocked chime for an INTERACTIVE chat. The chat runner
+            // parks its turn on this `permission` row and emits no `approval`
+            // frame for it (that frame is the coordinator registry's, and chimes
+            // on its own), so this row is where the sound is synthesized — the
+            // `chat_done` / `question_card` layering: client-side, sound only,
+            // no feed row, no toast. The row is delivered once, so one frame is
+            // one sound; a row carrying `resolved` — the batch-rejection
+            // re-append, or a turn with no budget left to wait, decided before
+            // the append — and a reconnect replay stay silent. A Slack post
+            // that fails after the row went out retires it via
+            // `approval_resolved`; that arrival chime is the accepted residual.
+            if (data.role === 'permission' && shouldChimeOnPermissionRow({ meta: data.meta, reconnecting: reconnectingRef.current })) {
+              dispatchMcNotification(APPROVAL_KIND)
+            }
             // Re-rank the sidebar the instant a session sees a message, instead of waiting
             // for the next full slots push. `last_ts` moves for agent output too (it feeds
             // "last message" reads); the ORDERING key moves only for an inbound prompt —
