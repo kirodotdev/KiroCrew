@@ -7739,7 +7739,7 @@ class TestSlackSubagentCompletionPersistence:
                 orch._init_subagents()
         return orch, mock_sm
 
-    def _make_info(self, parent_key="C123:1234567890.123456"):
+    def _make_info(self, parent_key="1234567890.123456"):
         info = MagicMock()
         info.id = "agent-persist"
         info.parent_session_key = parent_key
@@ -7943,6 +7943,29 @@ class TestSlackSubagentCompletionPersistence:
         # Exactly ONE completion persisted (2 appends: user + assistant), not 4.
         assert orch.conv_log.append.call_count == 2
 
+    @pytest.mark.asyncio
+    async def test_taskrunner_parent_injects_without_slack_post(self):
+        """A machine parent keeps the synthesized turn but is not a Slack thread."""
+        orch, mock_sm = self._setup()
+        on_done = mock_sm.call_args[1]["on_done"]
+        info = self._make_info("taskrunner:TASK_example:review")
+
+        with (
+            patch(
+                "kiro_crew.slack.gateway.stream_and_collect",
+                new_callable=AsyncMock,
+                return_value="synthesized response",
+            ),
+            patch("kiro_crew.slack.gateway.is_thread_temporary", return_value=False),
+            patch("kiro_crew.slack.gateway.is_thread_incognito", return_value=False),
+        ):
+            await on_done(info)
+
+        assert orch.conv_log.append.call_count == 2
+        orch.slack.open_dm.assert_not_awaited()
+        orch.slack.post_message.assert_not_awaited()
+        orch.slack.post_blocks.assert_not_awaited()
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Tests: subagent completion delivery to non-Slack channel parents
@@ -8043,6 +8066,9 @@ class TestSubagentChannelTransportDelivery:
         addressed to the session's own conversation id, never through Slack."""
         transport = self._fake_transport("telegram")
         orch, mock_sm = self._setup(parent_channel="telegram:12345", transport=transport)
+        # set_channel() persists an empty thread sentinel for non-Slack sessions;
+        # it must not turn this Telegram route into an implicit Slack mirror.
+        orch.sessions.get_thread = MagicMock(return_value="")
         on_done = mock_sm.call_args[1]["on_done"]
         info = self._make_info("telegram:kirocrew:direct:12345")
 

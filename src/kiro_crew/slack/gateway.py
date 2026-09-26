@@ -248,6 +248,7 @@ from kiro_crew.messaging.link import (
     SLACK_NAMESPACE,
     ChannelLink,
     channel_namespace_of,
+    is_legacy_slack_key,
     parse_session_key,
 )
 from kiro_crew.messaging.renderer import SilentRenderer, chunk_for_transport, display_safe
@@ -10108,11 +10109,17 @@ class GatewayOrchestrator:
                 assert self.sessions is not None
                 _namespace = channel_namespace_of(parent_key)
                 _via_transport = bool(_namespace) and _namespace != SLACK_NAMESPACE
-                _inject_label = _namespace if _via_transport else "Slack"
-                # Snapshot the delivery target BEFORE the injection retry
-                # loop: the timeout path's sessions.reset() evicts the
-                # session's in-memory origin link, so resolving after a retry
-                # would lose a Discord thread/forum target and drop the reply.
+                _slack_thread = self.sessions.get_thread(parent_key)
+                if _slack_thread is None and is_legacy_slack_key(parent_key):
+                    _slack_thread = parent_key
+                _via_slack = _namespace == SLACK_NAMESPACE or bool(_slack_thread)
+                _inject_label = (
+                    _namespace if _via_transport else ("Slack" if _via_slack else "session")
+                )
+                # Snapshot delivery targets BEFORE the injection retry loop:
+                # the timeout path's sessions.reset() evicts the session's
+                # in-memory links, so resolving after a retry would lose a
+                # channel thread/forum target or a mapped Slack thread.
                 _reply_link = self._channel_reply_link(parent_key) if _via_transport else None
                 _injected = False
                 _inject_failure_reasons: list[str] = []
@@ -10223,7 +10230,7 @@ class GatewayOrchestrator:
                             )
                         # Post only the LLM's synthesized response to Slack
                         try:
-                            if response and not _via_transport and self.slack and self._owner_id:
+                            if response and _via_slack and self.slack and self._owner_id:
                                 channel = (
                                     self.sessions.get_channel(parent_key) if self.sessions else None
                                 ) or await self.slack.open_dm(self._owner_id)
@@ -10234,7 +10241,7 @@ class GatewayOrchestrator:
                                     # to_slack_mrkdwn's 39,000-char truncation.
                                     reply_text, options = extract_options(response)
                                     for part in render_for_slack(reply_text):
-                                        await self.slack.post_message(channel, part, parent_key)
+                                        await self.slack.post_message(channel, part, _slack_thread)
                                     try:
                                         elapsed = (
                                             info.elapsed
@@ -10260,7 +10267,7 @@ class GatewayOrchestrator:
                                             channel,
                                             footer_blocks,
                                             footer_text,
-                                            parent_key,
+                                            _slack_thread,
                                         )
                                         self._remember_options(
                                             parent_key,
