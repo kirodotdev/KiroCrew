@@ -126,7 +126,6 @@ test/test_pip_deps_consistency.py::test_all_unguarded_third_party_imports_are_de
 test/test_pod.py::TestCliVerbs::test_install_writes_unit
 test/test_pod.py::TestEnvFileAndPin::test_pin_checkout
 test/test_pod.py::TestPodConfigWrite::test_config_and_home_are_owner_only
-test/test_pod.py::TestPodConfigWrite::test_seed_config_sanitized_and_locked_down
 test/test_pod.py::TestUnitRendering::test_env_block_pins_nondefaults
 test/test_pod.py::TestUpVerb::test_up_happy_path_json
 test/test_process_tree.py::TestDirectChildren::test_proc_children_parsed

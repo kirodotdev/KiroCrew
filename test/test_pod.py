@@ -2208,6 +2208,11 @@ class TestPodConfigWrite:
         rt.write_pod_config(home, seed=str(seed))
         data = json.loads((home / "config.json").read_text(encoding="utf-8"))
         assert data["tunnel"]["enabled"] is False  # sanitized
+        if sys.platform == "win32":
+            # No POSIX bits on Windows; owner-only enforcement is the DACL
+            # from atomic_write(restrict_to_owner=True), pinned by the
+            # restrict_to_owner suite. The sanitize above is this test's core.
+            return
         assert stat.S_IMODE((home / "config.json").stat().st_mode) == 0o600
 
     def test_a_failed_lockdown_publishes_no_config(self, tmp_path: Path, monkeypatch) -> None:
