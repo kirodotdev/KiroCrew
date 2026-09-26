@@ -846,6 +846,14 @@ class ContinuationCoordinator(ManagerComponent):
                     f"not registered within {_STEER_STARTUP_WAIT_SECS}s — "
                     "retry in a few seconds"
                 )
+        if provider.steer_needs_loss_recovery is True:
+            # codex can drop a steer it reported delivered when a later approval
+            # in the turn is denied, and a subagent run keeps no pending-steer
+            # record to requeue it from. Refuse so the caller queues instead.
+            return False, (
+                "steer_unsupported: this run's backend cannot guarantee a mid-turn "
+                "steer — use mode='follow_up'"
+            )
         try:
             ok = await provider.steer(message)
         except Exception as exc:  # pragma: no cover - provider-specific

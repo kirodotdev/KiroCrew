@@ -67,6 +67,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_SESSION_SHARING,
     ACP_BACKENDS_STEER,
+    ACP_BACKENDS_STEERING_REQUEST,
     METHOD_CANCEL,
     METHOD_SESSION_CLOSE,
     METHOD_SESSION_NEW,
@@ -1143,9 +1144,23 @@ class TestWhatTheHandleAdvertisesForCodex:
     and a model picker with nothing in it.
     """
 
-    def test_steer_is_not_advertised_for_a_host_outside_the_steer_set(self):
+    def test_codex_advertises_user_steer_over_its_own_steering_request(self):
+        """codex takes a user steer on ``_session/steering``, not kiro's verb.
+
+        This replaces a pin that codex must NOT advertise steer, whose reason was
+        that an advertised steer met ``-32601`` at the user's mid-turn correction.
+        The handle now speaks codex's own verb, which discharges that reason; the
+        refusal answer below stays off, for the reason its own test gives.
+        """
         assert ACP_BACKEND_CODEX not in ACP_BACKENDS_STEER
-        assert _handle_on(ACP_BACKEND_CODEX).supports_steer is False
+        assert ACP_BACKEND_CODEX in ACP_BACKENDS_STEERING_REQUEST
+        assert _handle_on(ACP_BACKEND_CODEX).supports_steer is True
+
+    def test_codex_does_not_advertise_refusal_steer(self):
+        """A deny notice keeps the recovery continuation: codex drops it with the turn."""
+        assert _handle_on(ACP_BACKEND_CODEX).supports_refusal_steer is False
+        for backend in (ACP_BACKEND_KIRO, ACP_BACKEND_KAS):
+            assert _handle_on(backend).supports_refusal_steer is True
 
     def test_the_kiro_family_still_advertises_steer(self):
         for backend in (ACP_BACKEND_KIRO, ACP_BACKEND_KAS):
@@ -1156,7 +1171,13 @@ class TestWhatTheHandleAdvertisesForCodex:
         for backend in (ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CODEX):
             client = MagicMock()
             client.backend = backend
-            assert _handle_on(backend).supports_steer is (backend in ACP_BACKENDS_STEER)
+            client.supports_steer = backend in ACP_BACKENDS_STEER
+            # The refusal answer is the one both drivers share; the user-steer
+            # answer is wider on the handle by exactly the steering-request set.
+            assert _handle_on(backend).supports_refusal_steer is client.supports_steer
+            assert _handle_on(backend).supports_steer is (
+                backend in ACP_BACKENDS_STEER or backend in ACP_BACKENDS_STEERING_REQUEST
+            )
 
     def test_a_model_select_populates_the_picker_when_no_models_object_is_sent(self):
         """codex advertises its models as a ``model`` select, not as ``models``."""

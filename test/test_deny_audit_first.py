@@ -66,6 +66,8 @@ class _StalledRejectClient:
     """A backend that answered nothing since the decision: reject stalls."""
 
     supports_steer = True
+    # The deny path reads the refusal answer, which a kiro-family client shares.
+    supports_refusal_steer = True
 
     def __init__(self) -> None:
         self.calls: list[str] = []

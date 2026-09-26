@@ -92,6 +92,9 @@ with no row here.
      - driver-internal (whether a member's own webview can be mounted)
    * - ``ACP_BACKENDS_STEER``
      - pre-session registry query (whether ``_session/steer`` exists)
+   * - ``ACP_BACKENDS_STEERING_REQUEST``
+     - pre-session registry query (whether a user steer travels on codex-acp's
+       ``_session/steering`` request instead)
    * - ``ACP_BACKENDS_COMPACT``
      - pre-session registry query (whether manual ``/compact`` is offered at all)
    * - ``ACP_BACKENDS_INLINE_COMPACTION``
@@ -1046,7 +1049,46 @@ ACP_BACKENDS_MEMBER_PANEL = frozenset(
 # ``sessionCapabilities`` of list and delete, and no steering extension.
 # deepseek is not a member: it advertises close, list and resume only, and permits
 # one in-flight prompt per session, so a mid-turn steer has no verb to travel on.
+#
+# This set answers the DENY-NOTICE question as well as the user one: a member's
+# steer can carry a refusal reason into the turn that was refused. A backend that
+# can take a USER's mid-turn message but not a deny notice belongs in
+# ``ACP_BACKENDS_STEERING_REQUEST`` below instead, and the two questions are read
+# off separate properties (``supports_steer`` and ``supports_refusal_steer``).
 ACP_BACKENDS_STEER = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+
+# Backends that take a USER's mid-turn message over codex-acp's
+# ``_session/steering`` request rather than kiro-cli's ``_session/steer``.
+#
+# Measured against a live codex-acp 1.11.0: a steer sent while a prompt is in
+# flight is answered ``{outcome: "injected"}`` within milliseconds and the running
+# turn reads it; the same request with no turn running is answered
+# ``{outcome: "startedNewTurn"}`` and the adapter runs a turn of its own that no
+# ``session/prompt`` owns; ``session/cancel`` stops that turn and the next
+# ``session/prompt`` runs normally. There is no ``steering_consumed`` echo, so the
+# request's own answer is the delivery evidence.
+#
+# The session handle therefore AWAITS the answer (the kiro verb is
+# fire-and-forget), until it arrives or the aimed-at turn ends: ``injected``
+# settles the steer inside that turn, ``failed`` or no answer before the turn ends
+# reports it undelivered so the caller queues it as the next turn, and
+# ``startedNewTurn`` is cancelled first so the text cannot run twice. The result
+# is at-least-once: codex orders the answer against the turn's terminal in no
+# way, so a steer injected just as its turn ends can be queued as well and run a
+# second time, visibly, as its own turn. Only the
+# shared-runtime path speaks it -- ``AcpSessionHandle`` -- because only there can
+# a request be awaited without competing with the turn for the adapter's stdout.
+#
+# Deliberately NOT ``ACP_BACKENDS_STEER``: the deny-notice path needs a steer
+# that survives the refusal, and codex discards an injected steer with a turn
+# its approval answer cancels (see the note above).
+#
+# The same discard reaches a user steer the turn already settled, when a LATER
+# approval is denied. The handle reports those as ``EVENT_STEER_LOST`` and only
+# the dashboard chat runner requeues them, so membership here also means
+# ``steer_needs_loss_recovery``: the provider wrapper that the messaging
+# channels, Side Chat and ``spawn_steer`` steer refuses, and those queue instead.
+ACP_BACKENDS_STEERING_REQUEST = frozenset({ACP_BACKEND_CODEX})
 
 # Backends that can serve a MANUAL ``/compact`` (the user-typed slash command).
 # Every member acts on the ``/compact`` prompt that ``AcpProvider.compact()``

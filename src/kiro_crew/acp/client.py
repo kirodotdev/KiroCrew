@@ -12330,6 +12330,25 @@ class AcpClient:
         """
         return self.backend in ACP_BACKENDS_STEER
 
+    @property
+    def supports_refusal_steer(self) -> bool:
+        """True when a deny notice steered into the refused turn reaches the model.
+
+        The same set as :attr:`supports_steer` on this client, which speaks only
+        kiro-cli's ``_session/steer``. The session handle answers the two apart.
+        """
+        return self.backend in ACP_BACKENDS_STEER
+
+    @property
+    def steer_needs_loss_recovery(self) -> bool:
+        """Always False: this client speaks only kiro-cli's ``_session/steer``,
+        whose clean reject keeps the turn and every steer delivered into it."""
+        return False
+
+    def take_lost_steers(self) -> list[str]:
+        """Always ``[]``; see :attr:`steer_needs_loss_recovery`."""
+        return []
+
     def turn_finished_cleanly(self) -> bool:
         """Whether the last turn reached its own end boundary uncancelled.
 

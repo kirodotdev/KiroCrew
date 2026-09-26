@@ -40,6 +40,8 @@ from kiro_crew.acp.types import (
     EVENT_MCP_SERVER_INIT_FAILURE,
     EVENT_MCP_SERVER_INITIALIZED,
     EVENT_STEER_CONSUMED,
+    EVENT_STEER_LOST,
+    MAX_STEERING_ANSWERS,
     STOP_CLASS_FAILED,
     STOP_REASON_CANCELLED,
     STOP_REASON_COMPACTION_FAILED,
@@ -100,11 +102,13 @@ from kiro_crew.dashboard import directive_queue
 from kiro_crew.dashboard.chat_delivery import (
     STEER_STATE_CONSUMED,
     STEER_STATE_REQUEUED,
+    STEER_STATE_WRITTEN,
 )
 from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY as _TURN_ACTOR_META_KEY
 from kiro_crew.dashboard.chat_delivery import (
     attachment_meta,
     find_written_steer_row,
+    remember_settled_steer,
 )
 from kiro_crew.dashboard.chat_folders import (
     _resolve_folder_steering_dirs,
@@ -967,8 +971,9 @@ async def _steer_policy_notice(
 
     Opt-in by positive capability, never by harness identity: a backend outside
     ``ACP_BACKENDS_STEER`` has no ``_session/steer``, reports
-    ``supports_steer`` False, and keeps the recovery-continuation behaviour
-    unchanged. ``getattr`` guards the attribute because the reject paths also run
+    ``supports_refusal_steer`` False, and keeps the recovery-continuation
+    behaviour unchanged. That includes codex, whose user steer travels on
+    ``_session/steering`` but whose approval answer discards it with the turn. ``getattr`` guards the attribute because the reject paths also run
     against minimal test doubles.
 
     Appends the notice to *notices* (the turn's pending list, settled later by the
@@ -980,7 +985,7 @@ async def _steer_policy_notice(
     :func:`build_refusal_steer_notice`. Every deny path that reaches a model runs
     through here, so a new one states its cause rather than inheriting "policy".
     """
-    if not getattr(client, "supports_steer", False):
+    if not getattr(client, "supports_refusal_steer", False):
         return False
     notice = build_refusal_steer_notice(
         title,
@@ -7477,6 +7482,7 @@ def _mark_steer_row_state(
     message: str,
     new_state: str,
     siblings: list[str] | None = None,
+    from_states: tuple[str, ...] = (STEER_STATE_WRITTEN,),
 ) -> None:
     """Move *message*'s persisted steer row to *new_state* and tell open clients.
 
@@ -7491,7 +7497,7 @@ def _mark_steer_row_state(
     identity: two rows minted in the same clock tick share it, so a ts-only lookup
     takes whichever came first.
     """
-    row = find_written_steer_row(slot, message, siblings)
+    row = find_written_steer_row(slot, message, siblings, from_states)
     if row is None:
         return
     ts = str(row.get("ts") or "")
@@ -7636,9 +7642,110 @@ def _settle_consumed_steers(
             # cannot rehydrate the stale card.
             state.clear_question_pending(slot.key, blocking=False)
     slot._pending_steers[:] = remaining
+    _settled_log = getattr(slot, "_steers_settled_this_turn", None)
+    _client = getattr(slot, "_acp_client", None)
+    if _client is None or _client.steer_needs_loss_recovery is not True:
+        # Only a session that can lose a steer after reporting it delivered
+        # (codex) ever reports one lost, so nothing else is kept.
+        _settled_log = None
+    _still_after = list(remaining)
+    for _msg in previous:
+        if _msg in _still_after:
+            _still_after.remove(_msg)
+        elif _settled_log is not None:
+            # Kept for the turn so an ``EVENT_STEER_LOST`` can undo the settle.
+            _settled_log.append({"text": _msg})
+            remember_settled_steer(slot, _msg)
+            # The handle admits at most MAX_STEERING_ANSWERS codex steers per turn,
+            # so this never trims in practice; it holds the mirror to that count.
+            if len(_settled_log) > MAX_STEERING_ANSWERS:
+                del _settled_log[0]
+                logger.warning("settled-steer log for slot %s over its bound", slot.key)
     for settled_msg in set(previous) - set(remaining):
         slot._steer_attachment_meta.pop(settled_msg, None)
         slot._steer_decision_strips.pop(settled_msg, None)
+
+
+def _restore_lost_steers(
+    slot: "_ChatSlot", snapshot: str, state: "DashboardState | None" = None
+) -> None:
+    """Move steers the backend discarded after consuming them back to pending.
+
+    codex reports a steer ``injected`` and then drops it when an approval in
+    the same turn is denied, because its reject cancels the turn. The handle
+    reports each such steer as ``EVENT_STEER_LOST`` carrying the echo its
+    consumed event carried. The entries that echo settled this turn go back on
+    ``_pending_steers`` with their attachments, containment admission and user
+    origin (see ``chat_delivery.remember_settled_steer``), and the turn's teardown
+    (``_requeue_unconsumed_steers``) requeues them as ordinary queue cards, which
+    re-admits them under the same rules as any requeued steer. The decision strip,
+    delivery id and send id are not restored: the steer's own row already carries
+    them, and the requeue would stamp them on a second row. If the text was in fact read
+    before the cancel, it runs a second time, visibly, which is the requeue
+    path's documented cost.
+
+    The steer's row was promoted to ``consumed`` by the settle this undoes, so it
+    is moved to ``requeued`` here; the teardown's own correction only looks for a
+    ``written`` row and would leave it claiming the turn read the steer.
+    """
+    log = getattr(slot, "_steers_settled_this_turn", None)
+    if not log or not snapshot.strip():
+        return
+    msgs = [entry["text"] for entry in log]
+    unmatched = settle_consumed_steers(msgs, snapshot)
+    lost = list(msgs)
+    for _msg in unmatched:
+        lost.remove(_msg)
+    for _msg in lost:
+        for idx, entry in enumerate(log):
+            if entry["text"] != _msg:
+                continue
+            del log[idx]
+            if state is not None:
+                # Before the append: find_written_steer_row refuses when two live
+                # steers share the content, and the entry being restored must not
+                # count against its own row.
+                _mark_steer_row_state(
+                    state,
+                    slot,
+                    _msg,
+                    STEER_STATE_REQUEUED,
+                    from_states=(STEER_STATE_CONSUMED,),
+                )
+            slot._pending_steers.append(_msg)
+            if entry.get("attachments") is not None:
+                slot._steer_attachment_meta[_msg] = entry["attachments"]
+            if entry.get("admission") is not None:
+                slot._steer_admissions[_msg] = entry["admission"]
+            if "user_origin" in entry:
+                slot._steer_user_origin[_msg] = entry["user_origin"]
+            break
+    if lost:
+        logger.info(
+            "Steer lost to a denied approval for slot %s (%d restored)", slot.key, len(lost)
+        )
+
+
+def _collect_lost_steers(
+    slot: "_ChatSlot", client: Any, state: "DashboardState | None" = None
+) -> None:
+    """Restore lost steers the turn's stream never reported, at turn exit.
+
+    ``EVENT_STEER_LOST`` is yielded before the turn's next frame, so a runtime
+    that dies after the denial, or a turn that leaves its loop another way,
+    never delivers it. The client still holds those steers; reading them here,
+    before the teardown's requeue, is what keeps them from being lost. Best
+    effort: a failure is logged and the teardown continues.
+    """
+    if client is None:
+        return
+    try:
+        lost = client.take_lost_steers()
+        if isinstance(lost, list):
+            for echo in lost:
+                _restore_lost_steers(slot, echo, state)
+    except Exception:
+        logger.warning("collecting lost steers failed for slot %s", slot.key, exc_info=True)
 
 
 def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> None:
@@ -7657,6 +7764,10 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
     A hard kill never reaches here with pending steers (the force-stop
     handler clears ``_pending_steers`` alongside ``_queue``).
     """
+    # The turn is over, so no ``EVENT_STEER_LOST`` can undo its settles now.
+    _settled_log = getattr(slot, "_steers_settled_this_turn", None)
+    if _settled_log:
+        _settled_log.clear()
     if not slot._pending_steers:
         return
     requeued = slot._pending_steers[:]
@@ -15231,6 +15342,8 @@ async def _run_chat(
                     _still_pending = settle_consumed_steers(_refusal_notices, event.text or "")
                     _refusal_notices_settled += len(_refusal_notices) - len(_still_pending)
                     _refusal_notices[:] = _still_pending
+            elif event.kind == EVENT_STEER_LOST:
+                _restore_lost_steers(slot, event.text or "", state)
             elif event.kind == EVENT_COMPACTION_STATUS:
                 logger.debug("Main loop: compaction event text=%r", event.text)
                 if event.text == "started":
@@ -19147,6 +19260,11 @@ async def _run_chat(
             or getattr(getattr(_lc, "_handle", None), "_awaiting_permission", False)
         )
         slot._last_turn_children_announced = _children_unfinished_final
+        # A denial may have discarded steers whose ``EVENT_STEER_LOST`` the stream
+        # never delivered (the runtime died, or the turn left its loop before
+        # another frame). Collected here, on every turn exit, while the client is
+        # still reachable, so the requeue below still sees them.
+        _collect_lost_steers(slot, _lc, state)
         # Steer handle: turn is over, drop the live client ref so a late steer
         # can't target a dead session (the route also re-checks running state).
         slot._acp_client = None

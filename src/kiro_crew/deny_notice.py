@@ -193,7 +193,7 @@ async def steer_refusal_notice(
     Must be awaited while the ``session/request_permission`` is still
     unanswered — see :func:`build_refusal_steer_notice` for why that ordering is
     what makes the notice race-free. Opt-in by positive capability
-    (``provider.supports_steer``), never by harness identity; ``getattr`` because
+    (``provider.supports_refusal_steer``), never by harness identity; ``getattr`` because
     the reject paths also run against minimal test doubles. *title* is redacted
     here (it is provider-authored text); *reason* is the caller's own wording.
 
@@ -203,7 +203,7 @@ async def steer_refusal_notice(
     while ``CancelledError`` propagates, because the caller is the one that
     knows how to answer the wire while it unwinds.
     """
-    if not getattr(provider, "supports_steer", False):
+    if not getattr(provider, "supports_refusal_steer", False):
         return ""
     try:
         title_safe, _ = redact_exfiltration_urls(title or "")

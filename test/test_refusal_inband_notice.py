@@ -53,6 +53,8 @@ class _SteerClient:
 
     def __init__(self, *, supports_steer: bool = True, steer_result: bool = True):
         self.supports_steer = supports_steer
+        # The deny paths read the refusal answer; a steer-capable double has both.
+        self.supports_refusal_steer = supports_steer
         self._steer_result = steer_result
         self.calls: list[str] = []
         self.steered: list[str] = []

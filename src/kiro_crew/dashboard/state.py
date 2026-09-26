@@ -2639,6 +2639,7 @@ class _ChatSlot:
         "_native_subagent_output",
         "_steer_confirmed",
         "_pending_steers",
+        "_steers_settled_this_turn",
         "_steer_delivery_ids",
         "_steer_send_ids",
         "_steer_user_origin",
@@ -3601,6 +3602,13 @@ class _ChatSlot:
         # STOP, error). Without this, a steer swallowed by a dying turn
         # vanished with no trace (see the requeue site).
         self._pending_steers: list[str] = []
+        # Steers a consumed echo settled THIS turn, one dict per steer: its
+        # ``text`` plus the attachments, containment admission and user origin a
+        # requeue needs (``chat_delivery.remember_settled_steer``).
+        # An ``EVENT_STEER_LOST`` (codex dropping injected text when an approval
+        # is denied) moves the entry back to ``_pending_steers`` so the teardown
+        # requeues it. TURN-SCOPED: the teardown's requeue empties it.
+        self._steers_settled_this_turn: list[dict] = []
         # Opaque id per in-flight steer, keyed by its text (the one-per-text
         # rule in chat_delivery makes that key unique). The requeue moves the id
         # onto the queue entry and the drain unions entry meta onto the row it

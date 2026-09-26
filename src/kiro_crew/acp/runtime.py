@@ -4849,6 +4849,76 @@ class AcpRuntime:
 
         self._last_activity = time.monotonic()
 
+    async def send_request_for_answer(
+        self,
+        method: str,
+        params: dict[str, Any],
+        on_registered: "Callable[[asyncio.Future[dict[str, Any]]], None] | None" = None,
+    ) -> "asyncio.Future[dict[str, Any]]":
+        """Write a request and return a future for its answer, off the session queue.
+
+        For a request a session sends WHILE its own turn is streaming, whose answer
+        the sender needs. :meth:`send_request` routes the answer into the session's
+        queue, where the turn's dispatch loop is the only reader, so waiting for it
+        there would mean pulling the turn's frames out from under that loop.
+        :meth:`_send_and_await` resolves off the queue but owns the wait and drops
+        the registration when it times out. This registers the future the same way
+        (``_pending_requests``, which the reader resolves before any routing) and
+        hands it back, so the caller can bound the wait and still observe an answer
+        that arrives after the bound.
+
+        The future carries the answer's ``result`` object, or an
+        :class:`AcpRuntimeError` for an error answer, or :class:`AcpRuntimeDead`
+        if the process dies first -- the same three outcomes ``_send_and_await``
+        gives.
+
+        ``on_registered`` is called with the future BEFORE the write, whose
+        ``drain()`` can suspend: the reader may resolve the future during that
+        suspension, so a caller that must see the answer in order with the frames
+        after it has to hold the future by then.
+        """
+        if not self._process or not self._process.stdin:
+            raise AcpRuntimeDead("process not running")
+        if self._dead:
+            raise AcpRuntimeDead("runtime is dead")
+
+        req_id = self._next_id
+        self._next_id += 1
+        projection = getattr(self, "_native_skill_projection", None)
+        if projection is not None:
+            params = projection.request(method, params)
+        req = JsonRpcRequest(method=method, params=params, id=req_id)
+        data = json.dumps(req.to_dict()) + "\n"
+
+        future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+        self._pending_requests[req_id] = future
+        if on_registered is not None:
+            on_registered(future)
+        try:
+            self._process.stdin.write(data.encode())
+            await self._process.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError) as exc:
+            self._pending_requests.pop(req_id, None)
+            self._mark_dead(f"pipe broken: {exc}")
+            raise AcpRuntimeDead(f"pipe broken: {exc}") from exc
+
+        self._last_activity = time.monotonic()
+        return future
+
+    def forget_request(self, future: "asyncio.Future[dict[str, Any]]") -> None:
+        """Stop waiting for a :meth:`send_request_for_answer` answer.
+
+        Drops the registration so an answer that never comes holds nothing, and
+        cancels the future so any callback on it runs once. A no-op when the answer
+        already arrived or the runtime has died (both already dropped it).
+        """
+        for req_id, pending in list(self._pending_requests.items()):
+            if pending is future:
+                self._pending_requests.pop(req_id, None)
+                break
+        if not future.done():
+            future.cancel()
+
     async def send_response(self, request_id: str | int, result: dict[str, Any]) -> None:
         """Send a JSON-RPC response (for server→client requests like permission)."""
         if not self._process or not self._process.stdin:

@@ -1828,6 +1828,7 @@ class TestRequestApproval:
         # TestApprovalTimeoutInbandNotice (a bare MagicMock auto-attribute would
         # be truthy and route through the steer-failure path instead).
         provider.supports_steer = False
+        provider.supports_refusal_steer = False
         provider.reject_tool = AsyncMock()
         outcome = await h._request_approval(slack, provider, "C1", "t1", _perm_event())
         assert outcome == h._OUTCOME_REJECTED
@@ -1843,6 +1844,7 @@ class TestRequestApproval:
         )
         provider = MagicMock()
         provider.supports_steer = False
+        provider.supports_refusal_steer = False
         provider.reject_tool = AsyncMock()
         await h._request_approval(slack_client, provider, "C1", "t1", _perm_event())
         assert "🚫 Rejected" in _texts(slack_client)
@@ -1853,6 +1855,8 @@ class _SteerRecordingProvider:
 
     def __init__(self, *, supports_steer: bool = True, steer_exc: BaseException | None = None):
         self.supports_steer = supports_steer
+        # The deny paths read the refusal answer; a steer-capable double has both.
+        self.supports_refusal_steer = supports_steer
         self.calls: list[tuple[str, str]] = []
         self._steer_exc = steer_exc
         self.pending_during_steer: dict[str, object] = {}

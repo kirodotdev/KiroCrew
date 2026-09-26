@@ -426,6 +426,34 @@ class LLMProvider(ABC):
         return False
 
     @property
+    def supports_refusal_steer(self) -> bool:
+        """True when a deny notice steered mid-turn reaches the refused turn's model.
+
+        Narrower than :attr:`supports_steer`: a harness can take a user's mid-turn
+        message and still discard one sent while a refused tool call is being
+        answered. Default False, granted by opt-in like the steer itself.
+        """
+        return False
+
+    @property
+    def steer_needs_loss_recovery(self) -> bool:
+        """True when a steer this provider reported delivered can still be lost.
+
+        codex drops injected text when a later approval in the turn is denied.
+        Only a caller that drains :meth:`take_lost_steers` and requeues may steer
+        such a provider; every other caller queues instead. Default False.
+        """
+        return False
+
+    def take_lost_steers(self) -> list[str]:
+        """Echo text of delivered steers a denial discarded, each returned once.
+
+        Default ``[]``: a provider without :attr:`steer_needs_loss_recovery`
+        never loses a delivered steer.
+        """
+        return []
+
+    @property
     def last_steer_monotonic(self) -> float:
         """Monotonic time of the last steer this provider handed to its backend,
         0.0 when it has never steered one.
