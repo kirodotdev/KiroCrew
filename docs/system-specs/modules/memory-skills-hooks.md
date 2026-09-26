@@ -4538,16 +4538,19 @@ never reach an LLM/agent surface.
 
 ### `SessionLaneChanged` — board-lane transitions (`_fire_session_lane_changed`)
 
-**Status: this section specifies a PENDING implementation, not the tree as it
-stands.** `SessionLaneChanged` is not a live hook event yet: it is absent from
-`HOOK_EVENTS`, from `ALLOWED_HOOK_EVENTS` and from `_VALID_HOOK_EVENTS`, and none
-of the symbols named below exist in `src/`. The three sets are not the same size:
-`HOOK_EVENTS` and `_VALID_HOOK_EVENTS` carry the five turn-lifecycle events, while
-`ALLOWED_HOOK_EVENTS` carries eleven — the five plus the six Kiro Agent triggers
-in `hooks.HOOK_EVENTS_KAS_ONLY`, which are registrable but fired by nothing. Read
-every present-tense sentence here as the contract the implementation must meet.
-Until it lands, `handlers/hooks.py` and the Hooks page behave as the rest of this
-module already describes.
+**Status: the DELIVERY this section specifies is PENDING, not the tree as it
+stands.** `SessionLaneChanged` is authorable but nothing fires it: it is a member of
+`hooks.HOOK_EVENTS_PENDING` and therefore of `ALLOWED_HOOK_EVENTS`, so a hook can be
+created against it, saved and reloaded, and Test runs its command on demand — but it
+is absent from `HOOK_EVENTS` and from `_VALID_HOOK_EVENTS`, and `_fire_session_lane_changed`
+and the other emit-side symbols named below do not exist in `src/`. The sets are not
+the same size: `HOOK_EVENTS` and `_VALID_HOOK_EVENTS` carry the five turn-lifecycle
+events, while `ALLOWED_HOOK_EVENTS` carries twelve — the five, this pending one, and
+the six Kiro Agent triggers in `hooks.HOOK_EVENTS_KAS_ONLY`, which are registrable
+but fired by nothing. Read every present-tense sentence below about FIRING as the
+contract the implementation must meet. Until it lands, the Hooks page marks the event
+`not fired yet` from `HOOK_EVENTS_PENDING` and `handlers/hooks.py` behaves as the rest
+of this module already describes.
 
 The implementation is PR #7669, and this section stands or falls with it: it is
 owned by that PR, is asserted against the code by a spec-pinning test that ships
@@ -4734,14 +4737,17 @@ into two tokens or forging the opposite direction.
   `uuid4().hex[:12]` and carry no separator, but are **validated** anyway because
   `tags.json` is persisted state: a malformed id is skipped, never rewritten.
 - **Three event allowlists diverge intentionally.** The event is in
-  `hooks.HOOK_EVENTS` (dispatchable) and `validation.ALLOWED_HOOK_EVENTS`
-  (registrable through the hook create/update API), and deliberately **absent**
-  from `agent._VALID_HOOK_EVENTS` — kiro-cli rejects a generated agent config
-  naming an event it does not know, refusing to load that agent at all. A test
-  pins all three memberships together with this rationale, so the divergence
-  cannot be "fixed" by syncing them. The Kiro Agent triggers sit one step further
-  out again: registrable, absent from `_VALID_HOOK_EVENTS` for the same reason,
-  and not dispatchable either.
+  `validation.ALLOWED_HOOK_EVENTS` (registrable through the hook create/update API)
+  by way of `hooks.HOOK_EVENTS_PENDING`, and — until the emit site this section
+  specifies lands — deliberately **absent** from `hooks.HOOK_EVENTS`, which is the
+  promise that something calls `fire`: it is registrable but **not yet
+  dispatchable**. It is also deliberately absent from `agent._VALID_HOOK_EVENTS` —
+  kiro-cli rejects a generated agent config naming an event it does not know,
+  refusing to load that agent at all. Tests pin the pending membership and the
+  `_VALID_HOOK_EVENTS` absence with this rationale, so the divergence cannot be
+  "fixed" by syncing them; the `HOOK_EVENTS` membership arrives with the emit site.
+  The Kiro Agent triggers sit alongside it: registrable, absent from
+  `_VALID_HOOK_EVENTS` for the same reason, and not dispatchable either.
 
 **The SEL rows this event adds, stated so an auditor can find them and a host can
 budget them.** A lane-dispatch decision writes ONE `log_api_access` row under
