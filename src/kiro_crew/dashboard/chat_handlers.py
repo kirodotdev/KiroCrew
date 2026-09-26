@@ -8629,21 +8629,9 @@ async def _reapply_effort_after_live_switch(
     Returns False to ask the caller for a reset, which re-applies effort through
     the provider factory instead.
     """
-    if not provider.supports_effort():
-        # The new model has no effort selector. slot.reasoning_effort stays
-        # persisted for when the user switches back to a capable model — same
-        # "persisted no-op" the effort endpoint applies.
-        return True
     try:
-        if slot.reasoning_effort:
-            return bool(await provider.change_effort(slot.reasoning_effort))
-        # No slot override: re-resolve so a workspace default reaches the new
-        # model, matching what a respawn's overlay would have written. A False
-        # return is benign HERE, unlike in the effort endpoint: it means there
-        # was no default to push, and since the user never set a level for THIS
-        # model there is nothing stale on the session to undo either.
-        await provider.clear_effort()
-        return True
+        # Through the class: the shared body the provider's own set_model runs.
+        return await AcpProvider.reapply_live_effort(provider, slot.reasoning_effort)
     except Exception as exc:
         logger.warning(
             "Effort re-apply after live model switch failed for slot %s: %s: %s"

@@ -774,8 +774,8 @@ def resolve_substitute_set_model(provider: Any) -> Callable[[str], Awaitable[Non
     """The provider's substitute-path ``set_model`` coroutine, or ``None``.
 
     Prefers ``provider.set_model``; falls back to the wrapped client
-    (``provider.client`` / ``provider._client``) for wrappers like
-    ``AcpProvider`` that do not re-export it. Callers pre-filter candidates
+    (``provider.client`` / ``provider._client``) for wrappers that do not
+    re-export it. Callers pre-filter candidates
     against the advertised list, so the explicit-pick guard inside
     ``AcpClient.set_model`` / ``AcpSessionProvider.set_model`` does not fire
     for a served candidate.

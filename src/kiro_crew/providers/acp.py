@@ -1855,6 +1855,47 @@ class AcpProvider(LLMProvider):
         )
         return True
 
+    async def reapply_live_effort(self, level: str) -> bool:
+        """Re-apply *level* (empty: the resolved default) to the model just switched to.
+
+        An in-place switch never respawns, so without this the new model runs at its
+        own default. False asks the caller for a reset; errors propagate.
+        """
+        if not self.supports_effort():
+            # No effort selector on this model: the level stays persisted for a
+            # capable one, the same "persisted no-op" the effort endpoint applies.
+            return True
+        if level:
+            return bool(await self.change_effort(level))
+        # No override: re-resolve so a workspace default reaches the new model. A
+        # False here only means there was no default to push, so nothing is stale.
+        await self.clear_effort()
+        return True
+
+    async def set_model(self, model: str) -> None:
+        """Switch the live session's model, then re-apply the slot's effort to it.
+
+        The effort goes last so it wins over a ``<model>[<effort>]`` pick's own
+        level. The target's own override applies as ``reapply_live_effort`` does;
+        without one, the level of the model left is pushed live but never stored.
+        """
+        overrides = self._effort_per_model
+        carried = overrides.get(self._client._model, "")
+        await self._client.set_model(model)
+        try:
+            own = overrides.get(self._client._model) or overrides.get(model, "")
+            if own or not carried:
+                await self.reapply_live_effort(own)
+            elif self.supports_effort():
+                # Live only: persisting it would overwrite the target's stored state.
+                if self._client.backend in ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION:
+                    await self._set_effort_config_option(carried)
+                elif self._client.backend in ACP_BACKENDS_KIRO_SLASH_COMMANDS:
+                    await self._client.send_command("/effort", args={"level": carried})
+        except Exception:
+            # The model DID switch; failing here would make a fallback walk skip it.
+            logger.warning("Effort re-apply after set_model(%s) failed", model, exc_info=True)
+
     async def clear_effort(self) -> bool | None:
         """Clear the slot's effort override for the current model.
 
