@@ -4,6 +4,8 @@ import {
   fileDownloadUrl,
   fileStreamUrl,
   fileOfficePreviewUrl,
+  fileOfficeSlidesUrl,
+  fileOfficeSlideUrl,
 } from './fileReadUrl'
 
 // The four builders carry the client half of the contract that a path holding
@@ -24,6 +26,7 @@ const builders: Array<[string, (p: string) => string, string]> = [
   ['fileDownloadUrl', fileDownloadUrl, '/api/file-download'],
   ['fileStreamUrl', fileStreamUrl, '/api/file-stream'],
   ['fileOfficePreviewUrl', fileOfficePreviewUrl, '/api/file-office-preview'],
+  ['fileOfficeSlidesUrl', fileOfficeSlidesUrl, '/api/file-office-slides'],
 ]
 
 describe('file endpoint URL builders', () => {
@@ -54,5 +57,20 @@ describe('file endpoint URL builders', () => {
       '/api/file-read?path=' + encodeURIComponent('notes/One on one (2026).md') + '&resolve=1',
     )
     expect(fileReadUrl(RESERVED)).not.toContain('resolve=1')
+  })
+
+  it('fileOfficeSlideUrl appends the slide number after the encoded path and resolve flag', () => {
+    const url = fileOfficeSlideUrl('decks/Q3 (draft) #2.pptx', 7)
+    expect(url).toBe(
+      '/api/file-office-slide?path=' + encodeURIComponent('decks/Q3 (draft) #2.pptx') + '&resolve=1&n=7',
+    )
+    const params = new URL(fileOfficeSlideUrl(RESERVED, 12), 'http://localhost').searchParams
+    expect(params.get('path')).toBe(RESERVED)
+    expect(params.get('n')).toBe('12')
+    expect(params.get('resolve')).toBeNull()
+    expect(params.get('digest')).toBeNull()
+    const pinned = new URL(fileOfficeSlideUrl(RESERVED, 12, 'f'.repeat(64)), 'http://localhost').searchParams
+    expect(pinned.get('digest')).toBe('f'.repeat(64))
+    expect(pinned.get('n')).toBe('12')
   })
 })

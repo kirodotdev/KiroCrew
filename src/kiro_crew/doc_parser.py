@@ -107,11 +107,62 @@ def extract_text(
     is byte-scan based and still reads *path*; no current fileobj caller
     requests PDFs.
     """
+    fmt = _admit(path, mimetype, filename, operation="extract_text")
+    if not fmt:
+        return ""
+    try:
+        if fmt == "docx":
+            return _extract_docx(path, max_chars=max_chars, fileobj=fileobj)
+        if fmt == "pptx":
+            return _extract_pptx(path, max_chars=max_chars, fileobj=fileobj)
+        if fmt == "pdf":
+            return _extract_pdf(path)
+    except Exception:
+        logger.warning("Failed to extract text from %s", path, exc_info=True)
+    return ""
+
+
+def extract_slides(
+    path: str,
+    mimetype: str = "",
+    filename: str = "",
+    max_chars: int | None = None,
+    fileobj: IO[bytes] | None = None,
+) -> list[tuple[int, str]]:
+    """Extract a .pptx deck's text one slide at a time.
+
+    Returns ``[(slide_number, slide_text), ...]`` in deck order, holding only
+    the slides that carry text. The structure is what a caller needs to show
+    a deck AS slides -- :func:`extract_text` flattens the same slides into one
+    string with ``--- Slide N ---`` separators, and re-splitting that string
+    on the separator would make its consumer depend on a formatting detail.
+
+    Same admission (sensitive-path screen, format detection, defusedxml
+    gate), the same *max_chars* aggregate budget and the same *fileobj*
+    contract as :func:`extract_text`, and the same failure shape: an empty
+    list for a file that is not a .pptx, has no slide text, or fails to parse.
+    """
+    if _admit(path, mimetype, filename, operation="extract_slides") != "pptx":
+        return []
+    try:
+        return _extract_pptx_slides(path, max_chars=max_chars, fileobj=fileobj)
+    except Exception:
+        logger.warning("Failed to extract slides from %s", path, exc_info=True)
+    return []
+
+
+def _admit(path: str, mimetype: str, filename: str, *, operation: str) -> str:
+    """The shared entry gate: refuse sensitive paths, resolve the format.
+
+    Returns the format tag (``docx`` / ``pptx`` / ``pdf``) or ``""`` when the
+    file must not be parsed -- a refused path (audited under *operation*), an
+    unknown format, or an OOXML format with no hardened XML parser available.
+    """
     if is_sensitive_path(path):
         logger.warning("Refusing to read sensitive path: %s", path)
         sel().log_api_access(
             caller="doc_parser",
-            operation="extract_text",
+            operation=operation,
             outcome="denied",
             source="local",
             resources=path,
@@ -131,16 +182,7 @@ def extract_text(
             filename or path,
         )
         return ""
-    try:
-        if fmt == "docx":
-            return _extract_docx(path, max_chars=max_chars, fileobj=fileobj)
-        if fmt == "pptx":
-            return _extract_pptx(path, max_chars=max_chars, fileobj=fileobj)
-        if fmt == "pdf":
-            return _extract_pdf(path)
-    except Exception:
-        logger.warning("Failed to extract text from %s", path, exc_info=True)
-    return ""
+    return fmt
 
 
 # ── Decompression safety ──
@@ -277,19 +319,41 @@ _SLIDE_RE = re.compile(r"^ppt/slides/slide(\d+)\.xml$")
 def _extract_pptx(
     path: str, max_chars: int | None = None, fileobj: IO[bytes] | None = None,
 ) -> str:
-    """Extract text from a .pptx file (ZIP containing ppt/slides/*.xml).
+    """Extract text from a .pptx file as ONE string, ``--- Slide N ---`` per slide.
 
     Must only be called from extract_text() which enforces is_sensitive_path().
+    The slide walk itself is :func:`_extract_pptx_slides`; this is the flat
+    rendering of it that text consumers (knowledge ingest, attachments) read.
+    """
+    return join_slides(_extract_pptx_slides(path, max_chars=max_chars, fileobj=fileobj))
+
+
+def join_slides(slides: list[tuple[int, str]]) -> str:
+    """Flatten per-slide text into the ``--- Slide N ---`` form :func:`extract_text` returns.
+
+    Public so a caller holding the structured slides can produce the flat text
+    without a second extraction; the separator is owned here and nowhere else.
+    """
+    return "\n\n".join(f"--- Slide {num} ---\n{text}" for num, text in slides)
+
+
+def _extract_pptx_slides(
+    path: str, max_chars: int | None = None, fileobj: IO[bytes] | None = None,
+) -> list[tuple[int, str]]:
+    """Walk a .pptx (ZIP containing ppt/slides/*.xml) and collect each slide's text.
+
+    Must only be called through :func:`extract_text` / :func:`extract_slides`,
+    which enforce is_sensitive_path().
 
     With *max_chars* set, slide iteration stops as soon as the collected
     text meets the budget — later slides are never decompressed or parsed,
     so a deck with thousands of slides cannot accumulate unbounded text.
     """
-    assert _xml_fromstring is not None  # extract_text() gates the None case
+    assert _xml_fromstring is not None  # the callers gate the None case
     if is_sensitive_path(path):
-        return ""
+        return []
     if not _vet_archive_inventory(path, fileobj):
-        return ""
+        return []
     slides: list[tuple[int, str]] = []
     collected = 0
     with zipfile.ZipFile(fileobj if fileobj is not None else path, "r") as zf:
@@ -313,10 +377,7 @@ def _extract_pptx(
                 collected += len(slide_text)
                 if max_chars is not None and collected >= max_chars:
                     break
-    parts: list[str] = []
-    for num, text in slides:
-        parts.append(f"--- Slide {num} ---\n{text}")
-    return "\n\n".join(parts)
+    return slides
 
 
 # ── PDF parser (best-effort binary text extraction) ──

@@ -10,8 +10,10 @@ import zipfile
 import pytest
 
 from kiro_crew.doc_parser import (
+    extract_slides,
     extract_text,
     is_parseable_document,
+    join_slides,
 )
 
 # ── Helpers ──
@@ -549,3 +551,87 @@ class TestFileobjExtraction:
             os.unlink(real)
             os.unlink(decoy)
         assert text == "FROM-FILEOBJ"
+
+
+# ── Per-slide extraction (extract_slides) ──
+
+
+class TestExtractSlides:
+    """The structured form the office-preview endpoint renders a deck from.
+
+    Its contract is "the same slides extract_text flattens, kept apart": the
+    numbers are the deck's own, the order is deck order, and joining them
+    reproduces extract_text byte for byte, so the two can never disagree.
+    """
+
+    def test_returns_numbered_slides_in_deck_order(self):
+        path = _make_pptx([["Title", "Body text"], ["Second"]])
+        try:
+            slides = extract_slides(path, filename="deck.pptx")
+        finally:
+            os.unlink(path)
+        assert slides == [(1, "Title\nBody text"), (2, "Second")]
+
+    def test_join_reproduces_extract_text(self):
+        path = _make_pptx([["alpha"], ["beta"], ["gamma"]])
+        try:
+            slides = extract_slides(path, filename="deck.pptx")
+            text = extract_text(path, filename="deck.pptx")
+        finally:
+            os.unlink(path)
+        assert join_slides(slides) == text
+        assert text == "--- Slide 1 ---\nalpha\n\n--- Slide 2 ---\nbeta\n\n--- Slide 3 ---\ngamma"
+
+    def test_slide_without_text_keeps_the_deck_numbering(self):
+        # Slide 2 carries no runs; the gap in the numbering is the reader's
+        # signal that a slide was skipped, so it must not be renumbered.
+        path = _make_pptx([["one"], [], ["three"]])
+        try:
+            slides = extract_slides(path, filename="deck.pptx")
+        finally:
+            os.unlink(path)
+        assert [n for n, _ in slides] == [1, 3]
+
+    def test_non_pptx_is_an_empty_list(self):
+        path = _make_docx(["a paragraph"])
+        try:
+            assert extract_slides(path, filename="report.docx") == []
+        finally:
+            os.unlink(path)
+
+    def test_budget_stops_slide_iteration(self):
+        path = _make_pptx([["s" * 1000] for _ in range(50)])
+        try:
+            slides = extract_slides(path, filename="deck.pptx", max_chars=3000)
+        finally:
+            os.unlink(path)
+        # 3 slides meet the 3000-char budget; the other 47 are never parsed.
+        assert len(slides) == 3
+
+    def test_fileobj_matches_path_result(self):
+        path = _make_pptx([["alpha"], ["beta"]])
+        try:
+            via_path = extract_slides(path, filename="d.pptx")
+            with open(path, "rb") as f:
+                via_fileobj = extract_slides(path, filename="d.pptx", fileobj=f)
+        finally:
+            os.unlink(path)
+        assert via_fileobj == via_path == [(1, "alpha"), (2, "beta")]
+
+    def test_sensitive_path_is_refused_and_audited(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from kiro_crew import doc_parser
+
+        monkeypatch.setattr(doc_parser, "is_sensitive_path", lambda p: True)
+        sel_instance = MagicMock()
+        monkeypatch.setattr(doc_parser, "sel", lambda: sel_instance)
+        assert extract_slides("/home/u/.ssh/deck.pptx", filename="deck.pptx") == []
+        kwargs = sel_instance.log_api_access.call_args.kwargs
+        assert kwargs["operation"] == "extract_slides"
+        assert kwargs["error"] == "sensitive_path_rejected"
+
+    def test_parse_failure_is_an_empty_list(self, tmp_path):
+        path = tmp_path / "broken.pptx"
+        path.write_bytes(b"PK\x03\x04 not really a zip")
+        assert extract_slides(str(path), filename="broken.pptx") == []

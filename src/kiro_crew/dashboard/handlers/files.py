@@ -74,7 +74,7 @@ from kiro_crew.dashboard.state import (
     append_and_surface,
 )
 from kiro_crew.doc_blocks import extract_blocks
-from kiro_crew.doc_parser import extract_text
+from kiro_crew.doc_parser import extract_slides, extract_text, join_slides
 from kiro_crew.git_worktree_scope import worktree_probe_failure_is_empty_scope
 from kiro_crew.github_runner import validate_provider_executable
 from kiro_crew.hooks import (
@@ -3618,6 +3618,31 @@ class _PreviewUnsupported(Exception):
     """
 
 
+def _cap_slides(slides: list[tuple[int, str]], cap: int) -> list[dict[str, object]]:
+    """Redact each slide's text and bound the slides' TOTAL text to *cap*.
+
+    The same two rules the flat ``text`` field follows, applied per slide so
+    the structured form never carries more than the flat one would: redact
+    first (a credential must not be cut in half by the cap and slip past the
+    redactor), then spend one budget across the deck in slide order -- a
+    slide that does not fit is cut to the remaining budget and the slides
+    after it are dropped. Slide numbers are the deck's own (``slideN.xml``),
+    so a gap tells the reader a slide carried no text rather than that one
+    went missing.
+    """
+    out: list[dict[str, object]] = []
+    budget = cap
+    for index, raw in slides:
+        if budget <= 0:
+            break
+        text = redact(raw)
+        if len(text) > budget:
+            text = text[:budget]
+        budget -= len(text)
+        out.append({"index": index, "text": text})
+    return out
+
+
 async def api_file_office_preview(request: web.Request) -> web.Response:
     """GET /api/file-office-preview?path=...[&format=blocks] — inline preview of a .docx/.pptx.
 
@@ -3637,6 +3662,17 @@ async def api_file_office_preview(request: web.Request) -> web.Response:
     the default so every existing caller's response is byte-identical, and the
     frontend falls back to it whenever blocks comes back empty. python-docx /
     python-pptx are not required by either path.
+
+    For a .pptx the ``text`` response also carries
+    ``"slides": [{"index", "text"}, ...]``. The panel renders a deck slide
+    by slide from ``slides`` (a deck flattened into one string reads as a
+    parse failure, not a preview); ``text`` stays the flat form for the
+    .docx path and for any consumer that predates ``slides``. Both fields
+    come from ONE slide walk (``kiro_crew.doc_parser.extract_slides`` /
+    ``join_slides``), so they cannot disagree. This endpoint returns only a
+    document's text; a deck's rendered slide IMAGES (layout, charts,
+    positions) come from the separate ``/api/file-office-slides`` route,
+    which needs an office suite to rasterize the deck.
 
     Not supported (fall through to download): .doc, .ppt, .xls, .xlsx,
     .odt, .ods, .odp. The frontend keeps the download card for these.
@@ -3742,7 +3778,8 @@ async def api_file_office_preview(request: web.Request) -> web.Response:
             return checked
         res_path = checked.path
         with checked.file as fobj:
-            if os.path.splitext(checked.path)[1].lower() not in _OFFICE_PREVIEWABLE_EXT:
+            ext = os.path.splitext(checked.path)[1].lower()
+            if ext not in _OFFICE_PREVIEWABLE_EXT:
                 raise _PreviewUnsupported(checked.path)
             if fmt == "blocks":
                 # Same handle, same one-hop discipline as the text branch:
@@ -3762,19 +3799,32 @@ async def api_file_office_preview(request: web.Request) -> web.Response:
                     "blocks": _redact_blocks(blocks),
                     "truncated": blocks_truncated,
                 }
-            # extract_text parses through the SAME handle the prefix opened
-            # and fstat-ed (its opt-in fileobj parameter), so the bytes
+            # The extractors parse through the SAME handle the prefix opened
+            # and fstat-ed (their opt-in fileobj parameter), so the bytes
             # parsed are exactly the bytes measured — no stat→open TOCTOU
             # window. max_chars bounds AGGREGATE extraction (cap + 1 keeps
             # the truncation flag detectable): a deck with thousands of
             # slides stops parsing at the budget instead of accumulating
-            # unbounded text. It never raises — returns "" on any failure.
-            text = extract_text(
-                checked.path,
-                filename=os.path.basename(checked.path),
-                max_chars=_OFFICE_PREVIEW_CAP + 1,
-                fileobj=fobj,
-            )
+            # unbounded text. Neither raises — an empty result on any failure.
+            slides: list[tuple[int, str]] = []
+            if ext == ".pptx":
+                # One walk of the deck feeds both fields: `text` is the flat
+                # join of the same slides, never a second extraction that
+                # could read a different budget or a different byte range.
+                slides = extract_slides(
+                    checked.path,
+                    filename=os.path.basename(checked.path),
+                    max_chars=_OFFICE_PREVIEW_CAP + 1,
+                    fileobj=fobj,
+                )
+                text = join_slides(slides)
+            else:
+                text = extract_text(
+                    checked.path,
+                    filename=os.path.basename(checked.path),
+                    max_chars=_OFFICE_PREVIEW_CAP + 1,
+                    fileobj=fobj,
+                )
         truncated = len(text) > _OFFICE_PREVIEW_CAP
         # Redact BEFORE truncating: slicing first could cut a credential
         # across the cap boundary, leaving an unmatched prefix the redactor
@@ -3783,7 +3833,7 @@ async def api_file_office_preview(request: web.Request) -> web.Response:
         text = redact(text)
         if truncated:
             text = text[:_OFFICE_PREVIEW_CAP]
-        return {
+        payload: dict[str, object] = {
             "text": text,
             "truncated": truncated,
             # No `empty` field: doc_parser returns "" for both a genuinely
@@ -3791,6 +3841,9 @@ async def api_file_office_preview(request: web.Request) -> web.Response:
             # indistinguishable here. The frontend treats empty `text` as
             # "no preview available" and falls back to the download card.
         }
+        if slides:
+            payload["slides"] = _cap_slides(slides, _OFFICE_PREVIEW_CAP)
+        return payload
 
     try:
         result = await _run_path_probe(_open_and_extract, transfer=True)
