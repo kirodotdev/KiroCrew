@@ -350,6 +350,7 @@ from kiro_crew.session_agent_selection import (
     restore_agent_selection,
     session_agent_selection_kind,
 )
+from kiro_crew.session_compaction_methods import rotation_ladder
 from kiro_crew.slack.handler import post_linked_approval, resolve_linked_approval
 from kiro_crew.slack.outbound import PostedOptions
 from kiro_crew.trust_patterns import (  # noqa: F401 -- compatibility re-export
@@ -10847,6 +10848,15 @@ async def _run_chat(
             if slot.memory_store or isinstance(exc, UnknownMemoryStore):
                 raise _MemoryUnavailable(f"memory_unavailable: {exc}") from exc
 
+        # The replay clips an oversized newest row only when a rotation method
+        # is configured: a rotation is judged on a projection that charges the
+        # replay budget for the tail, so the carried tail may not exceed it.
+        # With the default (native) the newest row is carried whole, as on
+        # main, and an unreadable config keeps that default too.
+        _replay_clips_newest_row = loaded_cfg is not None and bool(
+            rotation_ladder(loaded_cfg.session.compaction_method)
+        )
+
         _require_current_binding()
         if bindings is not None:
             from kiro_crew.execution_context import (
@@ -11667,6 +11677,7 @@ async def _run_chat(
                             pending_messages=list(slot.messages),
                             current_message=_current_replay_message,
                             model_window=window_for_provider_client(client),
+                            clip_newest_row=_replay_clips_newest_row,
                         )
                         or ""
                     )
@@ -11936,6 +11947,7 @@ async def _run_chat(
                     slot,
                     conversation_log=state.conversation_log,
                     current_message=_current_replay_message,
+                    clip_newest_row=_replay_clips_newest_row,
                 )
                 full_message = history + full_message
 

@@ -14360,7 +14360,13 @@
         "minimap_location": "Position der Minimap",
         "minimap_location_desc": "Am rechten Rand ersetzt die Minimap die Scrollleiste.",
         "message_font_size": "Schriftgröße der Nachrichten",
-        "message_font_size_desc": "Schriftgröße für die Konversation, in jeder Sitzung: Nachrichtentext, Code, Tabellen, Antwortvorschläge und die Nachrichteneingabe. Die kompakte Inhaltsbreite wächst entsprechend mit. Seitenleiste, Sitzungsliste und der Rest der Oberfläche sind nicht betroffen."
+        "message_font_size_desc": "Schriftgröße für die Konversation, in jeder Sitzung: Nachrichtentext, Code, Tabellen, Antwortvorschläge und die Nachrichteneingabe. Die kompakte Inhaltsbreite wächst entsprechend mit. Seitenleiste, Sitzungsliste und der Rest der Oberfläche sind nicht betroffen.",
+        "compaction_method": "Verdichtungsmethode",
+        "compaction_method_desc": "Was beim Schwellenwert für automatische Verdichtung läuft. Eine Methode, die nicht genug freigeben würde, gibt weiter: Shake an Soft, Soft an Native; wo Shake keinen Digest schreiben kann, etwa in einem Kanal, läuft Native",
+        "compaction_method_native": "Native (Standard) – den gesamten Kontext an Ort und Stelle zusammenfassen; ein Modellaufruf, kann Minuten dauern",
+        "compaction_method_soft": "Soft – neue Sitzung, nur die letzten Gesprächsrunden; kein Modellaufruf",
+        "compaction_method_shake": "Shake – neue Sitzung, frühere Runden zu einem Digest verdichtet; kein Modellaufruf",
+        "failed_to_save_compaction_method": "Verdichtungsmethode konnte nicht gespeichert werden"
       },
       "computerUsePanel": {
         "accessibility": "Bedienungshilfen",

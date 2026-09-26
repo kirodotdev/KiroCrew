@@ -14572,7 +14572,13 @@
         "minimap_location": "Posizione della minimappa",
         "minimap_location_desc": "Sul bordo destro, la minimappa sostituisce la barra di scorrimento.",
         "message_font_size": "Dimensione del carattere dei messaggi",
-        "message_font_size_desc": "Dimensione del carattere della conversazione, in ogni sessione: testo dei messaggi, codice, tabelle, risposte suggerite e campo di inserimento del messaggio. La larghezza compatta del contenuto cresce di conseguenza. La barra laterale, l'elenco delle sessioni e il resto dell'interfaccia non sono interessati."
+        "message_font_size_desc": "Dimensione del carattere della conversazione, in ogni sessione: testo dei messaggi, codice, tabelle, risposte suggerite e campo di inserimento del messaggio. La larghezza compatta del contenuto cresce di conseguenza. La barra laterale, l'elenco delle sessioni e il resto dell'interfaccia non sono interessati.",
+        "compaction_method": "Metodo di compattazione",
+        "compaction_method_desc": "Cosa viene eseguito alla soglia di compattazione automatica. Un metodo che non libererebbe abbastanza spazio passa al successivo: Shake a Soft, Soft a Native; dove Shake non può scrivere il suo digest, come in un canale, viene eseguito Native",
+        "compaction_method_native": "Native (predefinito) — riassumere tutto il contesto sul posto; una chiamata al modello, può richiedere minuti",
+        "compaction_method_soft": "Soft — nuova sessione, solo i turni recenti; nessuna chiamata al modello",
+        "compaction_method_shake": "Shake — nuova sessione, turni precedenti condensati in un digest; nessuna chiamata al modello",
+        "failed_to_save_compaction_method": "Impossibile salvare il metodo di compattazione"
       },
       "computerUsePanel": {
         "accessibility": "Accessibilità",

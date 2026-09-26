@@ -14572,7 +14572,13 @@
         "minimap_location": "Emplacement de la minicarte",
         "minimap_location_desc": "Sur le bord droit, la minicarte remplace la barre de défilement.",
         "message_font_size": "Taille de police des messages",
-        "message_font_size_desc": "Taille de police de la conversation, dans toutes les sessions : texte des messages, code, tableaux, réponses suggérées et zone de saisie du message. La largeur de contenu compacte s'élargit en proportion. La barre latérale, la liste des sessions et le reste de l'interface ne sont pas affectés."
+        "message_font_size_desc": "Taille de police de la conversation, dans toutes les sessions : texte des messages, code, tableaux, réponses suggérées et zone de saisie du message. La largeur de contenu compacte s'élargit en proportion. La barre latérale, la liste des sessions et le reste de l'interface ne sont pas affectés.",
+        "compaction_method": "Méthode de compactage",
+        "compaction_method_desc": "Ce qui s'exécute au seuil de compactage automatique. Une méthode qui ne libérerait pas assez de place passe la main : Shake à Soft, Soft à Native ; là où Shake ne peut pas écrire son digest, comme dans un canal, Native s'exécute",
+        "compaction_method_native": "Native (par défaut) — résumer tout le contexte sur place ; un appel au modèle, peut prendre plusieurs minutes",
+        "compaction_method_soft": "Soft — nouvelle session, échanges récents seulement ; aucun appel au modèle",
+        "compaction_method_shake": "Shake — nouvelle session, échanges antérieurs condensés en un digest ; aucun appel au modèle",
+        "failed_to_save_compaction_method": "Échec de l'enregistrement de la méthode de compactage"
       },
       "computerUsePanel": {
         "accessibility": "Accessibilité",

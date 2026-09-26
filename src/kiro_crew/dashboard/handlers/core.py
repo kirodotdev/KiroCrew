@@ -59,6 +59,7 @@ from kiro_crew.config.loader import (
     config_path,
 )
 from kiro_crew.config.sections import (
+    COMPACTION_METHODS,
     DECISION_BUCKET_MAX,
     DECISION_BUCKET_MIN,
     DECISION_MODEL_ROUTE_TIERS,
@@ -2462,6 +2463,10 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "min": AUTOCOMPACT_PCT_MIN,
         "max": AUTOCOMPACT_PCT_MAX,
     },
+    # The Settings > Chat > Advanced control beside the threshold. The value set
+    # is the load path's own tuple, so a method added there is writable here
+    # without a second list to keep in step.
+    "session.compaction_method": {"type": "enum", "values": list(COMPACTION_METHODS)},
     "session.pool_size": {"type": "int", "min": 0, "max": 10},
     "session.pool_agent": {"type": "str", "values_fn": _agent_values},
     "session.pool_ttl_secs": {"type": "int", "min": POOL_TTL_SECS_MIN, "max": POOL_TTL_SECS_MAX},

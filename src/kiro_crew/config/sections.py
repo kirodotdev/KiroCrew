@@ -117,6 +117,26 @@ DEFAULT_MAX_PARALLEL_STEPS = (
 # (typically 300-600 MiB) a wide margin while still catching a leak before
 # it takes the host with it. 0 disables.
 DEFAULT_WATCHDOG_RSS_MAX_MB = 1536
+# session.compaction_method: the strongest compaction the coordinator may use
+# when the auto-compact threshold fires. The methods form one line of strength,
+# weakest first in ``COMPACTION_METHODS``: ``native`` is the agent runtime's own
+# in-place summarization (one model call over the whole window); ``soft``
+# recycles the session on purpose and seeds the successor from the transcript
+# tail, no model call; ``shake`` also writes a seed row holding an elided digest
+# of the dropped slice before recycling. The coordinator walks down from the
+# chosen method through every weaker one, ``native`` last, so the key is a
+# ceiling and no order needs spelling out. A name outside this tuple falls back
+# to the default at load. Default is ``native``, so nothing changes for a config
+# that never set the key.
+COMPACTION_METHOD_NATIVE = "native"
+COMPACTION_METHOD_SOFT = "soft"
+COMPACTION_METHOD_SHAKE = "shake"
+COMPACTION_METHODS: tuple[str, ...] = (
+    COMPACTION_METHOD_NATIVE,
+    COMPACTION_METHOD_SOFT,
+    COMPACTION_METHOD_SHAKE,
+)
+DEFAULT_COMPACTION_METHOD = COMPACTION_METHOD_NATIVE
 
 
 def normalize_agent_model(model: object) -> str:
@@ -858,6 +878,22 @@ def _archive_retention_days(session_data: dict) -> int:
     except (TypeError, ValueError):
         return 30
     return val if val >= 0 else -1
+
+
+def _compaction_method(session_data: dict) -> str:
+    """Resolve session.compaction_method to a known method name.
+
+    A name outside ``COMPACTION_METHODS`` (or a non-string) falls back to
+    ``DEFAULT_COMPACTION_METHOD`` so the coordinator always has a ceiling it
+    knows. Type handling is owned by the schema validation that runs over the
+    raw dict first; a non-string here only means that validation was
+    unavailable, and it takes the default as well.
+    """
+    raw = session_data.get("compaction_method", DEFAULT_COMPACTION_METHOD)
+    if not isinstance(raw, str):
+        return DEFAULT_COMPACTION_METHOD
+    method = raw.strip().lower()
+    return method if method in COMPACTION_METHODS else DEFAULT_COMPACTION_METHOD
 
 
 # Process-isolation jail modes (``agent.jail``).  Single source of truth shared by
@@ -1941,6 +1977,25 @@ class SessionConfig:
         metadata=_meta(
             "Auto-Compact Threshold",
             "Context usage percentage at which auto-compaction triggers (5-90).",
+        ),
+    )
+    compaction_method: str = field(
+        default=DEFAULT_COMPACTION_METHOD,
+        metadata=_meta(
+            "Compaction Method",
+            "What runs when the Auto-Compact Threshold fires. native (default): "
+            "the agent summarizes the whole context in place; one model call, "
+            "minutes on a large window; everything is kept as a summary. soft: a "
+            "fresh session with only the recent turns; no model call; older "
+            "turns are gone from the agent's memory (the transcript stays on "
+            "screen). shake: soft, plus the older turns condensed into the "
+            "agent's memory as a digest; dashboard tabs only, a channel runs "
+            "native. The value is the strongest method allowed. A method that "
+            "would not free enough context hands off, shake to soft, soft to "
+            "native; one that cannot run skips to native. A running turn defers "
+            "the attempt to the next check. The chat notice names the method that "
+            "ran.",
+            enum=list(COMPACTION_METHODS),
         ),
     )
     pool_size: int = field(

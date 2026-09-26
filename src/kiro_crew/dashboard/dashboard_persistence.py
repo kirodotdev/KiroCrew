@@ -143,6 +143,40 @@ class DashboardPersistenceCoordinator:
             if slot._dirty_gen == generation:
                 slot._dirty = False
 
+    def save_slot_strict(
+        self,
+        owner: Any,
+        slot: Any,
+        *,
+        expected_slot_name: str | None = None,
+        expected_history_key: str | None = None,
+    ) -> None:
+        """Write one slot's window now, or raise.
+
+        The periodic flush is best-effort by design: a failed write stays owed
+        to the next pass. A caller about to act on the row being on disk (the
+        compaction seed writer, which lets the native conversation be dropped
+        on the strength of its digest) needs the opposite reading, so every
+        way the write does not happen is an exception here: the guarded
+        metadata deferral, a refused guarded save, a raising writer. The
+        optional pins bind the save to the live slot object and transcript key
+        the caller authorized.
+        """
+        if getattr(slot, "_metadata_persist_inflight", 0):
+            raise RuntimeError(f"slot {slot.key}: a guarded metadata write is in flight")
+        if not owner.conversation_log:
+            raise RuntimeError(f"slot {slot.key}: no conversation log to write to")
+        generation = slot._dirty_gen
+        if not self._slot_saver_provider()(
+            owner,
+            slot,
+            expected_slot_name=expected_slot_name,
+            expected_history_key=expected_history_key,
+        ):
+            raise RuntimeError(f"slot {slot.key}: the history writer refused the save")
+        if slot._dirty_gen == generation:
+            slot._dirty = False
+
     def _flush_dirty_slots(self, owner: Any) -> None:
         """Persist dirty transcripts, open tabs, then context snapshots."""
         if not owner.conversation_log:

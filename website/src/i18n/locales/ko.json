@@ -14148,7 +14148,13 @@
         "minimap_location": "미니맵 위치",
         "minimap_location_desc": "오른쪽 가장자리에 있으면 미니맵이 스크롤바를 대체합니다.",
         "message_font_size": "메시지 글꼴 크기",
-        "message_font_size_desc": "모든 세션에서 대화의 글꼴 크기입니다: 메시지 텍스트, 코드, 표, 추천 답변 및 메시지 입력창. 콤팩트 콘텐츠 너비도 이에 맞춰 넓어집니다. 사이드바, 세션 목록 및 나머지 인터페이스에는 영향을 주지 않습니다."
+        "message_font_size_desc": "모든 세션에서 대화의 글꼴 크기입니다: 메시지 텍스트, 코드, 표, 추천 답변 및 메시지 입력창. 콤팩트 콘텐츠 너비도 이에 맞춰 넓어집니다. 사이드바, 세션 목록 및 나머지 인터페이스에는 영향을 주지 않습니다.",
+        "compaction_method": "압축 방식",
+        "compaction_method_desc": "자동 압축 임계값에서 실행되는 방식. 충분히 비우지 못할 방식은 다음 방식으로 넘어갑니다(Shake에서 Soft로, Soft에서 Native로). Shake가 다이제스트를 쓸 수 없는 곳(예: 채널)에서는 Native가 실행됩니다",
+        "compaction_method_native": "Native (기본값) — 전체 컨텍스트를 그 자리에서 요약; 모델 호출 1회, 몇 분 걸릴 수 있음",
+        "compaction_method_soft": "Soft — 새 세션, 최근 턴만 유지; 모델 호출 없음",
+        "compaction_method_shake": "Shake — 새 세션, 이전 턴은 다이제스트로 압축; 모델 호출 없음",
+        "failed_to_save_compaction_method": "압축 방식을 저장하지 못했습니다"
       },
       "computerUsePanel": {
         "accessibility": "손쉬운 사용",

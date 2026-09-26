@@ -461,6 +461,14 @@
       "description": "A folder with no chats takes one row instead of two, and its New chat button moves onto the folder's own row"
     },
     {
+      "id": "chat.compaction-method",
+      "label": "Compaction Method",
+      "tab": "chat",
+      "route": "/settings/chat/advanced?highlight=key%3Asession.compaction_method",
+      "description": "What runs at the Auto-Compact Threshold. A method that would not free enough context hands off, Shake to Soft, Soft to Native; where Shake cannot write its digest, as in a channel, Native runs",
+      "configKey": "session.compaction_method"
+    },
+    {
       "id": "chat.completion-event-characters",
       "label": "Completion Event Characters",
       "tab": "chat",
@@ -534,7 +542,7 @@
       "id": "chat.double-click-to-edit-your-messages",
       "label": "Double-click to edit your messages",
       "tab": "chat",
-      "route": "/settings/chat?highlight=chat.double-click-to-edit-your-messages",
+      "route": "/settings/chat/transcript?highlight=chat.double-click-to-edit-your-messages",
       "description": "When off, a double-click on your message selects a word as in any text."
     },
     {

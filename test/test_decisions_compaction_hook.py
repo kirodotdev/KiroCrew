@@ -59,7 +59,13 @@ class _Owner:
     """A ``_CompactionOwner`` stub that records which arm ran."""
 
     def __init__(self, coordinator_holder: dict) -> None:
-        self._cfg = type("Cfg", (), {"session": type("S", (), {"autocompact_pct": 70.0})()})()
+        # The ladder reads ``session.compaction_method`` before choosing an arm;
+        # ``native`` is the default, so the stub models today's in-place path.
+        self._cfg = type(
+            "Cfg",
+            (),
+            {"session": type("S", (), {"autocompact_pct": 70.0, "compaction_method": "native"})()},
+        )()
         self._sessions: dict = {}
         self._lock = asyncio.Lock()
         self._recycling: dict = {}

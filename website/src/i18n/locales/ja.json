@@ -14148,7 +14148,13 @@
         "minimap_location": "ミニマップの位置",
         "minimap_location_desc": "右端に配置すると、ミニマップがスクロールバーを置き換えます。",
         "message_font_size": "メッセージのフォントサイズ",
-        "message_font_size_desc": "会話のフォントサイズ（すべてのセッションに適用）：メッセージのテキスト、コード、表、返信候補、メッセージ入力欄。コンパクトなコンテンツ幅もそれに合わせて広がります。サイドバー、セッション一覧、その他のUIには影響しません。"
+        "message_font_size_desc": "会話のフォントサイズ（すべてのセッションに適用）：メッセージのテキスト、コード、表、返信候補、メッセージ入力欄。コンパクトなコンテンツ幅もそれに合わせて広がります。サイドバー、セッション一覧、その他のUIには影響しません。",
+        "compaction_method": "圧縮方式",
+        "compaction_method_desc": "自動圧縮のしきい値で実行される処理。十分に空きを作れない方式は次に引き継ぎます（Shake から Soft、Soft から Native）。Shake がダイジェストを書けない場所（チャンネルなど）では Native が実行されます",
+        "compaction_method_native": "Native（デフォルト）— コンテキスト全体をその場で要約。モデル呼び出し1回、数分かかる場合があります",
+        "compaction_method_soft": "Soft — 新しいセッション、直近のターンのみ。モデル呼び出しなし",
+        "compaction_method_shake": "Shake — 新しいセッション、以前のターンをダイジェストに凝縮。モデル呼び出しなし",
+        "failed_to_save_compaction_method": "圧縮方式を保存できませんでした"
       },
       "computerUsePanel": {
         "accessibility": "アクセシビリティ",

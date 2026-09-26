@@ -614,6 +614,47 @@ describe('ChatPanel — Context', () => {
     await pickOption('Auto-Compact Threshold', 0)
     expect(await screen.findByText(/Failed to save auto-compact threshold/)).toBeInTheDocument()
   })
+
+  it('PATCHes the compaction method with the picked value', async () => {
+    wrap('advanced')
+    await pickOption('Compaction Method', 1)
+    await waitFor(() =>
+      expect(patchConfigMock).toHaveBeenCalledWith('session.compaction_method', 'soft')
+    )
+    await waitFor(() => expect(kirocrewConfigMock).toHaveBeenCalledTimes(2))
+  })
+
+  it('offers the three methods weakest first, with native as the marked default', async () => {
+    // The backend's PATCH allowlist accepts exactly native/soft/shake, in the
+    // ladder's order; the full list is asserted so the '(Default)' marker cannot
+    // drift onto a second option. Each label is one catalog value.
+    wrap('advanced')
+    const opts = await openSelect('Compaction Method')
+    expect(opts.map(o => o.textContent)).toEqual([
+      'Native (Default) — summarize the whole context in place; one model call, can take minutes',
+      'Soft — fresh session, recent turns only; no model call',
+      'Shake — fresh session, earlier turns condensed into a digest; no model call',
+    ])
+  })
+
+  it('puts the full selected label on the trigger, which clips it at narrow widths', async () => {
+    seedMc({ session: { compaction_method: 'soft' } })
+    wrap('advanced')
+    const trigger = await screen.findByRole('combobox', { name: 'Compaction Method' })
+    await waitFor(() =>
+      expect(trigger).toHaveAttribute('title', 'Soft — fresh session, recent turns only; no model call')
+    )
+  })
+
+  it('shows the stored method and surfaces a failed write', async () => {
+    seedMc({ session: { compaction_method: 'shake' } })
+    rejectOnce(patchConfigMock)
+    wrap('advanced')
+    const trigger = await screen.findByRole('combobox', { name: 'Compaction Method' })
+    await waitFor(() => expect(trigger).toHaveTextContent('Shake'))
+    await pickOption('Compaction Method', 0)
+    expect(await screen.findByText(/Failed to save compaction method/)).toBeInTheDocument()
+  })
 })
 
 describe('ChatPanel — Subagents', () => {

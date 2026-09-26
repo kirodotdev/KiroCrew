@@ -127,9 +127,11 @@ interface SettingsSelectProps {
   configKey?: string
   /** Explicit UI row identity for deep links, independent of the config schema. */
   settingId?: string
+  /** Hover text for the trigger: the full selected label when options are long enough to clip. */
+  title?: string
 }
 
-export function SettingsSelect({ label, description, hint, value, options, optionLabels, onChange, action, disabled, configKey, settingId }: SettingsSelectProps) {
+export function SettingsSelect({ label, description, hint, value, options, optionLabels, onChange, action, disabled, configKey, settingId, title }: SettingsSelectProps) {
   // Per-instance id pairing the caption's htmlFor with the select trigger, so
   // the visible caption is the control's programmatic label. The aria-label
   // below stays as a fallback: it wins the accessible-name computation and
@@ -146,6 +148,7 @@ export function SettingsSelect({ label, description, hint, value, options, optio
         action={action}
         disabled={disabled}
         aria-label={label}
+        title={title}
         triggerFallback={optionLabels?.[options.indexOf(value)] ?? (value || '—')}
       />
     </SettingsField>

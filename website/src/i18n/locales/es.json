@@ -14572,7 +14572,13 @@
         "minimap_location": "Ubicación del minimapa",
         "minimap_location_desc": "Cuando está en el borde derecho, el minimapa reemplaza la barra de desplazamiento.",
         "message_font_size": "Tamaño de fuente de los mensajes",
-        "message_font_size_desc": "Tamaño de fuente de la conversación, en todas las sesiones: texto de los mensajes, código, tablas, respuestas sugeridas y el cuadro de entrada de mensajes. El ancho de contenido compacto crece en proporción. La barra lateral, la lista de sesiones y el resto de la interfaz no se ven afectados."
+        "message_font_size_desc": "Tamaño de fuente de la conversación, en todas las sesiones: texto de los mensajes, código, tablas, respuestas sugeridas y el cuadro de entrada de mensajes. El ancho de contenido compacto crece en proporción. La barra lateral, la lista de sesiones y el resto de la interfaz no se ven afectados.",
+        "compaction_method": "Método de compactación",
+        "compaction_method_desc": "Lo que se ejecuta al alcanzar el umbral de compactación automática. Un método que no liberaría suficiente espacio pasa al siguiente: Shake a Soft y Soft a Native; donde Shake no puede escribir su resumen, como en un canal, se ejecuta Native",
+        "compaction_method_native": "Native (predeterminado): resumir todo el contexto en el mismo lugar; una llamada al modelo, puede tardar minutos",
+        "compaction_method_soft": "Soft: sesión nueva, solo los turnos recientes; sin llamada al modelo",
+        "compaction_method_shake": "Shake: sesión nueva, turnos anteriores condensados en un resumen; sin llamada al modelo",
+        "failed_to_save_compaction_method": "No se pudo guardar el método de compactación"
       },
       "computerUsePanel": {
         "accessibility": "Accesibilidad",

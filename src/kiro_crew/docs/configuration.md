@@ -257,6 +257,7 @@ Set a registered value with, for example,
 | `session.empty_response_auto_continue` | After two consecutive empty model responses, send transcript-visible `continue` nudges on the same session | `true` |
 | `session.empty_response_max_continues` | How many `continue` nudges may run back to back before the give-up card (clamped 1-10; above 1 the notice shows "recovery N of M") | `1` |
 | `session.autocompact_pct` | Context usage percentage at which auto-compaction triggers (5-90). Lower compacts sooner and keeps per-turn cost down; higher retains more conversation before rewriting it. Applies to new installs: an existing `config.json` keeps its stored value | `70.0` |
+| `session.compaction_method` | The strongest compaction the threshold may run: `native` (the agent summarizes the whole context in place), `soft` (a fresh session carrying only the recent turns; older turns leave the agent's memory) or `shake` (`soft` plus the older turns condensed into a digest; dashboard tabs only). A method that would not free enough context hands off, `shake` to `soft`, `soft` to `native`; one that cannot run skips to `native`. Also set from Settings > Chat > Advanced | `"native"` |
 | `session.pool_size` | Number of pre-spawned kiro-cli processes kept ready for instant session start. 0 disables | `0` |
 | `session.pool_agent` | Agent for warm-pool processes. Empty uses `agent.default_agent` | `""` |
 | `session.pool_ttl_secs` | Max age in seconds for pooled processes, discarded at claim time. 0 disables | `1800` |

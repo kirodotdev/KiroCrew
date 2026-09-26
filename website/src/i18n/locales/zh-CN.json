@@ -14148,7 +14148,13 @@
         "minimap_location": "小地图位置",
         "minimap_location_desc": "位于右边缘时，小地图将取代滚动条。",
         "message_font_size": "消息字号",
-        "message_font_size_desc": "所有会话中对话内容的字号：消息文本、代码、表格、建议回复和消息输入框。紧凑内容宽度会随之增大。侧边栏、会话列表和其余界面不受影响。"
+        "message_font_size_desc": "所有会话中对话内容的字号：消息文本、代码、表格、建议回复和消息输入框。紧凑内容宽度会随之增大。侧边栏、会话列表和其余界面不受影响。",
+        "compaction_method": "压缩方式",
+        "compaction_method_desc": "达到自动压缩阈值时执行的方式。释放空间不足时依次改用下一种：Shake 改用 Soft，Soft 改用 Native；Shake 无法写入摘要时（如在频道中）直接执行 Native",
+        "compaction_method_native": "Native（默认）— 在原地总结全部上下文；调用一次模型，可能需要几分钟",
+        "compaction_method_soft": "Soft — 新建会话，只保留最近轮次；不调用模型",
+        "compaction_method_shake": "Shake — 新建会话，更早的轮次浓缩为摘要；不调用模型",
+        "failed_to_save_compaction_method": "保存压缩方式失败"
       },
       "computerUsePanel": {
         "accessibility": "辅助功能",
