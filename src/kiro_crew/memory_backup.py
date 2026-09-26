@@ -152,6 +152,10 @@ def backup_store(db_path: Path, *, now: datetime | None = None) -> Path | None:
 
     require_memory_ready(named_store_of_db(db_path))
     if member_memory_backup.is_member_store(db_path):
+        # The DIRECTORY, not the database file: a member store is declared in config
+        # before it is ever created, and one present but incomplete must still raise.
+        if not db_path.parent.exists():
+            return None
         try:
             return member_memory_backup.backup_store(db_path, now=now)
         except Exception as exc:
