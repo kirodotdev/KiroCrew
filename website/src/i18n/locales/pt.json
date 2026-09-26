@@ -4012,6 +4012,11 @@
         "fast_path": "Fast path",
         "fix_label": "Fix: {{fix}}",
         "hypothesis_agent_must_confirm_first": "hypothesis — agent must confirm first",
+        "incidentio_error_no_schedule_ids": "Há um ID de usuário do incident.io, mas nenhuma escala configurada, então esta instância conta como fora do plantão em toda verificação. Adicione em Configurações as escalas das quais você faz parte.",
+        "incidentio_error_unreachable": "O incident.io não respondeu (HTTP {{status}}).",
+        "incidentio_error_unreachable_no_status": "O incident.io não respondeu.",
+        "incidentio_not_on_roster": "Você não tem plantões nas escalas do incident.io configuradas para as próximas duas semanas. Confira schedule_ids e seu ID de usuário do incident.io em Configurações.",
+        "incidentio_roster_window": "incident.io · plantões nas próximas duas semanas",
         "is_no_longer_in_the_ledger": "is no longer in the\n                                    ledger.",
         "knowledge_ledger": "Knowledge ledger",
         "known_patterns": "Known patterns",
@@ -4113,7 +4118,8 @@
         "waiting_awaiting_approval": "Approve to continue",
         "waiting_awaiting_diagnosis": "Stopped, no diagnosis",
         "waiting_awaiting_input": "Waiting on you",
-        "waiting_on_you": "Waiting on you"
+        "waiting_on_you": "Waiting on you",
+        "your_next_shift": "Seu próximo plantão: {{start}} – {{end}}"
       },
       "settingsPanel": {
         "a_pattern_is_required_there_is_no_wildcard_grant": "A pattern is required — there is no wildcard grant. Use * to match a prefix, e.g. prod-* covers every resource whose name starts with prod-.",
@@ -4238,7 +4244,8 @@
         "your_github_login": "Your GitHub login",
         "your_pagerduty_user_id": "Your PagerDuty user ID",
         "your_incident_io_user_id": "Your incident.io user ID",
-        "your_team_s_ledger_is_still_being_exchanged_sync": "Your team's ledger is still being exchanged — sync names"
+        "your_team_s_ledger_is_still_being_exchanged_sync": "Your team's ledger is still being exchanged — sync names",
+        "unknown_incidentio_user_refused": "O incident.io não tem nenhum usuário com esse ID. Digite seu ID de usuário do incident.io, não seu nome."
       },
       "signalsPanel": {
         "a_signal_that_is_absent_from_this_poll_can_be_re": "A signal that is absent from this poll can be read as recovered.",

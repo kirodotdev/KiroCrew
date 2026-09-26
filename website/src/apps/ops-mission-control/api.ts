@@ -519,9 +519,12 @@ export interface ProviderInfo {
   secrets: Record<string, string>
 }
 
-/** One member of a committed on-call schedule. */
+/** One member of an on-call rotation. */
 export interface RosterMember {
+  /** The identity `me` is compared against: a GitHub login, or an incident.io user id. */
   login: string
+  /** What to display when `login` is an opaque id (incident.io). Absent for schedule-file. */
+  name?: string
   /** How many shift windows this member holds — makes an unbalanced rotation visible. */
   shifts: number
   on_call_now: boolean
@@ -536,10 +539,16 @@ export interface RosterMember {
  * failure mode — the roster is what makes it legible.
  */
 export interface RotationRoster {
+  /**
+   * Which rotation built this roster. `schedule-file` is the team's committed `rotation.yaml`;
+   * `incidentio` is this operator's own shifts over the next two weeks. Only a schedule-file
+   * roster may drive the GitHub-login field and the `rotation.yaml` warnings.
+   */
+  source: 'schedule-file' | 'incidentio'
   members: RosterMember[]
   windows: { from: string; to: string; who: string[]; current: boolean }[]
   timezone: string
-  /** This instance's resolved GitHub login, so the UI can mark "you". */
+  /** This instance's resolved GitHub login (or incident.io user id), so the UI can mark "you". */
   me: string
   /** False when `me` appears nowhere in the schedule — a setup mistake, not a quiet shift. */
   me_on_roster: boolean
@@ -554,6 +563,10 @@ export interface RotationRoster {
    */
   leader: string
   error: string
+  /** incident.io only: why the roster is empty, as a code the board translates. */
+  error_code?: '' | 'no_schedule_ids' | 'unreachable'
+  /** incident.io only: the HTTP status behind `unreachable`, or 0 when there was none. */
+  error_status?: number
 }
 
 /**

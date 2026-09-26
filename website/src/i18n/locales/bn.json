@@ -3951,6 +3951,11 @@
         "fast_path": "দ্রুত পথ",
         "fix_label": "ফিক্স: {{fix}}",
         "hypothesis_agent_must_confirm_first": "অনুমান — এজেন্টকে আগে নিশ্চিত করতে হবে",
+        "incidentio_error_no_schedule_ids": "incident.io ইউজার আইডি সেট আছে কিন্তু কোনো সময়সূচি কনফিগার করা নেই, তাই প্রতিটি যাচাইয়ে এই ইনস্ট্যান্সকে শিফটের বাইরে ধরা হয়। সেটিংসে তোমার সময়সূচিগুলো যোগ করো।",
+        "incidentio_error_unreachable": "incident.io সাড়া দেয়নি (HTTP {{status}})।",
+        "incidentio_error_unreachable_no_status": "incident.io সাড়া দেয়নি।",
+        "incidentio_not_on_roster": "আগামী দুই সপ্তাহে কনফিগার করা incident.io সময়সূচিতে তোমার কোনো শিফট নেই। সেটিংসে schedule_ids এবং তোমার incident.io ইউজার আইডি দেখে নাও।",
+        "incidentio_roster_window": "incident.io · আগামী দুই সপ্তাহের শিফট",
         "is_no_longer_in_the_ledger": "আর\n                                    লেজারে নেই।",
         "knowledge_ledger": "নলেজ লেজার",
         "known_patterns": "জানা প্যাটার্ন",
@@ -4048,7 +4053,8 @@
         "waiting_awaiting_approval": "চালিয়ে যেতে অনুমোদন করো",
         "waiting_awaiting_diagnosis": "থেমে গেছে, কোনো ডায়াগনোসিস নেই",
         "waiting_awaiting_input": "তোমার জন্য অপেক্ষা করছে",
-        "waiting_on_you": "তোমার জন্য অপেক্ষা করছে"
+        "waiting_on_you": "তোমার জন্য অপেক্ষা করছে",
+        "your_next_shift": "তোমার পরের শিফট: {{start}} – {{end}}"
       },
       "settingsPanel": {
         "a_pattern_is_required_there_is_no_wildcard_grant": "একটি প্যাটার্ন দিতে হবে — সবকিছুর জন্য একসঙ্গে অনুমতি দেওয়ার উপায় নেই। প্রিফিক্স মেলাতে * ব্যবহার করো, যেমন prod-* দিলে যেসব রিসোর্সের নাম prod- দিয়ে শুরু হয় সবই ধরা পড়ে।",
@@ -4172,7 +4178,8 @@
         "your_github_login": "তোমার GitHub লগইন",
         "your_pagerduty_user_id": "তোমার PagerDuty ইউজার ID",
         "your_incident_io_user_id": "তোমার incident.io ইউজার ID",
-        "your_team_s_ledger_is_still_being_exchanged_sync": "তোমার টিমের লেজার এখনও আদানপ্রদান হচ্ছে — সিঙ্ক যে নাম বলছে সেটি হল"
+        "your_team_s_ledger_is_still_being_exchanged_sync": "তোমার টিমের লেজার এখনও আদানপ্রদান হচ্ছে — সিঙ্ক যে নাম বলছে সেটি হল",
+        "unknown_incidentio_user_refused": "incident.io-তে এই আইডির কোনো ইউজার নেই। তোমার নাম নয়, তোমার incident.io ইউজার আইডি লেখো।"
       },
       "signalsPanel": {
         "a_signal_that_is_absent_from_this_poll_can_be_re": "এই পোলে যে সিগন্যাল নেই, সেটিকে সেরে গেছে বলে ধরা যায়।",

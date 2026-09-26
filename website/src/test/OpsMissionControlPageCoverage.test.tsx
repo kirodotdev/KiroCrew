@@ -979,6 +979,7 @@ describe('OpsMissionControlPage', () => {
           on_shift: true,
           who: 'octocat',
           roster: {
+            source: 'schedule-file',
             members: [
               { login: 'octocat', shifts: 2, on_call_now: true },
               { login: 'hubot', shifts: 1, on_call_now: false },

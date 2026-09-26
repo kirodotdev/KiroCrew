@@ -3965,6 +3965,11 @@
         "fast_path": "高速パス",
         "fix_label": "修正:{{fix}}",
         "hypothesis_agent_must_confirm_first": "仮説 — エージェントが最初に確認する必要があります",
+        "incidentio_error_no_schedule_ids": "incident.io のユーザー ID は設定されていますが、スケジュールが設定されていないため、このインスタンスは毎回のチェックでシフト外として扱われます。設定で自分が入っているスケジュールを追加してください。",
+        "incidentio_error_unreachable": "incident.io から応答がありません（HTTP {{status}}）。",
+        "incidentio_error_unreachable_no_status": "incident.io から応答がありません。",
+        "incidentio_not_on_roster": "設定済みの incident.io スケジュールに、今後2週間のシフトがありません。設定で schedule_ids と incident.io のユーザー ID を確認してください。",
+        "incidentio_roster_window": "incident.io · 今後2週間のシフト",
         "is_no_longer_in_the_ledger": "はもはや\n                                    元帳にありません。",
         "knowledge_ledger": "知識元帳",
         "known_patterns": "既知のパターン",
@@ -4058,7 +4063,8 @@
         "waiting_awaiting_approval": "続行を承認してください",
         "waiting_awaiting_diagnosis": "停止、診断なし",
         "waiting_awaiting_input": "ご対応をお待ちしています",
-        "waiting_on_you": "ご対応をお待ちしています"
+        "waiting_on_you": "ご対応をお待ちしています",
+        "your_next_shift": "次のシフト：{{start}} – {{end}}"
       },
       "settingsPanel": {
         "a_pattern_is_required_there_is_no_wildcard_grant": "パターンが必要です — ワイルドカード許可はありません。*を使用して接頭辞にマッチさせます。例えば、prod-*はprod-で始まるすべてのリソースをカバーします。",
@@ -4181,7 +4187,8 @@
         "your_github_login": "GitHub ログイン",
         "your_pagerduty_user_id": "PagerDuty ユーザーID",
         "your_incident_io_user_id": "incident.io ユーザーID",
-        "your_team_s_ledger_is_still_being_exchanged_sync": "チームの台帳はまだ交換中です。名前を同期します"
+        "your_team_s_ledger_is_still_being_exchanged_sync": "チームの台帳はまだ交換中です。名前を同期します",
+        "unknown_incidentio_user_refused": "incident.io にこの ID のユーザーはいません。名前ではなく、incident.io のユーザー ID を入力してください。"
       },
       "signalsPanel": {
         "a_signal_that_is_absent_from_this_poll_can_be_re": "このポーリングに含まれないシグナルは復旧と解釈できます。",

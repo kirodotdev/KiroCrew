@@ -57,6 +57,7 @@ import {
   type LedgerEntry,
   type OperatingMode,
   type ProviderInfo,
+  type RotationRoster,
 } from './api'
 
 import { i18nT } from '../../i18n/t'
@@ -167,6 +168,62 @@ function shiftEnd(iso: string): string {
     hour: 'numeric',
     minute: '2-digit',
   })
+}
+
+/**
+ * The first shift of `me`'s that has not started yet, or null.
+ *
+ * Read off `windows`, which both roster sources already send. A shift in force is left out on
+ * purpose: the card's "On call now" badge and the header's "until" already say that, and the
+ * question this answers is the one they cannot — "when am I on next?". Compared
+ * case-insensitively because a schedule-file `who:` entry is a hand-typed GitHub login.
+ */
+function nextShift(roster: RotationRoster, now: number = Date.now()): { from: string; to: string } | null {
+  const me = roster.me.toLowerCase()
+  if (!me) return null
+  let best: { from: string; to: string; at: number } | null = null
+  for (const w of roster.windows ?? []) {
+    const at = Date.parse(w.from)
+    if (Number.isNaN(at) || at <= now) continue
+    if (!w.who.some((who) => who.toLowerCase() === me)) continue
+    if (!best || at < best.at) best = { from: w.from, to: w.to, at }
+  }
+  return best ? { from: best.from, to: best.to } : null
+}
+
+/**
+ * The roster's error in the active language when the server sent a code for it.
+ *
+ * incident.io's two roster errors are fixed and enumerable, so the server sends
+ * `error_code` and the text is translated here; the English `error` beside it is the
+ * fallback for a schedule-file parse error, which carries the parser's own words.
+ */
+function rosterErrorText(roster: RotationRoster): string {
+  if (roster.error_code === 'no_schedule_ids') {
+    return i18nT('apps.opsMissionControl.opsMissionControlPage.incidentio_error_no_schedule_ids')
+  }
+  if (roster.error_code === 'unreachable') {
+    return roster.error_status
+      ? i18nT('apps.opsMissionControl.opsMissionControlPage.incidentio_error_unreachable', {
+          status: roster.error_status,
+        })
+      : i18nT('apps.opsMissionControl.opsMissionControlPage.incidentio_error_unreachable_no_status')
+  }
+  return roster.error
+}
+
+/** "Your next shift: …", or nothing when there is none or its bounds do not parse. */
+function NextShiftLine({ roster }: { roster: RotationRoster }) {
+  const next = nextShift(roster)
+  // `shiftEnd` returns '' on a bound it cannot parse; half a range is worse than none.
+  const start = next ? shiftEnd(next.from) : ''
+  const end = next ? shiftEnd(next.to) : ''
+  if (!start || !end) return null
+  return (
+    <p className="text-sm mt-2">
+      {i18nT('apps.opsMissionControl.opsMissionControlPage.your_next_shift', { start, end })}
+    </p>
+  )
 }
 
 function ModeBadge({ mode }: { mode: OperatingMode }) {
@@ -1184,17 +1241,25 @@ export default function OpsMissionControlPage() {
             written record is readable. */}
         <ClosedIncidents />
 
-        {/* Team composition. Only rendered when a committed rotation.yaml is the source —
-            a solo install has no team and an empty panel would just be noise. Placed
-            above the ledger because "who is handling this" is the question an operator
-            asks BEFORE "what do we know about it", and because a disarmed instance needs
-            an explanation near the top rather than buried. */}
-        {rotation?.roster?.members?.length ? (
+        {/* Team composition. Only rendered when a rotation has a roster to show — a
+            committed rotation.yaml, or incident.io with an operator identity. A solo
+            install has no team and an empty panel would just be noise. Placed above the
+            ledger because "who is handling this" is the question an operator asks BEFORE
+            "what do we know about it", and because a disarmed instance needs an
+            explanation near the top rather than buried.
+
+            An incident.io roster is rendered even with no members: the server sends one
+            only when an operator identity is set, and its empty states (no schedule_ids,
+            a failed read, or a window with no shifts at all) are exactly the ones the
+            card exists to explain. */}
+        {rotation?.roster?.members?.length || rotation?.roster?.source === 'incidentio' ? (
           <Card className="mb-4">
             <CardTitle>
               <Users className="lucide-inline" /> {i18nT('apps.opsMissionControl.opsMissionControlPage.on_call_team')}
               <span className="text-[12px] text-muted font-normal ml-2">
-                {rotation.roster.strict_gating
+                {rotation.roster.source === 'incidentio'
+                  ? i18nT('apps.opsMissionControl.opsMissionControlPage.incidentio_roster_window')
+                  : rotation.roster.strict_gating
                   ? i18nT('apps.opsMissionControl.opsMissionControlPage.timezone_only_on_call_instance_picks_up_work', {
                       timezone: rotation.roster.timezone,
                     })
@@ -1212,9 +1277,11 @@ export default function OpsMissionControlPage() {
                       <Radio className="lucide-inline" />
                     </span>
                     <span className={isMe ? 'font-semibold text-text-strong' : ''}>
+                      {/* `name` when the source sends one: an incident.io `login` is an opaque
+                          user id, kept for matching `me` because display names are not unique. */}
                       {isMe
-                        ? i18nT('apps.opsMissionControl.opsMissionControlPage.member_is_this_instance', { login: m.login })
-                        : m.login}
+                        ? i18nT('apps.opsMissionControl.opsMissionControlPage.member_is_this_instance', { login: m.name || m.login })
+                        : m.name || m.login}
                     </span>
                     {m.on_call_now ? (
                       <Badge variant="ok">{i18nT('apps.opsMissionControl.opsMissionControlPage.on_call_now')}</Badge>
@@ -1236,6 +1303,17 @@ export default function OpsMissionControlPage() {
               })}
             </ul>
 
+            <NextShiftLine roster={rotation.roster} />
+            {/* incident.io's counterpart of the not-on-roster warnings below. Different
+                words because the remedy is different: there is no who: list and no strict
+                gating, only the schedule list and the identity. */}
+            {rotation.roster.source === 'incidentio' &&
+            !rotation.roster.error &&
+            !rotation.roster.me_on_roster ? (
+              <p className="text-sm text-warn mt-2">
+                {i18nT('apps.opsMissionControl.opsMissionControlPage.incidentio_not_on_roster')}
+              </p>
+            ) : null}
             {/* The two states that look identical from the board but mean very different
                 things: a normal off-shift instance vs. one that will never pick up work
                 because it is not on the rotation at all. Saying so here is the difference
@@ -1255,7 +1333,8 @@ export default function OpsMissionControlPage() {
                 config` 400s it — there is no toggle here, in Settings, or anywhere else.
                 Advice that earns a rejection is worse than no advice, so the only remedies
                 named are the two that work. */}
-            {rotation.roster.me &&
+            {rotation.roster.source === 'schedule-file' &&
+            rotation.roster.me &&
             !rotation.roster.me_on_roster &&
             rotation.roster.strict_gating ? (
               <p className="text-xs text-warn mt-2">
@@ -1269,7 +1348,8 @@ export default function OpsMissionControlPage() {
                 every instance in that state arms, which is the duplicate-claim shape the
                 shared schedule exists to avoid, and it looks like a correctly-configured
                 team from here. */}
-            {rotation.roster.me &&
+            {rotation.roster.source === 'schedule-file' &&
+            rotation.roster.me &&
             !rotation.roster.me_on_roster &&
             !rotation.roster.strict_gating ? (
               <p className="text-xs text-muted mt-2">
@@ -1278,7 +1358,7 @@ export default function OpsMissionControlPage() {
                 })}
               </p>
             ) : null}
-            {!rotation.roster.me ? (
+            {rotation.roster.source === 'schedule-file' && !rotation.roster.me ? (
               <p className="text-xs text-warn mt-2">
                 {i18nT('apps.opsMissionControl.opsMissionControlPage.no_github_login_resolved_for_this_instance_so_it')}
               </p>
@@ -1287,7 +1367,7 @@ export default function OpsMissionControlPage() {
               <ErrorNotice
                 className="mt-2"
                 message={i18nT('apps.opsMissionControl.opsMissionControlPage.schedule_problem', {
-                  error: rotation.roster.error,
+                  error: rosterErrorText(rotation.roster),
                 })}
                 askAgent
               />
