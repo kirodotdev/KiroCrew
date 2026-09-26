@@ -1,10 +1,37 @@
 import * as React from 'react'
 import * as DropdownMenuPrimitive from '@radix-ui/react-dropdown-menu'
 import { cn } from '../../lib/utils'
+import { useCloseOnFileDrag } from '../../hooks/useCloseOnFileDrag'
 import { useIsTouchDevice } from '../../hooks/useIsTouchDevice'
 import { PhoneSubContentDiv, PhoneSubTriggerDiv, usePhoneSubState } from './phoneSubmenu'
 
-const DropdownMenu = DropdownMenuPrimitive.Root
+type DropdownMenuProps = React.ComponentProps<typeof DropdownMenuPrimitive.Root>
+
+/**
+ * Radix `DropdownMenu.Root`, plus one rule: an open modal menu closes the
+ * moment a file drag from outside the page enters the window, so the chat
+ * composer's drop zone can receive the drop. The mechanism is documented on
+ * `useCloseOnFileDrag`; `ContextMenu` applies the same rule.
+ *
+ * Controlled (`open`) and uncontrolled (`defaultOpen`) usage both work: the
+ * close goes through the same path as a click-outside, so `onOpenChange(false)`
+ * fires for callers that track the state themselves.
+ */
+function DropdownMenu({ open: openProp, defaultOpen, onOpenChange, modal = true, ...rest }: DropdownMenuProps) {
+  const isControlled = openProp !== undefined
+  const [uncontrolledOpen, setUncontrolledOpen] = React.useState(defaultOpen ?? false)
+  const open = isControlled ? openProp : uncontrolledOpen
+
+  const handleOpenChange = React.useCallback((next: boolean) => {
+    if (!isControlled) setUncontrolledOpen(next)
+    onOpenChange?.(next)
+  }, [isControlled, onOpenChange])
+  const close = React.useCallback(() => handleOpenChange(false), [handleOpenChange])
+
+  useCloseOnFileDrag(open && modal, close)
+
+  return <DropdownMenuPrimitive.Root open={open} onOpenChange={handleOpenChange} modal={modal} {...rest} />
+}
 const DropdownMenuTrigger = DropdownMenuPrimitive.Trigger
 const DropdownMenuGroup = DropdownMenuPrimitive.Group
 const DropdownMenuPortal = DropdownMenuPrimitive.Portal

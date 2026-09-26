@@ -4,6 +4,7 @@ import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 
 import kiroFileChomper from '../assets/kiro-file-chomper.png'
 import { i18nT } from '../i18n/t'
+import { carriesFiles } from '../lib/fileDrag'
 
 type DropHandler = (event: ReactDragEvent) => void
 type DropTargetProps = {
@@ -15,12 +16,6 @@ type DropTargetProps = {
 
 const FILE_COPY_DROP_EFFECT: DataTransfer['dropEffect'] = 'copy'
 const BOB_CYCLE_SECONDS = 2.8
-
-function carriesFiles(dataTransfer: DataTransfer): boolean {
-  return dataTransfer.types?.includes('Files')
-    || Array.from(dataTransfer.items).some((item) => item.kind === 'file')
-    || dataTransfer.files.length > 0
-}
 
 /**
  * Owns one file drag across an entire chat pane. A depth counter absorbs the

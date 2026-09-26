@@ -1,10 +1,37 @@
 import * as React from 'react'
 import * as ContextMenuPrimitive from '@radix-ui/react-context-menu'
 import { cn } from '../../lib/utils'
+import { useCloseOnFileDrag } from '../../hooks/useCloseOnFileDrag'
 import { useIsTouchDevice } from '../../hooks/useIsTouchDevice'
 import { PhoneSubContentDiv, PhoneSubTriggerDiv, usePhoneSubState } from './phoneSubmenu'
 
-const ContextMenu = ContextMenuPrimitive.Root
+/**
+ * A context menu opens on a right-click, so no caller drives it: `open` is
+ * deliberately not accepted (a future controlled caller gets a type error
+ * here instead of a silently ignored prop). Radix's Root does take `open`,
+ * which is what lets this wrapper close it.
+ */
+type ContextMenuProps = Omit<React.ComponentProps<typeof ContextMenuPrimitive.Root>, 'open'>
+
+/**
+ * Radix `ContextMenu.Root`, plus the same rule as `DropdownMenu`: an open
+ * modal menu closes when a file drag from outside the page enters the window,
+ * so the chat composer's drop zone can receive the drop. See
+ * `useCloseOnFileDrag` for the mechanism.
+ */
+function ContextMenu({ onOpenChange, modal = true, ...rest }: ContextMenuProps) {
+  const [open, setOpen] = React.useState(false)
+
+  const handleOpenChange = React.useCallback((next: boolean) => {
+    setOpen(next)
+    onOpenChange?.(next)
+  }, [onOpenChange])
+  const close = React.useCallback(() => handleOpenChange(false), [handleOpenChange])
+
+  useCloseOnFileDrag(open && modal, close)
+
+  return <ContextMenuPrimitive.Root open={open} onOpenChange={handleOpenChange} modal={modal} {...rest} />
+}
 const ContextMenuTrigger = ContextMenuPrimitive.Trigger
 const ContextMenuGroup = ContextMenuPrimitive.Group
 const ContextMenuPortal = ContextMenuPrimitive.Portal
