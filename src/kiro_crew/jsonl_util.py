@@ -65,12 +65,15 @@ used.
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import logging
 import os
 import re
-from collections.abc import Iterator
+import stat
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import IO
+from typing import IO, Any, cast
 
 from kiro_crew import platform_compat
 
@@ -116,6 +119,9 @@ _BOUNDARY_RE = re.compile(rb"[\r\n]")
 # record is a header or one session's file list, and 8 MiB here would silently
 # truncate the biggest real sessions.
 RECORD_CAP = 128 * 1024 * 1024
+
+# Public so a caller can tell this refusal from an unrelated EINVAL, which shares its errno.
+NOT_REGULAR_FILE = "refusing a non-regular file"
 
 
 class UnreadableRecord(Exception):
@@ -547,3 +553,113 @@ def rotate_jsonl_at(path: Path, max_bytes: int) -> None:
             os.close(lock_fd)
     except (OSError, ValueError):
         pass
+
+
+class _CappedReader:
+    """Charges every byte handed to the caller against *max_bytes*.
+
+    ``fstat`` describes the file at OPEN time, and a writer holding the same path may APPEND while
+    it is being consumed, so the size check bounds the file as it was rather than what the caller
+    receives. This bounds the delivery: reads are clamped to one byte past what remains, so a file
+    that grew to gigabytes cannot be materialised before the refusal fires.
+    """
+
+    __slots__ = ("_handle", "_max_bytes", "_path", "_remaining")
+
+    def __init__(self, handle: IO[bytes], path: Path, max_bytes: int) -> None:
+        self._handle = handle
+        self._path = path
+        self._max_bytes = max_bytes
+        self._remaining = max_bytes
+
+    def _charge(self, count: int) -> None:
+        self._remaining -= count
+        if self._remaining < 0:
+            raise OSError(
+                errno.EFBIG,
+                f"grew past the {self._max_bytes}-byte ceiling while being read",
+                str(self._path),
+            )
+
+    def _budget(self, size: int | None) -> int:
+        # One PAST the remainder, so the read that proves the file overran still lands and charges,
+        # while a file of exactly max_bytes reads to EOF and is never refused.
+        return self._remaining + 1 if size is None or size < 0 else min(size, self._remaining + 1)
+
+    def read(self, size: int = -1) -> bytes:
+        chunk = self._handle.read(self._budget(size))
+        self._charge(len(chunk))
+        return chunk
+
+    def readline(self, size: int = -1) -> bytes:
+        chunk = self._handle.readline(self._budget(size))
+        self._charge(len(chunk))
+        return chunk
+
+    def readinto(self, buffer: Any) -> int:
+        read = getattr(self._handle, "readinto", None)
+        if read is None:
+            chunk = self.read(len(buffer))
+            buffer[: len(chunk)] = chunk
+            return len(chunk)
+        count = read(memoryview(buffer)[: self._budget(len(buffer))]) or 0
+        self._charge(count)
+        return count
+
+    def __iter__(self) -> Iterator[bytes]:
+        return self
+
+    def __next__(self) -> bytes:
+        line = self.readline()
+        if not line:
+            raise StopIteration
+        return line
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._handle, name)
+
+
+@contextlib.contextmanager
+def open_regular_nofollow(
+    path: str | os.PathLike[str],
+    *,
+    max_bytes: int,
+    authorize: Callable[[int], None] | None = None,
+) -> Iterator[IO[bytes]]:
+    """Open *path* for reading, refusing anything that is not a regular file.
+
+    Refuses a FIFO and a reparse point in the SAME operation that opens, so a planted
+    link has no check-to-open window; the per-platform branch lives in
+    :func:`kiro_crew.platform_compat.open_file_no_reparse`.
+
+    ``max_bytes`` is checked against the open handle's ``fstat`` and then charged against
+    every read, so growth after the open is still refused.
+
+    ``authorize`` receives the RAW descriptor and raises to refuse it, before any content
+    reader exists. It sits AFTER the size check deliberately: a callback that mutates the
+    file would otherwise be caught by the open-time ``fstat`` and never reach the per-read
+    charge it exercises.
+    """
+    fd = platform_compat.open_file_no_reparse(path, nonblocking=True)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise OSError(errno.EINVAL, NOT_REGULAR_FILE, str(path))
+        if st.st_size > max_bytes:
+            raise OSError(
+                errno.EFBIG, f"{st.st_size} bytes past the {max_bytes}-byte ceiling", str(path)
+            )
+        if authorize is not None:
+            authorize(fd)
+        if getattr(os, "O_NONBLOCK", 0):
+            # Cleared once the node is known regular: O_NONBLOCK earned its place on the open, and
+            # a regular-file read does not block, but a short read on a signal would be visible.
+            os.set_blocking(fd, True)
+        handle = os.fdopen(fd, "rb", closefd=True)
+    except BaseException:
+        os.close(fd)
+        raise
+    try:
+        yield cast("IO[bytes]", _CappedReader(handle, Path(path), max_bytes))
+    finally:
+        handle.close()
