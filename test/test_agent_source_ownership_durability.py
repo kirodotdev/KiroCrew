@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from kiro_crew.knowledge.agent_source import (
+    AGENT_SOURCE_URI,
     add_agent_document,
     document_slug,
     ensure_agent_source,
@@ -62,14 +63,29 @@ def pipeline(kstore):
 IMPORTED_ID = "imported-item-1"
 
 
-def _imported_item(source_id):
-    """A row shaped the way ``import_bundle`` expects, landing in the aggregate."""
+def _imported_bundle(source_id):
+    """A bundle shaped the way ``import_bundle`` expects, landing in the aggregate.
+
+    It declares the aggregate source, because a bundle's source ids are local to the
+    store that minted them and the import resolves them through the ``sources`` entry's
+    uri: a reference to a source the bundle does not carry is refused. Every producer
+    ships that entry -- ``export_all`` ships every source row and ``export_item`` ships
+    each source it holds -- so declaring it here is what makes this fixture a bundle
+    rather than a shortcut. The uri is this store's own aggregate, so the item lands
+    under *source_id*, which is what these pins are about.
+    """
     return {
-        "id": IMPORTED_ID, "title": "Imported", "content": "imported body",
-        "item_type": "document", "source_id": source_id, "chunk_index": 0,
-        "namespace": "default", "summary": None, "tags": "[]", "embedding": None,
-        "status": "active", "created_at": "2024-01-01T00:00:00",
-        "updated_at": "2024-01-01T00:00:00",
+        "sources": [{
+            "id": source_id, "name": "Auto-added", "source_type": "agent",
+            "uri": AGENT_SOURCE_URI, "created_at": "2024-01-01T00:00:00",
+        }],
+        "items": [{
+            "id": IMPORTED_ID, "title": "Imported", "content": "imported body",
+            "item_type": "document", "source_id": source_id, "chunk_index": 0,
+            "namespace": "default", "summary": None, "tags": "[]", "embedding": None,
+            "status": "active", "created_at": "2024-01-01T00:00:00",
+            "updated_at": "2024-01-01T00:00:00",
+        }],
     }
 
 
@@ -232,7 +248,7 @@ class TestOwnershipSurvivesAnInterruptedAdd:
         real_extract = pipeline.extractor.extract_batch
 
         async def import_lands_mid_ingest(contents):
-            kstore.import_bundle({"items": [_imported_item(sid)]})
+            kstore.import_bundle(_imported_bundle(sid))
             return await real_extract(contents)
 
         pipeline.extractor.extract_batch = import_lands_mid_ingest
@@ -255,7 +271,7 @@ class TestOwnershipSurvivesAnInterruptedAdd:
         real_extract = pipeline.extractor.extract_batch
 
         async def import_lands_mid_ingest(contents):
-            kstore.import_bundle({"items": [_imported_item(sid)]})
+            kstore.import_bundle(_imported_bundle(sid))
             pipeline.extractor.extract_batch = real_extract
             return await real_extract(contents)
 

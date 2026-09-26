@@ -139,6 +139,17 @@ _BUNDLE_STATE_PLAIN_FIELDS = {
     "agent_item_state": ("slug", "content_hash", "updated_at"),
 }
 
+#: Fields of an ``import_bundle`` ``withheld`` entry that carry BUNDLE-AUTHORED text,
+#: redacted on the way OUT rather than on the way in. Every one of them is a value the
+#: store has to keep byte-exact -- a document key lands in a PRIMARY KEY matched against
+#: a real slug or path, and the ids are matched against ``items.id`` -- which is why
+#: ``_BUNDLE_STATE_PLAIN_FIELDS`` deliberately exempts them from the inbound loop. That
+#: leaves the response as the one place bundle text reaches a reader unfiltered: a
+#: document key is unbounded, and the whole account is returned verbatim by
+#: ``web.json_response``. The SEL copy is already covered by ``_redact_and_clip``.
+#: ``reason`` and ``table`` are module constants, so neither is listed.
+_WITHHELD_REDACTED_FIELDS = ("key", "items", "item_id", "source_id")
+
 
 def _validate_knowledge_bundle(body: object) -> str | None:
     """Return an error string if body isn't an importable bundle shape, else None.
@@ -2522,6 +2533,20 @@ async def import_bundle(request: web.Request) -> web.Response:
             {"error": "internal server error", "code": "knowledge_import_failed"},
             status=500,
         )
+    # The withheld account names the content that did not arrive, and it names it in the
+    # bundle's OWN words: a document key and the item ids it claimed. Those are the
+    # values the inbound loop leaves alone on purpose, because the store matches them
+    # against a PRIMARY KEY and against ``items.id`` and so needs them byte-exact --
+    # which makes this response the one path on which bundle-authored text reaches a
+    # reader unfiltered. Redacted HERE, after the store has used and stored the real
+    # values, so the rule the loop above applies to ``name`` and ``source_uri`` on those
+    # very rows holds for the account of them too.
+    for entry in result.get("withheld", []):
+        if not isinstance(entry, dict):
+            continue
+        for field in _WITHHELD_REDACTED_FIELDS:
+            if isinstance(entry.get(field), str):
+                entry[field] = _redact(entry[field])
     return web.json_response(result)
 
 

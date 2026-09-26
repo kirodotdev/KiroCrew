@@ -2720,13 +2720,14 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
             source_locations = [dict(r) for r in self.db.execute("SELECT * FROM source_locations")]
             mentions = [dict(r) for r in self.db.execute("SELECT * FROM mentions")]
         # Ownership a bundle cannot back is worse than shipping none: the accepting pass
-        # drops a row whose group is not wholly inside the items the import wrote, so ONE
-        # id this export does not carry discards the WHOLE row and the surviving chunks
-        # arrive unowned. Deleting one chunk of a document leaves exactly that shape --
-        # no delete path prunes a state row's group, by design -- so the routine case
-        # would silently lose the ownership this export exists to carry. Pruned to the
-        # items actually carried, and to the ones filed under the row's own source, which
-        # is the same pair the accepting pass checks.
+        # keeps only the ids the import wrote, so an id this export does not carry is
+        # named on every restore in the account of what arrived owned by nothing, and the
+        # group it reaches the other side in is one id short of what the row claims.
+        # Deleting one chunk of a document leaves exactly that shape -- no delete path
+        # prunes a state row's group, by design -- so the routine case would report
+        # content as unowned that nothing is actually missing. Pruned to the items
+        # actually carried, and to the ones filed under the row's own source, which is
+        # the same pair the accepting pass checks.
         exported_owner: dict[str, object] = {
             row["id"]: row.get("source_id") for row in items
             if isinstance(row, dict) and isinstance(row.get("id"), str)}
@@ -2779,28 +2780,35 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         # and the entire import rolls back.
         source_id_map: dict[str, str] = {}
 
-        def _mapped_source(raw: object) -> str | None:
-            """The local source id a bundle's source id resolves to, or ``None``.
+        def _source_fk(raw: object, field: str) -> object:
+            """*raw* rewritten to its local source id, refused if it resolves nowhere.
 
-            ``None`` means the bundle names a source it does not itself carry and
-            this store does not hold. Callers writing a foreign key pass the raw
-            value through in that case: an unresolvable pointer is a malformed
-            bundle, and the constraint refusing it is what the import endpoint
-            turns into its typed malformed-bundle answer.
+            ``source_id_map`` is built from the bundle's own ``sources`` entries, so a
+            reference absent from it names a source the bundle does not carry. With no
+            uri to match on, the only handle left is an id -- and an id is local to
+            whichever store minted it, so resolving one against this store's rows files
+            the bundle's content under whatever local source happens to share it. The
+            DECLARED path already refuses exactly that: when a bundle source's uri is
+            absent here but its id is held by a different uri, the uri arrives under a
+            freshly minted id rather than being filed under the unrelated row. An
+            undeclared reference cannot be repaired that way, because nothing in the
+            bundle names the source its content belongs to, so it is refused as the
+            typed rejection the import endpoint turns into its malformed-bundle 400.
+
+            This is also what makes the plain ``INSERT`` in the sources loop defence in
+            depth rather than a hope: were it ever to fail and leave a uri unmapped, its
+            items are refused here instead of landing under an unrelated source.
+
+            A NULL reference is not a reference. An item filed under no source at all is
+            legitimate and arrives exactly as it came.
             """
-            if not isinstance(raw, str) or not raw:
+            if raw is None:
                 return None
-            mapped = source_id_map.get(raw)
-            if mapped is not None:
-                return mapped
-            row = self.db.execute(
-                "SELECT id FROM sources WHERE id = ?", (raw,)).fetchone()
-            return row["id"] if row else None
-
-        def _source_fk(raw: object) -> object:
-            """*raw* rewritten to its local source id, or left exactly as it came."""
-            mapped = _mapped_source(raw)
-            return mapped if mapped is not None else raw
+            mapped = source_id_map.get(raw) if isinstance(raw, str) else None
+            if mapped is None:
+                raise KnowledgeBundleError(
+                    f"'{field}' names a source this bundle does not carry")
+            return mapped
 
         self.db.execute("BEGIN IMMEDIATE")
         try:
@@ -2981,7 +2989,7 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                      # Through the map: the exporting store's source id is not this
                      # store's, and an item left pointing at the bundle's id is
                      # refused by the foreign key, which loses the whole import.
-                     _source_fk(item.get("source_id")),
+                     _source_fk(item.get("source_id"), "items.source_id"),
                      item.get("chunk_index", 0), item.get("namespace", "default"), item.get("summary"),
                      item.get("tags", "[]"), raw_emb, _validated_embedding_sig(item.get("embedding_sig")),
                      item.get("status", "active"),
@@ -3030,7 +3038,8 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                 self.db.execute(
                     "INSERT OR IGNORE INTO source_locations (id, item_id, source_id, chunk_range, section_title, anchor, created_at) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (loc["id"], loc["item_id"], _source_fk(loc["source_id"]),
+                    (loc["id"], loc["item_id"],
+                     _source_fk(loc["source_id"], "source_locations.source_id"),
                      loc.get("chunk_range"),
                      loc.get("section_title"), loc.get("anchor"), loc.get("created_at", now)))
             for m in bundle.get("mentions", []):
@@ -3189,9 +3198,11 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         Only that reason blocks an item, because only that reason says the content
         does not belong here. Every other refusal in :meth:`_import_bundle_state`
         rejects a ROW as an untrustworthy statement about items that are themselves
-        legitimate -- an over-claiming group, an unparsable one, one whose ids
-        another row already owns -- and those items arrive unowned exactly as they do
-        from a bundle with no state tables at all.
+        legitimate -- an unparsable group, one whose ids another row already owns, one
+        the bundle files under a different source -- and those items arrive unowned
+        exactly as they do from a bundle with no state tables at all. An over-claiming
+        group is not among them: the ids the import wrote are owned and the rest are
+        merely named in the account, so nothing it brought is left unowned.
 
         A row whose group overlaps another bundle row's group blocks nothing, and
         neither does an id whose own bundle item is filed under a DIFFERENT source.
@@ -3380,18 +3391,27 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         Runs INSIDE :meth:`import_bundle`'s transaction and AFTER the item loop,
         because the test a row has to pass is which items the import actually wrote.
 
-        A row is restored only when THIS import inserted every item in its group.
-        Ownership means "these items, all of them", so a half-present group would let
-        a later ingest replace the named part and leave the rest behind as duplicates
-        -- the outcome ownership exists to prevent. Requiring the import's own inserts
-        is what makes that safe rather than merely present: an id the bundle ships
-        that ALREADY existed here was skipped by ``INSERT OR IGNORE``, so the row in
-        the store is local content, and naming it would hand a foreign document the
-        authority to replace or delete something this store owns. Unowned local
-        content -- residue from an interrupted ingest -- is the case that makes this
-        load-bearing rather than theoretical.
+        A row owns the items THIS import inserted for it, and nothing else. Ownership
+        means "these items, all of them", so an id the bundle ships that ALREADY
+        existed here is left out: ``INSERT OR IGNORE`` skipped it, the row in the store
+        is local content, and naming it would hand a foreign document the authority to
+        replace or delete something this store owns. Unowned local content -- residue
+        from an interrupted ingest -- is the case that makes that load-bearing rather
+        than theoretical.
 
-        A row that does not qualify is dropped rather than repaired, and its items
+        What the import DID write is a different statement, and refusing it is what
+        strands content. A second bundle for a document already here brings exactly
+        that shape: the first restore put part of the group down, so the second's row
+        names ids it did not insert alongside ids it did. Dropping the whole row leaves
+        the new chunks searchable and owned by nothing -- ``agent_item_state`` is the
+        one table a bundle restores and no pass reaps it, so the document's own delete
+        takes the ids its row names and walks past the rest. The arriving ids therefore
+        join the live local row's group, which is the same document coming back: the
+        blocking pass only lets a bundle's items through when the two groups overlap.
+        A merge extends that row's group and touches nothing else, because its hash,
+        name and status describe this store's copy and the bundle can be older than it.
+
+        A row with nothing left to own is dropped rather than repaired, and its items
         arrive unowned: an empty group is a de-duplication claim or a scan marker,
         both of which describe the exporting store's progress and are re-derived
         here by the next ingest of that document.
@@ -3400,10 +3420,10 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         the surviving group is what makes a row live, and the vocabularies differ
         per table (see :data:`_DOC_STATE_TABLES`).
 
-        A local row for the same document wins only while it OWNS live items. One
-        with an empty or stale group is holding a marker, not ownership, so the
-        imported row takes its place and its claim on another source's items is
-        released with it.
+        A local row for the same document keeps its identity while it OWNS live items,
+        and only its group grows. One with an empty or stale group is holding a marker,
+        not ownership, so the imported row takes its place and its claim on another
+        source's items is released with it.
 
         Returns the number of rows restored.
         """
@@ -3437,41 +3457,70 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                 group = _bundle_item_group(row.get("item_ids"))
                 if not group:
                     continue
-                missing = sorted(set(group) - inserted_items)
-                if missing:
-                    # An export this store writes prunes the group to what it carries, so
-                    # this is a bundle built elsewhere or before that pruning. The row is
-                    # still refused -- partial ownership would name items another store
-                    # holds -- but the caller is told which document and which ids, because
-                    # its content arrives unowned and nothing else would say so.
-                    dropped.append({"reason": "ownership_row_names_absent_items",
-                                    "table": table, "source_id": target_source,
-                                    "key": key, "items": ",".join(missing)})
-                    continue
-                if set(group) & claimed_ids:
-                    continue
-                placeholders = ", ".join("?" * len(group))
-                # The group's items were inserted by this import, so they exist -- but
-                # under the source the ITEM named, which is not necessarily the one
-                # this row names. A row may only own items filed under itself.
-                held = {
-                    r["id"] for r in self.db.execute(
-                        "SELECT id FROM items WHERE source_id = ? "  # noqa: S608
-                        f"AND id IN ({placeholders})",
-                        (target_source, *group)).fetchall()
-                }
-                if held != set(group):
-                    continue
                 existing = self.db.execute(
                     f"SELECT {_OWNERSHIP_HASH_COL[table]} AS owned_hash, item_ids "  # noqa: S608
                     f"FROM {table} WHERE source_id = ? AND {key_col} = ?",
                     (target_source, key)).fetchone()
+                # A live local row on this key is THIS document already here -- the
+                # blocking pass only lets the bundle's items through when the two groups
+                # overlap -- so its group is the base the arriving ids join, and its own
+                # ids are already owned rather than missing.
+                merging = existing is not None and self._state_row_owns_items(
+                    existing["item_ids"], target_source)
+                base = _bundle_item_group(existing["item_ids"]) if merging else []
+                # What this import actually wrote for this row, and what the row names
+                # that nothing here hands it. Ownership covers the first; the second is
+                # local content or absent content, and claiming either would let a
+                # foreign document replace or delete something this store owns.
+                arriving = [item for item in group
+                            if item in inserted_items and item not in base]
+                absent = sorted(set(group) - inserted_items - set(base))
+                if absent:
+                    # An export this store writes prunes the group to what it carries, so
+                    # this is a bundle built elsewhere, or a second bundle whose ids a
+                    # previous restore already put here under another document. Those ids
+                    # stay out of the group -- partial ownership would name items another
+                    # document holds -- and the caller is told which document and which
+                    # ids, because their content is here unowned and nothing else says so.
+                    dropped.append({"reason": "ownership_row_names_absent_items",
+                                    "table": table, "source_id": target_source,
+                                    "key": key, "items": ",".join(absent)})
+                if not arriving:
+                    # Nothing this import wrote, so there is no ownership to record: the
+                    # row would either restate the base or claim local content.
+                    continue
+                # An id another document already owns is never taken, and the base is not
+                # "another document" -- it is the row being extended.
+                if set(arriving) & (claimed_ids - set(base)):
+                    continue
+                placeholders = ", ".join("?" * len(arriving))
+                # The ids were inserted by this import, so they exist -- but under the
+                # source the ITEM named, which is not necessarily the one this row names.
+                # A row may only own items filed under itself, and one id filed elsewhere
+                # makes the whole row an untrustworthy statement about ownership rather
+                # than a partial one: this store's own export cannot produce that shape.
+                held = {
+                    r["id"] for r in self.db.execute(
+                        "SELECT id FROM items WHERE source_id = ? "  # noqa: S608
+                        f"AND id IN ({placeholders})",
+                        (target_source, *arriving)).fetchall()
+                }
+                if held != set(arriving):
+                    continue
+                if merging:
+                    # Extend the live row's group and touch nothing else. Its hash, name
+                    # and status describe THIS store's copy of the document, and a bundle
+                    # reaching this branch can be older than that copy -- repointing the
+                    # identity columns at it would leave the row describing a revision
+                    # this store does not hold.
+                    self.db.execute(
+                        f"UPDATE {table} SET item_ids = ? "  # noqa: S608
+                        f"WHERE source_id = ? AND {key_col} = ?",
+                        (json.dumps([*base, *arriving]), target_source, key))
+                    claimed_ids.update(arriving)
+                    restored += 1
+                    continue
                 if existing is not None:
-                    if self._state_row_owns_items(
-                            existing["item_ids"], target_source):
-                        # A row holding live items wins: repointing it at the bundle's
-                        # group would leave the items it owns with nothing naming them.
-                        continue
                     # An empty or stale group is not ownership. It is a de-duplication
                     # marker or a scan marker, and nothing else will ever name the items
                     # this bundle brought, so the imported row takes the key. The
@@ -3483,7 +3532,7 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                         target_source, existing["owned_hash"] or "")
                 columns = ("source_id", key_col, "item_ids", "status", *carried)
                 values: list[Any] = [
-                    target_source, key, json.dumps(group), live_status]
+                    target_source, key, json.dumps(arriving), live_status]
                 for col in carried:
                     value = row.get(col)
                     if col in _BUNDLE_STATE_REQUIRED_COLS and not isinstance(value, str):

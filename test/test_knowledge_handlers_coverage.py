@@ -727,8 +727,16 @@ class TestImportBundle:
 
     @pytest.mark.asyncio
     async def test_bundle_violating_foreign_keys_is_400_not_500(self, store):
-        bundle = {"source_locations": [
-            {"id": "sl1", "item_id": "missing-item", "source_id": "missing-source"}]}
+        # The source IS declared, so the store resolves the reference and the row
+        # reaches the insert; its ITEM is what no bundle carries, which is the
+        # foreign key this arm exists for. An undeclared source is refused earlier,
+        # by the store's own typed rejection, and is covered separately.
+        bundle = {
+            "sources": [{"id": "s1", "name": "A", "source_type": "local_file",
+                         "uri": "/a.md", "created_at": "2024-01-01T00:00:00"}],
+            "source_locations": [
+                {"id": "sl1", "item_id": "missing-item", "source_id": "s1"}],
+        }
         async with _client(_make_app(store)) as client:
             resp = await client.post("/api/knowledge/import", json=bundle)
             assert resp.status == 400
@@ -998,8 +1006,15 @@ class TestImportBundle:
         # raw driver/exception text must never reach the client -- on either
         # the 400 arm (e2e via a real FK violation) or the 500 arm (covered
         # above).  Server-side logs keep the detail instead.
-        bundle = {"source_locations": [
-            {"id": "sl1", "item_id": "missing-item", "source_id": "missing-source"}]}
+        # The source is declared so the reference resolves and the row reaches the
+        # insert; the missing ITEM is what trips the foreign key, which is the arm
+        # whose driver text must not escape.
+        bundle = {
+            "sources": [{"id": "s1", "name": "A", "source_type": "local_file",
+                         "uri": "/a.md", "created_at": "2024-01-01T00:00:00"}],
+            "source_locations": [
+                {"id": "sl1", "item_id": "missing-item", "source_id": "s1"}],
+        }
         async with _client(_make_app(store)) as client:
             resp = await client.post("/api/knowledge/import", json=bundle)
             assert resp.status == 400
@@ -1007,6 +1022,68 @@ class TestImportBundle:
         assert body["error"] == "malformed bundle"
         assert "FOREIGN KEY" not in body["error"]
         assert "constraint" not in body["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_the_withheld_account_is_redacted_in_the_response(self, store):
+        """A document key is BUNDLE-authored text on an HTTP path. `slug` is exempt
+        from the inbound redaction loop on purpose -- it lands in a PRIMARY KEY and has
+        to be the real text -- and it carries no length bound, so the account naming it
+        is where bundle text would otherwise reach a reader unfiltered."""
+        bundle = {
+            "sources": [{"id": "s1", "name": "Auto-added", "source_type": "agent",
+                         "uri": "agent://", "created_at": "2024-01-01T00:00:00"}],
+            "agent_item_state": [{
+                "source_id": "s1",
+                "slug": "doc-AKIAIOSFODNN7EXAMPLE",
+                "content_hash": "h",
+                "item_ids": json.dumps(["absent-AKIAIOSFODNN7EXAMPLE"]),
+                "updated_at": "2024-01-01T00:00:00",
+                "name": "N",
+            }],
+        }
+        async with _client(_make_app(store)) as client:
+            resp = await client.post("/api/knowledge/import", json=bundle)
+            assert resp.status == 200
+            result = await resp.json()
+
+        named = [w for w in result["withheld"]
+                 if w.get("reason") == "ownership_row_names_absent_items"]
+        assert named, f"fixture must produce a withheld entry: {result['withheld']}"
+        assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(result), (
+            "bundle-authored credential text reached the import response"
+        )
+        assert "REDACTED" in named[0]["key"]
+        assert "REDACTED" in named[0]["items"]
+
+    @pytest.mark.asyncio
+    async def test_the_stored_document_key_stays_byte_exact(self, store):
+        """The control on the other side: redaction belongs to the RESPONSE. The store
+        matches this key against a PRIMARY KEY, so a redacted one would not find its own
+        document."""
+        slug = "doc-AKIAIOSFODNN7EXAMPLE"
+        bundle = {
+            "sources": [{"id": "s1", "name": "Auto-added", "source_type": "agent",
+                         "uri": "agent://", "created_at": "2024-01-01T00:00:00"}],
+            "items": [{"id": "i1", "title": "T", "content": "body",
+                       "item_type": "document", "source_id": "s1"}],
+            "agent_item_state": [{
+                "source_id": "s1",
+                "slug": slug,
+                "content_hash": "h",
+                "item_ids": json.dumps(["i1"]),
+                "updated_at": "2024-01-01T00:00:00",
+                "name": "N",
+            }],
+        }
+        async with _client(_make_app(store)) as client:
+            resp = await client.post("/api/knowledge/import", json=bundle)
+            assert resp.status == 200
+            result = await resp.json()
+
+        assert result["ownership_rows_imported"] == 1
+        assert result["withheld"] == []
+        row = store.db.execute("SELECT slug FROM agent_item_state").fetchone()
+        assert row["slug"] == slug, "the stored key was redacted; it must stay byte-exact"
 
 
 # ----------------------------------------------------------------- embeddings
