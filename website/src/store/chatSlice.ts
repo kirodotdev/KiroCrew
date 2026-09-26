@@ -235,10 +235,16 @@ const QUESTION_RETIRING_ROLES = new Set(['user'])
  *  waiting for has arrived and the card is spent. Nothing else retires it —
  *  see `QUESTION_RETIRING_ROLES` for why a nudge does not.
  *
- *  Server-owned cards (with `ask_id`) are exempt: their lifecycle is the
+ *  Blocking cards (with `ask_id`) are exempt: their lifecycle is the
  *  `question_card_resolved` broadcast (answered / timed out / cancelled /
  *  slot stop), and a blocked wait can legitimately outlive a mid-turn steer
  *  frame — clearing on it would strand the blocked tool call with no card.
+ *
+ *  Stateless cards are server-owned too: the server retires the record
+ *  on the same user row and broadcasts `question_card_resolved`, which
+ *  `resolveQuestionCard` applies by identity. This local drop is kept as
+ *  defense in depth for the frame that arrives before that broadcast, so the
+ *  card never outlives the row that answered it by even one render.
  *
  *  Shared by the two hand-synced frame appliers (active `sseChatMessage` and
  *  background `applyNonActiveFrame`) so the paths cannot drift; both call it
@@ -532,35 +538,21 @@ export const pendingQuestionFor = (
   return Object.prototype.hasOwnProperty.call(map, slot) ? map[slot] : null
 }
 
-/** Capture a slot's pending STATELESS card's per-delivery identity for
- *  send-time capture (the `expected` value of retireStatelessQuestion). Call
- *  SYNCHRONOUSLY at the send path's ENTRY — before its first await — so the
- *  capture is the card the user saw when they hit send. Captured any later,
- *  an await gap lets the card-submit flow clear the card (capture reads null
- *  and the retire is skipped) or a newer card land (capture reads an
- *  identity this send never answered, and success would retire it) — either
- *  way the identity guard compares against the wrong baseline. Shared by the
- *  two send sites (ChatPage.send / ChatPane.doSend) so their capture logic
- *  cannot drift. Returns null when no stateless card is pending (or the
- *  entry predates identity minting): dispatch nothing then. */
-export const captureStatelessCard = (
-  map: ChatState['pendingQuestions'] | undefined,
-  slot: string | null | undefined,
-): string | null => {
-  const c = pendingQuestionFor(map, slot)
-  return c && !c.ask_id ? c.cardId ?? null : null
-}
-
-/** Capture a slot's pending BLOCKING card's `ask_id` for send-time capture, the
- *  `ask_id` counterpart to captureStatelessCard, with the same
- *  synchronously-at-send-entry contract and for the same reason.
+/** Capture a slot's pending BLOCKING card's `ask_id` at the send path's ENTRY.
+ *  Call SYNCHRONOUSLY, before the first await, so the capture is the card the
+ *  user saw when they hit send: captured any later, an await gap lets the
+ *  card-submit flow resolve it (capture reads null) or a newer ask land
+ *  (capture reads an id this send never answered). Shared by the two send sites
+ *  (ChatPage.send / ChatPane.doSend) so their capture logic cannot drift.
  *
- *  A blocking card cannot be retired in the store the way a stateless one is:
- *  an agent is parked on its HTTP request, so deleting the entry alone leaves
- *  that agent waiting out its whole window with nothing on screen. Sending a
- *  composer message instead of using the card therefore has to resolve it
- *  through the answer endpoint, which is why the send path needs the id rather
- *  than just "a card was pending".
+ *  A STATELESS card needs no send-time capture: the server owns its lifecycle
+ *  and retires the record on the user row this send appends, announcing it
+ *  with `question_card_resolved` (handled by `resolveQuestionCard`). A blocking
+ *  card cannot be retired that way: an agent is parked on its HTTP request, so
+ *  deleting the entry alone leaves that agent waiting out its whole window with
+ *  nothing on screen. Sending a composer message instead of using the card
+ *  therefore has to resolve it through the answer endpoint, which is why the
+ *  send path needs the id rather than just "a card was pending".
  *
  *  Returns null while the card holds an ANSWER IN PROGRESS — a typed custom
  *  answer or a pending option selection — because resolving it unmounts the card
@@ -1196,7 +1188,7 @@ interface ChatState {
   /** Pending ask_question cards keyed by slot. Keyed (rather than a single
    *  card) so concurrent ask_question calls from two slots cannot evict each
    *  other — the losing agent would block until its timeout. */
-  pendingQuestions: Record<string, { slot: string; ask_id?: string; questions: Array<{ question: string; header?: string; options: Array<{ label: string; description?: string }>; multiSelect?: boolean }>; cardId?: string; serverCardId?: string; draftActive?: boolean }>
+  pendingQuestions: Record<string, { slot: string; ask_id?: string; questions: Array<{ question: string; header?: string; options: Array<{ label: string; description?: string }>; multiSelect?: boolean }>; serverCardId?: string; native?: boolean; draftActive?: boolean }>
   // Agent-authored follow-up suggestions (suggest_followup MCP tool), rendered
   // as a card above the composer. Keyed BY SLOT: a single global card let a
   // suggestion arriving in session B silently evict session A's unacted-on card,
@@ -4383,7 +4375,17 @@ const chatSlice = createSlice({
     /** Dismiss the refused-delete notice. The row stays in `history`: nothing
      *  was deleted, and the user retries from the sidebar as before. */
     clearUndeletableHistory(state) { state.undeletableHistory = null },
-    setQuestionCard(state, action: PayloadAction<{ slot: string; ask_id?: string; card_id?: string; questions: ChatState['pendingQuestions'][string]['questions']; fresh?: boolean }>) {
+    /** Show a question card for a slot. Every card carries the SERVER's identity
+     *  — `ask_id` for a blocking ask, `card_id` for a stateless card (the MCP
+     *  `ask_question` card and kiro-cli's native `AskUserQuestion` card alike) —
+     *  and that identity is the only one this slice keeps: the server owns the
+     *  card's lifecycle and names it on every retirement (`question_card_resolved`)
+     *  and on `GET /api/ask-question/pending`.
+     *
+     *  `native` marks the mid-turn kiro-cli card whose answer must STEER into the
+     *  turn still waiting on it (see PendingQuestionCard's callers); it rides the
+     *  frame and the /pending row so a reload keeps the routing with the card. */
+    setQuestionCard(state, action: PayloadAction<{ slot: string; ask_id?: string; card_id?: string; native?: boolean; questions: ChatState['pendingQuestions'][string]['questions'] }>) {
       // Defensive init: existing test fixtures build partial preloaded state
       // without this key.
       if (!state.pendingQuestions) state.pendingQuestions = {}
@@ -4394,81 +4396,53 @@ const chatSlice = createSlice({
       if (isUnsafeKey(action.payload.slot)) return
       const key = safeKey(action.payload.slot)
       const prev = state.pendingQuestions[key]
-      if (prev && !action.payload.fresh) {
-        // Payload comparison, not reference: a websocket reconnect re-dispatches
-        // the SAME still-pending card with a freshly parsed questions array
-        // (syncPendingQuestions). That is not a new ask — keep the existing
-        // entry (and its cardId) so the mounted card is not churned. Only the
-        // NON-fresh path may coalesce: a live `question_card` broadcast sets
-        // `fresh`, because a genuinely new ask that happens to repeat a prior
-        // question must get its own delivery identity — coalescing it would
-        // let a stale send completion for the old card retire the new one.
-        const same = prev.ask_id === action.payload.ask_id &&
-          JSON.stringify(prev.questions) === JSON.stringify(action.payload.questions)
-        if (same) return
-      }
+      // Identity comparison, not payload comparison: a websocket reconnect
+      // re-lists the SAME still-pending card (syncPendingQuestions), and that is
+      // not a new ask — keep the existing entry (and its `draftActive`) so the
+      // mounted card and the user's half-entered answer are not churned. A new
+      // ask always carries a new server id, even when it repeats a prior
+      // question word for word, so it always replaces. An entry with no server
+      // identity at all (a fixture) has nothing to compare and is replaced.
+      const identity = action.payload.ask_id || action.payload.card_id
+      if (prev && identity && (prev.ask_id || prev.serverCardId) === identity) return
+      // A new ask whose payload is byte-identical to the card on screen keeps
+      // the mounted component: PendingQuestionCard keys it by slot, and
+      // QuestionCard resets its selections and typed text only when the
+      // questions change. The user's local draft therefore survives the swap,
+      // so `draftActive` must survive with it, or the next turn-consuming
+      // frame retires a card that still holds unsent work. A DIFFERENT payload
+      // resets the component (local draft genuinely gone), so it starts clean.
+      const sameShape =
+        prev !== undefined &&
+        prev.ask_id === action.payload.ask_id &&
+        JSON.stringify(prev.questions) === JSON.stringify(action.payload.questions)
       state.pendingQuestions[key] = {
         slot: action.payload.slot,
         ask_id: action.payload.ask_id,
         questions: action.payload.questions,
-        // Per-delivery identity, minted once per entry. This — not the
-        // payload — is what send-time captures compare against, so two
-        // deliveries of an identical question are still distinguishable.
-        cardId: `card-${secureRandomId()}`,
-        // The SERVER's identity for this ask, carried on the broadcast. Distinct
-        // from `cardId` above, which is minted here per delivery: only the
-        // server's own id can name the record the dismiss route retires, so a
-        // dismissal that lands after a newer card replaced this one is refused
-        // instead of clearing the new card's status. Absent for a blocking card
-        // (its `ask_id` is that identity) and for a payload that predates it.
+        // The server's identity for a stateless card. It names the record the
+        // dismiss route retires, so a dismissal that lands after a newer card
+        // replaced this one is refused instead of clearing the new card's
+        // status; and it is what `question_card_resolved` matches against.
+        // Absent for a blocking card (its `ask_id` is that identity).
         serverCardId: action.payload.card_id,
-        // A fresh, structurally IDENTICAL replacement keeps the mounted
-        // component (PendingQuestionCard keys the component by payload, not
-        // cardId), so the user's local draft survives the swap — but a plain
-        // replacement here would reset `draftActive` and let the next
-        // turn-consuming frame silently destroy that surviving draft. Carry
-        // the flag over exactly for that case. A DIFFERENT payload remounts
-        // the component (local draft state is genuinely gone), so starting
-        // clean there is correct.
-        draftActive:
-          prev !== undefined &&
-          prev.draftActive === true &&
-          prev.ask_id === action.payload.ask_id &&
-          JSON.stringify(prev.questions) === JSON.stringify(action.payload.questions)
-            ? true
-            : undefined,
+        ...(action.payload.native ? { native: true } : {}),
+        ...(sameShape && prev.draftActive === true ? { draftActive: true } : {}),
       }
     },
-    /** Confirmed-delivery retirement of the sender's OWN answer to a
-     *  stateless card. The composer's user frame is never echoed back over
-     *  the wire (slot.append skips the broadcast for `user` rows the sender
-     *  already rendered optimistically), so the frame appliers can never
-     *  retire the card for the device that sent the answer — the send path
-     *  must do it. Dispatched by the send call sites ONLY when the server
-     *  accepted the message for immediate dispatch (`ok`): retiring on the
-     *  optimistic append would delete the card on a FAILED send (offline,
-     *  5xx), and retiring on `queued` would delete it while the queued
-     *  message is still cancellable — a QUEUED answer retires at its
-     *  `queue_pop` instead (see removeQueuedMessage), the moment it actually
-     *  becomes the slot's next turn.
-     *
-     *  `expected` is the per-delivery `cardId` of the card that was pending
-     *  WHEN THE SEND STARTED (captureStatelessCard at the send path's
-     *  entry). A slow POST response can race a new card into the slot —
-     *  including one repeating the identical question, which payload
-     *  comparison cannot distinguish — and an unqualified retirement would
-     *  delete that live card. Identity comparison makes any stale
-     *  completion a no-op. */
-    retireStatelessQuestion(state, action: PayloadAction<{ slot: string; expected: string }>) {
+    /** Take a slot's card off screen, optionally only if it is still the card
+     *  named by `card_id` (its server identity). The identity guard is for the
+     *  round-trips that clear AFTER the server answers — a dismiss whose response
+     *  lands after a newer card replaced the one dismissed must not take that
+     *  newer card down with it. Unlike `resolveQuestionCard`, this is the user's
+     *  own explicit action, so a draft in progress does not spare the card. */
+    clearQuestionCard(state, action: PayloadAction<{ slot: string; card_id?: string }>) {
       if (isUnsafeKey(action.payload.slot)) return
-      const card = state.pendingQuestions?.[safeKey(action.payload.slot)]
-      if (!card || card.ask_id) return
-      if (card.cardId !== action.payload.expected) return
-      delete state.pendingQuestions[safeKey(action.payload.slot)]
-    },
-    clearQuestionCard(state, action: PayloadAction<{ slot: string }>) {
-      if (isUnsafeKey(action.payload.slot)) return
-      delete state.pendingQuestions?.[safeKey(action.payload.slot)]
+      const key = safeKey(action.payload.slot)
+      const card = state.pendingQuestions?.[key]
+      if (!card) return
+      if (action.payload.card_id && card.serverCardId !== action.payload.card_id) return
+      delete state.pendingQuestions[key]
     },
     /** Publish whether the slot's pending card has a non-empty custom answer
      *  in progress. The draft text itself lives in QuestionCard's component
@@ -4592,8 +4566,10 @@ const chatSlice = createSlice({
       const m = action.payload
       // Retiring the slot's stateless question card on this OPTIMISTIC append
       // is deliberately NOT done here: the send can still fail (offline, 5xx),
-      // and the card must survive a failed send. The send path dispatches
-      // retireStatelessQuestion after the server confirms delivery.
+      // and the card must survive a failed send. The server retires the card
+      // when the user row actually lands and announces it with
+      // `question_card_resolved`, which every window — this one included —
+      // applies through resolveQuestionCard.
       if (m.role === 'user' && m.meta?.steer) finalizeTrailingStreaming(state.messages)
       // Non-steer user bubbles carry a `sendId` in meta (set by ChatPage at
       // send time) that serves as both the optimistic marker and the correlation
@@ -4611,8 +4587,7 @@ const chatSlice = createSlice({
       const { slot, message } = action.payload
       if (isUnsafeKey(slot)) return
       // Same reasoning as appendMessage: no card retirement on an optimistic
-      // append — the pane's send path dispatches retireStatelessQuestion once
-      // the server confirms delivery.
+      // append — the server announces the retirement once the user row lands.
       const msgs = slot === state.activeSlot ? state.messages : (state.slotMessages[safeKey(slot)] ??= [])
       // Reconcile a steer echo (server 'steer_push', meta.steer, no optimistic
       // flag) against the optimistic bubble that steer() added client-side
@@ -6293,15 +6268,11 @@ const chatSlice = createSlice({
         // Deliberately NO card retirement here. Three review rounds each found
         // a different way this path could retire the wrong card (system queue
         // items hydrated as indistinguishable rows; duplicate rows from the
-        // hydration/queue_push race; and a queued answer for card A landing
-        // after a newer card B arrived — per-delivery cardId comparison would
-        // be required, but the queued row cannot carry a trustworthy capture
-        // across reloads). The cost of NOT retiring is bounded and local: the
-        // answering device keeps the card until the popped turn's next
-        // turn-consuming frame retires it via the frame applier — the core
-        // fix — exactly like every other device. Sender-side instant
-        // retirement for queued answers is deferred to the server-side
-        // lifecycle owner (#2290), which can compare identities authoritatively.
+        // hydration/queue_push race; a queued answer for card A landing after
+        // a newer card B arrived). The server is the lifecycle owner:
+        // the popped entry lands as a live user row there, which retires the
+        // card's record and broadcasts `question_card_resolved` by identity to
+        // every window, this one included.
       }
     },
     /** Cancel a queued message: remove from messages. pendingInput is set locally by the initiating client. */
@@ -7351,7 +7322,7 @@ const chatSlice = createSlice({
 })
 
 export const {
-  setActiveSlot, clearSlotState, setPendingInput, setAgentSwitchNotice, clearSwitchSlotGone, clearUnresumableResume, clearUndeletableHistory, setQuestionCard, retireStatelessQuestion, clearQuestionCard, setQuestionDraft, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, ageFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
+  setActiveSlot, clearSlotState, setPendingInput, setAgentSwitchNotice, clearSwitchSlotGone, clearUnresumableResume, clearUndeletableHistory, setQuestionCard, clearQuestionCard, setQuestionDraft, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, ageFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
   removeThinking, confirmOptimisticSend, resolveOptimisticSteer, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, settleStopNotRunning, startLocalTurn, endLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, clearSlotCache, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
   sseContextUsage, setVoicePlaying, setVoiceAudio,
   toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, requestSlotReveal, clearSlotReveal, requestFolderReveal, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,

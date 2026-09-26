@@ -35,8 +35,8 @@ import {
   toggleActivity, openActivityPanel, openActivityToTab,
   selectSubagent,
   truncateAfterIndex, replaceMessages,
-  requestStop, pendingQuestionFor, captureStatelessCard, clearFollowupCard, dismissFollowupItem, clearFolderSuggestion, ageFolderSuggestion,
-  retireStatelessQuestion, capturePendingAskId, confirmOptimisticSend, resolveOptimisticSteer,
+  requestStop, pendingQuestionFor, clearFollowupCard, dismissFollowupItem, clearFolderSuggestion, ageFolderSuggestion,
+  capturePendingAskId, confirmOptimisticSend, resolveOptimisticSteer,
   requestSlotReveal,
   mcpAppKey,
   selectAutomationForSlot,
@@ -2523,17 +2523,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // clear, and (below) the send target.
     const uiSlot = activeSlotRef.current
 
-    // Capture the stateless card pending at ENTRY — before the first await
-    // below. This send consumes the answer channel of the card the user saw
-    // when they hit send; captured after an await, the card-submit flow can
-    // clear the card (or a newer one can land) in the gap, and the capture
-    // would compare against the wrong baseline (fork GPT review, 995718f).
+    // Capture a pending BLOCKING card at ENTRY — before the first await below.
+    // This send consumes the answer channel of the card the user saw when they
+    // hit send; captured after an await, the card-submit flow can resolve the
+    // card (or a newer one can land) in the gap, and the capture would compare
+    // against the wrong baseline. Its staleness is
+    // resolved over the network, not in the store. A STATELESS card needs no
+    // capture: the server retires it when this send's user row lands and
+    // announces it with `question_card_resolved`.
     const entrySendSlot = targetSlot ?? uiSlot
     // An app's supplied text is not the human's answer to a pending card.
     // Null captures keep all composer-owned completion effects inert.
-    const cardAtSend = isolated ? null : captureStatelessCard(store.getState().chat.pendingQuestions, entrySendSlot)
-    // Same entry-time capture for a BLOCKING card, whose staleness is resolved
-    // over the network instead of in the store.
     const askAtSend = isolated ? null : capturePendingAskId(store.getState().chat.pendingQuestions, entrySendSlot)
     // Entry-time capture of the folder-suggestion card, ONLY when it was
     // actually on screen for this send: the card renders solely in this page's
@@ -3030,29 +3030,18 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       // only after the chat_done refresh.
       dispatch(confirmOptimisticSend({ slot, sendId, mid: typeof body.mid === 'string' ? body.mid : undefined }))
     }
-    if (body.ok && !body.queued && cardAtSend && slot === entrySendSlot) {
-      // Immediate dispatch confirmed (`ok`): the message consumed the slot's
-      // next-turn channel, so the card captured at entry is now stale. An
-      // independent check, not part of the else-if chain above — the card must
-      // retire regardless of which transcript-echo rule applied. A QUEUED
-      // acceptance deliberately does NOT retire here — the queued message is
-      // still cancellable, and cancelling must keep the card. Its ordinary
-      // turn-consuming server frame owns later retirement. The slot guard
-      // covers forceNew rerouting the send into a freshly created session —
-      // that send answers nothing in the entry slot, whose card must stay.
-      // Deliberately NOT done on the optimistic append (a failed send must
-      // keep the card) nor on the abort-timeout path below (delivery
-      // unconfirmed — a wrongly kept card is dismissible, a wrongly deleted
-      // one is not recoverable).
-      dispatch(retireStatelessQuestion({ slot, expected: cardAtSend }))
-    }
+    // No stateless-card retirement here: the server retires the card when the
+    // user row lands (immediate dispatch) or when the queued entry pops, and
+    // announces it with `question_card_resolved` to every window, this one
+    // included. A failed send appends no row, so the card stays; a queued send
+    // stays cancellable with the card intact until its pop.
     if (body.ok && !body.queued && folderCardAtSend && slot === entrySendSlot) {
-      // Same delivery bar and slot-identity guard as the stateless-card
-      // retirement above, for the folder-suggestion card's turn-aging: the
-      // card was on screen when the user hit send (captured at entry, active
-      // slot only) and the server confirmed the send was delivered. Failed
-      // sends never reach here; queued sends are still cancellable; forceNew
-      // reroutes answer nothing in the entry slot. ts pins the card
+      // Delivery bar and slot-identity guard for the folder-suggestion card's
+      // turn-aging: the card was on screen when the user hit send (captured at
+      // entry, active slot only) and the server confirmed the send was
+      // delivered. Failed sends never reach here; queued sends are still
+      // cancellable; forceNew reroutes (the send lands in a freshly created
+      // session) answer nothing in the entry slot. ts pins the card
       // generation, so a replacement that landed mid-flight is not aged.
       dispatch(ageFolderSuggestion({ slot, ts: folderCardAtSend.ts }))
     }
@@ -7726,17 +7715,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                       // next-turn send, exactly as the non-blocking `ask_question`
                       // card always does.
                       //
-                      // Steer ONLY the native card, which carries neither an
-                      // `ask_id` (the blocking backend card) nor a server
-                      // `card_id` (the non-blocking `ask_question` MCP card,
-                      // stored as `serverCardId`). The client always mints a
-                      // local `cardId` per delivery, so that field cannot tell
-                      // the two apart -- `serverCardId` is the one the server
-                      // sets only for the non-blocking card. The non-blocking
-                      // card can be answered while sub-agents keep the slot
-                      // busy, and it must still start a next turn.
+                      // Steer ONLY the native card, which the server marks
+                      // `native` on the `question_card` frame and the /pending
+                      // row. The non-blocking `ask_question` MCP card carries
+                      // the same server `card_id` but no such mark: it can be
+                      // answered while sub-agents keep the slot busy, and it
+                      // must still start a next turn.
                       const slot = activeSlot || undefined
-                      const isNativeCard = !pendingQuestion?.ask_id && !pendingQuestion?.serverCardId
+                      const isNativeCard = pendingQuestion?.native === true
                       if (slot && isNativeCard && selectComposerBusy(store.getState(), slot)) {
                         const steerSendId = mintSendId()
                         drainPendingChunks()

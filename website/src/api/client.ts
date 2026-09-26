@@ -4828,8 +4828,10 @@ export const api = {
   resolveApproval: (id: string, action: 'approve' | 'reject' | 'reject_once') => post('/api/approvals/' + encodeURIComponent(id) + '/' + action, {}).then(j),
   /** Question cards still awaiting an answer, for rehydration after a reload or
    *  websocket reconnect (`question_card` is a one-shot broadcast). A blocking
-   *  ask carries `ask_id`; a stateless card carries `card_id` instead. */
-  pendingQuestions: (): Promise<{ ask_id?: string; card_id?: string; slot: string; questions: { question: string; header?: string; multiSelect?: boolean; options: { label: string; description?: string }[] }[]; ts?: number }[]> =>
+   *  ask carries `ask_id`; a stateless card carries `card_id` instead, and
+   *  `native` when it is kiro-cli's mid-turn `AskUserQuestion` card (whose
+   *  answer steers into the live turn). */
+  pendingQuestions: (): Promise<{ ask_id?: string; card_id?: string; native?: boolean; slot: string; questions: { question: string; header?: string; multiSelect?: boolean; options: { label: string; description?: string }[] }[]; ts?: number }[]> =>
     fetch('/api/ask-question/pending').then(j),
   /** Resolve a pending agent question that carries an `ask_id` — a server-side
    *  wait opened by `POST /api/ask-question`, not the MCP ask_question tool,

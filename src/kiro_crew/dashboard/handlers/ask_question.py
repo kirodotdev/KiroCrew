@@ -294,6 +294,9 @@ async def api_ask_question_pending(request: web.Request) -> web.Response:
                     "card_id": card_id,
                     "slot": slot_key,
                     "questions": rec.get("questions", []),
+                    # Rides with the card so a reload routes the answer the way
+                    # the live frame did (steer for a native mid-turn card).
+                    "native": bool(rec.get("native")),
                     "ts": rec.get("ts", 0),
                 }
             )

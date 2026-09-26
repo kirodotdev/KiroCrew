@@ -3622,6 +3622,40 @@ def _tool_call_ws_payload(event: "LLMEvent") -> dict[str, str | bool]:
     }
 
 
+async def _post_native_question_card(state: Any, slot_key: str, tool_input: str) -> bool:
+    """Post kiro-cli's native ``AskUserQuestion`` card through the server owner.
+
+    The card goes through the SAME path the MCP ``ask_question`` directive uses
+    (``DashboardState.post_question_card``): one minted ``card_id`` on the
+    frame, one ``_question_pending`` record on the slot, one redaction pass. A
+    live user row or a consumed steer then retires the record and broadcasts
+    ``question_card_resolved`` exactly as for an MCP card, so the client keeps
+    no lifecycle of its own for this kind.
+
+    Schema validation stays here (``validate_ask_user_question`` is the
+    tool-input contract); text redaction lives in the coordinator, which also
+    rejects questions that collapse to the same text after redaction.
+
+    Returns False -- and logs -- when the input is unusable. Nothing raised here
+    may reach the turn: a malformed native card is a warning, not a turn error.
+    """
+    try:
+        questions = validate_ask_user_question(json.loads(tool_input))
+        await state.post_question_card(slot_key, questions, native=True)
+    except (
+        # ``json.JSONDecodeError`` and the coordinator's redaction-collision
+        # refusal are both ValueError.
+        ValueError,
+        TypeError,
+        KeyError,
+        AttributeError,
+        ValidationError,
+    ) as exc:
+        logger.warning("AskUserQuestion validation failed: %s", exc)
+        return False
+    return True
+
+
 # Native kiro-cli subagents (``use_subagent``) are surfaced in the Activity tab
 # via the ``_kiro.dev/subagent/list_update`` notification (one card per
 # sub-agent), handled by ``_native_subagent_sync`` below. The list_update gives
@@ -12841,33 +12875,11 @@ async def _run_chat(
                     tool_kind=event.tool_kind,
                     outcome="invoked",
                 )
-                # AskUserQuestion: validate via schema, redact, and broadcast
+                # AskUserQuestion: validate, then post through the server-side
+                # owner so the card carries a ``card_id`` and retires with the
+                # next user row / consumed steer like every other question card.
                 if event.title == "AskUserQuestion" and event.tool_input:
-                    try:
-                        _q_input = json.loads(event.tool_input)
-                        _questions = validate_ask_user_question(_q_input)
-                        for q in _questions:
-                            q["question"], _ = redact_exfiltration_urls(q["question"])
-                            q["question"], _ = redact_credentials(q["question"])
-                            q["header"], _ = redact_exfiltration_urls(q["header"])
-                            q["header"], _ = redact_credentials(q["header"])
-                            for o in q["options"]:
-                                o["label"], _ = redact_exfiltration_urls(o["label"])
-                                o["label"], _ = redact_credentials(o["label"])
-                                o["description"], _ = redact_exfiltration_urls(o["description"])
-                                o["description"], _ = redact_credentials(o["description"])
-                        state.broadcast_ws(
-                            "question_card",
-                            {"slot": slot.key, "questions": _questions},
-                        )
-                    except (
-                        json.JSONDecodeError,
-                        TypeError,
-                        KeyError,
-                        AttributeError,
-                        ValidationError,
-                    ) as exc:
-                        logger.warning("AskUserQuestion validation failed: %s", exc)
+                    await _post_native_question_card(state, slot.key, event.tool_input)
                 # Fire PreToolUse hooks for auto-approved tools.
                 # NOTE: For EVENT_TOOL_CALL, hooks are informational only - the tool
                 # is already running (auto-approved by kiro-cli). Hook results cannot

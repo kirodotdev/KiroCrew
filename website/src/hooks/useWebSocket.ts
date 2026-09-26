@@ -939,6 +939,7 @@ export function useWebSocket() {
           slot: q.slot as string,
           ask_id: q.ask_id,
           card_id: q.card_id,
+          native: q.native,
           questions: q.questions as Parameters<typeof setQuestionCard>[0]['questions'],
         }))
       }
@@ -2191,9 +2192,10 @@ export function useWebSocket() {
             break
           case 'question_card': {
             const previous = store.getState().chat.pendingQuestions?.[data.slot]
-            // `fresh` marks a live delivery and preserves the card's existing
-            // identity/rehydration contract. Audio deduplicates by server id.
-            dispatch(setQuestionCard({ ...(data as Parameters<typeof setQuestionCard>[0]), fresh: true }))
+            // Every card carries its server identity (`ask_id` or `card_id`);
+            // the reducer coalesces a re-delivery of the same id. Audio
+            // deduplicates by that id too.
+            dispatch(setQuestionCard(data as Parameters<typeof setQuestionCard>[0]))
             const current = store.getState().chat.pendingQuestions?.[data.slot]
             const id = data.ask_id || data.card_id
             if (current?.slot === data.slot && !reconnectingRef.current

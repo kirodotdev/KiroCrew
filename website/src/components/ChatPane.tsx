@@ -53,7 +53,7 @@ import { usePlanActionMutation, isPlanAction } from '../hooks/usePlanActionMutat
 import { useQueuedMessageActions, queuedSendStash } from '../hooks/useQueuedMessageActions'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAppSelector, useAppDispatch, store } from '../store'
-import { PANE_HYDRATE_LIMIT, retireStatelessQuestion, captureStatelessCard, capturePendingAskId, confirmOptimisticSend, resolveOptimisticSteer, selectSlotMessages, selectSendConfirmed, selectSlotStreamState, selectSlotRunEpoch, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, syncSlotRunningFromServer, setAgentSwitchNotice, pendingQuestionFor } from '../store/chatSlice'
+import { PANE_HYDRATE_LIMIT, capturePendingAskId, confirmOptimisticSend, resolveOptimisticSteer, selectSlotMessages, selectSendConfirmed, selectSlotStreamState, selectSlotRunEpoch, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, syncSlotRunningFromServer, setAgentSwitchNotice, pendingQuestionFor } from '../store/chatSlice'
 import { handleStopPress, isEscalationState } from '../utils/stopDebounce'
 import { deriveFollowUpOptions } from '../app-sdk/protocol'
 import { appendFollowUpOption, removeFollowUpOption, type OwnedSuffix } from '../lib/followUpToggle'
@@ -978,15 +978,12 @@ export default function ChatPane({
     // A send while STREAMING dictation is live ends the dictation, before the
     // composer is read and cleared (see useComposerVoice.disarmForSend).
     composerRef.current?.voice()?.disarmForSend()
-    // Capture the stateless card pending at ENTRY (before any state updates
-    // or yields): this send consumes the answer channel of the card the user
-    // saw when they hit send. Retired only after the server confirms it
-    // accepted the message (ok or queued) — the optimistic append below must
-    // not do it, or a failed send (offline, 5xx) deletes the card while the
-    // session never moved on.
-    const cardAtSend = captureStatelessCard(store.getState().chat.pendingQuestions, slotKey)
-    // A blocking card is resolved over the network, not in the store — an agent
-    // is parked on its request.
+    // Capture a pending BLOCKING card at ENTRY (before any state updates or
+    // yields): this send consumes the answer channel of the card the user saw
+    // when they hit send, and a blocking card is resolved over the network, not
+    // in the store — an agent is parked on its request. A stateless card needs
+    // no capture: the server retires it when this send's user row lands and
+    // announces it with `question_card_resolved`.
     const askAtSend = capturePendingAskId(store.getState().chat.pendingQuestions, slotKey)
     // Staged text and files belong to the COMPOSER, so only a send that
     // consumes the composer may clear or carry them. An `optionText` send (the
@@ -1136,13 +1133,10 @@ export default function ChatPane({
         stashDemoted: (queueId) => { if (!optionText) queuedSendStash.set(queueId, { raw: bubblePastes.length ? expandPasteTokens(text, bubblePastes) : text, files, sent: llm }) },
       })
       // -- doSend's send-machinery tail (not steer-receipt policy) --
-      // Stateless card + blocking ask resolution, owned by doSend and run on
-      // every accepted receipt. Guarded independently of the rulings above so
-      // a `steered` or `queued` receipt still settles the card/ask correctly.
-      if (!cardAtSend && !askAtSend) return
-      // Immediate dispatch only: a QUEUED acceptance is still cancellable --
-      // the queued path retires at its queue_pop instead (removeQueuedMessage).
-      if (receipt.status === 'dispatched' && cardAtSend) dispatch(retireStatelessQuestion({ slot: slotKey, expected: cardAtSend }))
+      // Blocking ask resolution, owned by doSend and run on every accepted
+      // receipt. Guarded independently of the rulings above so a `steered` or
+      // `queued` receipt still settles the ask correctly.
+      if (!askAtSend) return
       void resolveAskAfterSend(receipt.body, askAtSend, dispatch)
     })
   }, [input, pendingFiles, pasteBlocks, busy, slotKey, dispatch, restoreIntoComposer, reportSendFailure])
@@ -1733,11 +1727,11 @@ export default function ChatPane({
              starts an ordinary next turn, exactly as the non-blocking
              `ask_question` card does. `busy` is the shared `selectComposerBusy`
              rule (chatSlice) the main chat keys on too, so the two routes match.
-             Steer ONLY the native card (no `ask_id`, no server `card_id`): the
-             client always mints a local `cardId`, so the discriminator is
-             `serverCardId`, which the server sets only for the non-blocking
-             `ask_question` card. That card can be answered while sub-agents keep
-             the slot busy, and it must still start a next turn.
+             Steer ONLY the native card, which the server marks `native` on the
+             `question_card` frame and the /pending row. The non-blocking
+             `ask_question` card carries the same server `card_id` but no such
+             mark: it can be answered while sub-agents keep the slot busy, and
+             it must still start a next turn.
 
              Recovery differs by whether this is a live steer. A LIVE steer uses
              the receipt-aware policy owned by `applySteerReceipt` (issue #9457),
@@ -1754,15 +1748,14 @@ export default function ChatPane({
              expired-blocking-card (404) recovery path and is NOT reused here. */
           onDirectSend={(text) => {
             // The card IS the interaction, answered in one click. A NATIVE
-            // AskUserQuestion card (no `ask_id`, no server `card_id`) is raised
+            // AskUserQuestion card (marked `native` by the server) is raised
             // while its own turn is still running and waiting on the answer, so
             // a plain send would queue behind that turn and the question would
             // never be consumed (#10634): when the slot is busy that turn is
-            // live, so the answer STEERS into it. The client always mints a
-            // local `cardId`, so the discriminator is `serverCardId`, which the
-            // server sets only for the non-blocking `ask_question` card; that
-            // card can be answered while sub-agents keep the slot busy and must
-            // still start a next turn, never steer.
+            // live, so the answer STEERS into it. The non-blocking
+            // `ask_question` card carries no such mark; it can be answered
+            // while sub-agents keep the slot busy and must still start a next
+            // turn, never steer.
             //
             // Both routes are otherwise ONE path: mint an optimistic user bubble
             // carrying the `sendId`, POST through `sendTurn`, and reconcile the
@@ -1779,7 +1772,7 @@ export default function ChatPane({
             // reconciled the bubble -- proof it landed, so no restore and no
             // duplicate. Only the `steer` POST flag and the pre-append chunk
             // drain differ between the two routes.
-            const steerLive = busy && !pendingQuestion?.ask_id && !pendingQuestion?.serverCardId
+            const steerLive = busy && pendingQuestion?.native === true
             const sendId = `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
             // Drain the per-frame chunk buffer before the append, as `doSteer`
             // does: a pre-steer chunk still buffered means the finalize-on-steer
