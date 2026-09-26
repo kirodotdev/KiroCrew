@@ -118,7 +118,7 @@ missing settings are named once, and configured or disabled channels stay silent
 ```
 Slack Socket Mode → events.py (dispatch) → handler.py → SessionManager → AcpClient → kiro-cli
                   ↘ interactive payloads → interactions.py (dispatch) → approve/reject/ack
-                  ↘ member_joined_channel → allowlist.py (prompt_allowlist) → owner DM
+                  ↘ /<command> @user → allowlist.py (prompt_allowlist) → owner DM → Allow/Deny
 ```
 
 ## Files
@@ -386,7 +386,7 @@ Restricted to `KIROCREW_OWNER_ID`. Processed before keyword commands.
 | `!yolo on/off/status` | Toggle global auto-approve for all tool calls |
 | `!agent <name>` / `!agent off` | Switch kiro-cli agent globally (all new sessions) |
 | `!ta <name>` / `!ta off` | Switch agent for current thread only |
-| `!allowlist @user` | Grant/revoke user access |
+| `!allowlist` | List who currently has Slack access. READ-ONLY: mutation goes through the owner's Allow/Deny button (`interactions.py`), which audits the approval and persists it, so there is exactly one audited way in |
 | `!allowlist #channel` | Add/remove tracking channel |
 | `!restart` | Restart the gateway. Bang alias intercepted in `events.py` before the LLM session; delegates to `/kirocrew restart` (`_handle_restart`) so owner-check + supervisor guard stay a single source of truth (`handler.py:_BANG_TO_SLASH`) |
 
@@ -419,8 +419,7 @@ Available to all allowed users.
 - Config: `config.json → slack.tracking_channels` — list of channel IDs to watch
 - Event: `member_joined_channel` — fires when a user joins a channel the bot is in
 - Requires `channels:read` scope (for public channels) and `groups:read` (for private)
-- When a user joins a monitored channel, `prompt_allowlist()` sends Allow/Deny to the owner
-- Users already on the allowlist are silently skipped
+- Joining a tracked channel nominates nobody. `_maybe_prompt_owner` is deliberately a stub: auto-prompting on join is how a shared channel turns into an accidental allowlist, and an owner clicking Allow on a prompt they did not ask for is a weaker consent record than typing the command. The owner nominates explicitly with `/<command> @user`
 - If `tracking_channels` is empty, no monitoring occurs
 - Tracked channels are capability-probed (`slack/scope_probe.py`, one `conversations.history` call with `limit=1`) after the socket connects at startup and whenever a channel is added to tracking. A `missing_scope`/`channel_not_found` result logs a warning and pushes a dashboard notification — a private channel tracked under an install predating `groups:history` would otherwise fail silently. Deferred (`asyncio.create_task`), best-effort: transient network errors report nothing
 - `/<command> @user` still works as a manual trigger (command name configurable via `slack.command` in config, default: `kirocrew`)
@@ -567,6 +566,116 @@ LLM responses ending with `[OPTIONS: choice1 | choice2 | choice3]` are rendered 
 Action IDs: `options_checkboxes` (toggle), `options_submit` (send). Checkbox `value` contains the choice text.
 
 Beyond the reply-finalization path in `handler.py`, two other Slack delivery paths also render `[OPTIONS: ...]` as buttons: the dashboard `send_message` MCP tool (`api_send_message` in `dashboard/handlers/messaging.py`) and cron subagent delivery (`_deliver_cron_response` in `gateway.py`). Both call `extract_options()` / `build_options_blocks()`, skip the tag parse when the caller supplies explicit `blocks` (those own their own layout), and wrap the follow-up options post in `try/except` so a failed options post never fails the primary message.
+
+## Guest access (allow-listed non-owners)
+
+An allow-listed non-owner — a "guest" — may reach exactly ONE thing: the inbound
+message gate in a tracked channel. Everything else on this surface stays
+owner-only, and the boundary is drawn by keeping the owner predicate untouched.
+
+**Two predicates, not one widened one.** `is_allowed_user(user_id)` still means
+OWNER and still returns `is_owner(user_id)`; its ~27 call sites — the Home tab,
+every interaction button, the `!` commands, presigned dashboard links, the session
+views — therefore keep refusing a guest with no change. `is_guest_user(user_id)`
+is the separate predicate that honours `slack.allowed_users`, and exactly one site
+consults it: the admission gate in `events.py:_route_message`. Widening the
+existing predicate would have handed a guest all ~27.
+
+**The list is loaded, not discarded.** `gateway.py` reads
+`cfg.slack.allowed_users` into the live `_allowed_users` set at startup. It
+previously computed a "stale" set only to log a pruning it never performed, then
+assigned an owner-only set unconditionally — so a button-approved guest survived
+only until restart.
+
+**Nomination is explicit and audited.** `/<command> @user` renders
+`prompt_allowlist`'s Allow/Deny to the owner, and `handle_allowlist_action`
+persists an approval. `!allowlist` is read-only. `member_joined_channel` nominates
+nobody.
+
+**Admission conditions** (all positive; an unmet one names itself in the ephemeral
+and in the SEL row):
+
+| Condition | Refusal reason |
+|---|---|
+| Not a DM | `guest_dm_not_supported` |
+| Channel in `slack.tracking_channels` | `guest_channel_not_tracked` |
+| Activation is `mention`, `always` or `observe` | `guest_denied_in_activation_<mode>` |
+| A top-level mention, or a message in a thread the guest already owns | `guest_thread_not_own` |
+| A guest member resolves, is store-isolated and spec-restricted | `guest_member_not_configured` |
+| No COMPOSED message interceptor is registered | `guest_denied_composed_interceptor` |
+
+`review` activation never admits a guest: it delivers an ephemeral draft for owner
+sign-off, which is an owner control. A guest may not join a thread it does not
+own — not even by mentioning the bot in it — because that turn is what would key to
+the thread owner's session.
+
+**Identity, and what it keys.** An admitted guest's Slack id travels as
+`guest_user` into `handle_message`, and every downstream mechanism keyed to owner
+identity either refuses the turn or operates on the guest's own key:
+
+| Mechanism | Guest behaviour |
+|---|---|
+| Session key | `guest_session_key(uid, ts)` = `slack:guest-<uid>-<ts>`, so its registry entry, conversation log and override maps are its own |
+| Thread index | The guest self-links under its own key; `visible_thread_owner` hides a guest claim from an OWNER turn, which keeps its canonical key instead |
+| Memory store | The guest member's named store, bound to the guest key before the turn resolves it. A key with no execution record resolves BLANK, and blank is the owner's own memory, so `resolve_member_execution` + `bind_session_execution` run before `session_store_for_turn`. A member that cannot resolve refuses the turn |
+| Agent | The member's RESOLVED TEMPLATE (`ExecutionContext.template_id`, i.e. `kirocrew-guest`), never the member key. `agent=` reaches the provider verbatim and is spawned as `--agent`, so a member key there fails on a missing spec or runs a same-named one; the cron path maps alias to template for the same reason. Pinned at both agent resolutions; thread and channel overrides are owner controls and cannot redirect it |
+| Route loop | Skipped: it hands a turn to the thread's owner, which for a guest is somebody else |
+| Linked-thread intercept | Skipped: it delivers into the owner's dashboard slot and returns upstream of the tool gate |
+| Keyword commands | `spawn`/`run`/`cron`/`sessions` all refuse; they run before any LLM turn, so no tool gate exists yet |
+| Channel history | Not pushed: the buffer is context an OWNER turn reads, under the owner's hooks |
+| Compaction replay | Carries `guest_user`, so a transient compaction failure does not replay the turn as the owner |
+| Queue | Both enqueue branches carry `guest_user`, since `_dispatch_queued` rebuilds the turn from the entry alone |
+| Transport path | Refused outright; a guest turn runs native, like review mode |
+| Dashboard mirror | None: `linked_session_key` is `None`, so no slot mirror and no Link-to-Dashboard control |
+
+**Capability limits — four layers, none of them a sandbox.**
+
+1. The generated `kirocrew-guest` spec mounts `mcpServers: {}` and `tools:
+   ["web_search"]`. `tools` is what is MOUNTED and `allowedTools` is what is
+   AUTO-APPROVED, so `allowedTools` is deliberately absent: the one tool must still
+   reach the permission gate. An empty `tools` list mounts nothing at all (the
+   spelling `kirocrew-lite` uses for a text-only agent), which would leave the gate
+   guarding a tool the model can never call.
+2. `build_guest_hooks` drops `auto_approve_tools` (keeping denies), because
+   `_resolve_permission` and the native turn loop consult `hooks.on_tool_call()`
+   BEFORE the guest gate, so an owner auto-approve entry would otherwise grant.
+3. `is_guest_safe_tool(tool_name, mcp_server_name)` is terminal and
+   deny-by-default, matched by exact string against `GUEST_SAFE_TOOLS`
+   (`{"web_search"}`) and fail-closed on audit failure. It keys on the
+   harness-authored `_meta` identity, never on `event.title`, which is
+   LLM-authored prose; an absent identity denies, and a non-empty
+   `mcp_server_name` denies.
+4. `_resolve_approval_mode` never returns `APPROVAL_AUTO` for a guest turn, so an
+   active YOLO/SafetyOverride TTL cannot widen it.
+
+A guest turn runs as the owner's OS user, so this is a tool-dispatch allowlist and
+not an isolation boundary. `web_fetch` is excluded because a guest-chosen host is a
+read primitive on the owner's network and this package guards only its own http
+paths, not the builtin.
+
+**A composed message interceptor refuses guests outright.** The interceptor seam
+(`SlackEnterpriseGate.intercept_message`) is gated on `_user_authorized`, which
+excludes guest candidates, so an admitted guest's turn would run un-intercepted in a
+composed edition. Routing guests through it instead is worse, not better:
+`InterceptDecision.REDIRECTED` is documented as having "minted + posted a presigned
+dashboard-session challenge link", and a dashboard session is the owner's whole
+surface -- the same presigned-link control every other site here refuses a guest. So
+while a composed gate is registered, guest admission is refused
+(`composed_interceptor_registered`, tested on the METHOD so an inheriting subclass
+reads as default, and failing closed when the gate cannot be read). The OSS default
+is not composed, so a standalone install is unaffected.
+
+**Config keys.** `slack.guest_agent` names the member globally;
+`ChannelConfig.guest_agent` overrides it per channel, matching how the per-channel
+`agent` override relates to the default agent. Both converge on the same refusal:
+the member must exist in `config.agents`, carry a `memory_store` that is neither
+blank nor `default`, and be bound to the `kirocrew-guest` spec. Anything else
+denies admission rather than downgrading the turn — every silent downgrade here
+lands on the owner's own store.
+
+**Guest-to-guest isolation is not provided.** All guests on one guest member share
+that member's store. Per-channel `guest_agent` is the mitigation; per-guest stores
+are a separate feature.
 
 ### Inline action values (`action::`)
 

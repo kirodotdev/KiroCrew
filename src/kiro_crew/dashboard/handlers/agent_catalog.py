@@ -11,7 +11,7 @@ from aiohttp import web
 
 from kiro_crew import agent_state
 from kiro_crew.agent_discovery import AgentInfo, list_agents
-from kiro_crew.agent_files import AGENT_FILENAME, LITE_AGENT_FILENAME
+from kiro_crew.agent_files import AGENT_FILENAME, GUEST_AGENT_FILENAME, LITE_AGENT_FILENAME
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.handlers._shared import _read_session_key, requesting_slot_project
 from kiro_crew.dashboard.handlers.agents import (
@@ -24,14 +24,21 @@ from kiro_crew.executors import discovery_executor
 
 logger = logging.getLogger(__name__)
 
-# The managed specs that are not a sensible thing to run a chat AS. Only the
-# bare cheap agent behind auto-titles and compaction (no prompt, no tools) is
-# here; it is reached by the runtime itself, never picked by a person. The
-# primary ``kirocrew`` spec is deliberately NOT here: a chat session is a
+# The managed specs that are not a sensible thing to run a chat AS. Two reasons
+# put a file here, and they are different reasons. The bare cheap agent behind
+# auto-titles and compaction (no prompt, no tools) is reached by the runtime
+# itself, never picked by a person. The Slack guest responder is withheld for a
+# stronger reason: its isolation is supplied by the Slack guest path around it —
+# the guest tool gate, the guest hook manager, and the routing refusal that
+# stops a guest turn resolving the owner's memory store — not by the spec file.
+# Picked here it resolves through ``passthrough`` to ``DEFAULT_MEMORY_STORE``,
+# the owner's own store, with none of those layers armed, so offering it would
+# advertise an isolating agent that isolates nothing.
+# The primary ``kirocrew`` spec is deliberately NOT here: a chat session is a
 # template choice, and the main managed agent is the default one. The other
-# owned specs (conductor, worker, research, ...) are ordinary choices; hiding
-# every owned file would drop them from a fresh install.
-_BACKGROUND_ONLY_FILES = frozenset({LITE_AGENT_FILENAME})
+# owned specs (conductor, worker, research, heartbeat, ...) are ordinary
+# choices; hiding every owned file would drop them from a fresh install.
+_BACKGROUND_ONLY_FILES = frozenset({LITE_AGENT_FILENAME, GUEST_AGENT_FILENAME})
 
 
 def _is_background_only(agent: AgentInfo) -> bool:

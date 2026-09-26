@@ -283,7 +283,9 @@ Set a registered value with, for example,
 
 | Key | Description | Default |
 |-----|-------------|---------|
-| `slack.allowed_users` | User records (`{slack_id, name}`) recorded for Slack access | `[]` |
+| `slack.allowed_users` | Non-owner users granted inbound access in tracked channels (`{slack_id, name}`) | `[]` |
+| `slack.guest_agent` | Crew Member an allow-listed guest runs as; must name a member in `agents`, and an empty value refuses every guest turn | `""` |
+| `slack.channels.<id>.guest_agent` | Per-channel guest member, overriding `slack.guest_agent` | `""` |
 | `slack.tracking_channels` | Channels to monitor for new members | `[]` |
 | `slack.open_channels` | Channel records retained in config | `[]` |
 | `slack.command` | Slash-command name | `"kirocrew"` |

@@ -37,8 +37,10 @@ Only the owner (set via `KIROCREW_OWNER_ID`) can use these:
 | `!voice on/off` | Speak this thread's answers as well as typing them |
 | `!link-to-dashboard` | Import this thread's history into a dashboard session and link it |
 
-`!allowlist` and `/kirocrew @user` are not accepted while access is owner-only, and
-`slack.allowed_users` in config has no effect.
+`!allowlist` lists who has Slack access, read-only. `/kirocrew @user` DMs the owner
+an Allow / Deny prompt for a guest; the button is what grants access, and an
+approval persists to `slack.allowed_users`. See "Access control" for what a guest
+can reach.
 
 ## Commands for All Allowed Users
 
@@ -151,21 +153,72 @@ multiple options before submitting.
 
 ## Access control
 
-Kiro Crew on Slack answers the bot owner (`KIROCREW_OWNER_ID`) and nobody else.
-Multi-user access is disabled because an allowed user would act under the owner's
-system identity — the owner's file permissions and cloud credentials — with no scope
-limit and no expiry. `!allowlist`, `/kirocrew @user` and `slack.allowed_users` are all
-inert as a result, and stale allowlist entries are pruned at startup.
+Slack has two kinds of caller, and they are separate sets.
 
-`!dashboard` presigned links go to the owner only.
+The **owner** (`KIROCREW_OWNER_ID`) reaches everything: DMs, every channel, every
+`!` command, the Home tab, the interaction buttons, and `!dashboard` presigned
+links.
+
+A **guest** is a non-owner in `slack.allowed_users`. A guest reaches exactly one
+thing — @mentioning the bot in a tracked channel — and no owner control. Every
+owner control keys off a predicate that answers for the owner alone, so adding
+someone to the allowlist cannot hand them a stop button, the Home tab, an `!`
+command, or a dashboard link.
+
+### What a guest turn can and cannot reach
+
+A guest turn runs as the Crew Member named by `slack.guest_agent` (or a channel's
+own `guest_agent`), which gives it that member's memory store and that store's
+own `lessons.jsonl`. **Without a configured member the turn is refused**, because
+an unnamed member resolves to the default store, and the default store is the
+owner's.
+
+| | Guest turn |
+|---|---|
+| Owner's memory, lessons, conversations | No — separate store, separate session |
+| Owner's files, shell, AWS | No — no such tool is approved |
+| MCP servers | None mounted on the guest agent |
+| Tools | `web_search` only, mounted by name and still gated at approval |
+| Approval prompts | None — a tool is approved or refused outright |
+| YOLO / `SafetyOverride` | Does not apply; a guest turn never auto-approves |
+| DMs | No — a channel is observable by the owner, a DM is not |
+| `review` activation | No |
+| A workspace running a composed access gate | No - see below |
+
+This is a tool-dispatch allowlist, not an OS sandbox: the turn still runs as the
+owner's user. What bounds it is which tools are approved, which MCP servers are
+mounted, and which memory store is bound — not process isolation.
+
+`web_fetch` is excluded deliberately, and the reason is the test any new entry has
+to pass. It takes a URL, so the guest chooses the host and the response returns to
+the channel — a read primitive aimed at whatever the owner's machine can reach,
+including link-local metadata endpoints and services bound to loopback. Kiro Crew
+does not guard that builtin against those destinations. `web_search` takes a query,
+so the guest chooses words and the destination is the search provider either way.
+
+If your workspace runs a composed access gate (an enterprise edition's
+challenge-and-redirect posture), guests are refused outright. That gate can answer an
+inbound message by minting a presigned dashboard-session link, and a dashboard
+session is your whole surface, so a guest is not routed through it and is not
+answered while it is registered. A standalone install has no composed gate and is
+unaffected.
+
+### Adding a guest
+
+`/kirocrew @user` DMs the owner an Allow / Deny prompt. Allow adds the user and
+persists them to `slack.allowed_users`, so the grant survives a restart. Adding
+is only ever the owner clicking that button, which records the approver.
+
+`!allowlist` lists who has access and changes nothing. Joining a tracked channel
+does **not** prompt for a new user: a join is not a nomination.
 
 ## Tracked channels
 
 `slack.tracking_channels` is the allowlist for unattended channel delivery (for
-example, heartbeat reports) and for the startup probe that checks whether each
-tracked channel is readable. It does not grant inbound access or enable member
-allowlisting: Slack remains owner-only, and member-join events do not prompt for
-new users.
+example, heartbeat reports), for the startup probe that checks whether each
+tracked channel is readable, and for guest admission — a guest is answered only in
+a tracked channel. It grants the owner nothing extra: the owner is answered
+anywhere. Member-join events do not prompt for new users.
 
 ### Channel Activation Modes
 
