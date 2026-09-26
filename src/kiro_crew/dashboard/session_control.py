@@ -3090,6 +3090,12 @@ def _slot_tree_parent(slot_key: str) -> "tuple[bool, str, dict[str, Any]]":
 def _live_sid_of(state: "DashboardState", slot_key: str) -> str:
     """The ACP session id *slot_key*'s crew log is written under, or ``""``.
 
+    For the slot the operation is ALREADY HOLDING, which is the whole of this
+    function's contract. A caller resolving some OTHER slot wants
+    :func:`_recorded_sid_of` instead: the mapping this reads is one process's, so a
+    caller with no context on the slot it is asking about cannot see a stale or
+    absent answer, and these ids are written into append-only entries.
+
     Read from the DURABLE session map rather than from the slot's in-turn ACP client.
     The client is published when a turn starts and cleared when it ends, so reading it
     would answer only for a session that happens to be working -- and the sessions a
@@ -3113,6 +3119,84 @@ def _live_sid_of(state: "DashboardState", slot_key: str) -> str:
     except Exception:
         logger.debug("session id for %s could not be resolved", slot_key, exc_info=True)
         return ""
+
+
+def _replay_pending(state: "DashboardState", slot_key: str) -> bool | None:
+    """Whether *slot_key* still owes conversation replay, or ``None`` when unknown.
+
+    The window in which the session map deliberately names the generation BEFORE the
+    store the slot is writing: allocation leaves the prior resumable id mapped for a
+    replay-pending ACP session on purpose, so a restart can still resume it. A history
+    reader taking the mapping's answer inside this window records the wrong log.
+
+    ``None`` rather than ``False`` when the session store cannot answer, because the
+    two have opposite consequences for the caller: an unknown window must not license
+    the mapping read that a known-closed one does.
+    """
+    try:
+        sessions = getattr(state, "sessions", None)
+        if sessions is None:
+            return None
+        return bool(sessions.provider_switch_replay_pending(f"dashboard:{slot_key}"))
+    except Exception:
+        logger.debug("replay state for %s could not be read", slot_key, exc_info=True)
+        return None
+
+
+def _slot_opened_sid(state: "DashboardState", slot_key: str) -> str:
+    """The crew log this process recorded when *slot_key* opened, or ``""``."""
+    try:
+        slot = state._slots.get(slot_key)
+        if slot is None:
+            return ""
+        sid = getattr(slot, "_crew_log_opened_sid", "")
+        return sid if isinstance(sid, str) and sid else ""
+    except Exception:
+        logger.debug("opened crew log for %s could not be read", slot_key, exc_info=True)
+        return ""
+
+
+async def _recorded_sid_of(state: "DashboardState", slot_key: str) -> str:
+    """The crew log *slot_key* is writing, or ``""`` when no id can be written.
+
+    For a slot the caller is NOT holding. The id goes into an append-only
+    ``session/adopted`` or ``session/released`` entry as ``parent`` or
+    ``previous_parent``, so a wrong id there is a permanent wrong answer about which
+    conversation a session came from, and there is no later write that corrects it.
+    The citation's slot half distinguishes a parent whose log is unnamed from no parent.
+
+    Resolution checks the live slot's own opened-store record, then the durable store,
+    then the process-local mapping. The slot record leads because it is this process's
+    own statement about which store the slot is on, and the only source that can name a
+    store whose unit the background writer has not written yet. An undecided store
+    answer is never a licence to guess from the mapping. A decided empty answer may use
+    the mapping only outside the replay-pending window, where the mapping is current.
+
+    Keep this separate from ``chat_runner._slot_predecessor_store``: this resolver runs
+    inside a live verb and can read the slot's replay state, while that resolver runs
+    before its turn's session exists and cannot ask whether replay is pending.
+    """
+    if not slot_key:
+        return ""
+
+    opened = _slot_opened_sid(state, slot_key)
+    if opened:
+        return opened
+
+    derived, decided, _complete = await asyncio.to_thread(
+        crew_log_emit.slot_previous_store, slot_key
+    )
+    if derived:
+        return derived
+    if not decided:
+        return ""
+    pending = _replay_pending(state, slot_key)
+    if pending is not False:
+        return ""
+    mapped = _live_sid_of(state, slot_key)
+    if mapped:
+        return mapped
+    return ""
 
 
 async def adopt_target(
@@ -3185,30 +3269,6 @@ async def adopt_target(
                 code="tree_unavailable",
             )
         async with _tree_mutation_lock():
-            # RE-AUTHORIZED here, and this is not the same question the pre-lock call
-            # answered. That call decided on a state read before the wait, and the wait is
-            # unbounded: the verb ahead in the queue awaits its own append, and anything the
-            # gate reads can move meanwhile -- the target can be stopped or closed, the
-            # caller's grant can be withdrawn, either side can gain a channel link. Writing
-            # on the earlier answer would record an adoption nobody was entitled to at the
-            # moment it landed. The pre-lock call is kept because it is the cheap refusal: an
-            # unauthorized caller never contends for this lock at all.
-            await prewarm_enabled_check()
-            slot = authorize_target(
-                state,
-                caller_session_key=caller_session_key,
-                target=target,
-                operation="adopt",
-                precomputed_ownership_fenced=caller_fenced,
-            )
-            target_sid = _live_sid_of(state, slot.key)
-            if not crew_log_emit.enabled() or not target_sid:
-                raise SessionControlError(
-                    "the session tree is not being recorded on this gateway, so sessions "
-                    "cannot be adopted",
-                    status=409,
-                    code="tree_unavailable",
-                )
             _refuse_if_append_pending(slot.key, operation="adoption")
             tree_known, previous_parent, nodes = _slot_tree_parent(slot.key)
             if not tree_known:
@@ -3239,14 +3299,44 @@ async def adopt_target(
                     status=409,
                     code="would_cycle",
                 )
+            # Resolve ids before the final authorization because nothing may suspend between
+            # that authorization and handing the append to the writer.
+            parent_sid = await _recorded_sid_of(state, caller_key)
+            previous_parent_sid = (
+                await _recorded_sid_of(state, previous_parent) if previous_parent else ""
+            )
+            # RE-AUTHORIZED here, and this is not the same question the pre-lock call
+            # answered. That call decided on a state read before the wait, and the wait is
+            # unbounded: the verb ahead in the queue awaits its own append, and anything the
+            # gate reads can move meanwhile -- the target can be stopped or closed, the
+            # caller's grant can be withdrawn, either side can gain a channel link. Writing
+            # on the earlier answer would record an adoption nobody was entitled to at the
+            # moment it landed. The pre-lock call is kept because it is the cheap refusal: an
+            # unauthorized caller never contends for this lock at all.
+            await prewarm_enabled_check()
+            slot = authorize_target(
+                state,
+                caller_session_key=caller_session_key,
+                target=target,
+                operation="adopt",
+                precomputed_ownership_fenced=caller_fenced,
+            )
+            target_sid = _live_sid_of(state, slot.key)
+            if not crew_log_emit.enabled() or not target_sid:
+                raise SessionControlError(
+                    "the session tree is not being recorded on this gateway, so sessions "
+                    "cannot be adopted",
+                    status=409,
+                    code="tree_unavailable",
+                )
             settled, landed = _tree_append_waiter(slot.key)
             crew_log_emit.on_session_adopted(
                 target_sid,
                 slot=slot.key,
                 parent_slot=caller_key,
-                parent_sid=_live_sid_of(state, caller_key),
+                parent_sid=parent_sid,
                 previous_parent_slot=previous_parent,
-                previous_parent_sid=_live_sid_of(state, previous_parent) if previous_parent else "",
+                previous_parent_sid=previous_parent_sid,
                 on_settled=settled,
             )
             # Inside the lock, so the next verb through it reads a tree that already carries
@@ -3323,26 +3413,6 @@ async def release_target(
                 code="tree_unavailable",
             )
         async with _tree_mutation_lock():
-            # RE-AUTHORIZED inside the lock, for the reason the adoption re-authorizes:
-            # the wait is unbounded and everything the gate reads can move during it.
-            await prewarm_enabled_check()
-            slot = authorize_target(
-                state,
-                caller_session_key=caller_session_key,
-                target=target,
-                operation="release",
-                precomputed_ownership_fenced=caller_fenced,
-                allow_self=True,
-            )
-            releasing_self = slot.key == caller_key
-            target_sid = _live_sid_of(state, slot.key)
-            if not crew_log_emit.enabled() or not target_sid:
-                raise SessionControlError(
-                    "the session tree is not being recorded on this gateway, so sessions "
-                    "cannot be released",
-                    status=409,
-                    code="tree_unavailable",
-                )
             _refuse_if_append_pending(slot.key, operation="release")
             tree_known, previous_parent, _ = _slot_tree_parent(slot.key)
             if not tree_known:
@@ -3368,12 +3438,35 @@ async def release_target(
                     status=403,
                     code="not_parent",
                 )
+            # Resolve the id before the final authorization because nothing may suspend
+            # between that authorization and handing the append to the writer.
+            previous_parent_sid = await _recorded_sid_of(state, previous_parent)
+            # RE-AUTHORIZED inside the lock, for the reason the adoption re-authorizes:
+            # the wait is unbounded and everything the gate reads can move during it.
+            await prewarm_enabled_check()
+            slot = authorize_target(
+                state,
+                caller_session_key=caller_session_key,
+                target=target,
+                operation="release",
+                precomputed_ownership_fenced=caller_fenced,
+                allow_self=True,
+            )
+            releasing_self = slot.key == caller_key
+            target_sid = _live_sid_of(state, slot.key)
+            if not crew_log_emit.enabled() or not target_sid:
+                raise SessionControlError(
+                    "the session tree is not being recorded on this gateway, so sessions "
+                    "cannot be released",
+                    status=409,
+                    code="tree_unavailable",
+                )
             settled, landed = _tree_append_waiter(slot.key)
             crew_log_emit.on_session_released(
                 target_sid,
                 slot=slot.key,
                 previous_parent_slot=previous_parent,
-                previous_parent_sid=_live_sid_of(state, previous_parent),
+                previous_parent_sid=previous_parent_sid,
                 on_settled=settled,
             )
             # Inside the lock, for the reason the adoption awaits inside it.
