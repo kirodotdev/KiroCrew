@@ -83,10 +83,10 @@ overhead.  Do not add ``preexec_fn`` to the launch: that is the switch that puts
 Python back in the forked child.
 
 ADOPTING IT FOR ANOTHER POOL.  Four things, and only the last two need judgement:
-1. Write a leaf child script next to :mod:`_child_realpath` that imports STDLIB
-   ONLY and answers one op code.  Never ``-m``; always run it by path, or
-   ``kiro_crew/__init__.py`` executes and the cold-start budget is gone.
-2. Give it a request/response body in :mod:`_child_realpath`'s shape: 4-byte
+1. Write a leaf child script shaped like :mod:`kiro_crew.security._child_realpath`
+   that imports STDLIB ONLY and answers one op code.  Never ``-m``; always run it
+   by path, or ``kiro_crew/__init__.py`` executes and the cold-start budget is gone.
+2. Give it a request/response body in that module's shape: 4-byte
    big-endian outer length, request id, op code, payload.  Length prefixes, never
    a newline -- a filename may contain one.
 3. Reach it with :meth:`SubprocessPoolExecutor.call_op` from the thread that
@@ -115,8 +115,10 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import Executor, Future, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import Any, TypeVar
 
 logger = logging.getLogger(__name__)
@@ -128,11 +130,18 @@ _LEN = struct.Struct(">I")
 _REQ_HEADER = struct.Struct(">IB")
 
 OP_REALPATH_SPELLINGS = 1
+OP_REALPATH_MANY = 2
 
 STATUS_OK = 0
 STATUS_ERROR = 1
 
-_CHILD_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_child_realpath.py")
+# The first consumer's child, kept beside the resolver it serves
+# (``security/_child_realpath.py``); an adopter passes its own ``script=``.
+_CHILD_SCRIPT = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "security",
+    "_child_realpath.py",
+)
 
 # How long one request may hold a child before the child is killed rather than
 # waited on.  It must sit ABOVE every caller budget (the resolver's largest is the
@@ -150,6 +159,39 @@ class SubprocessPoolUnavailable(RuntimeError):
     Callers MUST treat this as a failure to establish the answer, never as an
     empty answer.  For a sensitive-path gate that means refusing the path.
     """
+
+
+class SubprocessPoolTimeout(TimeoutError):
+    """A child took the request and had not answered by the caller's deadline.
+
+    The child is already destroyed when this is raised, so the one thing a caller
+    could still have asked it -- WHAT it was doing when the budget ran out -- is
+    sampled here first and carried as ``child_syscall``: the first token of
+    ``/proc/<pid>/syscall`` (a syscall number, or ``b"running"``), ``None`` where
+    that file is unreadable (non-Linux, or the child was already gone).  The
+    resolver uses it to tell "blocked in the filesystem, charge the mount" from
+    "starved of the CPU, charge nothing", which the thread pool it replaced read
+    off the worker thread and which has no referent once the work is a process.
+    A plain ``TimeoutError`` from :meth:`SubprocessPoolExecutor.call_op` means the
+    opposite thing: no child ever took the request.
+    """
+
+    def __init__(self, message: str, *, child_syscall: bytes | None) -> None:
+        super().__init__(message)
+        self.child_syscall = child_syscall
+
+
+def proc_syscall(pid: int) -> bytes | None:
+    """First token of ``/proc/<pid>/syscall``, or ``None`` where it cannot be read.
+
+    A thread id works too: Linux exposes every task under ``/proc/<tid>``.
+    """
+    try:
+        with open(f"/proc/{pid}/syscall", "rb") as fh:
+            head = fh.read().split()
+    except OSError:
+        return None
+    return head[0] if head else None
 
 
 def pack_strings(values: Iterable[bytes]) -> bytes:
@@ -206,14 +248,46 @@ class _Child:
     resolved form to another path's security decision.
     """
 
-    __slots__ = ("_lock", "_next_id", "busy_since", "proc", "script")
+    __slots__ = ("_lock", "_next_id", "_orphans", "busy_since", "proc", "script")
 
-    def __init__(self, script: str) -> None:
+    def __init__(self, script: str, orphans: deque[subprocess.Popen[bytes]] | None = None) -> None:
         self.script = script
         self.proc: subprocess.Popen[bytes] | None = None
         self.busy_since: float | None = None
         self._lock = threading.Lock()
         self._next_id = 0
+        # Killed-at-deadline children the REAPER waits on, so the calling thread never
+        # does: SIGKILL does not complete while the child is inside an uninterruptible
+        # syscall, and a child killed at its deadline is presumed to be in exactly such
+        # a wait on a wedged mount, so a ``wait`` here would burn its timeout on the
+        # calling thread -- the event loop, for the resolver -- past the budget the
+        # caller was promised.  ``None`` (a child outside an executor) waits inline.
+        self._orphans = orphans
+
+    def ensure_spawned(self) -> None:
+        """Spawn a replacement for a dead or never-started child, off the request path.
+
+        Called from the executor's reaper tick, so the fork/exec of a fresh interpreter
+        (~11 ms, more on a loaded host) is paid on that background thread rather than by
+        the next caller inside its budget.  Non-blocking: a child mid-request holds the
+        lock and is skipped; ``request`` still spawns on demand as the fallback, so a
+        request that arrives before the tick is answered, and one that finds a dead
+        child mid-lease respawns it itself.
+        """
+        if not self._lock.acquire(blocking=False):
+            return
+        try:
+            proc = self.proc
+            if proc is None or proc.poll() is not None:
+                if proc is not None:
+                    self._kill_locked()
+                self.proc = self._spawn()
+        except OSError:
+            # Cannot spawn here (a hardened host, a broken venv): the request path
+            # will find no child, try itself, and report the failure to its caller.
+            self.proc = None
+        finally:
+            self._lock.release()
 
     def _spawn(self) -> subprocess.Popen[bytes]:
         # ``-S`` skips site initialisation, which is most of an interpreter's
@@ -259,7 +333,16 @@ class _Child:
             bufsize=0,
         )
 
-    def _kill_locked(self) -> None:
+    def _kill_locked(self, *, wait: bool = True) -> None:
+        """Kill the current child and forget it.
+
+        With *wait* (a child that died or faulted, so its exit is immediate) the exit is
+        collected here.  Without it (the deadline arm) the killed process is handed to
+        the executor's reaper to collect: it is presumed blocked in an uninterruptible
+        syscall on a wedged mount, where SIGKILL takes effect only once the syscall
+        returns, and waiting for that on the calling thread would extend the caller's
+        bound by up to the wait timeout.
+        """
         proc = self.proc
         self.proc = None
         if proc is None:
@@ -269,10 +352,13 @@ class _Child:
         except OSError:
             pass
         else:
-            try:
-                proc.wait(timeout=1.0)
-            except subprocess.TimeoutExpired:
-                logger.warning("subprocess-pool child %s ignored SIGKILL", proc.pid)
+            if wait or self._orphans is None:
+                try:
+                    proc.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    logger.warning("subprocess-pool child %s ignored SIGKILL", proc.pid)
+            else:
+                self._orphans.append(proc)
         for stream in (proc.stdin, proc.stdout):
             try:
                 if stream is not None:
@@ -364,11 +450,16 @@ class _Child:
                     raise SubprocessPoolUnavailable("child response id mismatch")
             except _ChildTimeout:
                 # The pipe is mid-frame and the child is presumed wedged, so it is
-                # destroyed rather than reused. Raising ``TimeoutError`` keeps this
-                # substitutable for a pooled future, whose ``result(timeout=)``
-                # raises the same class.
-                self._kill_locked()
-                raise TimeoutError("child did not answer within the budget") from None
+                # destroyed rather than reused -- but sampled FIRST, because what
+                # it was blocked in is the only evidence the caller gets about
+                # whether the mount or the scheduler ate the budget. Raising a
+                # ``TimeoutError`` subclass keeps this substitutable for a pooled
+                # future, whose ``result(timeout=)`` raises the same class.
+                sampled = proc_syscall(proc.pid)
+                self._kill_locked(wait=False)
+                raise SubprocessPoolTimeout(
+                    "child did not answer within the budget", child_syscall=sampled
+                ) from None
             except SubprocessPoolUnavailable:
                 # Includes the kill-at-ceiling path, which surfaces here as EOF.
                 self._kill_locked()
@@ -393,10 +484,12 @@ class _ChildTimeout(Exception):
 
 # ``select`` accepts only SOCKETS on Windows, so it cannot watch a pipe there and
 # the per-request read deadline is a POSIX capability. Where it is unavailable the
-# read blocks and the ceiling reaper is what bounds a wedge, so a wedged child
-# costs up to ``ceiling_secs`` rather than the caller's own budget. The gateway
-# this serves runs on POSIX; making the deadline exact on Windows means moving the
-# transport onto a socket pair so it becomes selectable.
+# read blocks, so ``call_op`` runs it on an internal thread and bounds the CALLER
+# with a timed future instead (:meth:`SubprocessPoolExecutor._request_bounded_by_thread`):
+# the budget still fires at the caller's deadline, at the cost of the two extra GIL
+# handoffs the module docstring measures. The ceiling reaper remains the bound for
+# a request made with no deadline at all. Making the deadline exact on Windows
+# means moving the transport onto a socket pair so it becomes selectable.
 _CAN_SELECT_PIPES = os.name != "nt"
 
 
@@ -527,7 +620,11 @@ class SubprocessPoolExecutor(Executor):
         if workers < 1:
             raise ValueError("workers must be >= 1")
         self._ceiling = ceiling_secs
-        self._children = [_Child(script) for _ in range(workers)]
+        # Children killed at a caller's deadline, awaiting collection by the reaper
+        # (see ``_Child._kill_locked``).  Bounded only by how many deadline kills
+        # happen before the kernel lets the killed processes exit.
+        self._orphans: deque[subprocess.Popen[bytes]] = deque()
+        self._children = [_Child(script, self._orphans) for _ in range(workers)]
         self._free: queue.Queue[_Child] = queue.Queue()
         for child in self._children:
             self._free.put(child)
@@ -545,12 +642,19 @@ class SubprocessPoolExecutor(Executor):
         atexit.register(self.shutdown, wait=False)
 
     def _reap(self) -> None:
-        """Kill any child whose request outlived the ceiling.
+        """Kill any child whose request outlived the ceiling; collect killed children;
+        keep every slot spawned.
 
-        This is the whole reason the work moved to a process. The parent thread
+        The ceiling is the whole reason the work moved to a process. The parent thread
         waiting on that child is blocked in ``read`` and cannot cancel itself, so
         something else has to break the wait; killing the child makes the read
         return EOF at once and turns an unbounded wedge into one refused request.
+
+        The other two duties keep the CALLING thread's cost to the round trip alone:
+        a child killed at its deadline is ``wait``ed for here, not by the caller
+        (``_Child._kill_locked``), and a slot left empty by that kill -- or never
+        filled -- is respawned here before the next request needs it, so neither the
+        fork/exec nor the reap of a wedged process lands inside a caller's budget.
         """
         while not self._shutdown.wait(0.5):
             now = time.monotonic()
@@ -562,6 +666,22 @@ class SubprocessPoolExecutor(Executor):
                         self._ceiling,
                     )
                     child.kill_async()
+            self._collect_orphans()
+            if self._shutdown.is_set():
+                break  # never respawn a child ``shutdown`` has just killed
+            for child in self._children:
+                child.ensure_spawned()
+
+    def _collect_orphans(self) -> None:
+        """Collect the exit of every deadline-killed child that has exited by now.
+
+        One that has not is left in the deque for a later tick: it is inside an
+        uninterruptible syscall, and nothing this process does can hurry it.
+        """
+        for _ in range(len(self._orphans)):
+            proc = self._orphans.popleft()
+            if proc.poll() is None:
+                self._orphans.append(proc)
 
     def call_op(self, op: int, payload: bytes, timeout: float | None = None) -> bytes:
         """Run *op* in a child ON THE CALLING THREAD and return its response payload.
@@ -582,9 +702,50 @@ class SubprocessPoolExecutor(Executor):
         except queue.Empty:
             raise TimeoutError("no free child within the budget") from None
         try:
-            return child.request(op, payload, deadline)
+            if deadline is None or _CAN_SELECT_PIPES:
+                return child.request(op, payload, deadline)
+            return self._request_bounded_by_thread(child, op, payload, deadline)
         finally:
             self._free.put(child)
+
+    def _request_bounded_by_thread(
+        self, child: _Child, op: int, payload: bytes, deadline: float
+    ) -> bytes:
+        """The caller's bound where ``select`` cannot arm one on the pipe (Windows).
+
+        The read runs on one of the internal pool's threads and the caller waits on
+        its future with the same deadline, so a wedged child costs the CALLER its
+        budget rather than the ceiling.  This is the slower shape the module
+        docstring measures (two extra GIL handoffs per answer), accepted here
+        because the alternative is a caller blocked until the reaper fires and a
+        wedge that is never classified as a timeout -- on the resolver that meant
+        the stall cooldown never opened on Windows.  A wedge at the deadline is
+        sampled (``None`` off Linux), the child is killed so the blocked read sees
+        EOF at once, and the worker's own cleanup is given a moment so the slot it
+        held is not still mid-teardown when the next lease arrives.
+        """
+        future = self._fallback.submit(child.request, op, payload, None)
+        try:
+            return future.result(timeout=max(0.0, deadline - time.monotonic()))
+        except FuturesTimeoutError:
+            proc = child.proc
+            sampled = proc_syscall(proc.pid) if proc is not None else None
+            child.kill_async()
+            try:
+                future.result(timeout=2.0)
+            except FuturesTimeoutError:
+                # The read did not see EOF even after the kill: that worker stays
+                # blocked and its slot is lost until it does. Said here so a host
+                # that accumulates them is diagnosable from the log.
+                logger.debug(
+                    "subprocess-pool worker did not return within 2 s of its child's "
+                    "kill; a pool thread remains blocked on the dead child's pipe"
+                )
+            except Exception:
+                pass  # the worker raised on EOF, which is the intended outcome
+            raise SubprocessPoolTimeout(
+                "child did not answer within the budget", child_syscall=sampled
+            ) from None
 
     def submit_op(self, op: int, payload: bytes) -> Future[bytes]:
         """Run *op* on a child; the future raises :class:`SubprocessPoolUnavailable` on fault.
@@ -617,6 +778,7 @@ class SubprocessPoolExecutor(Executor):
         self._fallback.shutdown(wait=wait, cancel_futures=cancel_futures)
         for child in self._children:
             child.kill()
+        self._collect_orphans()
 
     # -- convenience for the first user -------------------------------------
 

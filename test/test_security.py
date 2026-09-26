@@ -6275,18 +6275,20 @@ class TestAdaptiveHomeTargetsExpiry:
             gate._KEYSTONE_ARTIFACT_PARENTS,
         )
         adapter_roots = dict(roots.adapter_roots)
-        real = gate._realpath_or_none
+        real = gate._realpaths_or_none
         override_anchored_seen = 0
 
         for tier in tiers:
             self._clear()
             asked: list[str] = []
 
-            def recording(path: str, _sink=asked) -> str | None:
-                _sink.append(path)
-                return real(path)
+            # The build resolves its anchors as ONE batched child request, so the
+            # recorder sits on the batch seam; the population it asks for is the same.
+            def recording(paths: list[str], _sink=asked) -> list[str | None]:
+                _sink.extend(paths)
+                return real(paths)
 
-            monkeypatch.setattr(gate, "_realpath_or_none", recording)
+            monkeypatch.setattr(gate, "_realpaths_or_none", recording)
             gate._home_dir_targets_uncached(tier, roots)
 
             expected = {roots.home}

@@ -797,6 +797,23 @@ class TestEnsureReady:
             release.set()  # let the worker thread go; the test must not leak it
 
     @pytest.mark.asyncio
+    async def test_sandbox_preflight_maps_a_resolver_stall_to_the_retryable_error(self):
+        """The mask half resolves roots through the resolver child with no per-call
+        deadline; a child killed at the pool ceiling or faulted raises the resolver's
+        own ``PathResolutionStalled``, which nothing on the spawn path catches. The
+        bound turns it into the same retryable ``AcpError`` its deadline raises, so
+        ``ensure_ready``'s cleanup still runs and the adapter is not started unmasked.
+        """
+        from kiro_crew.security import PathResolutionStalled
+
+        def _stalled(backend, mode):
+            raise PathResolutionStalled("/home/u", "/home/u")
+
+        with pytest.raises(AcpError, match="did not complete") as info:
+            await acp_client._run_preflight_bounded(_stalled, "codex", "standard")
+        assert "/home/u" in str(info.value)
+
+    @pytest.mark.asyncio
     async def test_sandbox_preflight_within_budget_returns_the_mask(self):
         calls = []
 

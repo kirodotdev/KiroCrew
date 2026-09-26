@@ -58,11 +58,11 @@ class TestIsSensitiveResolvedPath:
         calls = []
         generation = ["one"]
 
-        def resolve(path):
-            calls.append(path)
-            return path + generation[0]
+        def resolve(paths):
+            calls.extend(paths)
+            return [path + generation[0] for path in paths]
 
-        monkeypatch.setattr(security.paths, "_realpath_or_none", resolve)
+        monkeypatch.setattr(security.paths, "_realpaths_or_none", resolve)
         leaves = [".kiro/crew/token_signing.key", ".kirocrew/token_signing.key"]
         first = security.paths._home_dir_targets_uncached(leaves, roots)
         target = os.path.join(roots.crew_home, "token_signing.key")

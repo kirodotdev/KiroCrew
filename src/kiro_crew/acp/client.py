@@ -266,7 +266,12 @@ from kiro_crew.sandbox import (
     wrap_argv_async,
     wrapped_by_crew_sandbox,
 )
-from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import (
+    PathResolutionStalled,
+    is_sensitive_path,
+    redact_credentials,
+    redact_exfiltration_urls,
+)
 from kiro_crew.sel import sel
 from kiro_crew.session_token_sig import schedule_session_token_publish
 from kiro_crew.skill_usage import get_global_skill_read_observer
@@ -5335,6 +5340,20 @@ async def _run_preflight_bounded(
         return await asyncio.wait_for(
             asyncio.to_thread(preflight, backend, mode), timeout=_SANDBOX_PREFLIGHT_TIMEOUT
         )
+    except PathResolutionStalled as exc:
+        # The roots could not be canonicalised, so the mask cannot be established.
+        # Today the preflight resolves them in-process (no bounded-call deadline is
+        # armed off the loop), and a wedged mount surfaces as the ``wait_for``
+        # deadline below; this arm is what keeps the verdict the same -- and the same
+        # retryable class, since the ladder above knows AcpError and not the
+        # resolver's own -- should the roots ever be routed through the bounded
+        # resolver, which raises rather than waits.
+        raise AcpError(
+            f"Could not start the {backend} adapter: computing its sandbox credential "
+            f"mask needs the home and credential roots resolved on disk, and resolving "
+            f"{exc.prefix!s} did not complete (a stalled filesystem). The adapter is not "
+            "started without its mask; retry once the disk responds."
+        ) from None
     except asyncio.TimeoutError:
         raise AcpError(
             f"Could not start the {backend} adapter: computing its sandbox credential "

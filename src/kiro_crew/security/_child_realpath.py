@@ -1,27 +1,30 @@
 """Symlink-resolution worker, run as a SCRIPT in its own interpreter.
 
-NOT PART OF THE POOL. This is the subprocess pool's FIRST CONSUMER: the pool is a
-general primitive for syscall-shaped work, and this file is one op that happens to
-use it. It sits in the package only because the pool is landing in the same change;
-it belongs next to the sensitive-path resolver it serves and moves there when that
-caller is wired up. Read the pool's own contract as the generic thing, and read this
+NOT PART OF THE POOL. This is :mod:`kiro_crew.subprocess_pool`'s first consumer:
+the pool is a general primitive for syscall-shaped work, and this file is the two
+ops the sensitive-path resolver (:mod:`kiro_crew.security.paths`) asks of it.  It
+lives beside that resolver because the resolver is the only thing that knows what
+its answers mean.  Read the pool's own contract as the generic thing, and read this
 as an example of meeting it.
 
 Launched as ``python -S <this file>`` by :mod:`kiro_crew.subprocess_pool.executor`,
 never imported.  Running it as a script rather than as ``-m
-kiro_crew.subprocess_pool._child_realpath`` is the whole point: importing it as a module
+kiro_crew.security._child_realpath`` is the whole point: importing it as a module
 would execute ``kiro_crew/__init__.py`` first and drag the gateway's dependency
 graph into a process whose reason for existing is to start in about ten
 milliseconds.  So this file imports STDLIB ONLY, and nothing here may ever import
 ``kiro_crew`` -- a violation does not fail loudly, it just makes every child start
 cost seconds instead of milliseconds.
 
-It answers exactly one kind of question: "what are the symlink-resolved spellings
-of this path".  It does not execute, compile, import or evaluate anything derived
-from the request; the only thing it does with the bytes it is handed is hand them
-to ``os.path.realpath`` and ``pathlib.Path.resolve``.  That is the trust boundary:
-the child is strictly less capable than its parent, so a malicious path cannot do
-more here than it could in the thread this replaces.
+It answers exactly one kind of question, in two shapes: "what are the
+symlink-resolved spellings of this path" (one candidate), and "what is the
+``realpath`` of each of these paths" (the anchor rebuild, ~130 paths in one
+frame so the parent pays one round trip rather than one per anchor).  It does not
+execute, compile, import or evaluate anything derived from the request; the only
+thing it does with the bytes it is handed is hand them to ``os.path.realpath`` and
+``pathlib.Path.resolve``.  That is the trust boundary: the child is strictly less
+capable than its parent, so a malicious path cannot do more here than it could in
+the thread this replaces.
 
 Framing is a 4-byte big-endian length prefix in both directions, NEVER a newline
 terminator: a POSIX filename may contain ``\\n``, and a newline-framed protocol
@@ -46,6 +49,7 @@ _LEN = struct.Struct(">I")
 _REQ_HEADER = struct.Struct(">IB")  # request id, op code
 
 OP_REALPATH_SPELLINGS = 1
+OP_REALPATH_MANY = 2
 
 STATUS_OK = 0
 STATUS_ERROR = 1
@@ -105,6 +109,38 @@ def _pack_strings(values: list[bytes]) -> bytes:
     return b"".join(body)
 
 
+def _unpack_strings(payload: bytes) -> list[bytes]:
+    """Inverse of :func:`_pack_strings`; ``ValueError`` on a truncated frame."""
+    (count,) = _LEN.unpack_from(payload, 0)
+    offset = _LEN.size
+    out: list[bytes] = []
+    for _ in range(count):
+        (size,) = _LEN.unpack_from(payload, offset)
+        offset += _LEN.size
+        if len(payload) < offset + size:
+            raise ValueError("truncated value")
+        out.append(payload[offset : offset + size])
+        offset += size
+    return out
+
+
+def realpath_many(raw_paths: list[bytes]) -> list[bytes]:
+    """``os.path.realpath`` of every path, in order; ``b""`` where it raised.
+
+    Mirrors ``security.paths._realpath_or_none`` (same swallowed exceptions) for
+    the anchor rebuild, which asks about ~130 paths per build: one frame each way
+    instead of one round trip per anchor.  The empty answer is unambiguous because
+    the parent absolutizes before sending, so a real answer is never empty.
+    """
+    out: list[bytes] = []
+    for raw in raw_paths:
+        try:
+            out.append(os.fsencode(os.path.realpath(os.fsdecode(raw))))
+        except (OSError, ValueError):
+            out.append(b"")
+    return out
+
+
 def _handle(body: bytes) -> bytes:
     """One response body for one request body.
 
@@ -123,9 +159,12 @@ def _handle(body: bytes) -> bytes:
     try:
         request_id, op = _REQ_HEADER.unpack_from(body, 0)
         payload = body[_REQ_HEADER.size :]
-        if op != OP_REALPATH_SPELLINGS:
+        if op == OP_REALPATH_SPELLINGS:
+            answer = _pack_strings(realpath_spellings(payload))
+        elif op == OP_REALPATH_MANY:
+            answer = _pack_strings(realpath_many(_unpack_strings(payload)))
+        else:
             raise ValueError("unknown op")
-        answer = _pack_strings(realpath_spellings(payload))
     except BaseException as exc:  # noqa: BLE001 - a child that dies is a wedge
         name = type(exc).__name__.encode("ascii", "replace")
         return _LEN.pack(request_id)[:4] + bytes([STATUS_ERROR]) + name

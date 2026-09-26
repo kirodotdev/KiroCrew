@@ -332,8 +332,9 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # canary values, never the key. Called from a worker thread, never the
         # event loop.
         "acp/client.py::_verify_deepseek_gate",
-        # The subprocess-pool child interpreter: ONE fixed argv, ``sys.executable -S <leaf
-        # script>``, where the script is a module-relative constant (tests pass their
+        # The subprocess-pool child interpreter: ONE fixed argv, ``sys.executable -I -S
+        # <leaf script>``, where the script is a module-relative constant (the
+        # sensitive-path resolver's ``security/_child_realpath.py``; tests pass their
         # own stub). No agent value reaches the command, the args or the cwd -- the
         # path to resolve travels over stdin as a length-prefixed frame, never as an
         # argument, and no shell is involved. It is listed rather than routed because
@@ -341,9 +342,10 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # sensitive-path gate is checking, sensitive ones included: under the agent
         # sandbox it would be denied exactly those reads, and a resolver answering
         # "cannot resolve" where the true answer is a credential symlink's target
-        # would weaken the gate rather than harden it. The env is inherited
-        # deliberately, so a path resolves in the child to what it resolves to in
-        # the parent.
+        # would weaken the gate rather than harden it. ``-I`` drops ``PYTHONPATH``
+        # and the script directory from ``sys.path`` so nothing can be planted in
+        # front of its four stdlib imports; the cwd is inherited deliberately, so a
+        # path resolves in the child to what it resolves to in the parent.
         "subprocess_pool/executor.py::_spawn",
         # The PDF extractor child: ONE fixed argv, ``sys.executable -P -m
         # kiro_crew.pdf_extract_child --max-chars=N --max-pages=M`` with both

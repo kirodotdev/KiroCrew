@@ -35,26 +35,32 @@ prefix until the mount answers again.
 from __future__ import annotations
 
 import asyncio
-import functools
 import logging
 import os
 import platform
 import re
 import threading
 import time
-from concurrent.futures import Future
-from concurrent.futures import TimeoutError as FutureTimeoutError
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NamedTuple, TypeVar
+from typing import TYPE_CHECKING, NamedTuple, TypeVar
 
 from kiro_crew.agent_sdk import host_auth
-from kiro_crew.executors import _MAX_PATH_RESOLVE_WORKERS, path_resolve_executor
+from kiro_crew.executors import path_resolve_executor
 from kiro_crew.identity_stores import (
     AUTH_SQLITE_DB,
     AUTH_SQLITE_SIDECAR_SUFFIXES,
     fenced_home_dirs,
 )
 from kiro_crew.memory_stores import MEMORY_STORES_DIR_NAME
+from kiro_crew.subprocess_pool import (
+    OP_REALPATH_MANY,
+    OP_REALPATH_SPELLINGS,
+    SubprocessPoolTimeout,
+    SubprocessPoolUnavailable,
+    pack_strings,
+    unpack_strings,
+)
 
 from .diagnostics import annotate_refusal, refusal_diagnostic
 
@@ -1325,15 +1331,16 @@ def _oversize_refusal(length: int, limit: int) -> str:
 # past the watchdog.  The cooldown is scoped to the stalled prefix
 # (:func:`_stall_prefix`), never process-wide, so a stall on ``/home/<user>``
 # leaves ``/tmp`` and the workspace fully resolved.  It doubles on every
-# repeat stall under the same prefix (up to the cap below) and a re-probe is
-# only attempted while it leaves a worker free, because a timed-out worker is
-# NOT reclaimed: a mount that stays dead would otherwise be handed a fresh
-# worker every cooldown until every worker is pinned and every healthy path
-# queues behind wedged futures -- the per-prefix isolation would hold only
-# while free workers remained.
+# repeat stall under the same prefix (up to the cap below).
 #
-# The thread is NOT freed by the timeout (a started future cannot be cancelled);
-# that is why this has its own pool -- see ``executors.path_resolve_executor``.
+# The ``realpath`` itself runs in a CHILD INTERPRETER (``kiro_crew.subprocess_pool``,
+# ``executors.path_resolve_executor``), reached from the calling thread with
+# ``call_op``: ``realpath`` is pure Python and reacquires the GIL twice per path
+# component, so on a thread it paid one switch interval per component beside every
+# other busy thread in the gateway and expired a budget the disk never touched.
+# A child pays one handoff for the whole answer, and a child that misses
+# the deadline is KILLED and respawned, so a stall costs one refused resolution
+# rather than a pinned worker.
 _PATH_RESOLVE_TIMEOUT_SECS = 2.0
 # The ANCHOR REBUILD's own budget. One pool job there performs ~130 `realpath`
 # calls to build ~200 targets, where a candidate resolution performs one or two,
@@ -1373,6 +1380,10 @@ _PATH_RESOLVE_WAIT_FLOOR_SECS = 0.1
 # syscall table. Paid at most once per prefix per cooldown, because the charge that
 # follows a grace miss refuses later paths under the prefix without probing.
 #
+# The grace is FOLDED INTO the child's one deadline (budget plus grace) rather than
+# waited as a second phase: a child that misses its deadline is destroyed, so there
+# is nothing left to wait on, and a second request would be a re-probe, not a grace.
+#
 # Expressed as a FRACTION of the caller's budget, not a constant: the grace is "half
 # again as long as this caller already agreed to wait", so a caller that deliberately
 # chooses a tight budget keeps a tight worst case (the whole point of taking a budget
@@ -1387,7 +1398,7 @@ _PATH_RESOLVE_COOLDOWN_MAX_SECS = 1800.0
 # would otherwise supply: this many uncharged probes per prefix per window.
 _PATH_RESOLVE_LOAD_WINDOW_SECS = 10.0
 _PATH_RESOLVE_LOAD_MAX_PROBES = 3
-# ``/proc/<tid>/syscall`` reports the syscall NUMBER, which is per-architecture. An unmapped
+# ``/proc/<pid>/syscall`` reports the syscall NUMBER, which is per-architecture. An unmapped
 # architecture yields an empty set, which fails toward charging the prefix.
 _FS_BLOCKING_SYSCALLS_BY_ARCH: dict[str, frozenset[int]] = {
     "x86_64": frozenset(
@@ -1404,15 +1415,137 @@ _path_resolve_degraded: dict[str, tuple[float, int]] = {}
 _path_resolve_load_probes: dict[str, tuple[float, int]] = {}
 # calling thread id -> (quiet-window end, accumulated seconds in result waits)
 _path_resolve_thread_waits: dict[int, tuple[float, float]] = {}
-# futures that timed out and still hold an mc-pathres worker; pruned as they finish
-# (candidate spellings, root anchors and target rebuilds all land here)
-_path_resolve_wedged: list[Future[Any]] = []
 _path_resolve_lock = threading.Lock()
 _path_resolve_clock: Callable[[], float] = time.monotonic  # tests advance this
+# The absolute ``time.monotonic`` deadline every child request made under the
+# current :func:`_run_resolution_bounded` call shares.  Thread-local because the
+# whole resolution -- the worker AND its child round trips -- runs on the calling
+# thread.  It is ALSO the switch between the two places a ``realpath`` may run: a
+# resolution with no deadline armed is one made OUTSIDE any bounded call -- the
+# inline rebuild under :func:`is_sensitive_resolved_path`, a direct
+# :func:`_resolved_env_root` -- and those run in this interpreter, as they always
+# have, never in the pool.  The pool is sized and queued for the event loop's bounded
+# calls; a caller with no deadline would hold a child up to the pool's ceiling and
+# queue ahead of the loop, which is the starvation the inline entry point exists to
+# prevent (found in review).
+_child_budget = threading.local()
+_child_fallback_warned = False
+# Consecutive child TRANSPORT faults (the child started, then died or answered out of
+# frame).  One fault is a debug-level event: a child is killed and respawned as a
+# matter of course.  A RUN of them is a host where children spawn but keep dying (a
+# half-upgraded interpreter, antivirus or a cgroup OOM killer reaping the child), and
+# on that host every path gate is refusing fail-closed -- an outage as total as a
+# stalled mount, which :func:`_mark_stalled` warns about.  So the run is warned about
+# once, at this threshold, and the counter resets on the next successful answer.
+_CHILD_FAULT_WARN_STREAK = 3
+_child_fault_streak = 0
+_child_fault_warned = False
 
 
-def _resolved_spellings(expanded: str) -> set[str]:
-    """Symlink-resolved spellings of *expanded*; runs on the ``mc-pathres`` pool."""
+def _outside_bounded_call() -> bool:
+    """True when no :func:`_run_resolution_bounded` deadline is armed on this thread."""
+    return getattr(_child_budget, "deadline", None) is None
+
+
+def _child_request(op: int, payload: bytes) -> bytes | None:
+    """One round trip to the resolver child, on THIS thread, inside the shared deadline.
+
+    Only ever called under an armed deadline (callers check
+    :func:`_outside_bounded_call` first and resolve in-process otherwise), so the
+    pool never holds a child for a request with no bound.  ``None`` means the child
+    could not be STARTED at all (``Popen`` raised): the caller resolves in-process
+    instead, today's behaviour, after one warning.  Every
+    other fault propagates: :class:`SubprocessPoolUnavailable` (the child died,
+    faulted or answered out of frame) and :class:`SubprocessPoolTimeout` (it took
+    the request and missed the deadline) are the caller's to classify, and neither
+    may ever read as an empty answer.  A run of ``_CHILD_FAULT_WARN_STREAK``
+    consecutive transport faults is logged once at warning level, because it means
+    every gate is refusing and nothing at default log level would otherwise say why.
+    """
+    global _child_fallback_warned, _child_fault_streak, _child_fault_warned
+    deadline = getattr(_child_budget, "deadline", None)
+    if deadline is None:  # pragma: no cover - callers route inline first
+        raise RuntimeError("resolver child requested outside a bounded call")
+    timeout = max(0.0, deadline - time.monotonic())
+    try:
+        answer = path_resolve_executor().call_op(op, payload, timeout)
+    except SubprocessPoolUnavailable as exc:
+        with _path_resolve_lock:
+            _child_fault_streak += 1
+            streak = _child_fault_streak
+            escalate = streak >= _CHILD_FAULT_WARN_STREAK and not _child_fault_warned
+            if escalate:
+                _child_fault_warned = True
+        if escalate:
+            logger.warning(
+                "sensitive-path resolver child has faulted %d times in a row (%s); every "
+                "path gate is refusing fail-closed until a child answers again",
+                streak,
+                exc,
+            )
+        raise
+    except TimeoutError:
+        raise  # an ``OSError`` subclass, but the caller's to classify, not a spawn failure
+    except OSError as exc:
+        if not _child_fallback_warned:
+            _child_fallback_warned = True
+            logger.warning(
+                "sensitive-path resolver child could not be started (%s); resolving "
+                "in-process, where interpreter load counts against the budget",
+                type(exc).__name__,
+            )
+        return None
+    if _child_fault_streak:
+        with _path_resolve_lock:
+            _child_fault_streak = 0
+            _child_fault_warned = False
+    return answer
+
+
+def _absolutized(path: str) -> str:
+    """*path* anchored to THIS process's working directory, with no other rewriting.
+
+    Deliberately not ``os.path.abspath``: that also ``normpath``s, which collapses a
+    ``..`` LEXICALLY before the child has resolved the symlink in front of it, so
+    ``ws/link/../credentials`` (``link`` pointing into a credential home) would be
+    sent as ``ws/credentials`` and the sensitive form ``realpath`` finds would be
+    lost.  ``realpath`` resolves each component in order, so joining against the
+    CWD and leaving the rest alone answers exactly what the in-process resolver
+    answers for the same relative input.
+    """
+    if os.path.isabs(path):
+        return path
+    return os.path.join(os.getcwd(), path)
+
+
+def _inline_bounded(path: str, fn: Callable[[], _ResolvedT]) -> _ResolvedT:
+    """Run *fn* in-process when no child can be started, still inside the deadline.
+
+    The fallback keeps the gate alive on a host where ``Popen`` fails, but an
+    unbounded ``realpath`` on the calling thread is the original stall; so when a
+    bounded call is in progress the work goes to the pool's internal thread pool
+    and this thread waits on the future with the shared deadline.  A miss raises
+    :class:`PathResolutionStalled` uncharged: a thread wedged in the kernel says
+    nothing this code can classify, and the thread itself is not reclaimable.
+    Outside a bounded call (no deadline) *fn* simply runs here, as before.
+    """
+    deadline = getattr(_child_budget, "deadline", None)
+    if deadline is None:  # pragma: no cover - the callers resolve inline before asking a child
+        return fn()
+    future = path_resolve_executor().submit(fn)
+    try:
+        return future.result(timeout=max(0.0, deadline - time.monotonic()))
+    except FuturesTimeoutError:
+        logger.debug("in-process fallback resolution missed the budget; prefix not charged")
+        raise PathResolutionStalled(path, _stall_prefix(path)) from None
+
+
+def _resolved_spellings_inline(expanded: str) -> set[str]:
+    """Symlink-resolved spellings of *expanded*, computed in THIS interpreter.
+
+    What the child mirrors (``_child_realpath.realpath_spellings``), and the
+    fallback when no child can be started.
+    """
     out: set[str] = set()
     try:
         out.add(os.path.realpath(expanded))
@@ -1429,6 +1562,30 @@ def _resolved_spellings(expanded: str) -> set[str]:
     except (OSError, ValueError, RuntimeError):
         pass
     return out
+
+
+def _resolved_spellings(expanded: str) -> set[str]:
+    """Symlink-resolved spellings of *expanded*, resolved in the child.
+
+    Absolutized here, against THIS process's working directory, before it is sent:
+    ``realpath`` anchors a relative path to the CWD, and the child's CWD is not the
+    caller's guarantee.  A transport fault raises :class:`PathResolutionStalled`
+    rather than returning an empty set, because an empty set reads as "resolved,
+    no other spelling" and would leave a workspace symlink into a credential store
+    matched on its lexical spelling alone.  No cooldown is charged for it: the disk
+    did not stall.  Outside a bounded call the resolution runs in this interpreter
+    (see the note on ``_child_budget``).
+    """
+    if _outside_bounded_call():
+        return _resolved_spellings_inline(expanded)
+    try:
+        payload = _child_request(OP_REALPATH_SPELLINGS, os.fsencode(_absolutized(expanded)))
+    except SubprocessPoolUnavailable as exc:
+        logger.debug("resolver child faulted on a candidate: %s", exc)
+        raise PathResolutionStalled(expanded, _stall_prefix(expanded)) from None
+    if payload is None:
+        return _inline_bounded(expanded, lambda: _resolved_spellings_inline(expanded))
+    return {os.fsdecode(value) for value in unpack_strings(payload)}
 
 
 class PathResolutionStalled(RuntimeError):
@@ -1519,71 +1676,48 @@ def _stall_prefix(expanded: str) -> str:
     return (drive + os.sep.join(parts[:keep])) or normalized
 
 
-def _wedged_workers() -> int:
-    """How many ``mc-pathres`` workers are still pinned by a timed-out resolution.
+def _child_blocked_in_filesystem(sampled: bytes | None) -> bool:
+    """True when the child's syscall at the deadline was one a path resolution blocks in.
 
-    A future that timed out is not cancelled -- its thread stays in the kernel
-    until the mount answers -- so it is kept here and forgotten once it finally
-    completes.  The count gates re-probes: a mount that stays dead (hard NFS,
-    not the transient VPN case) must not be handed a fresh worker every cooldown
-    until none is left and every healthy path queues behind wedged futures.
-    """
-    with _path_resolve_lock:
-        _path_resolve_wedged[:] = [f for f in _path_resolve_wedged if not f.done()]
-        return len(_path_resolve_wedged)
+    *sampled* is what the executor read from ``/proc/<pid>/syscall`` the instant the
+    budget ran out, before it killed the child (:class:`SubprocessPoolTimeout`).  It
+    separates the two causes of a started-but-unfinished resolution, which the budget
+    alone cannot: a child stuck on a wedged mount versus one that was starved of the
+    CPU.  Both consume almost no CPU, so a CPU-time comparison cannot tell them apart,
+    and neither can the ``/proc`` state field: measured on a 48-core host, a thread
+    doing ordinary ``lstat`` work and a thread doing nothing but burn CPU BOTH
+    alternate between ``R`` and ``S`` from one sample to the next.
 
+    What does separate them is WHICH syscall the process is in.  One genuinely blocked
+    in a kernel wait reports that syscall on every sample; one merely contending
+    reports ``running`` or a ``futex``.  And these syscalls complete in microseconds
+    on a healthy filesystem, so sampling one at all is itself evidence that it is not
+    completing.  The child has no GIL to wait on -- it is alone in its interpreter --
+    so the starved case is now the rarer one, but it is still the one that must not
+    open a prefix-wide cooldown.
 
-def _worker_blocked_in_filesystem(tid: int | None) -> bool:
-    """True when thread ``tid`` is blocked inside a syscall a path resolution can block in.
-
-    Separates the two causes of a started-but-unfinished resolution, which the budget alone
-    cannot distinguish: a worker stuck on a wedged mount versus one that started and was then
-    starved of the CPU. Both consume almost no CPU, so a CPU-time comparison cannot tell them
-    apart, and neither can the ``/proc`` state field: measured on a 48-core host, a thread doing
-    ordinary ``lstat`` work and a thread doing nothing but burn CPU BOTH alternate between ``R``
-    and ``S`` from one sample to the next, because a Python thread spends most of its wall time
-    waiting on the GIL rather than inside a syscall.
-
-    What does separate them is WHICH syscall the thread is in. A thread genuinely blocked in a
-    kernel wait reports that syscall on every sample; one merely contending reports ``futex`` or
-    ``running``. And these syscalls complete in microseconds on a healthy filesystem, so
-    sampling one at all is itself evidence that it is not completing.
-
-    UNVERIFIED, and deliberately not claimed: that a thread stuck in one of these syscalls on a
-    real wedged NFS, FUSE or CIFS mount reports it stably. No wedged mount could be produced
-    where this was measured: an unprivileged ``fusermount3`` mount returns EPERM and
-    ``unshare(CLONE_NEWUSER)`` returns EPERM, so neither FUSE nor a user-namespace NFS mount is
-    available there.
-
-    What IS confirmed is the sampling this rests on, including for the state class a wedged FUSE
-    or CIFS mount actually waits in. An ``openat`` on a FIFO with no writer blocks
-    INTERRUPTIBLY while operating on a real filesystem path, and measured on a 48-core x86_64
-    host it reported state ``S`` with syscall 257 on 15 of 15 samples and no other value -- so
-    an in-``S`` filesystem wait samples exactly as stably as the uninterruptible waits (a pipe
-    ``read`` and a ``clock_nanosleep``, each 12 of 12). See
-    ``test_an_in_s_filesystem_wait_is_sampled_stably_and_reads_as_blocked``.
+    UNVERIFIED, and deliberately not claimed: that a process stuck in one of these
+    syscalls on a real wedged NFS, FUSE or CIFS mount reports it stably.  No wedged
+    mount could be produced where this was measured (an unprivileged ``fusermount3``
+    and ``unshare(CLONE_NEWUSER)`` both return EPERM).  What IS confirmed is the
+    sampling this rests on, including for the state class a wedged FUSE or CIFS mount
+    actually waits in: an ``openat`` on a FIFO with no writer blocks INTERRUPTIBLY on a
+    real filesystem path and reported state ``S`` with syscall 257 on 15 of 15
+    samples.  See ``test_an_in_s_filesystem_wait_is_sampled_stably_and_reads_as_blocked``.
 
     The table covers ``readlink`` as well as the stat family because CPython's
-    ``posixpath.realpath`` calls ``os.lstat`` AND ``os.readlink`` per component: a mount that
-    answers the lstat from cache and hangs the readlink would otherwise read as not blocked,
-    take the load arm, and pay an uncharged full-budget probe per token rather than opening one
-    cooldown.
+    ``posixpath.realpath`` calls ``os.lstat`` AND ``os.readlink`` per component: a
+    mount that answers the lstat from cache and hangs the readlink would otherwise
+    read as not blocked, take the load arm, and pay an uncharged full-budget probe per
+    token rather than opening one cooldown.
 
-    Fails toward the EXISTING behaviour -- an unreadable ``/proc``, a thread that has already
-    exited, an architecture whose syscall numbers are not mapped -- by returning True, so the
-    caller still charges the prefix rather than silently withholding an escalation the gate
-    would otherwise make.
+    Fails toward the EXISTING behaviour -- no sample (non-Linux, or the child was
+    already gone), or an architecture whose syscall numbers are not mapped -- by
+    returning True, so the caller still charges the prefix rather than silently
+    withholding an escalation the gate would otherwise make.
     """
-    if tid is None or not _FS_BLOCKING_SYSCALLS:
+    if sampled is None or not _FS_BLOCKING_SYSCALLS:
         return True
-    try:
-        with open(f"/proc/self/task/{tid}/syscall", "rb") as fh:
-            head = fh.read().split()
-    except OSError:
-        return True
-    if not head:
-        return True
-    sampled = head[0]
     if sampled == b"running":
         blocked = False
     else:
@@ -1592,8 +1726,7 @@ def _worker_blocked_in_filesystem(tid: int | None) -> bool:
         except ValueError:
             blocked = True
     logger.debug(
-        "resolver worker tid=%s syscall=%s blocked_in_filesystem=%s",
-        tid,
+        "resolver child syscall=%s blocked_in_filesystem=%s",
         sampled.decode("ascii", "replace"),
         blocked,
     )
@@ -1630,13 +1763,13 @@ def _load_arm_budget_spent(prefix: str) -> bool:
 def _mark_stalled(prefix: str, budget: float) -> None:
     """Record an OBSERVED stall under *prefix*: back off exponentially on repeats.
 
-    Only a resolution that actually RAN and timed out is recorded.  A refusal
-    issued because every worker was already pinned (nothing is submitted), or
-    because a submitted resolution never left the queue (its future cancelled
-    on timeout), says nothing about the filesystem and must not charge the
-    refused prefix -- often the local workspace -- a backoff it never earned,
-    or a transient dual-mount outage would keep refusing healthy paths for the
-    accrued window after the mounts recover.  The log line deliberately omits
+    Only a resolution that actually RAN in a child and timed out blocked in the
+    filesystem is recorded.  A refusal issued because no child took the request,
+    or because the child was on the CPU rather than in a syscall when the budget
+    ran out, says nothing about the filesystem and must not charge the refused
+    prefix -- often the local workspace -- a backoff it never earned, or a
+    transient dual-mount outage would keep refusing healthy paths for the accrued
+    window after the mounts recover.  The log line deliberately omits
     the path: the token is agent-supplied and is what the gates exist to keep
     out of clear-text logs.
     """
@@ -1654,11 +1787,10 @@ def _mark_stalled(prefix: str, budget: float) -> None:
     logger.warning(
         "sensitive-path symlink resolution did not complete in %.1fs (stalled "
         "mount?); refusing paths under the stalled prefix for the next %.0fs "
-        "(stall #%d, %d resolver worker(s) pinned)",
+        "(stall #%d)",
         budget,
         cooldown,
         stalls,
-        len(_path_resolve_wedged),
     )
 
 
@@ -1684,50 +1816,72 @@ def _is_unc_path(expanded: str) -> bool:
 _ResolvedT = TypeVar("_ResolvedT")
 
 
+def _resolve_on_calling_thread(
+    worker: Callable[[str], _ResolvedT], expanded: str, timeout: float
+) -> _ResolvedT:
+    """Run *worker(expanded)* HERE, with *timeout* as the deadline its child requests share.
+
+    On the calling thread by design, not for want of a pool: the answer comes back
+    from the child over a pipe, and the thread that wants it must be the one blocked
+    in that read.  Handing the round trip to a worker thread puts two more GIL
+    handoffs between question and answer (worker pickup, caller wake-up), each up to a
+    switch interval behind every other runnable thread, which is what made the
+    thread-pool version of this resolver a no-op under load -- measured at 48
+    contenders, 81 ms this way against 2681 ms pooled, the latter over the budget.
+    The worker's own Python (env reads, casefolding) is microseconds; only the
+    ``realpath`` was ever the cost, and that now runs one process over.
+    """
+    _child_budget.deadline = time.monotonic() + timeout
+    try:
+        return worker(expanded)
+    finally:
+        _child_budget.deadline = None
+
+
 def _run_resolution_bounded(
     expanded: str, worker: Callable[[str], _ResolvedT], *, budget: float | None = None
 ) -> _ResolvedT | None:
-    """Run *worker(expanded)* on the ``mc-pathres`` pool within the resolve budget.
+    """Run *worker(expanded)*, its ``realpath`` work in the resolver child, within the budget.
 
     The shared core under :func:`_resolved_forms_bounded` (the agent-supplied
     CANDIDATE), :func:`_resolved_root_key` and :func:`_rebuild_targets_bounded`
-    (the TARGET anchors: ``$HOME``, the
-    override roots and the keystone leaves).  Both kinds of resolution stat the
-    same filesystem from the event loop, so they share one pool, one budget and
-    one per-prefix cooldown: a stall observed while anchoring ``$HOME`` refuses
-    candidate resolution under that prefix for the same window, and a stall on
-    a candidate keeps the anchors from re-probing the same wedged mount every
-    time the target cache expires.
+    (the TARGET anchors: ``$HOME``, the override roots and the keystone leaves).
+    Both kinds of resolution stat the same filesystem from the event loop, so they
+    share one child pool, one budget and one per-prefix cooldown: a stall observed
+    while anchoring ``$HOME`` refuses candidate resolution under that prefix for
+    the same window, and a stall on a candidate keeps the anchors from re-probing
+    the same wedged mount every time the target cache expires.
 
     Returns the worker's value, or ``None`` when resolution FAILED -- the pool
-    refused work at interpreter exit, or faulted.  A resolution that does not
-    COMPLETE is different and raises
+    refused work at interpreter exit, or faulted in a way the worker did not
+    classify.  A resolution that does not COMPLETE is different and raises
     :class:`PathResolutionStalled` instead, both on the timing-out call and,
     without touching the filesystem, for every later call under the same
     :func:`_stall_prefix` until the cooldown lapses.  Repeated stalls under one
-    prefix double the cooldown up to ``_PATH_RESOLVE_COOLDOWN_MAX_SECS``, and a
-    prefix with a stall history is only re-probed while that leaves at least one
-    worker free for everything else -- so a permanently dead mount is probed
-    rarely and can never pin the whole pool.  Never blocks the caller for longer
-    than *budget* plus its grace -- the bounded second wait a missed budget earns
-    before the prefix is charged, itself a capped fraction of *budget*. Both waits
-    also consume the calling thread's cumulative allowance -- excluding a wait
-    below the floor, resolver-pool round-trip overhead rather than filesystem
-    latency; exhaustion refuses without submitting work or charging a prefix until
-    the quiet window expires.
-    Charging the prefix on a timeout ALSO requires that both the budget and the
-    grace were granted in full, uncapped by the allowance: a wait clamped short by
-    the allowance says nothing about the mount, so it refuses this call alone,
-    the same conclusion the saturated-pool, never-ran and load arms reach.
+    prefix double the cooldown up to ``_PATH_RESOLVE_COOLDOWN_MAX_SECS``.  Never
+    blocks the caller for longer than *budget* plus its grace -- a capped fraction
+    of *budget* folded into the child's single deadline, since a child that misses
+    it is destroyed rather than waited on.  The wait also consumes the calling
+    thread's cumulative allowance -- excluding a wait below the floor, round-trip
+    overhead rather than filesystem latency; exhaustion refuses without a request
+    or a charge until the quiet window expires.
 
-    A stall is charged only to a resolution that RAN.  A future that times out
-    still QUEUED (the pool saturated by concurrent callers, e.g. simultaneous
-    cron fires) is cancelled and refuses this call alone: queue wait is
-    evidence about load, not about the mount, so it opens no cooldown and pins
-    no worker in :func:`_wedged_workers`.  A future claimed by a freeing worker
-    in the very instant the deadline fires is abandoned by handshake -- the
-    worker returns without entering the resolution -- so the never-ran
-    classification is binding, not a race.
+    WHAT A TIMEOUT MEANS, and how the prefix is charged.  The thread pool this
+    replaced classified a miss by thread-shaped signals -- was the future ever
+    claimed, was the worker started, what syscall was that thread in -- and none of
+    those has a referent once the work is a process reached from this thread.  The
+    child-shaped signals are the exception the pool raises:
+
+    * a plain ``TimeoutError`` means NO child ever took the request (every child was
+      leased to another caller for the whole budget): evidence about load, not the
+      mount, so this call alone is refused and nothing is charged;
+    * :class:`SubprocessPoolTimeout` means a child took it and missed the deadline,
+      and carries what that child was doing when the budget ran out.  Blocked in a
+      stat/readlink syscall, or unsampleable (non-Linux, unmapped architecture), and
+      the mount is charged; on-CPU or in a ``futex``, and it is the load arm:
+      refused, not charged, bounded by :func:`_load_arm_budget_spent`.  Charging
+      ALSO requires that the budget and grace were granted in full: a wait clamped by
+      the allowance proves nothing about the mount.
 
     The UNC shortcut is NOT here: skipping a ``\\\\server\\share`` token is a
     stance about agent-supplied CANDIDATES (:func:`_resolved_forms_bounded`),
@@ -1737,34 +1891,17 @@ def _run_resolution_bounded(
     governance file (found in review); the bound makes that probe safe.
 
     *budget* sizes the wait to the work the caller submits: the anchor REBUILD is
-    one job performing ~130 ``realpath`` calls and passes
+    one request carrying ~130 paths and passes
     ``_PATH_RESOLVE_REBUILD_TIMEOUT_SECS``, while a candidate resolution keeps the
-    default. One budget for both put the rebuild ~130x closer to its ceiling than
-    the path whose latency the default exists to guarantee.
+    default.
     """
     if budget is None:
         budget = _PATH_RESOLVE_TIMEOUT_SECS
-    requested_budget = budget
     now = _path_resolve_clock()
     prefix = _stall_prefix(expanded)
     with _path_resolve_lock:
         history = _path_resolve_degraded.get(prefix)
     if history is not None and now < history[0]:
-        raise PathResolutionStalled(expanded, prefix)
-    wedged = _wedged_workers()
-    if wedged >= _MAX_PATH_RESOLVE_WORKERS or (
-        history is not None and wedged >= _MAX_PATH_RESOLVE_WORKERS - 1
-    ):
-        # Every worker is pinned, or this re-probe of a known-stalled prefix
-        # would pin the last free one.  Queueing behind a wedged future can only
-        # time out, so refuse now.  Nothing was submitted, so nothing is charged
-        # to the prefix: the next call re-evaluates the gate for free.
-        logger.debug(
-            "sensitive-path symlink resolution refused without probing: %d of %d "
-            "resolver worker(s) pinned by earlier stalls",
-            wedged,
-            _MAX_PATH_RESOLVE_WORKERS,
-        )
         raise PathResolutionStalled(expanded, prefix)
     caller_tid = threading.get_ident()
     with _path_resolve_lock:
@@ -1784,161 +1921,61 @@ def _run_resolution_bounded(
             "cumulative wait allowance exhausted; prefix not charged"
         )
         raise PathResolutionStalled(expanded, prefix)
-    granted_budget = min(budget, remaining)
+    # Budget plus grace, as ONE deadline (see the note above _PATH_RESOLVE_GRACE_FACTOR).
+    entitled = budget + min(budget * _PATH_RESOLVE_GRACE_FACTOR, _PATH_RESOLVE_GRACE_MAX_SECS)
+    granted = min(entitled, remaining)
+    wait_start = _path_resolve_clock()
     try:
-        started = threading.Event()
-        abandoned = threading.Event()
-        handoff = threading.Lock()
-        worker_tid: list[int] = []
-
-        @functools.wraps(worker)
-        def _tracked(arg: str) -> _ResolvedT | None:
-            worker_tid.append(threading.get_native_id())
-            with handoff:
-                if abandoned.is_set():
-                    # The caller classified this future as never-run at its
-                    # deadline: return without touching the filesystem, so a
-                    # late claim can neither probe a wedged mount nor pin a
-                    # worker _wedged_workers() is not tracking.
-                    return None
-                started.set()
-            return worker(arg)
-
-        future = path_resolve_executor().submit(_tracked, expanded)
-    except RuntimeError:
-        # Pool already shut down (interpreter exit).  Lexical forms only.
-        return None
-
-    def _wait_for_result(timeout: float) -> _ResolvedT | None:
-        nonlocal seconds_spent
-        wait_start = _path_resolve_clock()
-        try:
-            return future.result(timeout=timeout)
-        finally:
-            wait_end = _path_resolve_clock()
-            elapsed = max(0.0, wait_end - wait_start)
-            if elapsed >= _PATH_RESOLVE_WAIT_FLOOR_SECS:
-                seconds_spent += elapsed
-                with _path_resolve_lock:
-                    _path_resolve_thread_waits[caller_tid] = (
-                        wait_end + _PATH_RESOLVE_WAIT_WINDOW_SECS,
-                        seconds_spent,
-                    )
-
-    try:
-        value = _wait_for_result(granted_budget)
-    except FutureTimeoutError:
-        if future.cancel():
-            # Never claimed by a worker: the pool was saturated and the
-            # resolution never started -- evidence about load, not the mount.
+        value = _resolve_on_calling_thread(worker, expanded, granted)
+    except TimeoutError as exc:
+        sampled = exc.child_syscall if isinstance(exc, SubprocessPoolTimeout) else None
+        if not isinstance(exc, SubprocessPoolTimeout):
+            # No child took the request: every child was leased for the whole budget.
+            # Evidence about load, not the mount.
             logger.debug(
                 "sensitive-path symlink resolution refused: the resolver pool was "
                 "saturated and the resolution never started; prefix not charged"
             )
             raise PathResolutionStalled(expanded, prefix) from None
-        with handoff:
-            ran = started.is_set()
-            if not ran:
-                abandoned.set()
-        if not ran:
-            # Claimed by a freeing worker in the instant the deadline fired,
-            # before entering the resolution.  The handshake makes the
-            # classification binding: the worker sees ``abandoned`` and returns
-            # without probing, so it pins nothing and there is nothing to
-            # charge -- the same conclusion as the queued arm above.
-            logger.debug(
-                "sensitive-path symlink resolution refused: the resolver pool was "
-                "saturated and the resolution never started; prefix not charged"
-            )
+        if not _child_blocked_in_filesystem(sampled) and not _load_arm_budget_spent(prefix):
+            # The child RAN but was not in the filesystem when the budget ran out: the
+            # same conclusion as the arm above, reached one step later.  Refuse THIS
+            # resolution instead of opening a cooldown across every path under the
+            # prefix.
+            logger.debug("sensitive-path resolution timed out under load; prefix not charged")
             raise PathResolutionStalled(expanded, prefix) from None
-        with _path_resolve_lock:
-            _path_resolve_wedged.append(future)
-        tid = worker_tid[0] if worker_tid else None
-        if not _worker_blocked_in_filesystem(tid) and not _load_arm_budget_spent(prefix):
-            logger.debug(
-                "sensitive-path resolution timed out under load; prefix not charged (tid=%s)",
-                tid,
-            )
-            # The worker RAN but never got the CPU: the same conclusion as the queued
-            # arm above, reached one step later.  The future stays tracked as wedged
-            # (it does hold a worker until it finishes), but the prefix is NOT charged,
-            # so ordinary contention refuses THIS resolution instead of opening a
-            # cooldown across every path under the prefix.
-            raise PathResolutionStalled(expanded, prefix) from None
-        # A missed budget is not yet proof of a wedged mount, and charging the prefix
-        # is the expensive conclusion: it refuses EVERY path under that prefix for the
-        # cooldown, so one transient miss becomes a cascade of refusals across
-        # unrelated paths. Give the resolution a bounded GRACE to finish first. This is
-        # the only discriminator available wherever the syscall probe above cannot
-        # answer -- an architecture absent from `_FS_BLOCKING_SYSCALLS_BY_ARCH`, which
-        # is every Windows host (`platform.machine()` is "AMD64") and Apple silicon --
-        # because there it returns True for a merely slow resolution as readily as for
-        # a dead mount, and the prefix was charged either way.
-        #
-        # Costs nothing on a genuinely wedged mount beyond delaying the cooldown by
-        # the grace, and is paid at most ONCE per prefix per cooldown: the charge
-        # below refuses later paths under the prefix without probing at all. The
-        # future stays tracked as wedged while this waits, so a second token cannot
-        # pin the last worker meanwhile, and it self-prunes from that list if it does
-        # complete (`_wedged_workers` drops finished futures).
-        entitled_grace = min(
-            requested_budget * _PATH_RESOLVE_GRACE_FACTOR, _PATH_RESOLVE_GRACE_MAX_SECS
-        )
-        granted_grace = min(entitled_grace, _PATH_RESOLVE_WAIT_CAP_SECS - seconds_spent)
-        # A one-element list, not an Optional: the sentinel has to distinguish "the
-        # future completed" from "it completed as None", and the worker's own return
-        # is Optional since the never-ran handshake above makes it return None.  That
-        # arm raises before reaching here, so a None here can only come from the
-        # worker itself and is passed through exactly like the on-time path does.
-        late: list[_ResolvedT | None] = []
-        try:
-            if granted_grace > 0:
-                late.append(_wait_for_result(granted_grace))
-        except FutureTimeoutError:
-            pass
-        except Exception:
-            logger.debug("sensitive-path symlink resolution failed", exc_info=True)
-            return None
-        if late:
-            logger.debug(
-                "sensitive-path resolution completed within %.1fs past its %.1fs "
-                "budget, so the prefix is NOT charged (tid=%s)",
-                granted_grace,
-                requested_budget,
-                tid,
-            )
-            if history is not None:
-                with _path_resolve_lock:
-                    _path_resolve_degraded.pop(prefix, None)
-            return late[0]
-        if granted_budget < requested_budget or granted_grace < entitled_grace:
-            # The wait ended early because the calling thread's cumulative allowance
-            # ran out, not because the resolution itself proved anything about the
-            # mount -- the same conclusion the saturated-pool, never-ran and load
-            # arms above reach by a different route. Charging here would let the
-            # allowance clamp reopen exactly the blast radius this bound removes:
-            # on a host where the syscall probe cannot discriminate (every Windows
-            # host, and Apple silicon), the grace is the ONLY signal, and a
-            # truncated grace answers nothing either way. Refuse this call alone.
+        if granted < entitled:
+            # The deadline was clamped by the calling thread's allowance, not by
+            # anything the filesystem did -- and on a host where the syscall probe
+            # cannot discriminate (every Windows host, Apple silicon) the grace is
+            # the ONLY signal, so a truncated one answers nothing.  Refuse this call.
             logger.debug(
                 "sensitive-path resolution timed out with its budget or grace clamped "
-                "by the calling thread's cumulative wait allowance; prefix not "
-                "charged (tid=%s)",
-                tid,
+                "by the calling thread's cumulative wait allowance; prefix not charged"
             )
             raise PathResolutionStalled(expanded, prefix) from None
-        logger.debug(
-            "sensitive-path resolution timed out blocked in the filesystem (tid=%s)",
-            tid,
-        )
-        _mark_stalled(prefix, requested_budget)
+        logger.debug("sensitive-path resolution timed out blocked in the filesystem")
+        _mark_stalled(prefix, budget)
         raise PathResolutionStalled(expanded, prefix) from None
+    except PathResolutionStalled:
+        # The worker itself refused (a transport fault to the child): fail-closed,
+        # exactly like a stall, and never the lexical forms.
+        raise
     except Exception:
         # The worker's own exceptions are already swallowed inside the worker;
         # anything else here is a pool fault, and the gate's contract is to keep
         # the lexical forms rather than fail the tool call.
         logger.debug("sensitive-path symlink resolution failed", exc_info=True)
         return None
+    finally:
+        wait_end = _path_resolve_clock()
+        elapsed = max(0.0, wait_end - wait_start)
+        if elapsed >= _PATH_RESOLVE_WAIT_FLOOR_SECS:
+            with _path_resolve_lock:
+                _path_resolve_thread_waits[caller_tid] = (
+                    wait_end + _PATH_RESOLVE_WAIT_WINDOW_SECS,
+                    seconds_spent + elapsed,
+                )
     if history is not None:
         # The mount answered again: forget the stall history so the next stall
         # starts from the base cooldown rather than an inherited backoff.
@@ -1964,12 +2001,46 @@ def _resolved_forms_bounded(expanded: str) -> set[str]:
     return set() if forms is None else forms
 
 
-def _realpath_or_none(path: str) -> str | None:
-    """``os.path.realpath`` for a target anchor; runs on the ``mc-pathres`` pool."""
+def _realpaths_or_none(paths: list[str]) -> list[str | None]:
+    """``os.path.realpath`` of every anchor in *paths*, in order, in ONE child round trip.
+
+    ``None`` per entry where ``realpath`` raised.  Absolutized before sending, for
+    the reason :func:`_resolved_spellings` gives.  A transport fault raises
+    :class:`PathResolutionStalled` for the first anchor: the target set is never
+    rebuilt from lexical spellings (see :func:`_resolved_root_key` for the fallbacks
+    review found open), and no cooldown is charged, because a child fault is not a
+    stalled mount.
+    """
+    if not paths:
+        return []
+    if _outside_bounded_call():
+        return [_realpath_inline(path) for path in paths]
+    try:
+        payload = _child_request(
+            OP_REALPATH_MANY, pack_strings(os.fsencode(_absolutized(p)) for p in paths)
+        )
+    except SubprocessPoolUnavailable as exc:
+        logger.debug("resolver child faulted on the anchors: %s", exc)
+        raise PathResolutionStalled(paths[0], _stall_prefix(paths[0])) from None
+    if payload is None:
+        return _inline_bounded(paths[0], lambda: [_realpath_inline(path) for path in paths])
+    answers = unpack_strings(payload)
+    if len(answers) != len(paths):
+        raise PathResolutionStalled(paths[0], _stall_prefix(paths[0]))
+    return [os.fsdecode(value) if value else None for value in answers]
+
+
+def _realpath_inline(path: str) -> str | None:
+    """``os.path.realpath`` in THIS interpreter, ``None`` where it raises (the child's mirror)."""
     try:
         return os.path.realpath(path)
     except (OSError, ValueError):
         return None
+
+
+def _realpath_or_none(path: str) -> str | None:
+    """``os.path.realpath`` for one target anchor; see :func:`_realpaths_or_none`."""
+    return _realpaths_or_none([path])[0]
 
 
 def _candidate_forms(
@@ -2105,11 +2176,18 @@ def _home_dir_targets_uncached(
     """Anchor the ``$HOME``-relative *home_dirs* entries into absolute, casefolded
     on-disk targets.
 
-    Every per-anchor resolved form comes from :func:`_realpath_or_none`, looked
+    Every per-anchor resolved form comes from :func:`_realpaths_or_none`, looked
     up at call time so a test can stand in a recording or wedged resolver at
     module level.  It touches the filesystem, so in production this function
-    runs on the ``mc-pathres`` pool via :func:`_home_dir_targets` (see there
+    runs under the bounded core via :func:`_home_dir_targets` (see there
     for why); only direct callers and tests run it inline.
+
+    Two passes over the same anchoring logic (:func:`_anchor_targets`) so the
+    ~130 per-leaf ``realpath`` calls travel as ONE child round trip instead of one
+    each: the first pass runs with no answers and only records which paths it asks
+    for (every anchor derives from *roots* and *home_dirs*, never from an earlier
+    answer, so the set is complete), then the batch is resolved and the second pass
+    builds the real set from it.
 
     *roots* optionally supplies the already-resolved :class:`_ResolvedRoots`
     already resolved by the caller. The TTL cache in :func:`_home_dir_targets` MUST pass
@@ -2133,17 +2211,28 @@ def _home_dir_targets_uncached(
     secrets. On POSIX a single-segment entry splits to a 1-element list, so
     this is a no-op there.
     """
+    resolved = roots if roots is not None else _resolved_root_key()
+    wanted: dict[str, str | None] = {}
+    _anchor_targets(home_dirs, resolved, wanted)
+    answers = dict(zip(wanted, _realpaths_or_none(list(wanted))))
+    return _anchor_targets(home_dirs, resolved, answers)
+
+
+def _anchor_targets(
+    home_dirs: list[str], resolved: _ResolvedRoots, resolved_paths: dict[str, str | None]
+) -> set[str]:
+    """One pass of :func:`_home_dir_targets_uncached`, reading answers from *resolved_paths*.
+
+    A path not in the dict is recorded there as unresolved, which is how the first
+    pass enumerates what the second pass needs resolved.
+    """
+
     # Both supported Crew home prefixes map to the same override leaves.
     # Resolve each identical spelling once within this build; never carry these
     # answers across builds or cache keys, so root and leaf freshness is unchanged.
-    resolved_paths: dict[str, str | None] = {}
-
     def resolve_target(path: str) -> str | None:
-        if path not in resolved_paths:
-            resolved_paths[path] = _realpath_or_none(path)
-        return resolved_paths[path]
+        return resolved_paths.setdefault(path, None)
 
-    resolved = roots if roots is not None else _resolved_root_key()
     home = resolved.home
     crew_home = resolved.crew_home
     kiro_home_override = resolved.kiro_home
@@ -2707,10 +2796,11 @@ def _resolved_env_root(name: str) -> str | None:
     expanded = _expanded_env_root(name)
     if expanded is None:
         return None
-    # Runs on the ``mc-pathres`` pool via _resolve_root_anchors -- never call it
-    # from the event loop directly; go through _resolved_root_key.  A failure
-    # keeps the lexical form, exactly as the OSError arm did.  ``Path.resolve()``
-    # is ``os.path.realpath`` underneath, so the resolved spelling is unchanged.
+    # One child round trip; the gate itself batches every root through
+    # _resolve_root_anchors instead, so go through _resolved_root_key from the
+    # event loop.  A failure keeps the lexical form, exactly as the OSError arm
+    # did.  ``Path.resolve()`` is ``os.path.realpath`` underneath, so the
+    # resolved spelling is unchanged.
     return _realpath_or_none(expanded) or _lexical_root(expanded)
 
 
@@ -2750,24 +2840,32 @@ _OVERRIDE_ROOT_ENVS: tuple[tuple[str, str], ...] = (
 
 
 def _resolve_root_anchors(logical_home: str) -> _ResolvedRoots:
-    """Resolve every root the target set anchors on; runs on the ``mc-pathres`` pool.
+    """Resolve every root the target set anchors on, in ONE child round trip.
 
-    One worker call resolves ``$HOME`` and all six override roots together,
-    so :func:`_resolved_root_key` -- which runs once per ``is_sensitive_path``
-    call, on the event loop -- pays a single thread hop rather than seven.  The
-    stall bookkeeping is charged to the logical home's prefix: that is the
-    mount every root ordinarily lives under, and it is the one the crash dumps
-    named.
+    ``$HOME``, the override roots and every declared harness home travel in one
+    request (:func:`_realpaths_or_none`), so :func:`_resolved_root_key` -- which
+    runs once per ``is_sensitive_path`` call, on the event loop -- pays a single
+    round trip rather than seven.  Each failed root keeps its lexical form, exactly
+    as :func:`_resolved_env_root` does.  The stall bookkeeping is charged to the
+    logical home's prefix: that is the mount every root ordinarily lives under,
+    and it is the one the crash dumps named.
     """
-    home = _realpath_or_none(logical_home) or logical_home
-    overrides = {field: _resolved_env_root(env) for field, env in _OVERRIDE_ROOT_ENVS}
-    # Resolved in the SAME worker call as the host's own roots, for the reason
-    # above: one thread hop for every anchor, rather than one more per harness.
-    adapter_roots = tuple(
-        (env, _resolved_env_root(env)) for env in host_auth.home_override_env_vars()
-    )
+    overrides = {field: _expanded_env_root(env) for field, env in _OVERRIDE_ROOT_ENVS}
+    adapters = tuple((env, _expanded_env_root(env)) for env in host_auth.home_override_env_vars())
+    wanted = [logical_home, *overrides.values(), *(root for _env, root in adapters)]
+    distinct = list(dict.fromkeys(p for p in wanted if p is not None))
+    answers = dict(zip(distinct, _realpaths_or_none(distinct)))
+
+    def _root(expanded: str | None) -> str | None:
+        if expanded is None:
+            return None
+        return answers[expanded] or _lexical_root(expanded)
+
     return _ResolvedRoots(
-        home=home, logical_home=logical_home, adapter_roots=adapter_roots, **overrides
+        home=answers[logical_home] or logical_home,
+        logical_home=logical_home,
+        adapter_roots=tuple((env, _root(root)) for env, root in adapters),
+        **{field: _root(root) for field, root in overrides.items()},
     )
 
 
@@ -3388,8 +3486,10 @@ def sandbox_credential_targets(exclude_leaves: tuple[str, ...] = ()) -> tuple[st
     # the event loop and RAISES on a stall, and this runs off the loop already
     # (``_sandbox_preflight`` wraps it in ``asyncio.to_thread``). A sandbox mask
     # must be canonical whatever the disk is doing, so the worker that resolves
-    # the roots for the gate is called here directly and waits; the spawn side
-    # bounds that wait (``_run_preflight_bounded``, 60 s) and refuses the
+    # the roots for the gate is called here directly and waits -- in THIS
+    # interpreter, since no bounded-call deadline is armed (``_outside_bounded_call``),
+    # so it neither holds a resolver child nor queues ahead of the loop; the spawn
+    # side bounds that wait (``_run_preflight_bounded``, 60 s) and refuses the
     # adapter on expiry rather than starting it unmasked (found in review).
     resolved = _resolve_root_anchors(str(Path.home()))
     # BOTH home spellings, reusing the two anchors the read gate already keys on.

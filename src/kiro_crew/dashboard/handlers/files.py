@@ -5259,6 +5259,12 @@ def _grep_sensitive_globs(root: str) -> list[str]:
     """
     args: list[str] = []
     root_real = os.path.realpath(root)
+    # Should ``sandbox_credential_targets`` raise ``PathResolutionStalled`` (a
+    # ``RuntimeError``: the roots could not be canonicalised), it is deliberately
+    # NOT caught here. An empty exclusion list would let ripgrep read the stores
+    # before the per-hit filter sees them; letting it propagate reaches
+    # ``_grep_rg``'s ``RuntimeError`` catch, which returns ``None`` and routes the
+    # search to the fail-closed python engine instead.
     for target in sandbox_credential_targets():
         if not target:
             continue

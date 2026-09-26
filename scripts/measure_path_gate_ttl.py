@@ -193,7 +193,6 @@ def _reset_gate_state() -> None:
     gate._path_resolve_degraded.clear()
     gate._path_resolve_load_probes.clear()
     gate._path_resolve_thread_waits.clear()
-    gate._path_resolve_wedged.clear()
 
 
 def _anchor_inputs() -> tuple[list[str], gate._ResolvedRoots]:
@@ -205,9 +204,9 @@ def _anchor_inputs() -> tuple[list[str], gate._ResolvedRoots]:
 def measure_rebuild(hogs: int, samples: int) -> RebuildRow:
     """Time ``samples`` uncached anchor rebuilds with ``hogs`` siblings running.
 
-    Timed on a WORKER thread, not the main thread, because that is where the
-    gate runs it: the pool worker is the thread whose GIL re-acquisitions the
-    siblings delay.
+    Timed on a thread of its own rather than the main thread, so the probe
+    competes with the siblings exactly as a gateway thread does; the rebuild's
+    ``realpath`` work itself runs in the resolver child, reached from that thread.
     """
     home_dirs, roots = _anchor_inputs()
     durations: list[float] = []

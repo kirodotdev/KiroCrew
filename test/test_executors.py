@@ -82,9 +82,9 @@ def test_pools_execute_work() -> None:
 def test_path_resolve_pool_is_isolated_bounded_named_and_reset() -> None:
     # The sensitive-path gates' realpath run inline on the event loop can
     # block in the kernel on a stalled automount for as long as the mount
-    # did.  The caller now bounds its wait, but a timed-out future does NOT free
-    # its thread -- so a wedged lstat must only ever be able to starve OTHER
-    # path resolution, never the sweeps, teardown, or the default executor.
+    # did.  It now runs in this pool's child interpreters, killed at the
+    # deadline -- and the pool is still its own, so a wedged lstat can only ever
+    # cost OTHER path resolution, never the sweeps, teardown, or the default executor.
     pool = ex.path_resolve_executor()
     assert pool is ex.path_resolve_executor()
     for other in (
@@ -95,8 +95,8 @@ def test_path_resolve_pool_is_isolated_bounded_named_and_reset() -> None:
         ex.governance_executor(),
     ):
         assert pool is not other
-    assert pool._max_workers == ex._MAX_PATH_RESOLVE_WORKERS
-    assert pool._thread_name_prefix == "mc-pathres"
+    assert len(pool._children) == ex._MAX_PATH_RESOLVE_WORKERS
+    assert pool._fallback._thread_name_prefix == "mc-pathres-inline"
     assert pool.submit(lambda: 6 * 7).result(timeout=5) == 42
     ex.shutdown_maintenance_executor()
     assert ex.path_resolve_executor() is not pool

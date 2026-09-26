@@ -15,19 +15,19 @@ import time
 
 import pytest
 
-from kiro_crew.security.paths import _resolved_spellings
-from kiro_crew.subprocess_pool import _child_realpath as child_mod
+from kiro_crew.security import _child_realpath as child_mod
+from kiro_crew.security.paths import _resolved_spellings_inline as _resolved_spellings
+from kiro_crew.subprocess_pool import executor as executor_mod
 from kiro_crew.subprocess_pool.executor import (
     OP_REALPATH_SPELLINGS,
     SubprocessPoolExecutor,
+    SubprocessPoolTimeout,
     SubprocessPoolUnavailable,
     pack_strings,
     unpack_strings,
 )
 
-_CHILD = pathlib.Path(sys.modules["kiro_crew.subprocess_pool.executor"].__file__).with_name(
-    "_child_realpath.py"
-)
+_CHILD = pathlib.Path(child_mod.__file__)
 
 # Windows rejects a newline in a filename outright and stores names as UTF-16, so a
 # byte sequence that is not valid UTF-8 cannot round-trip through one. The framing
@@ -45,14 +45,6 @@ posix_names_only = pytest.mark.skipif(
 utf8_relaxed_names_only = pytest.mark.skipif(
     os.name == "nt" or sys.platform == "darwin",
     reason="non-UTF-8 bytes are not legal NTFS or APFS/HFS+ name units",
-)
-
-# The per-request read deadline is armed with select, which on Windows accepts only
-# sockets and so cannot watch the child's pipe. There the ceiling reaper bounds a
-# wedge instead, so these three assert a POSIX capability rather than shared
-# behaviour.
-posix_read_deadline_only = pytest.mark.skipif(
-    os.name == "nt", reason="select cannot watch a pipe on Windows; the reaper bounds it there"
 )
 
 
@@ -345,7 +337,9 @@ class TestCallerThreadDispatch:
         seen = self._record_threads(pool, monkeypatch)
         future = pool.submit_op(OP_REALPATH_SPELLINGS, os.fsencode(str(tmp_path)))
         assert seen == [], "submitting must not hand the work to another thread"
-        future.result(timeout=60)
+        # No timeout: with one, a platform whose pipes are not selectable (Windows)
+        # deliberately runs the read on a pool thread to keep the caller bounded.
+        future.result()
         assert seen == [threading.get_ident()]
 
     def test_the_executor_keeps_no_worker_pool_for_child_work(self, pool) -> None:
@@ -394,7 +388,28 @@ class TestCallerBudget:
         )
         return str(script)
 
-    @posix_read_deadline_only
+    @staticmethod
+    def _spawned(executor: SubprocessPoolExecutor) -> dict[int, subprocess.Popen[bytes]]:
+        """Every child spawned NOW, by pid, so a test can tell a destroyed one from a fresh one."""
+        for child in executor._children:
+            child.ensure_spawned()
+        return {child.proc.pid: child.proc for child in executor._children if child.proc}
+
+    @staticmethod
+    def _assert_leased_child_destroyed(
+        executor: SubprocessPoolExecutor, before: dict[int, subprocess.Popen[bytes]]
+    ) -> None:
+        """The child that timed out is gone: no slot holds it and it has been killed.
+
+        The OTHER slot keeps its process, and the reaper respawns the emptied slot in
+        the background, so "every slot is empty" is not the invariant -- "the timed-out
+        process is in no slot and is dead" is.
+        """
+        still_held = {child.proc.pid for child in executor._children if child.proc}
+        destroyed = [proc for pid, proc in before.items() if pid not in still_held]
+        assert len(destroyed) == 1, (before.keys(), still_held)
+        assert destroyed[0].wait(timeout=10.0) is not None
+
     def test_a_silent_child_raises_timeout_at_the_callers_budget(
         self, tmp_path: pathlib.Path
     ) -> None:
@@ -410,7 +425,6 @@ class TestCallerBudget:
         finally:
             executor.shutdown(wait=False)
 
-    @posix_read_deadline_only
     def test_a_timed_out_child_is_destroyed_rather_than_reused(
         self, tmp_path: pathlib.Path
     ) -> None:
@@ -420,13 +434,56 @@ class TestCallerBudget:
             workers=2, script=self._hanging(tmp_path), ceiling_secs=600.0
         )
         try:
+            before = self._spawned(executor)
             with pytest.raises(TimeoutError):
                 executor.call_op(OP_REALPATH_SPELLINGS, b"/x", timeout=1.0)
-            assert all(child.proc is None for child in executor._children)
+            self._assert_leased_child_destroyed(executor, before)
         finally:
             executor.shutdown(wait=False)
 
-    @posix_read_deadline_only
+    def test_a_timed_out_child_is_reaped_off_the_calling_thread(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        # The deadline arm kills but does not ``wait``: a child wedged in an
+        # uninterruptible syscall dies only when the syscall returns, and waiting for
+        # that on the caller (the event loop, for the resolver) would add the wait's
+        # timeout to the bound the caller was promised.  The reaper collects it.
+        executor = SubprocessPoolExecutor(
+            workers=1, script=self._hanging(tmp_path), ceiling_secs=600.0
+        )
+        try:
+            before = self._spawned(executor)
+            (victim,) = before.values()
+            with pytest.raises(TimeoutError):
+                executor.call_op(OP_REALPATH_SPELLINGS, b"/x", timeout=0.5)
+            # Handed to the reaper (or already collected by a tick that raced us).
+            assert victim in executor._orphans or victim.poll() is not None
+            deadline = time.monotonic() + 10.0
+            while victim in executor._orphans and time.monotonic() < deadline:
+                time.sleep(0.1)
+            assert victim not in executor._orphans, "the reaper collects a killed child"
+            assert victim.returncode is not None
+        finally:
+            executor.shutdown(wait=False)
+
+    def test_an_emptied_slot_is_respawned_in_the_background(self, tmp_path: pathlib.Path) -> None:
+        # The fork/exec of a replacement interpreter is paid on the reaper thread, not
+        # inside the next caller's budget.
+        executor = SubprocessPoolExecutor(
+            workers=1, script=self._hanging(tmp_path), ceiling_secs=600.0
+        )
+        try:
+            before = self._spawned(executor)
+            with pytest.raises(TimeoutError):
+                executor.call_op(OP_REALPATH_SPELLINGS, b"/x", timeout=0.5)
+            deadline = time.monotonic() + 10.0
+            while executor._children[0].proc is None and time.monotonic() < deadline:
+                time.sleep(0.1)
+            fresh = executor._children[0].proc
+            assert fresh is not None and fresh.pid not in before, "a new child, not the killed one"
+        finally:
+            executor.shutdown(wait=False)
+
     def test_an_awaited_future_surfaces_the_budget_as_the_standard_timeout(
         self, tmp_path: pathlib.Path
     ) -> None:
@@ -439,6 +496,27 @@ class TestCallerBudget:
             future = executor.submit_op(OP_REALPATH_SPELLINGS, b"/x")
             with pytest.raises(TimeoutError):
                 future.result(timeout=1.0)
+        finally:
+            executor.shutdown(wait=False)
+
+    def test_where_select_cannot_watch_the_pipe_the_caller_is_still_bounded(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+    ) -> None:
+        # Windows: ``select`` takes only sockets, so the read cannot carry a deadline.
+        # The request then runs on a pool thread and the CALLER waits with the budget,
+        # so a wedge still surfaces as the timeout subclass (charged by the resolver)
+        # and the child is destroyed -- not a 20 s freeze followed by an EOF fault.
+        monkeypatch.setattr(executor_mod, "_CAN_SELECT_PIPES", False)
+        executor = SubprocessPoolExecutor(
+            workers=2, script=self._hanging(tmp_path), ceiling_secs=600.0
+        )
+        try:
+            started = time.monotonic()
+            before = self._spawned(executor)
+            with pytest.raises(SubprocessPoolTimeout):
+                executor.call_op(OP_REALPATH_SPELLINGS, b"/x", timeout=1.0)
+            assert time.monotonic() - started < 30.0
+            self._assert_leased_child_destroyed(executor, before)
         finally:
             executor.shutdown(wait=False)
 

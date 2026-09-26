@@ -76,6 +76,8 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Awaitable, Callable, TypeVar
 
+from kiro_crew.subprocess_pool import SubprocessPoolExecutor
+
 logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
@@ -272,53 +274,27 @@ _MAX_STT_WORKERS = 2
 # side of an ``ssh host 'cd /home/...'`` command that never existed locally).
 # The caller bounds its wait and REFUSES the path on timeout (fail-closed --
 # a lexical-only fallback would let a symlink into a credential store ride a
-# stall; only a resolution that FAILS with OSError keeps the lexical forms);
-# the wait does NOT free the worker, so this is its OWN pool: a wedged
-# resolution can only ever starve other path resolution, never the sweeps or
-# the default executor's DNS.
+# stall; only a resolution that FAILS with OSError keeps the lexical forms).
 #
-# Sized like ``mc-pathprobe`` below, and for the same reason: the number is a
-# ceiling on how many resolutions can be WEDGED at once, not on ordinary
-# throughput.  It is 2, justified by "healthy resolution is microseconds, so
-# sustained queueing means the filesystem is wedged".  That premise holds on the
-# host it was written for and does NOT hold on every host.  It fails for the ANCHOR
-# REBUILD, which performs ~130 ``realpath`` calls behind a cache whose expiry
-# tracks the rebuild's own measured cost
-# (``security.paths._home_targets_ttl``), so ordinary tool traffic re-pays it in
-# proportion to what it costs rather than every 100ms. And it fails under
-# sustained GIL contention, where a
-# rebuild costing 0.9ms on an idle interpreter was measured at 873ms with one
-# CPU-bound sibling thread and 4.0s with four -- none of which is filesystem
-# latency.  Where both hold at once the pool sits at its ``wedged >= 2`` floor in
-# steady state and refuses every path under every prefix while the mount is
-# perfectly healthy.  That is why the number is now an operator knob rather than a
-# constant: the premise is a property of the host, not of the code.
+# The work runs in CHILD INTERPRETERS (``kiro_crew.subprocess_pool``), not on
+# threads, and the caller's own thread does the round trip.  A thread pool could
+# bound the wait but not the cost: ``realpath`` is pure Python and reacquires the
+# GIL twice per path component, so beside CPU-bound sibling threads a rebuild
+# costing 0.9ms idle measured 873ms with one contender and 4.0s with four -- none
+# of it filesystem latency -- and a thread wedged in the kernel could never be
+# reclaimed, so each stall pinned a worker for good.  A child pays one GIL handoff
+# for the whole answer and is KILLED at the deadline, so a timed-out resolution
+# costs one respawn (~11ms), never a pinned worker.  Measurements and the
+# reasoning are in ``subprocess_pool/executor.py``.
 #
-# The cap still bites under plain concurrency (simultaneous cron fires submitting
-# at once); a queued resolution that never starts is cancelled on timeout and
-# refused for that call alone, charging no prefix cooldown (see
-# ``security.paths._run_resolution_bounded``).
-#
-# The DEFAULT stays 2, which is the right number for the premise it was written
-# for: a host where healthy resolution really is microseconds, where sustained
-# queueing is evidence of a wedged mount and a low ceiling is what makes the wedge
-# signal meaningful. Raising it for everyone would make ordinary contention
-# indistinguishable from a dead mount on exactly those hosts.
-#
-# An operator whose gateway resolves under sustained GIL contention -- many
-# concurrent sessions, an anchor rebuild whose own contended cost is what its cache
-# expiry is now a multiple of -- raises it for THEIR box instead. Read once at
-# import, because the pool
-# is a module-level singleton; an unparseable or out-of-range value keeps the
-# default rather than failing the import, since a gateway that will not start is a
-# worse outcome than one resolving with the shipped ceiling.
-#
-# The floor is 2, not 1, and the reason is the leave-one-free guard in
-# ``security.paths._run_resolution_bounded``: a prefix with a stall on record is
-# refused before submission once ``W - 1`` workers are pinned, so that its re-probe
-# cannot take the last free worker.  With ``W = 1`` that test is ``wedged >= 0``,
-# true with nothing pinned at all, and since only a resolution that RUNS can clear
-# a prefix's record, one transient stall would refuse that prefix until restart.
+# The knob sizes the number of children.  One sustains ~45k resolutions/s, so the
+# second buys wedge isolation rather than throughput: while one child is stuck on
+# a dead mount (until the deadline reclaims it), the other keeps serving every
+# healthy prefix.  The DEFAULT stays 2 and the floor is 2 for that reason; the
+# resolver is the caller that cannot accept a single child.  Read once at import,
+# because the pool is a module-level singleton; an unparseable or out-of-range
+# value keeps the default rather than failing the import, since a gateway that
+# will not start is a worse outcome than one resolving with the shipped size.
 _PATH_RESOLVE_WORKERS_ENV = "KIROCREW_PATH_RESOLVE_WORKERS"
 _PATH_RESOLVE_WORKERS_DEFAULT = 2
 _PATH_RESOLVE_WORKERS_MIN = 2
@@ -404,7 +380,7 @@ _image_pool: ThreadPoolExecutor | None = None
 _stt_pool: ThreadPoolExecutor | None = None
 _governance_pool: ThreadPoolExecutor | None = None
 _cron_gate_pool: ThreadPoolExecutor | None = None
-_path_resolve_pool: ThreadPoolExecutor | None = None
+_path_resolve_pool: SubprocessPoolExecutor | None = None
 _path_probe_pool: ThreadPoolExecutor | None = None
 _path_transfer_pool: ThreadPoolExecutor | None = None
 _crew_log_pool: ThreadPoolExecutor | None = None
@@ -601,27 +577,28 @@ def stt_executor() -> ThreadPoolExecutor:
     return _stt_pool
 
 
-def path_resolve_executor() -> ThreadPoolExecutor:
+def path_resolve_executor() -> SubprocessPoolExecutor:
     """Return the process-wide sensitive-path symlink-resolution pool, creating it on first use.
 
-    Threads are named ``mc-pathres``.  Serves ``security._candidate_forms``, whose
-    ``os.path.realpath`` / ``Path.resolve`` on an agent-supplied path token used
-    to run inline on the event loop and could block in the kernel for as long as
-    a stalled automount did.  The caller bounds its wait
-    (``security._PATH_RESOLVE_TIMEOUT_SECS``) and refuses the path on timeout
-    (fail-closed; only a resolution that FAILS keeps the lexical forms); the
-    wait releases the CALLER, never the thread, which is why this
-    work gets a pool it can only starve for itself -- on
-    :func:`subprocess_executor` a wedged ``lstat`` would consume one of the PTY
-    teardown workers, and on the default executor it would starve the loop's own
-    DNS resolution.
+    A :class:`SubprocessPoolExecutor` whose children run
+    ``security/_child_realpath.py``; its fallback threads are named ``mc-pathres``.
+    Serves ``security._candidate_forms`` and the anchor rebuild, whose
+    ``os.path.realpath`` / ``Path.resolve`` would otherwise run on the event loop
+    and block in the kernel for as long as a stalled automount did, or on a thread
+    pool whose GIL handoffs are the budget's real cost under load.  The caller
+    reaches a child with ``call_op`` from its OWN thread and bounds the
+    wait (``security._PATH_RESOLVE_TIMEOUT_SECS``); a child that misses the
+    deadline is killed and respawned, and the path is refused (fail-closed; only a
+    resolution that FAILS keeps the lexical forms).  Its own pool rather than
+    :func:`subprocess_executor` so a wedged mount can only ever cost path
+    resolution, never PTY teardown or the loop's DNS.
     """
     global _path_resolve_pool
     if _path_resolve_pool is None:
         with _lock:
             if _path_resolve_pool is None:
-                _path_resolve_pool = ThreadPoolExecutor(
-                    max_workers=_MAX_PATH_RESOLVE_WORKERS,
+                _path_resolve_pool = SubprocessPoolExecutor(
+                    workers=_MAX_PATH_RESOLVE_WORKERS,
                     thread_name_prefix="mc-pathres",
                 )
                 atexit.register(shutdown_maintenance_executor)

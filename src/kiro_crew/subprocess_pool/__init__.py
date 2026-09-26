@@ -8,15 +8,19 @@ second pool at this base.
 from __future__ import annotations
 
 from kiro_crew.subprocess_pool.executor import (
+    OP_REALPATH_MANY,
     OP_REALPATH_SPELLINGS,
     SubprocessPoolExecutor,
+    SubprocessPoolTimeout,
     SubprocessPoolUnavailable,
     pack_strings,
     unpack_strings,
 )
 
 __all__ = [
+    "OP_REALPATH_MANY",
     "OP_REALPATH_SPELLINGS",
+    "SubprocessPoolTimeout",
     "SubprocessPoolUnavailable",
     "SubprocessPoolExecutor",
     "pack_strings",
