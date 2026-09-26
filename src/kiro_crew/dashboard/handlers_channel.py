@@ -14,6 +14,7 @@ from kiro_crew.channel import (
     ChannelManager,
     ListenMode,
     _shell_base_binary,
+    has_queued_work,
     run_channel_agent,
 )
 from kiro_crew.config.loader import config_path
@@ -116,6 +117,16 @@ async def _json_object(request: web.Request) -> dict:
             content_type="application/json",
         )
     return body
+
+
+def _closed_under_us(request: web.Request, ch) -> bool:
+    """Whether *ch* left the manager while this request waited for its lock.
+
+    A handler resolves the channel before taking `_log_lock`, so a close can win the lock,
+    pop the channel and delete its file in between. Mutating the detached object then calls
+    `_save()`, which writes the file back and `_load_all` restores a channel the user closed.
+    """
+    return _mgr(request).get(ch.id) is not ch
 
 
 async def _get_channel_body(request: web.Request):
@@ -288,7 +299,19 @@ async def api_channel_create(request: web.Request) -> web.Response:
 
 
 async def api_channel_close(request: web.Request) -> web.Response:
-    ok = _mgr(request).close(request.match_info["id"])
+    """Close a channel, waiting for any in-flight clear to finish first.
+
+    The close deletes the channel's file, while a clear-context holds `_log_lock` across an
+    awaited teardown and persists through `_save()` afterwards. Taking the same lock orders
+    the two, so the clear's write lands before the delete rather than the delete landing
+    first and the write recreating the file for `_load_all` to restore.
+    """
+    channel_id = request.match_info["id"]
+    ch = _mgr(request).get(channel_id)
+    if not ch:
+        return web.json_response({"ok": False})
+    async with ch._log_lock:
+        ok = _mgr(request).close(channel_id)
     return web.json_response({"ok": ok})
 
 
@@ -345,6 +368,10 @@ async def api_channel_post(request: web.Request) -> web.Response:
         msg_type="broadcast",
         thread_id=thread_id,
     )
+    if msg is None:
+        return web.json_response(
+            {"error": "channel was closed", "code": "channel_closed"}, status=404
+        )
     return web.json_response({"ok": True, "message": msg.to_dict()})
 
 
@@ -380,13 +407,18 @@ async def api_channel_add_agent(request: web.Request) -> web.Response:
             "approval must be a valid policy", "channel_agent_approval_invalid"
         )
 
-    agent = ch.add_agent(
-        role=role[:100],
-        agent_name=agent_name,
-        task=task,
-        is_orchestrator=is_orchestrator,
-        approval_policy=approval_policy,
-    )
+    async with ch._log_lock:
+        if _closed_under_us(request, ch):
+            return web.json_response(
+                {"error": "channel was closed", "code": "channel_closed"}, status=404
+            )
+        agent = ch.add_agent(
+            role=role[:100],
+            agent_name=agent_name,
+            task=task,
+            is_orchestrator=is_orchestrator,
+            approval_policy=approval_policy,
+        )
     if not agent:
         return web.json_response(
             {"error": "Agent limit reached. Dismiss an agent first."},
@@ -430,7 +462,12 @@ async def api_channel_dismiss_agent(request: web.Request) -> web.Response:
     ch = _mgr(request).get(request.match_info["id"])
     if not ch:
         return web.json_response({"error": "not found"}, status=404)
-    ok = ch.remove_agent(request.match_info["aid"])
+    async with ch._log_lock:
+        if _closed_under_us(request, ch):
+            return web.json_response(
+                {"error": "channel was closed", "code": "channel_closed"}, status=404
+            )
+        ok = ch.remove_agent(request.match_info["aid"])
     return web.json_response({"ok": ok})
 
 
@@ -558,32 +595,194 @@ async def api_channel_approve_agent(request: web.Request) -> web.Response:
 # ── Context Management ──
 
 
+#: Bound on the clear's own work while `_log_lock` is held, since `post` shares that lock. It
+#: does NOT bound the whole clear: the grace below is spent after this deadline expires.
+_CLEAR_DISCARD_TIMEOUT_SECS = 30.0
+
+#: How long a cancelled teardown gets to answer. Separate from the clear's own deadline: this
+#: one is spent only on the refusal path, and it is what makes a reported refusal true.
+_CANCEL_GRACE_SECS = 2.0
+
+
+async def _resumable(state, key: str, *, on_error: bool) -> bool:
+    """Whether a persisted resume SID survives for *key*, read OFF the event loop.
+
+    `resumable_sid` reaches `SessionMap.get`, which stats the transcript files and can rewrite
+    the map to prune a stale entry. That is store I/O, so it runs in a thread.
+
+    `on_error` is the caller's safe direction, and the two callers differ: as a PRESENCE probe
+    a True would credit a clear nobody confirmed, while as a REFUSAL probe a False would claim
+    one. Neither default is safe for both, so each states its own.
+    """
+    try:
+        return bool(await asyncio.to_thread(state.sessions.resumable_sid, key))
+    except Exception:
+        return on_error
+
+
+async def _note_reset(state, agent, cleared: list, busy: list, deadline: float) -> None:
+    """Reset one member's session and record it as cleared or refused.
+
+    A channel member holds its lifecycle lease across its whole listening life, so refusing on
+    the lease alone would refuse every clear forever; `refuse_only_on_active_turn=True` narrows
+    it to a declared lifecycle turn. A member holding an acknowledged-but-undequeued message
+    declares no turn yet, so it is refused ahead of everything below or the wipe erases a
+    prompt it still runs. A key with nothing registered takes the teardown path and answers
+    True, so presence is probed separately and an absent session is NOT reported as cleared.
+
+    Only a LIVE member can be refused. A member in a terminal state holds any message that
+    queued during its last turn for good, because `Channel.post` skips it and nothing else
+    drains its inbox, so probing the queue alone refuses that member's clear on every later
+    request -- and the wedge notice tells the user to clear its context to recover.
+
+    A REPORTED REFUSAL MUST BE TRUE, so the deadline path cancels rather than leaving the
+    shielded teardown running: the discard pops the session and clears the SID before the slow
+    `provider.shutdown()`, so a member whose wait expires before its own pop would be reported
+    busy while the surviving task discards the session the API said it kept. The registry is
+    therefore read AFTER the teardown settles.
+    """
+    label = agent.role or agent.id
+    if agent.state not in ("done", "failed") and (
+        # The STATE too, not the queue alone: a dequeued message leaves the queue empty while
+        # the turn is only declared later, and the wipe in that window is unrecoverable.
+        has_queued_work(agent)
+        or agent.state == "working"
+    ):
+        busy.append(label)
+        return
+    # `reset` keeps the persisted resume SID, so an idle or expired session reloads the very
+    # conversation this endpoint reports cleared. `discard_conversation` drops it.
+    # BOTH probes: `has_session` sees only a LIVE session, and the discard also drops the
+    # persisted resume SID, so a restored member's clear would be reported as nothing.
+    had_session = bool(state.sessions.has_session(agent.session_key)) or await _resumable(
+        state, agent.session_key, on_error=False
+    )
+    _teardown = asyncio.ensure_future(
+        state.sessions.discard_conversation(
+            agent.session_key, skip_if_busy=True, refuse_only_on_active_turn=True
+        )
+    )
+    try:
+        discarded = await asyncio.wait_for(
+            asyncio.shield(_teardown),
+            timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
+        )
+    except (Exception, asyncio.CancelledError) as exc:
+        if isinstance(exc, asyncio.CancelledError) and not _teardown.done():
+            # This request is being cancelled, not the teardown: stay out of its way.
+            raise
+        if not isinstance(exc, asyncio.TimeoutError):
+            # The SID is already cleared by the time a shutdown can raise, so letting it out
+            # answers 500 for a destructive request that partly succeeded. Reconcile instead.
+            logger.warning(
+                "Clear for %s: teardown raised %s; reconciling from the registry",
+                agent.session_key,
+                type(exc).__name__,
+            )
+            live = bool(state.sessions.has_session(agent.session_key))
+            if live or await _resumable(state, agent.session_key, on_error=True):
+                busy.append(label)
+            elif had_session:
+                cleared.append(label)
+            return
+        # The shield keeps the teardown alive past the deadline, so a refusal answered now
+        # would be contradicted by it -- see this function's docstring.
+        _teardown.cancel()
+        # OBSERVE, never cancel a second time: `wait_for` cancels what it waits on, and that
+        # lands inside the teardown's own `finally`, skipping the runtime release it owes.
+        done, _still_running = await asyncio.wait({_teardown}, timeout=_CANCEL_GRACE_SECS)
+        # Empty means an uncancellable shutdown. Releasing the lock matters more than waiting
+        # it out -- `post` is behind it -- so the answer is decided below without it.
+        settled = bool(done)
+        # Read AFTER it settled: with nothing still running, this is the final state.
+        try:
+            still_registered = bool(state.sessions.has_session(agent.session_key))
+        except Exception:
+            # Unreadable registry: refuse rather than claim a clear nothing confirmed.
+            still_registered = True
+        if settled and (
+            still_registered or await _resumable(state, agent.session_key, on_error=True)
+        ):
+            # A TRUE refusal: nothing was discarded. The SID counts as well as the registry,
+            # cleared LATE, so a cancellation before it leaves a "cleared" member resumable.
+            busy.append(label)
+            return
+        if not settled:
+            # Cannot promise either outcome, so it reports the one that cannot lose a
+            # conversation: a false refusal hides a context being destroyed.
+            logger.warning(
+                "Clear for %s: teardown did not answer cancellation within %.1fs; reporting "
+                "cleared because a refusal cannot be guaranteed once it may still commit",
+                agent.session_key,
+                _CANCEL_GRACE_SECS,
+            )
+            if had_session:
+                cleared.append(label)
+            return
+        # The context IS gone, so reporting a refusal would tell the user their history
+        # survived while the next turn starts empty. Slowness is logged, not reported as one.
+        logger.warning(
+            "Clear for %s: provider shutdown still running when the clear's %.0fs deadline "
+            "expired; the conversation was already discarded, so it is reported as done",
+            agent.session_key,
+            _CLEAR_DISCARD_TIMEOUT_SECS,
+        )
+        if had_session:
+            cleared.append(label)
+        return
+    if discarded:
+        # Only a session that EXISTED can have been cleared. An absent one had no context, so
+        # naming it cleared would credit this endpoint with work it did not do.
+        if had_session:
+            cleared.append(label)
+    else:
+        busy.append(label)
+
+
 async def api_channel_clear_context(request: web.Request) -> web.Response:
     """Clear LLM context for one or all agents in a channel.
 
-    Resets agent sessions (via SessionManager.reset) while preserving all
-    channel configuration. Agents get a fresh context on their next message.
+    Discards agent conversations (via SessionManager.discard_conversation) while preserving
+    all channel configuration. `reset` would keep the persisted resume SID, so the very
+    conversation this endpoint reports cleared would reload; the discard drops it. Agents get
+    a fresh context on their next message.
 
     Body: {"scope": "all"} or {"scope": "agent", "agent_id": "<id>"}
 
     Scope semantics:
-      * scope=all   — resets every agent's LLM session AND wipes the channel's
-                      shared message buffer + exchange counts. Persisted via _save().
-      * scope=agent — resets ONLY the named agent's LLM session. The channel's
+      * scope=all   -- discards every agent's LLM session AND wipes the channel's
+                      shared message buffer + exchange counts, but ONLY when every
+                      member was idle. A PARTIAL clear leaves the shared buffer
+                      intact, because a busy member keeps the LLM context that
+                      references it. Persisted via _save().
+      * scope=agent -- discards ONLY the named agent's LLM session. The channel's
                       shared message history and exchange counts are preserved,
                       so the cleared agent will still see prior messages on its
                       next turn. To reset shared history use scope=all.
 
-    Concurrency: this handler does not hold a per-channel lock. Sibling channel
-    mutation handlers (api_channel_close, api_channel_dismiss_agent, api_channel_post)
-    follow the same pattern and rely on the manager's serialized access. A concurrent
-    api_channel_post during scope=all clear may produce a message that gets clobbered
-    by the subsequent ``ch.messages.clear()``; this is consistent with the existing
-    codebase pattern for channel mutations.
+    Refusal contract: a member with a declared lifecycle turn in flight is refused rather
+    than destroyed. Any refusal, total or partial, answers 409 with code "turn_in_flight"
+    and names the refused members in `error`, which the dashboard renders verbatim, so a
+    caller that only branches on the status still reports the refusal. The total refusal is
+    answered before the buffer wipe and the partial path skips that wipe, so no response
+    reports shared state as kept after destroying it. Only a fully clean clear answers 200
+    and broadcasts channel_context_cleared.
 
-    Pending tool approvals: any in-flight tool-approval futures held by the agent
-    are not cancelled here — they are owned by the agent task spawned by
-    run_channel_agent and will resolve naturally (rejected on session reset).
+    Concurrency: the whole clear runs under the channel's `_log_lock`, the same lock
+    `Channel.post` holds across its append, delivery and `_save()`, so a post concurrent with
+    a scope=all clear is safe from ``ch.messages.clear()``: it either precedes the clear or
+    refuses the member it targets. Each member's discard is bounded by
+    _CLEAR_DISCARD_TIMEOUT_SECS and a cancelled teardown gets _CANCEL_GRACE_SECS on top, but
+    neither is a bound on the lock hold: the grace is spent per member, and the wipe's
+    synchronous `_save()` still holds the lock. The grace wait itself RETURNS at its deadline,
+    but the teardown it was watching may still be running when it does. So the constants bound
+    the discard waits only: the wipe's `_save()` is unbounded, so a waiting post has no
+    guaranteed ceiling. Membership and lifetime changes take the same lock, so `add_agent`,
+    `remove_agent` and a channel close cannot land mid-clear.
+
+    Pending tool approvals: an in-flight tool-approval future keeps its member `working`, so
+    that member is REFUSED rather than cleared. The future is not cancelled here either way --
+    it is owned by the agent task spawned by run_channel_agent.
     """
     ch = _mgr(request).get(request.match_info["id"])
     if not ch:
@@ -623,6 +822,9 @@ async def api_channel_clear_context(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid scope"}, status=400)
 
     cleared: list[str] = []
+    # A clear-context click is USER-COMMANDED, so a refused reset is reported rather than
+    # swallowed -- declining is right, but pretending it cleared is not.
+    busy: list[str] = []
 
     if scope == "agent":
         if not agent_id:
@@ -635,49 +837,112 @@ async def api_channel_clear_context(request: web.Request) -> web.Response:
             )
             return web.json_response({"error": "agent_id required"}, status=400)
         agent = ch.members.get(agent_id)
-        if not agent:
+    # The whole clear runs under the channel's log lock: the resets below AWAIT, so a post
+    # cannot reach the inbox mid-clear and one already there refuses its member.
+    async with ch._log_lock:
+        if _closed_under_us(request, ch):
+            # Every other exit of this handler writes a row; this one refuses a destructive
+            # request, so it owes one too.
             sel().log_api_access(
                 caller="dashboard",
                 operation="channel.clear_context",
                 outcome="denied",
                 source="dashboard",
-                resources=f"{ch.id}:{agent_id}",
+                resources=f"{ch.id}:{scope}:channel_closed",
             )
-            return web.json_response({"error": "agent not found"}, status=404)
-        if agent.session_key:
-            # ``ends_conversation``: the user asked this agent to forget the
-            # conversation, so its sub-agent runs have nothing left to report into. The
-            # default is the recycle, which is what the wedged-session and watchdog
-            # resets in `channel.py` want; this route is the opposite intent.
-            await state.sessions.reset(agent.session_key, ends_conversation=True)
-            cleared.append(agent.role or agent.id)
-    else:
-        for agent in ch.members.values():
+            return web.json_response(
+                {"error": "channel was closed", "code": "channel_closed"}, status=404
+            )
+        # ONE deadline for the whole clear, not one per member: `post` waits on this lock, so
+        # an N-member channel with a per-member bound stalls every message for up to N x 30s.
+        deadline = asyncio.get_running_loop().time() + _CLEAR_DISCARD_TIMEOUT_SECS
+        if scope == "agent":
+            if not agent:
+                sel().log_api_access(
+                    caller="dashboard",
+                    operation="channel.clear_context",
+                    outcome="denied",
+                    source="dashboard",
+                    resources=f"{ch.id}:{agent_id}",
+                )
+                return web.json_response({"error": "agent not found"}, status=404)
             if agent.session_key:
-                await state.sessions.reset(agent.session_key, ends_conversation=True)
-                cleared.append(agent.role or agent.id)
-        ch.messages.clear()
-        ch._msg_index.clear()
-        ch.exchange_counts.clear()
-        ch._save()
+                await _note_reset(state, agent, cleared, busy, deadline)
+        else:
+            # A SNAPSHOT: the body awaits, and a mutation mid-iteration raises RuntimeError
+            # after some members are already discarded.
+            for agent in list(ch.members.values()):
+                if agent.session_key:
+                    await _note_reset(state, agent, cleared, busy, deadline)
 
+        # BEFORE the buffer wipe below: that is shared state `_save()` persists, so a 409
+        # answered after it destroys the log this response reports as untouched.
+        if busy and not cleared:
+            sel().log_api_access(
+                caller="dashboard",
+                operation="channel.clear_context",
+                outcome="denied",
+                source="dashboard",
+                resources=f"{ch.id}:{scope}:busy={','.join(busy)}",
+            )
+            return web.json_response(
+                {
+                    "error": (
+                        "context not cleared: "
+                        + ", ".join(busy)
+                        + " had a turn in flight. Nothing was cleared -- retry when idle."
+                    ),
+                    "code": "turn_in_flight",
+                },
+                status=409,
+            )
+
+        # Gated on a FULLY clean clear: the log is shared, and a busy member keeps the LLM
+        # context that references it, so wiping it here would strand that member's replies.
+        cleared_shared_log = scope != "agent" and not busy
+        if cleared_shared_log:
+            ch.messages.clear()
+            ch._msg_index.clear()
+            ch.exchange_counts.clear()
+            ch._save()
+
+    # `partial` is its own outcome: a 409-answered request audited as "allowed" reads as a
+    # clean clear, and the refused roles then appear in no row on any path.
     sel().log_api_access(
         caller="dashboard",
         operation="channel.clear_context",
-        outcome="allowed",
+        outcome="partial" if busy else "allowed",
         source="dashboard",
-        resources=f"{ch.id}:{scope}:{','.join(cleared)}",
+        resources=(
+            f"{ch.id}:{scope}:{','.join(cleared)}" + (f":busy={','.join(busy)}" if busy else "")
+        ),
     )
 
-    # Notify other clients (multi-tab UX) so their stale message buffers refresh.
-    ch._broadcast(
-        "channel_context_cleared",
-        {
-            "channel_id": ch.id,
-            "scope": scope,
-            "agent_id": agent_id if scope == "agent" else None,
-            "cleared": cleared,
-        },
-    )
+    # Only when the shared log actually emptied. The listener REPLACES its retained transcript
+    # with an empty list, so announcing a partial clear wipes the log this request just kept.
+    if cleared_shared_log:
+        # Carries what the listener reads and nothing else: the gate above forces `scope` to
+        # "all", so a per-agent id, the cleared roles and the busy roles are all dead here.
+        ch._broadcast(
+            "channel_context_cleared",
+            {
+                "channel_id": ch.id,
+                "scope": scope,
+            },
+        )
 
-    return web.json_response({"ok": True, "cleared": cleared})
+    if busy:
+        return web.json_response(
+            {
+                "error": (
+                    "context not cleared for "
+                    + ", ".join(busy)
+                    + ": a turn was in flight. Cleared "
+                    + ", ".join(cleared)
+                    + "; the shared message log was kept. Retry when idle."
+                ),
+                "code": "turn_in_flight",
+            },
+            status=409,
+        )
+    return web.json_response({"ok": True, "cleared": cleared}, status=200)

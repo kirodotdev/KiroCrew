@@ -7375,8 +7375,6 @@ class TestParentEndCancelsItsChildren:
                 found.add(rel)
 
         assert found == {
-            # The user asked the agent to forget the conversation.
-            "dashboard/handlers_channel.py",
             # A cancelled cron job's conversation is over.
             "cron.py",
             # Cancel cleanup ends every step conversation of the run.

@@ -2027,10 +2027,13 @@ those callers are:
 
 | caller | why it ends the conversation |
 |---|---|
-| `dashboard/handlers_channel.py` — `api_channel_clear_context` | the user asked the agent to forget the conversation (`scope=all` also wipes the channel's shared buffer) |
 | `cron.py` — `cancel` / `_force_reap` | the job is cancelled or reaped, so its conversation is over |
 | `taskrunner.py` — `_cleanup_run_sessions` | cancel cleanup ends every step conversation of the run |
 | `workflows/agent_pool.py` — `reset` | the pool STARTS A NEW conversation on a pooled key |
+
+`api_channel_clear_context` is deliberately absent: it ends each member's conversation
+through `discard_conversation`, which cancels that key's children and releases its
+companion runtime itself, so it needs no flag on `reset` to avoid resurrecting them.
 
 The default is the recycle because that is what the overwhelming majority of `reset`'s ~46
 callers are, and the two mistakes do not cost the same — but a MISSED flag costs more than an
