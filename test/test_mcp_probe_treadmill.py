@@ -45,6 +45,16 @@ def _request(state) -> object:
         def __init__(self, app):
             super().__init__(user="local-app", app="")
             self.app = app
+            self._claims = {"user": "local-app", "app": ""}
+
+        def get(self, key, default=None):
+            return self._claims.get(key, default)
+
+        def __contains__(self, key):
+            return key in self._claims
+
+        def __getitem__(self, key):
+            return self._claims[key]
 
     app = _App()
     app["state"] = state

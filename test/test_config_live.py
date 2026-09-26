@@ -1820,13 +1820,15 @@ class TestRestartRequiredOverHttp:
     @staticmethod
     def _app():
         from aiohttp import web
+        from dashboard_owner_helpers import as_owner
 
         from kiro_crew.dashboard import handlers
 
         app = web.Application()
         app.router.add_put("/api/config/kirocrew", handlers.api_kirocrew_config)
         app.router.add_patch("/api/config/kirocrew", handlers.api_kirocrew_config_patch)
-        return app
+        # Both doors are owner-gated, so the restart hint is only reached as owner.
+        return as_owner(app)
 
     @pytest.fixture
     def client_ctx(self, cfg_file: Path):
