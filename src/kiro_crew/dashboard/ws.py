@@ -7,7 +7,7 @@ import json
 import logging
 import sys
 import time
-from typing import Any
+from typing import Any, Callable
 
 from aiohttp import WSCloseCode, WSMsgType, web
 
@@ -16,6 +16,8 @@ from kiro_crew import shutdown_event
 from kiro_crew.dashboard.chat_utils import effective_session_key, subagent_event_slot
 from kiro_crew.dashboard.origin import check_origin
 from kiro_crew.dashboard.state import (
+    PERSISTED_SUBAGENT_REPLAY_KEEP,
+    PERSISTED_SUBAGENT_REPLAY_MAX_AGE_SECS,
     DashboardState,
     _safe_folder_tree,
     _slots_serialization_note,
@@ -28,9 +30,13 @@ from kiro_crew.dashboard.ws_event_scope import (
     filter_slots_for_app,
     global_event_declared,
     load_declared_events_for_connect,
+    persisted_precap_denial_reason,
+    persisted_precap_readings,
+    persisted_replay_denial_reason,
     slots_envelope_extras,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.subagent_persistence import PanelRecords, read_panel_records
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +90,37 @@ def _subagent_replay_has_owner(frame: object) -> bool:
         return False
     slot = data.get("slot")
     return isinstance(slot, str) and bool(slot.strip())
+
+
+def build_persisted_subagent_frame(record: dict, *, redact: Callable[[str], str]) -> dict:
+    """Build the ``subagent_done`` replay frame for one persisted run record.
+
+    Separate from the reconnect handler for the same reason
+    :func:`build_subagent_snapshot` is: the handler around it needs a live
+    aiohttp WebSocket, so a field that goes missing in here is hard to catch
+    from the outside.
+
+    The caller's own redactor is passed in rather than imported, so these frames
+    carry exactly the treatment the live frames beside them get.
+    """
+    error = str(record.get("error") or "")
+    return {
+        "type": "subagent_done",
+        "data": {
+            "id": str(record.get("id") or ""),
+            # Same mapping the live frames use; a raw prefix-strip tags a card
+            # with a slot no tab reads.
+            "slot": subagent_event_slot(str(record.get("parent_session") or "")),
+            "elapsed": float(record.get("elapsed") or 0.0),
+            "error": redact(error) if error else None,
+            # The tombstone records the run's own outcome, so a user stop stays a
+            # stop here rather than being flattened into a failure.
+            "stopped": bool(record.get("stopped")),
+            "outcome": str(record.get("outcome") or ""),
+            "task": redact(str(record.get("task") or "")),
+            "agent": redact(str(record.get("agent") or "")),
+        },
+    }
 
 
 def build_subagent_snapshot(a: Any, *, now: float | None = None) -> dict:
@@ -1031,6 +1068,114 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                                     )
                                 except Exception:
                                     pass
+                        # Durable rebuild source. Every frame above comes from
+                        # gateway memory, so a replacement process has none to
+                        # replay and the tab stays empty until something new
+                        # spawns. The persisted run folders answer for the runs
+                        # this process never tracked. Ids already collected are
+                        # excluded, so a live frame is never displaced by a disk
+                        # record, and the disk frames join THIS list rather than
+                        # a parallel send: the owner check, the per-socket scope
+                        # gate and the batch packaging below then apply to them
+                        # on exactly the same terms.
+                        try:
+                            _seen = {
+                                str(_f["data"]["id"])
+                                for _f in _replay
+                                if isinstance(_f.get("data"), dict) and _f["data"].get("id")
+                            }
+
+                            # Slot ownership is read on the LOOP, twice, and never
+                            # from the worker thread. Once here as a snapshot, so
+                            # the row cap is sized over the records this socket may
+                            # actually see; then again after the thread returns,
+                            # which is the authoritative check. A slot's owner can
+                            # flip while the scan runs -- keys are caller-supplied
+                            # and not app-namespaced, so another app can reclaim
+                            # one -- and a decision taken off-loop would be read
+                            # from state this socket does not describe.
+                            # Ownership and visibility are two INDEPENDENT live
+                            # bounds, and both belong before the cap: a record
+                            # this socket may not see, or whose run another app
+                            # owns, would otherwise spend a slot its own visible
+                            # runs need, and the cut count would be computed over
+                            # records that were never this socket's to receive.
+                            # Taken together on the loop, at one instant.
+                            _owner_now, _visible_now = persisted_precap_readings(
+                                state,
+                                ws_app,
+                                ws.get("_allowed_events", frozenset()),
+                                dashboard_user=bool(ws.get("_is_dashboard_user", False)),
+                            )
+
+                            def _admit_persisted(_rec: dict) -> bool:
+                                """Both pre-cap bounds, sizing the cap.
+
+                                Withholding is itself the permission decision, so
+                                it audits under the reason it had. The records
+                                that survive are decided again on the loop, and
+                                the two sets are disjoint, so nothing is audited
+                                twice.
+                                """
+                                _reason = persisted_precap_denial_reason(
+                                    _owner_now,
+                                    _visible_now,
+                                    subagent_event_slot(str(_rec.get("parent_session") or "")),
+                                    _rec,
+                                )
+                                if _reason:
+                                    _audit_deny(ws_app or "<dashboard>", "subagent_done", _reason)
+                                    return False
+                                return True
+
+                            _persisted = await asyncio.to_thread(
+                                read_panel_records,
+                                keep=PERSISTED_SUBAGENT_REPLAY_KEEP,
+                                max_age_secs=PERSISTED_SUBAGENT_REPLAY_MAX_AGE_SECS,
+                                exclude_ids=_seen,
+                                admit=_admit_persisted,
+                            )
+                        except Exception:
+                            logger.debug("Persisted subagent replay failed", exc_info=True)
+                            _persisted = PanelRecords([], 0, False)
+                        _overflow = _persisted.overflow
+                        if _overflow or _persisted.overflow_is_lower_bound:
+                            # Said out loud once per rebuild, to the operator
+                            # rather than the client: a cut tail otherwise reads
+                            # as a population that never held those runs. The
+                            # WARNING carries the count and is the whole report:
+                            # a truncation refuses nobody, so it is not a
+                            # permission decision and stays out of the SEL deny
+                            # stream, where an operator has to be able to see the
+                            # ownership refusals. No client reads a count it
+                            # cannot act on, so it stays off the wire too.
+                            logger.warning(
+                                "subagent replay truncated: %s%d eligible persisted run(s) "
+                                "past the %d cap%s",
+                                "at least " if _persisted.overflow_is_lower_bound else "",
+                                _overflow,
+                                PERSISTED_SUBAGENT_REPLAY_KEEP,
+                                (
+                                    " (scan window saturated, so older admissible runs "
+                                    "may not have been inspected)"
+                                    if _persisted.overflow_is_lower_bound
+                                    else ""
+                                ),
+                            )
+                        for _rec in _persisted.records:
+                            try:
+                                # The authoritative gate, on the loop, against
+                                # state as it is NOW rather than as the snapshot
+                                # found it. A record the snapshot admitted and
+                                # this rejects had its slot reclaimed mid-scan.
+                                _slot = subagent_event_slot(str(_rec.get("parent_session") or ""))
+                                _why = persisted_replay_denial_reason(state, _slot, _rec)
+                                if _why:
+                                    _audit_deny(ws_app or "<dashboard>", "subagent_done", _why)
+                                    continue
+                                _replay.append(build_persisted_subagent_frame(_rec, redact=_r))
+                            except Exception:
+                                pass
                         # Per-slot scope gate on the reconnect replay. The
                         # broadcast chokepoint covers live events, but this
                         # replay writes to the socket directly, so it must
@@ -1062,7 +1207,10 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                                 # and cost the app its whole replay, so keep
                                 # this send and the per-item filter together.
                                 await ws.send_json(
-                                    {"type": "subagent_snapshot_batch", "data": {"items": _replay}}
+                                    {
+                                        "type": "subagent_snapshot_batch",
+                                        "data": {"items": _replay},
+                                    }
                                 )
                             else:
                                 for _frame in _replay:

@@ -162,7 +162,9 @@ from kiro_crew.subagent_persistence import (
     mark_delivered,
     prune_stale_tombstones,
     read_state,
+    record_panel_dismissal,
     record_slow_command,
+    settle_delivered_batch,
     update_state,
     write_result_chunk,
     write_tombstone,
@@ -3649,6 +3651,13 @@ class SubagentManager:
                 self.discard_report_failures(info.parent_session_key, owner)
         self._agents.pop(agent_id, None)
         self._tasks.pop(agent_id, None)
+        # The pop is only half of a dismissal. The panel's durable half reads run
+        # folders, so without a record of its own the next rebuild found this
+        # run's folder and sent the card again -- the dismissal lasted exactly as
+        # long as the process. Recorded here rather than in the route so the two
+        # halves cannot come apart, and OFF the loop, because the record is a
+        # synchronous file write and this is a coroutine.
+        await asyncio.to_thread(record_panel_dismissal, agent_id)
         return "delivered"
 
     def _mint_agent_id(self) -> str:
@@ -4642,8 +4651,8 @@ class SubagentManager:
     async def settle_queued_delivery(self, agent_ids: list[str]) -> None:
         return await self._waves.settle_queued_delivery_impl(agent_ids)
 
-    def _settle_digest_holds(self, info: SubagentInfo) -> None:
-        return self._waves._settle_digest_holds_impl(info)
+    async def _settle_digest_holds(self, info: SubagentInfo) -> None:
+        return await self._waves._settle_digest_holds_impl(info)
 
     def get(self, agent_id: str) -> SubagentInfo | None:
         return self._run_events.get_impl(agent_id)
@@ -5100,6 +5109,7 @@ _COMPONENT_GLOBAL_BINDINGS = (
     redact_exfiltration_urls,
     run_in_embed_pool,
     sel,
+    settle_delivered_batch,
     single_completion_meta,
     stage_boundary_owner_for_run,
     subprocess_executor,

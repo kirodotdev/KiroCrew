@@ -763,6 +763,178 @@ def _slot_visible(
     return False
 
 
+def persisted_replay_denial_reason(state: Any, slot_key: str, record: dict) -> str:
+    """``""`` when a persisted run may be replayed into *slot_key*, else the reason.
+
+    Companion to :func:`_subagent_visible` below, and it lives here for that
+    reason: that gate answers "may this app receive subagent events for this
+    slot" from the slot's CURRENT owner, which is the right question for a live
+    run and the wrong one for a run read back off disk. Slot keys are
+    caller-supplied and are not namespaced by app, so the key an app's run was
+    recorded under can later be created by a DIFFERENT app -- and the gate would
+    then admit the old run to the new owner. The run's own recorded app is the
+    missing half of the decision, so it is compared here.
+
+    Two refusals, not one, because they mean different things and an operator
+    reads the reason: ``slot_missing`` is the same reason the live gate gives when
+    no slot answers the key, which on a lazily hydrated slot is ordinary rather
+    than adversarial; ``persisted_owner_mismatch`` is a real cross-owner refusal.
+    Collapsing them would file every cold-start reconnect as a security event and
+    dilute the stream the real one has to be visible in.
+
+    Equality both ways, and fail closed. A run no app owns carries ``""``, which
+    matches only a slot no app owns, so an app never receives a person's run and
+    a person never receives an app's. ``get_slot`` is deliberate over a raw
+    ``_slots`` read: it also answers ``None`` for a slot still under
+    construction, and an admission decision must not be made against a
+    not-yet-finalized session.
+    """
+    if not slot_key:
+        return "slot_missing"
+    getter = getattr(state, "get_slot", None)
+    if callable(getter):
+        slot = getter(slot_key)
+    else:
+        slot = getattr(state, "_slots", {}).get(slot_key)
+    if slot is None:
+        return "slot_missing"
+    if str(getattr(slot, "_app", "") or "") != str(record.get("app") or ""):
+        return "persisted_owner_mismatch"
+    return ""
+
+
+def slot_owner_snapshot(state: object) -> dict[str, str]:
+    """Every live slot's current owning app, as a plain mapping.
+
+    Taken on the EVENT LOOP so an off-loop scan can size its row cap over the
+    records a socket may actually see, without that scan reading live state from
+    a worker thread. It is a snapshot and nothing more: the decision to deliver a
+    record is taken again on the loop by ``persisted_replay_denial_reason``,
+    because a slot's owner can be reclaimed while the scan runs.
+    """
+    slots = dict(getattr(state, "_slots", {}) or {})
+    return {key: str(getattr(slot, "_app", "") or "") for key, slot in slots.items()}
+
+
+def persisted_snapshot_denial_reason(
+    snapshot: dict[str, str], slot_key: str, record: object
+) -> str:
+    """``""`` when a snapshot of slot owners would admit this record, else the reason.
+
+    The same answer shape as :func:`persisted_replay_denial_reason`, deliberately:
+    these are the two halves of ONE decision -- this one sizes the cap off-loop,
+    that one decides delivery on the loop -- and a bool here could not name which
+    refusal happened, so a caller would have to withhold the record silently.
+    Withholding IS the permission decision, so it carries the same two reasons the
+    authoritative half gives, and the same fail-closed default: a slot the
+    snapshot does not hold is refused rather than assumed absent-and-harmless.
+
+    Its answer governs only the cap: admitting a foreign record here would spend a
+    slot the caller's own runs need, and counting one would disclose how many
+    foreign runs exist.
+    """
+    if not slot_key or slot_key not in snapshot:
+        return "slot_missing"
+    getter = getattr(record, "get", None)
+    if not callable(getter):
+        return "slot_missing"
+    if snapshot[slot_key] != str(getter("app") or ""):
+        return "persisted_owner_mismatch"
+    return ""
+
+
+def visible_subagent_slot_keys(
+    state: Any,
+    app: str,
+    allowed_events: frozenset[str],
+    *,
+    dashboard_user: bool,
+) -> set[str]:
+    """Slot keys this client may receive subagent events for, as a plain set.
+
+    Taken on the EVENT LOOP for the same reason as :func:`slot_owner_snapshot`,
+    and for the same consumer: an off-loop scan needs to size its row cap over
+    the records this client may actually SEE, and visibility is a live-state
+    question. Without it the cap is spent on records the per-frame gate will drop
+    afterwards, so a burst of invisible newer runs hides the client's own older
+    visible ones -- and the cut count, computed over the wrong set, reports
+    nothing was lost.
+
+    Ownership and visibility are INDEPENDENT bounds and both are needed: a record
+    may name a slot this client owns yet carry an event the client never declared,
+    and it may be visible under a declaration while belonging to another app. The
+    authoritative per-frame gate still runs afterwards; this only decides the cap.
+
+    Safe to use BEFORE the cap even though the answer can move between the two
+    evaluations, because of which way it moves. ``app_events_revoked`` reports NOT
+    revoked on a cold cache and schedules the refresh, so the cold answer is the
+    OPEN one and warming can only narrow it -- pre-cap open then post-cap closed
+    costs a cap slot, which the authoritative gate then correctly reclaims. The
+    losing direction needs the opposite move, closed here and open there, which
+    takes an app being re-enabled mid-scan; that costs one run one replay and the
+    next reconnect carries it. A record whose slot is not live at all is not this
+    predicate's case: the ownership half answers ``slot_missing`` for it.
+    """
+    slots = dict(getattr(state, "_slots", {}) or {})
+    if dashboard_user:
+        # The dashboard user passes the per-frame gate unconditionally, so every
+        # live slot is visible and the cap is already sized over the right set.
+        return set(slots)
+    if not app:
+        return set()
+    return {
+        key
+        for key, slot in slots.items()
+        if _subagent_visible(slot, app, allowed_events, state)
+    }
+
+
+def persisted_precap_readings(
+    state: Any,
+    app: str,
+    allowed_events: frozenset[str],
+    *,
+    dashboard_user: bool,
+) -> tuple[dict[str, str], set[str]]:
+    """The two loop-taken readings :func:`persisted_precap_denial_reason` consumes.
+
+    Built here, as one named unit, so the pairing is a tested thing rather than two
+    inline calls at a call site no test can reach. The order matters to nobody but
+    the type checker; what matters is that BOTH are taken, from the same state, at
+    the same instant, before the off-loop scan starts.
+    """
+    return (
+        slot_owner_snapshot(state),
+        visible_subagent_slot_keys(state, app, allowed_events, dashboard_user=dashboard_user),
+    )
+
+
+def persisted_precap_denial_reason(
+    owners: dict[str, str],
+    visible_keys: set[str],
+    slot_key: str,
+    record: object,
+) -> str:
+    """``""`` when the pre-cap bounds admit this record, else the reason.
+
+    The WHOLE pre-cap decision, in one place, because it has two independent
+    halves and splitting them across a caller invites one of them to be forgotten
+    on the next read path: visibility answers whether this client may receive the
+    record at all, ownership answers whether the run belongs to the slot's present
+    owner. Both are live-state questions, so both arrive as loop-taken readings --
+    ``visible_subagent_slot_keys`` and ``slot_owner_snapshot`` -- and both decide
+    the cap only, with the authoritative per-frame gate still running afterwards.
+
+    Visibility is checked FIRST because it is the broader refusal: a record this
+    client cannot see is not its business whoever owns the slot, and reporting it
+    as an ownership mismatch would put a declaration gap into the stream an
+    operator reads for cross-app breaches.
+    """
+    if slot_key not in visible_keys:
+        return "persisted_not_visible"
+    return persisted_snapshot_denial_reason(owners, slot_key, record)
+
+
 def _subagent_visible(
     slot: _ChatSlot,
     app: str,

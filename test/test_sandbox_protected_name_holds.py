@@ -279,16 +279,22 @@ class TestLeafOnlyPopulationIsRecorded:
     #: home it protects (the two ``$HOME``-joined ``_CREW_HOME_PREFIXES`` plus
     #: the resolved ``config_dir()`` when it is a third place, as the relocated
     #: ``KIROCREW_HOME`` the conftest pins always is), so one new root-level
-    #: leaf is three entries in every tier. Two landed after the first
-    #: measurement, both at the data-home root, whose parent no stand-in can
+    #: leaf is three entries in every tier. Three landed after the first
+    #: measurement, all at the data-home root, whose parent no stand-in can
     #: hold, so leaf-only is the only hold available to them:
     #:
     #: * ``credential_redaction.json`` -- the owner's credential-redaction
     #:   switch, on the same read-only floor as ``file_delivery_consent.json``;
     #: * ``auth-store-staging`` -- the masked directory the two gateway auth
     #:   stores publish through, so the temp holding a full signing key or
-    #:   refresh-chain state is never listable from inside the namespace.
-    EXPECTED: dict[str, int] = {"standard": 241, "cc": 248, "strict": 249}
+    #:   refresh-chain state is never listable from inside the namespace;
+    #: * ``panel-dismissals`` -- the operator's subagent-panel dismissals. An
+    #:   owner decision about what the panel HIDES, so it sits at the root beside
+    #:   ``crew-panels`` and ``crew-teams`` rather than under ``trust/``, which
+    #:   stays sandbox read-write for SEL and would leave the record forgeable by
+    #:   a runtime-built path. Same hold as those two, and the same reason it can
+    #:   only be leaf-only.
+    EXPECTED: dict[str, int] = {"standard": 244, "cc": 251, "strict": 252}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

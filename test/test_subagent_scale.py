@@ -1621,7 +1621,7 @@ class TestWaveDigest:
         info = SubagentInfo(id="last", task="t")
         info._digest_settle_ids = ["h1", "h2"]
         with patch("kiro_crew.subagent.mark_delivered", side_effect=marked.append):
-            mgr._settle_digest_holds(info)
+            await mgr._settle_digest_holds(info)
         assert marked == ["h1", "h2"]
         assert info._digest_settle_ids == []  # idempotent re-entry safe
         # Structural guarantee: the settle call sits AFTER the awaited
@@ -1636,7 +1636,7 @@ class TestWaveDigest:
 
         src = inspect.getsource(TerminalCoordinator._report_terminal_impl)
         on_done_pos = src.index("await asyncio.wait_for(self._manager._on_done(info)")
-        settle_pos = src.index("self._manager._settle_digest_holds(info)")
+        settle_pos = src.index("await self._manager._settle_digest_holds(info)")
         assert settle_pos > on_done_pos
 
     @pytest.mark.asyncio

@@ -276,7 +276,7 @@ class TerminalCoordinator(ManagerComponent):
                 # _on_done returned without raising, so the wave digest (if this
                 # was the final member) has been handed off. Only NOW settle the
                 # held members' delivery tombstones.
-                self._manager._settle_digest_holds(info)
+                await self._manager._settle_digest_holds(info)
             # Digest-held wave members are NOT marked delivered here: their
             # result has not reached the parent yet (the gateway marks them when
             # the digest fires), so a restart mid-wave leaves them visible to
@@ -318,7 +318,11 @@ class TerminalCoordinator(ManagerComponent):
                 # "delivered" tombstone excludes it from orphan reconciliation;
                 # the reaper prunes it after agent.subagent_result_ttl_secs.
                 try:
-                    mark_delivered(info.id)
+                    # Off the loop: this writes a file and now also reads the
+                    # existing tombstone, so that the terminal outcome an earlier
+                    # write recorded is not erased by this one. The drained path
+                    # offloads the same call for the same reason.
+                    await asyncio.to_thread(mark_delivered, info.id)
                 except Exception:
                     logger.debug("Failed to mark subagent %s delivered", info.id, exc_info=True)
                 # Clean up workspace result file (agent-{id}.md in parent dir).
