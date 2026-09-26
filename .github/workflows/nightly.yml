@@ -667,3 +667,218 @@ jobs:
       channel: nightly
       version: ${{ needs.version.outputs.nightly_version }}
       write_feed: true
+
+  # ── Failure tracking issue ────────────────────────────────────────────
+  # A red nightly used to be visible only on the Actions page, which nobody
+  # reads at 06:00 UTC, so a broken nightly channel could stay broken for days.
+  # This job turns the run's verdict into ONE durable GitHub issue: opened on
+  # the first red run, refreshed with a comment on every further red run, and
+  # closed automatically by the next green run. Same shape as the tracking
+  # issue in main-ratchet-audit.yml (label-scoped query, hidden authorship
+  # marker, lowest-numbered issue is canonical, refused writes degrade to a
+  # ::notice::).
+  #
+  # `always()` so the verdict is rendered when a lane failed -- that is the
+  # whole point. Every other job is a `needs:` so this runs last and sees
+  # every result. `cancel-in-progress` on the concurrency group cancels THIS
+  # job along with the rest of a superseded run, so a cancelled older run
+  # never reports; the run that replaced it does.
+  #
+  # issues:write is scoped to this job alone; the workflow default stays
+  # contents:read. actions:read is for the Windows probe below.
+  report:
+    name: Open or close the nightly failure issue
+    needs:
+      - version
+      - dependency-vulnerability-gate
+      - platform-tests
+      - pod-scenarios
+      - build-wheel
+      - build-desktop
+      - build-windows
+      - publish-cli
+      - publish-linux-appimage-x64
+      - publish-linux-appimage-arm64
+      - publish-linux-deb-x64
+      - publish-linux-deb-arm64
+      - publish-linux-rpm-x64
+      - publish-linux-rpm-arm64
+      - publish-windows-x64
+      - publish-docker
+      - sign-and-notarize
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: ${{ always() }}
+    permissions:
+      contents: read
+      issues: write
+      actions: read
+    steps:
+      - name: Open, update, or close the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
+          RUN_ID: ${{ github.run_id }}
+          COMMIT_SHA: ${{ github.sha }}
+          NIGHTLY_VERSION: ${{ needs.version.outputs.nightly_version }}
+          # One env var per needed job. `needs.*.result` is
+          # success | failure | cancelled | skipped.
+          R_VERSION: ${{ needs.version.result }}
+          R_DEP_GATE: ${{ needs.dependency-vulnerability-gate.result }}
+          R_PLATFORM_TESTS: ${{ needs.platform-tests.result }}
+          R_POD_SCENARIOS: ${{ needs.pod-scenarios.result }}
+          R_BUILD_WHEEL: ${{ needs.build-wheel.result }}
+          R_BUILD_DESKTOP: ${{ needs.build-desktop.result }}
+          R_BUILD_WINDOWS: ${{ needs.build-windows.result }}
+          R_PUBLISH_CLI: ${{ needs.publish-cli.result }}
+          R_LINUX_APPIMAGE_X64: ${{ needs.publish-linux-appimage-x64.result }}
+          R_LINUX_APPIMAGE_ARM64: ${{ needs.publish-linux-appimage-arm64.result }}
+          R_LINUX_DEB_X64: ${{ needs.publish-linux-deb-x64.result }}
+          R_LINUX_DEB_ARM64: ${{ needs.publish-linux-deb-arm64.result }}
+          R_LINUX_RPM_X64: ${{ needs.publish-linux-rpm-x64.result }}
+          R_LINUX_RPM_ARM64: ${{ needs.publish-linux-rpm-arm64.result }}
+          R_PUBLISH_WINDOWS: ${{ needs.publish-windows-x64.result }}
+          R_PUBLISH_DOCKER: ${{ needs.publish-docker.result }}
+          R_SIGN_NOTARIZE: ${{ needs.sign-and-notarize.result }}
+        run: |
+          set -euo pipefail
+
+          RUN_URL="$SERVER_URL/$REPO/actions/runs/$RUN_ID"
+          # Hidden authorship marker: the label alone is not proof this job
+          # wrote an issue (anyone can add a label), and the reconciliation
+          # below comments on and CLOSES what it selects, so it must never
+          # select a human's issue.
+          MARKER="<!-- nightly-build-failure-tracking-issue -->"
+          LABEL="nightly-build-failure"
+          TITLE="Nightly build is failing"
+
+          # Anything other than an explicit `success` is a failed lane. A
+          # `cancelled` result (timeout-minutes firing) is an UNKNOWN verdict,
+          # not a green one, and must not close an open issue. A `skipped`
+          # publish lane is listed too: it tells the reader which channel
+          # artifacts did NOT ship, even though the root cause is the lane
+          # that reads `failure`.
+          FAILED=""
+          lane() {
+            # $1 = job id, $2 = result
+            if [ "$2" != "success" ]; then
+              FAILED="$(printf '%s\n- `%s`: **%s**' "$FAILED" "$1" "$2")"
+            fi
+          }
+          lane version "$R_VERSION"
+          lane dependency-vulnerability-gate "$R_DEP_GATE"
+          lane platform-tests "$R_PLATFORM_TESTS"
+          lane pod-scenarios "$R_POD_SCENARIOS"
+          lane build-wheel "$R_BUILD_WHEEL"
+          lane build-desktop "$R_BUILD_DESKTOP"
+          lane build-windows "$R_BUILD_WINDOWS"
+          lane publish-cli "$R_PUBLISH_CLI"
+          lane publish-linux-appimage-x64 "$R_LINUX_APPIMAGE_X64"
+          lane publish-linux-appimage-arm64 "$R_LINUX_APPIMAGE_ARM64"
+          lane publish-linux-deb-x64 "$R_LINUX_DEB_X64"
+          lane publish-linux-deb-arm64 "$R_LINUX_DEB_ARM64"
+          lane publish-linux-rpm-x64 "$R_LINUX_RPM_X64"
+          lane publish-linux-rpm-arm64 "$R_LINUX_RPM_ARM64"
+          lane publish-windows-x64 "$R_PUBLISH_WINDOWS"
+          lane publish-docker "$R_PUBLISH_DOCKER"
+          lane sign-and-notarize "$R_SIGN_NOTARIZE"
+
+          # build-windows runs with soft_fail, so its result is `success` even
+          # when the build failed and uploaded nothing (publish-windows then
+          # skips cleanly). Its result therefore says nothing; ask the Actions
+          # API whether the installer artifact exists instead, exactly as
+          # publish-windows.yml does. Only a CONFIRMED absence counts: an API
+          # error must not be laundered into a Windows failure, so a probe
+          # that cannot answer is reported as a notice and nothing more.
+          if [ "$R_BUILD_WINDOWS" = "success" ]; then
+            rc=0
+            names="$(gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/artifacts" \
+              --jq '.artifacts[].name' 2>&1)" || rc=$?
+            if [ "$rc" -ne 0 ]; then
+              echo "::notice::Could not list this run's artifacts to verify the Windows build (rc=$rc); skipping the Windows soft_fail probe. $names"
+            elif ! printf '%s\n' "$names" | grep -qx 'build-windows-x64'; then
+              FAILED="$(printf '%s\n- `build-windows`: **failure** (soft_fail kept the run green; no `build-windows-x64` artifact was uploaded)' "$FAILED")"
+            fi
+          fi
+
+          # Label-scoped query, marker-filtered locally. Do NOT search by the
+          # marker: the issue SEARCH index is eventually consistent, while
+          # `gh issue list --label --state open` reads the issues API directly.
+          # The label must exist first or both the list and the create below
+          # error for the wrong reason; --force makes "already exists" a no-op.
+          gh label create "$LABEL" --repo "$REPO" --force \
+            --color B60205 \
+            --description "Nightly Build: tracking issue for a failing nightly run (opened/closed automatically)" \
+            || echo "::notice::Could not ensure the $LABEL label (continuing); it may already exist or label writes may be refused."
+
+          # Every open issue this workflow owns, lowest number first. The
+          # single-flight concurrency group makes a double-create unlikely, but
+          # converge anyway: the lowest-numbered open issue is canonical and
+          # the rest are closed as duplicates.
+          OPEN="$(gh issue list --repo "$REPO" --state open --label "$LABEL" \
+            --json number,body 2>/dev/null \
+            | jq -r --arg marker "$MARKER" \
+              '[.[] | select((.body // "") | contains($marker))] | sort_by(.number) | .[].number' \
+            || true)"
+          EXISTING="$(printf '%s\n' "$OPEN" | head -n 1)"
+          for duplicate in $(printf '%s\n' "$OPEN" | tail -n +2); do
+            gh issue comment "$duplicate" --repo "$REPO" \
+              --body "Duplicate of #$EXISTING, this workflow's single tracking issue. Closing; the failure record lives there." \
+              || true
+            gh issue close "$duplicate" --repo "$REPO" --reason "not planned" || true
+            echo "::notice::Closed duplicate tracking issue #$duplicate (canonical is #$EXISTING)."
+          done
+
+          if [ -n "$FAILED" ]; then
+            if [ -n "$EXISTING" ]; then
+              COMMENT="$(printf 'Still failing at `%s` (nightly `%s`).%s\n\nRun: %s' \
+                "$COMMIT_SHA" "$NIGHTLY_VERSION" "$FAILED" "$RUN_URL")"
+              gh issue comment "$EXISTING" --repo "$REPO" --body "$COMMENT"
+              echo "::notice::Updated tracking issue #$EXISTING with the failed nightly at $COMMIT_SHA."
+              exit 1
+            fi
+
+            BODY="$(printf '%s\n\nThe nightly build failed on `main` at `%s` (nightly `%s`).\n\nLanes that did not succeed:%s\n\nRun: %s\n\nWhy this matters: the nightly channel is what `--channel nightly` installs and what nightly desktop clients auto-update from. Until this is fixed those users stay on the last good nightly and `main` has no published build. See `docs/build/release.md`.\n\nThis issue is maintained automatically by the Nightly Build workflow: each further red run adds a comment, and the next green run closes it.' \
+              "$MARKER" "$COMMIT_SHA" "$NIGHTLY_VERSION" "$FAILED" "$RUN_URL")"
+
+            # `gh issue create` is refused outright when a repository disables
+            # Actions issue writes for the GITHUB_TOKEN (forks, notably); treat
+            # ONLY that class of refusal as soft -- reported as a ::notice::
+            # carrying the failure -- so the reporter does not go red for a
+            # reason no maintainer can act on. Any OTHER failure is real and
+            # fails loud on its own exit code. Same remedy shape as
+            # main-ratchet-audit.yml.
+            rc=0
+            out="$(gh issue create --repo "$REPO" \
+              --title "$TITLE" \
+              --label "$LABEL" \
+              --label "area: ci" \
+              --label "channel: nightly" \
+              --body "$BODY" 2>&1)" || rc=$?
+            printf '%s\n' "$out"
+            if [ "$rc" -ne 0 ]; then
+              case "$out" in
+                *"not permitted"*|*"Resource not accessible by integration"*|*"issues are disabled"*|*"Issues has been disabled"*|*"could not add label"*|*"label"*"not found"*|*"not found"*"label"*)
+                  echo "::notice::Nightly build failed at $COMMIT_SHA but this workflow may not open issues (or add its labels) in this repository. Failed lanes:$FAILED  Run: $RUN_URL"
+                  exit 1
+                  ;;
+                *)
+                  exit "$rc"
+                  ;;
+              esac
+            fi
+            # An issue was created; the nightly still failed, so fail the run.
+            exit 1
+          fi
+
+          # Every lane green. Self-heal: close an open tracking issue.
+          if [ -n "$EXISTING" ]; then
+            COMMENT="$(printf 'Nightly is green again at `%s` (nightly `%s`). Closing.\n\nRun: %s' \
+              "$COMMIT_SHA" "$NIGHTLY_VERSION" "$RUN_URL")"
+            gh issue comment "$EXISTING" --repo "$REPO" --body "$COMMENT"
+            gh issue close "$EXISTING" --repo "$REPO" --reason completed
+            echo "::notice::Closed tracking issue #$EXISTING; nightly green at $COMMIT_SHA."
+          else
+            echo "Nightly green at $COMMIT_SHA; no tracking issue open."
+          fi

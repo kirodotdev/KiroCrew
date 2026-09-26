@@ -38,6 +38,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "nightly.yml"
 
@@ -327,3 +329,61 @@ def test_windows_soft_fail_expression_is_boolean_safe() -> None:
         "absent input then makes it non-boolean and GitHub rejects the workflow "
         "at startup. Compare explicitly (`== true`) or coerce with fromJSON."
     )
+
+
+class TestFailureIssueReporter:
+    """A red nightly must become a GitHub issue, not just a red Actions row.
+
+    The `report` job is the only thing that turns a nightly failure into
+    something a maintainer is notified about. Three properties keep it honest:
+    it must observe EVERY other job (or a lane can fail unreported), it must run
+    when a lane failed (or it never fires when it matters), and every job result
+    it depends on must actually be read (or a new lane is waited on but never
+    named in the issue).
+    """
+
+    @staticmethod
+    def _jobs() -> dict:
+        return yaml.safe_load(_workflow_text())["jobs"]
+
+    def test_reporter_needs_every_other_job(self) -> None:
+        jobs = self._jobs()
+        report = jobs["report"]
+        needs = report["needs"]
+        assert sorted(needs) == sorted(set(jobs) - {"report"}), (
+            "the failure reporter must be a `needs:` of every nightly job; a job "
+            "it does not wait on can fail without an issue being opened"
+        )
+
+    def test_reporter_runs_on_failure_and_never_publishes(self) -> None:
+        report = self._jobs()["report"]
+        # Without always() the job is skipped the moment a needed job fails --
+        # which is the one case it exists for.
+        assert "always()" in str(report["if"])
+        assert "uses" not in report, "the reporter is a plain job, not a publish lane"
+        assert "id-token" not in report["permissions"]
+
+    def test_every_needed_result_is_read_by_the_step(self) -> None:
+        report = self._jobs()["report"]
+        run_env = report["steps"][-1]["env"]
+        read = {
+            m.group(1)
+            for value in run_env.values()
+            for m in re.finditer(r"needs\.([A-Za-z0-9_-]+)\.result", str(value))
+        }
+        assert read == set(report["needs"]), (
+            "every job the reporter waits on must have its result read into the "
+            "step env, or that lane's failure is never named in the issue"
+        )
+        # ...and every env var carrying a result is fed to the lane list.
+        script = report["steps"][-1]["run"]
+        for name, value in run_env.items():
+            if ".result" in str(value):
+                assert f'"${name}"' in script, f"{name} is read but never reported"
+
+    def test_windows_soft_fail_is_covered_by_an_artifact_probe(self) -> None:
+        """build-windows runs with soft_fail, so its result is `success` even
+        when it built nothing; only the artifact tells the truth."""
+        script = self._jobs()["report"]["steps"][-1]["run"]
+        assert "actions/runs/$RUN_ID/artifacts" in script
+        assert "build-windows-x64" in script

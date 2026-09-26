@@ -144,6 +144,15 @@ class TestNightlyPermissions:
             "contents": "read",
             "attestations": "write",
         }
+        # The failure reporter opens/closes the tracking issue (issues:write)
+        # and probes this run's artifacts for the soft_fail Windows build
+        # (actions:read). It holds no OIDC identity and never contents:write:
+        # it ships nothing and must not be able to.
+        assert _permission_block(lines, "  report:") == {
+            "contents": "read",
+            "issues": "write",
+            "actions": "read",
+        }
 
 
 class TestReleasePermissions:

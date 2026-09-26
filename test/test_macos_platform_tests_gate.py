@@ -187,6 +187,10 @@ class TestARedMacSuiteHoldsPublicationAndNeverABuild:
                 "publish-linux-rpm-x64",
                 "publish-windows-x64",
                 "sign-and-notarize",
+                # Not a shipper: the failure-issue reporter needs EVERY job so it
+                # runs last and can name the lane that failed. It publishes
+                # nothing, so it cannot widen the outage the partition guards.
+                "report",
             ]
         )
         # No build job may grow this `needs:`. Gating the builds is what blocked the
