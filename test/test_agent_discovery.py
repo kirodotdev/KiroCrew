@@ -152,6 +152,155 @@ class TestProjectScopeDiscovery:
         (_project_agents_dir(proj) / "a.json").write_text(json.dumps({"name": "a"}))
         assert project_agent_files(str(proj)) == []
 
+    def test_list_agents_sensitive_project_dir_denied_before_any_stat(
+        self, fake_home, tmp_path, monkeypatch
+    ):
+        """``list_agents`` refuses a sensitive project dir BEFORE stating under it.
+
+        The sibling pin
+        ``TestProjectAgentNameCache.test_sensitive_project_dir_denied_before_any_stat``
+        patches ``_project_signature``, which this entry point does not call, so
+        it leaves this scope's ordering uncovered.
+
+        Regression: the refusal yielded no project specs and the cache signature
+        was then built from ``_dir_signature`` on both project scopes anyway -- a
+        ``scandir`` plus a ``stat`` per entry under the tree the refusal had just
+        protected, while the recorded outcome said denied. The user-level scope
+        still lists, and the one refusal still owes exactly one denial row.
+        """
+        import kiro_crew.agent_discovery as ad
+
+        d = _agents_dir(fake_home)
+        (d / "user-level.json").write_text(json.dumps({"name": "user-level"}))
+        # Named "protected", not "secret": CodeQL's clear-text-logging query
+        # treats a variable named `secret` as a credential and then follows this
+        # plain temp path into the module's existing logs of a REFUSED path,
+        # reporting them as new leaks. The refused path is what the trail shows.
+        protected = tmp_path / "protected"
+        (_project_agents_dir(protected) / "a.json").write_text(json.dumps({"name": "a"}))
+        monkeypatch.setattr(
+            "kiro_crew.agent_discovery.is_sensitive_path",
+            lambda p: str(p) == str(protected),
+        )
+        real_signature = ad._dir_signature
+
+        def _refuse_under_protected(target):
+            # Scoped to the refused tree: the user-level scope legitimately
+            # stats, so a blanket failure here would fire on every call and
+            # prove nothing about the ordering.
+            if str(protected) in str(target):
+                pytest.fail(f"signature stat ran under a refused project dir: {target}")
+            return real_signature(target)
+
+        monkeypatch.setattr(ad, "_dir_signature", _refuse_under_protected)
+        sel_events: list[dict] = []
+        monkeypatch.setattr(
+            ad,
+            "_sel",
+            lambda: SimpleNamespace(log_api_access=lambda **kw: sel_events.append(kw)),
+        )
+        clear_list_agents_cache()
+
+        names = [a.name for a in list_agents(agents_dir=d, project_dir=str(protected))]
+
+        assert names == ["user-level"]
+        assert [e["outcome"] for e in sel_events] == ["denied"], (
+            f"one refusal owes exactly one denial row: {sel_events}"
+        )
+
+    def test_list_agents_decides_project_sensitivity_exactly_once(
+        self, fake_home, tmp_path, monkeypatch
+    ):
+        """One scope, ONE sensitivity verdict -- for the spec scan and the signature.
+
+        ``list_agents`` used to decide twice: once itself, then again inside
+        ``project_agent_files``. A redundant second verdict is not a stronger
+        guard, because both reduce to ``is_sensitive_path(str(project_dir))``,
+        which RE-RESOLVES the path on every call -- so the two answers can differ
+        and one half of the function proceeds on a verdict the other half
+        rejected. Counting the verdicts is what holds the shape: the behavioural
+        pin below passes just as well while a redundant guard sits there
+        agreeing, and only starts failing once the answers diverge.
+        """
+        import kiro_crew.agent_discovery as ad
+
+        d = _agents_dir(fake_home)
+        (d / "user-level.json").write_text(json.dumps({"name": "user-level"}))
+        proj = tmp_path / "proj"
+        (_project_agents_dir(proj) / "a.json").write_text(json.dumps({"name": "a"}))
+        verdicts: list[str] = []
+        real_guard = ad._project_scope_denied
+
+        def _counting_guard(project_dir, **kwargs):
+            verdicts.append(str(project_dir))
+            return real_guard(project_dir, **kwargs)
+
+        monkeypatch.setattr(ad, "_project_scope_denied", _counting_guard)
+        clear_list_agents_cache()
+
+        list_agents(agents_dir=d, project_dir=str(proj))
+
+        decided_once = [str(proj)]
+        assert verdicts == decided_once, f"decided sensitivity more than once: {verdicts}"
+
+    def test_list_agents_never_stats_a_scope_a_later_verdict_refuses(
+        self, fake_home, tmp_path, monkeypatch
+    ):
+        """No stat under a scope ANY verdict in the call refused.
+
+        ``is_sensitive_path`` re-resolves the path on every call, so two verdicts
+        on one scope can disagree -- a symlink component repointed between them,
+        or a fail-closed resolver stall landing on only the later one.
+        Regression: when the refusal came second, the first verdict had already
+        admitted the scope, so ``project_agent_files`` recorded a denial row and
+        the cache signature statted the protected tree anyway -- the exact
+        deny-and-read this module's guard exists to prevent.
+
+        The invariant is the conjunction: a call must never both record a denial
+        for a scope and stat under it.
+        """
+        import kiro_crew.agent_discovery as ad
+
+        d = _agents_dir(fake_home)
+        (d / "user-level.json").write_text(json.dumps({"name": "user-level"}))
+        proj = tmp_path / "proj"
+        (_project_agents_dir(proj) / "a.json").write_text(json.dumps({"name": "a"}))
+        queries: list[str] = []
+
+        def _sensitive_from_the_second_query(p):
+            # Scoped to this scope: the user-level dir legitimately resolves, so
+            # answering for every path would refuse scopes this test is not about.
+            if str(p) != str(proj):
+                return False
+            queries.append(str(p))
+            return len(queries) >= 2
+
+        monkeypatch.setattr(ad, "is_sensitive_path", _sensitive_from_the_second_query)
+        statted: list[str] = []
+        real_signature = ad._dir_signature
+
+        def _recording_signature(target):
+            if str(proj) in str(target):
+                statted.append(str(target))
+            return real_signature(target)
+
+        monkeypatch.setattr(ad, "_dir_signature", _recording_signature)
+        sel_events: list[dict] = []
+        monkeypatch.setattr(
+            ad,
+            "_sel",
+            lambda: SimpleNamespace(log_api_access=lambda **kw: sel_events.append(kw)),
+        )
+        clear_list_agents_cache()
+
+        list_agents(agents_dir=d, project_dir=str(proj))
+
+        denied = [e for e in sel_events if e.get("outcome") == "denied"]
+        assert not (denied and statted), (
+            "a scope a verdict refused was statted anyway -- one refusal must drop "
+            f"the scope whole: denials={denied} stats={statted}"
+        )
+
     def test_missing_project_kiro_dir_is_not_an_error(self, tmp_path):
         """A checkout with no ``.kiro`` yields no agents rather than raising."""
         assert project_agent_files(str(tmp_path / "no-kiro")) == []
@@ -219,11 +368,15 @@ class TestProjectAgentNameCache:
         """
         import kiro_crew.agent_discovery as ad
 
-        secret = tmp_path / "secret"
-        (_project_agents_dir(secret) / "a.json").write_text(json.dumps({"name": "a"}))
+        # Named "protected", not "secret": CodeQL's clear-text-logging query
+        # treats a variable named `secret` as a credential and then follows this
+        # plain temp path into the module's existing logs of a REFUSED path,
+        # reporting them as new leaks. The refused path is what the trail shows.
+        protected = tmp_path / "protected"
+        (_project_agents_dir(protected) / "a.json").write_text(json.dumps({"name": "a"}))
         monkeypatch.setattr(
             "kiro_crew.agent_discovery.is_sensitive_path",
-            lambda p: str(p) == str(secret),
+            lambda p: str(p) == str(protected),
         )
         monkeypatch.setattr(
             ad,
@@ -238,10 +391,36 @@ class TestProjectAgentNameCache:
         )
         clear_project_agent_cache()
 
-        assert project_agent_names(str(secret)) == frozenset()
+        assert project_agent_names(str(protected)) == frozenset()
         assert sel_events and sel_events[0]["outcome"] == "denied", (
             f"sensitive-dir rejection must emit a SEL denial: {sel_events}"
         )
+
+    def test_decides_project_sensitivity_exactly_once(self, tmp_path, monkeypatch):
+        """The sibling entry point decides once too, for the same reason.
+
+        ``project_agent_names`` guards, stats its signature, and then used to call
+        ``project_agent_files``, which guarded the same scope a second time. With
+        the signature already taken, a second verdict that refused would record a
+        denial for a tree this very call had just statted.
+        """
+        import kiro_crew.agent_discovery as ad
+
+        proj = tmp_path / "proj"
+        (_project_agents_dir(proj) / "a.json").write_text(json.dumps({"name": "a"}))
+        verdicts: list[str] = []
+        real_guard = ad._project_scope_denied
+
+        def _counting_guard(project_dir, **kwargs):
+            verdicts.append(str(project_dir))
+            return real_guard(project_dir, **kwargs)
+
+        monkeypatch.setattr(ad, "_project_scope_denied", _counting_guard)
+        clear_project_agent_cache()
+
+        assert project_agent_names(str(proj)) == frozenset({"a"})
+        decided_once = [str(proj)]
+        assert verdicts == decided_once, f"decided sensitivity more than once: {verdicts}"
 
     def test_malformed_spec_is_not_dispatchable(self, tmp_path):
         """A file that does not parse must not contribute its filename fallback.

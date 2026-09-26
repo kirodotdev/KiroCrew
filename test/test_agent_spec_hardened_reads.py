@@ -1156,10 +1156,13 @@ _EXPECTED_PROJECT_FILES_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("agent_project_shadow", "unknown"),
         ("markdown_spec_lookup", "unknown"),
     ],
-    "kiro_crew/agent_discovery.py": [
-        ("forward:operation", "forward:source"),
-        ("list_agents", "unknown"),
-    ],
+    # No ``kiro_crew/agent_discovery.py`` entry on purpose. The two in-module
+    # readers (``list_agents``, ``project_agent_names``) decide this scope's
+    # sensitivity THEMSELVES -- pinned in
+    # ``_EXPECTED_SCOPE_GUARD_CALL_SITE_LABELS`` -- and then scan through the
+    # unguarded ``_scan_project_agent_files``. Re-entering this reader would
+    # decide a second time on the same scope, and a second verdict that
+    # disagreed would record a denial for a tree the caller already read.
     "kiro_crew/cli_doctor.py": [("doctor", "cli")],
     # The base-spec read and the shadow check are one surface's two questions
     # about the same checkout, so one label covers both.
@@ -1312,7 +1315,23 @@ _EXPECTED_STRICT_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 }
 
 
+# The guard those three paths share. It is not a reader -- it decides, and emits
+# the denial row when the answer is "protected tree" -- but it is where the
+# ``operation``/``source`` pair now reaches the log, so a literal written here in
+# place of a forward would erase the asking surface from every denial the
+# enclosing function records. ``list_agents`` is the one in-module caller that IS
+# the surface, so its literals are the pinned exception.
+_EXPECTED_SCOPE_GUARD_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
+    "kiro_crew/agent_discovery.py": [
+        ("forward:operation", "forward:source"),
+        ("forward:operation", "forward:source"),
+        ("list_agents", "unknown"),
+    ],
+}
+
+
 _RATCHET_INVENTORY: dict[str, dict[str, list[tuple[str, str]]]] = {
+    "_project_scope_denied": _EXPECTED_SCOPE_GUARD_CALL_SITE_LABELS,
     "_read_agent_spec": _EXPECTED_CALL_SITE_LABELS,
     "parsed_agent_specs": _EXPECTED_PARSED_SPECS_CALL_SITE_LABELS,
     "project_agent_files": _EXPECTED_PROJECT_FILES_CALL_SITE_LABELS,
