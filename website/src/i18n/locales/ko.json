@@ -8387,7 +8387,8 @@
       "project_directory_path": "프로젝트 디렉터리 경로",
       "select": "선택",
       "workspace_name": "워크스페이스 이름",
-      "workspace_name_2": "workspace-name"
+      "workspace_name_2": "workspace-name",
+      "retry": "다시 시도"
     },
     "settingRef": {
       "copied": "복사됨!",
