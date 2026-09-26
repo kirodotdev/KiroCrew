@@ -6463,6 +6463,7 @@
       "show_line_by_line_diff": "पंक्ति-दर-पंक्ति डिफ़ दिखाएँ",
       "cancel_line_by_line_diff": "रद्द करें",
       "computing_line_by_line_diff": "पंक्ति-दर-पंक्ति डिफ़ की गणना हो रही है…",
+      "highlighting": "कोड हाइलाइट हो रहा है…",
       "line_by_line_diff_failed": "डिफ़ की गणना नहीं हो सकी",
       "more": "और",
       "no_changes": "कोई बदलाव नहीं",

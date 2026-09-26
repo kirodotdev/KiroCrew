@@ -10,6 +10,7 @@ import {
 import { changedLineSpan, plainPatchHunks } from '../utils/diffLineCounts'
 import { Btn } from '../components/ui'
 import ErrorNotice from '../components/ErrorNotice'
+import { WarmSwapHeldContext } from '../components/pierreStaging'
 import { i18nT } from '../i18n/t'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 
@@ -100,11 +101,34 @@ export function PlainCodeFallback({ text, className, contentStyle, header, degra
 }
 
 /** The header row shared by the fallbacks, sized to Pierre's own header so a
- *  swap does not move the layout. A collapsed pair is this row alone. */
+ *  swap does not move the layout. A collapsed pair is this row alone.
+ *
+ *  Inside the fallback a `WarmSwap` is holding (`WarmSwapHeldContext`), the
+ *  row ends with the one-line "Highlighting code…" cue: the plain text below is
+ *  readable but uncoloured, and for the seconds a slow highlight pool takes,
+ *  uncoloured text reads as a deliberate display mode rather than as a load in
+ *  progress (#13937). The cue takes the place Pierre's header metadata fills
+ *  once painted, in a row that exists in both states, so it costs the hold no
+ *  height. Plain text, no motion (nothing to gate on `prefers-reduced-motion`),
+ *  not a live region (it corrects a VISUAL misreading a screen reader never
+ *  makes, and a row of cards would otherwise announce it once per card). Below
+ *  420px of ROW width (`@max-[420px]:hidden`, a container query against this
+ *  row — it carries `@container` — never the viewport) the cue steps aside the
+ *  way the neighbouring header content does: on a ~300px card it would take
+ *  ~110px (en) to ~165px (it, ru) of the filename's room for the whole hold and
+ *  hand it back on the paint — the filename keeps priority. A viewport query
+ *  would miss the card that is narrow in a wide window: a 1920px window with
+ *  the side panel dragged out until the chat pane sits at `CHAT_PANE_MIN_W`
+ *  (320px) shows a ~300px card. The row's width IS the card's, and inline-size
+ *  containment changes nothing about it: the row is a stretched block child of
+ *  the fallback, so its width never came from its content. */
 function PlainFallbackHeader({ children }: { children: ReactNode }) {
+  const held = useContext(WarmSwapHeldContext)
+  useLanguageGeneration()
   return (
-    <div data-diffs-header="" className="flex min-h-9 items-center justify-end gap-1 border-b border-border px-2 py-1">
+    <div data-diffs-header="" className="@container flex min-h-9 items-center justify-end gap-1 border-b border-border px-2 py-1">
       {children}
+      {held && <span className="shrink-0 @max-[420px]:hidden text-[12px] text-muted">{i18nT('components.fileChangeChips.highlighting')}</span>}
     </div>
   )
 }

@@ -4487,6 +4487,7 @@
       "show_line_by_line_diff": "Show line-by-line diff",
       "cancel_line_by_line_diff": "Cancel",
       "computing_line_by_line_diff": "Computing line-by-line diff…",
+      "highlighting": "Highlighting code…",
       "line_by_line_diff_failed": "Could not compute the diff",
       "more": "more",
       "no_changes": "no changes",

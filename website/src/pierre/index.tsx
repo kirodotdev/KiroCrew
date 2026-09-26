@@ -20,7 +20,7 @@ import { PlainCodeFallback, PlainFilePairFallback, PlainFilePairHeader } from '.
 import { isPierreFilePairWithinBudget } from './renderBudget'
 import { computePairPatch } from './diffOffThread'
 import { countDiffStats } from '../utils/diffLineCounts'
-import { PierreFarmHoldContext } from '../components/pierreStaging'
+import { PierreFarmHoldContext, WarmSwapHeldContext } from '../components/pierreStaging'
 import { usePlainDiff } from '../hooks/usePlainDiff'
 
 const CodeImpl = lazy(() => import('./PierreImpl').then(m => ({ default: m.PierreCodeImpl })))
@@ -160,10 +160,29 @@ function StagedSuspense({ fallback, children }: { fallback: React.ReactNode; chi
  * the wrapper its own height would pass for painted content and release the
  * hold before a single row exists; before release the caller's fallback
  * already carries the same row, so showing it early would double it.
+ *
+ * While the hold lasts, the fallback is rendered under `WarmSwapHeldContext`
+ * (`true` unless the caller passes `heldHint={false}`), and a fallback that
+ * has a header row carries the one-line "Highlighting code…" cue at that row's end
+ * (`PlainFallbackHeader`): the plain fallback is readable but uncoloured, and
+ * for the seconds a slow highlight pool takes, uncoloured text reads as a
+ * deliberate display mode rather than as a load in progress (#13937). The cue
+ * exists for exactly as long as the hold does — gone the moment `painted`
+ * flips true, whether on the first rows, on the plain text a failed pool hands
+ * the surface, or on the deadline fail-safe. It lives in a row that exists in
+ * both states (the fallback's header while held, Pierre's own header with its
+ * metadata in the same place once painted), so it costs the hold no height and
+ * sits outside the measured wrapper. A hold whose fallback has no header row
+ * shows no cue at all: an in-flow line of its own would grow the box and
+ * shrink it back on the paint, and an overlay was ruled out (#13937), so the
+ * ruling's "no change to the hold's geometry" leaves those surfaces silent by
+ * design. A caller whose fallback already carries a pending cue of its own
+ * passes `heldHint={false}`, so one hold never shows two.
  */
-function WarmSwap({ fallback, header, children, warmKey, onVisible }: {
+function WarmSwap({ fallback, header, heldHint = true, children, warmKey, onVisible }: {
   fallback: React.ReactNode
   header?: React.ReactNode
+  heldHint?: boolean
   children: React.ReactNode
   warmKey?: string
   onVisible?: () => void
@@ -239,7 +258,7 @@ function WarmSwap({ fallback, header, children, warmKey, onVisible }: {
           <WarmSwapRevealedContext.Provider value={painted}>{children}</WarmSwapRevealedContext.Provider>
         </div>
       </div>
-      {!painted && fallback}
+      {!painted && <WarmSwapHeldContext.Provider value={heldHint}>{fallback}</WarmSwapHeldContext.Provider>}
     </div>
   )
 }
@@ -483,9 +502,10 @@ export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, o
     // layout until the diff truly paints. The header goes to the hold as
     // `header`, NOT as a child, for the same reason: inside the wrapper its
     // own height would satisfy the paint measurement and release the hold
-    // before a single row exists.
+    // before a single row exists. No held hint either: the fallback's
+    // "computing" strip above is already this hold's pending cue.
     return (
-      <WarmSwap fallback={holdFallback} header={header} onVisible={onVisible}>
+      <WarmSwap fallback={holdFallback} header={header} heldHint={false} onVisible={onVisible}>
         <Suspense fallback={null}>
           <PairPatchImpl patch={active.patch} options={patchOptions} className={className} />
         </Suspense>
@@ -527,12 +547,16 @@ export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, o
   // A collapsed pair renders ONLY its header (~32px) — under the paint
   // threshold by design — so it must not warm-swap or it would sit on the
   // fallback until the deadline. Expanded pairs get the same treatment as
-  // Patch: readable text holds the layout until the diff paints.
+  // Patch: readable text holds the layout until the diff paints. The hold's
+  // pending cue rides in the fallback's header row (none when the caller
+  // disabled the header), and not in plain-diff mode, where the impl drops
+  // the colour and nothing is being highlighted.
   if (options?.collapsed) return impl
   return (
     <WarmSwap
       warmKey={warmKeyOf((newFile ?? oldFile)?.contents ?? '')}
       fallback={fallbackNode}
+      heldHint={!plain}
       onVisible={onVisible}
     >
       {impl}

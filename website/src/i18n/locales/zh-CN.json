@@ -6360,6 +6360,7 @@
       "show_line_by_line_diff": "显示逐行差异",
       "cancel_line_by_line_diff": "取消",
       "computing_line_by_line_diff": "正在计算逐行差异…",
+      "highlighting": "正在高亮代码…",
       "line_by_line_diff_failed": "无法计算差异",
       "more": "更多",
       "no_changes": "无更改",

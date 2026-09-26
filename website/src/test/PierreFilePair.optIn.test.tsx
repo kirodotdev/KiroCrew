@@ -458,6 +458,24 @@ describe('oversized pair: line-by-line opt-in keeps the card controllable', () =
     expect(box!.querySelector('[data-testid="pierre-patch"]')).not.toBeNull()
   })
 
+  it('keeps its computing strip as the ONLY pending cue while the patch surface is held', async () => {
+    // This hold's fallback already says the work is not done (the strip, with
+    // its Cancel); WarmSwap's own "Highlighting code…" line must not stack a second
+    // cue on top of it (#13937 leaves this opted-in path alone).
+    state.implPainted = false
+    const user = userEvent.setup()
+    const PierreFilePair = await loadPierreFilePair()
+    const { container } = render(
+      <PierreFilePair oldFile={oldFile} newFile={newFile} options={OPTIONS} {...slotProps} />,
+    )
+    await user.click(screen.getByRole('button', { name: 'Show line-by-line diff' }))
+    expect(await screen.findByTestId('pierre-patch')).toBeInTheDocument()
+    fireResize()
+    expect(container.querySelector('[data-pierre-plain-side]')).toBeInTheDocument()
+    expect(container.querySelector('[aria-live="polite"]')).toHaveTextContent(/Computing line-by-line diff/)
+    expect(screen.queryByText('Highlighting code…')).toBeNull()
+  })
+
   it('does not recompute the diff when the reader opts in again after a collapse', async () => {
     const user = userEvent.setup()
     const PierreFilePair = await loadPierreFilePair()
