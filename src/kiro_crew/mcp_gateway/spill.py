@@ -50,15 +50,21 @@ def _sanitize_server_name(name: str) -> str:
 def cleanup_old_spill_files() -> int:
     """Delete spill files older than 24h. Returns count deleted. Best-effort.
 
-    Symlink-hardened: ``is_dir()``/``is_file()``/``stat()`` all FOLLOW
-    symlinks, so an agent that swapped the spill dir (or planted a link
-    inside it) could otherwise aim this sweep at an arbitrary directory and
-    have the gateway delete 24h-old files there (confused deputy). The dir
-    itself and every entry are checked with lstat semantics; links are
-    skipped, never followed.
+    Link-hardened: ``is_dir()``/``is_file()``/``stat()`` all FOLLOW links, so
+    an agent that swapped the spill dir (or planted a link inside it) could
+    otherwise aim this sweep at an arbitrary directory and have the gateway
+    delete 24h-old files there (confused deputy). The dir itself and every
+    entry are checked with lstat semantics; links are skipped, never followed.
+
+    The directory-level check runs through ``is_link_or_junction`` rather than
+    ``is_symlink()``. A Windows junction is not a symlink: ``is_symlink()``
+    answers False for one and ``is_dir()`` answers True, so the guard admitted
+    it and the sweep iterated the junction's TARGET. The per-entry
+    ``S_ISREG`` screen below does not cover that -- it skips links INSIDE the
+    directory, whereas a junction is the directory itself.
     """
     spill_dir = _spill_dir()
-    if spill_dir.is_symlink() or not spill_dir.is_dir():
+    if platform_compat.is_link_or_junction(spill_dir) or not spill_dir.is_dir():
         return 0
     now = time.time()
     deleted = 0
@@ -126,10 +132,16 @@ def maybe_spill_response(
         filename = f"{safe_server}-{request_id}-{timestamp}.json"
 
         spill_dir = _spill_dir()
-        # Never operate through a symlinked spill dir (agent-swappable): an
-        # attacker-planted link would redirect the write outside the data home.
-        if spill_dir.is_symlink():
-            logger.warning("spill dir is a symlink — refusing to spill")
+        # Never operate through a LINKED spill dir (agent-swappable): an
+        # attacker-planted link would redirect the write outside the data home,
+        # and what lands there is a full tool response -- exactly the payload
+        # that may carry secrets. Junctions count: one is not a symlink, so
+        # ``is_symlink()`` alone left this open on Windows. The O_EXCL/
+        # O_NOFOLLOW open below does not cover it either -- those constrain the
+        # FINAL component, not the directory the path resolves through, and
+        # ``os.O_NOFOLLOW`` does not exist on Windows at all.
+        if platform_compat.is_link_or_junction(spill_dir):
+            logger.warning("spill dir is a symlink or junction — refusing to spill")
             return line
         # Not a bare mkdir(mode=0o700): that is umask-masked, is ignored for
         # an already-existing directory, and is inert on Windows -- yet this
