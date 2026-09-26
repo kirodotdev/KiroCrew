@@ -108,10 +108,12 @@ const ARG_AGENT = 1
 const ARG_MODE = 3
 const ARG_MEMORY_MODE = 4
 
-function renderSidebar() {
+function renderSidebar(connected = true) {
   const store = createTestStore({
     dashboard: {
-      status: {}, connected: false, slots: [], approvalMode: 'normal',
+      // These cases assert the create REACHES the server, and the creators are
+      // gateway-gated, so the fixture has to declare a live gateway.
+      status: {}, connected, slots: [], approvalMode: 'normal',
       channelTrusted: false, refreshTrigger: 0, unreadSlots: [], updateProgress: null,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
@@ -134,7 +136,7 @@ function renderSidebar() {
       </Provider>
     </QueryClientProvider>,
   )
-  return view
+  return { ...view, store }
 }
 
 function openCreateMenu() {
@@ -158,6 +160,42 @@ beforeEach(() => {
   mocks.createChatSlot.mockResolvedValue({ key: 'chat-new-1' })
 })
 afterEach(() => vi.clearAllMocks())
+
+describe('create-button caret menu: offline gating is menu-wide', () => {
+  it('gates every create row, not only the ephemeral pair', async () => {
+    renderSidebar(false)
+    openCreateMenu()
+    const plain = await screen.findByTestId('new-plain-chat')
+    const autopilot = screen.getByTestId('new-autopilot-chat')
+    // The ephemeral pair was already gated, so dimming only those two said the
+    // undimmed pair still worked — the same createSlot write is behind all four.
+    for (const row of [plain, autopilot]) {
+      expect(row.getAttribute('aria-disabled')).toBe('true')
+      expect(row.getAttribute('title')).toMatch(/offline/i)
+      expect(row.className).toContain('opacity-40')
+    }
+  })
+
+  it('says why, which a dimmed row alone does not', async () => {
+    renderSidebar(false)
+    openCreateMenu()
+    expect(await screen.findByTestId('new-menu-offline-reason')).toBeInTheDocument()
+  })
+
+  it('runs the plain create when connected, so the gate is not blanket', async () => {
+    renderSidebar()
+    openCreateMenu()
+    fireEvent.click(await screen.findByTestId('new-plain-chat'))
+    await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalledTimes(1))
+  })
+
+  it('offers no reason row when connected', async () => {
+    renderSidebar()
+    openCreateMenu()
+    await screen.findByTestId('new-plain-chat')
+    expect(screen.queryByTestId('new-menu-offline-reason')).toBeNull()
+  })
+})
 
 describe('create-button caret menu: ephemeral chats', () => {
   it('offers both ephemeral modes under one submenu', async () => {
