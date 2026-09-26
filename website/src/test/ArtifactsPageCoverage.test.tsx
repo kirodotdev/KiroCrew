@@ -305,6 +305,120 @@ describe('ArtifactsPage — folder cards in the gallery', () => {
     expect(within(card).queryByTitle('loose one')).not.toBeInTheDocument()
   })
 
+  it('renders markdown inside folder tiles as compact plain text', async () => {
+    const markdown = mkArtifact('long-report', {
+      folder_id: 'ops',
+      kind: 'markdown',
+    })
+    seed({
+      artifacts: [markdown],
+      folders: [mkFolder('ops', 'Ops')],
+      full: { content: '# Huge report heading\n\n| A | B |\n|---|---|\n| one | two |' },
+    })
+    renderWithProviders(<ArtifactsPage />)
+    const folder = await screen.findByRole('button', { name: 'Open folder Ops' })
+    const thumb = await within(folder).findByTestId('artifact-mini-text')
+
+    expect(thumb).toHaveTextContent('Huge report heading')
+    expect(thumb.className).toContain('line-clamp-5')
+    // Table syntax is not laid out in a five-line tile, so no pipe survives.
+    expect(thumb.textContent).not.toContain('|')
+    // ... and the cells stay separable: a bare space would read "A B one two".
+    expect(thumb).toHaveTextContent('A · B')
+    expect(thumb).toHaveTextContent('one · two')
+    expect(within(folder).queryByRole('heading')).not.toBeInTheDocument()
+    expect(within(folder).queryByRole('table')).not.toBeInTheDocument()
+  })
+
+  it('flattens a pathological delimiter line without stalling the render', async () => {
+    // The tile flattens the WHOLE content line by line, before the 240-char
+    // clamp, so one unbounded line reaches the delimiter check. A single
+    // anchored regex whose classes both match a space backtracks quadratically
+    // on this shape -- measured 14ms at 8k chars, 54ms at 16k, 346ms at 40k,
+    // and 9.2s for this render at 200k -- which freezes the gallery tab on
+    // content the library itself can hold. The per-cell test is linear, so the
+    // budget below is the assertion: it is met with room to spare, and missed
+    // by an order of magnitude if the whole-line regex comes back.
+    const pathological = `${' '.repeat(200000)}|x`
+    const markdown = mkArtifact('long-report', { folder_id: 'ops', kind: 'markdown' })
+    seed({
+      artifacts: [markdown],
+      folders: [mkFolder('ops', 'Ops')],
+      full: { content: `# Report\n\n${pathological}\n` },
+    })
+    const started = Date.now()
+    renderWithProviders(<ArtifactsPage />)
+    const folder = await screen.findByRole('button', { name: 'Open folder Ops' })
+    const thumb = await within(folder).findByTestId('artifact-mini-text')
+    const elapsed = Date.now() - started
+
+    expect(thumb).toHaveTextContent('Report')
+    expect(thumb.textContent).not.toContain('|')
+    expect(elapsed).toBeLessThan(2500)
+  })
+
+  it('bounds how much content the tile scans before flattening it', async () => {
+    // The tile shows 240 characters, but every pass that produces them -- the
+    // tag strip, the split, the per-line flatten, stripMd -- ran over the FULL
+    // artifact first, while the sibling non-mini markdown path clamps at 4000.
+    // The library provably holds large markdown (that sibling clamp is the
+    // proof), and the tag-strip regex is quadratic on `<` with no closing `>`,
+    // so an unclamped scan froze the whole folder tile with no recovery but
+    // leaving the page. Clamped, the cost is fixed at 4000 characters whatever
+    // the artifact's size, so the budget below is met with room to spare and
+    // missed by an order of magnitude without the clamp.
+    const wide = '<'.repeat(200000)
+    seed({
+      artifacts: [mkArtifact('long-report', { folder_id: 'ops', kind: 'markdown' })],
+      folders: [mkFolder('ops', 'Ops')],
+      full: { content: `Report opens here\n\n${wide}` },
+    })
+    const started = Date.now()
+    renderWithProviders(<ArtifactsPage />)
+    const folder = await screen.findByRole('button', { name: 'Open folder Ops' })
+    const thumb = await within(folder).findByTestId('artifact-mini-text')
+    const elapsed = Date.now() - started
+
+    expect(thumb).toHaveTextContent('Report opens here')
+    expect(elapsed).toBeLessThan(2500)
+  })
+
+  it('separates flattened table ROWS as strongly as the cells inside them', async () => {
+    // stripMd collapses the row-ending newline to a bare space, so joining rows
+    // with it put the weaker mark at the stronger boundary: the last cell of one
+    // row bound to the first of the next and "Check · Result Build · Passed"
+    // read "Result Build" as a pair. Rows carry the same separator as cells.
+    seed({
+      artifacts: [mkArtifact('long-report', { folder_id: 'ops', kind: 'markdown' })],
+      folders: [mkFolder('ops', 'Ops')],
+      full: { content: '| Check | Result |\n|---|---|\n| Build | Passed |\n' },
+    })
+    renderWithProviders(<ArtifactsPage />)
+    const folder = await screen.findByRole('button', { name: 'Open folder Ops' })
+    const thumb = await within(folder).findByTestId('artifact-mini-text')
+
+    expect(thumb).toHaveTextContent('Check · Result · Build · Passed')
+    expect(thumb.textContent).not.toContain('Result Build')
+  })
+
+
+  it('keeps SVG folder tiles on the kind-aware preview path', async () => {
+    // The artifact is built inline, as the other seeds in this file do: a
+    // separate binding used in the same call as the script-bearing fixture is
+    // what the SAST unknown-value-with-script-tag rule matches on.
+    seed({
+      artifacts: [mkArtifact('brand-mark', { folder_id: 'ops', kind: 'svg' })],
+      folders: [mkFolder('ops', 'Ops')],
+      full: { content: '<' + 'svg viewBox="0 0 10 10"><circle cx="5" cy="5" r="4" /><script>window.x=1</script></svg>' },
+    })
+    renderWithProviders(<ArtifactsPage />)
+    const folder = await screen.findByRole('button', { name: 'Open folder Ops' })
+
+    await waitFor(() => expect(folder.querySelector('svg circle')).toBeTruthy())
+    expect(folder.querySelector('svg script')).toBeNull()
+    expect(within(folder).queryByTestId('artifact-mini-text')).not.toBeInTheDocument()
+  })
+
   it('renders the derived emoji badge on a closed folder glyph', async () => {
     seed({ artifacts: [], folders: [mkFolder('ops', 'Ops', { icon: '🛠', color: '#3b82f6' })] })
     renderWithProviders(<ArtifactsPage />)
