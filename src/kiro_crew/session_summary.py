@@ -244,6 +244,40 @@ def render_input(turns: list[TranscriptTurn]) -> str:
     return "\n".join(lines).strip()
 
 
+# Over budget, a session keeps what fits of its opening goals and newest turns.
+_MAX_INPUT_CHARS = 40_000
+_KEEP_FIRST_TURNS = 3
+
+
+def render_bounded_input(turns: list[TranscriptTurn], max_chars: int = _MAX_INPUT_CHARS) -> str:
+    """:func:`render_input` under *max_chars*: a marker for the middle, long turns cut."""
+    whole = render_input(turns)
+    if len(whole) <= max_chars:
+        return whole
+    blocks = [_excerpt(render_input([turn]), max_chars // 8) for turn in turns]
+    head: list[str] = []
+    used = 64  # the marker and its separators
+    for turn, block in zip(turns, blocks):
+        if (turn.user_turn or 0) > _KEEP_FIRST_TURNS or used + len(block) > max_chars // 2:
+            break
+        head.append(block)
+        used += len(block) + 2
+    tail: list[str] = []
+    for block in reversed(blocks[len(head) :]):
+        if used + len(block) > max_chars:
+            break
+        tail.append(block)
+        used += len(block) + 2
+    tail.reverse()
+    if len(head) + len(tail) == len(blocks):
+        return "\n\n".join(blocks)
+    cut = [t.user_turn for t in turns[len(head) : len(turns) - len(tail)] if t.user_turn]
+    marker = "[... replies omitted ...]"
+    if cut:
+        marker = f"[... user turns {cut[0]}-{cut[-1]} omitted ...]"
+    return "\n\n".join([*head, marker, *tail])
+
+
 # ---------------------------------------------------------------------------
 # Payload shaping
 # ---------------------------------------------------------------------------

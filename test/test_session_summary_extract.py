@@ -21,6 +21,7 @@ from kiro_crew.session_summary import (
     extract_turns,
     last_activity_ts,
     normalize_payload,
+    render_bounded_input,
     render_input,
 )
 
@@ -406,3 +407,52 @@ class TestPayloadRedaction:
         assert intent["verified"] is True
         assert intent["origin_turn"] == 2
         assert intent["last_touched_turn"] == 4
+
+
+class TestRenderedInputIsBounded:
+    """A long session keeps its opening goals and its newest turns under one budget."""
+
+    def _long_turns(self, count):
+        recs = []
+        for i in range(1, count + 1):
+            recs.append(_rec("user", f"ask-{i} " + "u" * 900))
+            recs.append(_rec("assistant", f"reply-{i}"))
+        return extract_turns(recs)
+
+    def test_long_transcript_keeps_first_and_last_turns_under_budget(self):
+        turns = self._long_turns(200)
+        rendered = render_bounded_input(turns, max_chars=20_000)
+        assert len(rendered) <= 20_000
+        assert "ask-1 " in rendered
+        assert "USER (turn 1)" in rendered
+        assert rendered.endswith("reply-200")
+        assert "ask-200 " in rendered
+        assert "ask-4 " not in rendered
+        assert "ask-100 " not in rendered
+        assert "[... user turns 4-" in rendered
+        assert "omitted ...]" in rendered
+
+    def test_the_default_budget_bounds_a_long_transcript(self):
+        rendered = render_bounded_input(self._long_turns(200))
+        assert 20_000 < len(rendered) <= 40_000
+
+    def test_many_short_turns_still_keep_the_newest(self):
+        turns = extract_turns([_rec("user", f"q{i}") for i in range(1, 30_001)])
+        rendered = render_bounded_input(turns, max_chars=20_000)
+        assert len(rendered) <= 20_000
+        assert rendered.endswith("q30000")
+
+    def test_an_oversized_newest_turn_is_cut_not_dropped(self):
+        recs = [_rec("user", f"ask-{i}") for i in range(1, 6)]
+        recs.append(_rec("assistant", "reply-last " + "r" * 50_000 + " offered-next"))
+        turns = extract_turns(recs, assistant_excerpt_chars=25_000)
+        rendered = render_bounded_input(turns, max_chars=20_000)
+        assert len(rendered) <= 20_000
+        assert "reply-last " in rendered
+        assert rendered.endswith("offered-next")
+        assert "omitted ...]" not in rendered.replace("characters omitted ...]", "")
+
+    def test_short_transcript_is_unchanged(self):
+        turns = self._long_turns(3)
+        assert render_bounded_input(turns, max_chars=20_000) == render_input(turns)
+        assert "omitted" not in render_input(turns)
