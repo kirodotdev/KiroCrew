@@ -437,6 +437,27 @@ jobs:
           fi
           echo "Commit count verified ($COMMIT_COUNT of at most $MAX_COMMITS)."
 
+      # ── Frozen goal sections ────────────────────────────────────────
+      # Every PR states its goal once, at open: a `**Goal:**` line under
+      # Problem / Motivation, plus Why it matters and Not a goal. The rules
+      # live in one script shared with fork-pr-description.yml, so fork and
+      # same-repo PRs are held to the same list. Dependabot writes its own
+      # body and has no goal to freeze.
+      - name: Require the PR template sections
+        if: github.event.pull_request.user.login != 'dependabot[bot]'
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          out="$(mktemp)"
+          PR_DRAFT=false GITHUB_OUTPUT="$out" bash .github/scripts/pr-description-check.sh
+          if grep -qx 'conclusion=failure' "$out"; then
+            err "$(sed -n 's/^title=//p' "$out")"
+            sed -n '/^summary<<__FORK_PR_DESCRIPTION__$/,/^__FORK_PR_DESCRIPTION__$/p' "$out" | sed '1d;$d'
+            exit 1
+          fi
+          echo "PR template sections present."
+
       # ── Pattern harvest on fix PRs ──────────────────────────────────
       # Every fix is a chance to retire its whole defect class. Fix/revert
       # PRs must carry a "Pattern harvest" section stating either a rule

@@ -115,12 +115,13 @@ def test_the_new_section_is_not_added_to_the_fork_description_gate() -> None:
     recorded where a later author will look for it.
     """
     root = Path(__file__).resolve().parents[1]
-    workflow = " ".join(
-        (root / ".github" / "workflows" / "fork-pr-description.yml")
+    # The gate's list lives in the script both description checks run.
+    gate = " ".join(
+        (root / ".github" / "scripts" / "pr-description-check.sh")
         .read_text(encoding="utf-8")
         .split()
     )
-    assert "## Backwards compatibility" not in workflow
+    assert "## Backwards compatibility" not in gate
     rationale = " ".join(
         (
             root

@@ -44,6 +44,9 @@ EXIT_RETRO_DUE = 30
 SELF_ADDED_RE = re.compile(r"^self-added:\s*(yes|no)\s*$", re.MULTILINE | re.IGNORECASE)
 MECHANISM_RE = re.compile(r"^mechanism:\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE)
 DISPOSITION_WORD_RE = re.compile(r"^\*\*([a-z-]+)\*\*", re.MULTILINE)
+# The PR's frozen goal: the body's `**Goal:** <one sentence>` line, written once
+# at open. Every retrospective is measured against it, so the view prints it.
+GOAL_LINE_RE = re.compile(r"^ {0,3}\*\*Goal:\*\*[ \t]*(\S.*?)[ \t]*$", re.MULTILINE | re.IGNORECASE)
 
 
 def rounds_view(repo, number, head_sha, pr_json):
@@ -107,6 +110,11 @@ def rounds_view(repo, number, head_sha, pr_json):
         )
     )
     print("(a round is one judged head; the current head becomes a round once it is disposed)")
+    goal = GOAL_LINE_RE.search((pr_json.get("body") or "").replace("\r", ""))
+    if goal:
+        print("goal (frozen): {}".format(redact(sanitize(goal.group(1)))))
+    else:
+        print("goal (frozen): MISSING - the PR body has no **Goal:** line")
     if not order:
         print("(no disposition records yet - this is round 0)")
     for idx, h in enumerate(order):
@@ -528,7 +536,7 @@ def main(argv):
         return 2
 
     rc, out, _ = run(
-        ["gh", "pr", "view", pr, "--json", "number,url,headRefOid,additions,deletions"]
+        ["gh", "pr", "view", pr, "--json", "number,url,headRefOid,additions,deletions,body"]
     )
     if rc != 0 or not out.strip():
         err("ERROR: could not read PR #" + str(pr))

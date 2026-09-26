@@ -228,6 +228,13 @@ Types the PR-title gate in `code-review.yml` accepts: `feat`, `fix`, `docs`,
 `style`, `refactor`, `perf`, `test`, `chore`, `ci`, `build`, `revert`. **One
 logical change per commit**, and at most two commits per PR.
 
+### PR goal is frozen
+
+The `**Goal:**` line, `## Why it matters` and `## Not a goal` are written once,
+when the PR opens. Never edit them on your own, not even to match the diff. A
+finding outside the goal is rebutted or deferred, never absorbed by widening the
+goal. Edit them only when a human explicitly asks, and say why in a PR comment.
+
 ## CHANGELOG.md
 
 - **Your feature PR does not touch `CHANGELOG.md`.** The release PR writes the

@@ -1324,7 +1324,10 @@ of the AUTOSDE rules; the semantic half is delegated to the line reviewers.
   `## Pattern harvest` section on `fix`/`revert` PRs containing either
   `Rule candidate:` or `Not generalizable:`. One commit stays the norm; the second
   is there so a mechanical follow-up (a regenerated artifact, a formatting sweep)
-  can stay separable from the change it accompanies. All three checks are blocking.
+  can stay separable from the change it accompanies. It also runs
+  `.github/scripts/pr-description-check.sh`, the same rules `fork-pr-description.yml`
+  applies to forks: the template's required headings, `## Not a goal` included, and
+  a filled `**Goal:**` line under Problem / Motivation. All four checks are blocking.
 
 Separately, **`dependency-review.yml`** fails a PR that adds or changes a
 dependency whose license is off the curated allowlist in
