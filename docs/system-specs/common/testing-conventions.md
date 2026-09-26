@@ -645,9 +645,13 @@ spec rebuild runs after the dashboard is serving).
 
 `gw.registered_routes()` is every `(METHOD, canonical path)` the live router
 serves -- the same reading the coverage ratchet counts -- so a sweep over
-"every route of a kind" (`test_route_sweep.py`: every parameter-less `GET`,
-the SPA shell and its assets included, is guarded and serves without a 5xx on
-a fresh home) and the metric agree on what a route is. A sweep excludes by
+"every route of a kind" (`test_route_sweep.py`: every parameter-less `GET`
+is guarded and serves without a 5xx on a fresh home; every mutating or
+parameterized route is guarded; every parameterized `GET` answers an unknown
+id below 500) and the metric agree on what a route is. The ratchet the sweeps
+carry is REQUESTED routes: it says every route has been asked for its guard
+and its fresh-home answer, not that its behaviour is pinned -- that is what
+the seam tests beside it are for. A sweep excludes by
 EXACT path with a reason, never by pattern or prefix: the routes that answer
 unauthenticated, the ones that hold a connection open, and the ones that
 reach the network on a fresh home are each a small table in the test, and a
