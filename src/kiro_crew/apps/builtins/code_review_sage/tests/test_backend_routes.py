@@ -1088,6 +1088,62 @@ class TestRestartClearsAStrandedPostingFlag(unittest.TestCase):
         self.assertEqual(run["status"], "interrupted")
         self.assertFalse(run["posting"])
 
+    def test_load_records_interrupted_postings_without_walking_results(self):
+        """The registry load is the cheap read; the intent walk is the hook's."""
+        path = self._write_runs([{"run_id": "r4", "status": "done", "posting": True}])
+        with (
+            unittest.mock.patch.object(self.routes, "_runs_file", lambda: path),
+            unittest.mock.patch.object(self.routes.results, "list_results") as listing,
+        ):
+            self.routes._load_runs()
+        listing.assert_not_called()
+        self.assertEqual(self.routes._POSTING_RECOVERY_IDS, ["r4"])
+
+    def test_restart_recovery_marks_an_attempting_delivery_indeterminate(self):
+        path = self._write_runs([{"run_id": "r4", "status": "done", "posting": True}])
+        record = {
+            "delivery_intent": {
+                "operation_id": "4" * 32,
+                "state": "attempting",
+                "target": "target",
+                "revision": "head",
+                "payload_digest": "digest",
+                "selected_keys": [],
+            }
+        }
+        writes: list[dict] = []
+
+        def write_result(updated, root=None, run_id=None):
+            writes.append(dict(updated))
+
+        with (
+            unittest.mock.patch.object(self.routes, "_runs_file", lambda: path),
+            unittest.mock.patch.object(self.routes.results, "list_results", return_value=[record]),
+            unittest.mock.patch.object(self.routes.results, "write_result", write_result),
+        ):
+            self.routes._load_runs()
+            self.routes._recover_interrupted_posting()
+
+        self.assertEqual(record["delivery_intent"]["state"], "indeterminate")
+        error = record["delivery_intent"]["error"]
+        assert isinstance(error, str)
+        self.assertIn("restart", error.lower())
+        self.assertEqual(len(writes), 1)
+
+    def test_restart_recovery_failure_records_an_error_on_the_run(self):
+        """A run whose intents cannot be persisted still says so on the page."""
+        path = self._write_runs([{"run_id": "r5", "status": "done", "posting": True}])
+        with (
+            unittest.mock.patch.object(self.routes, "_runs_file", lambda: path),
+            unittest.mock.patch.object(
+                self.routes, "_mark_restart_delivery_indeterminate",
+                side_effect=OSError("disk full")),
+        ):
+            self.routes._load_runs()
+            self.routes._recover_interrupted_posting()
+        run = self.routes._RUNS[0]
+        self.assertIn("could not persist delivery intent", run["post_error"])
+
 
 class TestGroupedPostAppliesKeysPerChange(unittest.TestCase):
     """A multi-change selection is one request, and each group keeps its own keys.
@@ -1332,6 +1388,21 @@ class TestOrphanReapDoesNotBlockStartup(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(
             threads[0], threading.current_thread().name,
             "the reap must run on a worker thread, not the loop thread")
+
+    async def test_registration_restores_runs_before_startup_hooks(self):
+        app = web.Application()
+        threads = []
+
+        def _load() -> None:
+            threads.append(threading.current_thread().name)
+
+        with unittest.mock.patch.object(self.routes, "_load_runs", _load):
+            self.routes.register_routes(app)
+            for hook in app.on_startup:
+                await hook(app)
+
+        self.assertEqual(len(threads), 1)
+        self.assertEqual(threads[0], threading.current_thread().name)
 
     async def test_a_failing_reap_never_breaks_startup(self):
         app = web.Application()

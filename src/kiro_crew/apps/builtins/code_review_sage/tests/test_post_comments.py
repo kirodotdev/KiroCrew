@@ -1187,3 +1187,541 @@ class TestDraftConfirmed(unittest.TestCase):
         got = [{"path": "src/a.py", "line": 4, "body": "widens scope"}]
         crlf = self._review(body="[code-review-sage] summary\r\n")
         self.assertTrue(self._confirm(crlf, got))
+
+
+def _record_dispatch(dispatched: list[str], task: str) -> dict:
+    """Log a dispatch and report a clean accept for the mocked poster.
+
+    The log append returns None, so the mock returns the success dict explicitly
+    instead of leaving the lambda body to double as its value.
+    """
+    dispatched.append(task)
+    return {"ok": True}
+
+
+class TestDeliveryOutbox(_Base):
+    """The durable intent closes the POST-success / response-loss window."""
+
+    LINK = "https://github.com/o/r/pull/1"
+
+    def test_invalid_persisted_operation_id_blocks_retry_and_dispatch(self):
+        record = _record()
+        record["delivery_intent"] = {"operation_id": "injected-marker", "state": "indeterminate"}
+        results.write_result(record, self.root, "run-a")
+        dispatched: list[str] = []
+
+        out = D.post_recorded(
+            "CR-1", self.LINK,
+            dispatch=lambda task, timeout=0: _record_dispatch(dispatched, task),
+            root=self.root, run_id="run-a",
+        )
+
+        self.assertFalse(out["post_ok"])
+        self.assertIn("invalid operation ID", out["post_error"])
+        self.assertEqual(dispatched, [])
+        persisted = results.read_result("CR-1", self.root, "run-a") or {}
+        self.assertEqual((persisted.get("delivery_intent") or {}).get("state"), "indeterminate")
+
+    def test_invalid_confirmed_operation_id_cannot_become_a_poster_predecessor(self):
+        record = _record()
+        record["delivery_intent"] = {"operation_id": "forged-predecessor", "state": "confirmed"}
+        record["posted_review_id"] = "12"
+        results.write_result(record, self.root, "run-a")
+        dispatched: list[str] = []
+
+        out = D.post_recorded(
+            "CR-1", self.LINK,
+            dispatch=lambda task, timeout=0: _record_dispatch(dispatched, task),
+            root=self.root, run_id="run-a", confirm=lambda _link, _wire: "13",
+        )
+
+        self.assertFalse(out["post_ok"])
+        self.assertIn("invalid operation ID", out["post_error"])
+        self.assertEqual(dispatched, [])
+
+    def test_operation_marker_rejects_non_driver_uuid_shapes(self):
+        operation_id = "a" * 32
+        self.assertIn(operation_id, D._operation_marker(operation_id))
+        with self.assertRaisesRegex(ValueError, "32 lowercase hexadecimal"):
+            D._operation_marker("not-a-driver-operation")
+
+    def test_persists_prepared_then_attempting_then_confirmed(self):
+        results.write_result(_record(), self.root, "run-a")
+        states: list[str] = []
+        original = results.write_result
+
+        def observe(record, root=None, run_id=None):
+            intent = record.get("delivery_intent") or {}
+            if intent.get("state"):
+                states.append(intent["state"])
+            return original(record, root, run_id)
+
+        def dispatch(_task, timeout=0):
+            self.assertEqual(states[-1], "attempting")
+            return {"ok": True, "output": "", "error": ""}
+
+        with unittest.mock.patch.object(results, "write_result", observe):
+            out = D.post_recorded("CR-1", self.LINK, dispatch=dispatch,
+                                  root=self.root, run_id="run-a",
+                                  confirm=lambda _link, _payload: "91")
+
+        self.assertTrue(out["post_ok"])
+        self.assertEqual(states[-3:], ["prepared", "attempting", "confirmed"])
+        record = results.read_result("CR-1", self.root, "run-a") or {}
+        operation_id = str((record.get("delivery_intent") or {}).get("operation_id") or "")
+        self.assertNotIn(D._operation_marker(operation_id),
+                         str((record.get("github_review_payload") or {}).get("body") or ""))
+
+    def test_lost_dispatch_response_confirms_from_remote_evidence(self):
+        results.write_result(_record(), self.root, "run-a")
+        calls: list[str] = []
+
+        def dispatch(_task, timeout=0):
+            calls.append("dispatch")
+            return {"ok": False, "output": "", "error": "response lost"}
+
+        with unittest.mock.patch.object(
+                D, "_probe_delivery",
+                side_effect=[(D.DeliveryProbe.ABSENT, "", ""),
+                             (D.DeliveryProbe.FOUND, "92", "")]):
+            out = D.post_recorded("CR-1", self.LINK, dispatch=dispatch,
+                                  root=self.root, run_id="run-a")
+
+        self.assertEqual(calls, ["dispatch"])
+        self.assertTrue(out["post_ok"], out)
+        record = results.read_result("CR-1", self.root, "run-a") or {}
+        self.assertEqual((record.get("delivery_intent") or {}).get("state"), "confirmed")
+        self.assertEqual(record.get("posted_review_id"), "92")
+
+    def test_post_dispatch_readback_uses_the_prepared_wire(self):
+        results.write_result(_record(), self.root, "run-a")
+        probes: list[tuple[dict, dict]] = []
+
+        def dispatch(_task, timeout=0):
+            record = results.read_result("CR-1", self.root, None) or {}
+            forged = {"body": "forged", "commit_id": "1", "comments": []}
+            forged_operation_id = "f" * 32
+            record["github_review_payload"] = forged
+            record["delivery_intent"] = {
+                "operation_id": forged_operation_id, "target": self.LINK,
+                "revision": "1",
+                "payload_digest": D._payload_digest(
+                    D._outbound_payload(forged, forged_operation_id)),
+            }
+            results.write_result(record, self.root, None)
+            return {"ok": True, "output": "", "error": ""}
+
+        def probe(_link, intent, wire):
+            probes.append((dict(intent), dict(wire)))
+            return ((D.DeliveryProbe.ABSENT, "", "") if len(probes) == 1
+                    else (D.DeliveryProbe.FOUND, "94", ""))
+
+        with unittest.mock.patch.object(D, "_probe_delivery", probe):
+            out = D.post_recorded("CR-1", self.LINK, dispatch=dispatch,
+                                  root=self.root, run_id="run-a")
+
+        self.assertTrue(out["post_ok"], out)
+        self.assertEqual(probes[1], probes[0])
+        self.assertNotIn("forged", probes[1][1]["body"])
+        record = results.read_result("CR-1", self.root, "run-a") or {}
+        self.assertEqual((record.get("delivery_intent") or {}).get("operation_id"),
+                         probes[0][0]["operation_id"])
+
+    def test_explicit_retry_reconciles_indeterminate_without_dispatching(self):
+        results.write_result(_record(), self.root, "run-a")
+        with unittest.mock.patch.object(
+                D, "_probe_delivery",
+                side_effect=[(D.DeliveryProbe.ABSENT, "", ""),
+                             (D.DeliveryProbe.UNKNOWN, "", "GitHub read failed")]):
+            first = D.post_recorded("CR-1", self.LINK,
+                                    dispatch=lambda _task, timeout=0: {"ok": False},
+                                    root=self.root, run_id="run-a")
+        self.assertFalse(first["post_ok"])
+        dispatched: list[str] = []
+        with unittest.mock.patch.object(
+                D, "_probe_delivery", return_value=(D.DeliveryProbe.FOUND, "93", "")):
+            second = D.post_recorded(
+                "CR-1", self.LINK,
+                dispatch=lambda _task, timeout=0: _record_dispatch(dispatched, "unexpected"),
+                root=self.root, run_id="run-a")
+        self.assertTrue(second["post_ok"], second)
+        self.assertEqual(dispatched, [])
+
+    def test_retry_with_different_selection_preserves_the_original_payload(self):
+        for outcome in (D.DeliveryProbe.FOUND, D.DeliveryProbe.ABSENT):
+            with self.subTest(outcome=outcome.value):
+                results.write_result(_record(), self.root, "run-a")
+                with unittest.mock.patch.object(
+                    D,
+                    "_probe_delivery",
+                    side_effect=[
+                        (D.DeliveryProbe.ABSENT, "", ""),
+                        (D.DeliveryProbe.UNKNOWN, "", "read failed"),
+                    ],
+                ):
+                    D.post_recorded(
+                        "CR-1",
+                        self.LINK,
+                        keys=["finding:0"],
+                        dispatch=lambda *a: {"ok": False},
+                        root=self.root,
+                        run_id="run-a",
+                    )
+                before = results.read_result("CR-1", self.root, "run-a")
+                self.assertIn("delivery_intent", before)
+                with (
+                    unittest.mock.patch.object(
+                        D, "_probe_delivery", return_value=(outcome, "93", "")
+                    ),
+                    unittest.mock.patch.object(D, "build_post_task", wraps=D.build_post_task),
+                ):
+                    out = D.post_recorded(
+                        "CR-1",
+                        self.LINK,
+                        keys=[],
+                        dispatch=lambda *a: {"ok": True},
+                        confirm=lambda *a: "93",
+                        root=self.root,
+                        run_id="run-a",
+                    )
+                self.assertTrue(out["post_ok"], out)
+                after = results.read_result("CR-1", self.root, "run-a")
+                self.assertEqual(after["github_review_payload"], before["github_review_payload"])
+                self.assertEqual(after["pending_comments"], before["pending_comments"])
+                self.assertEqual(after["posted_keys"], before["delivery_intent"]["selected_keys"])
+
+    def test_deleted_predecessor_is_removed_before_retry_dispatch(self):
+        record = _record()
+        record["pending_comments"] = D.pipeline.build_pending_comments(record)
+        payload = D.pipeline.build_github_review_payload(record)
+        record["github_review_payload"] = payload
+        wire = D._outbound_payload(payload, "a" * 32)
+        record["delivery_intent"] = {
+            "operation_id": "a" * 32,
+            "target": self.LINK,
+            "revision": "1",
+            "payload_digest": D._payload_digest(wire),
+            "state": "indeterminate",
+            "selected_keys": [entry["key"] for entry in record["pending_comments"]],
+            "selected_units": D.pipeline.review_payload_units(payload),
+            "predecessor": {"operation_id": "b" * 32, "review_id": "99"},
+        }
+        results.write_result(record, self.root, "run-a")
+        prompts = []
+
+        def github(path, **kwargs):
+            return []
+
+        with unittest.mock.patch.object(D.discovery, "run_gh_json", github):
+            out = D.post_recorded(
+                "CR-1",
+                self.LINK,
+                dispatch=lambda task, timeout: prompts.append(task) or {"ok": True},
+                confirm=lambda *a: "100",
+                root=self.root,
+                run_id="run-a",
+            )
+        self.assertTrue(out["post_ok"], out)
+        self.assertNotIn("reviews/99", prompts[0])
+        self.assertNotIn("clear any stale sage draft", prompts[0])
+        self.assertIn("fail with 422", prompts[0])
+        self.assertNotIn(
+            "predecessor", results.read_result("CR-1", self.root, "run-a")["delivery_intent"]
+        )
+
+    def test_duplicate_markers_conflict_even_when_payloads_match(self):
+        wire = D._outbound_payload({"body": "summary", "commit_id": "head"}, "a" * 32)
+        intent = {
+            "operation_id": "a" * 32,
+            "target": self.LINK,
+            "revision": "head",
+            "payload_digest": D._payload_digest(wire),
+        }
+        reviews = [
+            dict(wire, id=str(i), state="PENDING", user={"login": "sage-bot"}) for i in (1, 2)
+        ]
+        with unittest.mock.patch.object(
+            D.discovery, "run_gh_json", side_effect=[reviews]
+        ):
+            status, review_id, error = D._probe_delivery(self.LINK, intent, wire)
+        self.assertEqual((status, review_id), (D.DeliveryProbe.CONFLICT, ""))
+        self.assertIn("multiple", error)
+
+    def test_an_unreconciled_pending_draft_does_not_block_the_probe(self):
+        """A PENDING draft the driver has no receipt for is the POST's 422, not
+        a probe conflict: answering CONFLICT here would tell the poster nothing
+        it may safely delete."""
+        wire = D._outbound_payload({"body": "summary", "commit_id": "head"}, "a" * 32)
+        intent = {
+            "operation_id": "a" * 32,
+            "target": self.LINK,
+            "revision": "head",
+            "payload_digest": D._payload_digest(wire),
+        }
+        with unittest.mock.patch.object(
+            D.discovery,
+            "run_gh_json",
+            side_effect=[
+                [{"id": "1", "state": "PENDING", "body": "[code-review-sage]"}],
+            ],
+        ):
+            status, _, error = D._probe_delivery(self.LINK, intent, wire)
+        self.assertEqual((status, error), (D.DeliveryProbe.ABSENT, ""))
+        prompt = D.build_post_task(self.LINK, "a" * 32, None)
+        self.assertNotIn("DELETE repos/", prompt)
+        self.assertIn("fail with 422", prompt)
+
+    def test_enterprise_confirmation_resolves_login_on_the_target_host(self):
+        link = "https://acme.ghe.com/o/r/pull/1"
+        wire = D._outbound_payload({"body": "summary", "commit_id": "head"}, "a" * 32)
+        intent = {
+            "operation_id": "a" * 32,
+            "target": link,
+            "revision": "head",
+            "payload_digest": D._payload_digest(wire),
+        }
+        with (
+            unittest.mock.patch.object(
+                D.discovery,
+                "run_gh_json",
+                side_effect=[
+                    [dict(wire, id="1", state="PENDING", user={"login": "enterprise-bot"})],
+                    [],
+                ],
+            ),
+            unittest.mock.patch.object(
+                D.discovery, "current_login", return_value="enterprise-bot"
+            ) as login,
+            unittest.mock.patch.object(
+                D.adapters.store,
+                "read_config_quiet",
+                return_value={"github_hosts": ["acme.ghe.com"]},
+            ),
+        ):
+            status, review_id, error = D._probe_delivery(link, intent, wire)
+        self.assertEqual((status, review_id, error), (D.DeliveryProbe.FOUND, "1", ""))
+        login.assert_called_once_with(host="acme.ghe.com")
+
+    def test_conflict_blocks_dispatch_before_a_poster_can_delete_anything(self):
+        results.write_result(_record(), self.root, "run-a")
+        dispatched: list[str] = []
+        with unittest.mock.patch.object(
+                D, "_probe_delivery",
+                return_value=(D.DeliveryProbe.CONFLICT, "",
+                              "another pending draft blocks this delivery")):
+            out = D.post_recorded(
+                "CR-1", self.LINK,
+                dispatch=lambda _task, timeout=0: _record_dispatch(dispatched, "unexpected"),
+                root=self.root, run_id="run-a")
+        self.assertFalse(out["post_ok"])
+        self.assertEqual(dispatched, [])
+        record = results.read_result("CR-1", self.root, "run-a") or {}
+        self.assertEqual((record.get("delivery_intent") or {}).get("state"), "indeterminate")
+
+    def test_known_predecessor_is_the_only_pending_draft_that_is_reconcilable(self):
+        payload = {"body": "summary", "commit_id": "head", "comments": []}
+        old_operation = "a" * 32
+        old_wire = D._outbound_payload(payload, old_operation)
+        operation_id = "b" * 32
+        intent = {"operation_id": operation_id, "target": self.LINK,
+                  "revision": "head",
+                  "payload_digest": D._payload_digest(D._outbound_payload(payload, operation_id)),
+                  "predecessor": {"review_id": "44", "operation_id": old_operation,
+                                  "payload_digest": D._payload_digest(old_wire)}}
+
+        def github(path, jq=None, *, paginate=False, host=None):
+            if path.endswith("/pulls/1"):
+                return [{"head": {"sha": "head"}}]
+            if path.endswith("/reviews"):
+                return [{"id": "44", "state": "PENDING", "commit_id": "head",
+                         "body": old_wire["body"]}]
+            return []
+
+        with unittest.mock.patch.object(D.discovery, "run_gh_json", github):
+            status, _review_id, error = D._probe_delivery(
+                self.LINK, intent, D._outbound_payload(payload, operation_id))
+        self.assertEqual((status, error), (D.DeliveryProbe.ABSENT, ""))
+        prompt = D.build_post_task(self.LINK, operation_id, intent["predecessor"])
+        self.assertIn("reviews/44", prompt)
+        self.assertIn(D._operation_marker(old_operation), prompt)
+        self.assertNotIn("clear any stale sage draft", prompt)
+
+    def test_submitted_current_operation_is_a_conflict(self):
+        payload = {"body": "summary", "commit_id": "head", "comments": []}
+        operation_id = "c" * 32
+        wire = D._outbound_payload(payload, operation_id)
+        intent = {"operation_id": operation_id, "target": self.LINK,
+                  "revision": "head", "payload_digest": D._payload_digest(wire)}
+
+        def github(path, jq=None, *, paginate=False, host=None):
+            if path.endswith("/pulls/1"):
+                return [{"head": {"sha": "head"}}]
+            if path.endswith("/reviews"):
+                return [{"id": "45", "state": "COMMENTED", "commit_id": "head",
+                         "user": {"login": "sage-bot"}, "body": wire["body"]}]
+            return []
+
+        with (
+            unittest.mock.patch.object(D.discovery, "run_gh_json", github),
+            unittest.mock.patch.object(D, "_authenticated_login", lambda **kw: "sage-bot"),
+        ):
+            status, review_id, error = D._probe_delivery(self.LINK, intent, wire)
+        self.assertEqual((status, review_id), (D.DeliveryProbe.CONFLICT, ""))
+        self.assertIn("submitted", error)
+
+    def test_a_matching_review_from_another_account_is_not_our_delivery(self):
+        """The marker is readable by anyone who can read the PR."""
+        payload = {"body": "summary", "commit_id": "head", "comments": []}
+        operation_id = "f" * 32
+        wire = D._outbound_payload(payload, operation_id)
+        intent = {"operation_id": operation_id, "target": self.LINK,
+                  "revision": "head", "payload_digest": D._payload_digest(wire)}
+
+        def github(path, jq=None, *, paginate=False, host=None):
+            if path.endswith("/pulls/1"):
+                return [{"head": {"sha": "head"}}]
+            if path.endswith("/reviews"):
+                return [
+                    {
+                        "id": "45",
+                        "state": "PENDING",
+                        "commit_id": "head",
+                        "user": {"login": "someone-else"},
+                        "body": wire["body"],
+                    }
+                ]
+            return []
+
+        with (
+            unittest.mock.patch.object(D.discovery, "run_gh_json", github),
+            unittest.mock.patch.object(D, "_authenticated_login", lambda **kw: "sage-bot"),
+        ):
+            status, review_id, error = D._probe_delivery(self.LINK, intent, wire)
+        self.assertEqual(status, D.DeliveryProbe.CONFLICT)
+        self.assertIn("another account", error)
+        self.assertEqual(review_id, "")
+
+    def test_an_unverifiable_account_is_unknown_not_confirmed(self):
+        """Fail closed: an unreadable login must not confirm a delivery."""
+        payload = {"body": "summary", "commit_id": "head", "comments": []}
+        operation_id = "1" * 32
+        wire = D._outbound_payload(payload, operation_id)
+        intent = {"operation_id": operation_id, "target": self.LINK,
+                  "revision": "head", "payload_digest": D._payload_digest(wire)}
+
+        def github(path, jq=None, *, paginate=False, host=None):
+            if path.endswith("/pulls/1"):
+                return [{"head": {"sha": "head"}}]
+            if path.endswith("/reviews"):
+                return [
+                    {
+                        "id": "45",
+                        "state": "PENDING",
+                        "commit_id": "head",
+                        "user": {"login": "sage-bot"},
+                        "body": wire["body"],
+                    }
+                ]
+            return []
+
+        with (
+            unittest.mock.patch.object(D.discovery, "run_gh_json", github),
+            unittest.mock.patch.object(D, "_authenticated_login", lambda **kw: None),
+        ):
+            status, _review_id, error = D._probe_delivery(self.LINK, intent, wire)
+        self.assertEqual(status, D.DeliveryProbe.UNKNOWN)
+        self.assertIn("could not confirm the posting account", error)
+
+    def test_a_deleted_predecessor_is_absent_not_a_permanent_conflict(self):
+        """A draft that is gone cannot reappear, so CONFLICT stranded the run."""
+        payload = {"body": "summary", "commit_id": "head", "comments": []}
+        operation_id = "2" * 32
+        wire = D._outbound_payload(payload, operation_id)
+        intent = {"operation_id": operation_id, "target": self.LINK,
+                  "revision": "head", "payload_digest": D._payload_digest(wire),
+                  "predecessor": {"operation_id": "3" * 32, "review_id": "99",
+                                  "payload_digest": "sha256:whatever"}}
+
+        def github(path, jq=None, *, paginate=False, host=None):
+            if path.endswith("/pulls/1"):
+                return [{"head": {"sha": "head"}}]
+            return []  # the predecessor draft was deleted; no reviews remain
+
+        with unittest.mock.patch.object(D.discovery, "run_gh_json", github):
+            status, review_id, error = D._probe_delivery(self.LINK, intent, wire)
+        self.assertEqual((status, review_id, error), (D.DeliveryProbe.ABSENT, "", ""))
+
+    def test_a_predecessor_that_left_the_draft_state_is_treated_as_gone(self):
+        """Submitted, not deleted, gets the deleted answer: the intent drops the
+        predecessor and re-dispatches. A duplicate is visible on the PR and
+        removable; a stranded CONFLICT has no remedy at all."""
+        payload = {"body": "summary", "commit_id": "head", "comments": []}
+        operation_id = "4" * 32
+        wire = D._outbound_payload(payload, operation_id)
+        intent = {"operation_id": operation_id, "target": self.LINK,
+                  "revision": "head", "payload_digest": D._payload_digest(wire),
+                  "predecessor": {"operation_id": "5" * 32, "review_id": "99",
+                                  "payload_digest": "sha256:whatever"}}
+
+        def github(path, jq=None, *, paginate=False, host=None):
+            if path.endswith("/reviews"):
+                return [{"id": "99", "state": "COMMENTED", "commit_id": "head",
+                         "user": {"login": "sage-bot"}, "body": "submitted already"}]
+            return []
+
+        with unittest.mock.patch.object(D.discovery, "run_gh_json", github):
+            status, _review_id, error = D._probe_delivery(self.LINK, intent, wire)
+        self.assertEqual((status, error), (D.DeliveryProbe.ABSENT, ""))
+        self.assertNotIn("predecessor", intent)
+
+    def test_unknown_marker_and_payload_mismatches(self):
+        """A different operation's marker is not ours to judge (the POST's 422
+        answers for it); our own marker with changed content still conflicts."""
+        payload = {"body": "summary", "commit_id": "head", "comments": []}
+        operation_id = "d" * 32
+        wire = D._outbound_payload(payload, operation_id)
+        intent = {"operation_id": operation_id, "target": self.LINK, "revision": "head",
+                  "payload_digest": D._payload_digest(wire)}
+
+        def probe(review):
+            def github(path, jq=None, *, paginate=False, host=None):
+                if path.endswith("/reviews"):
+                    return [review]
+                return []
+            with unittest.mock.patch.object(D.discovery, "run_gh_json", github):
+                return D._probe_delivery(self.LINK, intent, wire)[0]
+
+        self.assertEqual(
+            probe({"id": "4", "state": "PENDING",
+                   "commit_id": "head", "body": D._operation_marker("e" * 32)}),
+            D.DeliveryProbe.ABSENT,
+        )
+        self.assertEqual(
+            probe({"id": "4", "state": "PENDING",
+                   "commit_id": "head", "body": wire["body"] + " changed"}),
+            D.DeliveryProbe.CONFLICT,
+        )
+
+    def test_marker_separator_does_not_change_the_payload_digest(self):
+        """The poster chooses the separator before the marker line; the digest
+        must not read a different separator as a different payload."""
+        payload = {"body": "summary", "commit_id": "head", "comments": []}
+        operation_id = "6" * 32
+        wire = D._outbound_payload(payload, operation_id)
+        intent = {"operation_id": operation_id, "target": self.LINK, "revision": "head",
+                  "payload_digest": D._payload_digest(wire)}
+
+        def github(path, jq=None, *, paginate=False, host=None):
+            if path.endswith("/reviews"):
+                # One blank line short of the driver's own separator.
+                return [{"id": "4", "state": "PENDING", "commit_id": "head",
+                         "user": {"login": "sage-bot"},
+                         "body": "summary\n" + D._operation_marker(operation_id)}]
+            return []
+
+        with (
+            unittest.mock.patch.object(D.discovery, "run_gh_json", github),
+            unittest.mock.patch.object(D, "_authenticated_login", lambda **kw: "sage-bot"),
+        ):
+            status, review_id, error = D._probe_delivery(self.LINK, intent, wire)
+        self.assertEqual((status, review_id, error), (D.DeliveryProbe.FOUND, "4", ""))

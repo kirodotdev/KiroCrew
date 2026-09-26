@@ -76,6 +76,10 @@ from sage_lib import (  # noqa: E402,E501
 # per-change detail.
 _RUNS: list[dict[str, Any]] = []
 _RUNS_MAX = 25
+# Run ids whose `posting` flag survived a restart. `_load_runs` records them
+# here; the posting-recovery startup hook consumes the list and marks the
+# prepared/attempting delivery intents indeterminate.
+_POSTING_RECOVERY_IDS: list[str] = []
 _LOCK = LoopBoundLock()
 # Guards the claim/dedup step below. Runs themselves are NOT serialized: each run
 # owns a private ``data/runs/<run_id>/`` subtree (results + report), so several
@@ -187,6 +191,20 @@ async def _save_runs() -> None:
         logger.warning("failed to persist runs.json", exc_info=True)
 
 
+def _mark_restart_delivery_indeterminate(run_id: str) -> str:
+    """Persist restart ambiguity before reopening a run for an explicit retry."""
+    message = "Posting was interrupted by a gateway restart; reconcile before posting again."
+    for record in results.list_results(None, run_id):
+        intent = record.get("delivery_intent")
+        if not isinstance(intent, dict) or intent.get("state") not in {"prepared", "attempting"}:
+            continue
+        intent["state"] = "indeterminate"
+        intent["error"] = message
+        record["delivery_intent"] = intent
+        results.write_result(record, None, run_id)
+    return message
+
+
 def _load_runs() -> None:
     """Load persisted runs on startup. Any run still marked ``running`` is
     re-marked ``interrupted`` — its in-process driver thread did not survive the
@@ -201,8 +219,14 @@ def _load_runs() -> None:
     ``posted_keys`` is only written on delivery evidence, so whatever actually
     landed stays recorded and ``_pending_comment_count`` offers exactly the
     remainder on the next post.
+
+    Clearing the flag is the only work this function does: marking the delivery
+    intents indeterminate walks every result record of the run and re-writes each
+    one, which is a startup-hook concern, not a registry read. Runs that were
+    posting are recorded in ``_POSTING_RECOVERY_IDS`` for the hook to recover.
     """
     global _RUNS
+    _POSTING_RECOVERY_IDS.clear()
     try:
         f = _runs_file()
         if not f.is_file():
@@ -218,13 +242,41 @@ def _load_runs() -> None:
                 r["error"] = "Interrupted by a gateway restart — re-run the review."
                 r.setdefault("finished_at", _now())
             if r.get("posting"):
+                run_id = str(r.get("run_id") or "")
+                if run_id:
+                    _POSTING_RECOVERY_IDS.append(run_id)
                 r["posting"] = False
-                r["post_error"] = (
-                    "Posting was interrupted by a gateway restart — comments already "
-                    "delivered are marked as sent; post again to send the rest.")
+                r["post_error"] = ("Posting was interrupted by a gateway restart; "
+                                   "reconcile before posting again.")
         _RUNS = data[:_RUNS_MAX]
     except Exception:  # pragma: no cover - defensive
         logger.warning("failed to load runs.json", exc_info=True)
+
+
+def _recover_interrupted_posting() -> None:
+    """Mark prepared/attempting delivery intents on restart-interrupted postings.
+
+    Each interrupted run has its in-process posting task gone, so an intent left
+    ``prepared`` or ``attempting`` can never be reconciled by the task that owned
+    it. Re-marking it ``indeterminate`` (with the restart error) makes the next
+    explicit post re-probe GitHub and only then re-dispatch. Runs whose recovery
+    cannot be persisted keep the generic restart error on their registry entry,
+    so the page still tells the user to reconcile rather than silently claiming
+    the posting is healthy.
+    """
+    for run_id in _POSTING_RECOVERY_IDS:
+        try:
+            _mark_restart_delivery_indeterminate(run_id)
+        except (OSError, ValueError) as exc:
+            for run in _RUNS:
+                if str(run.get("run_id") or "") == run_id:
+                    run["post_error"] = (
+                        "Posting recovery could not persist delivery intent: "
+                        f"{exc}; reconcile before posting again."
+                    )
+                    break
+            logger.error(
+                "code-review-sage posting intent recovery failed", exc_info=True)
 
 
 def _is_live(run: dict) -> bool:
@@ -1127,6 +1179,15 @@ async def _post_comments_bg(run_id: str, run: dict,
         # only after the records above reflect what actually landed.
         await asyncio.to_thread(_record_reviewed, run)
         await _notify_posted(run, posted, bool(failed))
+    except (OSError, ValueError) as exc:
+        logger.exception("posting delivery intent persistence failed")
+        async with _LOCK:
+            run["posting"] = False
+            run["post_error"] = (
+                "posting durability state could not be persisted; reconcile the "
+                f"pull request before posting again: {exc}")
+            await _save_runs()
+        raise
     except Exception as e:
         logger.exception("posting comments failed")
         async with _LOCK:
@@ -2424,10 +2485,23 @@ def register_routes(app: web.Application) -> None:
     #
     # `_load_runs` is the one that stays inline, and it is the cheap one: a single
     # `read_text` of one registry file, which returns immediately when the file is
-    # absent. What both hooks keep is the ordering the UI depends on -- aiohttp
-    # runs `on_startup` before the site accepts a connection, so a request never
-    # observes a missing `resolved_paths` or an empty `_RUNS`, which is what it
-    # would render as a perpetual "Initializing" message.
+    # absent. Posting recovery is NOT cheap — it walks every result record of
+    # each interrupted run and re-writes each one — so
+    # `_recover_interrupted_posting` runs as its own startup hook, off the
+    # loop, like the layout and reap passes. What the hooks keep is the ordering
+    # the UI depends on — aiohttp runs `on_startup` before the site accepts a
+    # connection, so a request never observes a missing `resolved_paths` or an
+    # empty `_RUNS`, which is what it would render as a perpetual "Initializing"
+    # message.
+
+    async def _recover_posting_on_startup(_app: web.Application) -> None:
+        try:
+            await asyncio.to_thread(_recover_interrupted_posting)
+        except Exception:  # pragma: no cover - never break startup
+            logger.warning(
+                "code-review-sage: posting recovery failed at startup", exc_info=True)
+
+    app.on_startup.append(_recover_posting_on_startup)
 
     async def _reap_on_startup(_app: web.Application) -> None:
         try:

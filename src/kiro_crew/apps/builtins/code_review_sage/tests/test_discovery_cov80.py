@@ -66,6 +66,21 @@ class TestCurrentLogin(unittest.TestCase):
         self.assertIsInstance(captured["argv"], list)
         self.assertEqual(captured["argv"], [_stub_bin("gh"), "api", "user", "--jq", ".login"])
 
+    def test_current_login_pins_the_requested_host(self):
+        with (
+            unittest.mock.patch.object(discovery, "gh_bin", return_value=_stub_bin("gh")),
+            unittest.mock.patch.object(
+                discovery,
+                "_run_gh",
+                return_value=subprocess.CompletedProcess([], 0, "enterprise-bot\n", ""),
+            ) as run,
+        ):
+            self.assertEqual(discovery.current_login(host="acme.ghe.com"), "enterprise-bot")
+        self.assertEqual(
+            run.call_args.args[0],
+            [_stub_bin("gh"), "api", "user", "--jq", ".login", "--hostname", "acme.ghe.com"],
+        )
+
     def test_empty_output_is_no_login_not_an_empty_string(self):
         with unittest.mock.patch.object(discovery, "gh_bin", return_value=_stub_bin("gh")), \
              unittest.mock.patch.object(discovery.subprocess, "run",
