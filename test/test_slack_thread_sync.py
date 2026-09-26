@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+from kiro_crew.dashboard.state import DashboardState, _ChatSlot, _link_binding_token
 from kiro_crew.history import ConversationLog
 from kiro_crew.messaging.link import ChannelLink
 
@@ -196,7 +196,14 @@ class TestChannelNeutralSlotLinks:
                 "channel": "discord",
                 "label": "Discord DM",
                 "target": "…767244",
+                # The row's identity for an unlink: a digest of the whole binding,
+                # minted from the normalized (namespace-stripped) id.
+                "binding": _link_binding_token(ChannelLink("discord", "356163505868767244")),
                 "direction": "origin",
+                # The conversation the session was born in is where its turns
+                # come from -- the server says so on the row, so the client
+                # never has to infer inbound routing from direction or channel.
+                "drives_session": True,
                 "live": True,
                 # Present on EVERY row, origin included: the conversation a
                 # session was born in can be disconnected too, so the row needs
@@ -222,7 +229,9 @@ class TestChannelNeutralSlotLinks:
                 "channel": "discord",
                 "label": "Discord DM",
                 "target": "…767244",
+                "binding": _link_binding_token(ChannelLink("discord", "356163505868767244")),
                 "direction": "out",
+                "drives_session": False,
                 "live": True,
                 "paused": False,
             }
@@ -247,6 +256,7 @@ class TestChannelNeutralSlotLinks:
         payload = state.serialize_slot(state.get_or_create_slot("s1"))
 
         assert [link["direction"] for link in payload["links"]] == ["both"]
+        assert [link["drives_session"] for link in payload["links"]] == [True]
         assert payload["slack_linked"] is False
 
     def test_outbound_only_mirror_stays_out(self, tmp_path, monkeypatch):
@@ -262,6 +272,7 @@ class TestChannelNeutralSlotLinks:
         payload = state.serialize_slot(state.get_or_create_slot("s1"))
 
         assert [link["direction"] for link in payload["links"]] == ["out"]
+        assert [link["drives_session"] for link in payload["links"]] == [False]
 
     def test_missing_inbound_accessor_degrades_to_out(self, tmp_path, monkeypatch):
         """A SessionManager without the accessor must not drop the link."""
@@ -277,6 +288,7 @@ class TestChannelNeutralSlotLinks:
         payload = state.serialize_slot(state.get_or_create_slot("s1"))
 
         assert [link["direction"] for link in payload["links"]] == ["out"]
+        assert [link["drives_session"] for link in payload["links"]] == [False]
 
     def test_real_slack_link_remains_slack_linked(self, tmp_path):
         state = _make_state(tmp_path)
@@ -293,3 +305,9 @@ class TestChannelNeutralSlotLinks:
         assert payload["slack_channel"] == "C123"
         assert payload["slack_thread_ts"] == "1712793600.123456"
         assert payload["links"][0]["channel"] == "slack"
+        # Marked `out` -- Slack routes inbound through its own thread index, not
+        # the mirror's marker -- yet a reply in the thread resumes this session,
+        # and the row says so rather than leaving the client to infer it from
+        # the channel name.
+        assert payload["links"][0]["direction"] == "out"
+        assert payload["links"][0]["drives_session"] is True

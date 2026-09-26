@@ -6732,7 +6732,9 @@
       "worktree_disabled_no_project_directory": "«Añadir a esta sesión» precarga el editor de mensajes — no se envía nada hasta que pulsas enviar. Los worktrees no están disponibles aquí: esta sesión no tiene directorio de proyecto (elige uno con el chip Proyecto del editor)."
     },
     "inboundLinkChip": {
-      "driven_from": "Controlada desde {{label}}"
+      "driven_from": "Controlada desde {{label}}",
+      "driven_from_paused": "Controlada desde {{label}} · respuestas en pausa",
+      "driven_from_paused_hint": "Reanuda o desvincula {{label}}."
     },
     "infoTip": {
       "more_information": "Más información"
@@ -7082,6 +7084,15 @@
       "connect_to": "Conectar con {{label}}",
       "disconnect_failed": "No se pudo desconectar de {{label}}: {{reason}}",
       "disconnect_from": "Desconectar de {{label}}",
+      "disconnect_outcome": "Pausa las respuestas — el vínculo se mantiene",
+      "resume_replies_to": "Reanudar respuestas a {{label}}",
+      "still_linked": "Respuestas en pausa — el vínculo se mantiene; los mensajes de allí siguen llegando a esta sesión.",
+      "still_linked_out": "Respuestas en pausa — el vínculo se mantiene; los mensajes de allí no llegan a esta sesión.",
+      "unlink_failed": "No se pudo desvincular de {{label}}: {{reason}}",
+      "unlink_from": "Desvincular de {{label}}",
+      "unlink_outcome": "Elimina el vínculo — {{label}} deja de controlar esta sesión. Puedes volver a conectar en cualquier momento desde el menú de la sesión.",
+      "unlink_outcome_out": "Elimina el vínculo — las respuestas dejan de ir a {{label}}. Puedes volver a conectar en cualquier momento desde el menú de la sesión.",
+      "unlink_stale": "{{label}} ya no está vinculado a esta sesión; el menú estaba desactualizado. No se desvinculó nada.",
       "held_elsewhere": "{{label}} está en uso por otra sesión.",
       "unavailable": "Este destino no está disponible.",
       "unknown_error": "error desconocido",

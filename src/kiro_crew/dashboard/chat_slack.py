@@ -24,8 +24,14 @@ from kiro_crew.dashboard.chat_utils import (
     remember_slack_options,
     slack_options_owner_keys_snapshot,
 )
-from kiro_crew.dashboard.state import DashboardState, _log_task_exception
-from kiro_crew.messaging.link import SLACK_NAMESPACE
+from kiro_crew.dashboard.state import (
+    DashboardState,
+    _binding_matches,
+    _expected_binding,
+    _log_task_exception,
+    _slack_link_nonce,
+)
+from kiro_crew.messaging.link import SLACK_NAMESPACE, ChannelLink
 from kiro_crew.platform.context import redact_via_context
 from kiro_crew.platform.governance_profiles import vet_and_audit
 from kiro_crew.security import redact_and_truncate
@@ -513,6 +519,36 @@ async def api_chat_slot_slack_unlink(request: web.Request) -> web.Response:
     # answer.
     prev_channel = slot._slack_channel
     prev_thread_ts = slot._slack_thread_ts
+    # Same guard as mirror-unlink, on the Slack fields the row is projected from:
+    # a stale Slack row must not tear down a thread this slot was re-linked to
+    # after that row was drawn. No await between this read and the clear below.
+    expected = await _expected_binding(request)
+    if expected is not None:
+        thread_ts, channel = state.sessions.get_slack_link(session_key)
+        current = (
+            ChannelLink(SLACK_NAMESPACE, channel_id=channel, thread_id=thread_ts)
+            if thread_ts
+            else None
+        )
+        # The link's own nonce: a thread re-linked to the very same coordinates
+        # after an unlink is a new binding and must not read like the old row.
+        nonce = _slack_link_nonce(state, session_key)
+        if not _binding_matches(current, expected, nonce):
+            sel().log_api_access(
+                caller="dashboard",
+                operation="chat.slack_unlink",
+                outcome="denied",
+                source="dashboard",
+                resources=f"{slot.key} reason=mirror_changed",
+            )
+            logger.info("slack unlink: %s refused, the link changed under the menu", slot.key)
+            return web.json_response(
+                {
+                    "error": "the session's linked channel changed; nothing was unlinked",
+                    "code": "mirror_changed",
+                },
+                status=409,
+            )
     cleared = _clear_persisted_link_sync()
     slot._slack_linked = False
     slot._slack_channel = ""

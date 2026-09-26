@@ -739,6 +739,130 @@ def _redacted_link_target(target: str | None) -> str:
     return f"…{safe[-6:]}"
 
 
+def _link_binding_token(link: ChannelLink, nonce: str = "") -> str:
+    """The opaque identity of one binding, as the slots row carries it.
+
+    A digest over the WHOLE binding -- channel type, the full conversation id,
+    the thread id, and the binding's own persisted *nonce* -- so two threads in
+    one Slack channel, or two channels that share a redacted six-character
+    tail, are told apart, and so are two bindings to the SAME target made at
+    different times. The row shows the redacted tail (``target``) and carries
+    this token beside it; an unlink names the token, and the endpoint recomputes
+    it from the binding it holds (``_binding_identity`` below), so a row drawn
+    from a binding that has since been replaced never matches the replacement.
+    The nonce is what makes that hold when the replacement is byte-identical:
+    ``SessionMap`` mints one whenever a binding is created or its target
+    changes and drops it with the binding, so unlink -> reconnect the same
+    target yields a new token and a delayed unlink naming the old row is
+    refused instead of deleting the new binding. A binding written before nonces
+    existed has none, and its token digests the coordinates alone as it always
+    did -- the binding that REPLACES it carries a nonce, which is all the guard
+    needs. The channel id is normalized the way the row is -- a ``<type>:``
+    namespace matching the channel type is stripped -- so a Discord id stored
+    namespaced and a bare one yield the same token. Opaque on purpose: the raw
+    id and the nonce never reach the browser, and the digest is neither.
+    """
+    channel_type = (link.channel_type or "").lower()
+    channel_id = link.channel_id or ""
+    nested = _split_namespaced_channel_id(channel_id)
+    if nested and nested[0] == channel_type:
+        channel_id = nested[1]
+    parts = ["kirocrew-link-binding", channel_type, channel_id, link.thread_id or ""]
+    if nonce:
+        parts.append(nonce)
+    material = "\0".join(parts)
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+
+
+# The stale-row guard the two unlink endpoints (``chat_mirror.mirror-unlink``,
+# ``chat_slack.slack-unlink``) share. It lives here, beside the token the slots
+# projection mints, because the three pieces -- mint the row's token, read the
+# token a body names, compare the two -- are one contract: the row and the
+# compare cannot disagree when they spell the identity from the same function.
+
+
+async def _expected_binding(request: web.Request) -> tuple[str, str] | None:
+    """The binding an unlink body names -- ``(channel_type, binding)`` -- or None.
+
+    Shared by the mirror and Slack unlink endpoints so both spell the guard the
+    same way. Only a body naming a ``channel_type`` arms the compare; ``binding``
+    is the row's opaque token as the slots projection spells it. A body that
+    names the channel but no token still arms the compare, with a token nothing
+    matches: the caller tried to name a row and failed, and the fail-closed
+    answer is the 409, never the unconditional clear. Anything unparseable reads
+    as no body.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return None
+    if not isinstance(body, dict):
+        return None
+    channel_type = str(body.get("channel_type", "") or "").strip().lower()
+    if not channel_type:
+        return None
+    binding = body.get("binding")
+    return channel_type, (binding.strip() if isinstance(binding, str) else "")
+
+
+def _binding_identity(link: ChannelLink | None, nonce: str = "") -> tuple[str, str]:
+    """A binding as the slots projection spells its row: ``(channel, binding)``.
+
+    The token is the projection's own ``_link_binding_token`` -- a digest of the
+    whole binding, thread id and persisted nonce included -- so the menu's row
+    and this compare cannot disagree, and a thread and its same-channel
+    replacement never read alike: the redacted display tail drops the thread,
+    the token does not; and a binding recreated to the very same target after
+    an unlink carries a new nonce, so it does not read like the old row either.
+    *nonce* is the binding's own, read from the map beside it
+    (``SessionMap.mirror_link_nonce`` / ``slack_link_nonce``). ``("", "")`` for
+    no binding, which no row ever carries.
+    """
+    if link is None:
+        return "", ""
+    return (link.channel_type or "").lower(), _link_binding_token(link, nonce)
+
+
+def _binding_matches(
+    current: ChannelLink | None, expected: tuple[str, str], nonce: str = ""
+) -> bool:
+    """True iff *current* (with its persisted *nonce*) is exactly the binding named in *expected*.
+
+    Channel and token must both match. No binding at all matches nothing, so a
+    click on a row whose binding is already gone is refused rather than
+    reported as an unlink.
+    """
+    return current is not None and _binding_identity(current, nonce) == expected
+
+
+def _mirror_link_nonce(state: "DashboardState", session_key: str) -> str:
+    """The persisted nonce of *session_key*'s mirror binding, ``""`` when none.
+
+    The one reader the slots projection and the ``mirror-unlink`` endpoint
+    share, so the row's token and the compare digest one nonce. Only a string
+    counts: a session double without the accessor, or one that answers it with
+    a mock, reads as no nonce, which keeps the pre-nonce token in force there.
+    """
+    try:
+        value = state.sessions.mirror_link_nonce(session_key)
+    except Exception:
+        return ""
+    return value if isinstance(value, str) else ""
+
+
+def _slack_link_nonce(state: "DashboardState", session_key: str) -> str:
+    """The persisted nonce of *session_key*'s Slack thread link, ``""`` when none.
+
+    Shared by the projection and the ``slack-unlink`` endpoint, same contract as
+    ``_mirror_link_nonce``.
+    """
+    try:
+        value = state.sessions.slack_link_nonce(session_key)
+    except Exception:
+        return ""
+    return value if isinstance(value, str) else ""
+
+
 # Native kiro-cli subagent reconnect policy. The slot state, writer, and replay
 # path all import these bounds so retention cannot drift between modules.
 NATIVE_SUBAGENT_OUTPUT_TAIL = 40_000
@@ -7887,8 +8011,28 @@ class DashboardState:
             and session_key.endswith(slack_ts)
         )
         links: list[dict[str, Any]] = []
+        # The per-binding nonces, read the way the bindings themselves are, so
+        # the row's token and the unlink endpoint's compare digest the same
+        # material. Only a string counts: a session double that predates the
+        # accessors (or answers them with a mock) reads as no nonce.
+        mirror_nonce = _mirror_link_nonce(self, session_key)
+        slack_nonce = _slack_link_nonce(self, session_key)
 
-        def append_link(link: ChannelLink, direction: str) -> None:
+        def append_link(
+            link: ChannelLink, direction: str, nonce: str = "", *, drives_session: bool
+        ) -> None:
+            """Append one row. *drives_session*: messages sent there land in THIS session.
+
+            The inbound-routing fact is the server's to state, per row, because
+            it is not readable from the row's other fields: a Slack thread is
+            marked ``out`` (its inbound routing is Slack's own thread index, not
+            the mirror's inbound marker) yet a reply in it resumes this session;
+            a ``both`` mirror routes inbound by that marker; an ``out`` mirror
+            only receives replies; and the conversation a session was born in
+            is where its turns come from. Judged client-side from ``direction``
+            plus the channel name, a paused Slack row reads as a one-way link --
+            so the client reads this bit and special-cases nothing.
+            """
             channel_type = (link.channel_type or "").lower()
             if not channel_type:
                 return
@@ -7917,7 +8061,14 @@ class DashboardState:
                     "channel": channel_type,
                     "label": _link_label(channel_type),
                     "target": _redacted_link_target(channel_id),
+                    # The row's identity for an unlink: the redacted `target`
+                    # above is display only and drops the thread, so a Slack
+                    # thread and its same-channel replacement would read alike;
+                    # the binding's own nonce keeps a same-target replacement
+                    # from reading alike too.
+                    "binding": _link_binding_token(normalized, nonce),
                     "direction": direction,
+                    "drives_session": drives_session,
                     "live": self._channel_link_is_live(normalized),
                     "paused": paused,
                 }
@@ -7928,9 +8079,12 @@ class DashboardState:
         # mirror. This prefix sniff is intentionally defensive for unknown
         # future channel types too.
         if namespaced_origin and namespaced_origin[0] != SLACK_NAMESPACE:
+            # The conversation the session was born in: the channel dispatcher
+            # routes its messages here on every inbound turn.
             append_link(
                 ChannelLink(namespaced_origin[0], namespaced_origin[1]),
                 "origin",
+                drives_session=True,
             )
 
         if mirror is not None:
@@ -7942,6 +8096,8 @@ class DashboardState:
                     append_link(
                         ChannelLink(SLACK_NAMESPACE, slack_channel, slack_ts),
                         "out",
+                        slack_nonce,
+                        drives_session=True,
                     )
             else:
                 # A resume binding (set by an in-channel `!sessions` pick) routes
@@ -7959,13 +8115,17 @@ class DashboardState:
                     # Older/stubbed SessionManagers may not expose the accessor;
                     # degrade to the outbound reading rather than dropping the link.
                     inbound = False
-                append_link(mirror, "both" if inbound else "out")
+                append_link(
+                    mirror, "both" if inbound else "out", mirror_nonce, drives_session=inbound
+                )
         elif genuine_slack and not slack_origin_self_link:
             # Defensive fallback for SessionManager test doubles or older
             # implementations that expose get_slack_link but not get_mirror_link.
             append_link(
                 ChannelLink(SLACK_NAMESPACE, slack_channel, slack_ts),
                 "out",
+                slack_nonce,
+                drives_session=True,
             )
 
         if genuine_slack and slack_origin_self_link:
@@ -7976,7 +8136,12 @@ class DashboardState:
             # it back. It stays `origin` so the sidebar keeps showing where the
             # conversation came from — provenance is history and survives a
             # disconnect; only the delivery indicator reflects the mute.
-            append_link(ChannelLink(SLACK_NAMESPACE, slack_channel, slack_ts), "origin")
+            append_link(
+                ChannelLink(SLACK_NAMESPACE, slack_channel, slack_ts),
+                "origin",
+                slack_nonce,
+                drives_session=True,
+            )
 
         if genuine_slack and not slack_origin_self_link:
             slack_namespace = _split_namespaced_channel_id(slack_channel)
@@ -7992,7 +8157,12 @@ class DashboardState:
             if not any(
                 row["channel"] == SLACK_NAMESPACE and row["direction"] != "origin" for row in links
             ):
-                append_link(ChannelLink(SLACK_NAMESPACE, slack_channel, slack_ts), "out")
+                append_link(
+                    ChannelLink(SLACK_NAMESPACE, slack_channel, slack_ts),
+                    "out",
+                    slack_nonce,
+                    drives_session=True,
+                )
             return links, True, visible_slack_channel, slack_ts or ""
         return links, False, "", ""
 

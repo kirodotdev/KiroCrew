@@ -4652,7 +4652,12 @@ export const api = {
     { channel_type: channelType, target_id: targetId },
   ).then(j),
   remindMirror: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/mirror-link').then(j),
-  unlinkMirror: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/mirror-unlink').then(j),
+  // Severs the binding a link row names — the session's mirror OR its Slack
+  // thread: `expected` is the row's `{channel_type, binding}` and the server
+  // routes a `slack` binding to the Slack teardown itself, so the menu carries
+  // no channel-to-endpoint assumption. Without `expected`, an unconditional
+  // clear of the mirror for callers that hold no row.
+  unlinkMirror: (slot: string, expected?: { channel_type: string; binding: string }) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/mirror-unlink', expected).then(j),
   slackChannels: () => fetch('/api/slack/channels').then(j),
   // Folders
   chatFolders: () => fetch('/api/chat/folders', { headers: { ..._sk } }).then(j),

@@ -17,6 +17,7 @@ import reducer, {
   sseSubagentStatus,
   sseSubagentText,
   patchSlotLink,
+  dropSlotLinks,
 } from '../store/dashboardSlice'
 import type { StatusData, ChatSlot } from '../types'
 
@@ -513,6 +514,76 @@ describe('dashboardSlice', () => {
         key: 'chat-1', channel: 'discord', patch: { paused: true },
       }))
       expect(rows(state)[0].paused).toBe(true)
+    })
+  })
+
+  describe('dropSlotLinks removes the rows of ONE binding in place', () => {
+    const twoDiscordRows = (): ChatSlot => ({
+      key: 'chat-1',
+      title: 'Chat 1',
+      messages: 1,
+      running: false,
+      pending_approval: false,
+      waiting_for_input: false,
+      last_activity_ts: undefined,
+      slack_linked: true,
+      slack_channel: 'C-1',
+      slack_thread_ts: '1.2',
+      links: [
+        { channel: 'discord', label: 'Discord', target: 'dm-1', binding: 'b-o', direction: 'origin', live: true, paused: false },
+        { channel: 'discord', label: 'Discord', target: 'chan-2', binding: 'b-a', direction: 'both', live: true, paused: true },
+        { channel: 'telegram', label: 'Telegram', target: 'tg-1', binding: 'b-t', direction: 'out', live: true, paused: false },
+        { channel: 'slack', label: 'Slack', target: 'C-1', binding: 'b-s', direction: 'out', live: true, paused: false },
+      ],
+    })
+    const rows = (s: ReturnType<typeof reducer>) => s.slots[0].links!
+
+    // The Unlink action's write: the named binding is gone server-side, the
+    // origin row (the conversation the session was born in) is not a binding
+    // anyone severed, and every other row is untouched.
+    it('drops the rows carrying the named binding and keeps the origin row', () => {
+      let state = reducer(initial, sseSlots([twoDiscordRows()]))
+      state = reducer(state, dropSlotLinks({ key: 'chat-1', channel: 'discord', binding: 'b-a' }))
+      expect(rows(state).map(l => `${l.channel}:${l.direction}`)).toEqual([
+        'discord:origin', 'telegram:out', 'slack:out',
+      ])
+    })
+
+    it('leaves a same-channel row with a DIFFERENT binding alone', () => {
+      // The race the token exists for: Unlink A, another tab links B on the same
+      // channel before A's response lands, B's slots push arrives first. The
+      // server deleted exactly A, so a completion keyed on the channel would
+      // erase B — a binding the server still holds — and the tab would read as
+      // disconnected. Keyed on the binding, B stays and nothing is stamped.
+      let state = reducer(initial, sseSlots([twoDiscordRows()]))
+      const before = state
+      state = reducer(state, dropSlotLinks({ key: 'chat-1', channel: 'discord', binding: 'b-gone' }))
+      expect(rows(state)).toHaveLength(4)
+      expect(state.slots).toEqual(before.slots)
+    })
+
+    it('clears the Slack fields only with the Slack thread row it matched', () => {
+      let state = reducer(initial, sseSlots([twoDiscordRows()]))
+      // A stale token for the thread: no row matches, the fields stay.
+      state = reducer(state, dropSlotLinks({ key: 'chat-1', channel: 'slack', binding: 'b-stale' }))
+      expect(state.slots[0].slack_linked).toBe(true)
+      expect(state.slots[0].slack_channel).toBe('C-1')
+      expect(rows(state)).toHaveLength(4)
+      // The current token: the row goes and the fields go with it, one write.
+      state = reducer(state, dropSlotLinks({ key: 'chat-1', channel: 'slack', binding: 'b-s' }))
+      expect(rows(state).map(l => l.channel)).toEqual(['discord', 'discord', 'telegram'])
+      expect(state.slots[0].slack_linked).toBe(false)
+      expect(state.slots[0].slack_channel).toBeUndefined()
+      expect(state.slots[0].slack_thread_ts).toBeUndefined()
+    })
+
+    it('is a no-op for a channel with no rows and for an unknown slot', () => {
+      let state = reducer(initial, sseSlots([twoDiscordRows()]))
+      const before = state
+      state = reducer(state, dropSlotLinks({ key: 'chat-1', channel: 'imessage', binding: 'b-a' }))
+      expect(rows(state)).toHaveLength(4)
+      state = reducer(state, dropSlotLinks({ key: 'chat-404', channel: 'discord', binding: 'b-a' }))
+      expect(state.slots).toEqual(before.slots)
     })
   })
 })

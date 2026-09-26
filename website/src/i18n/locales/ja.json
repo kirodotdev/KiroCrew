@@ -6522,7 +6522,9 @@
       "worktree_disabled_no_project_directory": "「このセッションに追加」はコンポーザーを事前入力します。送信を押すまで何も送信されません。ワークツリーは使用不可です。このセッションにはプロジェクトディレクトリがありません (コンポーザーのプロジェクトチップで選択してください)。"
     },
     "inboundLinkChip": {
-      "driven_from": "{{label}}から駆動中"
+      "driven_from": "{{label}}から駆動中",
+      "driven_from_paused": "{{label}}から駆動中 · 返信は一時停止中",
+      "driven_from_paused_hint": "{{label}}を再開またはリンク解除できます。"
     },
     "infoTip": {
       "more_information": "詳細情報"
@@ -6868,6 +6870,15 @@
       "connect_to": "{{label}} に接続",
       "disconnect_failed": "{{label}} から切断できませんでした：{{reason}}",
       "disconnect_from": "{{label}} から切断",
+      "disconnect_outcome": "返信を一時停止します — リンクは残ります",
+      "resume_replies_to": "{{label}} への返信を再開",
+      "still_linked": "返信は一時停止中 — リンクは残り、そこからのメッセージは引き続きこのセッションに届きます。",
+      "still_linked_out": "返信は一時停止中 — リンクは残り、そこからのメッセージはこのセッションには届きません。",
+      "unlink_failed": "{{label}} とのリンクを解除できませんでした：{{reason}}",
+      "unlink_from": "{{label}} とのリンクを解除",
+      "unlink_outcome": "リンクを解除します — {{label}}はこのセッションを駆動しなくなります。再接続はいつでもセッションメニューから行えます。",
+      "unlink_outcome_out": "リンクを解除します — {{label}}への返信は送られなくなります。再接続はいつでもセッションメニューから行えます。",
+      "unlink_stale": "{{label}} はこのセッションにリンクされていません。メニューが古くなっていました。何も解除されていません。",
       "held_elsewhere": "{{label}} は別のセッションで使用中です。",
       "unavailable": "この送信先は利用できません。",
       "unknown_error": "不明なエラー",

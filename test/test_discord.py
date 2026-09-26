@@ -4308,6 +4308,32 @@ class TestDispatcher:
         assert any("Unlinked" in t for t, _ in cli.sent)
 
     @pytest.mark.asyncio
+    async def test_unlink_frees_a_paused_two_way_dashboard_mirror(self) -> None:
+        # The shape a dashboard Disconnect leaves behind: the owner connected a
+        # dashboard session to their own DM (two-way, because Discord resumes
+        # inbound), then disconnected it from the dashboard. Disconnect only
+        # PAUSES: the binding stays, the DM still routes here, and session
+        # control keeps refusing the session. One `/unlink` in the DM must free
+        # the location whatever the pause flag says, take the resumed-session
+        # exit (the binding accepted inbound), and nudge the dashboard so the
+        # chip and the menu stop showing a link that is gone.
+        d, cli, sess = _dispatcher({"u1"})
+        loc = ChannelLink("discord", channel_id="c1")
+        sess.mirror_links["dashboard:chat-42"] = loc
+        sess.inbound_mirror_keys.add("dashboard:chat-42")
+        sess.paused_deliveries.add(("dashboard:chat-42", False))
+        pushes: list[None] = []
+        d._session_resume._push_slots = lambda: pushes.append(None)  # type: ignore[method-assign]
+        await d.handle_message(self._msg("!unlink"))
+        assert sess.mirror_links == {}
+        assert sess.inbound_mirror_keys == set()
+        assert any("Left the resumed session" in t for t, _ in cli.sent)
+        assert pushes, "the dashboard projection was not refreshed after the sweep"
+        # Idempotent: a second unlink finds the location free.
+        await d.handle_message(self._msg("!unlink"))
+        assert any("wasn't linked" in t for t, _ in cli.sent)
+
+    @pytest.mark.asyncio
     async def test_unlink_leaves_other_locations_alone(self) -> None:
         # The value sweep is exact-match: a mirror into a DIFFERENT Discord
         # channel must survive an unlink here, and with nothing pointing at

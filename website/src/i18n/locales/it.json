@@ -6732,7 +6732,9 @@
       "worktree_disabled_no_project_directory": "\"Aggiungi a questa sessione\" precompila il campo di scrittura — nulla viene inviato finché non premi invia. I worktree non sono disponibili qui: questa sessione non ha una directory di progetto (scegline una con il chip Progetto del campo di scrittura)."
     },
     "inboundLinkChip": {
-      "driven_from": "Pilotata da {{label}}"
+      "driven_from": "Pilotata da {{label}}",
+      "driven_from_paused": "Pilotata da {{label}} · risposte in pausa",
+      "driven_from_paused_hint": "Riprendi o scollega {{label}}."
     },
     "infoTip": {
       "more_information": "Maggiori informazioni"
@@ -7082,6 +7084,15 @@
       "connect_to": "Connetti a {{label}}",
       "disconnect_failed": "Impossibile disconnettersi da {{label}}: {{reason}}",
       "disconnect_from": "Disconnetti da {{label}}",
+      "disconnect_outcome": "Mette in pausa le risposte — il collegamento resta",
+      "resume_replies_to": "Riprendi le risposte a {{label}}",
+      "still_linked": "Risposte in pausa — il collegamento resta; i messaggi da lì raggiungono ancora questa sessione.",
+      "still_linked_out": "Risposte in pausa — il collegamento resta; i messaggi da lì non raggiungono questa sessione.",
+      "unlink_failed": "Impossibile scollegare da {{label}}: {{reason}}",
+      "unlink_from": "Scollega da {{label}}",
+      "unlink_outcome": "Rimuove il collegamento — {{label}} smette di pilotare questa sessione. Puoi ricollegarti in qualsiasi momento dal menu della sessione.",
+      "unlink_outcome_out": "Rimuove il collegamento — le risposte smettono di andare a {{label}}. Puoi ricollegarti in qualsiasi momento dal menu della sessione.",
+      "unlink_stale": "{{label}} non è più collegato a questa sessione; il menu non era aggiornato. Non è stato scollegato nulla.",
       "held_elsewhere": "{{label}} è in uso da un'altra sessione.",
       "unavailable": "Questa destinazione non è disponibile.",
       "unknown_error": "errore sconosciuto",

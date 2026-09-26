@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import os
 from unittest.mock import AsyncMock, MagicMock
 
@@ -140,22 +141,42 @@ def _make_state(tmp_path, **kwargs):
     # empty (ValueError on unpack) and is unconditionally truthy. Parity with
     # SessionStore: absent -> (None, None); clear -> True iff a link was there.
     _slack_links: dict[str, tuple[str, str]] = {}
+    # Per-binding nonces, with ``SessionMap``'s semantics: minted when a binding
+    # is created or its coordinates change, kept across an identical rewrite,
+    # dropped with the binding. The slots row digests them into its ``binding``
+    # token and the unlink endpoints read them for the compare, so a double
+    # without them would make every recreated binding read like the old row --
+    # the exact ABA the real map's nonce exists to refuse.
+    _slack_nonces: dict[str, str] = {}
+    _mirror_nonces: dict[str, str] = {}
+    _nonce_counter = itertools.count(1)
+
+    def _mint_nonce():
+        return f"nonce-{next(_nonce_counter):04d}"
 
     def _set_slack_link(key, thread_ts, channel_id):
         if thread_ts or channel_id:
+            if _slack_links.get(key) != (thread_ts, channel_id) or key not in _slack_nonces:
+                _slack_nonces[key] = _mint_nonce()
             _slack_links[key] = (thread_ts, channel_id)
         else:
             _slack_links.pop(key, None)
+            _slack_nonces.pop(key, None)
 
     def _get_slack_link(key):
         return _slack_links.get(key, (None, None))
 
     def _clear_slack_link(key):
+        _slack_nonces.pop(key, None)
         return _slack_links.pop(key, None) is not None
+
+    def _slack_link_nonce(key):
+        return _slack_nonces.get(key, "") if key in _slack_links else ""
 
     sessions.set_slack_link = MagicMock(side_effect=_set_slack_link)
     sessions.get_slack_link = MagicMock(side_effect=_get_slack_link)
     sessions.clear_slack_link = MagicMock(side_effect=_clear_slack_link)
+    sessions.slack_link_nonce = MagicMock(side_effect=_slack_link_nonce)
 
     # Real in-memory mirror-link store, for the same reason as the Slack one and
     # with a sharper failure mode: callers branch on whether a mirror is PRESENT,
@@ -178,6 +199,8 @@ def _make_state(tmp_path, **kwargs):
         # arguments the channel-neutral link endpoint raises TypeError, which
         # surfaces as a 500 and hides whatever the test was actually asserting.
         if isinstance(channel_id, ChannelLink):
+            if _mirror_links.get(key) != channel_id or key not in _mirror_nonces:
+                _mirror_nonces[key] = _mint_nonce()
             _mirror_links[key] = channel_id
             if accepts_inbound:
                 _inbound_keys.add(key)
@@ -185,11 +208,13 @@ def _make_state(tmp_path, **kwargs):
                 _inbound_keys.discard(key)
             return
         if channel_id or thread_ts:
-            _mirror_links[key] = ChannelLink(
-                channel_type="slack", channel_id=channel_id, thread_id=thread_ts
-            )
+            link = ChannelLink(channel_type="slack", channel_id=channel_id, thread_id=thread_ts)
+            if _mirror_links.get(key) != link or key not in _mirror_nonces:
+                _mirror_nonces[key] = _mint_nonce()
+            _mirror_links[key] = link
         else:
             _mirror_links.pop(key, None)
+            _mirror_nonces.pop(key, None)
             _inbound_keys.discard(key)
 
     def _get_mirror_link(key):
@@ -197,7 +222,11 @@ def _make_state(tmp_path, **kwargs):
 
     def _clear_mirror_link(key, *, reason=""):
         _inbound_keys.discard(key)
+        _mirror_nonces.pop(key, None)
         return _mirror_links.pop(key, None) is not None
+
+    def _mirror_link_nonce(key):
+        return _mirror_nonces.get(key, "") if key in _mirror_links else ""
 
     def _find_mirror_sessions(link, *, inbound_only=False):
         return [
@@ -209,6 +238,7 @@ def _make_state(tmp_path, **kwargs):
     sessions.set_mirror_link = MagicMock(side_effect=_set_mirror_link)
     sessions.get_mirror_link = MagicMock(side_effect=_get_mirror_link)
     sessions.clear_mirror_link = MagicMock(side_effect=_clear_mirror_link)
+    sessions.mirror_link_nonce = MagicMock(side_effect=_mirror_link_nonce)
     sessions.find_mirror_sessions = MagicMock(side_effect=_find_mirror_sessions)
     state = DashboardState(
         sessions=sessions,
