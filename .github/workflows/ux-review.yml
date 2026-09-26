@@ -1127,29 +1127,102 @@ jobs:
           REVIEW_OUTCOME: ${{ steps.review.outcome }}
           UNFETCHED: ${{ steps.evidence.outputs.unfetched }}
         run: |
+          # ONE marker for this lane, declared before the first branch that
+          # writes a comment, so every write in this step reads the same slot.
+          MARKER="<!-- ux-review -->"
+          # Whether this lane's slot is already taken GATES every comment write
+          # below, so the read that answers it carries the same six-attempt, 5s
+          # linear-backoff budget as the reads that gate a verdict. A single
+          # attempt that swallows its own error answers "the slot is empty" for
+          # an ordinary flake. On an update that loses a notice. On a CREATE it
+          # is worse: the write puts a SECOND comment into a slot that already
+          # holds one, and nothing takes it back out -- a later lookup patches
+          # whichever id it picks, the other keeps whatever line it carries, and
+          # no run reconciles them.
+          #
+          # Two variables rather than one captured string, because "the read
+          # never answered" and "the read answered and the slot is empty" are
+          # different facts, and only the second licenses a create.
+          lookup_ok=0
+          existing=""
+          find_existing() {
+            local attempt matches
+            lookup_ok=0
+            existing=""
+            for attempt in 1 2 3 4 5 6; do
+              if matches="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+                --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$MARKER\"))) | .id" 2>/dev/null)"; then
+                lookup_ok=1
+                existing="$(printf '%s\n' "$matches" | awk 'NR == 1')"
+                return 0
+              fi
+              echo "Reading this PR's comments before writing this lane's notice failed on attempt $attempt."
+              if [ "$attempt" -lt 6 ]; then
+                sleep "$(( attempt * 5 ))"
+              fi
+            done
+            return 0
+          }
+          # A notice carries no verdict, so withholding one costs a stale line
+          # in this lane's slot while writing one over a newer revision's
+          # verdict costs that verdict, with nothing to restore it. Every
+          # notice write below therefore confirms this PR's head is still the
+          # head the notice is about, and treats an unreadable answer the same
+          # as a moved head, because writing is the destructive direction.
+          #
+          # The verdict path deliberately does not share this gate: there,
+          # withholding is the expensive direction, so retry_comment_write
+          # confirms the head only before a REPEAT, whose first write may
+          # already have landed.
+          head_unchanged=0
+          confirm_head() {
+            local attempt head_now
+            head_unchanged=0
+            # Budgeted like the slot read above it, and for the same reason: the two
+            # reads run in the same exhaustion window, so a single blip is the
+            # expected outcome rather than the rare one. A moved head is a definite
+            # answer and returns at once; only an unreadable one is retried.
+            for attempt in 1 2 3 4 5 6; do
+              if head_now="$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha' 2>/dev/null)" \
+                && [ -n "$head_now" ]; then
+                if [ "$head_now" != "$HEAD" ]; then
+                  echo "::warning::This PR's head is now $head_now, not $HEAD, so this lane's notice was not written: the run for that head owns this lane's slot, and writing would replace its verdict with a superseded revision's notice."
+                  return 0
+                fi
+                head_unchanged=1
+                return 0
+              fi
+              echo "Reading this PR's current head before writing this lane's notice failed on attempt $attempt."
+              if [ "$attempt" -lt 6 ]; then
+                sleep "$(( attempt * 5 ))"
+              fi
+            done
+            echo "::warning::Whether $HEAD is still this PR's head is unreadable after 6 attempts, so this lane's notice was not written. If the head has moved, withholding is what protects the newer revision's verdict, which nothing would restore; if it has not moved, this lane's slot keeps whatever earlier outcome it already held. Re-run this lane to record the notice."
+            return 0
+          }
           if [ "$HUMAN_OVERRIDE" = "true" ]; then
-            OV_MARKER="<!-- ux-review -->"
             {
-              echo "$OV_MARKER"
+              echo "$MARKER"
               echo "## UX Review (Fable 5) — ✅ human override accepted"
               echo
               echo "_@$OVERRIDE_ACTOR overrode this lane for \`$HEAD\` via \`/ai-review override\` (this commit only)._"
-            } > /tmp/ai-override-note.md
-            ov_existing="$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$OV_MARKER\"))) | .id" 2>/dev/null | head -n1 || true)"
-            if [ -n "$ov_existing" ] && [ "$ov_existing" != "null" ]; then
-              gh api --method PATCH "repos/$REPO/issues/comments/$ov_existing" --field body="$(cat /tmp/ai-override-note.md)" >/dev/null || true
-            else
-              gh pr comment "$PR" --body-file /tmp/ai-override-note.md || true
+            } > "${RUNNER_TEMP:-/tmp}/ai-override-note.md"
+            confirm_head
+            # The slot read comes last, immediately before the write: this arm creates when
+            # the slot is empty, and the head check above can spend over a minute on
+            # backoff. Reading the slot first would decide CREATE from a minute-old answer,
+            # and another run on this same head can fill the slot inside that gap.
+            find_existing
+            if [ "$head_unchanged" -eq 1 ] && [ -n "$existing" ] && [ "$existing" != "null" ]; then
+              gh api --method PATCH "repos/$REPO/issues/comments/$existing" --field body="$(cat "${RUNNER_TEMP:-/tmp}/ai-override-note.md")" >/dev/null || true
+            elif [ "$head_unchanged" -eq 1 ] && [ "$lookup_ok" -eq 1 ]; then
+              gh pr comment "$PR" --body-file "${RUNNER_TEMP:-/tmp}/ai-override-note.md" || true
+            elif [ "$lookup_ok" -eq 0 ]; then
+              echo "::warning::This lane's slot was unreadable after 6 attempts, so the human override note for $HEAD was not posted. Creating one here can leave two comments in the slot, and the one a later lookup does not pick keeps its own blocking line. Re-run this lane to record the override."
             fi
             echo "verdict=OVERRIDE" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          MARKER="<!-- ux-review -->"
-          find_existing() {
-            gh api "repos/$REPO/issues/$PR/comments" --paginate \
-              --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$MARKER\"))) | .id" 2>/dev/null \
-              | head -n1 || true
-          }
           if [ "$ACTOR" = "dependabot[bot]" ]; then
             echo "Dependabot PR: UX review skipped (no Bedrock secrets/OIDC)."
             echo "verdict=SKIPPED" >> "$GITHUB_OUTPUT"
@@ -1158,17 +1231,26 @@ jobs:
           if [ "$UI_SCOPE" != "true" ]; then
             echo "No UI-relevant changes: UX review skipped."
             echo "verdict=SKIPPED" >> "$GITHUB_OUTPUT"
-            existing="$(find_existing)"
+            find_existing
+            # This arm replaces a comment already in the slot and never creates one, so
+            # the head question is only asked once an occupant is found: asking it first
+            # makes a run with an empty slot report a withheld notice that this arm was
+            # never going to write.
             if [ -n "$existing" ] && [ "$existing" != "null" ]; then
-              {
-                echo "$MARKER"
-                echo "## UX Review (Fable 5) — ⏭️ skipped"
-                echo
-                echo "_Revision \`$HEAD\` touches no user-facing surface (no changes under \`website/\` or committed screenshots), so the UX review was skipped. Advisory — does not block merge._"
-              } > "${RUNNER_TEMP:-/tmp}/ux-comment.md"
-              gh api --method PATCH "repos/$REPO/issues/comments/$existing" \
-                --field body="$(cat "${RUNNER_TEMP:-/tmp}/ux-comment.md")" >/dev/null || true
-              echo "Updated existing ux-review comment #$existing to skip notice"
+              confirm_head
+              if [ "$head_unchanged" -eq 1 ]; then
+                {
+                  echo "$MARKER"
+                  echo "## UX Review (Fable 5) — ⏭️ skipped"
+                  echo
+                  echo "_Revision \`$HEAD\` touches no user-facing surface (no changes under \`website/\` or committed screenshots), so the UX review was skipped. Advisory — does not block merge._"
+                } > "${RUNNER_TEMP:-/tmp}/ux-comment.md"
+                gh api --method PATCH "repos/$REPO/issues/comments/$existing" \
+                  --field body="$(cat "${RUNNER_TEMP:-/tmp}/ux-comment.md")" >/dev/null || true
+                echo "Updated existing ux-review comment #$existing to skip notice"
+              fi
+            elif [ "$lookup_ok" -eq 0 ]; then
+              echo "::warning::This lane's slot was unreadable after 6 attempts, so a comment already in it still shows an earlier revision's outcome rather than the skip notice for $HEAD."
             fi
             exit 0
           fi
