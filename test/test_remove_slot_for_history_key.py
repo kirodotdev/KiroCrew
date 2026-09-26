@@ -1957,6 +1957,11 @@ class _FakeTranscriptStore:
     def get_metadata(self, key: str) -> Any:
         return self.get_metadata_status(key)[0]
 
+    def list_sessions(self) -> list[dict[str, Any]]:
+        """Catalog projection: the fork-lineage snapshot walks every row."""
+        self.calls.append("list_sessions")
+        return [{"key": key} for key in self._meta]
+
     def delete_session(self, key: str, *, skip_pinned: bool = False) -> bool:
         self.calls.append(f"delete_session:{key}")
         existed = key in self._meta
@@ -3182,13 +3187,16 @@ class TestUnreadableMetadataAbortsTheDelete:
 
         await api_session_delete(request)
 
-        assert log.calls[0].startswith(f"locked_stems:{history_key},")
-        assert log.calls.index(f"locked:{history_key}") < log.calls.index(
-            f"get_metadata:{history_key}"
-        )
-        assert log.calls.index(f"get_metadata:{history_key}") < log.calls.index(
-            f"delete_session:{history_key}"
-        )
+        # The fork-lineage snapshot (``list_sessions`` plus a read of every row)
+        # runs before the lock; it feeds image cleanup, not the owner decision.
+        # The owner-key read is the one INSIDE the lock: lock, then read, then
+        # unlink, with no second hold in between.
+        lock_at = log.calls.index(f"locked:{history_key}")
+        delete_at = log.calls.index(f"delete_session:{history_key}")
+        assert log.calls[lock_at - 1].startswith(f"locked_stems:{history_key},")
+        assert lock_at < delete_at
+        assert any(call == f"get_metadata:{history_key}" for call in log.calls[lock_at:delete_at])
+        assert not any(call.startswith("locked") for call in log.calls[lock_at + 1 : delete_at])
 
 
 class TestSessionLedgerOnPermanentDelete:

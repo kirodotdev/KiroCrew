@@ -33,6 +33,7 @@ from kiro_crew.config.loader import (
     KiroCrewConfig,
     config_dir,
 )
+from kiro_crew.dashboard import fork_lineage
 from kiro_crew.dashboard.channel_slots import slot_closed_since
 from kiro_crew.dashboard.chat_utils import (
     _normalize_model,
@@ -1807,6 +1808,7 @@ def _rehydrate_slot_from_history(
             state._restricted_keys.add(f"dashboard:{slot_name}")
         if meta.get("forked_from") is not None:
             slot.forked_from = meta["forked_from"]
+        slot.fork_ancestors = fork_lineage.admitted_chain(meta)
         if meta.get("linked_session_key"):
             # Rebind the slot to the session its conversation actually runs on.
             # Skipped, the slot would answer from a dashboard-only session and the
@@ -2429,6 +2431,7 @@ def _apply_recent_session(
         state._restricted_keys.add(f"dashboard:{slot_name}")
     if meta.get("forked_from") is not None:
         slot.forked_from = meta["forked_from"]
+    slot.fork_ancestors = fork_lineage.admitted_chain(meta)
     if meta.get("linked_session_key"):
         slot.linked_session_key = str(meta["linked_session_key"])
     elif is_channel_session_key(key) and state.sessions:
@@ -3922,6 +3925,8 @@ def _save_slot_to_history(
                     fields["channel_origin"] = True
                 if slot.forked_from is not None:
                     fields["forked_from"] = slot.forked_from
+                if slot.fork_ancestors:
+                    fields["fork_ancestors"] = list(slot.fork_ancestors)
                 if slot.executor == "remote" and slot.instance_id and slot.remote_slot:
                     # All three or none, exactly like the full save: a newborn
                     # bound to a peer has an EMPTY window until the first relayed
@@ -4444,6 +4449,8 @@ def _save_slot_to_history(
             retired_drop_ids = dropped_note_ids if not rows_only else set()
             if slot.forked_from is not None:
                 meta_line["forked_from"] = slot.forked_from
+            if slot.fork_ancestors:
+                meta_line["fork_ancestors"] = list(slot.fork_ancestors)
             if slot.linked_session_key:
                 # The slot's conversation lives on another session (a channel
                 # thread, a cron job). Nothing recreates that binding on

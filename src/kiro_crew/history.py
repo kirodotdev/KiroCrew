@@ -228,6 +228,7 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         "color_theme",
         "tags",
         "forked_from",
+        "fork_ancestors",
         "linked_session_key",
         "tab_id",
     }
@@ -3153,6 +3154,33 @@ class ConversationLog:
 
     def list_sessions(self) -> list[dict]:
         return self._catalog_projection.list_sessions()
+
+    def transcript_stems_on_disk(self) -> set[str]:
+        """Stems of every ``*.jsonl`` in the transcript directory, by name alone.
+
+        :meth:`list_sessions` needs a ``stat`` per file and DROPS a file whose
+        ``stat`` fails, so a caller that must know the catalog is complete
+        compares against this list, which needs no per-file call: a directory
+        listing is one syscall and ``d_type`` answers the symlink question
+        without touching the file. A symlink (handoff alias) is skipped only
+        when that answer is certain; anything unsure is reported, since the
+        caller uses a surplus stem to fail closed.
+        """
+        out: set[str] = set()
+        try:
+            with os.scandir(self._dir) as it:
+                for entry in it:
+                    if not entry.name.endswith(".jsonl"):
+                        continue
+                    try:
+                        if entry.is_symlink():
+                            continue
+                    except OSError:
+                        pass
+                    out.add(entry.name[: -len(".jsonl")])
+        except FileNotFoundError:
+            return out
+        return out
 
     def agent_usage(self) -> dict[str, tuple[int, float]]:
         return self._catalog_projection.agent_usage()

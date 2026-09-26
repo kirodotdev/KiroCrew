@@ -198,6 +198,12 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
   const hasVariants = variants && variants.length > 1
   const activeIdx = onSwitchVariant ? (typeof variantIdx === 'number' ? variantIdx : (variants?.length ?? 1) - 1) : (localIdx ?? (typeof variantIdx === 'number' ? variantIdx : (variants?.length ?? 1) - 1))
   const effectiveContent = hasVariants && localIdx !== null && !onSwitchVariant ? (variants[localIdx]?.content ?? content) : content
+  // The message id MarkdownRenderer keys images by (cache-busting `&v=` and
+  // the durable-artifact fallback) must name the variant being SHOWN: a
+  // regenerated reply registers its own image copies under its own ts, so
+  // browsing back to an older variant with the active variant's ts would
+  // resolve that variant's pictures.
+  const effectiveTs = hasVariants ? (variants[activeIdx]?.ts ?? messageTs) : messageTs
   // Reset the "Applied to Tasks" flag only when the message content changes.
   // `applied` is intentionally omitted: including it would re-run this effect
   // the instant `applied` flips to true and immediately clear it, making the
@@ -517,7 +523,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
       ? { overflowWrap: 'anywhere', wordBreak: 'break-word', height: rawBoxHeight, overflowY: 'auto', fontSize: 'var(--mc-message-font-size, 14px)' }
       : { overflowWrap: 'anywhere', wordBreak: 'break-word', fontSize: 'var(--mc-message-font-size, 14px)' }}>
       <MessageErrorBoundary rawContent={smoothedText}>
-        <MarkdownRenderer content={smoothedText} streaming={isStreaming} onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} onArtifactOpen={onArtifactOpen} onSessionOpen={onSessionOpen} sessions={sessions} activeSession={activeSession} rawMode={rawMode} messageTs={messageTs} slotKey={slotKey} glow={isStreaming} smooth={smooth} linkPreviews={linkPreviews && !draining} collapseDiffs mdCardToggle />
+        <MarkdownRenderer content={smoothedText} streaming={isStreaming} onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} onArtifactOpen={onArtifactOpen} onSessionOpen={onSessionOpen} sessions={sessions} activeSession={activeSession} rawMode={rawMode} messageTs={effectiveTs} slotKey={slotKey} glow={isStreaming} smooth={smooth} linkPreviews={linkPreviews && !draining} collapseDiffs mdCardToggle />
       </MessageErrorBoundary>
       {/* Render the steer ack the moment kiro-cli emits the [STEERING …] marker
           — including mid-stream — so the user sees the agent acknowledge the

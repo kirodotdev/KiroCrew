@@ -5,7 +5,31 @@ describe('parseBlocks', () => {
   it('parses plain markdown', () => {
     const blocks = parseBlocks('Hello **world**', false)
     expect(blocks).toHaveLength(1)
-    expect(blocks[0]).toEqual({ type: 'markdown', content: 'Hello **world**', complete: true, startLine: 1 })
+    expect(blocks[0]).toEqual({ type: 'markdown', content: 'Hello **world**', complete: true, startLine: 1, startOffset: 0 })
+  })
+
+  it('records the exact raw offset where each markdown block begins', () => {
+    const raw = [
+      'intro',                                        // 0..5
+      '```md',                                        // 6..11
+      'fenced',                                       // 12..18
+      '```',                                          // 19..22
+      '<mcwidget title="t"></mcwidget> tail-a',       // 23..
+      'plain',
+      '<mcwidget title="t">',
+      'body',
+      '</mcwidget>tail-b',
+    ].join('\n')
+    const md = parseBlocks(raw, false).filter(b => b.type === 'markdown')
+    expect(md.map(b => b.content)).toEqual(['intro', ' tail-a\nplain', 'tail-b'])
+    for (const b of md) {
+      // The offset points at the block's own first character in the raw text,
+      // including a block that starts mid-line after a same-line close tag.
+      expect(raw.slice(b.startOffset!, b.startOffset! + b.content.length)).toBe(b.content)
+    }
+    expect(md[0].startOffset).toBe(0)
+    expect(md[1].startOffset).toBe(raw.indexOf(' tail-a'))
+    expect(md[2].startOffset).toBe(raw.lastIndexOf('tail-b'))
   })
 
   it('parses a fenced code block', () => {

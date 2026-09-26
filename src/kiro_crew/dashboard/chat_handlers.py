@@ -40,7 +40,7 @@ from kiro_crew.config.loader import (
     published_autocompact_pct,
     resolve_agent_bindings,
 )
-from kiro_crew.dashboard import remote_mirror
+from kiro_crew.dashboard import fork_lineage, remote_mirror
 from kiro_crew.dashboard.channel_slots import channel_slot_name, note_slot_closed
 from kiro_crew.dashboard.chat_auto_tag import maybe_auto_tag
 from kiro_crew.dashboard.chat_delivery import (
@@ -11839,6 +11839,10 @@ def _hydrate_slot_from_history(
         state._restricted_keys.discard(f"dashboard:{slot.key}")
     if meta.get("forked_from") is not None:
         slot.forked_from = meta["forked_from"]
+    # The fork's materialized chain travels with `forked_from`: it is a
+    # slot-owned field, so a save after a resume that skipped it would rewrite
+    # the meta line without it and the fork would lose its ancestry.
+    slot.fork_ancestors = fork_lineage.admitted_chain(meta)
     disk_total = len(all_messages)
     # ``window_limit`` is a fact about the data, not a caller switch: how many of
     # the newest rows to surface as the live window, given that any rows before

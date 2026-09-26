@@ -276,6 +276,107 @@ class TestMoveTakesBothHalves:
         assert str(crew_home / "sessions" / "dashboard_chat-1.jsonl") in origins
 
 
+class TestStagedTranscriptStems:
+    """Emptying a batch is a permanent delete of its transcripts, whose chat-image
+    copies live outside the batch; the empty handler reads the stems first so it
+    can reclaim them, and only transcript records count."""
+
+    def test_reports_transcript_stems_per_batch_and_nothing_else(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        crew_home, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=10, age_days=40)
+        _transcript(crew_home, "dashboard_chat-1", size=30, age_days=40)
+        _archive_segment(crew_home, "dashboard_chat-1", "20260730-211852", size=40, age_days=40)
+        _cli_half(kiro_home, "bbbb2222", log_bytes=10, age_days=40)
+        _transcript(crew_home, "slack_1700.42", size=30, age_days=40)
+        one = session_storage.move_to_trash(
+            ["aaaa1111"], reason="manual", index=_index({"aaaa1111": "dashboard_chat-1"}), now=_NOW
+        )
+        two = session_storage.move_to_trash(
+            ["bbbb2222"], reason="manual", index=_index({"bbbb2222": "slack_1700.42"}), now=_NOW
+        )
+
+        stems = session_storage.staged_transcript_stems([one.batch_id, two.batch_id])
+
+        assert stems == {
+            one.batch_id: {"dashboard_chat-1"},
+            two.batch_id: {"slack_1700.42"},
+        }
+
+    def test_an_unreadable_batch_contributes_no_stems(self, stores: tuple[Path, Path]) -> None:
+        assert session_storage.staged_transcript_stems(["20260101-000000-zzzz"]) == {
+            "20260101-000000-zzzz": set()
+        }
+
+    def test_all_staged_stems_union_every_batch_and_an_empty_trash_is_empty(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        crew_home, kiro_home = stores
+        assert session_storage.staged_transcript_stems_all() == set()
+        _cli_half(kiro_home, "aaaa1111", log_bytes=10, age_days=40)
+        _transcript(crew_home, "dashboard_chat-1", size=30, age_days=40)
+        _cli_half(kiro_home, "bbbb2222", log_bytes=10, age_days=40)
+        _transcript(crew_home, "slack_1700.42", size=30, age_days=40)
+        session_storage.move_to_trash(
+            ["aaaa1111"], reason="manual", index=_index({"aaaa1111": "dashboard_chat-1"}), now=_NOW
+        )
+        session_storage.move_to_trash(
+            ["bbbb2222"], reason="manual", index=_index({"bbbb2222": "slack_1700.42"}), now=_NOW
+        )
+        assert session_storage.staged_transcript_stems_all() == {
+            "dashboard_chat-1",
+            "slack_1700.42",
+        }
+
+    def test_staged_lineage_reads_each_transcripts_fork_edges(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """A trashed fork's `forked_from` lives only in the staged file; the reap
+        needs it to keep protecting the fork's live source. Three shapes: a
+        metadata line with edges, a first line that is a message (no metadata,
+        readable, no edges), and junk (unreadable, fails closed)."""
+        crew_home, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=10, age_days=40)
+        _transcript(crew_home, "dashboard_fork", size=1, age_days=40)
+        meta = {
+            "_type": "metadata",
+            "forked_from": "dashboard:src",
+            "fork_ancestors": ["dashboard:src"],
+            "title": "ignored",
+        }
+        path = crew_home / "sessions" / "dashboard_fork.jsonl"
+        path.write_text(json.dumps(meta) + "\n" + json.dumps({"role": "user"}) + "\n")
+        os.utime(path, (_NOW - 40 * _DAY, _NOW - 40 * _DAY))
+        _cli_half(kiro_home, "bbbb2222", log_bytes=10, age_days=40)
+        _transcript(crew_home, "dashboard_plain", size=1, age_days=40)
+        plain = crew_home / "sessions" / "dashboard_plain.jsonl"
+        plain.write_text(json.dumps({"role": "user", "content": "hi"}) + "\n")
+        os.utime(plain, (_NOW - 40 * _DAY, _NOW - 40 * _DAY))
+        _cli_half(kiro_home, "cccc3333", log_bytes=10, age_days=40)
+        _transcript(crew_home, "dashboard_junk", size=1, age_days=40)
+        junk = crew_home / "sessions" / "dashboard_junk.jsonl"
+        junk.write_bytes(b"\xff\xfe not json\n")
+        os.utime(junk, (_NOW - 40 * _DAY, _NOW - 40 * _DAY))
+        for uid, stem in (
+            ("aaaa1111", "dashboard_fork"),
+            ("bbbb2222", "dashboard_plain"),
+            ("cccc3333", "dashboard_junk"),
+        ):
+            session_storage.move_to_trash(
+                [uid], reason="manual", index=_index({uid: stem}), now=_NOW
+            )
+
+        lineage = session_storage.staged_transcript_lineage()
+
+        assert lineage == {
+            "dashboard_fork": {"forked_from": "dashboard:src", "fork_ancestors": ["dashboard:src"]},
+            "dashboard_plain": {},
+            "dashboard_junk": None,
+        }
+        assert session_storage.staged_transcript_stems_all() == set(lineage)
+
+
 class TestASessionResumedWhileStagingIsLeftAlone:
     """The authority checks run before the move loop, so they describe one instant.
 

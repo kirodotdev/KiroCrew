@@ -17608,6 +17608,41 @@ class TestForkSlot:
         assert [m["content"] for m in visible] == ["q1", "a1", "q2", "a2"]
 
     @pytest.mark.asyncio
+    async def test_a_source_that_moves_during_the_ancestry_walk_is_refused(self, tmp_path):
+        """A pre-upgrade fork (only `forked_from`, no `fork_ancestors`) makes the
+        fork path walk the catalog in a thread. That await is the only suspension
+        after the source identity was frozen; a source whose workspace changes
+        under it must be refused and the half-born child withdrawn, never persisted
+        with the old bindings and the new project."""
+        state = _make_state(tmp_path)
+        root = state.get_or_create_slot("root")
+        root.append("user", "q1", "msg msg-u")
+        root.drain()
+        mid = state.get_or_create_slot("mid")
+        mid.forked_from = "dashboard:root"
+        mid.fork_ancestors = []  # legacy shape: the walk is what fills the chain
+        mid.append("user", "q2", "msg msg-u")
+        mid.drain()
+        before = set(state._slots)
+
+        from kiro_crew.dashboard import chat_fork as cf
+
+        real_chain = cf.ancestry_chain
+
+        def _drifting_chain(log, key):
+            mid.workspace = "elsewhere"  # the source moves while the walk runs
+            return real_chain(log, key)
+
+        app = _make_app(state)
+        with patch.object(cf, "ancestry_chain", _drifting_chain):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post("/api/chat/slots/mid/fork", json={})
+                assert resp.status == 503
+                assert (await resp.json())["code"] == "store_unavailable"
+
+        assert set(state._slots) == before, "the half-born child must be withdrawn"
+
+    @pytest.mark.asyncio
     async def test_fork_reads_full_history_from_disk_when_memory_capped(self, tmp_path):
         """M12: when in-memory snapshot is smaller than full history, fork reads from disk."""
         state = _make_state(tmp_path)

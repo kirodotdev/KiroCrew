@@ -4543,6 +4543,116 @@ def staged_targets(
         return ids, total, identities
 
 
+def staged_transcript_stems(batch_ids: list[str]) -> dict[str, set[str]]:
+    """The transcript stems each staged batch holds: ``{batch_id: {stem, ...}}``.
+
+    Emptying a batch destroys its transcripts for good, and a transcript's chat
+    images live OUTSIDE the batch (in the artifact store, keyed by the session),
+    so the caller that empties must know which sessions are going in order to
+    reclaim their copies afterwards — and it must learn that BEFORE the empty,
+    because the manifest goes with the batch. Read under the mutation lock so a
+    batch mid-staging is either complete or absent, like :func:`staged_targets`.
+
+    Only ``crew/<stem>.jsonl`` records count: a rotated archive segment or an
+    attachments directory names the same session, and the replay log under
+    ``cli/`` is kiro-cli's, whose id is not a transcript stem. A batch that
+    cannot be read contributes an empty set — nothing is guessed about it.
+    """
+    out: dict[str, set[str]] = {}
+    with _mutation_lock():
+        for batch_id in batch_ids:
+            stems: set[str] = set()
+            try:
+                parsed = _read_manifest(_batch_dir(batch_id))
+            except SessionStorageError:
+                parsed = None
+            for entry in parsed[1] if parsed else ():
+                files = entry.get("files") if isinstance(entry, dict) else None
+                for record in files if isinstance(files, list) else ():
+                    rel = record.get("rel") if isinstance(record, dict) else None
+                    parts = PurePosixPath(rel).parts if isinstance(rel, str) else ()
+                    if (
+                        len(parts) == 2
+                        and parts[0] == STAGE_CREW_LEAF
+                        and parts[1].endswith(_TRANSCRIPT_SUFFIX)
+                    ):
+                        stems.add(parts[1][: -len(_TRANSCRIPT_SUFFIX)])
+            out[batch_id] = stems
+    return out
+
+
+def staged_transcript_lineage() -> dict[str, dict[str, Any] | None]:
+    """Fork lineage of EVERY staged transcript: ``{stem: meta | None}``.
+
+    ``meta`` is the transcript's metadata line restricted to the lineage keys
+    (``forked_from``, ``fork_ancestors``); ``None`` means the staged file could
+    not be read or its first line is not a metadata record, which a caller must
+    treat as unreadable (fail closed). A staged transcript is restorable, so the
+    permanent-delete reap counts it as a survivor AND follows its edges: a
+    trashed fork must keep protecting its live source's image copies, or a
+    restore renders broken images. Read under the mutation lock, like
+    :func:`staged_targets`, so a batch mid-staging is either complete or absent.
+    Bounded: only the first line is read, capped at ``_META_LINE_CAP`` bytes.
+    """
+    out: dict[str, dict[str, Any] | None] = {}
+    with _mutation_lock():
+        for batch in list_trash():
+            try:
+                batch_dir = _batch_dir(batch.batch_id)
+                parsed = _read_manifest(batch_dir)
+            except SessionStorageError:
+                continue
+            for entry in parsed[1] if parsed else ():
+                files = entry.get("files") if isinstance(entry, dict) else None
+                for record in files if isinstance(files, list) else ():
+                    rel = record.get("rel") if isinstance(record, dict) else None
+                    if not isinstance(rel, str):
+                        continue
+                    parts = PurePosixPath(rel).parts
+                    if not (
+                        len(parts) == 2
+                        and parts[0] == STAGE_CREW_LEAF
+                        and parts[1].endswith(_TRANSCRIPT_SUFFIX)
+                    ):
+                        continue
+                    stem = parts[1][: -len(_TRANSCRIPT_SUFFIX)]
+                    staged = _staged_path(batch_dir, rel)
+                    out[stem] = _read_lineage_meta(staged) if staged is not None else None
+    return out
+
+
+#: Longest metadata line the staged-lineage reader will parse. A real metadata
+#: line is a few hundred bytes; the trash is agent-writable, so the read is
+#: capped rather than trusting the file.
+_META_LINE_CAP = 64 * 1024
+
+
+def _read_lineage_meta(path: Path) -> dict[str, Any] | None:
+    try:
+        with open(path, "rb") as handle:
+            first = handle.readline(_META_LINE_CAP + 1)
+    except OSError:
+        return None
+    if len(first) > _META_LINE_CAP:
+        return None
+    try:
+        data = json.loads(first.decode("utf-8").strip() or "{}")
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if data and data.get("_type") != "metadata":
+        # A transcript whose first line is a message: no metadata, readable.
+        return {}
+    return {k: data[k] for k in ("forked_from", "fork_ancestors") if k in data}
+
+
+def staged_transcript_stems_all() -> set[str]:
+    """Transcript stems of every staged batch, as one set (see
+    :func:`staged_transcript_lineage` for the edges)."""
+    return set(staged_transcript_lineage())
+
+
 def empty_trash(
     batch_ids: list[str] | None = None,
     on_progress: EmptyProgress | None = None,

@@ -18,6 +18,7 @@ from kiro_crew.dashboard.chat_utils import (
     history_corpus_unreadable,
     slot_history_key,
 )
+from kiro_crew.dashboard.fork_lineage import ancestry_chain, materialize_ancestors
 from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.state import (
@@ -1164,6 +1165,40 @@ async def fork_slot(
                 return _store_unavailable_response(inherited_store, exc)
             raise
     new_slot.forked_from = effective_session_key(slot)
+    # The FULL chain, so lineage stays provable after an intermediate fork is
+    # deleted (its own metadata goes with it). A source forked before the chain
+    # was recorded carries only `forked_from`; walk the catalog once so the new
+    # fork records every ancestor, not one link. See dashboard/fork_lineage.py.
+    source_chain: list[str] | None = getattr(slot, "fork_ancestors", None) or None
+    if not source_chain and getattr(slot, "forked_from", None) and state.conversation_log:
+        source_chain = await asyncio.to_thread(
+            ancestry_chain, state.conversation_log, new_slot.forked_from
+        )
+        # That await suspended with the child already registered: re-assert the
+        # caller's containment answers and the frozen source identity exactly as
+        # the bind path does, and withdraw the child if the source moved. No rows
+        # are copied yet, so the withdrawal is a plain unregister, and the
+        # refusal surfaces the way the bind path's does.
+        try:
+            if recheck is not None:
+                recheck()
+            if not _source_identity_unchanged():
+                raise UnknownMemoryStore("The fork source changed before its history was copied")
+        except BaseException as exc:
+            from kiro_crew.execution_context import clear_session_execution
+
+            clear_session_execution(effective_session_key(new_slot))
+            state._slots.pop(new_slot.key, None)
+            state._restricted_keys.discard(effective_session_key(new_slot))
+            if isinstance(exc, (OSError, ValueError)):
+                return _store_unavailable_response(source_memory_identity[2], exc)
+            raise
+    # `source_slot_key`: image copies are owned by the source TAB's `slot.key`,
+    # which differs from the effective session key for a linked session; the
+    # chain records both so the fork can still reach those copies.
+    new_slot.fork_ancestors = materialize_ancestors(
+        new_slot.forked_from, source_chain, source_slot_key=slot.key
+    )
     new_slot.reasoning_effort = slot.reasoning_effort
     # Inherited beside the model it belongs to: the constructor takes `model` and
     # the routing choice is the other half of the same answer, so a fork of an
