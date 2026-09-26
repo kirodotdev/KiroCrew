@@ -401,24 +401,39 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
   // the SAME tree component either way, so both modes share look, keyboard
   // model, search, and git-status lanes.
   const paths = useMemo<string[]>(
-    () =>
-      mode === 'changed'
-        ? statusEntries.map(e => e.path)
-        : // The full-workspace list can still carry a duplicate — e.g. two
-          // genuinely different paths that collapse to the same string once
-          // egress redaction flattens a differing segment. @pierre/trees
-          // `appendPresortedPaths` throws 'Duplicate path' on adjacent
-          // identical entries, and that throw is uncaught inside the
-          // resetPaths useLayoutEffect below, taking down the whole route.
-          // De-dup here (preserving order + first occurrence, mirroring the
-          // `changed` branch's statusEntries seen-Set) so a duplicate degrades
-          // to a single (missing) row instead of a render crash. Explicit
-          // trailing-slash paths keep directory rows even when every direct
-          // file in that directory fell beyond the file budget.
-          Array.from(new Set([
-            ...(tree?.paths ?? []),
-            ...(tree?.directories ?? []).map(path => `${path.replace(/\/$/, '')}/`),
-          ])),
+    () => {
+      if (mode === 'changed') return statusEntries.map(e => e.path)
+      // The full-workspace list can still carry a duplicate — e.g. two
+      // genuinely different paths that collapse to the same string once
+      // egress redaction flattens a differing segment. @pierre/trees
+      // `appendPresortedPaths` throws 'Duplicate path' on adjacent
+      // identical entries, and that throw is uncaught inside the
+      // resetPaths useLayoutEffect below, taking down the whole route.
+      // De-dup here (preserving order + first occurrence, mirroring the
+      // `changed` branch's statusEntries seen-Set) so a duplicate degrades
+      // to a single (missing) row instead of a render crash. Explicit
+      // trailing-slash paths keep directory rows even when every direct
+      // file in that directory fell beyond the file budget.
+      const merged = Array.from(new Set([
+        ...(tree?.paths ?? []),
+        ...(tree?.directories ?? []).map(path => `${path.replace(/\/$/, '')}/`),
+      ]))
+      // The same redaction can also collapse a DEEP path onto a shorter string
+      // that is a directory row, or the parent of another file (a match that
+      // straddled a `/` is replaced whole). The builder models a name as either
+      // a file or a directory and throws 'Path collides with an existing entry'
+      // on the other — again uncaught in the layout effect. Drop the file row:
+      // its real path is gone, so it could not be opened anyway, while the
+      // directory may still carry visible children.
+      const directoryNames = new Set<string>()
+      for (const p of merged) {
+        const isDirectory = p.endsWith('/')
+        const segments = (isDirectory ? p.slice(0, -1) : p).split('/')
+        const depth = isDirectory ? segments.length : segments.length - 1
+        for (let i = 1; i <= depth; i++) directoryNames.add(segments.slice(0, i).join('/'))
+      }
+      return merged.filter(p => p.endsWith('/') || !directoryNames.has(p))
+    },
     [mode, statusEntries, tree],
   )
   const ready = mode === 'changed' ? status != null : tree != null

@@ -176,6 +176,34 @@ describe('PierreWorkspaceTreeImpl — data loading', () => {
     expect(treeMock.last().calls.resetPaths).toEqual([['README.md', 'src/a.ts']])
   })
 
+  it('drops a file row whose name is also a directory before it reaches the model', async () => {
+    // Redaction of a match that straddles '/' replaces the whole run, so a deep
+    // file and a deep directory can both collapse to the same short string, and
+    // a collapsed file can land as another file's parent. @pierre/trees throws
+    // 'Path collides with an existing entry' on a name that is both — uncaught
+    // in the resetPaths layout effect — so the wrapper keeps the directory and
+    // drops the (unopenable) file row.
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({
+      paths: [
+        'notes/case-[REDACTED: credential]',
+        'notes/summary.md',
+        'vault/[REDACTED: credential]',
+        'vault/[REDACTED: credential]/notes.md',
+      ],
+      directories: ['notes', 'notes/case-[REDACTED: credential]', 'vault'],
+    }))
+    renderTree()
+    await waitForTree()
+
+    expect(treeMock.last().calls.resetPaths).toEqual([[
+      'notes/summary.md',
+      'vault/[REDACTED: credential]/notes.md',
+      'notes/',
+      'notes/case-[REDACTED: credential]/',
+      'vault/',
+    ]])
+  })
+
   it('keeps explicit directory rows and marks directories whose files were sampled', async () => {
     vi.mocked(api.projectTree).mockResolvedValue(mkTree({
       paths: ['alpha/a.ts'],

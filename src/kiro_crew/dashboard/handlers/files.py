@@ -8121,6 +8121,33 @@ def _project_tree_directories(paths: list[str]) -> list[str]:
     return sorted(directories)
 
 
+def _project_tree_drop_file_directory_collisions(
+    paths: list[str], directories: list[str]
+) -> list[str]:
+    """Return *paths* without any entry that also names a directory.
+
+    A directory is any entry of *directories* or any proper parent of an entry
+    of *paths*. On a real listing one name is one inode, so this never bites;
+    it exists for REDACTED entries. When ``redact_path_segments`` falls back to
+    the whole-string result (the match straddled a ``/``), a deep path
+    collapses onto a shorter string, and every deep path under the same match
+    collapses onto the SAME string -- so one collapsed file row can share its
+    name with a collapsed directory row, or sit as the parent of another file.
+    ``@pierre/trees`` models a name as either a file or a directory and throws
+    ``Path collides with an existing entry`` on the other, uncaught inside the
+    tree's layout effect, which takes down the whole chat route. Such a file
+    row is inert anyway: its real path is gone, so nothing can open it. Drop
+    it and keep the directory, which may still carry visible children.
+    """
+    directory_names = set(directories)
+    for path in paths:
+        parent = posixpath.dirname(path)
+        while parent:
+            directory_names.add(parent)
+            parent = posixpath.dirname(parent)
+    return [path for path in paths if path not in directory_names]
+
+
 def _project_tree_file_quotas(file_counts: dict[str, int], limit: int) -> dict[str, int]:
     """Split *limit* round-robin across directories that directly own files."""
     quotas = {directory: 0 for directory in file_counts}
@@ -8322,6 +8349,13 @@ async def api_project_tree(request: web.Request) -> web.Response:
         result[key] = list(
             dict.fromkeys(redact_path_segments(p, redact) for p in result[key])
         )
+    # The per-list de-dup above cannot see a collision ACROSS the lists (a file
+    # row equal to a directory row) or a file row that became another file's
+    # parent; both throw in the tree builder. See the helper for why the file
+    # row is the one to drop.
+    result["paths"] = _project_tree_drop_file_directory_collisions(
+        result["paths"], result["directories"]
+    )
     return web.json_response(result)
 
 

@@ -415,3 +415,85 @@ class TestProjectTree:
         # ...and the fix does not merely invert the loss: the untracked subtree
         # still spends the remaining budget, so it keeps a row too.
         assert any(p.startswith("zz_vendor/") for p in data["paths"])
+
+    @pytest.mark.asyncio
+    async def test_a_file_that_redacts_onto_a_directory_row_is_dropped(
+        self, plain_project, mock_sel, monkeypatch
+    ):
+        """A whole-string match that straddles ``/`` makes the path helper hand
+        back a SHORTER string for a deep entry, and the same string for every
+        deep entry the match covers -- so one collapsed FILE row and one
+        collapsed DIRECTORY row can share a name. @pierre/trees models a name
+        as either, and throws "Path collides with an existing entry" on the
+        other, uncaught inside the tree's layout effect. The file row goes and
+        the directory row stays.
+
+        The reported shape: a case-id segment of digits followed by camel-case
+        package segments formed a 43-char run of the base64 alphabet with three
+        ``/`` in it, which the bare-secret pass read as one token. Every path
+        under that run then collapsed onto ``<parent>/<prefix>-<tag>``: a
+        ``Config`` file and a sibling ``docs/plans`` directory became the same
+        string.
+        """
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        collapsed = "notes/case-[REDACTED: credential]"
+        deep_prefix = "notes/case-T9021456783/vendor/"
+        monkeypatch.setattr(
+            files_mod,
+            "redact_path_segments",
+            lambda p, r=None: collapsed if p.startswith(deep_prefix) else p,
+        )
+        plain = plain_project
+        pkg = plain / "notes" / "case-T9021456783" / "vendor" / "BlueWidgetGraphSDK"
+        (pkg / "docs" / "plans").mkdir(parents=True)
+        (pkg / "Config").write_text("x")
+        (pkg / "docs" / "plans" / "design.md").write_text("x")
+        (plain / "notes" / "case-T9021456783" / "summary.md").write_text("x")
+
+        async with TestClient(TestServer(_make_app(str(plain)))) as client:
+            resp = await client.get(f"/api/project/tree?path={plain}")
+            data = await resp.json()
+
+        assert collapsed in data["directories"]
+        assert collapsed not in data["paths"]
+        assert not set(data["paths"]) & set(data["directories"])
+        # Untouched neighbours keep their rows.
+        assert "notes/case-T9021456783/summary.md" in data["paths"]
+        assert "notes/case-T9021456783" in data["directories"]
+
+    @pytest.mark.asyncio
+    async def test_a_file_that_redacts_onto_another_files_parent_is_dropped(
+        self, plain_project, mock_sel, monkeypatch
+    ):
+        """The other shape of the same collision: the collapsed file string is
+        a proper PARENT of another listed file, so the tree needs it as a
+        directory. The file row goes; the deeper file keeps its row."""
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        def fake(p, r=None):
+            if p == "vault/AKIAFAKEFAKEFAKEFAKE/Config":
+                return "vault/[REDACTED: credential]"
+            if p == "vault/AKIAFAKEFAKEFAKEFAKE/docs/notes.md":
+                return "vault/[REDACTED: credential]/notes.md"
+            return p
+
+        monkeypatch.setattr(files_mod, "redact_path_segments", fake)
+        plain = plain_project
+        (plain / "vault" / "AKIAFAKEFAKEFAKEFAKE" / "docs").mkdir(parents=True)
+        (plain / "vault" / "AKIAFAKEFAKEFAKEFAKE" / "Config").write_text("x")
+        (plain / "vault" / "AKIAFAKEFAKEFAKEFAKE" / "docs" / "notes.md").write_text("x")
+
+        async with TestClient(TestServer(_make_app(str(plain)))) as client:
+            resp = await client.get(f"/api/project/tree?path={plain}")
+            data = await resp.json()
+
+        assert "vault/[REDACTED: credential]/notes.md" in data["paths"]
+        assert "vault/[REDACTED: credential]" not in data["paths"]
+        parents = set()
+        for p in data["paths"]:
+            head = p.rsplit("/", 1)[0] if "/" in p else ""
+            while head:
+                parents.add(head)
+                head = head.rsplit("/", 1)[0] if "/" in head else ""
+        assert not set(data["paths"]) & parents
