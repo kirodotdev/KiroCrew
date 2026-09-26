@@ -91,7 +91,10 @@ hand after looking at it. A worker's claimed `pr` is never read as the bar,
 because a worker that could fill in its own bar could point it at somebody
 else's already-green pull request.
 
-Limits: 32 items per conductor, and a conductor may dispatch a conductor only
+Limits: 32 open items per conductor (an item in a terminal state -- accepted,
+rejected, abandoned -- stays on the board, listed and readable, and does not count;
+how many closed items a board keeps is a retention policy this cap does not set),
+and a conductor may dispatch a conductor only
 once — depth is capped at 2, so a second-level conductor's own children are
 workers. A worker holds one open item at a time.
 

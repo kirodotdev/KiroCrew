@@ -3344,9 +3344,15 @@ def work_slots_naming_board(slot: str) -> "tuple[str, ...]":
     return tuple(found)
 
 
-#: Item records the fold retains per board. The WRITER caps a board at far fewer
-#: (it refuses a create past its own limit); this is the fold's own bound, so a
-#: log that somehow carries more still folds to a value of bounded size.
+#: Item records the fold retains per board -- the fold's own memory bound, so a
+#: log that carries more still folds to a value of bounded size. The WRITER caps
+#: only a board's OPEN items (``work_ledger.MAX_ITEMS_PER_CONDUCTOR``) and keeps
+#: closed ones on the board, so a long-lived board's LIFETIME item count can pass
+#: this number. The fold then holds the board's first ``WORK_ITEM_LIMIT`` items and
+#: counts every later create in ``omitted``; a fold that is full is therefore a
+#: prefix of the board, not the board, and ``work_ledger.rebuild_from_projection``
+#: refuses to reconstruct a cache from it rather than drop what the fold could not
+#: hold.
 WORK_ITEM_LIMIT: Final[int] = 256
 
 #: Newest event lines kept per item, the same tail the stored ledger kept.

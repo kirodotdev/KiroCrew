@@ -847,6 +847,77 @@ def test_the_item_cap_refuses_the_thirty_third_item():
     assert sorted(p.name for p in wl.items_dir(CONDUCTOR).iterdir()) == before
 
 
+@pytest.mark.parametrize("terminal_state", sorted(wl.TERMINAL_ITEM_STATES))
+def test_closed_items_do_not_count_toward_the_item_cap(terminal_state: str):
+    """The cap bounds LIVE fan-out: closing an item frees its seat.
+
+    A queue conductor mints one item per ticket and closes each as it lands, so a
+    cap that counted its closed history would refuse the 33rd ticket of the shift
+    with nothing live behind the refusal.
+    """
+    wl.ensure_conductor(CONDUCTOR, goal="g")
+    ids = [
+        wl.apply_conductor_action(CONDUCTOR, "create", title=f"t{index}", acceptance={})[
+            "item"
+        ].item_id
+        for index in range(wl.MAX_ITEMS_PER_CONDUCTOR)
+    ]
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        wl.apply_conductor_action(CONDUCTOR, "create", title="one too many", acceptance={})
+    assert caught.value.code == wl.CODE_ITEM_CAP_EXCEEDED
+
+    wl.apply_conductor_action(CONDUCTOR, "close", item_id=ids[0], state=terminal_state)
+    minted = wl.apply_conductor_action(CONDUCTOR, "create", title="next ticket", acceptance={})
+    assert minted["item"].state == "open"
+
+    # Thirty-two open again, so the next one is refused -- the cap still holds.
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        wl.apply_conductor_action(CONDUCTOR, "create", title="one too many", acceptance={})
+    assert caught.value.code == wl.CODE_ITEM_CAP_EXCEEDED
+    assert "open items" in str(caught.value)
+
+
+def test_closed_items_stay_on_disk_listed_and_readable_past_the_cap():
+    """Freeing a seat changes nothing about the closed item's own record."""
+    wl.ensure_conductor(CONDUCTOR, goal="g")
+    ids = [
+        wl.apply_conductor_action(CONDUCTOR, "create", title=f"t{index}", acceptance={})[
+            "item"
+        ].item_id
+        for index in range(wl.MAX_ITEMS_PER_CONDUCTOR)
+    ]
+    for item_id in ids:
+        wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
+    closed_bytes = {item_id: _bytes_on_disk(item_id) for item_id in ids}
+
+    # A whole second shift's worth fits once the first is closed...
+    second = [
+        wl.apply_conductor_action(CONDUCTOR, "create", title=f"s{index}", acceptance={})[
+            "item"
+        ].item_id
+        for index in range(wl.MAX_ITEMS_PER_CONDUCTOR)
+    ]
+    # ...and the cap bites again at thirty-two OPEN.
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        wl.apply_conductor_action(CONDUCTOR, "create", title="one too many", acceptance={})
+    assert caught.value.code == wl.CODE_ITEM_CAP_EXCEEDED
+
+    listed = wl.list_work_items(CONDUCTOR)
+    assert len(listed) == 2 * wl.MAX_ITEMS_PER_CONDUCTOR
+    assert {it.item_id for it in listed} == set(ids) | set(second)
+    assert sum(it.state == "accepted" for it in listed) == wl.MAX_ITEMS_PER_CONDUCTOR
+    for item_id in ids:
+        stored = wl.read_work_item(CONDUCTOR, item_id)
+        assert stored is not None and stored.state == "accepted"
+        assert wl.item_path(CONDUCTOR, item_id).exists()
+        assert _bytes_on_disk(item_id) == closed_bytes[item_id]
+    brief = wl.read_work_brief(CONDUCTOR, ids[0])
+    assert brief is not None and brief["item_id"] == ids[0]
+
+
+# ── closed-item retention: moved into items-archive/, never deleted ──────────
+
+
 @pytest.mark.parametrize(
     "kwargs,expected_field",
     [

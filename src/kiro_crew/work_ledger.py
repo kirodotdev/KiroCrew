@@ -160,6 +160,14 @@ CONDUCTOR_ACTIONS: frozenset[str] = frozenset(
 # Caps. Each one refuses; none truncates.
 # --------------------------------------------------------------------------- #
 
+#: How many OPEN items one conductor may hold at once -- the bound on live fan-out,
+#: which is the only thing a per-conductor item cap is for. Items in a
+#: :data:`TERMINAL_ITEM_STATES` state do not count: they stay on disk, are still
+#: listed and readable, but a queue conductor that mints one item per ticket and
+#: closes each as it lands would otherwise exhaust the cap on its own history within
+#: a day, with nothing live behind the refusal. Enforced by :func:`_create_item`.
+#: Closed items are NOT bounded here: how long a board keeps its history is a
+#: retention decision this cap does not make (see ``docs/work-ledger.md``, Limits).
 MAX_ITEMS_PER_CONDUCTOR = 32
 MAX_EVENTS_PER_ITEM = 200
 MAX_DEPTH = 2
@@ -1719,6 +1727,12 @@ def _create_item(
 ) -> dict[str, Any]:
     """Mint one item under the conductor lock.
 
+    The set the cap counts is the OPEN items: :data:`MAX_ITEMS_PER_CONDUCTOR` bounds
+    live fan-out, so an item in a terminal state is listed but not counted. The
+    count comes from :func:`list_work_items`, which skips an unreadable record, so a
+    torn item neither counts toward the cap nor blocks a create -- the same reading
+    the listing gives everyone else. Closed items stay on the board, unbounded here.
+
     The lock is the conductor's, not the item's, because the cap it enforces is a
     property of the SET: counting the items and adding one must not interleave with
     another call doing the same, or two calls each see thirty-one and both write.
@@ -1750,10 +1764,16 @@ def _create_item(
         live = _header_under_lock(slot_key, record, "no item can be created in it")
         if checked_round is None:
             checked_round = live.round
-        existing = list_work_items(slot_key)
-        if len(existing) >= MAX_ITEMS_PER_CONDUCTOR:
+        # Only OPEN items count: a closed item is history, not fan-out. It stays on
+        # the board and ``list_work_items`` still returns it; it does not block a
+        # create.
+        open_items = [
+            item for item in list_work_items(slot_key) if item.state not in TERMINAL_ITEM_STATES
+        ]
+        if len(open_items) >= MAX_ITEMS_PER_CONDUCTOR:
             raise WorkLedgerError(
-                f"conductor holds {len(existing)} items; the cap is " f"{MAX_ITEMS_PER_CONDUCTOR}",
+                f"conductor holds {len(open_items)} open items; the cap is "
+                f"{MAX_ITEMS_PER_CONDUCTOR}",
                 code=CODE_ITEM_CAP_EXCEEDED,
                 field="items",
             )
@@ -2700,7 +2720,11 @@ def rebuild_from_projection(slot_key: str) -> dict[str, Any]:
     # which fails when these move up. The ``top-level-imports`` convention is
     # advisory; this boot-path invariant is enforced, so the invariant wins.
     from kiro_crew.crew_log import emit as crew_log_emit
-    from kiro_crew.crew_log.projection import read_slot_projection, work_slots_naming_board
+    from kiro_crew.crew_log.projection import (
+        WORK_ITEM_LIMIT,
+        read_slot_projection,
+        work_slots_naming_board,
+    )
     from kiro_crew.crew_log.store import unprovable_session_units
 
     directory = items_dir(slot_key)
@@ -2742,6 +2766,25 @@ def rebuild_from_projection(slot_key: str) -> dict[str, Any]:
         # way through puts all of them back, so the cache is never left half
         # rewritten: it is the old board or the rebuilt one, nothing between.
         fold_items = [raw for raw in (folded.get("items") or ()) if isinstance(raw, dict)]
+        omitted = folded.get("omitted")
+        if len(fold_items) >= WORK_ITEM_LIMIT and (not isinstance(omitted, int) or omitted > 0):
+            # The fold keeps a board's first ``WORK_ITEM_LIMIT`` items and counts
+            # every later create in ``omitted``, and the writer bounds only OPEN
+            # items (closed ones stay on the board), so a long-lived board's
+            # lifetime count can pass the fold's ceiling. A full fold that reports
+            # omissions is then a PREFIX of the board: rebuilding from it would
+            # write the oldest items back and -- past the dirty-cache shortcut
+            # below, which trusts the fold over the cache -- unlink every newer
+            # one, open items included. Refuse instead; the cache stands, and it is
+            # complete. A full fold that omitted nothing is the whole board and
+            # rebuilds; a fold whose count is unreadable is treated as full.
+            raise WorkLedgerError(
+                f"the crew log's fold holds {len(fold_items)} items for this board, its "
+                f"ceiling of {WORK_ITEM_LIMIT}, and omitted {omitted!r}; a board that "
+                "minted more than the fold retains cannot be rebuilt from the record -- "
+                "keep the cache as it stands",
+                code=CODE_CREW_LOG_INCOMPLETE,
+            )
         # An item the fold CREATES needs its lock held here, not merely while its
         # own files are written. The write routes take an item's lock alone and
         # never the conductor lock, so a lock released as soon as that item was

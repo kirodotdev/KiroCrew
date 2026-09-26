@@ -455,7 +455,50 @@ def test_rebuild_of_an_empty_fold_writes_nothing(monkeypatch):
     assert wl.read_conductor(CONDUCTOR) is None
 
 
-# -- real units, no mocked resolver and no pre-rendered fold ------------------
+def test_a_fold_at_its_item_ceiling_refuses_the_rebuild_even_on_a_dirty_cache(monkeypatch):
+    """The fold keeps a board's first ``WORK_ITEM_LIMIT`` items; a full fold may
+    be a prefix of a board whose closed items were archived out of ``items/``.
+    Rebuilding from it would re-materialise the prefix and, past the dirty-cache
+    shortcut, unlink every newer item. So it refuses -- and the cache stands."""
+    monkeypatch.setattr(projection, "WORK_ITEM_LIMIT", 1)
+    fold = _rendered(CONDUCTOR, "it_0000abcd")  # exactly one item: the ceiling
+    fold["omitted"] = 1  # ... and a later create the fold could not hold
+    monkeypatch.setattr(
+        projection,
+        "read_slot_projection",
+        lambda slot, name, **_kw: SimpleNamespace(value=fold if name == "work" else {}),
+    )
+    # A live board holding a NEWER item the fold never saw, flagged dirty (the one
+    # state whose documented cure is this rebuild).
+    wl.ensure_conductor(CONDUCTOR, goal="live")
+    newer = wl.apply_conductor_action(CONDUCTOR, "create", title="newest", acceptance={})["item"]
+    wl.mark_cache_dirty(CONDUCTOR, "an unrecorded write could not be undone")
+    before = {p.name: p.read_bytes() for p in wl.items_dir(CONDUCTOR).iterdir()}
+
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        wl.rebuild_from_projection(CONDUCTOR)
+
+    assert caught.value.code == wl.CODE_CREW_LOG_INCOMPLETE
+    assert "ceiling" in str(caught.value)
+    assert {p.name: p.read_bytes() for p in wl.items_dir(CONDUCTOR).iterdir()} == before
+    assert wl.read_work_item(CONDUCTOR, newer.item_id) is not None
+    assert wl.read_work_item(CONDUCTOR, "it_0000abcd") is None
+    assert wl.cache_dirty(CONDUCTOR), "the refusal leaves the flag for the operator"
+
+
+def test_a_full_fold_that_omitted_nothing_is_the_whole_board_and_rebuilds(monkeypatch):
+    """Exactly ``WORK_ITEM_LIMIT`` items and ``omitted == 0`` is a complete record,
+    not a prefix: the rebuild proceeds."""
+    monkeypatch.setattr(projection, "WORK_ITEM_LIMIT", 1)
+    fold = _rendered(CONDUCTOR, "it_0000abcd")  # exactly one item, nothing omitted
+    monkeypatch.setattr(
+        projection,
+        "read_slot_projection",
+        lambda slot, name, **_kw: SimpleNamespace(value=fold if name == "work" else {}),
+    )
+    result = wl.rebuild_from_projection(CONDUCTOR)
+    assert result["items"] == 1
+    assert wl.read_work_item(CONDUCTOR, "it_0000abcd") is not None
 
 
 def test_a_bound_workers_real_unit_joins_the_fold_and_its_report_is_rebuilt():

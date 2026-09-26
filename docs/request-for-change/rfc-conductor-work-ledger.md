@@ -298,7 +298,7 @@ one file describes the pair, whichever end asks about it. The conductor is the o
 writer, exactly like `bindings/`, so the file needs no lock discipline beyond the
 atomic write itself.
 
-Caps: 32 items per conductor, 200 events per item with oldest-dropped, `depth` ≤ 2,
+Caps: 32 open items per conductor (closed items do not count and stay on the board), 200 events per item with oldest-dropped, `depth` ≤ 2,
 16 channel files per conductor, a channel TTL of at most 86400 seconds and at most 50
 messages over a channel's life. Every cap refuses rather than truncates, because a
 silent truncation leaves the worker believing its report landed whole. `message`
@@ -785,7 +785,7 @@ rather than noise.
 
 **Oversized payload.** Every string and collection is capped, and a cap refuses with `field_too_long` naming the field. Refusal rather than truncation, because a truncated summary that the worker believes landed whole is a silent data loss the worker cannot detect.
 
-**Unbounded growth.** 32 items per conductor, 200 events per item with oldest-dropped, 16 channels per conductor, one directory per conductor. A ledger cannot grow without bound and cannot grow into another conductor's space.
+**Unbounded growth.** 32 open items per conductor (closed items stay on the board; their retention is a separate policy decision), 200 events per item with oldest-dropped, 16 channels per conductor, one directory per conductor. A ledger cannot grow without bound and cannot grow into another conductor's space.
 
 **Path traversal.** `item_id` is server-minted `it_<8 hex>`, a channel's pair id is two such ids sorted and joined, and the conductor directory name is derived from a hashed session key. No model-supplied string reaches a path component — which is what lets `work_request` and `work_message` take an `item_id` argument at all: the value is validated against the derived item list, and a value that is not a minted id of this ledger never becomes a filename.
 
