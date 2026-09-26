@@ -160,13 +160,23 @@ class TestFallbackServedTurnAttribution:
             await _run_chat(state, slot, "hello")
             await self._drain_bg(state)
 
-        # Preconditions: the fallback really served the turn, and the walk that
-        # the persist site relies on really cannot see it.
+        # Preconditions: the fallback really served the turn, and the walk the
+        # persist site falls back on resolves it too.
+        #
+        # `read_effective_model` probes the PUBLIC `served_model` accessor ahead of
+        # the private attributes, and that accessor sits on the outermost provider
+        # and delegates inward, so the chain cap does not hide the model from it.
+        #
+        # What this test asserts below is unaffected: the row is correct BY
+        # CONSTRUCTION from the caller-side witness, not by a coincidence in another
+        # module's traversal. `_resolve_model` short-circuits on a non-blank
+        # caller-side model and never consults `model_source`, so the witness decides
+        # the value and the walk is a second, independent source.
         assert slot._active_fallback_model == "fallback-model"
         assert handle._model == "fallback-model"
-        assert usage_mod.read_turn_model(client) == "", (
-            "precondition: the wrapper-chain walk must be blind here, otherwise "
-            "this test is not exercising the capped-chain case"
+        assert usage_mod.read_turn_model(client) == "fallback-model", (
+            "the public served_model accessor must resolve a capped chain; at '' the "
+            "row would depend on the witness alone"
         )
 
         rows = self._rows(shard_dir)

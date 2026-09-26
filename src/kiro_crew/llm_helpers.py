@@ -2079,17 +2079,24 @@ async def background_turn(
                 # shared predicate covers the claude seam's cost and cache
                 # dimensions alongside the kiro credits/token signals.
                 if usage_has_billing(usage):
+                    # Read once, for both destinations. A blank model here leaves the
+                    # row unattributable: `cost_breakdown` renders it as "unknown",
+                    # so the spend lands in a bucket naming no model. The usage store
+                    # takes the same value `run_bg_oneliner` passes: the model the
+                    # session SERVED, never the one requested. An unreadable served
+                    # model falls through to `model_source` rather than naming a guess.
+                    _served = str(getattr(client, "served_model", "") or "").strip()
                     _record_background_crew_log(
                         _crew_log_owner,
                         crew_log_kind,
                         usage,
-                        model=str(getattr(client, "served_model", "") or "").strip(),
+                        model=_served,
                         provider=_provider_label(client),
                         elapsed_ms=turn_elapsed_ms,
                     )
                     await persist_token_record_async(
                         key,
-                        "",
+                        _served,
                         usage,
                         _provider_label(client),
                         surface=f"bg:{task}",
