@@ -7716,14 +7716,16 @@
       "updated": "Actualizado"
     },
     "questionCard": {
-      "collapse_all": "Contraer todo",
       "custom_answer": "Respuesta personalizada",
       "dismiss": "Descartar",
       "dismiss_hint": "Descartar la pregunta hace que el agente deje de esperar una respuesta.",
       "dismiss_question_without_answering": "Descartar la pregunta sin responder",
-      "expand_all": "Expandir todo",
-      "not_answered_yet": "Sin responder",
+      "n_still_unanswered": "{{count}} sin responder",
+      "next": "Siguiente",
+      "next_question": "Pregunta siguiente",
       "or_type_a_custom_answer": "O escribe una respuesta personalizada...",
+      "previous_question": "Pregunta anterior",
+      "question_x_of_y": "Pregunta {{current}} de {{total}}",
       "submit": "Enviar"
     },
     "queueStack": {
@@ -8863,7 +8865,8 @@
     },
     "pendingQuestionCard": {
       "answer_failed": "No se pudo enviar tu respuesta. El agente sigue esperando, así que inténtalo de nuevo.",
-      "dismiss_failed": "No se pudo descartar esta pregunta. Inténtalo de nuevo."
+      "dismiss_failed": "No se pudo descartar esta pregunta. Inténtalo de nuevo.",
+      "qa_pair": "P. {{question}}\nR. {{answer}}"
     },
     "sketchDialog": {
       "title": "Bloc de bocetos",

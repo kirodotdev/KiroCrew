@@ -3292,7 +3292,8 @@
     },
     "pendingQuestionCard": {
       "answer_failed": "Couldn’t send your answer. The agent is still waiting, so try again.",
-      "dismiss_failed": "Couldn’t dismiss this question. Try again."
+      "dismiss_failed": "Couldn’t dismiss this question. Try again.",
+      "qa_pair": "Q. {{question}}\nA. {{answer}}"
     },
     "pinSurfaceButton": {
       "pin_limit_reached": "Maximum {{n}} sidebar pins - unpin one first"

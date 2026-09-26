@@ -55,11 +55,11 @@ The tool result tells the agent to end its turn. The server records the card as 
 
 ## Rendering and answers
 
-`PendingQuestionCard` is shared by the main chat view and session panes. `QuestionCard` renders an optional uppercase header badge, the question text, labeled options with optional descriptions, and a custom-answer field.
+`PendingQuestionCard` is shared by the main chat view and session panes. `QuestionCard` renders an optional uppercase header badge, the question text, labeled options with optional descriptions, and a custom-answer field. A card carrying more than one question shows one question at a time, with its position and back/forward arrows in the corner; a single-question card shows neither.
 
-For a single-select question, selecting a different option replaces the previous selection. For `multiSelect: true`, multiple option labels can be selected. Typing a custom answer clears option selections for that question.
+For a single-select question, selecting a different option replaces the previous selection. For `multiSelect: true`, multiple option labels can be selected, and each option carries a checkbox so the mode is visible before the second pick. Typing a custom answer clears option selections for that question.
 
-Every question must have an answer before Submit becomes available. The card emits answers keyed by question text; the stateless wrapper sends the answer values as newline-separated message text. Dismiss removes the stateless card and its `needs_input` status without sending an answer.
+Every question must have an answer before Submit becomes available, and on a multi-question card Submit is reached by walking to the last question. The card emits answers keyed by question text. The stateless wrapper sends one `Q. <question>` / `A. <answer>` pair per question, pairs separated by a blank line, so an answer cannot be read without the question it belongs to; a single-question card sends the bare answer, which needs no label. The `Q.` / `A.` initials come from the active locale. Dismiss removes the stateless card and its `needs_input` status without sending an answer.
 
 Only one stateless card is retained per slot; a later card replaces the earlier one. A live user message retires an unanswered stateless card; an auto-nudge cycle does not, because it wakes the same agent in the same conversation and the answer still reaches it. Anything else needs the card's own Dismiss control. Reloads and websocket reconnects reconcile pending cards with `GET /api/ask-question/pending`.
 

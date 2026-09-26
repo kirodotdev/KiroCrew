@@ -7490,14 +7490,16 @@
       "updated": "업데이트됨"
     },
     "questionCard": {
-      "collapse_all": "모두 접기",
       "custom_answer": "직접 입력한 답변",
       "dismiss": "무시",
       "dismiss_hint": "질문을 닫으면 에이전트가 답변 대기를 중단합니다.",
       "dismiss_question_without_answering": "답변하지 않고 질문 무시",
-      "expand_all": "모두 펼치기",
-      "not_answered_yet": "아직 답변하지 않음",
+      "n_still_unanswered": "미응답 {{count}}개",
+      "next": "다음",
+      "next_question": "다음 질문",
       "or_type_a_custom_answer": "또는 답변을 직접 입력하세요…",
+      "previous_question": "이전 질문",
+      "question_x_of_y": "질문 {{current}} / {{total}}",
       "submit": "제출"
     },
     "queueStack": {
@@ -8623,7 +8625,8 @@
     },
     "pendingQuestionCard": {
       "answer_failed": "답변을 보낼 수 없습니다. 에이전트가 아직 대기 중이므로 다시 시도하세요.",
-      "dismiss_failed": "이 질문을 닫을 수 없습니다. 다시 시도하세요."
+      "dismiss_failed": "이 질문을 닫을 수 없습니다. 다시 시도하세요.",
+      "qa_pair": "문. {{question}}\n답. {{answer}}"
     },
     "sketchDialog": {
       "title": "스케치 패드",

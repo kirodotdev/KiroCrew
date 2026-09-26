@@ -7603,14 +7603,16 @@
       "updated": "अपडेट किया गया"
     },
     "questionCard": {
-      "collapse_all": "सभी संक्षिप्त करें",
       "custom_answer": "कस्टम उत्तर",
       "dismiss": "खारिज करें",
       "dismiss_hint": "प्रश्न खारिज करने पर एजेंट उत्तर की प्रतीक्षा करना बंद कर देगा।",
       "dismiss_question_without_answering": "उत्तर दिए बिना प्रश्न खारिज करें",
-      "expand_all": "सभी विस्तृत करें",
-      "not_answered_yet": "अभी उत्तर नहीं दिया",
+      "n_still_unanswered": "{{count}} अनुत्तरित",
+      "next": "आगे",
+      "next_question": "अगला प्रश्न",
       "or_type_a_custom_answer": "या कस्टम उत्तर लिखें...",
+      "previous_question": "पिछला प्रश्न",
+      "question_x_of_y": "प्रश्न {{current}} / {{total}}",
       "submit": "सबमिट करें"
     },
     "queueStack": {
@@ -8743,7 +8745,8 @@
     },
     "pendingQuestionCard": {
       "answer_failed": "तुम्हारा उत्तर भेजा नहीं जा सका। एजेंट अभी भी प्रतीक्षा कर रहा है, इसलिए फिर से कोशिश करो।",
-      "dismiss_failed": "यह प्रश्न खारिज नहीं किया जा सका। कृपया पुनः प्रयास करें।"
+      "dismiss_failed": "यह प्रश्न खारिज नहीं किया जा सका। कृपया पुनः प्रयास करें।",
+      "qa_pair": "प्र. {{question}}\nउ. {{answer}}"
     },
     "sketchDialog": {
       "title": "स्केच पैड",

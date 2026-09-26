@@ -7603,14 +7603,16 @@
       "updated": "আপডেট হয়েছে"
     },
     "questionCard": {
-      "collapse_all": "সব সংকুচিত করুন",
       "custom_answer": "কাস্টম উত্তর",
       "dismiss": "খারিজ করুন",
       "dismiss_hint": "প্রশ্নটি বাতিল করলে এজেন্ট উত্তরের জন্য অপেক্ষা করা বন্ধ করবে।",
       "dismiss_question_without_answering": "উত্তর না দিয়ে প্রশ্নটি খারিজ করুন",
-      "expand_all": "সব প্রসারিত করুন",
-      "not_answered_yet": "এখনও উত্তর দেওয়া হয়নি",
+      "n_still_unanswered": "{{count}}টি অনুত্তরিত",
+      "next": "পরবর্তী",
+      "next_question": "পরবর্তী প্রশ্ন",
       "or_type_a_custom_answer": "অথবা একটি কাস্টম উত্তর লিখুন...",
+      "previous_question": "পূর্ববর্তী প্রশ্ন",
+      "question_x_of_y": "প্রশ্ন {{current}} / {{total}}",
       "submit": "জমা দিন"
     },
     "queueStack": {
@@ -8743,7 +8745,8 @@
     },
     "pendingQuestionCard": {
       "answer_failed": "আপনার উত্তর পাঠানো যায়নি। এজেন্ট এখনও অপেক্ষা করছে, তাই আবার চেষ্টা করুন।",
-      "dismiss_failed": "এই প্রশ্নটি বাতিল করা যায়নি। আবার চেষ্টা করুন।"
+      "dismiss_failed": "এই প্রশ্নটি বাতিল করা যায়নি। আবার চেষ্টা করুন।",
+      "qa_pair": "প্র. {{question}}\nউ. {{answer}}"
     },
     "sketchDialog": {
       "title": "স্কেচ প্যাড",

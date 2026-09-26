@@ -7716,14 +7716,16 @@
       "updated": "Mise à jour"
     },
     "questionCard": {
-      "collapse_all": "Tout réduire",
       "custom_answer": "Réponse personnalisée",
       "dismiss": "Ignorer",
       "dismiss_hint": "Ignorer la question fait cesser l’attente d’une réponse par l’agent.",
       "dismiss_question_without_answering": "Ignorer la question sans répondre",
-      "expand_all": "Tout développer",
-      "not_answered_yet": "Pas encore répondu",
+      "n_still_unanswered": "{{count}} sans réponse",
+      "next": "Suivant",
+      "next_question": "Question suivante",
       "or_type_a_custom_answer": "Ou saisissez une réponse personnalisée...",
+      "previous_question": "Question précédente",
+      "question_x_of_y": "Question {{current}} sur {{total}}",
       "submit": "Envoyer"
     },
     "queueStack": {
@@ -8863,7 +8865,8 @@
     },
     "pendingQuestionCard": {
       "answer_failed": "Impossible d’envoyer votre réponse. L’agent attend toujours, réessayez.",
-      "dismiss_failed": "Impossible d’ignorer cette question. Réessayez."
+      "dismiss_failed": "Impossible d’ignorer cette question. Réessayez.",
+      "qa_pair": "Q. {{question}}\nR. {{answer}}"
     },
     "sketchDialog": {
       "title": "Bloc de croquis",
