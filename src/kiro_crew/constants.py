@@ -1329,6 +1329,13 @@ ARTIFACT_MAX_CONTENT_BYTES = 26_214_400  # 25 MiB
 #: it rejects. ``dashboard.state`` re-exports every name, so its importers are
 #: unchanged.
 DENY_CAUSE_POLICY = "policy"
+#: The SURFACE the turn runs on refuses the call -- a reject-all or read-only
+#: tool policy, a tool-free background one-liner -- as opposed to a safety rule
+#: judging the call itself (``DENY_CAUSE_POLICY``). Kept apart because the
+#: policy notice appends class-specific remediation keyed off the reason AND
+#: the model's own tool title; on a surface where no tool can run, naming a
+#: sanctioned command the model should run instead would be a second wall.
+DENY_CAUSE_SURFACE_POLICY = "surface_policy"
 DENY_CAUSE_INVALID_NAME = "invalid_name"
 DENY_CAUSE_HOOK_ERROR = "hook_error"
 DENY_CAUSE_BATCH_CASCADE = "batch_cascade"
