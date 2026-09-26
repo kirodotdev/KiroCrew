@@ -1130,11 +1130,283 @@ async def test_a_floor_tick_is_charged_only_when_its_delivery_lands(tmp_path, mo
         assert loop.monitor is not None
         assert loop.monitor.floor_ticks == 0, "a refused floor delivery spent nothing"
         assert loop.id in service._pending_floor_tick, "so the charge stays owed"
+        assert loop.monitor.floor_fire_pending is True, "durably as well as in memory"
 
         # The retry lands, and only now is it charged -- exactly once.
         await service._run_fire_cycle(loop)
         assert loop.monitor.floor_ticks == 1
         assert loop.id not in service._pending_floor_tick
+        assert loop.monitor.floor_fire_pending is False, "and the debt is discharged with it"
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_death_between_the_floor_decision_and_its_turn_leaves_the_fire_owed(
+    tmp_path, monkeypatch
+):
+    """The decision to deliver is durable while the claim carrying it is not.
+
+    The floor's decision publishes a reset ``quiet_streak`` through a scheduled write,
+    and the claim recording the owed turn lives in a process-local set. A gateway that
+    stops between the decision and the turn landing therefore keeps the half that
+    suppresses and loses the half that delivers: the reloaded loop reads an unchanged
+    subject against a baseline written for a turn nobody received, answers quiet, and
+    the forced delivery moves a whole floor away with nothing saying one was due.
+
+    The post-wake allowance cannot cover it. That one answers a fire the slot REFUSED,
+    and a process that stops refuses nothing.
+    """
+    polls: list[str] = []
+
+    async def on_fire(loop):
+        return True
+
+    def _calm(identity, *_a, **_k):
+        polls.append(identity)
+        return _an.irq.Verdict(_an.irq.Outcome.QUIET, "nothing yet", ())
+
+    monkeypatch.setattr(_an.irq, "poll", _calm)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    monitor = _structured_monitor(kind="gh-pr", target="acme/widgets#42")
+    monitor.quiet_streak = _an._MAX_QUIET_STREAK - 1
+    loop = NudgeLoop(
+        id="monitor46",
+        slot_key="chat-1-123",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=monitor,
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    try:
+        # This tick DECIDES to deliver. No fire cycle follows it, which is the death.
+        assert await service._monitor_tick_is_quiet(loop) is False
+        assert loop.monitor is not None
+        assert loop.monitor.quiet_streak == 0, "the baseline the next tick reads is published"
+        assert loop.id in service._pending_floor_tick
+        # The write that decision scheduled is what a restart reads, so let it land.
+        await asyncio.gather(*tuple(service._inflight_adds))
+    finally:
+        service.stop()
+
+    restarted = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    restarted._load()
+    try:
+        revived = restarted._loops["monitor46"]
+        assert revived.monitor is not None
+        assert revived.monitor.quiet_streak == 0, "the reset survived, so the subject reads calm"
+        assert revived.monitor.floor_fire_pending is True, "and the owed turn survives with it"
+        assert revived.id not in restarted._pending_floor_tick, "while the claim set starts empty"
+        observed_before = revived.monitor.quiet_ticks
+
+        polls.clear()
+        # The probe here answers exactly what suppresses the turn: nothing has changed.
+        assert await restarted._monitor_tick_is_quiet(revived) is False, "the owed turn fires"
+        assert polls == [], "without spending another observation on an answer it cannot trust"
+        assert revived.id in restarted._pending_floor_tick, "and the claim is re-taken to charge it"
+        assert (
+            revived.monitor.quiet_ticks == observed_before
+        ), "an unobserved tick is not a quiet one"
+
+        await restarted._run_fire_cycle(revived)
+        assert revived.monitor.floor_ticks == 1, "the recovered turn is charged exactly once"
+        assert revived.monitor.floor_fire_pending is False, "and the debt is discharged"
+    finally:
+        restarted.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_refused_floor_fire_then_a_restart_delivers_exactly_one_turn(tmp_path, monkeypatch):
+    """Two credits for one owed turn must not each buy a turn.
+
+    A refused fire grants the post-wake allowance so the NEXT tick retries the
+    delivery, and the floor debt records that the delivery is still owed. Both
+    survive a restart while the in-process claim does not, so a debt served behind
+    the allowance is served twice: the bypass fires with no claim to charge, then the
+    debt fires on the tick after. The debt is therefore served first and consumes the
+    allowance it duplicates.
+    """
+    fired: list[str] = []
+    outcomes = [False, True]
+
+    async def on_fire(loop):
+        fired.append(loop.id)
+        return outcomes.pop(0) if outcomes else True
+
+    def _calm(*_a, **_k):
+        return _an.irq.Verdict(_an.irq.Outcome.QUIET, "nothing yet", ())
+
+    monkeypatch.setattr(_an.irq, "poll", _calm)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    monitor = _structured_monitor(kind="gh-pr", target="acme/widgets#42")
+    monitor.quiet_streak = _an._MAX_QUIET_STREAK - 1
+    loop = NudgeLoop(
+        id="monitor50",
+        slot_key="chat-1-123",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=monitor,
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    try:
+        # The floor trips and the slot refuses the turn, so both credits stand.
+        assert await service._monitor_tick_is_quiet(loop) is False
+        await service._run_fire_cycle(loop)
+        assert loop.monitor is not None
+        assert loop.monitor.floor_fire_pending is True
+        assert loop.monitor.followup_ticks == _an._WAKE_FOLLOWUP_TICKS
+        assert fired == [loop.id], "the refused fire is the only one so far"
+        await asyncio.gather(*tuple(service._inflight_adds))
+    finally:
+        service.stop()
+
+    restarted = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    restarted._load()
+    try:
+        revived = restarted._loops["monitor50"]
+        assert revived.monitor is not None
+        assert revived.monitor.floor_fire_pending is True, "the debt crossed the restart"
+        assert revived.monitor.followup_ticks == _an._WAKE_FOLLOWUP_TICKS, "so did the allowance"
+
+        fired.clear()
+        assert await restarted._monitor_tick_is_quiet(revived) is False, "the debt fires"
+        assert revived.id in restarted._pending_floor_tick, "and this fire carries the claim"
+        assert revived.monitor.followup_ticks == 0, "the duplicate allowance is consumed"
+        await restarted._run_fire_cycle(revived)
+        assert fired == [revived.id], "one turn, not two"
+        assert revived.monitor.floor_ticks == 1
+        assert revived.monitor.floor_fire_pending is False
+
+        # The next tick observes instead of spending a second uncharged bypass.
+        assert await restarted._monitor_tick_is_quiet(revived) is True
+        assert fired == [revived.id], "still one turn for one owed delivery"
+        assert revived.monitor.quiet_streak == 1
+    finally:
+        restarted.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_delivered_floor_turn_stops_owing_and_lets_observation_resume(
+    tmp_path, monkeypatch
+):
+    """The owed fire is a debt, not a latch.
+
+    A marker that forces a turn is only safe if the confirmed delivery clears it. Left
+    set, it would bypass the probe on every following tick and turn a gated watch back
+    into a plain timer -- which is the saving this gate exists to make.
+    """
+    fired: list[str] = []
+
+    async def on_fire(loop):
+        fired.append(loop.id)
+        return True
+
+    def _calm(*_a, **_k):
+        return _an.irq.Verdict(_an.irq.Outcome.QUIET, "nothing yet", ())
+
+    monkeypatch.setattr(_an.irq, "poll", _calm)
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    monitor = _structured_monitor(kind="gh-pr", target="acme/widgets#42")
+    monitor.quiet_streak = _an._MAX_QUIET_STREAK - 1
+    loop = NudgeLoop(
+        id="monitor47",
+        slot_key="chat-1-123",
+        message="watch https://github.com/acme/widgets/pull/42 until green",
+        idle_secs=30,
+        monitor=monitor,
+        gate=True,
+    )
+    service._loops[loop.id] = loop
+
+    try:
+        assert await service._monitor_tick_is_quiet(loop) is False, "the floor fires"
+        assert loop.monitor is not None and loop.monitor.floor_fire_pending is True
+        await service._run_fire_cycle(loop)
+        assert fired == [loop.id], "the turn landed"
+        assert loop.monitor.floor_ticks == 1
+        assert loop.monitor.floor_fire_pending is False
+
+        # And the next tick observes again rather than firing on a spent debt.
+        assert await service._monitor_tick_is_quiet(loop) is True, "the saving is back"
+        assert loop.monitor.quiet_streak == 1
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_owed_floor_fire_resolves_toward_spending(tmp_path):
+    """A stored value this gateway cannot read means a turn MAY be owed.
+
+    ``bool("")`` would clear the fail-safe and suppress a turn that was due, so an
+    unreadable marker is normalised toward doubt exactly as the in-flight poll marker
+    is. The cost is one turn, and the delivery it asks for clears it.
+    """
+    store = {
+        "version": 1,
+        "loops": [
+            {
+                "id": "monitor48",
+                "slot_key": "chat-1-123",
+                "message": "watch https://github.com/acme/widgets/pull/42 until green",
+                "idle_secs": 30,
+                "active": True,
+                "gate": True,
+                "monitor": {
+                    "kind": "gh-pr",
+                    "target": "acme/widgets#42",
+                    "objective": "review_ready",
+                    "created_ts": 1_000.0,
+                    "floor_fire_pending": "",
+                },
+            }
+        ],
+    }
+    (tmp_path / "autonudge.json").write_text(json.dumps(store), encoding="utf-8")
+
+    service = AutoNudgeService(base_dir=tmp_path)
+    service._load()
+    try:
+        loop = service._loops["monitor48"]
+        assert loop.monitor is not None
+        assert loop.monitor.floor_fire_pending is True
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_record_written_before_the_owed_floor_marker_owes_nothing(tmp_path):
+    """Absent means fresh, so an upgraded store does not invent a forced turn."""
+    store = {
+        "version": 1,
+        "loops": [
+            {
+                "id": "monitor49",
+                "slot_key": "chat-1-123",
+                "message": "watch https://github.com/acme/widgets/pull/42 until green",
+                "idle_secs": 30,
+                "active": True,
+                "gate": True,
+                "monitor": {
+                    "kind": "gh-pr",
+                    "target": "acme/widgets#42",
+                    "objective": "review_ready",
+                    "created_ts": 1_000.0,
+                },
+            }
+        ],
+    }
+    (tmp_path / "autonudge.json").write_text(json.dumps(store), encoding="utf-8")
+
+    service = AutoNudgeService(base_dir=tmp_path)
+    service._load()
+    try:
+        loop = service._loops["monitor49"]
+        assert loop.monitor is not None
+        assert loop.monitor.floor_fire_pending is False
     finally:
         service.stop()
 

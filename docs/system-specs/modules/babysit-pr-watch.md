@@ -47,10 +47,32 @@ budget, alongside a streak-floor delivery, a gate fallback and a post-wake
 follow-up, so reading the cap as a wake count under-states what it spends.
 A gated loop is never starved: after `_MAX_QUIET_STREAK` consecutive quiet
 observations it is delivered anyway, counted apart from wakes in `floor_ticks` so
-a periodic delivery is never read as a real signal. Every uncertain path -- no
-probe, no inferable target, a probe defect, a kernel that reached no verdict --
-fires as before, because a wrongly-quiet tick is silence with half-finished work
-behind it while a wrongly-spent tick costs what every tick costs today.
+a periodic delivery is never read as a real signal. **That forced delivery is owed
+durably, not merely claimed in memory.** The tick that decides it publishes a reset
+`quiet_streak`, which is the only record that a turn was due, so a gateway that
+stops between the decision and the turn landing would keep the half that suppresses
+and lose the half that delivers -- the next tick reads an unchanged subject against
+a baseline written for a turn nobody received and answers quiet, pushing the forced
+delivery out another whole floor. `MonitorState.floor_fire_pending` carries the debt
+across the fire instead: it is set before the write that publishes the reset so the
+two ride one snapshot, a later tick finding it set fires WITHOUT observing, and it is
+discharged at the single point delivery is confirmed -- the same point that charges
+`floor_ticks`. A refusal and a death therefore both leave it owed, and a retried
+delivery is charged once. `followup_ticks` is not that backstop: it answers a fire
+the slot refused, and a process that stopped refuses nothing.
+
+The debt is served **ahead of** the `followup_ticks` allowance, and consumes one of
+its credits when it fires. A refused floor fire leaves both standing for ONE owed
+turn -- the allowance so the next tick retries the delivery, the debt recording that
+the delivery is still owed -- and both survive a restart while the in-process claim
+does not. Behind the allowance, a restart spends the bypass with no claim to charge
+and then spends the debt on the tick after, so one owed delivery buys two turns. The
+retry the allowance exists for IS the debt's own fire.
+
+Every uncertain path -- no probe, no inferable target, a probe defect, a kernel that
+reached no verdict -- fires as before, because a wrongly-quiet tick is silence with
+half-finished work behind it while a wrongly-spent tick costs what every tick costs
+today.
 
 ## Same-session monitor contract
 
