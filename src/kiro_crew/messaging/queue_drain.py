@@ -43,7 +43,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable, Iterable
 from contextlib import contextmanager
-from typing import Iterator
+from typing import Any, Iterator
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +71,16 @@ QUEUED_OWNER_KEY = "queued_owner"
 #: id, an email or a room name from a transport, and none of them can contain one -- so
 #: two different principals cannot collide by spelling their parts with the separator.
 _OWNER_SEP = "\x1f"
+
+#: Neutral key naming the RESUMED session an entry was accepted for, written only when
+#: the busy session was one the conversation resumed rather than its own native
+#: session. A drain replays with command interpretation off, and that flag also
+#: skips resume routing (a native entry must keep native affinity even if a binding
+#: appeared after it was queued), so without this field a replay could only re-derive
+#: the native key -- and an entry accepted for a resumed dashboard session would run
+#: in the wrong conversation. The drain reads it and pins the replay to that key
+#: instead. Absent means the entry was accepted for the native session.
+QUEUED_RESUMED_KEY = "queued_resumed_key"
 
 #: "Drain everything you own on this session key." The only capability a peer
 #: channel is given, and the reason no address crosses this seam.
@@ -186,6 +196,23 @@ def entry_channel(kwargs: dict) -> str:
     let any drain claim an untagged entry and reply to it in the wrong conversation.
     """
     return str(kwargs.get(QUEUED_CHANNEL_KEY) or "")
+
+
+def tag_resumed_entry(kwargs: dict[str, Any], resumed_key: str | None) -> dict[str, Any]:
+    """Record the RESUMED session *resumed_key* this entry was accepted for, if any.
+
+    A ``None`` (the busy session was the conversation's own native one) writes
+    nothing, so a native entry keeps the shape it always had and the drain keeps
+    re-deriving the native key for it. Returns *kwargs* like :func:`tag_entry`.
+    """
+    if resumed_key:
+        kwargs[QUEUED_RESUMED_KEY] = str(resumed_key)
+    return kwargs
+
+
+def entry_resumed_key(kwargs: dict) -> str:
+    """The resumed session this entry was accepted for, or "" for a native entry."""
+    return str(kwargs.get(QUEUED_RESUMED_KEY) or "")
 
 
 def register_drain(channel_type: str, drain: DrainCallable) -> None:

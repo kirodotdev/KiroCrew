@@ -1723,7 +1723,10 @@ class TestRouteLinkedThread:
             directive_user_origin=True,
             directive_channel_origin=True,
         )
-        slot.append.assert_called_once()
+        # The queued message is rendered by its queue card and the DRAIN writes
+        # its user row when it runs, as for a composer-queued send. Appending
+        # here as well put the row on the transcript twice.
+        slot.append.assert_not_called()
         state.push_slots_update.assert_called_once()
 
 

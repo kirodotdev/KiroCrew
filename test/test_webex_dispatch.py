@@ -657,6 +657,29 @@ class TestCommands:
 
 class TestWebexMidTurn:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("queue_mode", ["steer", "queue"])
+    async def test_a_command_typed_while_busy_is_executed_never_steered_or_queued(
+        self, queue_mode: str
+    ) -> None:
+        """The command intercept precedes the busy check on every path: ``/help``
+        during a running turn is answered by the gateway and never folded into the
+        turn or held behind it, in either queue mode."""
+        provider = FakeProvider([])
+        sessions = FakeSessions(provider)
+        sessions._busy = True
+        client = FakeClient()
+        d = _dispatcher(
+            sessions, FakeCtx(), client, cfg=_cfg_queue() if queue_mode == "queue" else _cfg()
+        )
+
+        await d.handle_message(_inbound("/help"))
+
+        assert provider.steered == []
+        assert sessions.queued == []
+        assert sessions.successes == []
+        assert client.sent, "the command was answered"
+
+    @pytest.mark.asyncio
     async def test_busy_steers_and_acknowledges(self) -> None:
         provider = FakeProvider([])
         sessions = FakeSessions(provider)

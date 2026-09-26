@@ -100,6 +100,7 @@ DECLARED_SITES = frozenset(
         ("dashboard/handlers/prompts.py", "_api_user_prompt_detail._read"),
         ("dashboard/handlers/themes.py", "_copy_installed_theme"),
         ("dashboard/handlers/themes.py", "_resolve_local_source"),
+        ("dashboard/queue_generation_store.py", "_store_dir"),
         ("deploy/__init__.py", "_register_core_skills"),
         ("diagnostics.py", "_usable_dir"),
         ("feature_videos_cache.py", "_remove_release_held"),

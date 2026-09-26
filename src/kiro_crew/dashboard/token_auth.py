@@ -25,6 +25,7 @@ from typing import Any, cast
 from aiohttp import web
 
 from kiro_crew import platform_compat
+from kiro_crew.dashboard import queue_origin_token
 from kiro_crew.dashboard.boot_id import current_boot_id
 from kiro_crew.dashboard.origin import (
     is_https_request,
@@ -1679,6 +1680,11 @@ async def warm_auth_singletons() -> None:
     """
     await asyncio.to_thread(_get_secret)
     await asyncio.to_thread(_get_revoked_store)
+    # The queue's provenance keys are derived from the same secret on first use
+    # (``queue_origin_token._derived_key``); their callers -- the enqueue stamp,
+    # the durable seal, the slot restore -- all run on the loop, so the one
+    # derivation that could load the key file happens here instead.
+    await asyncio.to_thread(queue_origin_token.warm_proof_keys)
     # The revocation generation is lazy-loaded from disk on first use; prime it
     # here too so the first token validation never does file I/O on the loop.
     await asyncio.to_thread(current_revocation_gen)

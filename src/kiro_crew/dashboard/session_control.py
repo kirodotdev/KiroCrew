@@ -725,6 +725,21 @@ def caller_slot_key(state: "DashboardState", session_key: str) -> str:
 MIRROR_IDENTITY_SEPARATOR = "|"
 
 
+def mirror_room(link: Any) -> str:
+    """One room of a :func:`_probe_channel_mirror` identity: ``type:channel:thread``.
+
+    The grammar the probe composes a non-Slack link with and :func:`mirror_audience`
+    splits, in one place, so a caller asking whether a particular conversation is
+    among the rooms right now (``channel_busy.channel_origin_still_bound``) spells
+    it the way the probe does. Missing ids read as empty, never as ``None``.
+    """
+    return (
+        f"{getattr(link, 'channel_type', '')}"
+        f":{getattr(link, 'channel_id', '') or ''}"
+        f":{getattr(link, 'thread_id', '') or ''}"
+    )
+
+
 def _probe_channel_mirror(state: "DashboardState", slot: "_ChatSlot") -> str | None:
     """The identity of *slot*'s outbound channel mirror, ``""`` when the
     conversation is not mirrored, or ``None`` when the session store could not
@@ -778,11 +793,7 @@ def _probe_channel_mirror(state: "DashboardState", slot: "_ChatSlot") -> str | N
         return None
     parts: list[str] = []
     if link:
-        parts.append(
-            f"{getattr(link, 'channel_type', '')}"
-            f":{getattr(link, 'channel_id', '') or ''}"
-            f":{getattr(link, 'thread_id', '') or ''}"
-        )
+        parts.append(mirror_room(link))
     slack_identity = f"slack:{slack_channel}:{slack_thread}" if slack_thread else ""
     if slack_identity and slack_identity not in parts:
         parts.append(slack_identity)
@@ -1038,6 +1049,27 @@ _CONTAINMENT_CHANGE_LABELS = {
     "app": "the session became app-scoped",
     "unattended": "the session became unattended",
     "workspace": "the session moved to a different workspace",
+    # Recorded by the drain for a channel hand-off (``channel_busy``), not by
+    # :func:`newly_held_constraints`: the conversation that queued the entry
+    # stopped resuming the session, so its reply route is gone.
+    "unlinked": "the channel conversation that queued it left the session",
+    # Recorded by the drain for a restored entry (``slot_queue_repository.
+    # REJECTED_SEAL_CONSTRAINT``): the durable record it came back from carried
+    # provenance that was PRESENT AND FALSE against the write this gateway
+    # committed -- a seal, a generation or a whole line that is not what the
+    # gateway last wrote. Phrased, like every label here, as the clause both
+    # notice frames complete with "after it was queued, so ..." (``chat_runner``'s
+    # dashboard notice, ``channel_busy``'s channel one).
+    "seal_rejected": "its stored record was changed by something other than this gateway",
+    # Recorded by the drain for a restored entry (``slot_queue_repository.
+    # UNRECORDED_GENERATION_CONSTRAINT``): the line it came back from names a
+    # durable write the fenced store holds no record of for this transcript -- a
+    # save cut short before its generation landed, a transcript put back from a
+    # copy, a reused slot key. Nothing was altered, so this is not the tamper
+    # wording above; there is simply nothing this gateway can honour.
+    "generation_unrecorded": (
+        "this gateway kept no record of the durable write it was restored from"
+    ),
 }
 
 

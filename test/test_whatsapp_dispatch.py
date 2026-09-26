@@ -419,6 +419,35 @@ def test_busy_session_without_steer_asks_to_resend():
     assert any("resend" in t.lower() for _, t in transport.sent)
 
 
+def test_a_command_typed_while_busy_is_executed_never_steered():
+    """The command intercept precedes the busy check: ``/new`` during a running turn
+    rotates the conversation and is never folded into the turn."""
+
+    class Steering(FakeProvider):
+        supports_steer = True
+
+        def __init__(self):
+            super().__init__()
+            self.steered: list[str] = []
+
+        def has_active_turn(self):
+            return True
+
+        async def steer(self, text):
+            self.steered.append(text)
+            return True
+
+    provider = Steering()
+    d, _client, _sessions, transport = _make(provider=provider, busy=True)
+    before = d._session_key(_DM)
+    asyncio.run(d.handle_message(_msg("/new")))
+
+    assert provider.steered == []
+    assert provider.prompts == []
+    assert d._session_key(_DM) != before
+    assert not any("folded" in t.lower() for _, t in transport.sent)
+
+
 def test_busy_session_folds_into_current_reply_when_steerable():
     class Steering(FakeProvider):
         supports_steer = True

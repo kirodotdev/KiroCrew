@@ -157,6 +157,77 @@ class TestDequeueNextMessage:
         assert [c["content"] for c in consumed] == ["user msg"]
         assert [q["content"] for q in slot._queue] == [cron_msg, "another user msg"]
 
+    def test_a_channel_command_the_turn_would_refuse_is_never_merged(self):
+        """A channel conversation's entry whose leading token the dashboard would
+        refuse (``/compact`` under the ``channel_origin`` address) breaks the merge run
+        like an attachment: merged behind other text under the banner, the token would
+        lose the leading position the refusal keys on and reach the model as prose
+        with no notice to the conversation. Red on the previous head (the merge took
+        it)."""
+        address = {"channel_type": "discord", "channel_id": "c1", "thread_id": None}
+        slot = _ChatSlot("s1")
+        slot._queue = [
+            {"id": "a", "content": "msg1"},
+            {"id": "b", "content": "msg2"},
+            {"id": "c", "content": "/compact", "meta": {"channel_origin": address}},
+            {"id": "d", "content": "msg3"},
+        ]
+        for item in slot._queue:
+            slot.append("queued", item["content"], "msg msg-queued")
+
+        next_msg, consumed = _dequeue_next_message(slot, merge_enabled=True)
+
+        assert next_msg == "[2 queued messages merged]\n\nmsg1\n\nmsg2"
+        assert [c["content"] for c in consumed] == ["msg1", "msg2"]
+        assert [q["content"] for q in slot._queue] == ["/compact", "msg3"]
+        # At the head it pops alone, so the turn's refusal keys on it.
+        next_msg, consumed = _dequeue_next_message(slot, merge_enabled=True)
+        assert next_msg == "/compact" and [c["id"] for c in consumed] == ["c"]
+        assert [q["content"] for q in slot._queue] == ["msg3"]
+
+    def test_channel_prose_and_an_address_less_command_still_merge(self):
+        """Only a conversation's own refusable command drains alone: a channel
+        conversation's prose merges, and a ``/compact`` with no conversation on it
+        (channel authority the gateway could not place, or composer text) is not
+        refused by the turn either way, so it merges too."""
+        address = {"channel_type": "discord", "channel_id": "c1", "thread_id": None}
+        slot = _ChatSlot("s1")
+        slot._queue = [
+            {"id": "a", "content": "and the weather?", "meta": {"channel_origin": address}},
+            {"id": "b", "content": "/compact", "_directive_channel_origin": True},
+            {"id": "c", "content": "/compact"},
+        ]
+        for item in slot._queue:
+            slot.append("queued", item["content"], "msg msg-queued")
+
+        next_msg, consumed = _dequeue_next_message(slot, merge_enabled=True)
+
+        assert next_msg == "[3 queued messages merged]\n\nand the weather?\n\n/compact\n\n/compact"
+        assert slot._queue == []
+
+    def test_the_merge_asks_the_refusal_on_the_turns_harness_axis(self):
+        """Under ``claude_code`` any leading slash is a harness command, so a channel
+        entry ``/slidev deck`` is refusable there and drains alone; on the other axis
+        it is prose and merges -- the merge and the turn's refusal share one rule."""
+        address = {"channel_type": "discord", "channel_id": "c1", "thread_id": None}
+
+        def _slot() -> _ChatSlot:
+            slot = _ChatSlot("s1")
+            slot._queue = [
+                {"id": "a", "content": "msg1"},
+                {"id": "b", "content": "/slidev deck", "meta": {"channel_origin": address}},
+            ]
+            for item in slot._queue:
+                slot.append("queued", item["content"], "msg msg-queued")
+            return slot
+
+        next_msg, _consumed = _dequeue_next_message(_slot(), merge_enabled=True, cc_provider=True)
+        assert next_msg == "msg1"
+        next_msg, _consumed = _dequeue_next_message(
+            _slot(), merge_enabled=True, cc_provider=False
+        )
+        assert next_msg == "[2 queued messages merged]\n\nmsg1\n\n/slidev deck"
+
     def test_partial_merge_before_cron(self):
         """Multiple user messages before a cron are merged; cron and later messages stay."""
         cron_msg = f"{CRON_NOTIFY_PREFIX}daily]: run report"

@@ -664,6 +664,22 @@ class TestCommands:
 
 class TestWeComMidTurn:
     @pytest.mark.asyncio
+    async def test_a_command_typed_while_busy_is_executed_never_steered(self) -> None:
+        """The command intercept precedes the busy check: ``/help`` during a running
+        turn is answered by the gateway, never folded into the turn."""
+        provider = FakeProvider([])
+        sessions = FakeSessions(provider)
+        sessions._busy = True
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(_inbound("/help"))
+
+        assert provider.steered == []
+        assert sessions.successes == []
+        assert client.said or client.replies, "the command was answered"
+
+    @pytest.mark.asyncio
     async def test_busy_steers_and_acknowledges(self) -> None:
         provider = FakeProvider([])
         sessions = FakeSessions(provider)

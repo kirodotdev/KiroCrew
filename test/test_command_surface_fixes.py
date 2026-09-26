@@ -270,7 +270,14 @@ async def test_prose_opening_with_a_bang_still_reaches_the_model(permitted: None
     dispatcher, _client, sessions = _dispatcher(busy=True)
     handled: list[str] = []
 
-    async def _busy(session_key: str, msg: Any, text: str, override_mode: str | None) -> None:
+    async def _busy(
+        session_key: str,
+        msg: Any,
+        text: str,
+        override_mode: str | None,
+        *,
+        resumed_key: str | None = None,
+    ) -> None:
         handled.append(text)
 
     dispatcher._handle_busy = _busy  # type: ignore[assignment]
@@ -293,7 +300,14 @@ async def test_a_captioned_attachment_is_never_read_as_a_command(permitted: None
     dispatcher, client, sessions = _dispatcher(busy=True)
     handled: list[str] = []
 
-    async def _busy(session_key: str, msg: Any, text: str, override_mode: str | None) -> None:
+    async def _busy(
+        session_key: str,
+        msg: Any,
+        text: str,
+        override_mode: str | None,
+        *,
+        resumed_key: str | None = None,
+    ) -> None:
         handled.append(text)
 
     dispatcher._handle_busy = _busy  # type: ignore[assignment]
@@ -310,7 +324,14 @@ async def test_a_drained_queue_message_is_never_read_as_a_command(permitted: Non
     dispatcher, client, sessions = _dispatcher(busy=True)
     handled: list[str] = []
 
-    async def _busy(session_key: str, msg: Any, text: str, override_mode: str | None) -> None:
+    async def _busy(
+        session_key: str,
+        msg: Any,
+        text: str,
+        override_mode: str | None,
+        *,
+        resumed_key: str | None = None,
+    ) -> None:
         handled.append(text)
 
     dispatcher._handle_busy = _busy  # type: ignore[assignment]

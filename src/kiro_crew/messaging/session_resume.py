@@ -30,7 +30,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Awaitable, Callable, Protocol
 
 from kiro_crew.history import (
@@ -150,6 +150,117 @@ class ResumeReleaseError(RuntimeError):
     """A resumed binding removal could not be made durable."""
 
 
+class ReplayBindingChanged(Exception):
+    """A message's conversation stopped resuming the session it was admitted for.
+
+    Raised by :meth:`ResumeBinding.check` from a dispatcher's closing gate -- the
+    yield-free step right before the prompt opens -- when the binding read there
+    differs from the one the message was pinned to. The admission-time lookup ran
+    before the turn's awaits (callback admission, session acquisition, attachment
+    I/O, context build), and an ``/unlink`` or a rebind landing in any of them
+    would otherwise run and persist the message in a session the conversation has
+    left. Carries the binding and what the gate read, for the log line.
+    """
+
+    def __init__(self, binding: "ResumeBinding", current: str | None) -> None:
+        super().__init__(
+            "replay binding moved: pinned {!r}, conversation now resumes {!r}".format(
+                binding.resumed_key, current
+            )
+        )
+        self.binding = binding
+        self.current = current
+
+
+@dataclass(frozen=True)
+class ResumeBinding:
+    """The session a message was admitted for, pinned once and threaded everywhere.
+
+    Every dispatcher decides WHERE a message runs exactly once, at admission: a
+    fresh message from the routing decision, a queue replay from the key its
+    entry recorded (``queue_drain.QUEUED_RESUMED_KEY``). That decision is this
+    object, and every later step that could route the message takes it -- the
+    hand-off to a dashboard turn, the steer-or-queue busy path, the queue entry,
+    the retry after a false enqueue, the closing gate, the drop notice. None of
+    them re-reads the live binding to decide a target; they only ask this object
+    whether the binding it was pinned to :meth:`still_holds`. A rebind that lands
+    during any awaited step is then caught, never followed: the message is dropped
+    with a notice rather than run and persisted in a session the conversation has
+    moved to.
+
+    ``resumed_key`` is the resumed session, or ``None`` for the conversation's own
+    (native) session -- a native pin holds regardless of bindings that appear
+    later, which is what keeps a natively accepted entry native.
+    ``session_key`` is the session the message runs in, resolved by the
+    dispatcher's admission (:meth:`at`) from the pin and the conversation's own
+    current key, so no helper downstream derives a key of its own.
+
+    ``is_replay`` tells a drained QUEUE ENTRY from a live message. Only a replay
+    is dropped when the binding it was pinned to has moved (:meth:`dropped_by`,
+    :meth:`check`): it waited, unseen, while the conversation may have left the
+    session, and answering it there would be answering into a session the user
+    left. A live message -- fresh, or retried after a false enqueue -- was typed
+    against the binding it was pinned to and runs there; a rebind landing during
+    its setup awaits must neither re-route it nor drop it.
+    """
+
+    resumed_key: str | None
+    session_key: str = ""
+    is_replay: bool = False
+
+    @classmethod
+    def from_route(cls, route: "RoutingDecision") -> "ResumeBinding":
+        """Pin a fresh message to the routing decision just taken for it."""
+        return cls(resumed_key=route.resumed_key)
+
+    @classmethod
+    def for_replay(cls, marker: str | None) -> "ResumeBinding":
+        """Pin a drained entry to the key it recorded; an empty marker is native."""
+        return cls(resumed_key=marker or None, is_replay=True)
+
+    @property
+    def pinned(self) -> bool:
+        """Whether this binding names a RESUMED session (as opposed to native)."""
+        return self.resumed_key is not None
+
+    def at(self, native_key: str) -> "ResumeBinding":
+        """The pin with its session resolved: the resumed key, else *native_key*.
+
+        Called once per admission, after the conversation's own key is known; a
+        re-entry (the busy path's retry) resolves again, so rotation of the native
+        session applies to it exactly as to any fresh turn.
+        """
+        return replace(self, session_key=self.resumed_key or native_key)
+
+    def still_holds(self, current: str | None) -> bool:
+        """Whether *current* -- the conversation's binding read NOW -- still matches.
+
+        Always true for a native pin: an entry accepted natively keeps native
+        affinity even when a binding appeared after it was admitted.
+        """
+        return self.resumed_key is None or current == self.resumed_key
+
+    def dropped_by(self, current: str | None) -> bool:
+        """Whether *current* means this message must be dropped rather than run.
+
+        True only for a REPLAY whose pinned binding does not hold any more. A live
+        message is never dropped by a rebind: it runs where it was pinned.
+        """
+        return self.is_replay and not self.still_holds(current)
+
+    def check(self, current: str | None) -> None:
+        """Closing-gate half of the pin: raise :class:`ReplayBindingChanged` on a move.
+
+        Synchronous on purpose -- it runs inside the driver's closing gate, which
+        must not yield. Applies :meth:`dropped_by`, so a live turn on a resumed
+        conversation passes the gate whatever the binding does during its setup
+        awaits; the dispatcher turns the exception into the same drop notice the
+        admission-time lookup uses.
+        """
+        if self.dropped_by(current):
+            raise ReplayBindingChanged(self, current)
+
+
 @dataclass(frozen=True)
 class SessionChoice:
     """One offered session: its canonical key and the label the user sees."""
@@ -194,6 +305,7 @@ async def refused_resume_is_restricted(
     *,
     resolve: Callable[[], Awaitable[RoutingDecision]],
     is_restricted: Callable[[str], Awaitable[bool]],
+    resumed_session_key: str | None = None,
 ) -> bool:
     """Resolve every possible resume target before persisting a refused message.
 
@@ -202,6 +314,11 @@ async def refused_resume_is_restricted(
     update-pause spool cannot persist content belonging to a temporary or
     incognito conversation. Any resolution failure denies persistence: losing
     one restart notice is reversible, while writing restricted content is not.
+
+    ``resumed_session_key`` is the session a queued entry was accepted for. A
+    drain replays with commands off, and a commands-off turn does not route, so
+    ``resolve`` answers nothing for it: the entry's own key is then the only
+    word that its target is restricted, and it is checked like the rest.
     """
     try:
         decision = await resolve()
@@ -209,6 +326,7 @@ async def refused_resume_is_restricted(
             return True
         candidates = (
             native_session_key,
+            resumed_session_key,
             decision.resumed_key,
             decision.adopt_key,
             decision.described.key if decision.described is not None else None,

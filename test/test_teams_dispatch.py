@@ -11,7 +11,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, AcpEvent
-from kiro_crew.messaging.session_resume import RoutingDecision
+from kiro_crew.hooks import HOOK_REPLY
+from kiro_crew.messaging.session_resume import ResumeBinding, RoutingDecision
 from kiro_crew.session_allocation import SessionClosingError
 from kiro_crew.teams.client import TeamsInbound
 from kiro_crew.teams.transport_dispatch import TeamsDispatcher
@@ -411,6 +412,165 @@ class TestCommands:
 
         spool.assert_not_awaited()
         d._session_restricted.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_replay_whose_binding_moves_after_the_lookup_is_dropped_before_the_prompt(
+        self,
+    ) -> None:
+        """A drain replay pinned to a resumed session passes the admission-time
+        lookup, then `/unlink` (or a rebind) lands while the turn awaits its session.
+        The shared pipeline's closing gate re-reads the binding right before the
+        prompt opens: the replay neither runs nor persists in the session the
+        conversation has just left, and the conversation is told it was dropped."""
+        provider = FakeProvider(
+            [AcpEvent(kind=EVENT_TEXT_CHUNK, text="ran anyway"), AcpEvent(kind=EVENT_COMPLETE)]
+        )
+        sessions = FakeSessions(provider)
+        client = FakeClient()
+        conv = FakeConvLog()
+        d = _dispatcher(sessions, FakeCtx(), client, conv_log=conv)
+        binding = ["dashboard:chat-1"]
+        d._session_resume.resumed_session = lambda conversation_id: binding[0]  # type: ignore[method-assign]
+        real_get = sessions.get_or_create
+
+        async def _get(key, **kw):
+            result = await real_get(key, **kw)
+            binding[0] = None  # the conversation left the session mid-acquisition
+            return result
+
+        sessions.get_or_create = _get  # type: ignore[method-assign]
+
+        await d.handle_message(
+            _inbound("queued text"),
+            drain=False,
+            interpret_commands=False,
+            binding=ResumeBinding.for_replay("dashboard:chat-1"),
+        )
+
+        assert sessions.begin_turns == 0, "the prompt was opened in the abandoned session"
+        assert sessions.successes == []
+        assert conv.appended == []
+        assert sessions.released == ["dashboard:chat-1"]
+        assert not any("ran anyway" in content for (_, content, _) in client.sent)
+        assert any("Dropped" in content for (_, content, _) in client.sent)
+
+    @pytest.mark.asyncio
+    async def test_a_dropped_replay_does_not_rebind_the_left_sessions_mirror_to_the_conversation(
+        self,
+    ) -> None:
+        """`/unlink` lands while the replay awaits its restricted check: the resume
+        machinery has released the dashboard session's binding here, sweeping its
+        mirror at this conversation. The per-turn mirror re-assert is a NATIVE
+        session's self-healing (Discord and Telegram run it inside the native branch
+        only) -- on a pinned turn it would rebind the left session's outbound mirror
+        to the conversation that just unlinked, so its later dashboard replies would
+        land here. A dropped replay leaves no binding behind."""
+        provider = FakeProvider(
+            [AcpEvent(kind=EVENT_TEXT_CHUNK, text="ran anyway"), AcpEvent(kind=EVENT_COMPLETE)]
+        )
+        sessions = FakeSessions(provider)
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client, conv_log=FakeConvLog())
+        inbound = _inbound("queued text")
+        # The resumed state: the dashboard session's inbound-accepting mirror sits at
+        # this conversation, which is what the re-assert would otherwise leave alone.
+        sessions.mirror_links["dashboard:chat-1"] = d._origin_mirror_link(inbound)
+        binding = ["dashboard:chat-1"]
+        d._session_resume.resumed_session = lambda conversation_id: binding[0]  # type: ignore[method-assign]
+        real_restricted = d._session_restricted
+
+        async def _restricted(key):
+            binding[0] = None  # /unlink: the binding is released ...
+            sessions.mirror_links.pop("dashboard:chat-1", None)  # ... and its mirror swept
+            return await real_restricted(key)
+
+        d._session_restricted = _restricted  # type: ignore[method-assign]
+
+        await d.handle_message(
+            inbound,
+            drain=False,
+            interpret_commands=False,
+            binding=ResumeBinding.for_replay("dashboard:chat-1"),
+        )
+
+        assert (
+            "dashboard:chat-1" not in sessions.mirror_links
+        ), "the dropped replay re-bound the left session's mirror to the conversation that unlinked"
+        assert sessions.begin_turns == 0
+        assert any("Dropped" in content for (_, content, _) in client.sent)
+
+    @pytest.mark.asyncio
+    async def test_a_hook_auto_reply_does_not_answer_a_replay_whose_binding_moved(self) -> None:
+        """An ``on_message`` hook answers a message before the prompt opens -- and
+        before the closing gate. A replay whose pinned binding moved during the setup
+        awaits must not be answered by the hook and persisted into the session the
+        conversation left: the pin is checked on entry to the pipeline as well."""
+        sessions = FakeSessions(FakeProvider([]))
+        client = FakeClient()
+        conv = FakeConvLog()
+        ctx = FakeCtx()
+        ctx.hooks.on_message = lambda text: SimpleNamespace(action=HOOK_REPLY, text="canned")  # type: ignore[attr-defined]
+        d = _dispatcher(sessions, ctx, client, conv_log=conv)
+        binding = ["dashboard:chat-1"]
+        d._session_resume.resumed_session = lambda conversation_id: binding[0]  # type: ignore[method-assign]
+        real_restricted = d._session_restricted
+
+        async def _restricted(key):
+            binding[0] = None  # the conversation left the session during a setup await
+            return await real_restricted(key)
+
+        d._session_restricted = _restricted  # type: ignore[method-assign]
+
+        await d.handle_message(
+            _inbound("queued text"),
+            drain=False,
+            interpret_commands=False,
+            binding=ResumeBinding.for_replay("dashboard:chat-1"),
+        )
+
+        assert not any(
+            "canned" in content for (_, content, _) in client.sent
+        ), "the hook answered a replay whose binding had moved"
+        assert (
+            conv.appended == []
+        ), "the hook's answer was persisted into the session the conversation left"
+        assert any("Dropped" in content for (_, content, _) in client.sent)
+
+    @pytest.mark.asyncio
+    async def test_a_live_turn_on_a_resumed_conversation_is_not_dropped_by_a_rebind(
+        self,
+    ) -> None:
+        """The closing gate drops REPLAYED queue entries whose pinned binding moved,
+        never a live message: the user typed it against the binding it was pinned
+        to, and a rebind landing during its setup awaits must not turn a message
+        nobody queued into a "dropped queued message" notice. It runs where pinned."""
+        provider = FakeProvider(
+            [AcpEvent(kind=EVENT_TEXT_CHUNK, text="hi there"), AcpEvent(kind=EVENT_COMPLETE)]
+        )
+        sessions = FakeSessions(provider)
+        client = FakeClient()
+        conv = FakeConvLog()
+        d = _dispatcher(sessions, FakeCtx(), client, conv_log=conv)
+        binding = ["dashboard:chat-A"]
+        d._session_resume.route = AsyncMock(
+            side_effect=lambda conversation_id: RoutingDecision(resumed_key=binding[0])
+        )
+        d._session_resume.resumed_session = lambda conversation_id: binding[0]  # type: ignore[method-assign]
+        real_get = sessions.get_or_create
+
+        async def _get(key, **kw):
+            result = await real_get(key, **kw)
+            binding[0] = "dashboard:chat-B"  # rebind during a setup await
+            return result
+
+        sessions.get_or_create = _get  # type: ignore[method-assign]
+
+        await d.handle_message(_inbound("continue"))
+
+        assert sessions.begin_turns == 1, "a live turn was refused at the closing gate"
+        assert sessions.successes == ["dashboard:chat-A"]
+        assert ("dashboard:chat-A", "user", "continue") in conv.appended
+        assert not any("Dropped" in content for (_, content, _) in client.sent)
 
     @pytest.mark.asyncio
     async def test_new_bumps_gen_and_acks(self) -> None:

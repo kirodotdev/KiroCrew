@@ -316,6 +316,57 @@ class TestLinkedThreadIntercept:
             assert len(slot._queue) == 1
             mock_run_chat.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_a_queued_linked_message_carries_its_thread_through_the_shared_producer(self):
+        """The busy branch consumes ``queue_for_next_turn`` -- the dashboard's one
+        queue producer (persist, crew log, queue card) -- and stamps the Slack thread
+        on the entry, so a link released while the message waits drops the entry at
+        the drain and tells the thread, the way every other channel's hand-off is."""
+        from kiro_crew.dashboard.channel_busy import CHANNEL_ORIGIN_META_KEY
+        from kiro_crew.slack import handler
+
+        slack = _make_slack()
+        slot = MagicMock()
+        type(slot).running = PropertyMock(return_value=True)
+        slot.key = "slot1"
+        slot._queue = []
+        captured: dict = {}
+
+        def queue_append(content, *, meta=None, directive_user_origin, directive_channel_origin):
+            captured["meta"] = meta
+            captured["flags"] = (directive_user_origin, directive_channel_origin)
+            slot._queue.append({"id": "q-1", "content": content, "meta": meta})
+            return "q-1"
+
+        slot.queue_append = queue_append
+        ds = MagicMock()
+        ds.get_linked_slot = MagicMock(return_value=slot)
+        ds.broadcast_ws = MagicMock()
+        ds.push_slots_update = MagicMock()
+
+        with (
+            patch.object(handler, "_dashboard_state", ds),
+            patch.object(handler, "is_allowed_user", return_value=True),
+            patch("kiro_crew.dashboard.chat._run_chat", new_callable=AsyncMock),
+        ):
+            await handler.handle_message(slack, MagicMock(), "C1", "hello", "t1", "msg1", "U1")
+
+        assert captured["flags"] == (True, True)
+        assert captured["meta"].get(CHANNEL_ORIGIN_META_KEY) == {
+            "channel_type": "slack",
+            "channel_id": "C1",
+            "thread_id": "t1",
+        }
+        # The shared producer announces the queue card; a direct append never did.
+        frames = [call.args[0] for call in ds.broadcast_ws.call_args_list]
+        assert frames.count("queue_push") == 1
+        # ONE rendering of the pending message: the card. The user row is written
+        # by the drain when the entry runs (exactly as a composer-queued send is),
+        # so appending it here too would show the message as a bubble AND a card,
+        # and again as a second bubble once the drain wrote its own row.
+        user_rows = [c for c in slot.append.call_args_list if c.args and c.args[0] == "user"]
+        assert user_rows == [], "the queued message was appended as a user row beside its card"
+
 
 # ── Linked thread intercept on the messaging-transport path ──
 

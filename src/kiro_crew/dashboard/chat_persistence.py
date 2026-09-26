@@ -33,6 +33,7 @@ from kiro_crew.config.loader import (
     KiroCrewConfig,
     config_dir,
 )
+from kiro_crew.dashboard import queue_generation_store
 from kiro_crew.dashboard.channel_slots import slot_closed_since
 from kiro_crew.dashboard.chat_utils import (
     _normalize_model,
@@ -52,7 +53,9 @@ from kiro_crew.dashboard.slot_buffers import (
     union_deferred_notes,
 )
 from kiro_crew.dashboard.slot_queue_repository import (
+    ORIGIN_GENERATION_KEY,
     queue_persist_signature,
+    restore_queue_provenance,
     sanitize_restored_queue,
 )
 from kiro_crew.dashboard.state import (
@@ -104,6 +107,14 @@ _SKIP_MEMBER_RESTORE: tuple[str, str] = ("", "__skip__")
 #: non-member key) — defaulting to ``None`` would silently unpin every member
 #: slot restored by a caller that forgot to prefetch.
 _IDENTITY_UNRESOLVED: tuple[str, str] = ("", "__unresolved__")
+
+#: Sentinel default for the ``committed_generation`` parameters below, by the
+#: same rule: the caller did not prefetch the fenced store's record for the
+#: slot (``queue_generation_store.read_committed_generation``), read it inline.
+#: Distinct from ``None``, which is the store's own answer for a slot with no
+#: record -- and the answer that rejects every sealed line, so a caller that
+#: forgot to prefetch must not be read as having found nothing.
+_GENERATION_UNRESOLVED: str = "__unresolved__"
 
 
 # Recognized title-origin values (mirrors chat_title._TITLE_ORIGINS; duplicated
@@ -198,6 +209,61 @@ def _stable_durable_queue(slot: _ChatSlot) -> tuple[list[dict], int]:
             return entries, candidates
         entries, candidates = again, again_candidates
     return entries, candidates
+
+
+def _commit_queue_generation(slot: _ChatSlot, committed: list[dict], incarnation: str) -> bool:
+    """Record, in the fenced store, the generation the queue line just committed names.
+
+    Called at the two points a save commits ``queued_prompts`` to the transcript,
+    AFTER the line is on disk and within the same routing guard that credits the
+    slot's persistence witnesses. *committed* is the list the line carries: its
+    records all name one generation (``slot_queue_repository.
+    ORIGIN_GENERATION_KEY``), read off the records themselves rather than the
+    slot, so what the store names is what the line names whichever save's
+    snapshot won. *incarnation* is that line's metadata ``created_at`` -- the
+    transcript's identity, minted with the line and carried through rewrites --
+    and the record is bound to it: a slot key is reused after a permanent delete,
+    and a record good for the slot key alone would verify the deleted transcript
+    put back from a copy (``queue_generation_store``). An EMPTY committed list
+    names nothing, so the slot's current generation is committed instead --
+    fresh, because the value moved -- which moves the store off the generation of
+    the line that held the entries just consumed: put back whole, that line then
+    matches nothing.
+
+    Written only when the value differs from the one this slot last committed
+    (``_queue_generation_committed``, seeded by the restore from the store), so a
+    quiet slot's saves cost no store write, and a slot that never queued anything
+    never gets a record: the empty case commits only for a slot that HAS one to
+    move. Blocking file IO, like the transcript write beside it: the save runs
+    off the loop.
+
+    Returns whether the store now names what the line names -- it already did, or
+    the write landed. False is a write the store refused (``commit_queue_generation``
+    turns its ``OSError`` into False and a warning, and answers False for a line
+    naming no incarnation), and the caller must then leave the queue OWED: the
+    persisted-queue witness (``_queue_persisted_sig``) is not advanced,
+    ``queue_persist_pending`` stays true, and the next flush pass re-saves the line
+    and retries this write. Crediting the witness on a refused write would publish
+    the line as durable with no retry scheduled, and a restart would then reject
+    the whole line -- its generation is one the store does not hold -- and drop
+    the acknowledged prompts with a notice.
+    """
+    generation = ""
+    for record in committed:
+        value = record.get(ORIGIN_GENERATION_KEY) if isinstance(record, dict) else None
+        if isinstance(value, str) and value:
+            generation = value
+            break
+    if not generation:
+        if slot._queue_generation_committed is None:
+            return True
+        generation = slot._queue_generation
+    if generation == slot._queue_generation_committed:
+        return True
+    if queue_generation_store.commit_queue_generation(slot.key, generation, incarnation):
+        slot._queue_generation_committed = generation
+        return True
+    return False
 
 
 def _keep_owed_after_refusal(slot: _ChatSlot) -> None:
@@ -684,17 +750,24 @@ def _prefetch_rehydrate_inputs(
     kiro_model_map: dict[str, str] | None = None,
     with_status: bool = False,
 ) -> tuple[
-    dict, bool, list[dict] | None, dict[str, str] | None, tuple[str, str] | None, str | None, bool
+    dict,
+    bool,
+    list[dict] | None,
+    dict[str, str] | None,
+    tuple[str, str] | None,
+    str | None,
+    bool,
+    str | None,
 ]:
     """Read everything :func:`_rehydrate_slot_from_history` needs, off the loop.
 
     The one prefetch seam shared by every async restore path — the metadata line,
-    the chained message walk and (when the caller has no shared copy) the
-    agent→model map. All three are blocking disk work; none of them touches slot
-    state, so the whole function is safe to hand to ``asyncio.to_thread`` while
-    the loop-affine slot mutation stays on the event loop. See
-    :func:`rehydrate_slot_from_history_async` for why that split is mandatory
-    rather than merely nice.
+    the chained message walk, (when the caller has no shared copy) the
+    agent→model map, and the committed queue generation. All of them are
+    blocking disk work; none of them touches slot state, so the whole function
+    is safe to hand to ``asyncio.to_thread`` while the loop-affine slot mutation
+    stays on the event loop. See :func:`rehydrate_slot_from_history_async` for
+    why that split is mandatory rather than merely nice.
 
     *with_status* selects ``get_metadata_status`` over ``get_metadata`` so the
     open-tab restore keeps the readability signal it needs: ``get_metadata``
@@ -703,31 +776,38 @@ def _prefetch_rehydrate_inputs(
     live tab.
 
     Returns ``(meta, readable, messages, model_map, member_identity, agent,
-    effort_marker)``. The marker check is filesystem work too, so it belongs
-    in this prefetch rather than the loop-affine apply phase.
+    effort_marker, committed_generation)``. The marker check is filesystem work
+    too, so it belongs in this prefetch rather than the loop-affine apply phase.
     *messages* and *model_map* are ``None`` when there is nothing to build — no
     metadata, an unreadable read, or a session closed with ✕ that the caller did
     not opt to adopt — so a caller can decide without a second disk round trip.
     *member_identity* is the prefetched ``_member_restore_identity`` answer
     (dm.json is file IO too, and the apply half is loop-affine); it is resolved
-    only when there is something to build.
+    only when there is something to build. *committed_generation* is the fenced
+    store's record for the slot (``queue_generation_store.read_committed_generation``;
+    ``None`` when it holds none), which the queue restore requires of the line's
+    records and which, being a file read, belongs here and not in the apply half.
     """
     if with_status:
         meta, readable = conv_log.get_metadata_status(history_key)
     else:
         meta, readable = conv_log.get_metadata(history_key), True
     if not readable or not meta or (meta.get("closed") and not adopt_closed):
-        return meta or {}, readable, None, None, None, None, False
+        return meta or {}, readable, None, None, None, None, False, None
+    # The transcript key is "dashboard:" + slot name; identity and the committed
+    # generation are properties of the slot name.
+    slot_name = history_key.removeprefix("dashboard:")
     return (
         meta,
         readable,
         conv_log.read_messages_chained(history_key),
         kiro_model_map if kiro_model_map is not None else _build_kiro_model_map(),
-        # The transcript key is "dashboard:" + slot name; identity is a
-        # property of the slot name.
-        _member_restore_identity(history_key.removeprefix("dashboard:")),
+        _member_restore_identity(slot_name),
         _restored_agent_name(str(meta.get("linked_session_key") or history_key), meta),
         _has_validated_effort_marker(meta.get("reasoning_effort")),
+        queue_generation_store.read_committed_generation(
+            slot_name, str(meta.get("created_at") or "")
+        ),
     )
 
 
@@ -767,13 +847,20 @@ def _restore_open_slots_steps(state: DashboardState) -> "Iterator[int]":
             # These reads MUST stay inside the per-tab guard. The async driver
             # has no except at its call site either, so anything escaping here
             # aborts dashboard startup and costs every LATER tab too.
-            meta, readable, messages, model_map, member_identity, agent, effort_marker = (
-                _prefetch_rehydrate_inputs(
-                    state.conversation_log,
-                    slot_transcript_key(key),
-                    kiro_model_map=kiro_model_map,
-                    with_status=True,
-                )
+            (
+                meta,
+                readable,
+                messages,
+                model_map,
+                member_identity,
+                agent,
+                effort_marker,
+                generation,
+            ) = _prefetch_rehydrate_inputs(
+                state.conversation_log,
+                slot_transcript_key(key),
+                kiro_model_map=kiro_model_map,
+                with_status=True,
             )
             restored += _apply_restored_open_slot(
                 state,
@@ -785,6 +872,7 @@ def _restore_open_slots_steps(state: DashboardState) -> "Iterator[int]":
                 member_identity=member_identity,
                 agent=agent,
                 effort_marker=effort_marker,
+                committed_generation=generation,
                 unrestored=unrestored,
             )
         except Exception:
@@ -890,6 +978,7 @@ def _apply_restored_open_slot(
     member_identity: tuple[str, str] | None = _IDENTITY_UNRESOLVED,
     agent: str | None = None,
     effort_marker: bool = False,
+    committed_generation: str | None = _GENERATION_UNRESOLVED,
     conv_log: ConversationLog | None = None,
     started: float | None = None,
 ) -> int:
@@ -956,6 +1045,7 @@ def _apply_restored_open_slot(
         _prefetched_member_identity=member_identity,
         _prefetched_agent=agent,
         _prefetched_effort_marker=effort_marker,
+        _prefetched_generation=committed_generation,
     )
     return 1 if slot is not None else 0
 
@@ -1041,14 +1131,21 @@ async def restore_open_slots_async(state: DashboardState) -> int:
                 continue
             try:
                 started = time.time()
-                meta, readable, messages, model_map, member_identity, agent, effort_marker = (
-                    await asyncio.to_thread(
-                        _prefetch_rehydrate_inputs,
-                        conv_log,
-                        slot_transcript_key(key),
-                        kiro_model_map=kiro_model_map,
-                        with_status=True,
-                    )
+                (
+                    meta,
+                    readable,
+                    messages,
+                    model_map,
+                    member_identity,
+                    agent,
+                    effort_marker,
+                    generation,
+                ) = await asyncio.to_thread(
+                    _prefetch_rehydrate_inputs,
+                    conv_log,
+                    slot_transcript_key(key),
+                    kiro_model_map=kiro_model_map,
+                    with_status=True,
                 )
                 restored += _apply_restored_open_slot(
                     state,
@@ -1060,6 +1157,7 @@ async def restore_open_slots_async(state: DashboardState) -> int:
                     member_identity=member_identity,
                     agent=agent,
                     effort_marker=effort_marker,
+                    committed_generation=generation,
                     unrestored=unrestored,
                     # Opts into the post-hop re-checks (close tombstone +
                     # deletion): this driver's read ran in a worker thread, so
@@ -1496,6 +1594,7 @@ def _rehydrate_slot_from_history(
     _prefetched_member_identity: tuple[str, str] | None = _IDENTITY_UNRESOLVED,
     _prefetched_agent: str | None = None,
     _prefetched_effort_marker: bool = False,
+    _prefetched_generation: str | None = _GENERATION_UNRESOLVED,
 ) -> _ChatSlot | None:
     """Rehydrate a single dashboard slot from persisted history.
 
@@ -1790,12 +1889,40 @@ def _rehydrate_slot_from_history(
             # transcript file (this function runs on the event loop).
             slot._deferred_notes = restored_notes
         _restored_queue = sanitize_restored_queue(meta.get("queued_prompts"))
+        # The fenced store's committed generation for this slot, by the same
+        # rule as the member binding above: async callers prefetched it in their
+        # worker-thread step (a file read; this half is loop-affine), the inline
+        # read serves the synchronous callers.
+        _committed_generation = (
+            queue_generation_store.read_committed_generation(
+                slot_name, str(meta.get("created_at") or "")
+            )
+            if _prefetched_generation is _GENERATION_UNRESOLVED
+            else _prefetched_generation
+        )
+        # Seeded whatever was restored: a slot whose store holds a generation
+        # moves the store off it when its queue empties (``_commit_queue_generation``).
+        # A record for ANOTHER incarnation of this transcript (``STALE_INCARNATION``)
+        # seeds the witness too, so the slot's next save -- even of an empty queue --
+        # commits a fresh record over it; the restore below reads that answer as
+        # "no record for this transcript" and tells it apart from a tamper.
+        slot._queue_generation_committed = _committed_generation
         if _restored_queue:
             # Hand the queued prompts back as queue cards. They are the user's
             # own words, admitted while a turn was running and never dispatched,
             # so before this they simply vanished on a restart with no row and no
             # error. Nothing drains an idle slot on boot, so they wait for the
             # user to send, edit or delete them rather than running unasked.
+            # The reader above is the fail-closed half; this puts back, under the
+            # gateway's own proof, the admission snapshot and channel address of
+            # each entry it can vouch for -- before any drain re-validates them --
+            # and honours the line only if it names the committed generation.
+            restore_queue_provenance(
+                slot,
+                _restored_queue,
+                meta.get("queued_prompts"),
+                committed_generation=_committed_generation,
+            )
             slot._queue[:] = _restored_queue
             logger.info("Restored %d queued prompt(s) for slot %s", len(_restored_queue), slot_name)
         # Stamped whatever was restored (including nothing), so the first flush
@@ -2051,7 +2178,7 @@ async def rehydrate_slot_from_history_async(
     conv_log = state.conversation_log
 
     started = time.time()
-    _meta, _readable, messages, model_map, _member_id, agent, effort_marker = (
+    _meta, _readable, messages, model_map, _member_id, agent, effort_marker, _generation = (
         await asyncio.to_thread(
             _prefetch_rehydrate_inputs,
             conv_log,
@@ -2133,6 +2260,7 @@ async def rehydrate_slot_from_history_async(
         _prefetched_member_identity=_member_id,
         _prefetched_agent=agent,
         _prefetched_effort_marker=effort_marker,
+        _prefetched_generation=_generation,
     )
     if _restored is not None:
         # Claim recovery belongs HERE, not in each caller: this function is how
@@ -2178,20 +2306,22 @@ def _prefetch_recent_session(
     *,
     folders_only: bool,
     cutoff: float | None,
-) -> tuple[dict | None, list[dict] | None, tuple[str, str] | None, str | None, bool]:
+) -> tuple[dict | None, list[dict] | None, tuple[str, str] | None, str | None, bool, str | None]:
     """Read one candidate session's metadata + transcript, off the loop.
 
     Applies the selection filters BETWEEN the two reads so a session that is
     going to be skipped never pays for its transcript walk — the metadata read is
     what the filters need, and it is the cheap one.
 
-    Returns ``(None, None, None, None, False)`` for a session this pass must skip (not
-    folder'd / pinned under ``folders_only``, closed with ✕, or outside the
+    Returns ``(None, None, None, None, False, None)`` for a session this pass must
+    skip (not folder'd / pinned under ``folders_only``, closed with ✕, or outside the
     mtime window). The third element is the prefetched
     ``_member_restore_identity`` answer — dm.json is file IO too, and the apply
-    half is loop-affine. Pure disk work: no slot state is touched, so the whole
-    function is safe in ``asyncio.to_thread`` while the loop-affine apply half
-    stays on the loop.
+    half is loop-affine; the sixth is the fenced store's committed queue
+    generation for the slot (``queue_generation_store``), a file read for the same
+    reason. Pure disk work: no slot state is touched, so the whole function is
+    safe in ``asyncio.to_thread`` while the loop-affine apply half stays on the
+    loop.
     """
     meta = conv_log.get_metadata(key)
     if not meta:
@@ -2206,28 +2336,29 @@ def _prefetch_recent_session(
         # deleted. ``_rehydrate_slot_from_history`` already refuses on empty
         # metadata for exactly this reason ("don't create a phantom slot"); this
         # makes the recent-sessions path agree with it.
-        return None, None, None, None, False
+        return None, None, None, None, False, None
     has_folder = bool(meta.get("folder_id"))
     has_pin = bool(meta.get("pinned"))
     if folders_only and not has_folder and not has_pin:
-        return None, None, None, None, False
+        return None, None, None, None, False, None
     if meta.get("closed"):
-        return None, None, None, None, False
+        return None, None, None, None, False, None
     if not has_folder and not has_pin:
         if cutoff is not None and session.get("modified", 0) < cutoff:
-            return None, None, None, None, False
+            return None, None, None, None, False, None
+    slot_name = _recent_session_slot_name(key) or ""
     return (
         meta,
         conv_log.read_messages_chained(key),
-        _member_restore_identity(_recent_session_slot_name(key) or ""),
+        _member_restore_identity(slot_name),
         _restored_agent_name(
-            str(
-                meta.get("linked_session_key")
-                or slot_transcript_key(_recent_session_slot_name(key) or key)
-            ),
+            str(meta.get("linked_session_key") or slot_transcript_key(slot_name or key)),
             meta,
         ),
         _has_validated_effort_marker(meta.get("reasoning_effort")),
+        queue_generation_store.read_committed_generation(
+            slot_name, str(meta.get("created_at") or "")
+        ),
     )
 
 
@@ -2245,6 +2376,7 @@ def _apply_recent_session(
     member_identity: tuple[str, str] | None = _IDENTITY_UNRESOLVED,
     agent: str | None = None,
     effort_marker: bool = False,
+    committed_generation: str | None = _GENERATION_UNRESOLVED,
 ) -> None:
     """Build the slot for one prefetched recent session.
 
@@ -2418,8 +2550,25 @@ def _apply_recent_session(
         # this apply half runs on the event loop).
         slot._deferred_notes = restored_notes
     _restored_queue = sanitize_restored_queue(meta.get("queued_prompts"))
+    # Mirror of _rehydrate_slot_from_history: the fenced store's committed
+    # generation, prefetched by async callers, read inline by synchronous ones.
+    _committed_generation = (
+        queue_generation_store.read_committed_generation(
+            slot_name, str(meta.get("created_at") or "")
+        )
+        if committed_generation is _GENERATION_UNRESOLVED
+        else committed_generation
+    )
+    slot._queue_generation_committed = _committed_generation
     if _restored_queue:
-        # Mirror of the hand-back in _rehydrate_slot_from_history.
+        # Mirror of the hand-back in _rehydrate_slot_from_history, provenance
+        # step included (the store's answer passed through untranslated).
+        restore_queue_provenance(
+            slot,
+            _restored_queue,
+            meta.get("queued_prompts"),
+            committed_generation=_committed_generation,
+        )
         slot._queue[:] = _restored_queue
         logger.info("Restored %d queued prompt(s) for slot %s", len(_restored_queue), slot_name)
     slot._queue_persisted_sig = queue_persist_signature(slot.durable_queue_entries())
@@ -2516,7 +2665,7 @@ def _restore_recent_sessions_steps(
         slot_name = _recent_session_slot_name(key)
         if slot_name is None or slot_name in state._slots:
             continue
-        meta, messages, _member_id, agent, effort_marker = _prefetch_recent_session(
+        meta, messages, _member_id, agent, effort_marker, _generation = _prefetch_recent_session(
             conv_log, key, s, folders_only=folders_only, cutoff=cutoff
         )
         if meta is None or messages is None:
@@ -2534,6 +2683,7 @@ def _restore_recent_sessions_steps(
             member_identity=_member_id,
             agent=agent,
             effort_marker=effort_marker,
+            committed_generation=_generation,
         )
         restored += 1
         # Recover an app flag whose claim outlived its row, as the open-slots
@@ -2597,7 +2747,7 @@ async def restore_recent_sessions_async(
             if slot_name is None or slot_name in state._slots:
                 continue
             started = time.time()
-            meta, messages, _member_id, agent, effort_marker = await asyncio.to_thread(
+            meta, messages, _member_id, agent, effort_marker, _generation = await asyncio.to_thread(
                 _prefetch_recent_session,
                 conv_log,
                 key,
@@ -2668,6 +2818,7 @@ async def restore_recent_sessions_async(
                 member_identity=_member_id,
                 agent=agent,
                 effort_marker=effort_marker,
+                committed_generation=_generation,
             )
             restored += 1
             # Same recovery, with the spool read awaited: this driver is
@@ -3645,6 +3796,11 @@ def _save_slot_to_history(
     # writer that commits between here and the read costs a refused pass, never a
     # committed value this save could not prove.
     queue_write_basis = slot._queue_persisted_sig
+    # The generation this write's queue records are sealed under: fresh when the
+    # value moved since the last committed write, unchanged otherwise (see
+    # ``_ChatSlot.begin_durable_queue_write``). Before the snapshot, so the value
+    # taken below IS the sealed value the line will carry.
+    slot.begin_durable_queue_write()
     if messages is not None:
         window = list(messages)
         # A caller-supplied window was frozen before this call, so this function
@@ -3973,7 +4129,7 @@ def _save_slot_to_history(
             # from slot state inside the locked block -- so whichever writer
             # commits last writes the newest slot state.
             merged_fields: dict = {}
-            guard_state = {"ran": False}
+            guard_state: dict = {"ran": False, "created_at": ""}
 
             def _refresh_under_lock(meta: dict) -> bool:
                 guard_state["ran"] = True
@@ -3983,6 +4139,17 @@ def _save_slot_to_history(
                     return False
                 merged_fields.clear()
                 merged_fields.update(_fresh_fields())
+                # The line's identity, for the generation commit below: the
+                # ``created_at`` the line carries, read under the lock the merge
+                # commits under. A legacy line that carries none is stamped here
+                # exactly as the full save stamps it (``existing_meta.get(
+                # "created_at") or slot.created_at``), so the queue it carries
+                # has an incarnation for the store to bind to at all.
+                _line_identity = str(meta.get("created_at") or "")
+                if not _line_identity and slot.created_at:
+                    _line_identity = str(slot.created_at)
+                    merged_fields["created_at"] = slot.created_at
+                guard_state["created_at"] = _line_identity
                 # Held /note lines: a MERGE writer, so it unions
                 # with the on-disk hold and never shrinks it. A live-state
                 # mirror here could race a turn-end flush that just delivered
@@ -4016,13 +4183,18 @@ def _save_slot_to_history(
                     f"empty-window metadata merge skipped: record unreadable for {history_key}"
                 )
             if applied and slot_history_key(slot) == history_key:
-                # The queued prompts this merge committed are now durable, so
-                # the flush's drift check must stop reporting them as owed. Same
+                # The queued prompts this merge committed are durable only once
+                # the store names the line's generation too: the witness that
+                # stops the flush's drift check from reporting them as owed is
+                # advanced after that commit, never before it, so a refused store
+                # write leaves the queue owed and the next pass retries both. Same
                 # routing guard as the full save's witnesses: a slot rebound
                 # while the merge was in flight would otherwise be credited for
                 # a value written to the OLD transcript.
                 _merged_queue = merged_fields.get("queued_prompts")
-                if isinstance(_merged_queue, list):
+                if isinstance(_merged_queue, list) and _commit_queue_generation(
+                    slot, _merged_queue, str(guard_state["created_at"])
+                ):
                     slot._queue_persisted_sig = queue_persist_signature(_merged_queue)
         return True
     # Skip a pure no-op: a freshly resumed slot with no new AND no edited
@@ -4739,10 +4911,14 @@ def _save_slot_to_history(
                 # has no ``created_at`` for the identity string above.
                 slot._disk_meta_observed = True
                 slot._frozen_prefix_cache = _post_write_cache
-                if queue_line_is_ours:
-                    # The queued prompts are now on disk, so the flush's drift
-                    # check stops reporting them as owed until the queue moves
-                    # again.
+                if queue_line_is_ours and _commit_queue_generation(
+                    slot, _durable_queue, _post_write_created_at
+                ):
+                    # The queued prompts are on disk AND the generation the line
+                    # names is committed beside them, where the line's editor
+                    # cannot follow -- only then does the flush's drift check stop
+                    # reporting them as owed. A refused store write leaves the
+                    # witness behind, so the next pass re-saves and retries.
                     slot._queue_persisted_sig = queue_persist_signature(_durable_queue)
             else:
                 logger.warning(
