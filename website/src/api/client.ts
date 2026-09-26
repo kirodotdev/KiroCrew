@@ -2493,6 +2493,12 @@ export interface KiroPrerequisiteStatus {
    */
   login_command: string
   sso_login_command: string
+  /**
+   * True when the resolved CLI is the copy built into the desktop app. The gate
+   * then explains why `login_command` is an absolute path into the app's own
+   * resources rather than the bare name the user's shell would resolve.
+   */
+  bundled_cli: boolean
   setup_allowed: boolean
   /**
    * True when the CLI binary is present and executable but could not be

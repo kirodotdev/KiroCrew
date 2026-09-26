@@ -385,6 +385,45 @@ if ($displayVersion -and ($cliText -notmatch [Regex]::Escape($displayVersion))) 
   throw "The bundled CLI reported '$($cliText.Trim())' but the registration says '$displayVersion'; the installed backend and the installer disagree about the build."
 }
 
+# The kiro-cli the build stages beside the backend, checked in the INSTALLED
+# tree rather than only in the build's own staging dir: this is the copy every
+# desktop session spawns, and the desktop app has no other. The expected release
+# is the checkout's pin file (the same two-file contract the build fetches by);
+# a tree without the copy makes sessions fall through to whatever the machine
+# has, which is the failure bundling exists to remove. `BUNDLE_KIRO_CLI=0` is
+# the build's documented opt-out and is honoured here the same way.
+$bundledKiroDir = Join-Path $installLocation "resources\backend-dist\kiro-cli"
+$bundledKiro = Join-Path $bundledKiroDir "kiro-cli.exe"
+$kiroPinFile = Join-Path $PSScriptRoot "..\packaging\kiro-cli-version"
+$pinnedKiroVersion = (Get-Content -LiteralPath $kiroPinFile -Raw).Trim()
+$kiroText = ""
+if ($env:BUNDLE_KIRO_CLI -eq "0") {
+  Write-Host "> Bundled kiro-cli: skipped (BUNDLE_KIRO_CLI=0)"
+} else {
+  if (-not (Test-Path -LiteralPath $bundledKiro)) {
+    throw "The installed tree carries no bundled kiro-cli at $bundledKiro (packaging/kiro-cli-version pins $pinnedKiroVersion)."
+  }
+  $kiroOut = Join-Path $requestedRoot "kiro-cli-version.out"
+  $kiroErr = Join-Path $requestedRoot "kiro-cli-version.err"
+  # The installed exe as the process image, from the shell's own environment:
+  # this job holds no signing credential, and the point is that the shipped
+  # file runs from where the installer put it.
+  $kiroExit = Wait-BoundedExit -FilePath $bundledKiro -Arguments @("--version") `
+    -TimeoutSeconds $MaxCliSeconds -What "Bundled kiro-cli --version" `
+    -StdoutFile $kiroOut -StderrFile $kiroErr
+  if ($kiroExit -ne 0) {
+    Write-Host "kiro-cli stdout:"; Get-Content -LiteralPath $kiroOut -ErrorAction SilentlyContinue
+    Write-Host "kiro-cli stderr:"; Get-Content -LiteralPath $kiroErr -ErrorAction SilentlyContinue
+    throw "The installed bundled kiro-cli exited with code $kiroExit."
+  }
+  $kiroText = (Get-Content -LiteralPath $kiroOut -Raw -ErrorAction SilentlyContinue)
+  if (-not $kiroText) { $kiroText = "" }
+  Write-Host "> Bundled kiro-cli reports: $($kiroText.Trim())"
+  if ($kiroText -notmatch [Regex]::Escape($pinnedKiroVersion)) {
+    throw "The installed bundled kiro-cli reported '$($kiroText.Trim())' but packaging/kiro-cli-version pins $pinnedKiroVersion."
+  }
+}
+
 # Boot the gateway from the INSTALLED prefix, using the installed interpreter,
 # against the fake ACP backend that ships inside the same payload. The point is
 # that these bytes start: the packaged interpreter carries checked-hash bytecode
@@ -497,6 +536,41 @@ if (-not $healthy) {
 }
 Write-Host "> Installed gateway answered /api/health in $healthSeconds seconds"
 
+  # The installed product must RESOLVE the bundled copy the way the desktop
+  # shell wires it (KIROCREW_BUNDLED_KIRO_DIR, set by website/electron/
+  # gateway-env.js at spawn). `kirocrew doctor` prints the binary a session
+  # spawns on its kiro-cli row, so that row naming the installed exe is the
+  # proof; the fake backend above stays pinned for the gateway boot because the
+  # boot assertion is about the interpreter, not the agent. Text is asserted,
+  # not the exit code: doctor also reports host facts this runner fails on.
+  if ($env:BUNDLE_KIRO_CLI -ne "0") {
+    $doctorOut = Join-Path $requestedRoot "doctor.out"
+    $doctorErr = Join-Path $requestedRoot "doctor.err"
+    $savedKiroBin = $env:KIROCREW_KIRO_BIN
+    Remove-Item -Path "Env:KIROCREW_KIRO_BIN" -ErrorAction SilentlyContinue
+    Set-Item -Path "Env:KIROCREW_BUNDLED_KIRO_DIR" -Value $bundledKiroDir
+    Set-Item -Path "Env:KIRO_NO_AUTO_UPDATE" -Value "1"
+    try {
+      $doctorExit = Wait-BoundedExit -FilePath $bundledPython -Arguments @(
+        "-s", "-P", "-m", "kiro_crew", "doctor"
+      ) -TimeoutSeconds $MaxHealthSeconds -What "Installed kirocrew doctor" `
+        -StdoutFile $doctorOut -StderrFile $doctorErr
+    } finally {
+      Remove-Item -Path "Env:KIROCREW_BUNDLED_KIRO_DIR" -ErrorAction SilentlyContinue
+      Remove-Item -Path "Env:KIRO_NO_AUTO_UPDATE" -ErrorAction SilentlyContinue
+      if ($null -ne $savedKiroBin) { Set-Item -Path "Env:KIROCREW_KIRO_BIN" -Value $savedKiroBin }
+    }
+    $doctorText = (Get-Content -LiteralPath $doctorOut -Raw -ErrorAction SilentlyContinue)
+    if (-not $doctorText) { $doctorText = "" }
+    $kiroRow = ($doctorText -split "`r?`n" | Where-Object { $_ -match '^\s*kiro-cli:' } | Select-Object -First 1)
+    Write-Host "> Installed doctor kiro-cli row (exit $doctorExit): $kiroRow"
+    if (-not $kiroRow -or ($kiroRow -notmatch [Regex]::Escape($bundledKiro))) {
+      Write-Host "doctor stdout tail:"; Get-Content -LiteralPath $doctorOut -Tail 40 -ErrorAction SilentlyContinue
+      Write-Host "doctor stderr tail:"; Get-Content -LiteralPath $doctorErr -Tail 20 -ErrorAction SilentlyContinue
+      throw "The installed kirocrew doctor did not resolve the bundled kiro-cli at $bundledKiro."
+    }
+  }
+
 # Silent uninstall, driven by the string the registration itself carries.
 # QuietUninstallString when present (it already implies silence); otherwise
 # UninstallString plus /S. Never a path composed here: only the registration
@@ -577,6 +651,7 @@ if ($env:GITHUB_STEP_SUMMARY) {
     "| --- | --- |",
     "| Silent install | $installSeconds s (ceiling $MaxInstallSeconds s) |",
     "| Installed gateway /api/health | $healthSeconds s (ceiling $MaxHealthSeconds s) |",
+    "| Bundled kiro-cli | $(if ($kiroText) { $kiroText.Trim() } else { 'skipped (BUNDLE_KIRO_CLI=0)' }) |",
     "| Start Menu shortcut target | matches this install |",
     "| Silent uninstall | registration and tree removed |"
   )

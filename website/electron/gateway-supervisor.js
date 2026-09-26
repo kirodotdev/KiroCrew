@@ -6,12 +6,17 @@ const defaultPath = require("path");
 const defaultHttp = require("http");
 const {
   spawn: defaultSpawn,
+  spawnSync: defaultSpawnSync,
   execFile: defaultExecFile,
   execFileSync: defaultExecFileSync,
 } = require("child_process");
 
 const { findKirocrewBin } = require("./find-bin");
-const { buildGatewayEnvironment, gatewayBytecodeEnvironment } = require("./gateway-env");
+const {
+  buildGatewayEnvironment,
+  bundledKiroCliEnvironment,
+  gatewayBytecodeEnvironment,
+} = require("./gateway-env");
 const { resolveGatewayPath } = require("./mac-env");
 const {
   findMissingBundleParts,
@@ -1153,6 +1158,16 @@ function createGatewaySupervisor({
         KIROCREW_PROJECT_DIR: IS_WIN
           ? resolveProjectDir()
           : path.resolve(dirname, ".."),
+        // The kiro-cli staged into the app's resources at build time; spread
+        // only when it shipped AND runs on this machine, so an unbundled build,
+        // or a bundled copy this host cannot execute, keeps the user's own
+        // install (see gateway-env.js).
+        ...bundledKiroCliEnvironment(fs, path, processObj.resourcesPath, {
+          platform: processObj.platform,
+          spawnSync: defaultSpawnSync,
+          env: cleanEnv,
+          log: glog,
+        }),
         ...gatewayBytecodeEnvironment(
           processObj.platform,
           path.join(kirocrewDir, "cache", "pycache"),

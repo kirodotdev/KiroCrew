@@ -43,6 +43,7 @@ function status(overrides: Partial<KiroPrerequisiteStatus> = {}): KiroPrerequisi
     docs_url: 'https://kiro.dev/cli/',
     login_command: 'kiro-cli login',
     sso_login_command: 'kiro-cli login --use-device-flow --license pro',
+    bundled_cli: false,
     setup_allowed: true,
     sandbox_unavailable: false,
     sandbox_failure_kind: '',
@@ -222,6 +223,71 @@ describe('KiroPrerequisiteGate', () => {
     expect(screen.getByRole('button', { name: /Check again/ })).toBeEnabled()
     expect(screen.queryByRole('button', { name: 'Sign in to Kiro' })).not.toBeInTheDocument()
     expect(screen.queryByText(/unverified executable/)).not.toBeInTheDocument()
+    // A PATH install: bare commands, nothing muted, no bundled-copy hint.
+    expect(screen.queryByText(/desktop app.s own copy of Kiro CLI/)).not.toBeInTheDocument()
+  })
+
+  it('explains then mutes the shared bundled path', async () => {
+    // A desktop install resolves the app's own kiro-cli, which is not on the
+    // user's PATH, so both commands open with the same quoted absolute path and
+    // differ only after `login`. Two full lines read as one command shown twice,
+    // so the shared run is muted and the tail carries the weight; the copied
+    // text is still the whole command. The hint saying what the path is applies
+    // to both commands equally, so it appears ONCE before either path is read.
+    const bin =
+      "'/Applications/Kiro Crew.app/Contents/Resources/backend-dist/kiro-cli/kiro-cli-chat'"
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
+      installed: true,
+      authenticated: false,
+      bundled_cli: true,
+      login_command: `${bin} login`,
+      sso_login_command: `${bin} login --use-device-flow --license pro`,
+    }))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    await screen.findByText(/Sign in with Kiro CLI on the gateway host/)
+    const codes = screen.getAllByText(
+      (_, el) => el?.tagName === 'CODE' && (el.textContent ?? '').startsWith(bin),
+    )
+    expect(codes.map((c) => c.textContent)).toEqual([
+      `${bin} login`,
+      `${bin} login --use-device-flow --license pro`,
+    ])
+    for (const code of codes) {
+      expect(code.querySelector('span.text-muted')?.textContent).toBe(`${bin} `)
+    }
+    const hints = screen.getAllByText(/desktop app.s own copy of Kiro CLI.*exactly as shown/)
+    expect(hints).toHaveLength(1)
+    expect(
+      hints[0].compareDocumentPosition(codes[0]) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+  })
+
+  it('a copy that fails says so under the box instead of painting Copied', async () => {
+    // Both clipboard paths can be denied (no API, execCommand refused). The
+    // command is the only instruction on this screen, so a silent miss strands
+    // the user; the failure renders through ErrorNotice and clears on success.
+    const { copyToClipboard } = await import('../utils/clipboard')
+    vi.mocked(copyToClipboard).mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({ installed: true }))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    await screen.findByText(/Sign in with Kiro CLI on the gateway host/)
+    const [button] = screen.getAllByRole('button', { name: /Copy command/ })
+    fireEvent.click(button)
+    const notice = await screen.findByTestId('kiro-gate-copy-failed')
+    expect(notice.textContent).toMatch(/Copy failed/)
+    expect(screen.queryByRole('button', { name: /Copied/ })).toBeNull()
+
+    fireEvent.click(button)
+    await waitFor(() => expect(screen.queryByTestId('kiro-gate-copy-failed')).toBeNull())
+    expect(screen.getAllByRole('button', { name: /Copied/ }).length).toBeGreaterThan(0)
   })
 
   it('exposes no way to start a sign-in from the dashboard', async () => {

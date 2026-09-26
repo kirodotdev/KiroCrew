@@ -7,6 +7,7 @@ import hashlib
 import inspect
 import json
 import os
+import shlex
 import sqlite3
 import stat
 import subprocess
@@ -40,8 +41,13 @@ from kiro_crew.dashboard.handlers.kiro_prerequisite import (
     api_kiro_prerequisite_update_cli,
 )
 from kiro_crew.dashboard.kiro_readiness import kiro_session_ready
-from kiro_crew.kiro_cli import resolve_kiro_cli
+from kiro_crew.kiro_cli import (
+    BUNDLED_KIRO_CLI_ENTRY,
+    BUNDLED_KIRO_CLI_WINDOWS_ENTRY,
+    resolve_kiro_cli,
+)
 from kiro_crew.kiro_prerequisite import (
+    BUNDLED_CLI_UPDATE_REFUSAL,
     KIRO_CLI_LOGIN_COMMAND,
     KIRO_CLI_SSO_LOGIN_COMMAND,
     KIRO_CLI_UPDATE_COMMAND,
@@ -51,6 +57,7 @@ from kiro_crew.kiro_prerequisite import (
     ProcessResult,
     _run_process,
     find_kiro_cli_candidates,
+    login_commands_for,
 )
 
 
@@ -231,6 +238,15 @@ class TestKiroPrerequisiteHelpers:
         # allowlist admitting the host PATH.
         assert version_env["PATH"] == "/probe/search/path"
         assert identity_env["PATH"] == "/probe/search/path"
+
+    def test_probe_env_keeps_the_cli_update_guard(self) -> None:
+        """Readiness probes must not update the bundled executable in place."""
+
+        version_env = prerequisite_module._probe_env(
+            {"KIRO_NO_AUTO_UPDATE": "1"}, "/probe/search/path"
+        )
+
+        assert version_env["KIRO_NO_AUTO_UPDATE"] == "1"
 
     def test_binary_digest_rejects_oversized_candidate(
         self,
@@ -535,6 +551,206 @@ class TestKiroPrerequisiteHelpers:
         )
 
         assert str(executable) in candidates
+
+    def test_bundled_dir_ranks_above_system_installs(self, tmp_path: Path) -> None:
+        """KIROCREW_BUNDLED_KIRO_DIR (the desktop app's own copy) wins over a
+        user install, because the app was built against that exact version. The
+        bundled POSIX candidate is the chat binary, the only file it ships."""
+        bundled = tmp_path / "resources" / "kiro-cli" / BUNDLED_KIRO_CLI_ENTRY
+        user_install = tmp_path / "home" / ".local" / "bin" / "kiro-cli"
+        _make_executable(bundled)
+        _make_executable(user_install)
+
+        resolved = resolve_kiro_cli(
+            platform_name="linux",
+            home=tmp_path / "home",
+            environ={"KIROCREW_BUNDLED_KIRO_DIR": str(bundled.parent), "PATH": ""},
+        )
+
+        assert resolved == str(bundled)
+
+    def test_windows_bundled_dir_uses_the_msi_executable(self, tmp_path: Path) -> None:
+        """Windows ranks the one executable extracted from the pinned MSI."""
+        bundled = tmp_path / "resources" / "kiro-cli" / "kiro-cli.exe"
+        local_app_data = tmp_path / "home" / "AppData" / "Local"
+        user_install = local_app_data / "Kiro-Cli" / "kiro-cli.exe"
+        _make_executable(bundled)
+        _make_executable(user_install)
+
+        resolved = resolve_kiro_cli(
+            platform_name="win32",
+            home=tmp_path / "home",
+            environ={
+                "KIROCREW_BUNDLED_KIRO_DIR": str(bundled.parent),
+                "LOCALAPPDATA": str(local_app_data),
+                "PATH": "",
+            },
+        )
+
+        assert resolved == str(bundled)
+
+    def test_a_bundled_dir_holding_only_the_launcher_is_not_a_candidate(
+        self, tmp_path: Path
+    ) -> None:
+        """The ``kiro-cli`` launcher never finds the chat binary beside itself
+        (it resolves through ``$HOME/.local/bin`` and ``PATH``), so a bundled
+        directory that ships only the launcher would run the USER's copy or fail
+        on a clean machine. It is therefore not a candidate at all; discovery
+        falls through to the user's own install."""
+        launcher_only = tmp_path / "resources" / "kiro-cli" / "kiro-cli"
+        user_install = tmp_path / "home" / ".local" / "bin" / "kiro-cli"
+        _make_executable(launcher_only)
+        _make_executable(user_install)
+
+        resolved = resolve_kiro_cli(
+            platform_name="linux",
+            home=tmp_path / "home",
+            environ={"KIROCREW_BUNDLED_KIRO_DIR": str(launcher_only.parent), "PATH": ""},
+        )
+
+        assert resolved == str(user_install)
+
+    def test_bundled_dir_is_pinned_for_off_path_spawns(self, tmp_path: Path) -> None:
+        """The unattended spawns drop the inherited PATH but keep the bundled
+        copy: it is set by the shell that starts the gateway, not by a directory
+        an agent can plant a file in, so the pinned and interactive paths agree
+        on which binary runs."""
+        bundled = tmp_path / "resources" / "kiro-cli" / BUNDLED_KIRO_CLI_ENTRY
+        on_path_only = tmp_path / "venv" / "bin" / "kiro-cli"
+        _make_executable(bundled)
+        _make_executable(on_path_only)
+
+        resolved = resolve_kiro_cli(
+            platform_name="linux",
+            home=tmp_path / "home",
+            environ={
+                "KIROCREW_BUNDLED_KIRO_DIR": str(bundled.parent),
+                "PATH": str(on_path_only.parent),
+            },
+            include_inherited_path=False,
+        )
+
+        assert resolved == str(bundled)
+
+    def test_operator_override_still_beats_the_bundled_dir(self, tmp_path: Path) -> None:
+        """KIROCREW_KIRO_BIN stays the highest-priority escape hatch: an
+        operator can force a different binary even on a bundled install."""
+        bundled = tmp_path / "resources" / "kiro-cli" / BUNDLED_KIRO_CLI_ENTRY
+        forced = tmp_path / "operator" / "kiro-cli"
+        _make_executable(bundled)
+        _make_executable(forced)
+
+        resolved = resolve_kiro_cli(
+            platform_name="linux",
+            home=tmp_path / "home",
+            environ={
+                "KIROCREW_KIRO_BIN": str(forced),
+                "KIROCREW_BUNDLED_KIRO_DIR": str(bundled.parent),
+                "PATH": "",
+            },
+        )
+
+        assert resolved == str(forced)
+
+    def test_bundled_login_command_carries_the_absolute_path(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A bundled resolution serves sign-in commands the user can actually
+        run: the bundled copy is not on their shell PATH, and the macOS
+        resources path contains a space, so the path must be quoted."""
+        bundled_dir = tmp_path / "Kiro Res" / "kiro-cli"
+        binary = bundled_dir / BUNDLED_KIRO_CLI_ENTRY
+        _make_executable(binary)
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+
+        login, sso, bundled = login_commands_for(
+            str(binary), {"KIROCREW_BUNDLED_KIRO_DIR": str(bundled_dir)}
+        )
+
+        assert bundled is True
+        assert login.endswith(" login")
+        assert str(bundled_dir) in login.replace("'", "")
+        assert "--license pro" in sso
+
+    def test_windows_bundled_login_command_names_powershell(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        bundled_dir = tmp_path / "Kiro Crew" / "kiro-cli"
+        binary = bundled_dir / BUNDLED_KIRO_CLI_WINDOWS_ENTRY
+        _make_executable(binary)
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+
+        login, sso, bundled = login_commands_for(
+            str(binary), {"KIROCREW_BUNDLED_KIRO_DIR": str(bundled_dir)}
+        )
+
+        quoted = str(binary).replace("'", "''")
+        # The typed command runs outside the gateway tree, so it must carry the
+        # self-update switch itself; ``Set-Item`` survives an interactive
+        # PowerShell's interpolation of the double-quoted -Command string.
+        head = 'powershell.exe -NoProfile -Command "Set-Item Env:KIRO_NO_AUTO_UPDATE 1; '
+        assert bundled is True
+        assert login == f"{head}& '{quoted}' login\""
+        assert sso == f"{head}& '{quoted}' login --use-device-flow --license pro\""
+        assert "$env:" not in login
+
+    def test_system_resolution_keeps_the_bare_login_command(self, tmp_path: Path) -> None:
+        bundled_dir = tmp_path / "resources" / "kiro-cli"
+        bundled_dir.mkdir(parents=True)
+
+        login, sso, bundled = login_commands_for(
+            "/usr/local/bin/kiro-cli",
+            {"KIROCREW_BUNDLED_KIRO_DIR": str(bundled_dir)},
+        )
+
+        assert bundled is False
+        assert login == KIRO_CLI_LOGIN_COMMAND
+        assert sso == KIRO_CLI_SSO_LOGIN_COMMAND
+
+    def test_off_path_override_serves_its_absolute_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A ``KIROCREW_KIRO_BIN`` the user's shell would not find as ``kiro-cli``
+        gets the quoted absolute path, like the bundled copy: the bare command
+        would fail or sign in a different install."""
+        binary = tmp_path / "opt" / "kiro build" / "kiro-cli"
+        _make_executable(binary)
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+
+        login, sso, bundled = login_commands_for(
+            str(binary), {"KIROCREW_KIRO_BIN": str(binary), "PATH": "/nonexistent"}
+        )
+
+        assert bundled is False
+        assert login == f"{shlex.quote(str(binary))} login"
+        assert sso.startswith(shlex.quote(str(binary)))
+
+    def test_override_that_is_the_path_kiro_cli_keeps_the_bare_command(
+        self, tmp_path: Path
+    ) -> None:
+        bin_dir = tmp_path / "bin"
+        binary = bin_dir / "kiro-cli"
+        _make_executable(binary)
+
+        login, _sso, bundled = login_commands_for(
+            str(binary), {"KIROCREW_KIRO_BIN": str(binary), "PATH": str(bin_dir)}
+        )
+
+        assert bundled is False
+        assert login == KIRO_CLI_LOGIN_COMMAND
+
+    def test_no_bundled_env_keeps_the_bare_login_command(self, tmp_path: Path) -> None:
+        binary = tmp_path / "resources" / "kiro-cli" / "kiro-cli"
+        _make_executable(binary)
+
+        login, _sso, bundled = login_commands_for(str(binary), {})
+
+        assert bundled is False
+        assert login == KIRO_CLI_LOGIN_COMMAND
 
     def test_windows_candidates_include_standard_user_tool_directory(
         self,
@@ -4062,6 +4278,7 @@ class TestKiroPrerequisiteHandlers:
             # reach the owner and leave this caller's client reading undefined.
             assert body["login_command"] == KIRO_CLI_LOGIN_COMMAND
             assert body["sso_login_command"] == KIRO_CLI_SSO_LOGIN_COMMAND
+            assert body["bundled_cli"] is False
             # Redacted-but-present for the same reason as the sandbox keys: whether
             # the probe timed out describes how slow the HOST is. Asserted here
             # because the hazard the comment above names is not hypothetical -- this
@@ -6615,6 +6832,52 @@ class TestAcpSubcommandSupportNarrowsReadiness:
         assert "network unreachable" in result["cli_update_error"]
         # Still not ready — the update did not fix anything.
         assert result["acp_supported"] is False
+
+    @pytest.mark.asyncio
+    async def test_update_cli_refuses_the_bundled_copy_without_spawning(
+        self, tmp_path: Path
+    ) -> None:
+        """The desktop app's bundled kiro-cli is never self-updated in place.
+
+        It sits inside the signed app bundle, so a write there breaks the seal;
+        the app update replaces it. The refusal is a served error, and no
+        ``update`` spawn happens at all."""
+        bundled_dir = tmp_path / "resources" / "kiro-cli"
+        executable = bundled_dir / BUNDLED_KIRO_CLI_ENTRY
+        _make_executable(executable)
+        spawned: list[list[str]] = []
+
+        async def run(_command: str, args: list[str], **_kwargs: Any) -> ProcessResult:
+            spawned.append(list(args))
+            if args == ["--version"] or args == ["whoami"]:
+                return ProcessResult(ok=True)
+            if args == ["acp", "--help"]:
+                return ProcessResult(ok=False, returncode=2, output="unrecognized subcommand 'acp'")
+            return ProcessResult(ok=False)
+
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={
+                "HOME": str(tmp_path),
+                "PATH": "",
+                "KIROCREW_BUNDLED_KIRO_DIR": str(bundled_dir),
+            },
+            home=tmp_path,
+            data_home=tmp_path / "data-home",
+            process_runner=run,
+            audit_writer=_no_audit,
+        )
+        before = await service.snapshot(force=True)
+        # The bundled copy is what resolved: its absolute path is the served
+        # sign-in command, since the copy is not on the user's shell PATH, and
+        # the status says so, which is what lets the gate explain the path.
+        assert str(executable) in before["login_command"].replace("'", "")
+        assert before["bundled_cli"] is True
+
+        result = await service.update_cli("owner")
+
+        assert result["cli_update_error"] == BUNDLED_CLI_UPDATE_REFUSAL
+        assert ["update"] not in spawned
 
     @pytest.mark.asyncio
     async def test_update_cli_runs_unverified_binary_under_strict_sandbox(

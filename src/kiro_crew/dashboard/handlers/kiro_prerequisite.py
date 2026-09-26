@@ -173,6 +173,9 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
             "docs_url": OFFICIAL_INSTALL_DOCS_URL,
             "login_command": KIRO_CLI_LOGIN_COMMAND,
             "sso_login_command": KIRO_CLI_SSO_LOGIN_COMMAND,
+            # Redacted and present for shape stability: non-owners never learn
+            # which executable the gateway host resolved.
+            "bundled_cli": False,
             "setup_allowed": False,
             # Redacted like the rest of this block: the failure kind and probe
             # detail describe the HOST's sandbox posture (kernel knobs, errnos),
