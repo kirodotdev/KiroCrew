@@ -197,6 +197,31 @@ class TestCronCreateModel:
         assert kwargs.get("model") == "glm-4.7"
 
     @pytest.mark.asyncio
+    async def test_provider_qualified_model_accepted(self):
+        # The cron model dropdown is sourced from the live kiro-cli
+        # --list-models, so a provider-qualified effort id it advertises
+        # (e.g. gpt-6-astra[high]) must be accepted and persisted verbatim.
+        request = self._make_request(
+            {"name": "t", "message": "m", "every": 300, "model": "gpt-6-astra[high]"}
+        )
+        resp = await api_crons_create(request)
+        assert resp.status == 200
+        _, kwargs = request.app["state"].crons.add_job_async.call_args
+        assert kwargs.get("model") == "gpt-6-astra[high]"
+
+    @pytest.mark.asyncio
+    async def test_qualified_model_with_illegal_char_rejected(self):
+        # Brackets alone are not a free pass: an id that keeps an illegal
+        # character inside the qualifier is still refused by the format gate.
+        request = self._make_request(
+            {"name": "t", "message": "m", "every": 300, "model": "gpt-6-astra[high]!"}
+        )
+        resp = await api_crons_create(request)
+        assert resp.status == 400
+        body = json.loads(resp.body)
+        assert "invalid model format" in body["error"]
+
+    @pytest.mark.asyncio
     async def test_non_string_model_rejected(self):
         # A numeric/bool JSON `model` must be rejected as a clean 400, not raise
         # AttributeError on .strip() and leak an HTTP 500.
