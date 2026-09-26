@@ -141,9 +141,6 @@ test/test_sandbox_launcher_sweep.py::TestNamespaceArgvPlacement::test_launcher_i
 test/test_sandbox_launcher_sweep.py::TestNamespaceArgvPlacement::test_launcher_is_executable
 test/test_sandbox_launcher_sweep.py::TestRunDirMode::test_run_dir_mode_0o700
 test/test_sandbox_launcher_sweep.py::TestRunDirMode::test_run_dir_mode_enforced_on_existing
-test/test_security.py::TestIsSensitivePath::test_absolute_symlink_to_aws_credentials
-test/test_security.py::TestIsSensitivePath::test_base_dir_anchors_relative_path
-test/test_security.py::TestIsSensitivePath::test_relative_symlink_to_aws_credentials
 test/test_seed.py::test_seed_audit_uses_rail_tag_not_raw_path[main_home-main_home-False]
 test/test_seed.py::test_seed_main_home_rail_catches_symlink
 test/test_seed.py::test_seed_main_home_rail_refuses

@@ -5399,6 +5399,8 @@ class TestIsSensitivePath:
         cred = home / ".aws" / "credentials"
         cred.write_text("[default]\n")
         monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
         ws = tmp_path / "workspace"
         ws.mkdir()
         link = ws / "cfg.ini"
@@ -5412,6 +5414,8 @@ class TestIsSensitivePath:
         cred = home / ".aws" / "credentials"
         cred.write_text("[default]\n")
         monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
         ws = tmp_path / "workspace" / "sub"
         ws.mkdir(parents=True)
         link = ws / "alt.txt"
@@ -5427,6 +5431,8 @@ class TestIsSensitivePath:
         cred = home / ".aws" / "credentials"
         cred.write_text("[default]\n")
         monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
         ws = tmp_path / "workspace"
         ws.mkdir()
         (ws / "cfg.ini").symlink_to(cred)
