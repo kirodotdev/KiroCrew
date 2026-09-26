@@ -629,6 +629,12 @@ with `auth=False`. `gw.state` is the live `DashboardState`, `gw.app` the real
 `web.Application`, `gw.home` the data home -- use them to assert on what a
 request left behind, not to bypass the request.
 
+`integration_home` grants the disposable home unsandboxed-exec consent in its
+`config.local.json`, as the E2E suite does for its gateway: the agent binary is
+the fake stub, and the CI container has no sandbox backend, so without it every
+spawn is refused before the stub runs. Write further per-test config through the
+same file by merging, never by replacing it.
+
 `integration_home` also releases the rootdir conftest's agent-spec pin: that
 pin sends the boot's spec WRITES to a per-test directory while request-time
 READS follow `KIRO_HOME`, so under it the boot would write `kirocrew.json`
@@ -636,6 +642,16 @@ where no request reads it. Both sides resolve to `<home>/kiro/agents` here,
 which is the private target the shared-home write guard exempts. A test that
 edits the agents directory waits for the managed `kirocrew.json` first (the
 spec rebuild runs after the dashboard is serving).
+
+`gw.registered_routes()` is every `(METHOD, canonical path)` the live router
+serves -- the same reading the coverage ratchet counts -- so a sweep over
+"every route of a kind" (`test_route_sweep.py`: every parameter-less `GET`,
+the SPA shell and its assets included, is guarded and serves without a 5xx on
+a fresh home) and the metric agree on what a route is. A sweep excludes by
+EXACT path with a reason, never by pattern or prefix: the routes that answer
+unauthenticated, the ones that hold a connection open, and the ones that
+reach the network on a fresh home are each a small table in the test, and a
+route that joins one of those classes is added there by hand.
 
 The directory is a package (`test/integration/__init__.py`) so its conftest
 imports as `integration.conftest`. The unit files import `test/conftest.py` by

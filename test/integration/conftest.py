@@ -441,7 +441,15 @@ def _path_matches(canonical: str, concrete: str) -> bool:
     return re.fullmatch(pattern, concrete) is not None
 
 
-def _record_registered_routes(app: Any) -> None:
+def registered_routes(app: Any) -> frozenset[tuple[str, str]]:
+    """Every ``(METHOD, canonical path)`` the live router serves.
+
+    The same reading the coverage metric is measured against, so a test that
+    sweeps "every route of a kind" and the ratchet that counts it agree on what
+    a route is: static prefix mounts carry no path and are not routes; HEAD and
+    OPTIONS are aiohttp's own and not contracts of this layer.
+    """
+    routes: set[tuple[str, str]] = set()
     for resource in app.router.resources():
         canonical = _canonical_path(resource)
         if not canonical:
@@ -449,7 +457,12 @@ def _record_registered_routes(app: Any) -> None:
         for route in resource:
             if route.method in ("HEAD", "OPTIONS"):
                 continue
-            _REGISTERED_ROUTES.add((route.method, canonical))
+            routes.add((route.method, canonical))
+    return frozenset(routes)
+
+
+def _record_registered_routes(app: Any) -> None:
+    _REGISTERED_ROUTES.update(registered_routes(app))
 
 
 @dataclass
@@ -483,6 +496,10 @@ class IntegrationGateway:
         """The real ``web.Application`` the orchestrator built."""
         runner = self.orchestrator._dashboard_runner
         return runner.app if runner is not None else None
+
+    def registered_routes(self) -> frozenset[tuple[str, str]]:
+        """``(METHOD, canonical path)`` for every route this boot serves."""
+        return registered_routes(self.app)
 
     def _note_hit(self, method: str, path: str) -> None:
         # "Hit" means REQUESTED, whatever the status came back: the metric
@@ -1009,6 +1026,20 @@ def integration_home(
     # live agents) does not apply here.
     monkeypatch.setenv("KIROCREW_KIRO_BIN", str(fake_acp_backend.__file__))
     monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
+    # Unsandboxed consent, for THIS disposable home only, written as the operator
+    # would write it. The agent binary is the fake above -- a stdlib echo stub --
+    # so OS isolation guards nothing this layer asserts, and the CI container
+    # refuses ``unshare(CLONE_NEWUSER)`` at the runtime policy level, which no
+    # sysctl can lift. Without it every spawn (a chat turn, ``--list-models``,
+    # the sandboxed ``aws configure list-profiles``) fails with a sandbox
+    # refusal instead of running the stub. The E2E suite grants the same
+    # consent for the same reason; a sandboxed spawn doing real work stays
+    # proven by the ``e2e-private-namespace`` and ``e2e-boot-matrix`` lanes.
+    # A test that pins more config merges into this file rather than replacing
+    # it, or the consent goes with it.
+    (home / "config.local.json").write_text(
+        json.dumps({"agent": {"sandbox_allow_unsandboxed_exec": True}}), encoding="utf-8"
+    )
     # Strict on-loop persistence, set HERE rather than in the CI job's env: the
     # rootdir conftest deletes this name before every test body, so a job-level
     # value never reaches the boot. Set per test it makes an on-loop store write
@@ -1018,6 +1049,23 @@ def integration_home(
     # No channel credential may reach the boot (module docstring, "The boot
     # reaches no real channel"): the orchestrator would open the transport.
     for key in CREDENTIAL_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    # Nor the operator's AWS identity: the cloud routes shell the real ``aws``
+    # CLI, which reads ``~/.aws`` (env-var credentials are not supported there),
+    # so a sweep that reaches ``/api/cloud/preflight`` on a developer machine
+    # with a default profile would exercise their account. Both files the CLI
+    # reads are pointed at paths that do not exist under this home, and the
+    # profile selectors are dropped, so every ``aws`` call fails to resolve
+    # credentials before it reaches the network.
+    monkeypatch.setenv("AWS_CONFIG_FILE", str(home / "no-aws" / "config"))
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(home / "no-aws" / "credentials"))
+    for key in (
+        "AWS_PROFILE",
+        "AWS_DEFAULT_PROFILE",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+    ):
         monkeypatch.delenv(key, raising=False)
     return home
 
