@@ -20,7 +20,15 @@ describe('FileCard', () => {
     expect(video?.src).toContain('/api/outbox/clip.mp4')
   })
 
-  it('renders download link for non-media files', () => {
+  it('keeps long descriptions on their own wrapping line', () => {
+    const description = 'A long description that should remain readable instead of disappearing behind the metadata row'
+    render(<FileCard file={{ filename: 'report.pdf', content_type: 'application/pdf', size: 2048, description }} />)
+    const line = screen.getByText(description)
+    expect(line).toHaveClass('break-words')
+    expect(line).not.toHaveClass('truncate')
+  })
+
+  it('keeps the whole non-media card as the download link', () => {
     render(<FileCard file={{ filename: 'report.pdf', content_type: 'application/pdf', size: 2048 }} />)
     expect(screen.getByText('report.pdf')).toBeInTheDocument()
     // `fmtBytes` is SI (1000-based) and locale-formatted, so 2048 B is 2 kB and not
@@ -29,18 +37,31 @@ describe('FileCard', () => {
     // whitespace-insensitive matcher rather than a literal: `fmtUnit` asks CLDR for
     // the `narrow` form and promotes any plain space to U+00A0, and the separator
     // CLDR chooses differs per locale and can change across ICU versions.
-    expect(screen.getByText((_, el) => el?.textContent?.replace(/\s/g, '') === '2kB')).toBeInTheDocument()
+    // The meta line joins type · size, so match the size as a segment of that
+    // line rather than as the whole element text.
+    expect(screen.getByText((content) => /^PDF\s*·\s*2\s*kB$/.test(content.replace(/\u00a0/g, ' ')))).toBeInTheDocument()
+    expect(screen.getByTestId('file-card-glyph').dataset.family).toBe('document')
     const link = document.querySelector('a[download]')
     expect(link).toBeInTheDocument()
     expect(link?.getAttribute('href')).toContain('/api/outbox/report.pdf')
+    expect(screen.getByText('report.pdf').closest('a[download]')).toBe(link)
+    expect(link).toHaveAccessibleName(/Save/)
+    expect(document.querySelectorAll('a[download]')).toHaveLength(1)
   })
 
   it('renders download link when no content_type', () => {
     render(<FileCard file={{ filename: 'data.bin' }} />)
     expect(screen.getByText('data.bin')).toBeInTheDocument()
+    expect(screen.getByTestId('file-card-glyph').dataset.family).toBe('unknown')
     expect(document.querySelector('a[download]')).toBeInTheDocument()
     expect(document.querySelector('audio')).not.toBeInTheDocument()
     expect(document.querySelector('video')).not.toBeInTheDocument()
+  })
+
+  it('picks the family from the extension when the MIME is opaque', () => {
+    render(<FileCard file={{ filename: 'deploy-key.pem', content_type: 'application/octet-stream' }} />)
+    expect(screen.getByTestId('file-card-glyph').dataset.family).toBe('key')
+    expect(document.querySelector('a[download]')).toBeInTheDocument()
   })
 
   it('renders audio player for audio/ogg', () => {

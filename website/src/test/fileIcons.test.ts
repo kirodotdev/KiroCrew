@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { File, FileCode, FileJson, FileText, Image, Paintbrush, Settings, Terminal } from 'lucide-react'
+import { BookOpen, File, FileCode, FileJson, FileKey, FileSpreadsheet, FileText, Image, Package, Paintbrush, Presentation, Settings, Terminal } from 'lucide-react'
 import { FILE_COLORS, fileIcon, colorForExt } from '../utils/fileIcons'
 
 describe('fileIcon', () => {
@@ -22,12 +22,20 @@ describe('fileIcon', () => {
     expect(fileIcon('config.toml')).toBe(Settings)
   })
 
-  it('returns FileText for docs', () => {
+  it('returns the existing fine-grained doc icons', () => {
     expect(fileIcon('README.md')).toBe(FileText)
     expect(fileIcon('CHANGELOG.mdx')).toBe(FileText)
     expect(fileIcon('notes.txt')).toBe(FileText)
     expect(fileIcon('rows.csv')).toBe(FileText)
     expect(fileIcon('out.log')).toBe(FileText)
+  })
+
+  it('covers the extended attachment families from the same table', () => {
+    expect(fileIcon('headcount.xlsx')).toBe(FileSpreadsheet)
+    expect(fileIcon('kickoff.pptx')).toBe(Presentation)
+    expect(fileIcon('certificate.pem')).toBe(FileKey)
+    expect(fileIcon('installer.dmg')).toBe(Package)
+    expect(fileIcon('handbook.epub')).toBe(BookOpen)
   })
 
   it('returns Paintbrush for stylesheets', () => {
