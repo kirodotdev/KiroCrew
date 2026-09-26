@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time as _time
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
@@ -144,6 +145,31 @@ async def _end_stalled_step(
     task.status = TaskStatus.FAILED
     task.error = f"{stop.stop_class} ({stop.stop_reason}) — {why} — partial result preserved"
     return False
+
+
+#: Bound for the loop-detection fingerprint: the failing-test identity lives in
+#: the first lines, volatile counters in the tail.
+_ERROR_FINGERPRINT_LINES = 20
+_ERROR_FINGERPRINT_LEN = 1000
+_VOLATILE_HEX_RE = re.compile(r"0x[0-9a-fA-F]+")
+_VOLATILE_NUMBER_RE = re.compile(r"\d+")
+_VOLATILE_WS_RE = re.compile(r"\s+")
+
+
+def _error_fingerprint(error: str) -> str:
+    """Normalize *error* so a repeated failure compares equal across retries.
+
+    Exact equality misses real loops (timestamps, durations, ports, PIDs, temp
+    paths change every attempt) and never fires on test failures (the full
+    output is embedded). The fingerprint keeps the first lines truncated to a
+    bound, masks hex/numbers, and collapses whitespace. Distinct failures
+    (different missing modules, different test names) still differ; only the
+    volatile runs vary. Comparison-only: ``task.error`` keeps the raw text.
+    """
+    text = "\n".join(error.splitlines()[:_ERROR_FINGERPRINT_LINES])[:_ERROR_FINGERPRINT_LEN]
+    text = _VOLATILE_HEX_RE.sub("#", text)
+    text = _VOLATILE_NUMBER_RE.sub("#", text)
+    return _VOLATILE_WS_RE.sub(" ", text).strip()
 
 
 async def _check_error_loop(
@@ -410,6 +436,8 @@ async def execute_task(
     stop_recoveries = 0
     dependency_waits = 0
     attempt = 0
+    # Stores _error_fingerprint(task.error), not the raw text, so retries that
+    # differ only in volatile runs still compare equal.
     previous_error = ""
     consecutive_same_error = 0
     result_prefix = ""
@@ -960,13 +988,14 @@ async def execute_task(
                 await sessions.reset(session_key)
             except Exception:
                 logger.debug("Session reset between retries failed", exc_info=True)
-            if previous_error and task.error == previous_error:
+            error_fp = _error_fingerprint(task.error)
+            if previous_error and error_fp == previous_error:
                 consecutive_same_error += 1
                 if await _check_error_loop(task, consecutive_same_error, on_notify, run):
                     return False
             else:
                 consecutive_same_error = 0
-            previous_error = task.error
+            previous_error = error_fp
             run.last_task_time = _time.time()
             if attempt < MAX_RETRIES + stop_recoveries:
                 continue
@@ -1030,7 +1059,8 @@ async def execute_task(
             except Exception:
                 logger.debug("Session reset between retries failed", exc_info=True)
 
-            if previous_error and task.error == previous_error:
+            error_fp = _error_fingerprint(task.error)
+            if previous_error and error_fp == previous_error:
                 consecutive_same_error += 1
                 should_fail = await _check_error_loop(
                     task,
@@ -1042,7 +1072,7 @@ async def execute_task(
                     return False
             else:
                 consecutive_same_error = 0
-            previous_error = task.error
+            previous_error = error_fp
             if attempt < MAX_RETRIES + stop_recoveries:
                 continue
             task.status = TaskStatus.FAILED
@@ -1064,7 +1094,8 @@ async def execute_task(
                 task.error = f"Tests failed:\n{test_output}"
                 logger.warning("Task %d tests failed (attempt %d)", task.index, attempt)
                 # Same retry logic as main task failure above
-                if previous_error and task.error == previous_error:
+                error_fp = _error_fingerprint(task.error)
+                if previous_error and error_fp == previous_error:
                     consecutive_same_error += 1
                     should_fail = await _check_error_loop(
                         task, consecutive_same_error, on_notify, run
@@ -1073,7 +1104,7 @@ async def execute_task(
                         return False
                 else:
                     consecutive_same_error = 0
-                previous_error = task.error
+                previous_error = error_fp
                 if attempt < MAX_RETRIES + stop_recoveries:
                     continue
                 task.status = TaskStatus.FAILED
