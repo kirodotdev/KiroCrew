@@ -312,7 +312,7 @@ describe('crew editor — collision warning', () => {
     view.queryClient.setQueryData(['member-thread', 'oncall'], { slot_key: 'member-oncall-v1' })
     const sheet = await openEditor('oncall')
     fireEvent.click(within(sheet).getByTestId('crew-rail-place'))
-    expect(within(sheet).getByText('This member keeps its current memory (V1). Member memory (V2) is only available when creating a new crew member.')).toBeVisible()
+    expect(within(sheet).getByText('This crewmate keeps its current memory (V1). Its own memory (V2) is only available when creating a new crewmate.')).toBeVisible()
     expect(within(sheet).queryByRole('button', { name: /Create.*memory/i })).toBeNull()
     expect(mockApi.updateKirocrewAgent).not.toHaveBeenCalled()
     expect(view.queryClient.getQueryData(['member-thread', 'oncall'])).toEqual({ slot_key: 'member-oncall-v1' })
@@ -336,7 +336,7 @@ describe('crew editor — collision warning', () => {
     const panel = within(sheet).getByRole('tabpanel', { name: 'Workspace · Memory Shared' })
 
     expect(within(panel).getByText('oncall-mem', { exact: true })).toBeVisible()
-    expect(within(panel).getByText('This member uses Member memory (V2).')).toBeVisible()
+    expect(within(panel).getByText('This crewmate has its own memory (V2).')).toBeVisible()
     expect(within(panel).getByRole('button', { name: 'Manage memory' })).toBeEnabled()
     expect(within(panel).queryByRole('button', { name: 'Create private memory' })).toBeNull()
     expect(mockApi.updateKirocrewAgent).not.toHaveBeenCalled()
@@ -361,7 +361,7 @@ describe('crew editor — collision warning', () => {
 
     expect(within(panel).getByText(reason, { exact: true })).toBeVisible()
     expect(within(panel).queryByText(/Open the crew manager/i)).toBeNull()
-    expect(within(panel).queryByText(/This member keeps its current memory \(V1\)\. Member memory \(V2\) is only available when creating a new crew member\./)).toBeNull()
+    expect(within(panel).queryByText(/This crewmate keeps its current memory \(V1\)\. Its own memory \(V2\) is only available when creating a new crewmate\./)).toBeNull()
     expect(within(panel).queryByRole('button', { name: 'Create private memory' })).toBeNull()
     expect(within(panel).queryByRole('button', { name: 'Manage memory' })).toBeNull()
     expect(mockApi.updateKirocrewAgent).not.toHaveBeenCalled()
@@ -420,7 +420,7 @@ describe('crew editor — a registry write re-reads the config snapshot', () => 
     const sheet = await openEditor('fix')
     fireEvent.click(within(sheet).getByTestId('crew-rail-place'))
     await waitFor(() =>
-      expect(within(sheet).getByText('This member uses Member memory (V2).')).toBeVisible())
+      expect(within(sheet).getByText('This crewmate has its own memory (V2).')).toBeVisible())
     expect(within(sheet).queryByText(/configured memory store is unavailable/)).toBeNull()
   })
 })

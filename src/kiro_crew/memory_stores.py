@@ -813,9 +813,10 @@ def _allocate_member_id(config, member: str, *, refuse_damaged: bool = True) -> 
     """A member id for *member* that no agent or store in *config* already holds.
 
     The slug of the display name, with a random suffix only on collision. Deleted
-    members retain their stores, so a retired store's ``owner_member_id`` reserves
-    the slug too: captured work must never resolve to a newly created member that
-    happens to share the name.
+    members retain their stores and DM bindings, so those identities reserve the
+    slug too. A live legacy agent with no ``member_id`` reserves its name-derived
+    slug until it is provisioned. Captured work and an existing legacy member must
+    never resolve to a newly created member that happens to share the name.
 
     ``refuse_damaged`` decides what a non-string identity elsewhere in the config
     means. Creating a member refuses outright, because a config that cannot be
@@ -826,16 +827,51 @@ def _allocate_member_id(config, member: str, *, refuse_damaged: bool = True) -> 
     failure the upgrade exists to end. The damaged record is still refused on its
     own behalf, by the candidate scan that rejects it.
     """
-    from kiro_crew.members import slug_for_name
+    from kiro_crew.members import MemberSlugError, dm_binding_path, read_dm_binding, slug_for_name
+
+    def dm_slug_is_reserved(identity: str) -> bool:
+        """Keep a retained DM binding from resolving to a new member."""
+        try:
+            dm_binding_path(identity).lstat()
+        except FileNotFoundError:
+            return False
+        except (MemberSlugError, OSError, RuntimeError) as exc:
+            if refuse_damaged:
+                raise UnknownMemoryStore(
+                    "Member DM binding state is unreadable; allocation refused"
+                ) from exc
+            return False
+        binding = read_dm_binding(identity)
+        # Only the upgrade (``refuse_damaged=False``) may claim a binding that
+        # names *member*: the migrating agent is live and already owns its
+        # thread. Every create path adds a NEW agent, so a same-name binding
+        # there belongs to a deleted predecessor whose thread must not be
+        # inherited by its namesake. A binding the upgrade cannot READ is the
+        # migrating agent's own too: a legacy agent already derives this slug
+        # at runtime, so re-slugging it would orphan its rules, activity and
+        # thread while protecting nothing -- the same call the lstat OSError
+        # branch above makes. A create still reserves an unreadable binding.
+        if not refuse_damaged and (binding is None or binding["member"] == member):
+            return False
+        return True
 
     base = slug_for_name(member)
-    identities = [getattr(item, "member_id", "") for item in config.agents.values()]
+    identities = []
+    for name, item in config.agents.items():
+        member_id = getattr(item, "member_id", "")
+        identities.append(member_id)
+        if name != member and member_id == "":
+            # Legacy agents predate durable ids. Their display-name slug is
+            # nevertheless live ownership, even before any DM binding exists.
+            legacy_slug = slug_for_name(name)
+            if refuse_damaged or legacy_slug != base:
+                identities.append(legacy_slug)
     identities.extend(item.owner_member_id for item in config.memory_stores.values())
     if refuse_damaged and any(not isinstance(identity, str) for identity in identities):
         raise UnknownMemoryStore("Configured member identity must be a string; allocation refused")
     existing = {identity for identity in identities if isinstance(identity, str)}
     member_id = base
-    while member_id in existing:
+    while member_id in existing or dm_slug_is_reserved(member_id):
         member_id = f"{base[:48]}-{uuid.uuid4().hex[:12]}"
     return member_id
 

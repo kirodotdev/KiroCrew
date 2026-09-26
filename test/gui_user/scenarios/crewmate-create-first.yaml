@@ -1,0 +1,38 @@
+# Nightly: create a crewmate from the Crewmates page and land in its chat. The
+# page sits behind a feature-preview switch (per-device localStorage), so the
+# tester turns it on through the GUI first, exactly as a user would.
+#
+# The target boots once for the whole run with the seeded roster (see
+# scripts/gui-user-test/boot.sh), so the page may already list crewmates when
+# this scenario starts. The steps therefore describe BOTH entry points to the
+# same dialog: the "New crewmate" button in the empty-page hero, and the plus
+# button at the top of the crewmate list when the roster is not empty. The
+# Feature Previews card is titled "Crew Members" (older builds: "Crew Members
+# and Crew Mode"), so the steps describe it by what both titles share.
+name: crewmate-create-first
+tier: nightly
+feature: members
+user_story: >-
+  As a user opening the Crewmates page for the first time, I want to create a
+  crewmate by giving it a name and a job, so that I land in its chat and it
+  introduces itself without any further setup.
+docs_url: docs/system-specs/modules/crew-mode.md
+summary: Enable the preview, create a crewmate named Radar with a job, and see its chat open with a greeting
+preconditions:
+  seed: rich
+  members: []
+  start_url: /settings
+steps:
+  - You are on the Settings page. Open the Developer section and find the Feature Previews list.
+  - Turn on the preview whose title starts with "Crew Members" (it may read "Crew Members" or "Crew Members and Crew Mode"; either is the right one). Ignore the Webhooks preview.
+  - Open the Crewmates page. After the preview is on, an item appears in the left rail directly under Sessions (labelled "Crew Members", or "Crewmates" on newer builds); click it.
+  - If the page shows the heading "No crewmates yet", click the "New crewmate" button below it. Otherwise the page already lists crewmates; click the small plus button at the top of that list (its tooltip reads "New crewmate"). Either way a dialog titled "New crewmate" opens.
+  - In the dialog, type exactly "Radar" in the "Name" field.
+  - In the field labelled "What it looks after" (marked optional), type exactly "Keep release notes up to date". Leave "Built from" and the Advanced section as they are.
+  - Click the "Create crewmate" button and wait about three seconds.
+expectations:
+  - The "New crewmate" dialog is closed.
+  - A chat conversation is open and "Radar" is visible in its header or on the selected crewmate card.
+  - A chat bubble containing "welcome to the team" is visible in the conversation (the greeting the page sends on your behalf).
+max_steps: 18
+max_seconds: 480

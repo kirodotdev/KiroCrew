@@ -22,6 +22,7 @@ from kiro_crew.config.loader import (
     update_config_locked,
 )
 from kiro_crew.config.sections import MemoryStoreConfig
+from kiro_crew.members import dm_binding_path, write_dm_binding
 from kiro_crew.memory_stores import (
     MemberAlreadyExists,
     UnknownMemoryStore,
@@ -130,6 +131,58 @@ class TestPrivateOwnership:
         assert require_member_memory_store(cfg, "Code Review") == first
         assert require_member_memory_store(cfg, "Code-Review") == second
         assert cfg.agents["Code Review"].member_id != cfg.agents["Code-Review"].member_id
+
+    def test_live_legacy_name_reserves_its_slug_before_any_dm_binding(self):
+        cfg = KiroCrewConfig.load()
+        cfg.agents["on_call"] = KiroCrewAgentConfig()
+        cfg.agents["on-call"] = KiroCrewAgentConfig()
+
+        store = provision_member_memory(cfg, "on-call")
+
+        assert cfg.agents["on_call"].member_id == ""
+        assert cfg.agents["on-call"].member_id.startswith("on-call-")
+        assert require_member_memory_store(cfg, "on-call") == store
+
+    def test_retained_dm_binding_reserves_deleted_legacy_slug(self):
+        write_dm_binding("code-review", member="Code Review", slot_key="member-code-review")
+        cfg = KiroCrewConfig.load()
+        cfg.agents["Code-Review"] = KiroCrewAgentConfig()
+
+        store = provision_member_memory(cfg, "Code-Review")
+
+        assert cfg.agents["Code-Review"].member_id.startswith("code-review-")
+        assert require_member_memory_store(cfg, "Code-Review") == store
+
+    def test_recreating_a_deleted_member_by_its_exact_name_gets_a_fresh_identity(self):
+        # A deleted crewmate's DM binding is retained and names the SAME display
+        # name a new crewmate is being created under. The create path must not
+        # treat that as "my own binding": the namesake would inherit the deleted
+        # crewmate's thread. Only the upgrade may claim a same-name binding.
+        write_dm_binding("radar", member="Radar", slot_key="member-radar")
+        cfg = KiroCrewConfig.load()
+        cfg.agents["Radar"] = KiroCrewAgentConfig()
+
+        store = provision_member_memory(cfg, "Radar")
+
+        assert cfg.agents["Radar"].member_id != "radar"
+        assert cfg.agents["Radar"].member_id.startswith("radar-")
+        assert require_member_memory_store(cfg, "Radar") == store
+
+    def test_unreadable_dm_binding_still_reserves_slug_on_create(self):
+        # Only the upgrade may claim a binding it cannot read. A create adds a
+        # NEW agent, so an unreadable same-slug binding is a predecessor's
+        # thread of unknown attribution: reserve the slug rather than risk it.
+        path = dm_binding_path("radar")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\xff\xfe{not json")
+        cfg = KiroCrewConfig.load()
+        cfg.agents["Radar"] = KiroCrewAgentConfig()
+
+        store = provision_member_memory(cfg, "Radar")
+
+        assert cfg.agents["Radar"].member_id != "radar"
+        assert cfg.agents["Radar"].member_id.startswith("radar-")
+        assert require_member_memory_store(cfg, "Radar") == store
 
     @pytest.mark.parametrize("replacement", ["Code Review", "Code-Review"])
     def test_deleted_member_identity_stays_reserved_by_retained_store(self, replacement):

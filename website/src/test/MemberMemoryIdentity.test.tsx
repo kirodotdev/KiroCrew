@@ -42,7 +42,7 @@ describe('private member memory controls', () => {
   it('keeps existing V1 memory without offering database creation', () => {
     renderWithProviders(<MemoryStoreField member="reviewer" value="default" memoryState="legacy" />)
     expect(screen.getByText('default', { exact: true })).toBeVisible()
-    expect(screen.getByText(/^This member keeps its current memory \(V1\)\. Member memory \(V2\) is only available when creating a new crew member\.$/)).toBeVisible()
+    expect(screen.getByText(/^This crewmate keeps its current memory \(V1\)\. Its own memory \(V2\) is only available when creating a new crewmate\.$/)).toBeVisible()
     expect(screen.queryByRole('button', { name: /Create.*memory/i })).toBeNull()
     expect(screen.queryByRole('combobox')).toBeNull()
   })
@@ -67,7 +67,7 @@ describe('private member memory controls', () => {
     expect(screen.getByText(reason, { exact: true })).toBeVisible()
     expect(screen.queryByText(/Open the crew manager/i)).toBeNull()
     expect(screen.queryByText(/unavailable or belongs/i)).toBeNull()
-    expect(screen.queryByText(/This member keeps its current memory \(V1\)\. Member memory \(V2\) is only available when creating a new crew member\./)).toBeNull()
+    expect(screen.queryByText(/This crewmate keeps its current memory \(V1\)\. Its own memory \(V2\) is only available when creating a new crewmate\./)).toBeNull()
     expect(screen.queryByRole('button', { name: 'Create member memory' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Manage memory' })).toBeNull()
   })

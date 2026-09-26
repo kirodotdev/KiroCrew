@@ -21,14 +21,16 @@ import pytest
 from kiro_crew import cli, cli_doctor
 from kiro_crew import memory_record_metadata as record_meta
 from kiro_crew import memory_schema, memory_stores
-from kiro_crew.config.loader import KiroCrewConfig, config_dir
+from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig, config_dir
 from kiro_crew.execution_context import resolve_member_execution
+from kiro_crew.members import dm_binding_path, write_dm_binding
 from kiro_crew.memory import PREFERENCES_FILE, PROJECTS_FILE
 from kiro_crew.memory_stores import (
     LEGACY_MEMBER_MANIFEST,
     LEGACY_MEMBER_STORE_REMEDY,
     legacy_member_store_states,
     migrate_legacy_member_stores,
+    provision_member_memory,
     repair_legacy_member_stores,
     require_member_memory_store,
 )
@@ -175,6 +177,45 @@ class TestTheUpgradeRepairsAnAttributableStore:
             connection.close()
         assert meta["owner_member"] == "reviewer"
         assert meta[memory_schema.LINEAGE_META_KEY] == memory_schema.LINEAGE_CREW
+
+    def test_an_own_dm_binding_does_not_re_slug_the_member_during_upgrade(self) -> None:
+        _write_legacy_home("reviewer")
+        write_dm_binding("reviewer", member="reviewer", slot_key="member-reviewer")
+        cfg = KiroCrewConfig.load()
+
+        assert migrate_legacy_member_stores(cfg) == [STORE]
+        assert cfg.agents["reviewer"].member_id == "reviewer"
+        assert KiroCrewConfig.load().agents["reviewer"].member_id == "reviewer"
+
+    def test_an_unreadable_dm_binding_does_not_re_slug_the_member_during_upgrade(self) -> None:
+        # The legacy agent already derives this slug at runtime, so a binding
+        # file the upgrade cannot read is still its own: suffixing it here would
+        # orphan its thread, rules and activity while protecting nothing.
+        _write_legacy_home("reviewer")
+        path = dm_binding_path("reviewer")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\xff\xfe{not json")
+        cfg = KiroCrewConfig.load()
+
+        assert migrate_legacy_member_stores(cfg) == [STORE]
+        assert cfg.agents["reviewer"].member_id == "reviewer"
+        assert KiroCrewConfig.load().agents["reviewer"].member_id == "reviewer"
+
+    def test_migration_owner_keeps_shared_legacy_slug_and_later_peer_is_suffixed(self) -> None:
+        _write_legacy_home("on_call", owner="on_call")
+        cfg = KiroCrewConfig.load()
+        cfg.agents["on-call"] = KiroCrewAgentConfig()
+        cfg.save()
+        cfg = KiroCrewConfig.load()
+
+        assert migrate_legacy_member_stores(cfg) == [STORE]
+        assert cfg.agents["on_call"].member_id == "on-call"
+        assert cfg.agents["on-call"].member_id == ""
+
+        peer_store = provision_member_memory(cfg, "on-call")
+
+        assert cfg.agents["on-call"].member_id.startswith("on-call-")
+        assert require_member_memory_store(cfg, "on-call") == peer_store
 
     def test_a_second_run_changes_nothing(self) -> None:
         directory = _write_legacy_home("reviewer")

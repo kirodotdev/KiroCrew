@@ -65,9 +65,14 @@ function stub(page, roster) {
 
 /** The add entry's glyph, pinned by Lucide's rendered class: `lucide-plus`
  *  and not `lucide-user-plus`. */
-async function checkPlus(page, theme, testId) {
-  const cls = await page.getByTestId(testId).locator('svg').first().getAttribute('class')
-  check(`[${theme}] ${testId} draws Lucide Plus`, /\blucide-plus\b/.test(cls || '') && !/user-plus/.test(cls || ''), cls || '(no svg)')
+// `target` is a test id or a Locator: the empty hero renders in both the roster
+// list (below md) and the chat column, so its button must be scoped by the
+// caller — a bare test id would match two nodes and fail strict mode.
+async function checkPlus(page, theme, target) {
+  const locator = typeof target === 'string' ? page.getByTestId(target) : target
+  const label = typeof target === 'string' ? target : 'crewmate-empty-cta (chat column)'
+  const cls = await locator.locator('svg').first().getAttribute('class')
+  check(`[${theme}] ${label} draws Lucide Plus`, /\blucide-plus\b/.test(cls || '') && !/user-plus/.test(cls || ''), cls || '(no svg)')
 }
 
 async function shoot(browser, theme) {
@@ -104,9 +109,11 @@ async function shoot(browser, theme) {
   await stub(page, EMPTY)
   await page.goto(`${BASE}/capture/members-page.html?theme=${theme}`)
   await page.waitForSelector('[data-capture-root]')
-  await page.getByTestId('member-empty-cta').waitFor({ state: 'visible', timeout: 20000 })
-  await checkPlus(page, theme, 'member-empty-cta')
-  await checkPlus(page, theme, 'member-add')
+  const emptyCta = page.locator('section [data-testid=crewmate-empty-cta]')
+  await emptyCta.waitFor({ state: 'visible', timeout: 20000 })
+  await checkPlus(page, theme, emptyCta)
+  // On an empty roster the hero is the one create door: the header + is not rendered.
+  check(`[${theme}/empty] no header + beside the hero`, (await page.getByTestId('member-add').count()) === 0)
   check(`[${theme}/empty] the header still draws the brand mark`, (await page.getByTestId('member-roster').getByTestId('crew-member-mark').count()) === 1)
   await page.waitForTimeout(300)
   await page.screenshot({ path: join(OUT, `02-empty-cta-${theme}.png`) })

@@ -42,6 +42,15 @@ interface ModalProps {
    *  mid-write unmounts the modal, and a rejection settling after that has
    *  nowhere to render. The caller keeps its own footer Cancel in step. */
   dismissDisabled?: boolean
+  /** Remove this dialog from focus and pointer input while its own nested
+   *  portaled dialog is the active layer. Set it for as long as this modal
+   *  has a dialog of its OWN open above it that is portaled outside its panel
+   *  (a Radix `Dialog`): the panel goes inert, and its Tab trap stands down
+   *  with it (focus-in and focus-restore do not) — the trap's window-capture
+   *  listener would otherwise see every Tab pressed in the inner dialog as
+   *  focus having left, and pull it back out on each keypress. See
+   *  `useDialogFocusTrap`'s `enabled`. */
+  interactionDisabled?: boolean
   /** Modal content */
   children: React.ReactNode
 }
@@ -59,7 +68,7 @@ const SPRING = { type: 'spring' as const, stiffness: 500, damping: 35 }
  * therefore capture the restore target at page load and move focus into a
  * dialog that is not on screen.
  */
-function ModalDialog({ onClose, title, ariaLabel, footer, headerActions, maxWidth, height, layoutId, dismissDisabled = false, children }: ModalDialogProps) {
+function ModalDialog({ onClose, title, ariaLabel, footer, headerActions, maxWidth, height, layoutId, dismissDisabled = false, interactionDisabled = false, children }: ModalDialogProps) {
   const dialogRef = useRef<HTMLDivElement>(null)
   const dismiss = useCallback(() => { if (!dismissDisabled) onClose() }, [dismissDisabled, onClose])
   const reactId = useId()
@@ -71,7 +80,12 @@ function ModalDialog({ onClose, title, ariaLabel, footer, headerActions, maxWidt
   // than per call site so all ~24 `Modal` users get it.
   // Escape remains on Modal's bubble-phase listener so a nested layer can
   // consume it with preventDefault before the outer dialog decides to close.
-  useDialogFocusTrap(dialogRef, dismiss, { handleEscape: false })
+  // The trap is one facet of interaction: an inert panel (a nested portaled
+  // dialog is the active layer) must not pull Tab back into itself either.
+  useDialogFocusTrap(dialogRef, dismiss, { handleEscape: false, enabled: !interactionDisabled })
+  useEffect(() => {
+    if (dialogRef.current) dialogRef.current.inert = interactionDisabled
+  }, [interactionDisabled])
 
   // Keyboard isolation for the whole dialog, the header X button included. The
   // page's global shortcuts bind bubble-phase `document` keydown
@@ -131,6 +145,7 @@ function ModalDialog({ onClose, title, ariaLabel, footer, headerActions, maxWidt
       ref={dialogRef}
       role="dialog"
       aria-modal="true"
+      aria-hidden={interactionDisabled || undefined}
       // An explicit name wins; otherwise the dialog is named by its own title.
       // `aria-labelledby` is dropped in that case so the two can't disagree.
       aria-label={ariaLabel}
@@ -138,7 +153,7 @@ function ModalDialog({ onClose, title, ariaLabel, footer, headerActions, maxWidt
       tabIndex={-1}
       onKeyDown={isolateKeys}
       {...motionProps}
-      className="bg-card border border-border rounded-xl shadow-2xl w-full flex flex-col pointer-events-auto overflow-hidden outline-hidden"
+      className={`bg-card border border-border rounded-xl shadow-2xl w-full flex flex-col ${interactionDisabled ? 'pointer-events-none' : 'pointer-events-auto'} overflow-hidden outline-hidden`}
       style={{ maxWidth, height, maxHeight: '90vh' }}
     >
       {/* Header */}
