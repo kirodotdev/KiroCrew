@@ -154,6 +154,63 @@ describe('meetingsApi transport', () => {
   })
 })
 
+describe('the note transport', () => {
+  it('reads the note over GET, with the id encoded into the path', async () => {
+    fetchMock.mockResolvedValue(response(200, { content: '# mine', updated_at: 't', path: '/p' }))
+
+    await expect(meetingsApi.note('evt with space')).resolves.toEqual({
+      content: '# mine',
+      updated_at: 't',
+      path: '/p',
+    })
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/api/apps/meetings/meetings/evt%20with%20space/note')
+    // A GET: no verb and no body, or the backend's PUT handler answers instead.
+    expect(init?.method).toBeUndefined()
+    expect(init?.body).toBeUndefined()
+  })
+
+  it('saves the note as a JSON PUT', async () => {
+    fetchMock.mockResolvedValue(response(200, { ok: true, content: 'x', updated_at: 't', path: '/p' }))
+
+    await meetingsApi.saveNote('meeting one', '# Heading\n')
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/api/apps/meetings/meetings/meeting%20one/note')
+    expect(init.method).toBe('PUT')
+    expect(JSON.parse(init.body)).toEqual({ content: '# Heading\n' })
+    expect(init.headers['Content-Type']).toBe('application/json')
+  })
+
+  it('posts a pasted image as multipart and lets the browser name the type', async () => {
+    fetchMock.mockResolvedValue(
+      response(200, { ok: true, filename: 'a.png', src: 'images/a.png', alt: '00:12', content_type: 'image/png' }),
+    )
+    const file = new File(['bytes'], 'shot.png', { type: 'image/png' })
+
+    await expect(meetingsApi.uploadNoteImage('m1', file)).resolves.toMatchObject({
+      src: 'images/a.png',
+      alt: '00:12',
+    })
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/api/apps/meetings/meetings/m1/note/images')
+    expect(init.method).toBe('POST')
+    expect(init.body).toBeInstanceOf(FormData)
+    expect((init.body as FormData).get('file')).toBe(file)
+    // The point of the multipart branch: naming the content type by hand omits
+    // the boundary the browser generated, and the server cannot then parse a
+    // body that looks perfectly well formed from here.
+    expect(init.headers).toBeUndefined()
+  })
+
+  it('surfaces an upload refusal as a MeetingsApiError, not a silent no-op', async () => {
+    fetchMock.mockResolvedValue(response(413, { error: 'that image is too large' }))
+
+    await expect(
+      meetingsApi.uploadNoteImage('m1', new File(['b'], 's.png', { type: 'image/png' })),
+    ).rejects.toMatchObject({ status: 413, name: 'MeetingsApiError' })
+  })
+})
+
 describe('safeMeetingId', () => {
   it('matches the backend rule for calendar ids', () => {
     // The server's `safe_meeting_id` does exactly this substitution, and the

@@ -451,6 +451,12 @@ def error_response(exc: Exception) -> web.Response:
     # traversal). Not 503 — no configuration change or retry will make it work.
     if exc.status == HTTPStatus.NOT_IMPLEMENTED:
         return web.json_response({"error": str(exc), "code": exc.code}, status=501)
+    # 500: the request was fine and OUR side failed — the note read that cannot be
+    # reported as an empty note, because the client would overwrite it. Without this
+    # branch the fall-through answered 400, which tells the user to fix a request
+    # that had nothing wrong with it.
+    if exc.status == HTTPStatus.INTERNAL_SERVER_ERROR:
+        return web.json_response({"error": str(exc), "code": exc.code}, status=500)
     return web.json_response({"error": str(exc), "code": exc.code}, status=400)
 
 

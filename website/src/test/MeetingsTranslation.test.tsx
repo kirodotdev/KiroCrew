@@ -139,7 +139,13 @@ describe('the incremental poll', () => {
 
   it('polls only while the panel is open AND a language is set', () => {
     // Translation is off by default; polling for it regardless would be pure waste.
-    const enabled = SessionSource.match(/enabled: initQuery\.isSuccess && [^\n]*/)
+    //
+    // Scoped to the translation query's own block rather than matching the first
+    // `enabled:` in the file — the note query added one above it, and a loose match
+    // silently started asserting against the wrong query.
+    const block = SessionSource.match(/const translationQuery = useQuery\(\{[\s\S]*?\n {2}\}\)/)
+    expect(block).toBeTruthy()
+    const enabled = block![0].match(/enabled: [^\n]*/)
     expect(enabled).toBeTruthy()
     expect(enabled![0]).toContain('translationOpen')
     expect(enabled![0]).toContain('Boolean(translationLanguage)')
@@ -184,12 +190,37 @@ describe('MeetingView wiring', () => {
     }
   })
 
-  it('keeps the two side panels mutually exclusive', () => {
-    // Stacked below `lg`, both panels' 260px height floors together exceed a
-    // short viewport (2 × min-h-[260px] inside an overflow-hidden column) and
-    // squeeze the transcript out entirely — so opening one closes the other.
-    expect(ViewSource).toMatch(/setSidebarOpen\(false\)\s*session\.setTranslationOpen\(open => !open\)/)
-    expect(ViewSource).toMatch(/session\.setTranslationOpen\(false\)\s*setSidebarOpen\(open => !open\)/)
+  it('keeps the side panels mutually exclusive', () => {
+    // Stacked below `lg`, the panels' 260px height floors together exceed a short
+    // viewport (min-h-[260px] each inside an overflow-hidden column) and squeeze
+    // the transcript out entirely — so opening one closes the others.
+    //
+    // Asserted per TOGGLE, over the lines that precede it, rather than as one
+    // adjacent pair: with three panels a toggle is preceded by two closes, and an
+    // adjacency regex pins the order they happen to be written in rather than the
+    // exclusivity it means to check.
+    const toggles: [string, string[]][] = [
+      [
+        'session.setTranslationOpen(open => !open)',
+        ['setSidebarOpen(false)', 'session.setNoteOpen(false)'],
+      ],
+      [
+        'setSidebarOpen(open => !open)',
+        ['session.setTranslationOpen(false)', 'session.setNoteOpen(false)'],
+      ],
+      [
+        'session.setNoteOpen(open => !open)',
+        ['setSidebarOpen(false)', 'session.setTranslationOpen(false)'],
+      ],
+    ]
+    for (const [toggle, closes] of toggles) {
+      const at = ViewSource.indexOf(toggle)
+      expect(at, `${toggle} must be in the view`).toBeGreaterThan(-1)
+      const before = ViewSource.slice(Math.max(0, at - 200), at)
+      for (const close of closes) {
+        expect(before, `${toggle} must be preceded by ${close}`).toContain(close)
+      }
+    }
   })
 
   it('mounts the panel only when open and configured', () => {
