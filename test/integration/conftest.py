@@ -122,6 +122,17 @@ cross-home flake three tests later.
    * ``crew_log.emit`` caches and its shutdown-drain flag -- the real exit
      path drains the session log and marks the writer as draining for
      shutdown, which would keep the next boot's writer from starting.
+   * ``sandbox._SHIM_ARGV_CACHE`` -- the spawn shim's resolved argv, derived
+     from the boot's config and home.
+   * ``browser_cli.launch._warned_lifecycle_losses`` -- the warn-once set for
+     browser-socket lifecycle losses; carried across boots it would silence
+     the second boot's first diagnostic.
+   * ``sandbox`` cgroup-counter baselines (``_SLICE_THROTTLE_PROBE_SEEN``,
+     ``_SLICE_THROTTLE_EDGE_AT``, ``_SLICE_MEMHIGH_EVENTS_SEEN``,
+     ``_SLICE_OOM_SEEN``) -- each is "seeded from the first read in this
+     process", and a fresh process has none; a baseline carried across boots
+     would let the second boot read the first one's counter climb as a live
+     throttle episode.
 
 2. **Snapshot and restore** around the boot by ``booted_gateway``, on every
    exit: the SIGINT/SIGTERM handlers ``run()`` installs; the event loop's
@@ -188,6 +199,7 @@ import faulthandler
 import json
 import os
 import re
+import secrets
 import signal
 import time
 from contextlib import asynccontextmanager
@@ -204,8 +216,10 @@ from kiro_crew import (
     embeddings,
     memory_startup,
     safety_override,
+    sandbox,
     shutdown_event,
 )
+from kiro_crew.browser_cli import launch as browser_launch
 from kiro_crew.config import live as config_live
 from kiro_crew.config.loader import CREDENTIAL_KEYS
 from kiro_crew.crew_log import emit as crew_log_emit
@@ -453,6 +467,7 @@ class IntegrationGateway:
     _client: ClientSession
     _boot_secs: float
     _tasks_before: frozenset["asyncio.Task[Any]"]
+    _cookie: str = ""
 
     @property
     def base_url(self) -> str:
@@ -498,13 +513,19 @@ class IntegrationGateway:
     ) -> Any:
         """One HTTP request against the live gateway. Returns the response.
 
-        ``auth=True`` (default) sends the boot token as ``?token=``; pass
-        ``auth=False`` to prove the 401/403 side of a contract.
+        ``auth=True`` (default) sends the dashboard session cookie ``_boot``
+        minted from the boot token; pass ``auth=False`` to prove the 401/403
+        side of a contract. The cookie, not ``?token=``: the link token is a
+        one-use nonce that the ``mixed_internal`` routes (``/api/chat/slots``
+        among them) refuse once any ordinary route has minted the cookie, and
+        aiohttp's jar does not keep cookies set by an IP host, so the harness
+        carries it as a header the way the E2E ``_Client`` carries its jar.
         """
         url = f"{self.base_url}{path}"
         params = dict(kwargs.pop("params", {}) or {})
+        headers = dict(headers or {})
         if auth:
-            params["token"] = self.token
+            headers["Cookie"] = self._cookie
         self._note_hit(method.upper(), path.split("?", 1)[0])
         return await self._client.request(
             method,
@@ -530,6 +551,26 @@ class IntegrationGateway:
 
     async def delete(self, path: str, **kw: Any) -> Any:
         return await self.request("DELETE", path, **kw)
+
+    def mcp_headers(self, session_key: str) -> dict[str, str]:
+        """The headers a managed MCP server sends on the session's behalf.
+
+        The launcher's half of the session-token handshake, done in-process:
+        mint a token, publish its signed ``token -> session_key`` record the way
+        ``session/new`` does, and hand back the three headers the internal
+        routes authenticate on (``X-Internal-Secret`` proves the loopback
+        process, ``X-Session-Token`` attests the ``X-Session-Key``). Use with
+        ``auth=False``: these routes are for processes, not the dashboard user.
+        """
+        from kiro_crew.session_token_sig import publish_session_token
+
+        token = secrets.token_hex(16)
+        publish_session_token(token, session_key)
+        return {
+            "X-Internal-Secret": self.app["local_secret"],
+            "X-Session-Key": session_key,
+            "X-Session-Token": token,
+        }
 
     async def get_json(self, path: str, *, expect: int = 200, **kw: Any) -> Any:
         resp = await self.get(path, **kw)
@@ -571,6 +612,7 @@ class IntegrationGateway:
         self.token = fresh.token
         self._run_task = fresh._run_task
         self._client = fresh._client
+        self._cookie = fresh._cookie
         self._tasks_before = fresh._tasks_before
         return self
 
@@ -646,6 +688,12 @@ def _reset_home_bound_globals() -> None:
     embeddings.reset_shared_embedder()
     embeddings.reset_download_manager()
     crew_log_emit.reset_caches()
+    sandbox._SLICE_THROTTLE_PROBE_SEEN = None
+    sandbox._SLICE_THROTTLE_EDGE_AT = None
+    sandbox._SLICE_MEMHIGH_EVENTS_SEEN = None
+    sandbox._SLICE_OOM_SEEN = None
+    sandbox._SHIM_ARGV_CACHE.clear()
+    browser_launch._warned_lifecycle_losses.clear()
     live_nudge = autonudge._INSTANCE
     if live_nudge is not None:
         with contextlib.suppress(Exception):
@@ -666,6 +714,10 @@ def home_bound_globals_are_clear() -> bool:
         and safety_override._singleton is None
         and embeddings._shared_embedder is None
         and embeddings._download_manager is None
+        and sandbox._SLICE_THROTTLE_PROBE_SEEN is None
+        and sandbox._SLICE_THROTTLE_EDGE_AT is None
+        and not sandbox._SHIM_ARGV_CACHE
+        and not browser_launch._warned_lifecycle_losses
     )
 
 
@@ -863,6 +915,24 @@ async def _boot(home: Path, *, boot_secs: float) -> IntegrationGateway:
     )
     if handle.app is not None:
         _record_registered_routes(handle.app)
+    try:
+        async with client.get(
+            f"{handle.base_url}/api/status",
+            params={"token": handle.token},
+            timeout=ClientTimeout(total=10),
+        ) as resp:
+            set_cookie = resp.headers.get("Set-Cookie", "")
+            if resp.status != 200 or not set_cookie.startswith("mc_token_"):
+                raise RuntimeError(
+                    f"boot token did not mint a session cookie: {resp.status} {set_cookie[:60]!r}"
+                )
+            handle._cookie = set_cookie.split(";", 1)[0]
+            # Every boot exercises this route; count it like any other request.
+            handle._note_hit("GET", "/api/status")
+    except BaseException:
+        await client.close()
+        await _teardown_boot(orchestrator, run_task, tasks_before)
+        raise
     return handle
 
 
@@ -913,7 +983,9 @@ async def booted_gateway(
 
 
 @pytest.fixture
-def integration_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def integration_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unpinned_agent_spec_home: Any
+) -> Path:
     """A fresh, isolated ``KIROCREW_HOME`` with the fake model wired in.
 
     Mirrors ``kiro_crew.testing.harness.spawn_feature_gateway``'s environment
@@ -926,6 +998,15 @@ def integration_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     # Isolate the agent-spec home too: boot rewrites managed MCP specs under
     # ``kiro_agents_dir()``, which must never be the operator's ``~/.kiro/agents``.
     monkeypatch.setenv("KIRO_HOME", str(home / "kiro"))
+    # ``unpinned_agent_spec_home`` (rootdir conftest) is requested above: the
+    # rootdir pins the WRITE side of the agent-spec seam (the ``KIRO_AGENTS_DIR``
+    # hooks) to its own per-test directory while the READ side
+    # (``config.paths.kiro_agents_dir``) follows ``KIRO_HOME``, so under the pin
+    # the boot writes ``kirocrew.json`` where no request will read it. That
+    # fixture releases the pin; with ``KIRO_HOME`` set above, both sides resolve
+    # to ``<home>/kiro/agents`` -- the private target the shared-home write guard
+    # exempts -- so its "read-only use" caveat (writes would reach the operator's
+    # live agents) does not apply here.
     monkeypatch.setenv("KIROCREW_KIRO_BIN", str(fake_acp_backend.__file__))
     monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
     # Strict on-loop persistence, set HERE rather than in the CI job's env: the
