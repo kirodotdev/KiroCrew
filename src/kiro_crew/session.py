@@ -108,8 +108,8 @@ import os
 import re
 import time
 from collections import deque
-from collections.abc import Awaitable, Callable
-from contextlib import AbstractContextManager
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
@@ -175,6 +175,9 @@ from kiro_crew.session_allocation import (
 from kiro_crew.session_allocation import SessionBusyError as SessionBusyError  # noqa: F401
 from kiro_crew.session_allocation import (
     SessionClosingError,
+)
+from kiro_crew.session_allocation import SessionEndingError as SessionEndingError  # noqa: F401
+from kiro_crew.session_allocation import (
     SessionRegistryState,
 )
 from kiro_crew.session_allocation import (  # noqa: F401
@@ -201,6 +204,7 @@ from kiro_crew.session_lifecycle import (
     SessionLifecycleDeps,
     SessionLifecycleService,
     SessionLifecycleState,
+    TornDown,
 )
 from kiro_crew.session_map import _kiro_sessions_dir  # noqa: F401
 from kiro_crew.session_map import (
@@ -342,6 +346,22 @@ def _load_child_process_helpers() -> tuple[
     )
 
     return _capture_child_records, _get_child_pids, _kill_escaped_children
+
+
+def child_process_helpers() -> tuple[
+    Callable[..., Any],
+    Callable[..., Any],
+    Callable[..., Any],
+]:
+    """The client's ``(capture_child_records, get_child_pids, kill_escaped_children)``.
+
+    The same triple the session teardown resolves for itself, for a caller that
+    kills a session's process on its own handle after the teardown lost it (the
+    cron reaper through ``kiro_crew.process_identity``): resolved at call time,
+    so it is the one place outside the ACP layer that names these helpers, and a
+    test's patch of the client module is what every caller's sweep then runs.
+    """
+    return _load_child_process_helpers()
 
 
 def _resolve_allocation_crew_identity(
@@ -1784,6 +1804,23 @@ class SessionManager:
         """Return whether allocation/claim ownership is reserved for *key*."""
         return self._allocation_boundary().has_allocation_reservation(key)
 
+    def _spawn_in_flight(self, key: str) -> str | None:
+        """Why a cold start under *key* is a process an ending caller must name, or None.
+
+        The read a holder of the key's ending fence (:meth:`ending_key`) makes
+        after its kill passes. Not every reservation is a process: a claim
+        waiting on the live session's turn, or a cold start still ahead of the
+        pre-spawn fence check, has started nothing and is held or refused before
+        it does. What this names is a start the fence invalidated past that door
+        -- its ``provider.start()`` in flight, nothing published that any map
+        read could see, refused at registration and hard-killed when the start
+        returns -- and a start that already returned during the passes, refused
+        and hard-killed by the allocation path with an outcome nothing here reads
+        back. Either is a process the holder's own passes did not answer, and the
+        phrase is the reason its record carries.
+        """
+        return self._allocation_boundary().spawn_in_flight(key)
+
     async def try_acquire(self, key: str) -> bool:
         """Try to acquire an exact-key idle session."""
         return await self._allocation_boundary().try_acquire(key)
@@ -2154,12 +2191,14 @@ class SessionManager:
         sess: "_Session",
         *,
         wait_if_busy: bool = True,
+        reservation: object | None = None,
     ) -> bool:
-        """Acquire outside the registry lock and revalidate identity."""
+        """Acquire outside the registry lock, revalidate identity and meet the key's ending fence again."""
         return await self._allocation_boundary()._reacquire_and_validate(
             key,
             sess,
             wait_if_busy=wait_if_busy,
+            reservation=reservation,
         )
 
     async def _evict_stale_session(self, key: str, sess: "_Session") -> None:
@@ -2430,17 +2469,87 @@ class SessionManager:
         refuse_only_on_active_turn: bool = False,
         clear_conversation: bool = False,
         ends_conversation: bool = False,
+        scope: Any | None = None,
     ) -> bool:
-        """Reset a live session while preserving its persistence entry."""
-        return await self._lifecycle_boundary().reset(
-            key,
-            expect_session=cast(Any, expect_session),
-            skip_if_busy=skip_if_busy,
-            skip_if_injecting=skip_if_injecting,
-            refuse_only_on_active_turn=refuse_only_on_active_turn,
-            clear_conversation=clear_conversation,
-            ends_conversation=ends_conversation,
-        )
+        """Reset a live session while preserving its persistence entry.
+
+        The session the reset pops stays readable through :meth:`tearing_down`
+        for exactly the life of its teardown: the scope opened here records it at
+        the pop and releases it when the call ends, however it ends. A caller that
+        must know exactly which session THIS reset popped -- and read it
+        atomically with the pop -- opens the scope itself with
+        :meth:`teardown_scope` and passes it as ``scope``; it is entered and
+        released here all the same, and its ``popped`` survives the release.
+        """
+        lifecycle = self._lifecycle_boundary()
+        with scope if scope is not None else lifecycle.teardown_scope() as opened:
+            return await lifecycle.reset(
+                key,
+                expect_session=cast(Any, expect_session),
+                skip_if_busy=skip_if_busy,
+                skip_if_injecting=skip_if_injecting,
+                refuse_only_on_active_turn=refuse_only_on_active_turn,
+                clear_conversation=clear_conversation,
+                ends_conversation=ends_conversation,
+                scope=opened,
+            )
+
+    def teardown_scope(self, on_pop: Callable[[Any], None] | None = None) -> Any:
+        """A teardown scope to hand :meth:`reset`, with an optional hook run at its pop.
+
+        ``on_pop(session)`` runs in the same registry-lock hold as the pop, so what
+        it reads off the session is read atomically with the pop, timed-out reset
+        or not. The cron reaper uses it to take the process handle of the exact
+        session its reset pops.
+        """
+        return self._lifecycle_boundary().teardown_scope(on_pop)
+
+    def tearing_down(self, key: str) -> "list[TornDown]":
+        """Every teardown in flight under *key*, in pop order: the popped session and the process handle read at its pop.
+
+        The live map stops naming a session at the pop, before the teardown's
+        awaits; a caller that must still reach those sessions' processes -- the
+        cron reaper, after a run's own finally reset popped the session and hung,
+        and after a successor's reset popped it and hung as well -- reads them
+        here for exactly the life of each teardown, and kills on each entry's
+        ``handle``: the identity captured at the pop, before the teardown's own
+        awaits could clear the provider's pid with the process still standing.
+        Empty when none is in flight.
+        """
+        return self._lifecycle_boundary().tearing_down(key)
+
+    @contextmanager
+    def ending_key(self, key: str) -> Iterator[None]:
+        """Hold the per-key ending fence from a run's kill passes through its terminal record.
+
+        The per-key sibling of the manager-wide closing check. While the fence is
+        up, a claim or a new allocation under *key* is HELD at the front door of
+        :meth:`get_or_create` -- it waits for the fence to lift, bounded by
+        :data:`kiro_crew.session_allocation.ENDING_FENCE_WAIT_SECS`, then
+        proceeds -- and every allocation reservation already in flight under the
+        key -- a cold start caught inside ``provider.start()``, which has published
+        nothing a pass could see -- is invalidated: it is refused at registration
+        when it gets there, fence up or lifted, the provider it started is
+        hard-killed by the closing manager's own path, and the call then waits for
+        the lift and allocates again. Nothing is dropped: a sub-agent completion
+        that races the reap of its parent's run lands in the session that follows
+        the run's record, never in the run being ended. The cron reaper and
+        ``cancel()`` open this before their reset-then-kill passes and hold it
+        until the run's terminal record is persisted and audited: a held caller
+        wakes to a key whose run is RECORDED, never to one that is neither being
+        ended nor recorded -- the record is what the caller's own session follows.
+        Synchronous: raised before the holder's first await, lifted however the
+        block ends. :class:`SessionEndingError` reaches a caller only when its
+        wait outlives the bound, or from ``open_task_session``, which is refused
+        while the fence is up rather than held (it reserves nothing and creates
+        on a shared runtime).
+        """
+        boundary = self._allocation_boundary()
+        boundary.begin_ending(key)
+        try:
+            yield
+        finally:
+            boundary.end_ending(key)
 
     def check_context_usage(self, key: str, provider: LLMProvider) -> float:
         """Delegate context accounting and compaction triggering."""

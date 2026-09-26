@@ -8,10 +8,13 @@ session and fails to kill the hung child process.
 
 The reaper fix: CronService tracks every distinct exact live session key per job via
 idempotent ``register_active_session_key(job_id, key)`` and whole-key
-``clear_active_session_key(job_id, key)`` after a successful reset. The newest key
-remains the reaper target; the complete set protects older sessions retained for
-pending subagents. The gateway's _cron_callback is responsible for these calls.
-_force_reap falls back to the stable key for persistent jobs that have not registered.
+``clear_active_session_key(job_id, key)`` after a successful reset. Each key is
+attributed to the run (the ``_RunClaim``) that registered it: a reap or cancel of
+that run ends every key it registered, newest first (``_run_session_keys``), and
+leaves an older run's key -- a session retained for pending subagents -- alone. A
+key registered under no claim belongs to whichever run is ended next. The
+gateway's _cron_callback is responsible for these calls. _force_reap falls back
+to the stable key for persistent jobs that have not registered.
 """
 
 from __future__ import annotations
@@ -20,7 +23,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kiro_crew.cron import CronService
+from kiro_crew.cron import CronService, _RunClaim
+
+
+def _run() -> _RunClaim:
+    """A claim standing for one run of a job, the identity keys are attributed to."""
+    return _RunClaim(trigger="scheduled", claimed_at=0.0)
 
 
 @pytest.fixture(autouse=True)
@@ -100,12 +108,43 @@ class TestReaperUsesActiveSessionKey:
         key_v2 = "cron:j1:v2"
         svc.register_active_session_key("j1", key_v1)
         svc.register_active_session_key("j1", key_v2)
-        assert svc.get_active_session_key("j1") == key_v2
+        assert svc._run_session_keys("j1", _run()) == [key_v2, key_v1]
 
         svc.register_active_session_key("j1", key_v1)
 
-        assert svc.get_active_session_key("j1") == key_v1
+        assert svc._run_session_keys("j1", _run()) == [key_v1, key_v2]
         assert svc.active_session_keys() == frozenset({key_v1, key_v2})
+
+    def test_a_key_is_attributed_to_the_run_that_held_the_claim_when_it_was_registered(self):
+        """A reap of one run ends only that run's keys; an older run's key lives on for its subagents."""
+        svc = CronService()
+        older = svc._claim_run("j1", "scheduled")
+        svc.register_active_session_key("j1", "cron:j1:older")
+        assert svc._release_claim("j1", older)
+        current = svc._claim_run("j1", "scheduled")
+        svc.register_active_session_key("j1", "cron:j1:agentA")
+        svc.register_active_session_key("j1", "cron:j1:agentB")
+
+        assert svc._run_session_keys("j1", current) == [
+            "cron:j1:agentB",
+            "cron:j1:agentA",
+        ], "the run's own keys, newest first, are what its reap ends"
+        assert svc._run_session_keys("j1", older) == ["cron:j1:older"]
+        assert svc.active_session_keys() == frozenset(
+            {"cron:j1:older", "cron:j1:agentA", "cron:j1:agentB"}
+        ), "the complete set still protects every distinct live run"
+
+    def test_re_registering_a_stable_key_re_attributes_it_to_the_current_run(self):
+        """A persistent job's stable key is registered every run; the run registering it now owns it."""
+        svc = CronService()
+        first = svc._claim_run("j1", "scheduled")
+        svc.register_active_session_key("j1", "cron:j1")
+        assert svc._release_claim("j1", first)
+        second = svc._claim_run("j1", "scheduled")
+        svc.register_active_session_key("j1", "cron:j1")
+
+        assert svc._run_session_keys("j1", second) == ["cron:j1"]
+        assert svc._run_session_keys("j1", first) == []
 
     def test_one_successful_reset_clears_all_shared_key_registrations(self):
         svc = CronService()
@@ -116,11 +155,11 @@ class TestReaperUsesActiveSessionKey:
         svc.clear_active_session_key("j1", key)
 
         assert svc.active_session_keys() == frozenset()
-        assert svc.get_active_session_key("j1") is None
+        assert svc._run_session_keys("j1", _run()) == []
 
     def test_get_active_key_returns_none_when_unregistered(self):
         svc = CronService()
-        assert svc.get_active_session_key("nope") is None
+        assert svc._run_session_keys("nope", _run()) == []
 
 
 class TestCronCallbackDeferredResetPreservesActiveKey:
@@ -175,10 +214,11 @@ class TestCronCallbackDeferredResetPreservesActiveKey:
         svc = CronService()
 
         ephemeral_key = "cron:jobid1:deadbeef"
+        run = svc._claim_run("jobid1", "scheduled")
         svc.register_active_session_key("jobid1", ephemeral_key)
 
         # Simulate the deferred branch: callback returns without clearing.
-        assert svc.get_active_session_key("jobid1") == ephemeral_key
+        assert svc._run_session_keys("jobid1", run) == [ephemeral_key]
 
         # Later, _subagent_done runs the real reset and then clears using
         # the same job_id extraction the gateway does: parent_key.split(":", 2)[1].
@@ -189,8 +229,8 @@ class TestCronCallbackDeferredResetPreservesActiveKey:
         # After the deferred reset completes, the key is gone → reaper
         # falls back to the stable key (correct, because the session is
         # gone by now too).
-        assert svc.get_active_session_key("jobid1") is None
+        assert svc._run_session_keys("jobid1", run) == []
 
         # Calling clear again is safe (idempotent).
         svc.clear_active_session_key("jobid1", ephemeral_key)
-        assert svc.get_active_session_key("jobid1") is None
+        assert svc._run_session_keys("jobid1", run) == []

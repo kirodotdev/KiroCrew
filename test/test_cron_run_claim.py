@@ -26,10 +26,26 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from test_cron_reaper import (
+    _KILL_PRIMITIVES,
+    _refuse_unpinned_signal,
+    _refuse_unpinned_signal_async,
+)
 
-from kiro_crew import cron_script
+from kiro_crew import cron_script, platform_compat
 from kiro_crew.cron import _JOB_TIMEOUT_SECS, CronJob, CronSchedule, CronService, _RunClaim
 from kiro_crew.cron_history import CronHistoryStore
+
+
+@pytest.fixture(autouse=True)
+def _kill_seam(monkeypatch: pytest.MonkeyPatch) -> None:
+    """POSIX-shaped kill path unless a test pins ``IS_WINDOWS``; every kill primitive refuses unless the test pins it (see test_cron_reaper.py)."""
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+    for name in _KILL_PRIMITIVES:
+        guard = (
+            _refuse_unpinned_signal_async if name.endswith("_async") else _refuse_unpinned_signal
+        )
+        monkeypatch.setattr(platform_compat, name, guard)
 
 
 def _service() -> CronService:
@@ -455,7 +471,9 @@ class TestAnAbortedTeardownStillFinishesItsClaim:
         svc, job, claim, task = _cancel_fixture(tmp_path)
         svc._sessions.reset = AsyncMock(side_effect=RuntimeError("reset failed"))
 
-        async def _sigkill_raises(_session_key: str) -> None:
+        async def _sigkill_raises(
+            _session_key: str, _handle: object = None, *, who: str = "Reaper"
+        ) -> None:
             raise OSError("killpg refused")
 
         with (
