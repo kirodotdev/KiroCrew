@@ -445,6 +445,20 @@ export default function AgentTemplatesTab() {
       if (r?.error) { setNotice({ kind: 'err', text: r.error }); return }
       setNotice({ kind: 'ok', text: i18nT('pages.overview.agentTemplatesTab.enrolled', { name: row.name }) })
       invalidate()
+      // Enrolling is a crew registry write, so it has to reach the registry's
+      // readers too -- the Crews tab beside this one on the same rail
+      // (CapabilitiesPage), and the Crew Members roster under the same prefix
+      // (api/membersQuery.ts). Nothing else will while that cache entry is
+      // live: the QueryClient sets `staleTime: Infinity`, so a remount serves
+      // the cached roster without refetching, and `POST /api/agents` pushes no
+      // `refresh` frame (the only `push_refresh("agents")` is the MCP
+      // capability install). A user who opens Capabilities on Crews, comes
+      // here, enrolls and goes back is inside that entry's `gcTime`, and the
+      // crewmate this tab just reported as enrolled is missing from the list.
+      void queryClient.invalidateQueries({ queryKey: ['kirocrew-agents'] })
+      // The same write lands in config.json, whose masked read ships the agent
+      // records -- the pairing #12740 established for a member write.
+      void queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] })
     },
     onError: writeError,
   })
