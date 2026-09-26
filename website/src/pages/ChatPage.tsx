@@ -1622,7 +1622,32 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         // below already uses for the same reason.
         setAutoSendTick(t => t + 1)
       } else {
-        if (activeSlot) { setDraft(drafts.current, activeSlot, pendingInput); saveDraftsDebounced() }
+        if (activeSlot) {
+          setDraft(drafts.current, activeSlot, pendingInput); saveDraftsDebounced()
+          // Cold navigation (a palette command fired from an APP page, so this
+          // page mounts fresh): this effect runs before the new slot's
+          // draft-restore, which would then overwrite the `setInput` below with
+          // the slot's empty persisted draft — the seeded prompt vanished
+          // exactly when the command was invoked anywhere but /chat. The keyed
+          // prefill is the channel built to survive that race: the restore
+          // consumes it in preference to the stored draft and removes it.
+          // Harmless on the warm path, where the restore already ran.
+          //
+          // But do NOT clobber a prefill a hand-off already staged for a
+          // DIFFERENT slot: the worktree follow-up keys the NEW slot's prefill
+          // before switching and only then sets pendingInput, while `activeSlot`
+          // here can still be render-lagged to the origin slot (the same lag the
+          // hand-off reads store.getState() to sidestep). Re-keying to it would
+          // redirect the seed to the wrong session's restore. A prefill already
+          // pointing at this same slot, or none at all (the palette path, which
+          // stages nothing before its own setPendingInput), is ours to write.
+          let stagedFor: string | null = null
+          try {
+            const raw = sessionStorage.getItem(PREFILL_STORAGE_KEY)
+            if (raw) { const p = JSON.parse(raw); if (p && typeof p.slotKey === 'string') stagedFor = p.slotKey }
+          } catch { /* a malformed entry is treated as absent */ }
+          if (!stagedFor || stagedFor === activeSlot) writePrefill(activeSlot, pendingInput)
+        }
         setInput(pendingInput)
         raisePrefillHint()
       }

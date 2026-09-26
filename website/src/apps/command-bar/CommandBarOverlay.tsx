@@ -1156,7 +1156,7 @@ export default function CommandBarOverlay({
    * it open with the field intact.
    */
   const seedNewSession = useCallback(
-    (pendingKey: string, text: string, failureLabel: string, autoSend: boolean) => {
+    (pendingKey: string, text: string, failureLabel: string, autoSend: boolean, agent?: string) => {
       const run = dialogRunRef.current
       const owned = () => dialogRunRef.current === run
       // Whether this seed belongs to a CONTRIBUTED command, decided before the awaits.
@@ -1178,8 +1178,11 @@ export default function CommandBarOverlay({
       // to type into it. Leaning on "create makes the new slot active" is only true at
       // the instant it resolves -- and this callback can resolve long after the user
       // has moved on, at which point the seed lands in whatever they moved to.
+      // The contributed row may name the agent the seeded session runs as; ''
+      // and undefined both mean the dashboard default.
       void dispatch(createSlot({
         activate: false,
+        agent: agent || undefined,
         ...(contributed ? { memory_mode: 'persistent' } : {}),
       }))
         .unwrap()
@@ -1279,7 +1282,7 @@ export default function CommandBarOverlay({
         if (!cmd) return
         if (!cmd.argument) {
           // Nothing to collect, so this is the whole action: seed and go.
-          seedNewSession(cmd.id, cmd.prompt, cmd.title, cmd.autoSend)
+          seedNewSession(cmd.id, cmd.prompt, cmd.title, cmd.autoSend, cmd.agent)
           return
         }
         // No work yet -- this row's operation is defined by a value the user has not
@@ -1629,7 +1632,7 @@ export default function CommandBarOverlay({
       return
     }
     setActionError(null)
-    seedNewSession(live.id, now, live.title, live.autoSend)
+    seedNewSession(live.id, now, live.title, live.autoSend, live.agent)
   }, [argCommand, commandById, exitArgumentState, pendingRow, query, seedNewSession])
 
   const onKeyDown = useCallback(

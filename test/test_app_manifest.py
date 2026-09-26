@@ -1273,7 +1273,7 @@ class TestSignatureFrozenVocabulary:
 
     #: Every key `CommandContribution.to_dict()` can emit.
     COMMAND_KEYS = frozenset(
-        {"id", "title", "subtitle", "icon", "keywords", "prompt", "autoSend", "argument"}
+        {"id", "title", "subtitle", "icon", "keywords", "prompt", "autoSend", "agent", "argument"}
     )
     #: Every key `CommandArgument.to_dict()` can emit.
     ARGUMENT_KEYS = frozenset({"placeholder", "hint", "kind", "hosts", "patternError"})
@@ -1288,6 +1288,7 @@ class TestSignatureFrozenVocabulary:
             "keywords": ["pr"],
             "prompt": "Approve everything behind {argument}.",
             "autoSend": True,
+            "agent": "ticket-analyst",
             "argument": {
                 "placeholder": "Paste a link",
                 "hint": "A PR search or a single pull request.",
@@ -1736,6 +1737,46 @@ class TestContributedCommands:
         # Without autoSend the same command is fine.
         cmd.pop("autoSend")
         assert AppManifest.from_dict(self._manifest(cmd)).validate() == []
+
+    def test_agent_selects_which_agent_the_seeded_session_runs_as(self):
+        # The prompt reaches a tool-enabled agent either way; `agent` only names WHICH
+        # one, so it grants nothing the prompt did not already reach. A bare config
+        # stem is the same shape a cron's `agent` takes.
+        m = AppManifest.from_dict(self._manifest(self._command(agent="ticket-analyst")))
+        assert m.validate() == []
+        assert m.contributes.commands[0].agent == "ticket-analyst"
+        assert m.to_dict()["contributes"]["commands"][0]["agent"] == "ticket-analyst"
+
+    def test_agent_defaults_empty_and_is_omitted_from_the_payload(self):
+        # Empty means the dashboard default, and an empty string is not emitted: an app
+        # that names no agent adds no key, so it cannot invalidate a prior signature.
+        m = AppManifest.from_dict(self._manifest(self._command()))
+        assert m.contributes.commands[0].agent == ""
+        assert "agent" not in m.to_dict()["contributes"]["commands"][0]
+
+    @pytest.mark.parametrize("raw", [1, {}, [], None, True])
+    def test_a_non_string_agent_reads_as_no_agent(self, raw):
+        # Same fail-closed read as the other string fields: anything that is not a
+        # string becomes the default rather than coercing to one.
+        m = AppManifest.from_dict(self._manifest(self._command(agent=raw)))
+        assert m.contributes.commands[0].agent == ""
+
+    @pytest.mark.parametrize(
+        "agent,fragment",
+        [
+            ("agents/ticket-analyst", "bare config stem"),
+            ("../evil", "bare config stem"),
+            ("a\\b", "bare config stem"),
+            ("x" * 121, "exceeds 120 characters"),
+        ],
+    )
+    def test_refuses_an_agent_that_is_not_a_bare_stem(self, agent, fragment):
+        # A separator breaks the KAS projection's `<dir>/<agent>.json` load and would
+        # escape the agents directory; the length bound shares the title cap.
+        errors = AppManifest.from_dict(self._manifest(self._command(agent=agent))).validate()
+        assert any(fragment in e for e in errors), errors
+
+
 # ---------------------------------------------------------------------------
 # contributes.panelTabs — declarative side-panel tab contribution
 # ---------------------------------------------------------------------------
