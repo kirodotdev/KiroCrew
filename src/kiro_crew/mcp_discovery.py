@@ -1697,18 +1697,6 @@ def _expand_header_placeholders(
     return expanded, resolved
 
 
-def _header_reference_unresolved(value: object) -> bool:
-    """True when a header value still carries a ``${VAR}`` reference.
-
-    After :func:`_expand_header_placeholders` this means the variable was
-    missing or credential-filtered — either way nothing was dereferenced, so
-    the value is not a credential anything supplied.
-    """
-    from kiro_crew.mcp_gateway.rewriter import _ENV_VAR_PLACEHOLDER
-
-    return isinstance(value, str) and _ENV_VAR_PLACEHOLDER.search(value) is not None
-
-
 def _needs_authorization(
     status_code: int, resp_headers: Mapping[str, str], sent_headers: Mapping[str, str]
 ) -> bool:
@@ -1725,8 +1713,10 @@ def _needs_authorization(
     (a missing or credential-filtered variable, sent as literal text) supplied
     nothing, so it does not suppress ``needs_auth``.
     """
+    from kiro_crew.apps.manifest import references_env  # circular at module load
+
     if any(
-        k.lower() == "authorization" and not _header_reference_unresolved(v)
+        k.lower() == "authorization" and not (isinstance(v, str) and references_env(v))
         for k, v in sent_headers.items()
     ):
         return False

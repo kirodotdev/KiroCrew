@@ -2723,3 +2723,450 @@ class TestTheMappingDocCitesOnlyThisRepo:
         text = self._DOC.read_text(encoding="utf-8")
         assert "Proposed diffs" not in text
         assert "Proposals, not applied" not in text
+
+
+# ---------------------------------------------------------------------------
+# The schema-qualified format keeps its MCP servers in a root mcp.json
+# ---------------------------------------------------------------------------
+
+
+_SCHEMA_1_0 = f"{SCHEMA_NAMESPACE_PREFIX}1.0.0/plugin.schema.json"
+_MCP_SCHEMA_1_0 = f"{SCHEMA_NAMESPACE_PREFIX}1.0.0/mcp.schema.json"
+
+
+def _standard_package(tmp_path: Path, servers: dict | None, **manifest) -> Path:
+    """A schema-qualified package: root plugin.json, servers in a root mcp.json."""
+    root = tmp_path / "src" / "std-plugin"
+    root.mkdir(parents=True, exist_ok=True)
+    _write_json(root / "plugin.json", {"$schema": _SCHEMA_1_0, "name": "std-plugin", **manifest})
+    if servers is not None:
+        _write_json(root / "mcp.json", {"$schema": _MCP_SCHEMA_1_0, "mcpServers": servers})
+    return root
+
+
+def _emitted(root: Path, out: Path) -> tuple[dict, plugin_import.ImportReport]:
+    report = convert_plugin_package(root, out)
+    return json.loads((out / "app.json").read_text(encoding="utf-8")), report
+
+
+class TestStandardMcpDocument:
+    """The published packages declare their servers in ``mcp.json`` at the root, not
+    in the manifest. A converter that only read the manifest emitted every one of
+    them as an app with skills and no tools, and said nothing."""
+
+    def test_a_remote_streamable_http_server_is_emitted_as_an_http_entry(self, tmp_path):
+        root = _standard_package(
+            tmp_path,
+            {
+                "stripe": {
+                    "type": "streamable-http",
+                    "url": "https://mcp.example.com/mcp",
+                    "headers": {"X-Client": "demo"},
+                }
+            },
+        )
+        manifest, report = _emitted(root, tmp_path / "out")
+        assert manifest["mcpServers"] == {
+            "stripe": {
+                "type": "http",
+                "url": "https://mcp.example.com/mcp",
+                "headers": {"X-Client": "demo"},
+            }
+        }
+        assert any(m.kind == "mcpServers" for m in report.mapped)
+
+    def test_a_stdio_server_is_emitted_without_a_type_key(self, tmp_path):
+        root = _standard_package(
+            tmp_path,
+            {"tool": {"type": "stdio", "command": "uvx", "args": ["some-server@latest"]}},
+        )
+        manifest, _report = _emitted(root, tmp_path / "out")
+        assert manifest["mcpServers"] == {
+            "tool": {"command": "uvx", "args": ["some-server@latest"]}
+        }
+
+    def test_sse_keeps_its_type(self, tmp_path):
+        root = _standard_package(tmp_path, {"s": {"type": "sse", "url": "https://h.example/sse"}})
+        manifest, _report = _emitted(root, tmp_path / "out")
+        assert manifest["mcpServers"]["s"] == {"type": "sse", "url": "https://h.example/sse"}
+
+    def test_the_manifest_wins_when_it_declares_servers_itself(self, tmp_path):
+        """A package carrying both is read the way its manifest says: the root
+        document is the format's spelling only for a manifest that says nothing."""
+        root = _standard_package(
+            tmp_path,
+            {"from-document": {"type": "stdio", "command": "uvx"}},
+            mcpServers={"from-manifest": {"command": "npx"}},
+        )
+        manifest, _report = _emitted(root, tmp_path / "out")
+        assert list(manifest["mcpServers"]) == ["from-manifest"]
+
+    @pytest.mark.parametrize("declared", [{}, [], ""])
+    def test_an_empty_manifest_map_does_not_shadow_the_document(self, tmp_path, declared):
+        """The format has no manifest ``mcpServers`` key, so an empty value says
+        nothing and must not hide the document."""
+        root = _standard_package(
+            tmp_path, {"t": {"type": "stdio", "command": "uvx"}}, mcpServers=declared
+        )
+        manifest, report = _emitted(root, tmp_path / "out")
+        assert list(manifest["mcpServers"]) == ["t"]
+        assert any("is read instead" in w for w in report.warnings)
+
+    def test_an_empty_manifest_map_with_no_document_says_so(self, tmp_path):
+        root = _standard_package(tmp_path, None, mcpServers={})
+        manifest, report = _emitted(root, tmp_path / "out")
+        assert "mcpServers" not in manifest
+        assert any("no root mcp.json to read either" in w for w in report.warnings)
+
+    def test_a_declared_path_in_the_manifest_is_honoured_over_the_document(self, tmp_path):
+        """A path is the vendor spelling and names a real file; it is read, not
+        mistaken for 'says nothing'."""
+        root = _standard_package(
+            tmp_path,
+            {"from-document": {"type": "stdio", "command": "uvx"}},
+            mcpServers="./config/servers.json",
+        )
+        _write_json(root / "config" / "servers.json", {"from-path": {"command": "npx"}})
+        manifest, _report = _emitted(root, tmp_path / "out")
+        assert list(manifest["mcpServers"]) == ["from-path"]
+
+    def test_a_vendor_directory_package_never_reads_a_root_mcp_json(self, tmp_path):
+        root = _package(tmp_path, skills="./skills")
+        _skill(root, "skills")
+        _write_json(
+            root / "mcp.json",
+            {"$schema": _MCP_SCHEMA_1_0, "mcpServers": {"x": {"type": "stdio", "command": "uvx"}}},
+        )
+        manifest, _report = _emitted(root, tmp_path / "out")
+        assert "mcpServers" not in manifest
+
+    @pytest.mark.parametrize(
+        "server, fragment",
+        [
+            ({"type": "streamable-http", "url": "http://mcp.example.com/mcp"}, "plain http"),
+            ({"type": "streamable-http", "url": "https://u:p@h.example/mcp"}, "user information"),
+            (
+                {"type": "streamable-http", "url": "http://localhost\\@evil.example/mcp"},
+                "backslash, control or whitespace",
+            ),
+            (
+                {"type": "streamable-http", "url": "http://localhost\t@evil.example/mcp"},
+                "backslash, control or whitespace",
+            ),
+            ({"type": "streamable-http", "url": "https://h.example/mcp#frag"}, "fragment"),
+            ({"type": "streamable-http", "url": "ftp://h.example/mcp"}, "not an absolute http"),
+            ({"type": "streamable-http", "url": "https://h.example:bad/mcp"}, "does not parse"),
+            ({"type": "streamable-http", "url": "https://h.example:99999/mcp"}, "does not parse"),
+            ({"type": "streamable-http"}, "no url"),
+            ({"type": "ws", "url": "wss://h.example"}, "not one of"),
+            ({"type": ["stdio"], "command": "uvx"}, "not one of"),
+            ({"type": {"k": 1}, "command": "uvx"}, "not one of"),
+            ({"type": None, "args": ["x"]}, "does not spell exactly one transport"),
+            (
+                {"command": "uvx", "url": "https://h.example/mcp"},
+                "does not spell exactly one transport",
+            ),
+            (
+                {
+                    "type": "streamable-http",
+                    "url": "https://h.example",
+                    "headers": {"A": "1", "a": "2"},
+                },
+                "not unique case-insensitively",
+            ),
+            (
+                {"type": "stdio", "command": "uvx", "env": {"PLUGIN_ROOT": "/x"}},
+                "reserved placeholder",
+            ),
+            (
+                {"type": "streamable-http", "url": "https://h.example", "headers": {"": "v"}},
+                "blank header name",
+            ),
+            (
+                {
+                    "type": "streamable-http",
+                    "url": "https://h.example/mcp",
+                    "headers": {"Authorization": "Bearer ${OPENAI_API_KEY}"},
+                },
+                "environment reference",
+            ),
+            (
+                {
+                    "type": "streamable-http",
+                    "url": "https://h.example/mcp",
+                    "headers": {"X-Key": "${env:AWS_SECRET_ACCESS_KEY}"},
+                },
+                "environment reference",
+            ),
+            (
+                {"type": "streamable-http", "url": "https://h.example/${TOKEN}/mcp"},
+                "environment reference",
+            ),
+            (
+                {"type": "stdio", "command": "uvx", "env": {"API_KEY": "${OPENAI_API_KEY}"}},
+                "environment reference",
+            ),
+            (
+                {"type": "stdio", "command": "uvx", "args": ["--token", "${SECRET}"]},
+                "environment reference",
+            ),
+        ],
+    )
+    def test_an_entry_breaking_the_format_is_dropped_and_named(self, tmp_path, server, fragment):
+        root = _standard_package(
+            tmp_path, {"bad": server, "good": {"type": "stdio", "command": "uvx"}}
+        )
+        manifest, report = _emitted(root, tmp_path / "out")
+        assert list(manifest["mcpServers"]) == ["good"], "one refused entry keeps its siblings"
+        assert any(fragment in w for w in report.warnings), report.warnings
+
+    @pytest.mark.parametrize(
+        "config, field",
+        [
+            ({"type": "stdio", "command": "uvx", "args": 7}, "args"),
+            ({"type": "stdio", "command": "uvx", "args": ["ok", 3]}, "args"),
+            ({"type": "stdio", "command": "uvx", "env": ["A=B"]}, "env"),
+            ({"type": "stdio", "command": "uvx", "env": {"A": 1}}, "env"),
+            ({"type": "stdio", "command": "uvx", "cwd": ["/x"]}, "cwd"),
+            (
+                {"type": "streamable-http", "url": "https://h.example/mcp", "headers": ["X"]},
+                "headers",
+            ),
+            (
+                {"type": "streamable-http", "url": "https://h.example/mcp", "headers": {"X": 1}},
+                "headers",
+            ),
+        ],
+    )
+    def test_a_mistyped_field_drops_the_entry_before_it_can_break_registration(
+        self, tmp_path, config, field
+    ):
+        """The registration writer iterates ``args`` and overlays ``env`` without
+        re-checking them; a scalar there raises mid-registration under the lock."""
+        root = _standard_package(
+            tmp_path, {"bad": config, "good": {"type": "stdio", "command": "uvx"}}
+        )
+        manifest, report = _emitted(root, tmp_path / "out")
+        assert list(manifest["mcpServers"]) == ["good"]
+        assert any(f"wrong type: {field}" in w for w in report.warnings), report.warnings
+
+    def test_a_directly_installed_manifest_is_held_to_the_same_shape(self, tmp_path, monkeypatch):
+        """The converter is one entry path; ``app install`` of a hand-written app.json is
+        the other, and ``mcpServers`` is copied verbatim there. The registration writer
+        refuses the same mistyped entry instead of raising under its lock."""
+        import kiro_crew.apps.bridges as bmod
+        from kiro_crew.apps.manager import install_app
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        mcp_path = tmp_path / "mcp.json"
+        monkeypatch.setattr(bmod, "_mcp_json_path", lambda: mcp_path)
+        src = tmp_path / "direct"
+        src.mkdir()
+        _write_json(
+            src / "app.json",
+            {
+                "name": "direct-app",
+                "version": "1.0.0",
+                "displayName": "Direct",
+                "description": "d",
+                "mcpServers": {
+                    "bad": {"command": "run", "args": 7},
+                    "pinned": {"command": "kirocrew", "args": 7},
+                    "string": "not-an-object",
+                    "good": {"command": "run"},
+                },
+            },
+        )
+        result = install_app(str(src))
+        assert result.ok, result.error
+        manifest = AppManifest.from_json_file(home / "apps" / "direct-app" / "app.json")
+        registered = bmod._register_mcp_servers("direct-app", manifest)
+        assert registered == ["direct-app:good"]
+
+    def test_a_vendor_manifest_entry_is_type_checked_the_same_way(self, tmp_path):
+        root = _package(tmp_path, mcpServers={"bad": {"command": "npx", "args": "not-a-list"}})
+        manifest, report = _emitted(root, tmp_path / "out")
+        assert "mcpServers" not in manifest
+        assert any("wrong type: args" in w for w in report.warnings)
+
+    def test_plain_http_to_loopback_is_allowed(self, tmp_path):
+        root = _standard_package(
+            tmp_path, {"dev": {"type": "streamable-http", "url": "http://127.0.0.1:8080/mcp"}}
+        )
+        manifest, _report = _emitted(root, tmp_path / "out")
+        assert manifest["mcpServers"]["dev"]["url"] == "http://127.0.0.1:8080/mcp"
+
+    def test_a_missing_type_is_inferred_and_named(self, tmp_path):
+        root = _standard_package(tmp_path, {"t": {"command": "uvx", "args": ["x"]}})
+        manifest, report = _emitted(root, tmp_path / "out")
+        assert manifest["mcpServers"]["t"] == {"command": "uvx", "args": ["x"]}
+        assert any("read as stdio" in w for w in report.warnings)
+
+    def test_a_key_the_transport_does_not_define_makes_the_entry_invalid(self, tmp_path):
+        """Closed per transport (§7.2.1). Reading around ``disabled: true`` would
+        silently decide the author meant enabled."""
+        root = _standard_package(
+            tmp_path,
+            {
+                "t": {"type": "stdio", "command": "uvx", "disabled": True},
+                "good": {"type": "stdio", "command": "uvx"},
+            },
+        )
+        manifest, report = _emitted(root, tmp_path / "out")
+        assert list(manifest["mcpServers"]) == ["good"]
+        assert any("not defined for stdio: disabled; dropped" in w for w in report.warnings)
+
+    @pytest.mark.parametrize(
+        "config, field",
+        [
+            ({"command": "uvx", "args": ["--db", "${PLUGIN_DATA}"]}, "args[1]"),
+            ({"command": "uvx", "cwd": "${PLUGIN_ROOT}/srv"}, "cwd"),
+            ({"command": "uvx", "env": {"HOME_DIR": "${PLUGIN_DATA}/state"}}, "env[HOME_DIR]"),
+            ({"command": "${PLUGIN_ROOT}"}, "command"),
+        ],
+    )
+    def test_a_placeholder_is_package_relative_wherever_it_appears(self, tmp_path, config, field):
+        """Both placeholders name roots conversion does not preserve. ``${PLUGIN_DATA}``
+        alone carries no separator, so the separator rule missed it."""
+        root = _standard_package(tmp_path, {"t": {"type": "stdio", **config}})
+        manifest, report = _emitted(root, tmp_path / "out")
+        assert "mcpServers" not in manifest
+        refused = [u for u in report.unmapped if u.kind == "mcpServers[t]"]
+        assert refused and field in refused[0].detail
+
+    @pytest.mark.parametrize(
+        "document, fragment",
+        [
+            ({"mcpServers": {"t": {"type": "stdio", "command": "uvx"}}}, "no published $schema"),
+            (
+                {
+                    "$schema": f"{SCHEMA_NAMESPACE_PREFIX}9.9.0/mcp.schema.json",
+                    "mcpServers": {"t": {"type": "stdio", "command": "uvx"}},
+                },
+                "does not match",
+            ),
+            ({"$schema": _MCP_SCHEMA_1_0, "mcpServers": []}, "not an object"),
+        ],
+    )
+    def test_a_document_level_failure_disables_mcp_and_nothing_else(
+        self, tmp_path, document, fragment
+    ):
+        root = _standard_package(tmp_path, None, skills="./skills")
+        _skill(root / "skills", "s")
+        _write_json(root / "mcp.json", document)
+        manifest, report = _emitted(root, tmp_path / "out")
+        assert manifest["skills"] == ["skills/s"], "the skills component still converts"
+        assert "mcpServers" not in manifest
+        assert any(fragment in w for w in report.warnings), report.warnings
+
+    def test_a_matching_but_unimplemented_version_pair_is_refused_not_guessed(self, tmp_path):
+        """Equality alone is not fail-closed: a 2.0.0/2.0.0 pair would pass while only
+        1.0.0 entry semantics are coded."""
+        root = tmp_path / "src" / "std-plugin"
+        root.mkdir(parents=True)
+        _write_json(
+            root / "plugin.json",
+            {"$schema": f"{SCHEMA_NAMESPACE_PREFIX}2.0.0/plugin.schema.json", "name": "std-plugin"},
+        )
+        _write_json(
+            root / "mcp.json",
+            {
+                "$schema": f"{SCHEMA_NAMESPACE_PREFIX}2.0.0/mcp.schema.json",
+                "mcpServers": {"t": {"type": "stdio", "command": "uvx"}},
+            },
+        )
+        manifest, report = _emitted(root, tmp_path / "out")
+        assert "mcpServers" not in manifest
+        assert any("not the one this converter implements" in w for w in report.warnings)
+
+    def test_an_unparseable_document_is_a_warning_not_a_refusal(self, tmp_path):
+        root = _standard_package(tmp_path, None)
+        (root / "mcp.json").write_text("{not json", encoding="utf-8")
+        manifest, report = _emitted(root, tmp_path / "out")
+        assert "mcpServers" not in manifest
+        assert any("mcp.json not read" in w for w in report.warnings)
+
+    @pytest.mark.skipif(os.name == "nt", reason="symlink creation needs a privilege on Windows")
+    def test_a_linked_document_is_not_read(self, tmp_path):
+        root = _standard_package(tmp_path, None)
+        real = tmp_path / "elsewhere.json"
+        _write_json(
+            real,
+            {"$schema": _MCP_SCHEMA_1_0, "mcpServers": {"t": {"type": "stdio", "command": "uvx"}}},
+        )
+        (root / "mcp.json").symlink_to(real)
+        manifest, report = _emitted(root, tmp_path / "out")
+        assert "mcpServers" not in manifest
+        assert any("is a link" in w for w in report.warnings)
+
+    def test_the_server_cap_bounds_the_document_too(self, tmp_path):
+        servers = {
+            f"s{i}": {"type": "stdio", "command": "uvx"}
+            for i in range(plugin_import.MAX_MCP_SERVERS + 5)
+        }
+        root = _standard_package(tmp_path, servers)
+        manifest, report = _emitted(root, tmp_path / "out")
+        assert len(manifest["mcpServers"]) == plugin_import.MAX_MCP_SERVERS
+        assert any("the rest are dropped" in w for w in report.warnings)
+
+    def test_the_emitted_app_installs(self, tmp_path, monkeypatch):
+        from kiro_crew.apps.manager import install_app
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        root = _standard_package(
+            tmp_path,
+            {
+                "remote": {"type": "streamable-http", "url": "https://mcp.example.com/mcp"},
+                "local": {"type": "stdio", "command": "uvx", "args": ["x"]},
+            },
+            version="1.0.0",
+            description="d",
+        )
+        out = tmp_path / "out"
+        convert_plugin_package(root, out)
+        result = install_app(str(out))
+        assert result.ok, result.error
+
+
+class TestManifestFieldsTheFormatAdded:
+    def test_a_top_level_display_name_is_read(self, tmp_path):
+        root = _standard_package(tmp_path, None, displayName="Std Plugin")
+        manifest, report = _emitted(root, tmp_path / "out")
+        assert manifest["displayName"] == "Std Plugin"
+        assert not any("displayName" in w for w in report.warnings)
+
+    def test_a_vendor_interface_display_name_still_wins_where_present(self, tmp_path):
+        root = _package(tmp_path, displayName="Top", interface={"displayName": "Interface"})
+        manifest, _report = _emitted(root, tmp_path / "out")
+        assert manifest["displayName"] == "Interface"
+
+    def test_extensions_is_named_as_not_read_and_nothing_under_a_namespace_is_copied(
+        self, tmp_path
+    ):
+        root = _standard_package(tmp_path, None, extensions={"com.example": {"x": 1}})
+        (root / "dev.kiro" / "steering").mkdir(parents=True)
+        (root / "dev.kiro" / "steering" / "a.md").write_text("steer", encoding="utf-8")
+        _manifest, report = _emitted(root, tmp_path / "out")
+        assert any("not read by this converter: extensions" in w for w in report.warnings)
+        assert not (tmp_path / "out" / "dev.kiro").exists()
+
+    @pytest.mark.skipif(os.name == "nt", reason="symlink creation needs a privilege on Windows")
+    def test_an_empty_manifest_map_with_a_linked_document_does_not_follow_it(self, tmp_path):
+        """The reader refused the link without following it; the presence probe that
+        words the warning must not resolve the target either."""
+        root = _standard_package(tmp_path, None, mcpServers={})
+        (root / "mcp.json").symlink_to(tmp_path / "nowhere.json")  # dangling on purpose
+        _manifest, report = _emitted(root, tmp_path / "out")
+        assert any("could not be read (see above)" in w for w in report.warnings)
+        assert not any("no root mcp.json to read either" in w for w in report.warnings)
+
+    def test_an_empty_manifest_map_with_an_unreadable_document_says_which(self, tmp_path):
+        root = _standard_package(tmp_path, None, mcpServers={})
+        (root / "mcp.json").write_text("{not json", encoding="utf-8")
+        _manifest, report = _emitted(root, tmp_path / "out")
+        assert any("could not be read (see above)" in w for w in report.warnings)
+        assert not any("no root mcp.json to read either" in w for w in report.warnings)

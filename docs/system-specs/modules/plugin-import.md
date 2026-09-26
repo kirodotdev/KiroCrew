@@ -48,10 +48,12 @@ Manifest fields read, all camelCase, every path written `./`-relative:
 | `author` | object with `name`, or string | `author` |
 | `license` | string | `license` |
 | `keywords` | list of strings | `tags` |
+| `displayName` | string | `displayName` (after `interface.displayName`) |
 | `skills` | path, or list of paths | `skills`, resources copied |
 | `mcpServers` | path to a config file, or inline object | `mcpServers` |
 | `apps` | path | reported, not converted |
 | `hooks` | path, list of paths, inline object, or list of objects | reported, not converted |
+| `extensions` | object keyed by reverse-domain namespace | named in the not-read warning; nothing under a namespace is copied (§2.1) |
 | `interface.displayName` | string | `displayName` |
 | `interface.shortDescription`, `.longDescription` | string | `description` fallback |
 | `interface.developerName` | string | `author` fallback |
@@ -61,6 +63,95 @@ Manifest fields read, all camelCase, every path written `./`-relative:
 the source, so both are synthesized when absent, with a warning naming what was
 synthesized. A key the converter does not read is named in a warning rather than
 ignored silently.
+
+### 2.1 The schema-qualified format's servers live in a root `mcp.json`
+
+A schema-qualified manifest declares no components at all: its skills are the
+children of `skills/`, and its MCP servers are one document fixed at the package
+root, `mcp.json`, carrying its own `$schema` and a `mcpServers` object. The
+published packages ship that way, so a converter reading only the manifest emitted
+each of them as an app with skills and no tools, and said nothing.
+
+The document is read when the manifest declares no `mcpServers`, or declares an
+EMPTY one (`{}`, `[]`, `""`); a non-empty inline map or a declared path is the
+vendor spelling and is honoured as such, so a package carrying both is read the
+way its manifest says. An empty value is named, together with whether a root
+document was there to read instead, and never shadows the document. It is read through the
+same containment rule as every declared file (not through a link, not past the
+manifest byte bound), and a failure at the DOCUMENT level -- unparseable, no
+published `$schema`, a `$schema` version other than the manifest's, a version
+this converter does not implement (`IMPLEMENTED_MCP_SCHEMA_VERSION`, `1.0.0`), `mcpServers` not an object -- disables the MCP component with a warning
+and converts the rest of the package. The version rules are the format's own
+([Agent Plugins 1.0](https://agent-plugins.org/specification/) §7.2.1: `mcp.json`
+carries a required `$schema`; §10.1: its version MUST match the manifest's;
+§7.2.2: a mismatch or an unsupported version disables the MCP component for that
+plugin and nothing else); the implemented-set check is what makes equality
+fail-closed, since a 2.0/2.0 pair would otherwise be read with 1.0 entry
+semantics. The format isolates each component at its own boundary, and so
+does this.
+
+Each entry carries a `type`. The three the format defines, and what each becomes:
+
+| `type` | fields read | emitted |
+|---|---|---|
+| `stdio` | `command`, `args`, `env`, `cwd` | the same fields, no `type` key -- the stdio spelling every reader of an app manifest already understands |
+| `streamable-http` | `url`, `headers` | `type: "http"`, `url`, `headers` |
+| `sse` | `url`, `headers` | `type: "sse"`, `url`, `headers` |
+
+The document is closed per transport (§7.2.1): a key the transport does not
+define (`disabled`, `autoApprove`, `timeout`) makes the ENTRY invalid, dropped and
+named -- reading around a `disabled: true` the author wrote would silently decide
+it meant enabled.
+An entry is dropped WHOLE, and named, when it breaks the format's own rules
+(§7.2.1 for the entry shape and the url rules, §9.2 for the reserved names): a
+`type` outside the three; a missing `type` on an entry that does not spell exactly
+one transport (exactly one of `command` or `url` is read as that transport, with a
+warning; both or neither is ambiguous and dropped, because guessing stdio would run
+the command of a package that reads as remote);
+an HTTP url that is not absolute `http(s)`, that is plain `http` to a host other
+than loopback, that carries userinfo or a fragment, or whose header names collide
+case-insensitively; a stdio `env` that defines `PLUGIN_ROOT` or `PLUGIN_DATA`, the
+two names the format reserves for the client; any string the entry hands the
+runtime -- an HTTP url or header value, a stdio `command`, `args`, `cwd` or `env`
+value -- carrying a `${VAR}` / `${env:VAR}` reference other than the two format
+placeholders. That last one is a security refusal, not a format nit: the format
+keeps those values literal and says neither headers nor `env` are "a portable
+secret mechanism" (§7.2.1, §9.2), but the runtime that reads the emitted manifest
+expands the reference from the operator's environment, which carries provider
+credentials -- so a package writing `Authorization: Bearer ${OPENAI_API_KEY}`, or
+`env: {"KEY": "${OPENAI_API_KEY}"}`, would hand a key the package never held to
+the host it names or the process it launches. The predicate is
+`manifest.mcp_entry_references_env`, shared with both agent-config writers. The url shape rules (raw bytes, parse,
+scheme, host, user information, fragment) are `manifest.mcp_url_violation`,
+shared with both agent-config writers so the three cannot drift apart. A `type` that is not a string is
+"not one of the three", never a crash: the membership test is guarded before a
+foreign value is hashed. One refused entry never takes its siblings with it. The normalized map then goes through the same pass a
+manifest-inline map does, so §3.1, the bounding pass and the field TYPE check apply
+unchanged: an entry whose `command`, `args`, `env`, `cwd`, `url` or `headers` is
+not the shape every reader of an emitted manifest assumes (a string, a list of
+strings, a string-to-string object) is dropped and named, for every format. The
+check is `manifest.mistyped_mcp_server_fields`, and both agent-config writers
+apply it too, because a directly installed `app.json` never passes through this
+converter and its `mcpServers` is copied verbatim -- the registration writer
+iterates `args` and overlays `env` without re-checking them, and a scalar there
+raised mid-registration under the config lock.
+
+The format expands exactly two placeholders, `${PLUGIN_ROOT}` and `${PLUGIN_DATA}`,
+in stdio `args`, `env` values and `cwd`. Both name a root conversion does not
+preserve -- the package, and a per-install data directory the CLIENT creates -- so
+a value carrying either is package-relative in the §3.1 sense and refuses the
+entry, `${PLUGIN_DATA}` alone included: it carries no separator, so the separator
+rule missed it. In a url or a header the format performs no expansion at all
+(§7.2.1), so any `${...}` there -- the two format placeholders included -- is
+refused by the environment-reference rule below rather than passed through as
+text.
+
+Vendor data travels under `extensions`, an object keyed by reverse-domain
+namespace, and under a root directory of the same name (`dev.kiro/`,
+`com.openai/`). The format assigns it no meaning; only the namespace owner can
+read it. The key is named by the existing not-read warning like any other key
+this converter does not consume, and nothing under a namespace directory is
+copied, because only declared resources ever are.
 
 ## 3. Output
 

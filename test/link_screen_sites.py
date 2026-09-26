@@ -83,6 +83,7 @@ DECLARED_SITES = frozenset(
         ("apps/plugin_import.py", "_copy_tree_without_links"),
         ("apps/plugin_import.py", "_discover_skill_dirs"),
         ("apps/plugin_import.py", "_is_schema_qualified"),
+        ("apps/plugin_import.py", "_standard_mcp_document"),
         ("apps/plugin_import.py", "convert_plugin_package"),
         ("apps/plugin_import.py", "find_plugin_manifest"),
         ("config/superseded_defaults.py", "_update_map"),

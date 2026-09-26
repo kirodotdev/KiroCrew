@@ -45,7 +45,7 @@ from kiro_crew.apps.manager import (
     get_app_manifest,
     list_apps,
 )
-from kiro_crew.apps.manifest import AppManifest
+from kiro_crew.apps.manifest import AppManifest, mcp_url_kind
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import (
     config_dir,
@@ -2853,6 +2853,7 @@ def _register_mcp_servers(
     _maybe_provision_backendless_deps(app_name, manifest)
     registered: list[str] = []
     skipped: list[str] = []
+    refused: list[str] = []
     # Reconcile guard OUTSIDE _mcp_lock: that order is fixed everywhere, so a health
     # transition and a lifecycle registration can never deadlock against each other.
     with _health_reconcile_guard(), _mcp_lock():
@@ -2861,9 +2862,29 @@ def _register_mcp_servers(
         for server_name, server_config in manifest.mcpServers.items():
             namespaced = f"{app_name}:{server_name}"
             cfg = dict(server_config) if isinstance(server_config, dict) else server_config
-            if isinstance(cfg, dict):
+            # Classified on the RAW entry, before anything reads its fields: the
+            # host-cli pin below iterates ``args`` and copies ``env``, so a
+            # mistyped value has to be refused before it can reach that code.
+            # A non-object entry (a bare string, a list) is refused the same way:
+            # nothing below can read it, and written verbatim it is an entry
+            # kiro-cli cannot load.
+            url_kind = mcp_url_kind(cfg, bool(manifest.backend.entryPoint))
+            if url_kind != "invalid" and isinstance(cfg, dict):
                 cfg = _pin_host_cli_command(app_name, cfg)
-            is_http = isinstance(cfg, dict) and bool(cfg.get("url"))
+            if url_kind == "invalid":
+                servers.pop(namespaced, None)
+                refused.append(namespaced)
+                logger.warning(
+                    "App %s MCP server %s is not registered: the entry is not an object, "
+                    "has a mistyped field, its url is not an absolute https (or loopback "
+                    "http) url, or its url or a header carries a ${VAR} reference",
+                    app_name,
+                    server_name,
+                )
+                continue
+            # A "remote" url is neither rewritten nor skipped: it is the server's
+            # address, not a placeholder for a port this gateway allocates.
+            is_http = url_kind == "backend"
             if is_http and not resolved_port:
                 # No live backend → registering the manifest's dead default-port URL would
                 # break every kiro session. Skip it AND scrub any stale entry so a prior
@@ -2902,12 +2923,14 @@ def _register_mcp_servers(
         _write_mcp_json_unlocked(mcp_data)
     logger.info(
         "Registered %d MCP server(s) for app %s (live_port=%s); skipped %d HTTP server(s) "
-        "with no live backend: %s",
+        "with no live backend: %s; refused %d with an unusable url: %s",
         len(registered),
         app_name,
         resolved_port,
         len(skipped),
         skipped or "none",
+        len(refused),
+        refused or "none",
     )
     return registered
 
