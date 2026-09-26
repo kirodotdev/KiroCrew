@@ -176,7 +176,7 @@ CONTROL_MODULES = (
     "dashboard/handlers/themes.py",
     "image_artifacts.py",
     "member_essential_context.py",
-    "memory.py",
+    "memory_files.py",
     "messaging/outbound_files.py",
 )
 

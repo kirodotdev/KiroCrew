@@ -7777,6 +7777,24 @@ class VectorMemoryStore:
         home = config_dir()
         base = home / "workspace" / "memory"
         counts = {"semantic": 0, "episodic": 0, "skipped": 0}
+        # The three markdown sources below are memory SOURCE text, so they are read
+        # through the injected file access rather than with Path methods -- if the
+        # default workspace's memory tree is mounted elsewhere, this import has to
+        # read the tree that is actually in use, not an abandoned local copy of it.
+        #
+        # lessons.jsonl is deliberately NOT read that way: it sits at the data-home
+        # ROOT, outside the memory tree, so no memory mount covers it.
+        from kiro_crew.memory_files import memory_files_for
+        from kiro_crew.platform.interfaces import MemoryRoots
+
+        files = memory_files_for(
+            MemoryRoots(
+                workspace=home / "workspace",
+                memory_dir=base,
+                history_dir=base / "history",
+                memory_version=1,
+            )
+        )
 
         # ── Lessons ──
         lessons_path = home / "lessons.jsonl"
@@ -7829,8 +7847,8 @@ class VectorMemoryStore:
 
         # ── Preferences ──
         prefs_path = base / "preferences.md"
-        if prefs_path.is_file():
-            for line in prefs_path.read_text(encoding="utf-8").splitlines():
+        if files.exists(prefs_path):
+            for line in files.read_text(prefs_path).splitlines():
                 line = line.strip()
                 if not line.startswith("- "):
                     continue
@@ -7858,9 +7876,9 @@ class VectorMemoryStore:
 
         # ── Projects ──
         proj_path = base / "projects.md"
-        if proj_path.is_file():
+        if files.exists(proj_path):
             current_project = ""
-            for line in proj_path.read_text(encoding="utf-8").splitlines():
+            for line in files.read_text(proj_path).splitlines():
                 line = line.strip()
                 if line.startswith("- ") and ":" in line:
                     name = line[2:].split(":")[0].strip()
@@ -7885,29 +7903,34 @@ class VectorMemoryStore:
 
         # ── History ──
         history_dir = base / "history"
-        if history_dir.is_dir():
-            for md_file in sorted(history_dir.glob("*.md")):
-                content = md_file.read_text(encoding="utf-8", errors="replace")
-                # Split on timestamp-like paragraphs
-                paragraphs = re.split(r"\n(?=\[[\d-]+)", content)
-                for para in paragraphs:
-                    text = para.strip()
-                    # Skip markdown headers, HTML comments, short text
-                    if not text or text.startswith("#") or text.startswith("<!--"):
-                        continue
-                    if len(text) < _EPISODIC_TEXT_MIN:
-                        continue
-                    text = text[:_EPISODIC_TEXT_MAX]
-                    if self.write_episodic(
-                        text,
-                        embedding=self._try_embed(text),
-                        importance=0.4,
-                        source="migration",
-                        tags=["history"],
-                    ):
-                        counts["episodic"] += 1
-                    else:
-                        counts["skipped"] += 1
+        for md_file in sorted(files.glob(history_dir, "*.md")):
+            # ``read_entry``, not ``read_text``: this read was lossy
+            # (``errors="replace"``) because one corrupt day must not abort the
+            # whole migration, and the strict reader raises. The guarded reader
+            # keeps that robustness with a better failure: a day that cannot be
+            # read wholly and validly is SKIPPED, rather than imported into the
+            # vector store with replacement characters standing in for its text.
+            content = files.read_entry(md_file).content
+            # Split on timestamp-like paragraphs
+            paragraphs = re.split(r"\n(?=\[[\d-]+)", content)
+            for para in paragraphs:
+                text = para.strip()
+                # Skip markdown headers, HTML comments, short text
+                if not text or text.startswith("#") or text.startswith("<!--"):
+                    continue
+                if len(text) < _EPISODIC_TEXT_MIN:
+                    continue
+                text = text[:_EPISODIC_TEXT_MAX]
+                if self.write_episodic(
+                    text,
+                    embedding=self._try_embed(text),
+                    importance=0.4,
+                    source="migration",
+                    tags=["history"],
+                ):
+                    counts["episodic"] += 1
+                else:
+                    counts["skipped"] += 1
 
         embedded_row = self._fetch_one_locked(
             "SELECT COUNT(*) FROM episodic_memories WHERE is_deleted=0 AND embedding IS NOT NULL"
