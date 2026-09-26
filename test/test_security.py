@@ -1230,6 +1230,85 @@ class TestTokenParamValueRedaction:
             assert result == text
             assert warnings == []
 
+    def test_a_tag_with_glued_bytes_is_a_value_not_a_tag(self) -> None:
+        """Trust is byte identity of the ENTIRE value: a registered tag with bytes
+        glued to its `]` is redacted whole, with the warning `scrub_reason` gates
+        on, and the result is a fixed point. A tag followed by a value boundary is
+        a bare tag with an ordinary tail."""
+        from kiro_crew.security import CREDENTIAL_REDACTION_TAGS
+
+        for tag in CREDENTIAL_REDACTION_TAGS:
+            glued = f"{tag}{self._OPAQUE}"
+            result, warnings = redact_credentials(f"?token={glued}&x=1")
+            assert result == "?token=[REDACTED: credential]&x=1", tag
+            assert self._OPAQUE not in result
+            assert warnings == [f"Redacted token parameter value ({len(glued)} chars)"]
+            again, more = redact_credentials(result)
+            assert again == result and more == []
+
+            tailed = f"?token={tag} and more text"
+            assert redact_credentials(tailed) == (tailed, [])
+
+    def test_a_complete_tag_ending_a_stream_chunk_holds_its_anchor(self) -> None:
+        """The whole-value rule must hold across a chunk boundary that falls
+        exactly after a tag's `]`. A tag standing whole as the parameter value
+        is a fixed point only while nothing is glued to it, so a chunk ending
+        in `?token=[REDACTED: credential]` cannot commit anchor and tag: the
+        next chunk may open with the glued bytes, which arrive anchor-less and
+        would stream raw. The next byte decides -- a boundary byte releases a
+        bare tag with an ordinary tail, a value byte joins the run the anchor
+        already holds."""
+        from kiro_crew.security import CREDENTIAL_REDACTION_TAGS, StreamRedactor, redact
+
+        def stream(*chunks: str) -> str:
+            redactor = StreamRedactor()
+            pieces = [redactor.feed(chunk) for chunk in chunks]
+            pieces.append(redactor.flush())
+            assert all(self._OPAQUE not in piece for piece in pieces), pieces
+            return "".join(pieces)
+
+        for tag in CREDENTIAL_REDACTION_TAGS:
+            # Glued continuation: one credential, redacted whole, as the batch
+            # redactor writes it for the joined text.
+            for anchor in ("?token=", "see path?a=1&token=", '{"u": "?token='):
+                joined = f"{anchor}{tag}{self._OPAQUE} tail"
+                expected = redact(joined)
+                assert self._OPAQUE not in expected, joined
+                assert stream(f"{anchor}{tag}", f"{self._OPAQUE} tail") == expected, joined
+                assert stream(f"{anchor}{tag}", self._OPAQUE, " tail") == expected, joined
+                assert stream(f"{anchor}{tag}Xk9f", f"{self._OPAQUE[4:]} tail") == expected, joined
+
+            # A value byte OUTSIDE `_CRED_CLASS` glued to the tag (`!` is a legal
+            # `_TOKEN_PARAM_VALUE_CLASS` byte) ends the natural cred run, so
+            # only the tag-aware anchor keeps this tail in progress.
+            banged = f"?token={tag}!{self._OPAQUE} tail"
+            expected = redact(banged)
+            assert self._OPAQUE not in expected, banged
+            assert stream(f"?token={tag}!", f"{self._OPAQUE} tail") == expected, banged
+            assert stream(f"?token={tag}", f"!{self._OPAQUE} tail") == expected, banged
+
+            # Boundary continuation: a bare tag with an ordinary tail is released
+            # unchanged -- the hold costs one chunk of latency, never a byte.
+            redactor = StreamRedactor()
+            held = redactor.feed(f"?token={tag}")
+            released = redactor.feed(" and more text")
+            assert held + released + redactor.flush() == f"?token={tag} and more text"
+
+            # Stream end right after the tag: the flush releases the bare tag.
+            redactor = StreamRedactor()
+            assert redactor.feed(f"?token={tag}") + redactor.flush() == f"?token={tag}"
+
+            # Boundary continuation: a bare tag with an ordinary tail is released
+            # unchanged -- the hold costs one chunk of latency, never a byte.
+            redactor = StreamRedactor()
+            held = redactor.feed(f"?token={tag}")
+            released = redactor.feed(" and more text")
+            assert held + released + redactor.flush() == f"?token={tag} and more text"
+
+            # Stream end right after the tag: the flush releases the bare tag.
+            redactor = StreamRedactor()
+            assert redactor.feed(f"?token={tag}") + redactor.flush() == f"?token={tag}"
+
     def test_blocking_surface_unchanged(self) -> None:
         """Redaction-only: `_contains_fixed_credential` gates request-BLOCKING
         decisions in `exfil.py` and must not learn the parameter name -- a

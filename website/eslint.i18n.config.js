@@ -411,9 +411,26 @@ export default [
               // surrounding sentence (`Enter <name> here`), which the anchors reject.
               String.raw`^<[a-z]+>$`,
 
-              // Exact capability-retention wire sentinel, never input copy.
-              // Translating it would turn a retained credential into a new value.
-              String.raw`^\[REDACTED\]$`,
+              // The redactors' own SENTINELS, never input copy: the dashboard's bare
+              // capability-retention tag `[REDACTED]`, and the two tags the backend
+              // registers in `CREDENTIAL_REDACTION_TAGS`
+              // (`src/kiro_crew/security/redaction.py`), which `utils/sanitize.ts`
+              // holds byte-for-byte in `REDACTION_TAGS` so a value that already IS
+              // the backend's output is recognised and left alone. Translating the
+              // first would turn a retained credential into a new value; respelling
+              // either of the others would stop the mirror recognising a redacted
+              // `key=[REDACTED: credential]` and re-collapse it on screen.
+              //
+              // ENUMERATED, not a `^\[REDACTED[^\]]*\]$` shape, for the closed-set
+              // reason the completion-event markers below give: a fourth tag is
+              // added here on purpose, beside its registration on the backend, and
+              // a shape would also admit the variable exfiltration tag
+              // (`[REDACTED: suspicious URL to <domain>]`), whose dashboard rendering
+              // IS catalog copy (`utils.sanitize.redacted_suspicious_url`). Three
+              // fixed strings admit no prose. Measured: `utils/sanitize.ts` 1 -> 0
+              // (its encoded-tag `replace` literal is one of the three); no other
+              // file's count moves.
+              String.raw`^\[REDACTED(?:: (?:encoded )?credential)?\]$`,
 
               // The same sentinel standing in for a URL QUERY, e.g. `?token=<redacted>`
               // and `?<query>` — the two values `safePaneUrl` substitutes for a query it
